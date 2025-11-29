@@ -1,6 +1,6 @@
 # resh - Resource Shell
 
-**AI-Native Automation Platform for Modern Infrastructure**
+**AI-native automation platform with structured outputs**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-in%20development-orange.svg)]()
