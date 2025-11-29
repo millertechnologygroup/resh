@@ -1,0 +1,242 @@
+# Rust/Cargo
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# Build artifacts
+/target/
+**/target/
+debug/
+release/
+
+# Generated files
+*.o
+*.so
+*.rlib
+*.dll
+*.exe
+*.out
+*.a
+
+# Documentation
+/doc/
+/target/doc/
+
+# Test artifacts
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+
+# Benchmarks
+/criterion/
+/target/criterion/
+
+# Flamegraph
+flamegraph.svg
+perf.data
+perf.data.old
+
+# Coverage
+*.lcov
+coverage/
+tarpaulin-report.html
+cobertura.xml
+
+# IDEs and Editors
+
+## Visual Studio Code
+.vscode/
+*.code-workspace
+.history/
+
+## IntelliJ IDEA / CLion / RustRover
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+out/
+
+## Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+## Vim
+*.swp
+*.swo
+*~
+.*.sw[a-p]
+Session.vim
+tags
+
+## Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+## NetBeans
+nbproject/private/
+build/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+
+# Operating System Files
+
+## macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+## Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+## Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Project-specific
+
+## Configuration files (keep templates, ignore actual configs)
+config.toml
+config.yaml
+config.json
+*.local
+.env
+.env.local
+.env.*.local
+
+## Secrets and credentials
+secrets/
+*.key
+*.pem
+*.crt
+*.cer
+*.p12
+*.pfx
+credentials.json
+.secrets/
+
+## Logs
+*.log
+logs/
+*.log.*
+
+## Database files
+*.db
+*.sqlite
+*.sqlite3
+
+## Backup files
+*.bak
+*.backup
+*.old
+*~
+
+## Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+## Build outputs
+dist/
+build/
+bin/
+pkg/
+
+## Documentation build
+book/
+mdbook/
+_book/
+
+## Installation packages
+*.deb
+*.rpm
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+*.zip
+
+## Cache
+.cache/
+*.cache
+
+# Development tools
+
+## Pre-commit
+.pre-commit-config.yaml
+
+## Docker
+.dockerignore
+
+## CI/CD artifacts
+.gitlab-ci-local/
+
+## Profiling
+*.prof
+*.trace
+
+# Dependencies (if vendored)
+# Uncomment if you vendor dependencies
+# /vendor/
+
+# Custom resh-specific
+
+## Handle test fixtures
+/tests/fixtures/temp/
+/tests/fixtures/*.tmp
+
+## Plugin development
+/plugins/*/target/
+/examples/*/target/
+
+## Generated documentation
+/target/doc/
+
+## Benchmarking results
+/benchmarks/results/
+
+## Integration test artifacts
+/tests/integration/output/
+/tests/integration/*.log
+
+## Example outputs
+/examples/output/
+/examples/*.log
