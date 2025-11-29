@@ -191,7 +191,7 @@ See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 **Note:** resh is in early development. The build may be incomplete or broken.
 
 ```bash
-git clone https://github.com/yourusername/resh.git
+git clone https://github.com/millertechnologygroup/resh.git
 cd resh
 cargo build --release
 ./target/release/resh --version
@@ -251,8 +251,7 @@ Built with frustration from years of fragile automation tools and excitement abo
 ## Stay Updated
 
 - **GitHub:** Star and watch this repository
-- **LinkedIn:** [Your LinkedIn Profile] for development updates
-- **Twitter:** [@YourHandle] for daily progress
+- **LinkedIn:** (https://www.linkedin.com/in/cscottmiller/) for development updates
 
 ---
 
