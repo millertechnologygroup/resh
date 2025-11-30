@@ -179,11 +179,11 @@ sudo yum install git  # RHEL/CentOS
 ### Fork and Clone
 ```bash
 # Fork the repository on GitHub, then:
-git clone https://github.com/YOUR-USERNAME/resh.git
+git clone https://github.com/millertechnologygroup/resh.git
 cd resh
 
 # Add upstream remote
-git remote add upstream https://github.com/millertg/resh.git
+git remote add upstream https://github.com/millertechnologygroup/resh.git
 ```
 
 ### Build and Test
