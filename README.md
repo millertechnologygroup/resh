@@ -8,7 +8,7 @@
 
 ---
 
-## 🎉 v0.7 Alpha Available - 25 of 27 Handles Complete
+## 🎉 v0.7 Alpha Available - 25 of 30 Handles Complete
 
 **resh v0.7 is now available for testing!** This alpha release includes 25 production-ready handles covering the complete automation lifecycle.
 
