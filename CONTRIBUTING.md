@@ -1,172 +1,288 @@
 # Contributing to resh
 
-Thank you for your interest in contributing to resh! We're excited to build the future of AI-native infrastructure automation together.
+Thank you for your interest in contributing to resh! We're building the future of AI-native infrastructure automation together.
 
 ---
 
-## 🚧 Current Status: Early Development
+## 🎉 v0.7 Alpha is Available - We Need Your Help!
 
-**resh is currently in early development** and we're not accepting pull requests yet. We're working toward a v0.8 feature-complete release in Q1 2026, at which point we'll open the project for contributions.
+**resh v0.7 alpha is now available for testing!** With 25 of 30 handles complete, we're ready for community feedback, bug reports, and real-world testing.
 
-### How You Can Help Right Now
+### How You Can Contribute Right Now
 
-While we're not ready for code contributions yet, you can help in these ways:
+While we're not accepting code pull requests yet, there are many valuable ways to contribute:
 
-**1. ⭐ Star the Repository**
-- Shows your interest and helps us gauge community support
-- You'll be notified when we're ready for contributions
+**1. 🐛 Test and Report Bugs**
+- Try resh in your environment
+- Report issues with detailed reproduction steps
+- Test on different Linux distributions
+- Find edge cases and corner cases
 
-**2. 👀 Watch the Repository**
-- Follow development progress
-- See when features are implemented
-- Get notified of major milestones
+**2. 💡 Provide Feedback**
+- Share your automation use cases
+- Suggest missing features or improvements
+- Tell us which handles you use most
+- Describe your AI agent integration ideas
 
-**3. 💡 Share Ideas**
-- Once GitHub Discussions are enabled, share your use cases
-- Describe your automation pain points
-- Suggest features or improvements
+**3. 📝 Improve Documentation**
+- Report unclear or missing documentation
+- Suggest examples for specific use cases
+- Request tutorials for common workflows
+- Share your own usage examples
 
-**4. 📢 Spread the Word**
-- Share resh with your network
-- Star and share on social media
-- Write about your interest in AI-native automation
+**4. 🧪 Real-World Testing**
+- Test in production-like environments
+- Try complex multi-server scenarios
+- Validate database operations at scale
+- Test SSH remote execution across fleets
 
-**5. 📝 Document Your Use Cases**
-- Tell us what automation problems you're trying to solve
-- Share your current tooling challenges
-- Describe how you'd use resh in your environment
+**5. ⭐ Spread the Word**
+- Star the repository
+- Share with your network
+- Write blog posts about your experience
+- Present at local meetups
 
 ---
 
-## When Will Contributions Open?
+## Contribution Timeline
 
-### v0.8 Alpha (Q1 2026)
-**We will begin accepting contributions** including:
-- Bug reports and fixes
+### ✅ Now (v0.7 Alpha - December 2025)
+**Currently accepting:**
+- Bug reports and issue submissions
+- Feature requests and suggestions
+- Documentation feedback and improvements
+- Testing and validation feedback
+- Use case sharing and examples
+- Community discussions (coming soon)
+
+### v0.8 Feature Complete (January 2026)
+**We will begin accepting:**
+- Bug fix pull requests
 - Documentation improvements
 - Example scripts and use cases
-- Plugin development
-- Testing and feedback
+- Test contributions
+- Handle enhancement suggestions
 
-### v0.9 Beta (Q2 2026)
+### v0.9 Beta (February-March 2026)
 **Expanded contribution opportunities:**
-- Feature development
-- Handle improvements
-- Performance optimization
+- Feature development contributions
+- Performance optimization PRs
+- Plugin development
 - Translation and internationalization
-- Community plugins
+- Comprehensive testing
 
-### v1.0 Production (Q3 2026)
+### v1.0 Production (Q2/Q3 2026)
 **Full contribution model:**
-- Complete contribution guidelines
+- Complete open source contribution workflow
 - Contributor recognition program
-- Plugin marketplace
-- Community governance
+- Plugin marketplace contributions
+- Community governance participation
 
 ---
 
-## Future Contribution Guidelines
+## How to Report Bugs (v0.7 Alpha)
 
-When contributions open, we'll welcome the following types of contributions:
+We welcome and encourage bug reports! Good bug reports help us improve resh quickly.
 
-### Code Contributions
+### Before Reporting
 
-**Bug Fixes**
-- Fix issues in existing handles
-- Improve error handling
-- Address edge cases
-- Performance improvements
+1. **Check existing issues** - Your bug may already be reported
+2. **Update to latest** - Ensure you're running the latest v0.7.x release
+3. **Verify it's a bug** - Not a documentation or usage issue
 
-**New Features**
-- Implement new handles
-- Add new verbs to existing handles
-- Enhance output formats
-- Improve CLI experience
+### Bug Report Template
 
-**Performance**
-- Optimize handle operations
-- Reduce memory usage
-- Improve startup time
-- Enhance concurrency
+When reporting bugs, please include:
 
-### Documentation Contributions
+**Environment:**
+- OS and version (e.g., Ubuntu 22.04, Debian 12, RHEL 9)
+- resh version: `resh --version`
+- Installation method (built from source, script, etc.)
 
-**Guides and Tutorials**
-- Getting started guides
-- Handle-specific documentation
-- Migration guides (from Ansible, Terraform, etc.)
-- Best practices and patterns
+**Command:**
+```bash
+# Exact command you ran
+resh svc://nginx status --format json
+```
 
-**Examples**
-- Real-world use cases
-- Integration examples
-- Template examples
-- Script examples
+**Expected Behavior:**
+What you expected to happen.
 
-**API Documentation**
-- Handle reference documentation
-- Verb documentation
-- Error code documentation
-- Schema documentation
+**Actual Behavior:**
+What actually happened. Include full error output.
 
-### Plugin Development
+**Additional Context:**
+- Does it happen consistently?
+- Does it work with a different handle/format?
+- Any relevant logs or system state?
 
-**Community Plugins**
-- Custom handles for specific use cases
-- Integration plugins (cloud providers, monitoring tools)
-- Utility plugins
-- Domain-specific plugins
+### Example Good Bug Report
 
-### Testing
+```markdown
+**Title:** svc:// handle fails on OpenRC systems
 
-**Test Coverage**
-- Unit tests for handles
-- Integration tests
-- Performance tests
-- Edge case tests
+**Environment:**
+- Alpine Linux 3.18
+- resh v0.7.0
+- Built from source
 
-**Quality Assurance**
-- Beta testing
-- Bug reporting
-- Security testing
-- Usability testing
+**Command:**
+resh svc://nginx status --format json
 
----
+**Expected:**
+JSON output with service status
 
-## Code of Conduct
+**Actual:**
+Error: "systemd not found"
 
-resh is committed to providing a welcoming and inclusive environment for all contributors.
+**Context:**
+Alpine uses OpenRC, not systemd. The handle should detect
+and use OpenRC but appears to only check for systemd.
+```
 
-### Our Pledge
+### Where to Report
 
-We pledge to make participation in our project a harassment-free experience for everyone, regardless of age, body size, disability, ethnicity, gender identity and expression, level of experience, nationality, personal appearance, race, religion, or sexual identity and orientation.
-
-### Our Standards
-
-**Examples of behavior that contributes to a positive environment:**
-- Using welcoming and inclusive language
-- Being respectful of differing viewpoints and experiences
-- Gracefully accepting constructive criticism
-- Focusing on what is best for the community
-- Showing empathy towards other community members
-
-**Examples of unacceptable behavior:**
-- Trolling, insulting/derogatory comments, and personal or political attacks
-- Public or private harassment
-- Publishing others' private information without explicit permission
-- Other conduct which could reasonably be considered inappropriate
-
-### Enforcement
-
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported by contacting the project team. All complaints will be reviewed and investigated and will result in a response that is deemed necessary and appropriate to the circumstances.
+- **GitHub Issues:** https://github.com/millertechnologygroup/resh/issues
+- Use issue labels: `bug`, `v0.7`, `handle:<name>`
+- Be respectful and constructive
 
 ---
 
-## Development Setup (Future)
+## How to Request Features
 
-When contributions open, here's what the development setup will look like:
+Have an idea for resh? We'd love to hear it!
 
-### Prerequisites
+### Feature Request Template
+
+**Title:** Clear, descriptive title
+
+**Problem:**
+What problem does this solve? What pain point does it address?
+
+**Proposed Solution:**
+How would this feature work? What would the API look like?
+
+**Example Usage:**
+```bash
+# Show what commands would look like
+resh newhandle://resource.action --json-pretty
+```
+
+**Alternatives Considered:**
+What other approaches did you consider?
+
+**Additional Context:**
+Why is this important? What use cases does it enable?
+
+### Example Good Feature Request
+
+```markdown
+**Title:** Add k8s:// handle for Kubernetes operations
+
+**Problem:**
+Managing Kubernetes resources requires kubectl with
+unstructured text output, making it difficult for AI agents
+to operate reliably.
+
+**Proposed Solution:**
+Add k8s:// handle for Kubernetes operations:
+
+resh k8s://mycluster/pod/nginx-123 status --format json
+resh k8s://mycluster/deployment/web scale --replicas 5
+
+**Alternatives:**
+Could use kubectl with jq, but that's fragile and requires
+external dependencies.
+
+**Context:**
+Many teams are moving to Kubernetes. An AI-native k8s://
+handle would enable autonomous Kubernetes operations.
+```
+
+---
+
+## Testing v0.7 Alpha
+
+### What to Test
+
+**High Priority:**
+- Different Linux distributions (Ubuntu, Debian, RHEL, Arch, Alpine)
+- SSH remote execution across multiple servers
+- Database operations (PostgreSQL, MySQL, SQLite)
+- Service management (systemd vs OpenRC)
+- Template rendering with complex variables
+- Certificate operations and validation
+
+**Medium Priority:**
+- Firewall rule management
+- Archive operations (tar, zip, 7z)
+- Git operations on real repositories
+- Backup operations with restic
+- Cache operations with Redis/Memcached
+- HTTP client operations with real APIs
+
+**Also Valuable:**
+- Edge cases and error handling
+- Performance with large files/data
+- Concurrent operations
+- Long-running operations
+- Resource cleanup and memory usage
+
+### How to Share Results
+
+**Successful Tests:**
+- Comment on GitHub Issues with "✅ Tested on [OS] - Working"
+- Share your use case and example commands
+- Note any performance observations
+
+**Failed Tests:**
+- Open a new GitHub Issue with the bug report template
+- Include full reproduction steps
+- Attach relevant logs if available
+
+### Testing Environments
+
+**Safe Environments:**
+- Virtual machines or containers
+- Development/test servers
+- Home lab setups
+- Non-production environments
+
+**Not Recommended (Yet):**
+- Production servers (v0.7 is alpha!)
+- Critical infrastructure
+- Systems without backups
+- Customer-facing services
+
+### Structured Testing
+
+If you want to be thorough, try testing:
+
+1. **Each handle individually** - Does it work as documented?
+2. **Output formats** - Do JSON, table, and log all work?
+3. **Error handling** - Do errors return useful messages?
+4. **Edge cases** - What happens with invalid input?
+5. **Remote operations** - Does SSH work across your network?
+6. **Integration** - Can you build real workflows?
+
+### Sharing Your Experience
+
+Beyond bug reports, we'd love to hear:
+- What workflows did you automate?
+- How does it compare to your current tools?
+- What documentation is missing?
+- What features would unlock new use cases?
+- How's the developer experience?
+
+---
+
+## Future Contribution Guidelines (v0.8+)
+
+When code contributions open with v0.8 in January 2026, here's what the development workflow will look like:
+
+### Development Setup (Future)
+
+**Prerequisites:**
 ```bash
 # Rust 1.70 or later
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -176,7 +292,7 @@ sudo apt install git  # Debian/Ubuntu
 sudo yum install git  # RHEL/CentOS
 ```
 
-### Fork and Clone
+**Fork and Clone:**
 ```bash
 # Fork the repository on GitHub, then:
 git clone https://github.com/millertechnologygroup/resh.git
@@ -186,7 +302,7 @@ cd resh
 git remote add upstream https://github.com/millertechnologygroup/resh.git
 ```
 
-### Build and Test
+**Build and Test:**
 ```bash
 # Build
 cargo build
@@ -198,10 +314,10 @@ cargo test
 cargo test --package resh --lib handles::file::tests
 
 # Run resh locally
-cargo run -- svc://nginx status --format json
+cargo run -- svc://nginx.status --json-pretty
 ```
 
-### Development Workflow
+**Development Workflow:**
 ```bash
 # Create a feature branch
 git checkout -b feature/add-new-handle
@@ -230,14 +346,43 @@ git push origin feature/add-new-handle
 
 ---
 
-## Pull Request Process (Future)
+## Code of Conduct
+
+resh is committed to providing a welcoming and inclusive environment for all contributors.
+
+### Our Pledge
+
+We pledge to make participation in our project a harassment-free experience for everyone, regardless of age, body size, disability, ethnicity, gender identity and expression, level of experience, nationality, personal appearance, race, religion, or sexual identity and orientation.
+
+### Our Standards
+
+**Examples of behavior that contributes to a positive environment:**
+- Using welcoming and inclusive language
+- Being respectful of differing viewpoints and experiences
+- Gracefully accepting constructive criticism
+- Focusing on what is best for the community
+- Showing empathy towards other community members
+
+**Examples of unacceptable behavior:**
+- Trolling, insulting/derogatory comments, and personal or political attacks
+- Public or private harassment
+- Publishing others' private information without explicit permission
+- Other conduct which could reasonably be considered inappropriate
+
+### Enforcement
+
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported by contacting the project team via GitHub Issues. All complaints will be reviewed and investigated and will result in a response that is deemed necessary and appropriate to the circumstances.
+
+---
+
+## Pull Request Process (Future - v0.8+)
 
 When we begin accepting PRs, this will be the process:
 
 ### Before Submitting
 
 1. **Check existing issues** - Is this already being worked on?
-2. **Open an issue first** - Discuss the change before coding
+2. **Open an issue first** - Discuss the change before coding (for features)
 3. **Write tests** - All new code needs test coverage
 4. **Update documentation** - Document new features/changes
 5. **Follow code style** - Run `cargo fmt` and `cargo clippy`
@@ -369,7 +514,7 @@ mod tests {
 
 ## Plugin Development (Future)
 
-Plugins will allow you to extend resh with custom handles.
+Plugins will allow you to extend resh with custom handles (coming in v0.9+).
 
 ### Plugin Structure
 ```
@@ -402,7 +547,7 @@ impl Plugin for MyPlugin {
 }
 ```
 
-More details will be available in the Plugin Development Guide when the plugin system is ready.
+More details will be available in the Plugin Development Guide when the plugin system is ready (v0.9+).
 
 ---
 
@@ -433,20 +578,31 @@ We believe in recognizing contributors!
 - Top contributors get special recognition
 - Plugin developers featured in marketplace
 
+**Early Tester Recognition**
+- v0.7 alpha testers will be acknowledged
+- Beta testers get special recognition
+- "Founding Contributors" list for pre-v1.0 contributors
+
 ---
 
 ## Communication Channels
 
-### Current (Limited)
-- **GitHub Issues** - For bug reports (when open)
-- **GitHub Discussions** - For questions and ideas (when enabled)
+### Active Now (v0.7)
+- **GitHub Issues** - Bug reports and feature requests
+- **GitHub Discussions** - Coming soon for questions and community
+- **LinkedIn** - Development updates and announcements
+- **Twitter/X** - Daily progress and quick updates
 
-### Future (Post-v0.8)
-- **Discord Server** - Real-time community chat
-- **Community Calls** - Monthly video calls
-- **Office Hours** - Weekly Q&A with maintainers
-- **Twitter/LinkedIn** - Updates and announcements
-- **Blog** - Technical deep-dives and tutorials
+### Coming Soon (v0.8+)
+- **Discord Server** - Real-time community chat (v0.8 - January 2026)
+- **Community Calls** - Monthly video calls (v0.9 - Spring 2026)
+- **Office Hours** - Weekly Q&A with maintainers (v0.9+)
+
+### Stay Informed
+- **Watch the GitHub repo** for releases and updates
+- **Star the repo** to show support
+- **Follow on social media** for daily progress
+- **Join email list** (coming soon with v0.8)
 
 ---
 
@@ -460,30 +616,46 @@ All contributions must be your original work, or properly attributed if derived 
 
 ## Questions?
 
-### Before v0.8
-- Watch this repository for updates
-- Check the [README](README.md) for current status
-- Review the [ROADMAP](ROADMAP.md) for timeline
+### About v0.7 Alpha
+- **Installation issues?** Open a GitHub Issue
+- **Usage questions?** Check the [README](README.md) and [docs/](docs/)
+- **Found a bug?** Report it via GitHub Issues
+- **Have a feature idea?** Submit a feature request
 
-### After v0.8
-- Open a GitHub Discussion
-- Join the Discord server
-- Attend community calls
-- Contact the maintainers
+### About Contributing
+- **When can I submit PRs?** Code contributions open with v0.8 (January 2026)
+- **How can I help now?** Test, report bugs, provide feedback, spread the word
+- **Where to discuss?** GitHub Issues for specific bugs/features
+
+### General Questions
+- Review the [README](README.md) for current status
+- Check the [ROADMAP](ROADMAP.md) for timeline
+- Read [docs/](docs/) for usage guides
+- Contact the maintainers via GitHub Issues
 
 ---
 
 ## Thank You!
 
-Even though we're not accepting contributions yet, **your interest means everything**. 
+**Thank you for testing resh v0.7 and being part of this journey!**
 
-Building an open source project takes a community, and we're excited to have you be part of resh's journey from the beginning.
+Your bug reports, feedback, and real-world testing are invaluable. Every issue you report, every suggestion you make, and every test you run helps shape resh into a better tool.
 
-**Star the repo, watch for updates, and we'll see you in Q1 2026 when contributions open!** 🚀
+We're building resh in public, and you're helping us build it right.
+
+**Your early involvement matters:**
+- You're shaping the future of AI-native automation
+- Your feedback directly influences v1.0 priorities
+- You'll be recognized as an early contributor
+- You're helping solve real infrastructure problems
+
+**Together, we're building the automation platform for the AI era.** 🚀
 
 ---
 
-**Last Updated:** November 2025  
-**Next Review:** Q1 2026 (when contributions open)
+**Last Updated:** December 2025 (v0.7 Alpha)  
+**Next Review:** January 2026 (when code contributions open with v0.8)
 
-For questions about contributing, please open a GitHub Discussion (when available) or contact the maintainers.
+For questions about contributing, please open a GitHub Issue or check back as we set up GitHub Discussions.
+
+**Star the repo • Test the alpha • Report bugs • Help us build the future**

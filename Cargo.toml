@@ -2,7 +2,13 @@
 name = "resh"
 version = "0.7.0"
 edition = "2024"
+authors = ["Scott Miller <smiller@millertechnologygroupllc.com>"]
 license = "Apache-2.0"
+description = "AI-Native Automation Platform for Modern Infrastructure"
+repository = "https://github.com/millertechnologygroup/resh"
+readme = "README.md"
+keywords = ["automation", "devops", "infrastructure", "ai", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 time = "0.3"
