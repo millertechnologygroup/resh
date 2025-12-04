@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Comprehensive documentation for all handle categories
+- Individual documentation files for each of the 25 implemented handles
+- Organized documentation structure with category overviews
+- Examples and usage patterns for core functionality
+- Complete resh overview documentation
+
 ### Coming in v0.9
 - webhook:// handle - Webhook receiver
 - lock:// handle - Distributed locking
