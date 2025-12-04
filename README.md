@@ -168,17 +168,18 @@ See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 - ✅ Service management (systemd + OpenRC)
 - ✅ Template rendering (Tera engine)
 - ✅ Plugin system foundation
-- ✅ Basic documentation
+- ✅ Comprehensive documentation for all handles
+- ✅ Organized documentation structure by category
 
 **What's next:**
 - ⏱️ plugin:// and lock:// handles (v0.8 - January 2026)
-- ⏱️ Comprehensive documentation for all handles (v0.9)
 - ⏱️ Integration test suite expansion (v0.9)
+- ⏱️ Advanced documentation with more examples (v0.9)
 - ⏱️ Performance optimization (v0.9)
 - ⏱️ Binary releases for major distributions (v0.9)
 
 **Alpha limitations:**
-- ⚠️ Documentation incomplete for some handles
+- ✅ Documentation now complete for all 25 handles
 - ⚠️ Test coverage ~40% (expanding to 80%+ in v0.9)
 - ⚠️ Performance not yet optimized
 - ⚠️ Error messages need improvement
