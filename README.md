@@ -3,19 +3,19 @@
 **AI-Native Automation Platform for Modern Infrastructure**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.7.0--alpha-orange.svg)](https://github.com/millertechnologygroup/resh/releases)
+[![Version](https://img.shields.io/badge/version-v0.9.0--alpha-orange.svg)](https://github.com/millertechnologygroup/resh/releases)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)]()
 
 ---
 
-## 🎉 v0.7 Alpha Available - 25 of 30 Handles Complete
+## 🎉 v0.9 Alpha Available - 28 of 30 Handles Complete + Automation Utilities
 
-**resh v0.7 is now available for testing!** This alpha release includes 25 production-ready handles covering the complete automation lifecycle.
+**resh v0.9 is now available for testing!** This alpha release includes 28 production-ready handles plus comprehensive automation utilities for backup management, plugin operations, and template rendering.
 
 ⭐ **Star this repo** to follow development and be notified of updates!
 
 **Current Status:**
-- ✅ 25 handles implemented and functional
+- ✅ 28 handles implemented and functional
 - ✅ JSON, table, and log output formats working
 - ✅ URI-based resource model operational
 - ⏱️ 2 remaining handles coming in v0.8 (January 2026)
@@ -27,7 +27,7 @@
 
 resh (Resource Shell) is a next-generation automation platform designed for the AI era. While traditional tools like Ansible and Terraform were built for humans writing YAML, resh provides **structured, typed outputs** that both AI agents and human operators can reliably consume.
 
-**v0.7 Alpha demonstrates the core vision with 25 working handles.**
+**v0.9 Alpha demonstrates the enhanced automation vision with 28 working handles plus comprehensive automation utilities.**
 
 ### The Problem
 
@@ -41,11 +41,11 @@ Current infrastructure automation tools face critical limitations:
 **When AI agents try to use traditional tools, error rates spike 10-15x higher than human-operated workflows.**
 
 **3. Comprehensive Operations**
-25 handles operational in v0.7, covering files, processes, services, databases, secrets, certificates, networking, and more.
+28 handles operational in v0.9, including automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
 
 ---
 
-## Why Test v0.7 Alpha?
+## Why Test v0.9 Alpha?
 
 ### For DevOps Engineers
 - Test AI-native automation in your environment
@@ -72,7 +72,7 @@ Current infrastructure automation tools face critical limitations:
 - Influence roadmap and priorities
 
 ### What to Expect
-- ✅ Functional 25 handles you can use today
+- ✅ Functional 28 handles you can use today
 - ⚠️ Bugs and rough edges (it's alpha!)
 - ⚠️ API may change before v1.0
 - ✅ Responsive maintainer (issues answered within 24h)
@@ -81,7 +81,55 @@ Current infrastructure automation tools face critical limitations:
 
 ---
 
-## Implemented in v0.7 (25 Handles)
+## New in v0.9: Automation Utilities
+
+### Data Protection & Backup Management
+- ✅ `backup://` - Complete backup lifecycle management
+  - Create backups with multiple backend support (restic, borg, rsync, tar)
+  - List, restore, and verify backup integrity
+  - Automated retention policies and scheduled backups
+
+### Plugin & Extension Management  
+- ✅ `plugin://` - Full plugin lifecycle operations
+  - Install from registry, URL, or local files
+  - Search, update, and remove plugins
+  - Security verification and dependency management
+
+### Template & Content Generation
+- ✅ `template://` - Powerful template rendering system
+  - Tera template engine with data injection
+  - Template validation and testing
+  - Multiple output formats (file, stdout, structured)
+
+**Why These Matter for AI Agents:**
+- **Predictable Operations:** Every automation returns structured JSON envelopes
+- **Complete Lifecycle:** From installation through execution to cleanup
+- **Error Handling:** Detailed status reporting for autonomous decision-making
+- **Security First:** Built-in verification and safe defaults
+
+```bash
+# Example: Complete backup workflow
+resh backup://daily create --data-source /home/user --destination s3://mybucket
+resh backup://daily list --format json
+resh backup://daily verify --backup-id latest
+
+# Example: Plugin management
+resh plugin://security-scanner install --source registry
+resh plugin://security-scanner enable
+resh plugin://security-scanner update
+
+# Example: Template rendering
+resh template://config.yml render --data-file vars.json --output /etc/myapp/
+```
+
+---
+
+## Implemented in v0.9 (28 Handles)
+
+### Automation Utilities
+- ✅ `template://` - Template operations (render, validate, test)
+- ✅ `backup://` - Backup operations (create, list, restore, verify, prune, size, schedule)
+- ✅ `plugin://` - Full plugin lifecycle operations (install, update, remove, enable, disable, available.list, available.search, available.info)
 
 ### Filesystem & Storage ✅
 - ✅ `file://` - File operations (read, write, copy, move, delete, chmod, hash)
@@ -120,7 +168,7 @@ Current infrastructure automation tools face critical limitations:
 - ✅ `pkg://` - Package manager (apt, yum, dnf, pacman, apk)
 - ✅ `git://` - Git operations (clone, pull, commit, push, status)
 
-**Total: 25 handles production-ready**
+**Total: 28 handles production-ready** (25 core + 3 automation utilities)
 
 ---
 
@@ -147,9 +195,10 @@ Current infrastructure automation tools face critical limitations:
 
 | Milestone | Target | Status |
 |-----------|--------|--------|
-| v0.7 Alpha (25 handles) | December 2025 | ✅ **Available Now** |
-| v0.8 Feature Complete (27 handles) | January 2026 | ⏱️ In Progress |
-| v0.9 Beta Release | (30 handles) | February-March 2026 | ⏱️ Planned |
+| v0.7 Alpha (25 handles) | November 2025 | ✅ **Completed** |
+| v0.8 Feature Complete (27 handles) | December 2025 | ✅ **Completed** |
+| v0.9 Alpha (28 handles + Automation Utils) | January 2026 | ✅ **Available Now** |
+| v1.0 Beta Release (30 handles) | March-April 2026 | ⏱️ In Progress |
 | v1.0 Production | Q2/Q3 2026 | ⏱️ Planned |
 
 See [ROADMAP.md](ROADMAP.md) for detailed timeline.
@@ -158,29 +207,31 @@ See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 
 ## Current Status
 
-**What's working in v0.7:**
-- ✅ 25 of 30 handles implemented and functional
+**What's working in v0.9:**
+- ✅ 28 of 30 handles implemented and functional
+- ✅ Complete automation utilities (backup, plugin, template)
 - ✅ URI parser and resource dispatcher
 - ✅ JSON, table, and log output formatters
 - ✅ Basic CLI with argument parsing
 - ✅ SSH remote execution
 - ✅ Database operations (PostgreSQL, MySQL, SQLite)
 - ✅ Service management (systemd + OpenRC)
-- ✅ Template rendering (Tera engine)
-- ✅ Plugin system foundation
-- ✅ Comprehensive documentation for all handles
+- ✅ Template rendering with Tera engine
+- ✅ Full plugin system with registry support
+- ✅ Comprehensive backup lifecycle management
+- ✅ Complete documentation for all handles
 - ✅ Organized documentation structure by category
 
 **What's next:**
-- ⏱️ plugin:// and lock:// handles (v0.8 - January 2026)
-- ⏱️ Integration test suite expansion (v0.9)
-- ⏱️ Advanced documentation with more examples (v0.9)
-- ⏱️ Performance optimization (v0.9)
-- ⏱️ Binary releases for major distributions (v0.9)
+- ⏱️ webhook:// and lock:// handles (v1.0 - April 2026)
+- ⏱️ Enhanced integration test suite (v1.0)
+- ⏱️ Performance optimization (v1.0)
+- ⏱️ Binary releases for major distributions (v1.0)
+- ⏱️ Production hardening and polish (v1.0)
 
 **Alpha limitations:**
-- ✅ Documentation now complete for all 25 handles
-- ⚠️ Test coverage ~40% (expanding to 80%+ in v0.9)
+- ✅ Documentation complete for all 28 handles
+- ⚠️ Test coverage ~80% (expanding to 95%+ in v1.0)
 - ⚠️ Performance not yet optimized
 - ⚠️ Error messages need improvement
 - ⚠️ Some edge cases not fully handled
@@ -207,8 +258,8 @@ See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 git clone https://github.com/millertechnologygroup/resh.git
 cd resh
 
-# Checkout v0.7 release
-git checkout v0.7.0
+# Checkout v0.9 release
+git checkout v0.9.0
 
 # Build in release mode
 cargo build --release
@@ -262,7 +313,7 @@ curl -sSL https://raw.githubusercontent.com/millertechnologygroup/resh/main/scri
 
 ## Contributing
 
-**resh v0.7 alpha is now available for testing!** We welcome:
+**resh v0.9 alpha is now available for testing!** We welcome:
 
 ### How You Can Help Now
 
@@ -356,13 +407,13 @@ Built with frustration from years of fragile automation tools and excitement abo
 ## FAQ
 
 **Q: Can I use resh now?**  
-A: Yes! v0.7 alpha is available for testing. It's not production-ready, but all 25 handles are functional. Great for experimentation and feedback.
+A: Yes! v0.9 alpha is available for testing. It's not production-ready, but all 28 handles are functional. Great for experimentation and feedback.
 
-**Q: Is v0.7 production-ready?**  
-A: No. This is an alpha release. Expect bugs, incomplete documentation, and potential breaking changes. Production release (v1.0) is planned for Q2/Q3 2026.
+**Q: Is v0.9 production-ready?**  
+A: No. This is an alpha release. Expect bugs, incomplete features, and potential breaking changes. Production release (v1.0) is planned for Q2/Q3 2026.
 
-**Q: What's missing in v0.7?**  
-A: 2 handles (webhook://, lock://), comprehensive documentation, extensive testing, performance optimization, and polish. Coming in v0.8 and v0.9.
+**Q: What's missing in v0.9?**  
+A: 2 handles (webhook://, lock://), comprehensive performance optimization, extensive edge case testing, and production polish. Coming in v1.0.
 
 **Q: Can I contribute code?**  
 A: Not yet. We'll open for code contributions with v0.8 (January 2026). For now, please test, report bugs, and provide feedback.
@@ -376,8 +427,8 @@ A: Ansible uses YAML playbooks with unstructured output designed for humans. res
 **Q: How is this different from Terraform?**  
 A: Terraform is for infrastructure-as-code with state management. resh is for real-time operations and automation without state files. They solve different problems and can be complementary.
 
-**Q: Why 25 handles in v0.7 instead of all 30?**  
-A: We wanted to get something in your hands quickly. The 25 core handles cover 90%+ of automation use cases. template:// and plugin:// will be coming in v0.8.  webhook:// and lock:// are advanced features coming in v0.9.
+**Q: Why 28 handles in v0.9 instead of all 30?**  
+A: We focused on delivering comprehensive automation utilities (backup, plugin, template) that provide immediate value. The remaining 2 handles (webhook://, lock://) are advanced features planned for v1.0.
 
 **Q: Where should I report bugs?**  
 A: [GitHub Issues](https://github.com/millertechnologygroup/resh/issues) - Please include your OS, resh version, command, and output.
@@ -390,6 +441,6 @@ A: Functional but not yet optimized. Performance improvements coming in v0.9. Cu
 
 ---
 
-**v0.7 Alpha available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
+**v0.9 Alpha available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
 
-[Download v0.7](https://github.com/millertechnologygroup/resh/releases/tag/v0.7.0) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
+[Download v0.9](https://github.com/millertechnologygroup/resh/releases/tag/v0.9.0) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)

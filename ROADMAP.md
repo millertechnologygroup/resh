@@ -6,10 +6,10 @@ This roadmap outlines the development plan for resh from early development throu
 
 ---
 
-## v0.8 - Feature Complete (Q1 2026)
-**Target: January-March 2026**
+## v0.9 - Alpha Release with Automation Utilities (Q1 2026)
+**Target: February 2026 - ✅ COMPLETED**
 
-All 27 core handles implemented and functional.
+28 handles implemented with comprehensive automation utilities for backup management, plugin operations, and template rendering.
 
 ### Filesystem & Storage (4 handles)
 - [x] `file://` - File operations (read, write, copy, move, delete, etc.)
@@ -50,28 +50,36 @@ All 27 core handles implemented and functional.
 ### System Information (1 handle)
 - [x] `system://` - System information (CPU, memory, disk, uptime)
 
-### Automation Utilities (3 handles)
-- [x] `template://` - Template rendering (Tera engine) ⭐ **ESSENTIAL**
-- [x] `plugin://` - Plugin management and ecosystem ⭐ **ECOSYSTEM ENABLER**
-- [x] `backup://` - Backup operations (restic backend)
+### Automation Utilities (3 handles) ✅ **COMPLETED IN v0.9**
+- [x] `backup://` - Complete backup lifecycle management (create, list, restore, verify, prune, schedule) with multiple backend support (restic, borg, rsync, tar)
+- [x] `plugin://` - Full plugin ecosystem management (install, update, remove, search, enable, disable) with registry support and security verification
+- [x] `template://` - Powerful template rendering system with Tera engine, data injection, validation, and testing capabilities
 
-### Status at v0.8
-- ✅ All 27 handles functional
-- ✅ Basic CLI and URI parser complete
+### Status at v0.9 ✅ **COMPLETED**
+- ✅ All 28 handles functional (25 core + 3 automation utilities)
+- ✅ Complete automation utilities for backup, plugin, and template management
+- ✅ Advanced CLI and URI parser
 - ✅ JSON, table, and log output formats working
-- ⚠️ Documentation incomplete
-- ⚠️ Testing coverage partial
-- ⚠️ Known bugs and edge cases
-- ⚠️ Not production-ready
+- ✅ Comprehensive documentation for all handles
+- ✅ Organized documentation structure by category
+- ⚠️ Testing coverage ~60% (expanding for v1.0)
+- ⚠️ Performance optimization in progress
+- ⚠️ Some edge cases being addressed
 
-**Deliverable:** Feature-complete alpha release for early testers
+**Deliverable:** Alpha release with complete automation utilities for early adoption
 
 ---
 
-## v0.9 - Beta Release (Q2 2026)
-**Target: April-June 2026**
+## v1.0 - Beta Release (Q2-Q3 2026)
+**Target: April-September 2026**
 
-**Focus: Polish, Testing & Documentation**
+**Focus: Production Readiness, Polish & Final Features**
+
+### Remaining Handles (2 handles)
+- [ ] `webhook://` - Webhook receiver for event-driven automation
+- [ ] `lock://` - Distributed locking mechanisms (Redis, etcd, Consul)
+
+**Goal:** Complete all 30 planned handles for feature-complete platform
 
 ### Documentation & Examples
 - [ ] Comprehensive documentation for all 27 handles
@@ -123,8 +131,8 @@ All 27 core handles implemented and functional.
 
 ---
 
-## v1.0 - Production Release (Q3 2026)
-**Target: July-September 2026**
+## v1.1 - Production Release (Q4 2026)
+**Target: October-December 2026**
 
 **Focus: Production-Ready, Stable API, Major Launch**
 
@@ -189,14 +197,10 @@ All 27 core handles implemented and functional.
 
 ---
 
-## v1.1 - Enhanced Operations (Q4 2026)
-**Target: October-December 2026**
+## v1.2 - Enhanced Operations (Q1 2027)
+**Target: January-March 2027**
 
 **Focus: Advanced Features & Ecosystem Growth**
-
-### New Handles
-- [ ] `webhook://` - Webhook receiver for event-driven automation
-- [ ] `lock://` - Distributed locking (Redis, etcd, Consul)
 
 ### Enhanced Features
 - [ ] Interactive shell mode (REPL)
@@ -230,8 +234,8 @@ All 27 core handles implemented and functional.
 
 ---
 
-## v1.2 - Enterprise Features (Q1 2027)
-**Target: January-March 2027**
+## v1.3 - Enterprise Features (Q2 2027)
+**Target: April-June 2027**
 
 **Focus: Enterprise-Grade Capabilities**
 
@@ -270,8 +274,8 @@ All 27 core handles implemented and functional.
 
 ---
 
-## v2.0 - Advanced Automation (Q2-Q3 2027)
-**Target: April-September 2027**
+## v2.0 - Advanced Automation (Q3-Q4 2027)
+**Target: July-December 2027**
 
 **Focus: AI-Native Enhancements & Cloud Integration**
 
@@ -437,7 +441,7 @@ All 27 core handles implemented and functional.
 
 ---
 
-**Last Updated:** November 2025  
-**Next Review:** Q1 2026 (at v0.8 release)
+**Last Updated:** December 2025  
+**Next Review:** Q2 2026 (at v1.0 release)
 
 For questions or suggestions about the roadmap, please open a GitHub Discussion.

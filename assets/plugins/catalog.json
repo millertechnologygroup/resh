@@ -1,0 +1,216 @@
+{
+  "version": 1,
+  "generated_at": "2025-12-13T00:00:00Z",
+  "plugins": [
+    {
+      "id": "resh.docker",
+      "name": "Docker Handle",
+      "description": "container:// plugin for Docker management and operations",
+      "version": "0.1.0",
+      "publisher": "resh-community",
+      "license": "MIT",
+      "tags": ["container", "docker", "infrastructure"],
+      "platforms": ["linux-x86_64", "linux-aarch64", "darwin-x86_64", "darwin-aarch64"],
+      "entrypoint": "resh-docker-plugin",
+      "homepage": "https://github.com/resh-community/docker-plugin",
+      "repo": "https://github.com/resh-community/docker-plugin",
+      "sha256": "abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd",
+      "artifacts": [
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "url": "https://releases.resh-community.com/docker/v0.1.0/resh-docker-linux-x86_64.tar.gz",
+          "sha256": "abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd"
+        },
+        {
+          "os": "linux",
+          "arch": "aarch64",
+          "url": "https://releases.resh-community.com/docker/v0.1.0/resh-docker-linux-aarch64.tar.gz",
+          "sha256": "bcde2345678901bcdef2345678901bcdef2345678901bcdef2345678901bcde"
+        },
+        {
+          "os": "darwin",
+          "arch": "x86_64",
+          "url": "https://releases.resh-community.com/docker/v0.1.0/resh-docker-darwin-x86_64.tar.gz",
+          "sha256": "cdef3456789012cdef3456789012cdef3456789012cdef3456789012cdef"
+        },
+        {
+          "os": "darwin",
+          "arch": "aarch64",
+          "url": "https://releases.resh-community.com/docker/v0.1.0/resh-docker-darwin-aarch64.tar.gz",
+          "sha256": "def45678901234def45678901234def45678901234def45678901234def4"
+        }
+      ]
+    },
+    {
+      "id": "resh.kubernetes",
+      "name": "Kubernetes Handle",
+      "description": "k8s:// plugin for Kubernetes cluster management and operations",
+      "version": "0.2.1",
+      "publisher": "resh-community",
+      "license": "Apache-2.0",
+      "tags": ["kubernetes", "k8s", "cloud", "orchestration"],
+      "platforms": ["linux-x86_64", "linux-aarch64", "darwin-x86_64"],
+      "entrypoint": "resh-k8s-plugin",
+      "homepage": "https://github.com/resh-community/k8s-plugin",
+      "repo": "https://github.com/resh-community/k8s-plugin",
+      "sha256": "efab5678901234efab5678901234efab5678901234efab5678901234efab",
+      "artifacts": [
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "url": "https://releases.resh-community.com/k8s/v0.2.1/resh-k8s-linux-x86_64.tar.gz",
+          "sha256": "efab5678901234efab5678901234efab5678901234efab5678901234efab"
+        },
+        {
+          "os": "linux",
+          "arch": "aarch64",
+          "url": "https://releases.resh-community.com/k8s/v0.2.1/resh-k8s-linux-aarch64.tar.gz",
+          "sha256": "fabc6789012345fabc6789012345fabc6789012345fabc6789012345fabc"
+        },
+        {
+          "os": "darwin",
+          "arch": "x86_64",
+          "url": "https://releases.resh-community.com/k8s/v0.2.1/resh-k8s-darwin-x86_64.tar.gz",
+          "sha256": "abcd7890123456abcd7890123456abcd7890123456abcd7890123456abcd"
+        }
+      ]
+    },
+    {
+      "id": "resh.aws",
+      "name": "AWS Handle",
+      "description": "aws:// plugin for Amazon Web Services integration",
+      "version": "1.0.0",
+      "publisher": "resh-core",
+      "license": "MIT",
+      "tags": ["aws", "cloud", "amazon"],
+      "platforms": ["linux-x86_64", "linux-aarch64", "darwin-x86_64", "darwin-aarch64", "windows-x86_64"],
+      "entrypoint": "resh-aws-plugin",
+      "homepage": "https://github.com/resh-core/aws-plugin",
+      "repo": "https://github.com/resh-core/aws-plugin",
+      "sha256": "bcde8901234567bcde8901234567bcde8901234567bcde8901234567bcde",
+      "artifacts": [
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "url": "https://releases.resh-core.com/aws/v1.0.0/resh-aws-linux-x86_64.tar.gz",
+          "sha256": "bcde8901234567bcde8901234567bcde8901234567bcde8901234567bcde"
+        },
+        {
+          "os": "linux",
+          "arch": "aarch64",
+          "url": "https://releases.resh-core.com/aws/v1.0.0/resh-aws-linux-aarch64.tar.gz",
+          "sha256": "cdef9012345678cdef9012345678cdef9012345678cdef9012345678cdef"
+        },
+        {
+          "os": "darwin",
+          "arch": "x86_64",
+          "url": "https://releases.resh-core.com/aws/v1.0.0/resh-aws-darwin-x86_64.tar.gz",
+          "sha256": "def0123456789def0123456789def0123456789def0123456789def012345"
+        },
+        {
+          "os": "darwin",
+          "arch": "aarch64",
+          "url": "https://releases.resh-core.com/aws/v1.0.0/resh-aws-darwin-aarch64.tar.gz",
+          "sha256": "ef01234567890ef01234567890ef01234567890ef01234567890ef0123456"
+        },
+        {
+          "os": "windows",
+          "arch": "x86_64",
+          "url": "https://releases.resh-core.com/aws/v1.0.0/resh-aws-windows-x86_64.zip",
+          "sha256": "f012345678901f012345678901f012345678901f012345678901f0123456"
+        }
+      ]
+    },
+    {
+      "id": "resh.terraform",
+      "name": "Terraform Handle",
+      "description": "terraform:// plugin for infrastructure as code management",
+      "version": "0.1.0-beta.1",
+      "publisher": "resh-community",
+      "license": "MPL-2.0",
+      "tags": ["terraform", "iac", "infrastructure"],
+      "platforms": ["linux-x86_64", "darwin-x86_64"],
+      "entrypoint": "resh-terraform-plugin",
+      "homepage": "https://github.com/resh-community/terraform-plugin",
+      "repo": "https://github.com/resh-community/terraform-plugin",
+      "sha256": "0123456789ab0123456789ab0123456789ab0123456789ab0123456789ab",
+      "artifacts": [
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "url": "https://releases.resh-community.com/terraform/v0.1.0-beta.1/resh-terraform-linux-x86_64.tar.gz",
+          "sha256": "0123456789ab0123456789ab0123456789ab0123456789ab0123456789ab"
+        },
+        {
+          "os": "darwin",
+          "arch": "x86_64",
+          "url": "https://releases.resh-community.com/terraform/v0.1.0-beta.1/resh-terraform-darwin-x86_64.tar.gz",
+          "sha256": "123456789abc123456789abc123456789abc123456789abc123456789abc"
+        }
+      ]
+    },
+    {
+      "id": "acme.redis",
+      "name": "Redis Handle",
+      "description": "redis:// plugin for Redis database operations",
+      "version": "2.0.0",
+      "publisher": "acme-corp",
+      "license": "BSD-3-Clause",
+      "tags": ["redis", "database", "cache"],
+      "platforms": ["linux-x86_64", "linux-aarch64", "darwin-x86_64"],
+      "entrypoint": "resh-redis-plugin",
+      "homepage": "https://github.com/acme-corp/resh-redis",
+      "repo": "https://github.com/acme-corp/resh-redis",
+      "sha256": "23456789abcd23456789abcd23456789abcd23456789abcd23456789abcd",
+      "artifacts": [
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "url": "https://releases.acme-corp.com/redis/v2.0.0/resh-redis-linux-x86_64.tar.gz",
+          "sha256": "23456789abcd23456789abcd23456789abcd23456789abcd23456789abcd"
+        },
+        {
+          "os": "linux",
+          "arch": "aarch64",
+          "url": "https://releases.acme-corp.com/redis/v2.0.0/resh-redis-linux-aarch64.tar.gz",
+          "sha256": "3456789abcde3456789abcde3456789abcde3456789abcde3456789abcde"
+        },
+        {
+          "os": "darwin",
+          "arch": "x86_64",
+          "url": "https://releases.acme-corp.com/redis/v2.0.0/resh-redis-darwin-x86_64.tar.gz",
+          "sha256": "456789abcdef456789abcdef456789abcdef456789abcdef456789abcdef"
+        }
+      ]
+    },
+    {
+      "id": "acme.redis",
+      "name": "Redis Handle",
+      "description": "redis:// plugin for Redis database operations",
+      "version": "1.5.0",
+      "publisher": "acme-corp",
+      "license": "BSD-3-Clause",
+      "tags": ["redis", "database", "cache"],
+      "platforms": ["linux-x86_64", "linux-aarch64"],
+      "entrypoint": "resh-redis-plugin",
+      "homepage": "https://github.com/acme-corp/resh-redis",
+      "repo": "https://github.com/acme-corp/resh-redis",
+      "sha256": "56789abcdef056789abcdef056789abcdef056789abcdef056789abcdef0",
+      "artifacts": [
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "url": "https://releases.acme-corp.com/redis/v1.5.0/resh-redis-linux-x86_64.tar.gz",
+          "sha256": "56789abcdef056789abcdef056789abcdef056789abcdef056789abcdef0"
+        },
+        {
+          "os": "linux",
+          "arch": "aarch64",
+          "url": "https://releases.acme-corp.com/redis/v1.5.0/resh-redis-linux-aarch64.tar.gz",
+          "sha256": "6789abcdef016789abcdef016789abcdef016789abcdef016789abcdef01"
+        }
+      ]
+    }
+  ]
+}

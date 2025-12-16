@@ -30,8 +30,8 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
         (s.to_string(), None)
     };
 
-    // Parse known verbs with dots first
-    let known_dotted_verbs = ["ea.get", "ea.set", "tag.add", "tag.rm", "nice.get", "nice.set", "nice.inc", "nice.dec", "io.peek", "limits.set", "route.list", "csr.create", "chain.info", "config.get", "keys.list", "key.add", "list-topics", "zone.fetch", "zone.update"];
+    // Parse known verbs with dots first (this should include plugin operations)
+    let known_dotted_verbs = ["ea.get", "ea.set", "tag.add", "tag.rm", "nice.get", "nice.set", "nice.inc", "nice.dec", "io.peek", "limits.set", "route.list", "csr.create", "chain.info", "config.get", "keys.list", "key.add", "list-topics", "zone.fetch", "zone.update", "test", "install", "update", "remove", "available.list"];
     
     for &dotted_verb in &known_dotted_verbs {
         if main_part.ends_with(&format!(".{}", dotted_verb)) {
@@ -67,6 +67,37 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
                 });
             }
         }
+    }
+
+    // Handle plugin:// URLs specially since they encode the verb in the host part
+    let url_regex = Regex::new(r"^plugin://([^/]+)(?:/.*)?$")?;
+    if let Some(captures) = url_regex.captures(&main_part) {
+        let host_part = &captures[1];
+        // For plugin URLs, the host is the verb and the entire URL is the target
+        let mut args: Args = HashMap::new();
+
+        if let Some(args_content) = args_str {
+            if !args_content.is_empty() {
+                for kv in parse_arguments(&args_content) {
+                    let kv = kv.trim();
+                    if kv.is_empty() {
+                        continue;
+                    }
+                    if let Some((k, v)) = kv.split_once('=') {
+                        args.insert(
+                            k.trim().to_string(),
+                            v.trim().trim_matches('"').to_string(),
+                        );
+                    }
+                }
+            }
+        }
+        
+        return Ok(ParsedStage { 
+            target: main_part.clone(), 
+            verb: host_part.to_string(), 
+            args 
+        });
     }
 
     // Fall back to the original logic for simple verbs

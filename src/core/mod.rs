@@ -1,9 +1,11 @@
 pub mod parse;
 pub mod registry;
 pub mod status;
+pub mod envelope;
 
-pub use registry::{Handle, Registry};
+pub use registry::{Handle, Registry, IoStreams, Args};
 pub use status::Status;
+pub use envelope::{BackupEnvelope, BackendInfo, BackupError, BackupEvent, Timer};
 
 use anyhow::Result;
 use std::io::{Read, Write};

@@ -220,8 +220,19 @@ _book/
 # Custom resh-specific
 
 ## Handle test fixtures
+/tests/*
 /tests/fixtures/temp/
 /tests/fixtures/*.tmp
+
+# Miscellaneous
+/keys
+/keys/*
+/scripts
+/scripts/*
+/examples
+/examples/*
+test*
+debug_*
 
 ## Plugin development
 /plugins/*/target/
