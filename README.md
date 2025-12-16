@@ -109,17 +109,17 @@ Current infrastructure automation tools face critical limitations:
 
 ```bash
 # Example: Complete backup workflow
-resh backup://daily create --data-source /home/user --destination s3://mybucket
-resh backup://daily list --format json
-resh backup://daily verify --backup-id latest
+resh backup://daily.create --data-source /home/user --destination s3://mybucket
+resh backup://daily.list --json-pretty
+resh backup://daily.verify --backup-id latest
 
 # Example: Plugin management
-resh plugin://security-scanner install --source registry
-resh plugin://security-scanner enable
-resh plugin://security-scanner update
+resh plugin://security-scanner.install --source registry
+resh plugin://security-scanner.enable
+resh plugin://security-scanner.update
 
 # Example: Template rendering
-resh template://config.yml render --data-file vars.json --output /etc/myapp/
+resh template://config.yml.render --data-file vars.json --output /etc/myapp/
 ```
 
 ---
