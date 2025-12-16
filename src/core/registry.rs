@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
 
-use super::status::Status;
+pub use super::status::Status;
 
 // Function to preprocess URL strings to handle backslash escapes
 fn preprocess_url_escapes(url: &str) -> String {
@@ -46,6 +46,12 @@ pub struct IoStreams<'a> {
     pub stdin: &'a mut dyn Read,
     pub stdout: &'a mut dyn Write,
     pub stderr: &'a mut dyn Write,
+}
+
+impl<'a> IoStreams<'a> {
+    pub fn new(stdin: &'a mut dyn Read, stdout: &'a mut dyn Write, stderr: &'a mut dyn Write) -> Self {
+        Self { stdin, stdout, stderr }
+    }
 }
 
 pub trait Handle: Send + Sync {

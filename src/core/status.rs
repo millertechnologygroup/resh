@@ -26,6 +26,10 @@ impl Status {
             reason: Some(reason.into()),
         }
     }
+    
+    pub fn is_success(&self) -> bool {
+        self.ok
+    }
 }
 
 /// Structured error type for shell operations

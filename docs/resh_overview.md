@@ -41,6 +41,11 @@ This approach makes it easy to:
 
 Resource Shell organizes its capabilities into clear categories, each covering related functionality:
 
+### [Automation Utilities](Automation_Utilities/overview.md)
+Tools for automating common tasks in development and operations workflows. This includes protecting data with backup management, extending system capabilities through plugin management, and generating dynamic content with template processing. These utilities work together to create powerful automation solutions.
+
+**Key Tools**: backup, plugin, template
+
 ### [Data & State Management](Data_StateManagement/overview.md)
 Tools for storing, retrieving, and managing data in your applications. This includes caches, databases, configuration files, events, logs, and message queues. Use these tools when you need to store information, track changes, or share data between different parts of your system.
 
