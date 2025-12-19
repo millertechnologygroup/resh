@@ -1,5 +1,5 @@
 mod automation;
-mod data;
+pub mod data;
 mod filesystem;
 mod network;
 mod pluginh;

@@ -23,8 +23,8 @@ Mounts a filesystem to a directory on your system.
 - `options` - List of mount options (default: empty list)
 - `read_only` - Mount as read-only (default: false)
 - `bind` - Create a bind mount (default: false)
-- `create_target` - Create the target directory if it doesn't exist (default: false)
-- `make_parents` - Create parent directories too (default: false)
+- `create_target` - Create the target directory if it doesn't exist (default: true)
+- `make_parents` - Create parent directories too (default: true)
 - `fail_if_mounted` - Fail if already mounted (default: false)
 - `remount` - Remount an existing mount with new options (default: false)
 - `network` - This is a network filesystem (default: false)
@@ -52,12 +52,12 @@ Removes a mounted filesystem from your system.
 
 **Arguments:**
 - `target` - What to unmount (required)
-- `by` - How to find what to unmount: "target", "source", or "auto" (default: "auto")
+- `by` - How to find what to unmount: "target", "source", or "auto" (default: "target")
 - `force` - Force unmount even if busy (default: false)
 - `lazy` - Detach the filesystem now, clean up later (default: false)
 - `detach_children` - Also unmount child mounts (default: false)
 - `fail_if_not_mounted` - Fail if nothing is mounted there (default: false)
-- `timeout_ms` - How long to wait before giving up (default: 30000)
+- `timeout_ms` - How long to wait before giving up (default: 5000)
 - `dry_run` - Show what would be done without doing it (default: false)
 
 **Examples:**
@@ -142,7 +142,7 @@ Shows a summary of quota usage across multiple filesystems.
 
 **Arguments:**
 - `subject` - User or group name (optional, shows current user if not specified)
-- `subject_type` - Whether subject is "user" or "group" (default: "user")
+- `subject_type` - Whether subject is "user" or "group" (default: "auto")
 - `resolve_uid_gid` - Convert user/group IDs to names (default: true)
 - `include_mountpoints` - Only check these mount points (default: check all)
 - `exclude_mountpoints` - Skip these mount points (default: empty list)
@@ -261,15 +261,15 @@ Checks a filesystem for errors and optionally repairs them.
 - `mode` - What to do: "check", "repair", or "auto" (default: "check")
 - `aggressiveness` - How thorough: "safe", "normal", or "aggressive" (default: "safe")
 - `allow_repair` - Allow fixing errors found (default: false)
-- `allow_online_check` - Check mounted filesystems if supported (default: false)
+- `allow_online_check` - Check mounted filesystems if supported (default: true)
 - `require_unmounted_for_repair` - Unmount before repairing (default: true)
 - `skip_if_mounted` - Skip check if filesystem is mounted (default: false)
 - `force` - Override safety checks (default: false)
 - `max_pass` - Maximum number of check passes (optional)
-- `btrfs_use_scrub` - Use scrub for btrfs instead of fsck (default: false)
+- `btrfs_use_scrub` - Use scrub for btrfs instead of fsck (default: true)
 - `btrfs_allow_offline_check` - Allow offline btrfs check (default: false)
 - `dry_run` - Show what would be done without doing it (default: false)
-- `timeout_ms` - How long to wait for check operation (default: 300000)
+- `timeout_ms` - How long to wait for check operation (default: 600000)
 
 **Examples:**
 ```bash
@@ -306,7 +306,7 @@ Shows information about currently mounted filesystems.
 - `normalize_paths` - Clean up path formatting (default: true)
 - `resolve_labels` - Look up filesystem labels and UUIDs (default: false)
 - `resolve_fs_features` - Include detailed filesystem information (default: false)
-- `timeout_ms` - How long to wait for mount information (default: 30000)
+- `timeout_ms` - How long to wait for mount information (default: 3000)
 
 **Examples:**
 ```bash

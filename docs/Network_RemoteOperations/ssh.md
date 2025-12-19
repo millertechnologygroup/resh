@@ -5,13 +5,66 @@ The SSH handle allows you to connect to remote systems using the SSH protocol. Y
 ## URL Format
 
 ```
-ssh://[username@]hostname[:port]/
+ssh://[username@]hostname[:port].verb
 ```
 
 **Examples:**
-- `ssh://user@server.example.com/`
-- `ssh://admin@192.168.1.10:2222/`
-- `ssh://server.local/` (uses current user and default port 22)
+- `ssh://user@server.example.com.exec` - Execute command
+- `ssh://admin@192.168.1.10:2222.test` - Test connection
+- `ssh://server.local.upload` - Upload files
+
+**Important Notes:**
+- SSH URLs require an explicit verb appended with a dot (`.`). The command `ssh://user@host` will fail with "Cannot parse stage" error. You must specify a verb like `.exec`, `.test`, `.upload`, etc.
+- **No quotes required**: SSH URLs can be used without quotes in most cases: `resh ssh://user@host.exec command=whoami`
+- **Quotes only needed for complex parameters**: Use quotes when parameters contain spaces or special characters: `command="ls -la"`
+
+## Syntax Examples
+
+```bash
+# ✅ Correct syntax - no quotes needed for simple commands
+resh ssh://user@host.exec command=whoami
+resh ssh://user@host.exec command=uptime method=key
+resh ssh://user@host.test
+
+# ✅ Correct syntax - quotes needed for complex commands
+resh ssh://user@host.exec command="ls -la /tmp"
+resh ssh://user@host.exec command="echo 'hello world'"
+
+# ❌ Wrong syntax - space before verb
+resh ssh://user@host .exec command=whoami
+resh ssh://user@host.exec command=whoami
+
+# ❌ Wrong syntax - missing verb
+resh ssh://user@host command=whoami
+```
+
+## When to Use Quotes
+
+Understanding when quotes are required helps avoid shell parsing issues:
+
+### ✅ **No Quotes Needed**
+- **SSH URLs**: The URL itself doesn't need quotes: `ssh://user@host.exec`
+- **Simple parameters**: Single-word values: `command=whoami`, `method=key`, `port=2222`
+- **Numbers**: Numeric values: `timeout=5000`, `port=22`
+
+### ✅ **Quotes Required**
+- **Commands with spaces**: `command="ls -la"`
+- **Commands with special characters**: `command="echo 'hello'"`
+- **File paths with spaces**: `dest="/path/with spaces/file.txt"`
+- **Environment variables**: `command="echo $HOME"` (if you want shell expansion)
+
+### Examples:
+
+```bash
+# Simple commands - no quotes needed
+resh ssh://user@host.exec command=whoami
+resh ssh://user@host.exec command=uptime method=key timeout=5000
+
+# Complex commands - quotes required
+resh ssh://user@host.exec command="ls -la /tmp"
+resh ssh://user@host.exec command="echo 'Hello World'"
+resh ssh://user@host.exec command="ps aux | grep ssh"
+```
 
 ## Available Verbs
 
@@ -26,6 +79,72 @@ The SSH handle supports these operations:
 - [`config.get`](#configget) - Get SSH configuration
 - [`test`](#test) - Test SSH connections
 
+## Common Issues and Troubleshooting
+
+### 1. "Cannot parse stage" Error
+
+**Problem:** Command like `ssh://user@host` fails with "Cannot parse stage" error.
+
+**Solution:** SSH URLs require an explicit verb. Add a verb to your URL:
+```bash
+# ❌ Wrong - missing verb
+resh ssh://smiller@192.168.1.13
+
+# ✅ Correct - with exec verb (quotes optional for simple commands)
+resh ssh://smiller@192.168.1.13.exec command=whoami
+
+# ✅ Also correct - with quotes (required for complex commands)
+resh ssh://smiller@192.168.1.13.exec command="ls -la"
+```
+
+### 2. "SSH agent is not available" Error
+
+**Problem:** Default authentication method (SSH agent) is not available.
+
+**Solution:** Specify an explicit authentication method:
+```bash
+# Using SSH key
+resh ssh://user@host.exec command="whoami" auth_method=key identity_path="$HOME/.ssh/id_rsa"
+
+# Using password (less secure)
+resh ssh://user@host.exec command="whoami" auth_method=password password="yourpassword"
+```
+
+### 3. "Failed to spawn ssh process" Error
+
+**Problem:** SSH process cannot be spawned, typically when using password authentication.
+
+**Solution:** Install `sshpass` for password authentication support:
+```bash
+# Ubuntu/Debian
+sudo apt-get install sshpass
+
+# CentOS/RHEL/Fedora
+sudo yum install sshpass   # or dnf install sshpass
+
+# macOS
+brew install sshpass
+```
+
+**Note:** Password authentication requires the `sshpass` utility to be installed on your system.
+
+### 4. "Permission denied (publickey)" Error
+
+**Problem:** SSH key authentication fails or wrong key is used.
+
+**Solutions:**
+- Ensure your SSH key is added to the remote host's `~/.ssh/authorized_keys`
+- Verify the correct key path: `identity_path="/path/to/your/private/key"`
+- Check key permissions: `chmod 600 ~/.ssh/id_rsa`
+- Test basic SSH connection: `ssh user@host`
+
+### 5. Quick Connection Test
+
+To verify SSH connectivity without executing commands:
+```bash
+resh ssh://user@host.test
+```
+
 ---
 
 ## exec
@@ -37,8 +156,26 @@ Execute commands on remote SSH hosts.
 Execute a simple command:
 
 ```bash
-# Execute 'echo hello' on the remote host
-resh ssh://user@host.com/ exec command="echo hello"
+# Execute simple commands without quotes
+resh ssh://user@host.com.exec command=whoami
+resh ssh://user@host.com.exec command=uptime
+
+# Execute commands with spaces (quotes required)
+resh ssh://user@host.com.exec command="echo hello"
+resh ssh://user@host.com.exec command="ls -la /tmp"
+```
+
+**Authentication Methods:**
+
+```bash
+# Using SSH agent (default)
+resh ssh://user@host.com.exec command=whoami
+
+# Using SSH key authentication
+resh ssh://user@host.com.exec command=whoami method=key identity_path="$HOME/.ssh/id_rsa"
+
+# Using password authentication (requires sshpass)
+resh ssh://user@host.com.exec command=whoami method=password password="yourpassword"
 ```
 
 ### Dry Run
@@ -46,7 +183,7 @@ resh ssh://user@host.com/ exec command="echo hello"
 Test what would be executed without running the command:
 
 ```bash
-resh ssh://host.com/ exec command="echo hello" dry_run=true
+resh ssh://host.com.exec command="echo hello" dry_run=true
 ```
 
 **Expected Output (JSON):**
@@ -75,7 +212,7 @@ resh ssh://host.com/ exec command="echo hello" dry_run=true
 Execute a command that succeeds:
 
 ```bash
-resh ssh://host.com/ exec command="echo hello"
+resh ssh://host.com.exec command="echo hello"
 ```
 
 **Expected Output (JSON):**
@@ -103,13 +240,21 @@ resh ssh://host.com/ exec command="echo hello"
 #### Password Authentication
 
 ```bash
-resh ssh://host.com/ exec command="echo hello" auth_method=password password=secret
+resh ssh://host.com.exec command="echo hello" method=password password=secret
 ```
 
 #### Key Authentication
 
 ```bash
-resh ssh://host.com/ exec command="echo hello" auth_method=key identity_path=/path/to/key
+resh ssh://host.com.exec command="echo hello" method=key identity_path=/path/to/key
+```
+
+#### Agent Authentication (Default)
+
+```bash
+resh ssh://host.com.exec command="echo hello"
+# or explicitly:
+resh ssh://host.com.exec command="echo hello" method=agent
 ```
 
 ### Shell Execution
@@ -118,14 +263,17 @@ Execute commands through different shells:
 
 ```bash
 # Using bash shell
-resh ssh://host.com/ exec command="echo hello" shell_mode=bash
+resh ssh://host.com.exec command="echo hello" shell_mode=bash
+
+# Working directory and shell
+resh ssh://host.com.exec command=pwd shell_mode=bash cwd=/tmp
 ```
 
 **Result:** Command becomes `bash -c 'echo hello'`
 
 ```bash
 # Using bash with working directory
-resh ssh://host.com/ exec command="pwd" shell_mode=bash cwd="/tmp"
+resh ssh://host.com.exec command="pwd" shell_mode=bash cwd="/tmp"
 ```
 
 **Result:** Command becomes `bash -c 'cd '/tmp' && pwd'`
@@ -135,7 +283,7 @@ resh ssh://host.com/ exec command="pwd" shell_mode=bash cwd="/tmp"
 #### Text Format
 
 ```bash
-resh ssh://host.com/ exec command="echo hello" format=text
+resh ssh://host.com.exec command="echo hello" format=text
 ```
 
 **Expected Output (Text):**
@@ -154,7 +302,7 @@ Stdout   : hello
 #### Base64 Output Encoding
 
 ```bash
-resh ssh://host.com/ exec command="echo hello" output_encoding=base64
+resh ssh://host.com.exec command="echo hello" output_encoding=base64
 ```
 
 ### Advanced Options
@@ -162,7 +310,7 @@ resh ssh://host.com/ exec command="echo hello" output_encoding=base64
 #### Timeouts and Limits
 
 ```bash
-resh ssh://host.com/ exec \
+resh ssh://host.com.exec \
   command="long-running-task" \
   connect_timeout_ms=5000 \
   command_timeout_ms=30000 \
@@ -172,7 +320,7 @@ resh ssh://host.com/ exec \
 #### Disable Output Capture
 
 ```bash
-resh ssh://host.com/ exec command="echo hello" capture_output=false
+resh ssh://host.com.exec command="echo hello" capture_output=false
 ```
 
 **Result:** Output fields will be `null` in the response
@@ -182,7 +330,7 @@ resh ssh://host.com/ exec command="echo hello" capture_output=false
 #### Missing Password
 
 ```bash
-resh ssh://host.com/ exec command="echo hello" auth_method=password
+resh ssh://host.com.exec command="echo hello" method=password
 ```
 
 **Error Response:**
@@ -199,7 +347,7 @@ resh ssh://host.com/ exec command="echo hello" auth_method=password
 #### Missing Key
 
 ```bash
-resh ssh://host.com/ exec command="echo hello" auth_method=key
+resh ssh://host.com.exec command="echo hello" method=key
 ```
 
 **Error Response:**
@@ -216,7 +364,7 @@ resh ssh://host.com/ exec command="echo hello" auth_method=key
 #### Missing Host
 
 ```bash
-resh ssh:/// exec command="echo hello"
+resh ssh:///tmp.exec command="echo hello"
 ```
 
 **Error Response:**
@@ -233,7 +381,7 @@ resh ssh:/// exec command="echo hello"
 #### Missing Command
 
 ```bash
-resh ssh://host.com/ exec
+resh ssh://host.com.exec
 ```
 
 **Error Response:**
@@ -258,7 +406,7 @@ Upload files to remote SSH hosts.
 Upload text content directly:
 
 ```bash
-resh ssh://user@host.com/ upload \
+resh ssh://user@host.com.upload \
   source="Hello, World!" \
   source_mode=inline \
   dest="/tmp/test.txt" \
@@ -298,7 +446,7 @@ resh ssh://user@host.com/ upload \
 Test what would be uploaded without actually transferring:
 
 ```bash
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="Test content" \
   source_mode=inline \
   dest="/tmp/test.txt" \
@@ -339,7 +487,7 @@ resh ssh://host.com/ upload \
 Upload from a local file:
 
 ```bash
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="/home/smiller/Development/rust/resh/test_upload.txt" \
   source_mode=file \
   dest="/tmp/test.txt" \
@@ -380,7 +528,7 @@ Upload base64-encoded content:
 
 ```bash
 # "Hello, Base64!" encoded in base64
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="SGVsbG8sIEJhc2U2NCE=" \
   source_mode=inline \
   source_encoding=base64 \
@@ -395,7 +543,7 @@ resh ssh://host.com/ upload \
 Upload with atomic operations (temporary file then rename):
 
 ```bash
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="atomic test data" \
   source_mode=inline \
   dest="/tmp/atomic_test.txt" \
@@ -410,7 +558,7 @@ resh ssh://host.com/ upload \
 Upload with checksum verification:
 
 ```bash
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="test data for checksum" \
   source_mode=inline \
   dest="/tmp/checksum_test.txt" \
@@ -434,7 +582,7 @@ resh ssh://host.com/ upload \
 ### Text Format Output
 
 ```bash
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="text format test" \
   source_mode=inline \
   dest="/tmp/text_test.txt" \
@@ -470,7 +618,7 @@ Result  :
 #### Missing Source
 
 ```bash
-resh ssh://host.com/ upload dest="/tmp/test.txt"
+resh ssh://host.com.upload dest="/tmp/test.txt"
 ```
 
 **Error Response:**
@@ -487,7 +635,7 @@ resh ssh://host.com/ upload dest="/tmp/test.txt"
 #### Missing Destination
 
 ```bash
-resh ssh://host.com/ upload source="test data" source_mode=inline
+resh ssh://host.com.upload source="test data" source_mode=inline
 ```
 
 **Error Response:**
@@ -504,7 +652,7 @@ resh ssh://host.com/ upload source="test data" source_mode=inline
 #### Destination Exists (No Overwrite)
 
 ```bash
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="test data" \
   source_mode=inline \
   dest="/tmp/existing_file.txt" \
@@ -525,7 +673,7 @@ resh ssh://host.com/ upload \
 #### Checksum Mismatch
 
 ```bash
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="test data" \
   source_mode=inline \
   dest="/tmp/checksum_mismatch.txt" \
@@ -546,7 +694,7 @@ resh ssh://host.com/ upload \
 #### Permission Denied
 
 ```bash
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="permission test" \
   source_mode=inline \
   dest="/tmp/permission_denied.txt"
@@ -566,7 +714,7 @@ resh ssh://host.com/ upload \
 #### Upload Timeout
 
 ```bash
-resh ssh://host.com/ upload \
+resh ssh://host.com.upload \
   source="timeout test" \
   source_mode=inline \
   dest="/tmp/timeout_test.txt"
@@ -594,7 +742,7 @@ Download files from remote SSH hosts.
 Download a file to local filesystem:
 
 ```bash
-resh ssh://deploy@example.com:22/ download \
+resh ssh://deploy@example.com:22.download \
   source="/etc/myapp/config.yaml" \
   auth_method=password \
   password=testpass \
@@ -636,7 +784,7 @@ resh ssh://deploy@example.com:22/ download \
 Download content without saving to file:
 
 ```bash
-resh ssh://deploy@example.com:22/ download \
+resh ssh://deploy@example.com:22.download \
   source="/etc/config.yaml" \
   auth_method=password \
   password=testpass \
@@ -679,7 +827,7 @@ resh ssh://deploy@example.com:22/ download \
 Download binary content as base64:
 
 ```bash
-resh ssh://deploy@example.com:22/ download \
+resh ssh://deploy@example.com:22.download \
   source="/bin/data" \
   auth_method=password \
   password=testpass \
@@ -695,7 +843,7 @@ resh ssh://deploy@example.com:22/ download \
 Test what would be downloaded:
 
 ```bash
-resh ssh://deploy@example.com:22/ download \
+resh ssh://deploy@example.com:22.download \
   source="/etc/config.yaml" \
   auth_method=password \
   password=testpass \
@@ -737,7 +885,7 @@ resh ssh://deploy@example.com:22/ download \
 Download and overwrite existing file:
 
 ```bash
-resh ssh://deploy@example.com:22/ download \
+resh ssh://deploy@example.com:22.download \
   source="/etc/config.yaml" \
   auth_method=password \
   password=testpass \
@@ -750,7 +898,7 @@ resh ssh://deploy@example.com:22/ download \
 Download to a nested path, creating directories:
 
 ```bash
-resh ssh://deploy@example.com:22/ download \
+resh ssh://deploy@example.com:22.download \
   source="/etc/config.yaml" \
   auth_method=password \
   password=testpass \
@@ -763,7 +911,7 @@ resh ssh://deploy@example.com:22/ download \
 Download file but don't return content in response:
 
 ```bash
-resh ssh://deploy@example.com:22/ download \
+resh ssh://deploy@example.com:22.download \
   source="/etc/config.yaml" \
   auth_method=password \
   password=testpass \
@@ -778,7 +926,7 @@ resh ssh://deploy@example.com:22/ download \
 Download with checksum verification:
 
 ```bash
-resh ssh://deploy@example.com:22/ download \
+resh ssh://deploy@example.com:22.download \
   source="/etc/config.yaml" \
   auth_method=password \
   password=testpass \
@@ -804,7 +952,7 @@ resh ssh://deploy@example.com:22/ download \
 ### Text Format Output
 
 ```bash
-resh ssh://deploy@example.com:22/ download \
+resh ssh://deploy@example.com:22.download \
   source="/etc/config.yaml" \
   auth_method=password \
   password=testpass \
@@ -835,7 +983,7 @@ Dest    :
 #### Missing Source
 
 ```bash
-resh ssh://example.com/ download dest="/tmp/output.txt"
+resh ssh://example.com.download dest="/tmp/output.txt"
 ```
 
 **Error Response:**
@@ -852,7 +1000,7 @@ resh ssh://example.com/ download dest="/tmp/output.txt"
 #### Missing Destination (File Mode)
 
 ```bash
-resh ssh://example.com/ download source="/etc/config.yaml" dest_mode=file
+resh ssh://example.com.download source="/etc/config.yaml" dest_mode=file
 ```
 
 **Error Response:**
@@ -869,7 +1017,7 @@ resh ssh://example.com/ download source="/etc/config.yaml" dest_mode=file
 #### Destination Exists (No Overwrite)
 
 ```bash
-resh ssh://example.com/ download \
+resh ssh://example.com.download \
   source="/etc/config.yaml" \
   auth_method=password \
   password=testpass \
@@ -891,7 +1039,7 @@ resh ssh://example.com/ download \
 #### File Too Large
 
 ```bash
-resh ssh://example.com/ download \
+resh ssh://example.com.download \
   source="/large/file.bin" \
   auth_method=password \
   password=testpass \
@@ -913,7 +1061,7 @@ resh ssh://example.com/ download \
 #### Missing Password
 
 ```bash
-resh ssh://example.com/ download \
+resh ssh://example.com.download \
   source="/etc/config.yaml" \
   dest_mode=none \
   auth_method=password
@@ -933,7 +1081,7 @@ resh ssh://example.com/ download \
 #### Missing Key
 
 ```bash
-resh ssh://example.com/ download \
+resh ssh://example.com.download \
   source="/etc/config.yaml" \
   dest_mode=none \
   auth_method=key
@@ -961,7 +1109,7 @@ Create SSH tunnels for secure port forwarding.
 Forward local port 5433 to remote database server:
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=local \
   remote_dest_host=db.internal \
   remote_dest_port=5432 \
@@ -1004,7 +1152,7 @@ resh ssh://user@host.com/ tunnel \
 Forward remote port 9090 to local service on port 8080:
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=remote \
   local_dest_host=localhost \
   local_dest_port=8080 \
@@ -1047,7 +1195,7 @@ resh ssh://user@host.com/ tunnel \
 Create a SOCKS proxy on local port 1080:
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=dynamic \
   local_bind_port=1080 \
   socks_version=socks5 \
@@ -1088,7 +1236,7 @@ resh ssh://user@host.com/ tunnel \
 Configure tunnel limits and timeouts:
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=local \
   remote_dest_host=db.internal \
   remote_dest_port=5432 \
@@ -1108,7 +1256,7 @@ resh ssh://user@host.com/ tunnel \
 Allow wildcard binding (security warning):
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=local \
   local_bind_host=0.0.0.0 \
   local_bind_port=5433 \
@@ -1125,7 +1273,7 @@ resh ssh://user@host.com/ tunnel \
 Disable host key verification (security warning):
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=local \
   remote_dest_host=db.internal \
   remote_dest_port=5432 \
@@ -1139,7 +1287,7 @@ resh ssh://user@host.com/ tunnel \
 ### Text Format Output
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=local \
   remote_dest_host=db.internal \
   remote_dest_port=5432 \
@@ -1173,7 +1321,7 @@ Remote Dest:
 #### Missing Mode
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   remote_dest_host=db.internal \
   remote_dest_port=5432
 ```
@@ -1192,7 +1340,7 @@ resh ssh://user@host.com/ tunnel \
 #### Local Mode Missing Remote Destination
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=local \
   local_bind_port=5433
 ```
@@ -1211,7 +1359,7 @@ resh ssh://user@host.com/ tunnel \
 #### Remote Mode Missing Local Destination
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=remote \
   remote_bind_port=9090
 ```
@@ -1230,7 +1378,7 @@ resh ssh://user@host.com/ tunnel \
 #### Wildcard Bind Forbidden
 
 ```bash
-resh ssh://user@host.com/ tunnel \
+resh ssh://user@host.com.tunnel \
   mode=local \
   local_bind_host=0.0.0.0 \
   local_bind_port=5433 \
@@ -1253,7 +1401,7 @@ resh ssh://user@host.com/ tunnel \
 #### Missing Host
 
 ```bash
-resh ssh:/// tunnel \
+resh ssh://.tunnel \
   mode=local \
   remote_dest_host=db.internal \
   remote_dest_port=5432 \
@@ -1283,7 +1431,7 @@ List SSH keys from authorized_keys files, host keys, or custom paths.
 List authorized keys for the current user:
 
 ```bash
-resh ssh://testhost/ keys.list
+resh ssh://testhost.keys.list
 ```
 
 **Expected Output (JSON):**
@@ -1319,7 +1467,7 @@ resh ssh://testhost/ keys.list
 List keys from custom file paths:
 
 ```bash
-resh ssh://testhost/ keys.list \
+resh ssh://testhost.keys.list \
   scope=custom \
   custom_paths="/path/to/keys1,/path/to/keys2"
 ```
@@ -1331,7 +1479,7 @@ resh ssh://testhost/ keys.list \
 List host keys:
 
 ```bash
-resh ssh://testhost/ keys.list scope=host
+resh ssh://testhost.keys.list scope=host
 ```
 
 **Expected Output:** `options.scope` will be "host"
@@ -1341,7 +1489,7 @@ resh ssh://testhost/ keys.list scope=host
 List only specific key types:
 
 ```bash
-resh ssh://testhost/ keys.list key_types="ed25519,rsa"
+resh ssh://testhost.keys.list key_types="ed25519,rsa"
 ```
 
 **Expected Output:** `options.key_types` will be `["ed25519", "rsa"]`
@@ -1357,7 +1505,7 @@ Add SSH keys to authorized_keys files or other locations.
 ### Basic Usage
 
 ```bash
-resh ssh://host.com/ key.add \
+resh ssh://host.com.key.add \
   public_key="ssh-rsa AAAAB3NzaC1yc2E... user@host" \
   target_path="~/.ssh/authorized_keys"
 ```
@@ -1373,7 +1521,7 @@ Get SSH configuration values.
 ### Basic Usage
 
 ```bash
-resh ssh://host.com/ config.get
+resh ssh://host.com.config.get
 ```
 
 ---
@@ -1387,7 +1535,7 @@ Test SSH connections to verify connectivity and authentication.
 ### Basic Usage
 
 ```bash
-resh ssh://host.com/ test auth_method=password password=secret
+resh ssh://host.com.test auth_method=password password=secret
 ```
 
 ---

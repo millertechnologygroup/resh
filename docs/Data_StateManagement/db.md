@@ -2,6 +2,8 @@
 
 The Database handle provides access to SQL databases including SQLite, PostgreSQL, and MySQL. You can run queries, manage transactions, inspect table schemas, and more.
 
+**Auto-Connect Feature**: Query and exec verbs now support automatic connection establishment when a DSN parameter is provided, eliminating the need for separate connect commands in many CLI scenarios.
+
 ## Available Verbs
 
 The db handle supports these verbs:
@@ -70,24 +72,55 @@ resh db://postgres/mydb.connect \
 
 ## Query Verb
 
-Runs SQL SELECT statements and returns results in different formats.
+Runs SQL SELECT statements and returns results in different formats. Supports both traditional workflow (connect first) and auto-connect (provide DSN with query).
 
-### Basic Query Examples
+### Traditional Query Examples (after connect)
 
 ```bash
-# Query returning multiple rows
+# First connect to database
+resh db://sqlite/mydb.connect dsn=sqlite:///path/to/database.db
+
+# Then query
 resh db://sqlite/mydb.query \
   sql="SELECT id, email FROM users WHERE active = ?" \
   params='[true]' \
   mode=rows
+```
 
+### Auto-Connect Query Examples (recommended for CLI)
+
+```bash
+# Query with automatic connection establishment
+resh db://sqlite/mydb.query \
+  dsn=sqlite:///path/to/database.db \
+  sql="SELECT id, email FROM users WHERE active = ?" \
+  params='[true]' \
+  mode=rows
+
+# MySQL auto-connect query
+resh db://mysql/stocks.query \
+  dsn='mysql://user:pass@host:3306/database' \
+  sql="SELECT COUNT(*) FROM stocks WHERE price > ?" \
+  params='[100]' \
+  mode=scalar
+
+# PostgreSQL auto-connect with complex query
+resh db://postgres/analytics.query \
+  dsn='postgresql://user:pass@localhost:5432/analytics' \
+  sql="SELECT category, AVG(amount) as avg_amount FROM transactions GROUP BY category" \
+  mode=rows
+```
+
+### Query without Connection (legacy)
+
+```bash
 # Query returning single value
 resh db://sqlite/mydb.query \
   sql="SELECT COUNT(*) FROM users WHERE active = ?" \
   params='[true]' \
   mode=scalar
 
-# Query with no parameters
+# Query with no parameters  
 resh db://sqlite/mydb.query \
   sql="SELECT COUNT(*) FROM users" \
   mode=scalar
@@ -102,13 +135,25 @@ resh db://sqlite/mydb.query \
 ### Query Configuration
 
 ```bash
-# Query with custom timeout and row limit
+# Query with custom timeout and row limit (traditional)
 resh db://sqlite/mydb.query \
   sql="SELECT * FROM users" \
   mode=rows \
   timeout_ms=10000 \
   max_rows=500
+
+# Query with auto-connect and custom configuration
+resh db://mysql/mydb.query \
+  dsn='mysql://user:pass@host:3306/database' \
+  sql="SELECT * FROM large_table" \
+  mode=rows \
+  timeout_ms=10000 \
+  max_rows=500
 ```
+
+**Auto-Connect Parameters**:
+- `dsn` - Database connection string (will auto-connect if no existing connection found)
+- When DSN is provided, connection will be established automatically if the alias is not already connected
 
 ### Example Output (rows mode)
 
@@ -145,9 +190,43 @@ resh db://sqlite/mydb.query \
 
 ## Exec Verb
 
-Runs INSERT, UPDATE, DELETE statements and returns the number of affected rows.
+Runs INSERT, UPDATE, DELETE statements and returns the number of affected rows. Supports both traditional workflow (connect first) and auto-connect (provide DSN with exec).
 
-### Basic Exec Examples
+### Traditional Exec Examples (after connect)
+
+```bash
+# First connect to database
+resh db://sqlite/mydb.connect dsn=sqlite:///path/to/database.db
+
+# Then execute statements
+resh db://sqlite/mydb.exec \
+  sql="INSERT INTO users (name, active) VALUES (?, ?)" \
+  params='["Alice", true]'
+```
+
+### Auto-Connect Exec Examples (recommended for CLI)
+
+```bash
+# Insert with automatic connection
+resh db://mysql/mydb.exec \
+  dsn='mysql://user:pass@host:3306/database' \
+  sql="INSERT INTO users (name, email, active) VALUES (?, ?, ?)" \
+  params='["Alice", "alice@example.com", true]'
+
+# Update with auto-connect
+resh db://postgres/mydb.exec \
+  dsn='postgresql://user:pass@localhost:5432/database' \
+  sql="UPDATE users SET last_login = NOW() WHERE id = $1" \
+  params='[123]'
+
+# Delete with auto-connect
+resh db://sqlite/mydb.exec \
+  dsn=sqlite:///path/to/database.db \
+  sql="DELETE FROM users WHERE active = ?" \
+  params='[false]'
+```
+
+### Legacy Exec Examples (without connection)
 
 ```bash
 # Insert with parameters
@@ -169,18 +248,32 @@ resh db://sqlite/mydb.exec \
 ### Insert with Last Insert ID
 
 ```bash
-# Get the last inserted ID (SQLite/MySQL)
+# Get the last inserted ID (SQLite/MySQL) - traditional
 resh db://sqlite/mydb.exec \
   sql="INSERT INTO users (name, active) VALUES (?, ?)" \
   params='["Bob", true]' \
+  return_last_insert_id=true
+
+# Get the last inserted ID with auto-connect
+resh db://mysql/mydb.exec \
+  dsn='mysql://user:pass@host:3306/database' \
+  sql="INSERT INTO products (name, price) VALUES (?, ?)" \
+  params='["Widget", 19.99]' \
   return_last_insert_id=true
 ```
 
 ### Exec Configuration
 
 ```bash
-# Exec with custom timeout
+# Exec with custom timeout (traditional)
 resh db://postgres/mydb.exec \
+  sql="UPDATE large_table SET status = $1 WHERE processed = $2" \
+  params='["completed", false]' \
+  timeout_ms=30000
+
+# Exec with auto-connect and custom timeout
+resh db://postgres/mydb.exec \
+  dsn='postgresql://user:pass@localhost:5432/database' \
   sql="UPDATE large_table SET status = $1 WHERE processed = $2" \
   params='["completed", false]' \
   timeout_ms=30000
@@ -528,6 +621,66 @@ resh db://postgres/mydb.exec \
 resh db://postgres/mydb.transaction \
   action=commit \
   tx_id=550e8400-e29b-41d4-a716-446655440000
+```
+
+## Auto-Connect Feature
+
+The auto-connect feature allows query and exec verbs to automatically establish database connections when a DSN parameter is provided. This eliminates the need for separate connect commands in CLI workflows.
+
+### How Auto-Connect Works
+
+1. When a `query` or `exec` command includes a `dsn` parameter
+2. If no existing connection is found for the specified alias  
+3. A connection is automatically established using the provided DSN
+4. The command then executes using the new connection
+
+### Auto-Connect vs Traditional Workflow
+
+**Traditional Workflow:**
+```bash
+# Step 1: Connect explicitly
+resh db://mysql/stocks.connect dsn='mysql://user:pass@host:3306/stocks'
+
+# Step 2: Execute query
+resh db://mysql/stocks.query sql="SELECT COUNT(*) FROM stocks"
+```
+
+**Auto-Connect Workflow:**
+```bash
+# Single step: Query with automatic connection
+resh db://mysql/stocks.query \
+  dsn='mysql://user:pass@host:3306/stocks' \
+  sql="SELECT COUNT(*) FROM stocks"
+```
+
+### Best Practices
+
+**Use Auto-Connect For:**
+- One-off CLI queries and commands
+- Batch processing scripts
+- Quick data exploration
+- Simple automation tasks
+
+**Use Traditional Connect For:**
+- Long-running applications
+- Multiple operations on same connection
+- Transaction-based workflows
+- Connection pooling scenarios
+
+### Auto-Connect with Special Characters
+
+When passwords contain shell special characters, use single quotes around the DSN:
+
+```bash
+# Password contains $ character - use single quotes
+resh db://mysql/prod.query \
+  dsn='mysql://user:P@ssw0rd$123@host:3306/database' \
+  sql="SELECT version()"
+
+# Alternative: URL-encode special characters  
+resh db://mysql/prod.query \
+  dsn=mysql://user:P@ssw0rd%24123@host:3306/database \
+  sql="SELECT version()"
 ```
 
 ## Parameter Binding

@@ -942,7 +942,7 @@ impl DbHandle {
         // First try args
         if let Some(dsn) = args.get("dsn") {
             if !dsn.is_empty() {
-                return Ok(dsn.clone());
+                return self.normalize_dsn(dsn);
             }
         }
 
@@ -950,7 +950,7 @@ impl DbHandle {
         let env_var = format!("DB_{}_DSN", self.alias.to_uppercase());
         if let Ok(dsn) = std::env::var(&env_var) {
             if !dsn.is_empty() {
-                return Ok(dsn);
+                return self.normalize_dsn(&dsn);
             }
         }
 
@@ -958,6 +958,72 @@ impl DbHandle {
             alias: self.alias.clone(),
             env_var,
         }.into())
+    }
+
+    /// Normalize and validate DSN, providing helpful error messages
+    fn normalize_dsn(&self, dsn: &str) -> Result<String> {
+        // First try parsing as-is
+        match Url::parse(dsn) {
+            Ok(url) => {
+                // Validate the scheme matches the driver
+                let expected_scheme = match self.driver {
+                    DbDriver::Postgres => "postgresql",
+                    DbDriver::Mysql => "mysql", 
+                    DbDriver::Sqlite => "sqlite",
+                };
+                
+                if url.scheme() != expected_scheme && !(url.scheme() == "postgres" && expected_scheme == "postgresql") {
+                    return Err(DbError::InvalidDsn {
+                        dsn: dsn.to_string(),
+                        message: format!("DSN scheme '{}' does not match driver '{}'. Expected scheme: '{}'", 
+                                       url.scheme(), self.driver.as_str(), expected_scheme),
+                    }.into());
+                }
+                
+                return Ok(dsn.to_string());
+            }
+            Err(parse_error) => {
+                // Check for common issues and provide helpful suggestions
+                let mut suggestions = Vec::new();
+                
+                // Check for shell variable expansion issues (missing @ after password)
+                if dsn.contains("://") && !dsn.contains("@") && dsn.matches(":").count() >= 2 {
+                    // Pattern like mysql://user:password192.168.1.1:3306/db suggests $@ was consumed by shell
+                    suggestions.push("Password may contain special characters that were interpreted by shell. Use single quotes around DSN or URL-encode special characters ($ becomes %24)".to_string());
+                }
+                
+                // Check for unencoded special characters in password/username
+                if dsn.contains("$") || dsn.contains("#") || dsn.contains("%") || dsn.contains("&") {
+                    if !dsn.contains("%") {  // Only suggest if no percent-encoding detected
+                        suggestions.push("Special characters in username/password need URL encoding (e.g., $ becomes %24, @ becomes %40)".to_string());
+                    }
+                }
+                
+                // Check for missing port
+                if dsn.contains("://") && !dsn.matches(":").collect::<Vec<_>>().len() >= 2 {
+                    suggestions.push("Missing port number in DSN (e.g., mysql://user:pass@host:3306/db)".to_string());
+                }
+                
+                // Check for missing database name
+                if dsn.contains("://") {
+                    let scheme_pos = dsn.find("://").unwrap() + 3;
+                    if !dsn[scheme_pos..].contains("/") {
+                        suggestions.push("Missing database name in DSN (add /database_name at the end)".to_string());
+                    }
+                }
+                
+                let suggestion_text = if suggestions.is_empty() {
+                    "".to_string()
+                } else {
+                    format!(" Suggestions: {}", suggestions.join("; "))
+                };
+                
+                return Err(DbError::InvalidDsn {
+                    dsn: dsn.to_string(),
+                    message: format!("Invalid DSN format: {}.{}", parse_error, suggestion_text),
+                }.into());
+            }
+        }
     }
 
     /// Create database connection pool
@@ -1017,20 +1083,50 @@ impl DbHandle {
             // Execute in transaction
             self.execute_query_in_transaction(tx_id, &config).await
         } else {
-            // Execute with connection pool
-            self.execute_query_with_pool(&config).await
+            // Execute with connection pool (auto-connect if needed)
+            self.execute_query_with_pool(&config, &args).await
         }
     }
 
     /// Execute query using connection pool (autocommit)
-    async fn execute_query_with_pool(&self, config: &QueryConfig) -> Result<Value> {
+    async fn execute_query_with_pool(&self, config: &QueryConfig, args: &Value) -> Result<Value> {
         // Look up connection handle
         let cache_key = (self.driver.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&cache_key)
-            .ok_or_else(|| DbError::ConnectionNotFound { 
-                driver: self.driver.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        let handle = match CONNECTION_REGISTRY.get(&cache_key) {
+            Some(handle) => handle.clone(),
+            None => {
+                // Try to auto-connect if DSN is provided
+                if let Some(dsn_value) = args.get("dsn") {
+                    if let Some(dsn_str) = dsn_value.as_str() {
+                        log::debug!("Auto-connecting for query with DSN: {}", dsn_str);
+                        
+                        // Create connection args for auto-connect
+                        let mut connect_args = std::collections::HashMap::new();
+                        connect_args.insert("dsn".to_string(), dsn_str.to_string());
+                        
+                        // Perform connection
+                        self.connect(connect_args).await?;
+                        
+                        // Retrieve the newly created connection
+                        CONNECTION_REGISTRY.get(&cache_key)
+                            .ok_or_else(|| DbError::ConnectionNotFound { 
+                                driver: self.driver.as_str().to_string(),
+                                alias: self.alias.clone(),
+                            })?.clone()
+                    } else {
+                        return Err(DbError::ConnectionNotFound { 
+                            driver: self.driver.as_str().to_string(),
+                            alias: self.alias.clone(),
+                        }.into());
+                    }
+                } else {
+                    return Err(DbError::ConnectionNotFound { 
+                        driver: self.driver.as_str().to_string(),
+                        alias: self.alias.clone(),
+                    }.into());
+                }
+            }
+        };
 
         // Execute query with timeout
         let result = tokio::time::timeout(
@@ -1119,20 +1215,50 @@ impl DbHandle {
             // Execute in transaction
             self.execute_exec_in_transaction(tx_id, &config).await
         } else {
-            // Execute with connection pool
-            self.execute_exec_with_pool(&config).await
+            // Execute with connection pool (auto-connect if needed)
+            self.execute_exec_with_pool(&config, &args).await
         }
     }
 
     /// Execute exec using connection pool (autocommit)
-    async fn execute_exec_with_pool(&self, config: &ExecConfig) -> Result<Value> {
+    async fn execute_exec_with_pool(&self, config: &ExecConfig, args: &Value) -> Result<Value> {
         // Look up connection handle
         let cache_key = (self.driver.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&cache_key)
-            .ok_or_else(|| DbError::ConnectionNotFound { 
-                driver: self.driver.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        let handle = match CONNECTION_REGISTRY.get(&cache_key) {
+            Some(handle) => handle.clone(),
+            None => {
+                // Try to auto-connect if DSN is provided
+                if let Some(dsn_value) = args.get("dsn") {
+                    if let Some(dsn_str) = dsn_value.as_str() {
+                        log::debug!("Auto-connecting for exec with DSN: {}", dsn_str);
+                        
+                        // Create connection args for auto-connect
+                        let mut connect_args = std::collections::HashMap::new();
+                        connect_args.insert("dsn".to_string(), dsn_str.to_string());
+                        
+                        // Perform connection
+                        self.connect(connect_args).await?;
+                        
+                        // Retrieve the newly created connection
+                        CONNECTION_REGISTRY.get(&cache_key)
+                            .ok_or_else(|| DbError::ConnectionNotFound { 
+                                driver: self.driver.as_str().to_string(),
+                                alias: self.alias.clone(),
+                            })?.clone()
+                    } else {
+                        return Err(DbError::ConnectionNotFound { 
+                            driver: self.driver.as_str().to_string(),
+                            alias: self.alias.clone(),
+                        }.into());
+                    }
+                } else {
+                    return Err(DbError::ConnectionNotFound { 
+                        driver: self.driver.as_str().to_string(),
+                        alias: self.alias.clone(),
+                    }.into());
+                }
+            }
+        };
 
         // Execute with timeout
         let result = tokio::time::timeout(
@@ -2393,6 +2519,9 @@ pub enum DbError {
     #[error("missing DSN for alias '{alias}'. Provide 'dsn' argument or set environment variable {env_var}")]
     MissingDsn { alias: String, env_var: String },
     
+    #[error("invalid DSN '{dsn}': {message}")]
+    InvalidDsn { dsn: String, message: String },
+    
     #[error("invalid configuration for field '{field}': {message}")]
     InvalidConfig { field: String, message: String },
     
@@ -2504,6 +2633,16 @@ impl DbError {
                     "details": {
                         "alias": alias,
                         "env_var": env_var
+                    }
+                }
+            }),
+            DbError::InvalidDsn { dsn, message } => json!({
+                "error": {
+                    "code": "db.invalid_dsn",
+                    "message": self.to_string(),
+                    "details": {
+                        "dsn": dsn,
+                        "validation_error": message
                     }
                 }
             }),

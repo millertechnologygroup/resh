@@ -1,0 +1,12 @@
+{
+  "name": "sample.hello",
+  "version": "0.1.0",
+  "description": "A simple sample plugin that demonstrates the resh plugin system",
+  "publisher": "resh-demo",
+  "license": "MIT",
+  "entrypoint": "hello-plugin.sh",
+  "tags": ["demo", "example", "hello"],
+  "platforms": ["linux-x86_64", "linux-aarch64", "darwin-x86_64", "darwin-aarch64"],
+  "homepage": "https://github.com/resh-demo/hello-plugin",
+  "repo": "https://github.com/resh-demo/hello-plugin"
+}
