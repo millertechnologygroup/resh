@@ -1,8 +1,8 @@
 mod cacheh;
 mod config;
-mod dbh;
+pub mod dbh;
 pub mod eventh;
-mod logh;
+pub mod logh;
 mod mqh;
 
 use crate::core::Registry;

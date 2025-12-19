@@ -31,7 +31,7 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
     };
 
     // Parse known verbs with dots first (this should include plugin operations)
-    let known_dotted_verbs = ["ea.get", "ea.set", "tag.add", "tag.rm", "nice.get", "nice.set", "nice.inc", "nice.dec", "io.peek", "limits.set", "route.list", "csr.create", "chain.info", "config.get", "keys.list", "key.add", "list-topics", "zone.fetch", "zone.update", "test", "install", "update", "remove", "available.list"];
+    let known_dotted_verbs = ["ea.get", "ea.set", "tag.add", "tag.rm", "nice.get", "nice.set", "nice.inc", "nice.dec", "io.peek", "limits.set", "route.list", "csr.create", "chain.info", "config.get", "keys.list", "key.add", "list-topics", "zone.fetch", "zone.update", "test", "install", "update", "remove", "available.list", "available.search", "available.info", "installed.list"];
     
     for &dotted_verb in &known_dotted_verbs {
         if main_part.ends_with(&format!(".{}", dotted_verb)) {

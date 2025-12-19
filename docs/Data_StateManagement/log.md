@@ -10,6 +10,32 @@ The log handle uses the `log://` URL scheme with different formats for different
 - **Relative file logs**: `log://./relative/path/log.txt`
 - **Service logs**: `log://svc/service-name` (via journalctl)
 
+## Command Syntax
+
+**✅ Preferred Syntax (Space-Separated Arguments)**
+```bash
+# No quotes needed - arguments are space-separated
+resh log:///var/log/syslog.tail lines=10
+resh log:///var/log/syslog.tail pattern=ERROR mode=json
+resh log://./app.log.tail lines=20 pattern=WARN
+resh log:///var/log/syslog.tail lines=10 pattern=CRON mode=json
+```
+
+**✅ Alternative Syntax (Quoted URLs with Parentheses)**
+```bash
+# Quote the entire URL when using parentheses syntax
+resh "log:///var/log/syslog.tail(lines=10)"
+resh "log:///var/log/syslog.tail(pattern=ERROR,mode=json)"
+resh "log://./app.log.tail(lines=20,pattern=WARN)"
+```
+
+**❌ Incorrect Syntax (Causes Shell Errors)**
+```bash
+# Missing quotes - bash interprets parentheses as syntax
+resh log:///var/log/syslog.tail(lines=10)
+# Error: bash: syntax error near unexpected token '('
+```
+
 ## Available Verbs
 
 ### tail
@@ -24,8 +50,8 @@ Shows the last lines of a log file, similar to the Unix `tail` command. This is 
 **Examples:**
 
 **Basic tail (last 100 lines):**
-```
-log:///tmp/test.log.tail
+```bash
+resh log:///tmp/test.log.tail
 ```
 Input: A log file with 5 lines:
 ```
@@ -38,15 +64,15 @@ Line 5
 Output: All 5 lines displayed
 
 **Tail with specific line count:**
-```
-log:///tmp/test.log.tail(lines=3)
+```bash
+resh log:///tmp/test.log.tail lines=3
 ```
 Input: A log file with 20 lines numbered 1-20
 Output: Only the last 3 lines (18, 19, 20) are displayed
 
 **Tail with pattern filtering:**
-```
-log:///tmp/app.log.tail(lines=10,pattern=ERROR)
+```bash
+resh log:///tmp/app.log.tail lines=10 pattern=ERROR
 ```
 Input: A log file with mixed content:
 ```
@@ -63,8 +89,8 @@ line-4 ERROR failed
 ```
 
 **Tail with JSON output:**
-```
-log:///tmp/app.log.tail(lines=30,mode=json,pattern=ERROR)
+```bash
+resh log:///tmp/app.log.tail lines=30 pattern=ERROR mode=json
 ```
 Input: A log file with 50 lines, some containing "ERROR" in the last 30 lines
 Output: JSON structure with:
@@ -79,15 +105,15 @@ Output: JSON structure with:
 ```
 
 **Empty file handling:**
-```
-log:///tmp/empty.log.tail(lines=10)
+```bash
+resh log:///tmp/empty.log.tail lines=10
 ```
 Input: An empty log file
 Output: No output (empty response)
 
 **Empty file with JSON mode:**
-```
-log:///tmp/empty.log.tail(lines=10,mode=json)
+```bash
+resh log:///tmp/empty.log.tail lines=10 mode=json
 ```
 Input: An empty log file  
 Output: JSON with empty results:
@@ -102,8 +128,8 @@ Output: JSON with empty results:
 ```
 
 **File not found (raw mode):**
-```
-log:///tmp/nonexistent.log.tail(lines=10)
+```bash
+resh log:///tmp/nonexistent.log.tail lines=10
 ```
 Input: A path to a non-existent file
 Output: Error message and exit status 2:
@@ -112,8 +138,8 @@ Error: Log file does not exist: /tmp/nonexistent.log
 ```
 
 **File not found (JSON mode):**
-```
-log:///tmp/nonexistent.log.tail(lines=10,mode=json)
+```bash
+resh log:///tmp/nonexistent.log.tail lines=10 mode=json
 ```
 Input: A path to a non-existent file
 Output: JSON error structure and exit status 2:
@@ -131,8 +157,8 @@ Output: JSON error structure and exit status 2:
 ### Invalid Arguments
 
 **Invalid line count:**
-```
-log:///tmp/test.log.tail(lines=0)
+```bash
+resh log:///tmp/test.log.tail lines=0
 ```
 Output: Error message to stderr and exit status 2:
 ```
@@ -140,8 +166,8 @@ Error: lines must be greater than 0
 ```
 
 **Invalid mode:**
-```
-log:///tmp/test.log.tail(lines=10,mode=invalid)
+```bash
+resh log:///tmp/test.log.tail lines=10 mode=invalid
 ```
 Output: Error message to stderr and exit status 2:
 ```
@@ -166,8 +192,8 @@ This allows for fast tail operations on very large log files without reading the
 ## Service Log Support
 
 For system service logs (using journalctl):
-```
-log://svc/systemd.tail(lines=50)
+```bash
+resh log://svc/systemd.tail lines=50
 ```
 
 This feature relies on journalctl being available and the service existing on the system.
@@ -175,3 +201,44 @@ This feature relies on journalctl being available and the service existing on th
 ## File Format Support
 
 The log handle works with any text-based log file format. It treats files as line-based text and doesn't require specific log formats or structured data.
+
+## Practical Examples
+
+### System Log Analysis
+```bash
+# Check recent system errors
+resh log:///var/log/syslog.tail pattern=error mode=json
+
+# Monitor recent cron job execution
+resh log:///var/log/syslog.tail pattern=CRON lines=20
+
+# Check systemd service messages
+resh log:///var/log/syslog.tail pattern=systemd lines=30 mode=json
+```
+
+### Application Log Monitoring
+```bash
+# Check recent application errors
+resh log://./logs/app.log.tail pattern=ERROR lines=50 mode=json
+
+# Monitor nginx error logs
+resh log:///var/log/nginx/error.log.tail lines=20
+
+# Debug recent activity with pattern
+resh log://./debug.log.tail lines=100 pattern=DEBUG
+```
+
+### Automation and Scripting
+```bash
+# Get structured JSON output for parsing
+ERROR_COUNT=$(resh log:///var/log/app.log.tail pattern=ERROR mode=json | jq '.returned_lines')
+
+# Check if any errors occurred recently
+resh log:///var/log/syslog.tail pattern=error lines=100 mode=json | jq '.returned_lines > 0'
+
+# Extract specific log lines for processing
+resh log:///var/log/app.log.tail pattern=CRITICAL mode=json | jq -r '.lines[]'
+
+# Using alternative quoted syntax in scripts (when needed)
+ERROR_COUNT=$(resh "log:///var/log/app.log.tail(pattern=ERROR,mode=json)" | jq '.returned_lines')
+```
