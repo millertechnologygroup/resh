@@ -4,9 +4,9 @@ Thank you for your interest in contributing to resh! We're building the future o
 
 ---
 
-## 🎉 v0.7 Alpha is Available - We Need Your Help!
+## 🎉 v0.9 Beta is Available - We Need Your Help!
 
-**resh v0.7 alpha is now available for testing!** With 25 of 30 handles complete, we're ready for community feedback, bug reports, and real-world testing.
+**resh v0.9 beta is now available for testing!** With 28 of 30 handles complete, we're ready for community feedback, bug reports, and real-world testing.
 
 ### How You Can Contribute Right Now
 
@@ -46,7 +46,7 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 
 ## Contribution Timeline
 
-### ✅ Now (v0.7 Alpha - December 2025)
+### v0.7 Alpha - December 2025
 **Currently accepting:**
 - Bug reports and issue submissions
 - Feature requests and suggestions
@@ -55,7 +55,7 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 - Use case sharing and examples
 - Community discussions (coming soon)
 
-### v0.8 Feature Complete (January 2026)
+### v0.8 Feature Complete (December 2025)
 **We will begin accepting:**
 - Bug fix pull requests
 - Documentation improvements
@@ -63,7 +63,7 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 - Test contributions
 - Handle enhancement suggestions
 
-### v0.9 Beta (February-March 2026)
+### ✅ Now v0.9 Beta (January-March 2026)
 **Expanded contribution opportunities:**
 - Feature development contributions
 - Performance optimization PRs
@@ -80,7 +80,7 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 
 ---
 
-## How to Report Bugs (v0.7 Alpha)
+## How to Report Bugs (v0.9 Beta)
 
 We welcome and encourage bug reports! Good bug reports help us improve resh quickly.
 
@@ -102,7 +102,7 @@ When reporting bugs, please include:
 **Command:**
 ```bash
 # Exact command you ran
-resh svc://nginx status --format json
+resh svc://nginx.status --json-pretty
 ```
 
 **Expected Behavior:**
@@ -143,7 +143,7 @@ and use OpenRC but appears to only check for systemd.
 ### Where to Report
 
 - **GitHub Issues:** https://github.com/millertechnologygroup/resh/issues
-- Use issue labels: `bug`, `v0.7`, `handle:<name>`
+- Use issue labels: `bug`, `v0.9`, `handle:<name>`
 - Be respectful and constructive
 
 ---
@@ -616,7 +616,7 @@ All contributions must be your original work, or properly attributed if derived 
 
 ## Questions?
 
-### About v0.7 Alpha
+### About v0.9 Beta
 - **Installation issues?** Open a GitHub Issue
 - **Usage questions?** Check the [README](README.md) and [docs/](docs/)
 - **Found a bug?** Report it via GitHub Issues
@@ -637,7 +637,7 @@ All contributions must be your original work, or properly attributed if derived 
 
 ## Thank You!
 
-**Thank you for testing resh v0.7 and being part of this journey!**
+**Thank you for testing resh v0.9 and being part of this journey!**
 
 Your bug reports, feedback, and real-world testing are invaluable. Every issue you report, every suggestion you make, and every test you run helps shape resh into a better tool.
 
@@ -653,9 +653,9 @@ We're building resh in public, and you're helping us build it right.
 
 ---
 
-**Last Updated:** December 2025 (v0.7 Alpha)  
-**Next Review:** January 2026 (when code contributions open with v0.8)
+**Last Updated:** December 2025 (v0.9 Beta)  
+**Next Review:** January 2026 (when code contributions open with v1.0)
 
 For questions about contributing, please open a GitHub Issue or check back as we set up GitHub Discussions.
 
-**Star the repo • Test the alpha • Report bugs • Help us build the future**
+**Star the repo • Test the beta • Report bugs • Help us build the future**
