@@ -197,7 +197,7 @@ resh template://config.yml.render --data-file vars.json --output /etc/myapp/
 |-----------|--------|--------|
 | v0.7 Alpha (25 handles) | November 2025 | ✅ **Completed** |
 | v0.8 Feature Complete (27 handles) | December 2025 | ✅ **Completed** |
-| v0.9 Beta (28 handles + Automation Utils) | January 2026 | ✅ **Available Now** |
+| v0.9 Beta (28 handles + Automation Utils) | December 2025 | ✅ **Available Now** |
 | v1.0 Beta Release (30 handles) | March-April 2026 | ⏱️ In Progress |
 | v1.0 Production | Q2/Q3 2026 | ⏱️ Planned |
 
