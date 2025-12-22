@@ -8,9 +8,9 @@
 
 ---
 
-## 🎉 v0.9 Alpha Available - 28 of 30 Handles Complete + Automation Utilities
+## 🎉 v0.9 Beta Available - 28 of 30 Handles Complete + Automation Utilities
 
-**resh v0.9 is now available for testing!** This alpha release includes 28 production-ready handles plus comprehensive automation utilities for backup management, plugin operations, and template rendering.
+**resh v0.9 is now available for testing!** This beta release includes 28 production-ready handles plus comprehensive automation utilities for backup management, plugin operations, and template rendering.
 
 ⭐ **Star this repo** to follow development and be notified of updates!
 
@@ -19,7 +19,7 @@
 - ✅ JSON, table, and log output formats working
 - ✅ URI-based resource model operational
 - ⏱️ 2 remaining handles coming in v0.8 (January 2026)
-- ⚠️ Alpha quality - expect bugs and rough edges
+- ⚠️ Beta quality - expect bugs and rough edges
 
 ---
 
@@ -27,7 +27,7 @@
 
 resh (Resource Shell) is a next-generation automation platform designed for the AI era. While traditional tools like Ansible and Terraform were built for humans writing YAML, resh provides **structured, typed outputs** that both AI agents and human operators can reliably consume.
 
-**v0.9 Alpha demonstrates the enhanced automation vision with 28 working handles plus comprehensive automation utilities.**
+**v0.9 Beta demonstrates the enhanced automation vision with 28 working handles plus comprehensive automation utilities.**
 
 ### The Problem
 
@@ -45,7 +45,7 @@ Current infrastructure automation tools face critical limitations:
 
 ---
 
-## Why Test v0.9 Alpha?
+## Why Test v0.9 Beta?
 
 ### For DevOps Engineers
 - Test AI-native automation in your environment
@@ -73,7 +73,7 @@ Current infrastructure automation tools face critical limitations:
 
 ### What to Expect
 - ✅ Functional 28 handles you can use today
-- ⚠️ Bugs and rough edges (it's alpha!)
+- ⚠️ Bugs and rough edges (it's beta!)
 - ⚠️ API may change before v1.0
 - ✅ Responsive maintainer (issues answered within 24h)
 - ✅ Rapid iteration and improvements
@@ -197,7 +197,7 @@ resh template://config.yml.render --data-file vars.json --output /etc/myapp/
 |-----------|--------|--------|
 | v0.7 Alpha (25 handles) | November 2025 | ✅ **Completed** |
 | v0.8 Feature Complete (27 handles) | December 2025 | ✅ **Completed** |
-| v0.9 Alpha (28 handles + Automation Utils) | January 2026 | ✅ **Available Now** |
+| v0.9 Beta (28 handles + Automation Utils) | January 2026 | ✅ **Available Now** |
 | v1.0 Beta Release (30 handles) | March-April 2026 | ⏱️ In Progress |
 | v1.0 Production | Q2/Q3 2026 | ⏱️ Planned |
 
@@ -313,7 +313,7 @@ curl -sSL https://raw.githubusercontent.com/millertechnologygroup/resh/main/scri
 
 ## Contributing
 
-**resh v0.9 alpha is now available for testing!** We welcome:
+**resh v0.9 beta is now available for testing!** We welcome:
 
 ### How You Can Help Now
 
@@ -407,10 +407,10 @@ Built with frustration from years of fragile automation tools and excitement abo
 ## FAQ
 
 **Q: Can I use resh now?**  
-A: Yes! v0.9 alpha is available for testing. It's not production-ready, but all 28 handles are functional. Great for experimentation and feedback.
+A: Yes! v0.9 beta is available for testing. It's not production-ready, but all 28 handles are functional. Great for experimentation and feedback.
 
 **Q: Is v0.9 production-ready?**  
-A: No. This is an alpha release. Expect bugs, incomplete features, and potential breaking changes. Production release (v1.0) is planned for Q2/Q3 2026.
+A: No. This is an beta release. Expect bugs, incomplete features, and potential breaking changes. Production release (v1.0) is planned for Q2/Q3 2026.
 
 **Q: What's missing in v0.9?**  
 A: 2 handles (webhook://, lock://), comprehensive performance optimization, extensive edge case testing, and production polish. Coming in v1.0.
@@ -434,13 +434,13 @@ A: We focused on delivering comprehensive automation utilities (backup, plugin, 
 A: [GitHub Issues](https://github.com/millertechnologygroup/resh/issues) - Please include your OS, resh version, command, and output.
 
 **Q: Can I use resh in my company?**  
-A: Yes, it's Apache 2.0 licensed. However, being alpha, we recommend testing in non-production environments first.
+A: Yes, it's Apache 2.0 licensed. However, being beta, we recommend testing in non-production environments first.
 
 **Q: What's the performance like?**  
 A: Functional but not yet optimized. Performance improvements coming in v0.9. Current focus is correctness and features.
 
 ---
 
-**v0.9 Alpha available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
+**v0.9 Beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
 
 [Download v0.9](https://github.com/millertechnologygroup/resh/releases/tag/v0.9.0) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
