@@ -18,7 +18,7 @@
 - ✅ 28 handles implemented and functional
 - ✅ JSON, table, and log output formats working
 - ✅ URI-based resource model operational
-- ⏱️ 2 remaining handles coming in v0.8 (January 2026)
+- ⏱️ 2 remaining handles coming in v1.0 (March 2026)
 - ⚠️ Beta quality - expect bugs and rough edges
 
 ---
