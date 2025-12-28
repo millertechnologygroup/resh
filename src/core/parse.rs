@@ -31,7 +31,7 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
     };
 
     // Parse known verbs with dots first (this should include plugin operations)
-    let known_dotted_verbs = ["ea.get", "ea.set", "tag.add", "tag.rm", "nice.get", "nice.set", "nice.inc", "nice.dec", "io.peek", "limits.set", "route.list", "csr.create", "chain.info", "config.get", "keys.list", "key.add", "list-topics", "zone.fetch", "zone.update", "test", "install", "update", "remove", "available.list", "available.search", "available.info", "installed.list", "env.list"];
+    let known_dotted_verbs = ["ea.get", "ea.set", "tag.add", "tag.rm", "nice.get", "nice.set", "nice.inc", "nice.dec", "io.peek", "limits.set", "route.list", "csr.create", "chain.info", "config.get", "keys.list", "key.add", "list-topics", "zone.fetch", "zone.update", "test", "install", "update", "remove", "available.list", "available.search", "available.info", "installed.list", "env.list", "send", "send_template", "config"];
     
     for &dotted_verb in &known_dotted_verbs {
         if main_part.ends_with(&format!(".{}", dotted_verb)) {
@@ -100,6 +100,74 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
         });
     }
 
+    // Handle mail:// URLs specially since they encode the verb in the path part
+    // Support both function-call syntax: mail://send(args...)
+    // and query parameter syntax: mail://send?arg1=val1&arg2=val2
+    let mail_regex = Regex::new(r"^mail://([a-zA-Z_][a-zA-Z0-9_-]*)(?:/.*)?(?:\?.*)?$")?;
+    if let Some(captures) = mail_regex.captures(&main_part) {
+        let verb_part = &captures[1];
+        // For mail URLs, the verb is in the path and the target is just "mail://"
+        let mut args: Args = HashMap::new();
+
+        // Check if we have query parameters instead of function-call syntax
+        if let Some(query_start) = main_part.find('?') {
+            // Parse query parameter syntax: mail://send?to=test@test.com&subject=test
+            let query_part = &main_part[query_start + 1..];
+            for param in query_part.split('&') {
+                if let Some((key, value)) = param.split_once('=') {
+                    let key = urlencoding::decode(key).map_err(|e| anyhow!("Failed to decode key: {}", e))?.to_string();
+                    let value = urlencoding::decode(value).map_err(|e| anyhow!("Failed to decode value: {}", e))?.to_string();
+                    
+                    // Handle special cases for arrays (e.g., to=email1,email2)
+                    if key == "to" || key == "cc" || key == "bcc" {
+                        // Split comma-separated values into JSON array format
+                        if value.contains(',') {
+                            let emails: Vec<&str> = value.split(',').collect();
+                            args.insert(key, serde_json::to_string(&emails).unwrap_or_else(|_| value));
+                        } else {
+                            // Single email, wrap in array format
+                            args.insert(key, serde_json::to_string(&[&value]).unwrap_or_else(|_| value));
+                        }
+                    } else {
+                        args.insert(key, value);
+                    }
+                }
+            }
+        } else if let Some(args_content) = args_str {
+            // Parse traditional function-call syntax: mail://send(args...)
+            if !args_content.is_empty() {
+                for kv in parse_arguments(&args_content) {
+                    let kv = kv.trim();
+                    if kv.is_empty() {
+                        continue;
+                    }
+                    if let Some((k, v)) = kv.split_once('=') {
+                        let key = k.trim().to_string();
+                        let mut value = v.trim();
+                        
+                        // Don't strip quotes from JSON arrays or objects for mail args
+                        if value.starts_with('[') && value.ends_with(']') {
+                            // Keep JSON array format intact
+                            args.insert(key, value.to_string());
+                        } else if value.starts_with('{') && value.ends_with('}') {
+                            // Keep JSON object format intact
+                            args.insert(key, value.to_string());
+                        } else {
+                            // Strip quotes from simple string values
+                            args.insert(key, value.trim_matches('"').to_string());
+                        }
+                    }
+                }
+            }
+        }
+        
+        return Ok(ParsedStage { 
+            target: "mail://".to_string(), 
+            verb: verb_part.to_string(), 
+            args 
+        });
+    }
+
     // Fall back to the original logic for simple verbs
     if let Some(last_dot) = main_part.rfind('.') {
         // Check if what comes after the dot looks like a verb (not a file extension)
@@ -149,6 +217,7 @@ fn parse_arguments(args_str: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut current_arg = String::new();
     let mut in_quotes = false;
+    let mut in_brackets = false;
     let mut chars = args_str.chars().peekable();
     
     while let Some(ch) = chars.next() {
@@ -157,7 +226,15 @@ fn parse_arguments(args_str: &str) -> Vec<String> {
                 in_quotes = !in_quotes;
                 current_arg.push(ch);
             }
-            ',' if !in_quotes => {
+            '[' if !in_quotes => {
+                in_brackets = true;
+                current_arg.push(ch);
+            }
+            ']' if !in_quotes => {
+                in_brackets = false;
+                current_arg.push(ch);
+            }
+            ',' if !in_quotes && !in_brackets => {
                 if !current_arg.trim().is_empty() {
                     result.push(current_arg.trim().to_string());
                 }

@@ -10,16 +10,16 @@ Send an email message with custom content.
 
 **Basic Usage:**
 ```bash
-mail://send(to=["user@example.com"], subject="Test Email", text_body="Hello from test")
+resh mail://send to=["user@example.com"] subject="Test Email" text_body="Hello from test"
 ```
 
 **Parameters:**
-- `to` (required): Array of recipient email addresses
+- `to` (required): Array of recipient email addresses, or comma-separated string in shell-friendly syntax
 - `subject` (required): Email subject line
 - `text_body` or `html_body` (required): Email body content
 - `from`: Sender email address
-- `cc`: Array of CC recipient email addresses
-- `bcc`: Array of BCC recipient email addresses
+- `cc`: Array of CC recipient email addresses, or comma-separated string in shell-friendly syntax
+- `bcc`: Array of BCC recipient email addresses, or comma-separated string in shell-friendly syntax
 - `reply_to`: Reply-to email address
 - `attachments`: Array of file paths to attach
 - `headers`: Custom email headers as JSON object
@@ -36,19 +36,24 @@ mail://send(to=["user@example.com"], subject="Test Email", text_body="Hello from
 
 **Examples:**
 
-*Simple email:*
+*Simple email (shell-friendly syntax):*
 ```bash
-mail://send(to=["user@example.com"], subject="Test", text_body="Hello", from="test@example.com")
+resh mail://send to="user@example.com" subject="Test" text_body="Hello" from="test@example.com"
 ```
 
 *Email with SMTP configuration:*
 ```bash
-mail://send(to=["user@example.com"], subject="Test Email", text_body="Hello from test", smtp_host="127.0.0.1", smtp_port=2525, use_tls="none")
+resh mail://send to="user@example.com" subject="Test Email" text_body="Hello from test" smtp_host="127.0.0.1" smtp_port=2525 use_tls="none"
 ```
 
 *Email with multiple recipients and CC:*
 ```bash
-mail://send(to=["user1@example.com", "user2@example.com"], cc=["manager@example.com"], subject="Team Update", text_body="Weekly update")
+resh mail://send to="user1@example.com,user2@example.com" cc="manager@example.com" subject="Team Update" text_body="Weekly update"
+```
+
+*Traditional function-call syntax:*
+```bash
+resh 'mail://send(to=["user@example.com"], subject="Test", text_body="Hello", from="test@example.com")'
 ```
 
 **Expected Output:**
@@ -78,18 +83,22 @@ Send an email using a predefined template with variable substitution.
 
 **Basic Usage:**
 ```bash
-mail://.send_template(template="welcome", to=["user@example.com"], vars={"user_name":"Alice"})
+# Shell-friendly syntax
+resh mail://send_template template="welcome" to="user@example.com" vars='{"user_name":"Alice"}'
+
+# Traditional function-call syntax
+resh 'mail://send_template(template="welcome", to=["user@example.com"], vars={"user_name":"Alice"})'
 ```
 
 **Parameters:**
 - `template` (required): Name of the email template to use
-- `to` (required): Array of recipient email addresses
+- `to` (required): Array of recipient email addresses, or comma-separated string in shell-friendly syntax
 - `vars`: JSON object containing template variables
 - `locale`: Template locale/language
 - `version`: Template version
 - `from`: Sender email address
-- `cc`: Array of CC recipient email addresses
-- `bcc`: Array of BCC recipient email addresses
+- `cc`: Array of CC recipient email addresses, or comma-separated string in shell-friendly syntax
+- `bcc`: Array of BCC recipient email addresses, or comma-separated string in shell-friendly syntax
 - `reply_to`: Reply-to email address
 - `attachments`: Array of file paths to attach
 - `headers`: Custom email headers as JSON object
@@ -110,17 +119,17 @@ mail://.send_template(template="welcome", to=["user@example.com"], vars={"user_n
 
 *Simple template without variables:*
 ```bash
-mail://.send_template(template="welcome", to=["user@example.com"], dry_run=true, format_output="json")
+resh mail://send_template template="welcome" to="user@example.com" dry_run=true format_output="json"
 ```
 
 *Template with variables:*
 ```bash
-mail://.send_template(template="welcome", to=["user@example.com"], vars={"user_name":"Alice","app_name":"MyApp"}, dry_run=true, format_output="json")
+resh mail://send_template template="welcome" to="user@example.com" vars='{"user_name":"Alice","app_name":"MyApp"}' dry_run=true format_output="json"
 ```
 
 *Template with locale:*
 ```bash
-mail://.send_template(template="newsletter", to=["user@example.com"], vars={"name":"Alice"}, locale="en_US", dry_run=true)
+resh mail://send_template template="newsletter" to="user@example.com" vars='{"name":"Alice"}' locale="en_US" dry_run=true
 ```
 
 **Expected Output:**
@@ -152,7 +161,11 @@ Test SMTP connection and optionally send a test email.
 
 **Basic Usage:**
 ```bash
-mail://.test(smtp_host="127.0.0.1", smtp_port=2525, use_tls="none")
+# Shell-friendly syntax
+resh mail://test smtp_host="127.0.0.1" smtp_port=2525 use_tls="none"
+
+# Traditional function-call syntax
+resh 'mail://test(smtp_host="127.0.0.1", smtp_port=2525, use_tls="none")'
 ```
 
 **Parameters:**
@@ -164,7 +177,7 @@ mail://.test(smtp_host="127.0.0.1", smtp_port=2525, use_tls="none")
 - `tls_accept_invalid_certs`: Accept invalid TLS certificates (true/false)
 - `connection_only`: Only test connection without sending email (true/false)
 - `send_test_email`: Send a test email (true/false)
-- `to`: Array of recipient email addresses (required if send_test_email=true)
+- `to`: Array of recipient email addresses, or comma-separated string (required if send_test_email=true)
 - `from`: Sender email address (required if send_test_email=true)
 - `subject`: Test email subject
 - `text_body`: Test email body
@@ -178,32 +191,32 @@ mail://.test(smtp_host="127.0.0.1", smtp_port=2525, use_tls="none")
 
 *Basic connection test:*
 ```bash
-mail://.test(smtp_host="127.0.0.1", smtp_port=2525, use_tls="none", connection_only=true)
+resh mail://test smtp_host="127.0.0.1" smtp_port=2525 use_tls="none" connection_only=true
 ```
 
 *Connection test with authentication:*
 ```bash
-mail://.test(smtp_host="127.0.0.1", smtp_port=2525, use_tls="none", smtp_username="user", smtp_password="pass")
+resh mail://test smtp_host="127.0.0.1" smtp_port=2525 use_tls="none" smtp_username="user" smtp_password="pass"
 ```
 
 *Send test email:*
 ```bash
-mail://.test(smtp_host="127.0.0.1", smtp_port=2525, use_tls="none", send_test_email=true, to=["test@example.com"], from="sender@example.com", subject="Test Email", text_body="Hello from test")
+resh mail://test smtp_host="127.0.0.1" smtp_port=2525 use_tls="none" send_test_email=true to="test@example.com" from="sender@example.com" subject="Test Email" text_body="Hello from test"
 ```
 
 *Test with STARTTLS:*
 ```bash
-mail://.test(smtp_host="127.0.0.1", smtp_port=587, use_tls="starttls", tls_accept_invalid_certs=false)
+resh mail://test smtp_host="127.0.0.1" smtp_port=587 use_tls="starttls" tls_accept_invalid_certs=false
 ```
 
 *Test with retry logic:*
 ```bash
-mail://.test(smtp_host="127.0.0.1", smtp_port=2525, use_tls="none", max_retry=2, retry_backoff_ms=100)
+resh mail://test smtp_host="127.0.0.1" smtp_port=2525 use_tls="none" max_retry=2 retry_backoff_ms=100
 ```
 
 *Test with text output format:*
 ```bash
-mail://.test(smtp_host="127.0.0.1", smtp_port=2525, use_tls="none", connection_only=true, format_output="text")
+resh mail://test smtp_host="127.0.0.1" smtp_port=2525 use_tls="none" connection_only=true format_output="text"
 ```
 
 **Expected Output (Connection Only):**
@@ -272,7 +285,11 @@ Manage SMTP profile configurations.
 
 **Basic Usage:**
 ```bash
-mail://.config(action="list")
+# Shell-friendly syntax
+resh mail://config action="list"
+
+# Traditional function-call syntax
+resh 'mail://config(action="list")'
 ```
 
 **Parameters:**
@@ -294,32 +311,32 @@ mail://.config(action="list")
 
 *List all profiles:*
 ```bash
-mail://.config(action="list")
+resh mail://config action="list"
 ```
 
 *Get specific profile:*
 ```bash
-mail://.config(action="get", profile="production")
+resh mail://config action="get" profile="production"
 ```
 
 *Create/update profile:*
 ```bash
-mail://.config(action="set", profile="production", smtp_host="smtp.example.com", smtp_port=587, use_tls="starttls", smtp_username="user@example.com", smtp_password="password", from="noreply@example.com")
+resh mail://config action="set" profile="production" smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" smtp_username="user@example.com" smtp_password="password" from="noreply@example.com"
 ```
 
 *Activate profile:*
 ```bash
-mail://.config(action="activate", profile="production")
+resh mail://config action="activate" profile="production"
 ```
 
 *Get active profile:*
 ```bash
-mail://.config(action="get_active")
+resh mail://config action="get_active"
 ```
 
 *Delete profile:*
 ```bash
-mail://.config(action="delete", profile="old_profile")
+resh mail://config action="delete" profile="old_profile"
 ```
 
 **Expected Output (List):**
@@ -383,13 +400,14 @@ mail://.config(action="delete", profile="old_profile")
 - `mail.send_missing_subject`: Subject line not provided
 - `mail.send_missing_body`: Neither text_body nor html_body provided
 - `mail.send_invalid_address`: Invalid email address format
+- `mail.send_header_conflict`: Header conflicts with built-in headers (e.g., setting 'from' in custom headers)
 - `mail.send_smtp_not_configured`: SMTP configuration missing
 - `mail.send_smtp_connection_failed`: Failed to connect to SMTP server
 - `mail.send_smtp_auth_failed`: SMTP authentication failed
 - `mail.send_smtp_rejected`: Email rejected by SMTP server
 
 ### Test Verb Errors
-- `mail.test_missing_smtp_host`: SMTP host not specified
+- `mail.test_smtp_not_configured`: SMTP configuration missing (host not specified)
 - `mail.test_connection_failed`: Unable to connect to SMTP server
 - `mail.test_auth_failed`: SMTP authentication failed
 - `mail.test_send_rejected`: Test email rejected by server
@@ -411,20 +429,33 @@ mail://.config(action="delete", profile="old_profile")
 - `mail.send_template_empty_subject`: Template rendered empty subject
 - `mail.send_template_empty_body`: Template rendered empty body
 - `mail.send_template_render_error`: Template rendering failed
+- `mail.send_template_header_conflict`: Cannot override core headers like 'from', 'to', 'subject', etc.
 
 ## Tips
 
-1. **SMTP Configuration**: You can either provide SMTP settings in each command or use the `config` verb to manage reusable profiles.
+1. **Shell Syntax**: The mail handle supports both traditional function-call syntax and shell-friendly syntax:
+   ```bash
+   # Shell-friendly syntax (recommended for command line usage)
+   ./resh mail://send to="user@example.com" subject="Test" text_body="Hello"
+   
+   # Multiple recipients using comma-separated values
+   ./resh mail://send to="user1@example.com,user2@example.com" subject="Test" text_body="Hello"
+   
+   # Traditional function-call syntax (requires quotes)
+   ./resh 'mail://send(to=["user@example.com"], subject="Test", text_body="Hello")'
+   ```
 
-2. **TLS Modes**: 
+2. **SMTP Configuration**: You can either provide SMTP settings in each command or use the `config` verb to manage reusable profiles.
+
+3. **TLS Modes**: 
    - `"none"`: No encryption
    - `"starttls"`: Use STARTTLS for encryption
    - `"tls"`: Use TLS from the start
 
-3. **Testing**: Always use the `test` verb to verify your SMTP configuration before sending actual emails.
+4. **Testing**: Always use the `test` verb to verify your SMTP configuration before sending actual emails.
 
-4. **Templates**: Use `dry_run=true` with `send_template` to test template rendering without sending emails.
+5. **Templates**: Use `dry_run=true` with `send_template` to test template rendering without sending emails.
 
-5. **Attachments**: Specify file paths as an array of strings for the `attachments` parameter.
+6. **Attachments**: Specify file paths as an array of strings for the `attachments` parameter.
 
-6. **Output Formats**: Use `format_output="text"` for human-readable output or `format_output="json"` for programmatic use.
+7. **Output Formats**: Use `format_output="text"` for human-readable output or `format_output="json"` for programmatic use.
