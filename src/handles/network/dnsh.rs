@@ -2995,7 +2995,7 @@ impl DnsZoneFetchOptions {
 
         // Validate TSIG secret is valid base64
         if let Some(ref secret) = tsig_secret {
-            base64::decode(secret)
+            general_purpose::STANDARD.decode(secret)
                 .context("TSIG secret must be valid base64")?;
         }
 
@@ -3825,7 +3825,7 @@ impl DnsZoneUpdateOptions {
 
         // Validate TSIG secret is valid base64
         if let Some(ref secret) = tsig_secret {
-            base64::decode(secret)
+            general_purpose::STANDARD.decode(secret)
                 .context("TSIG secret must be valid base64")?;
         }
 

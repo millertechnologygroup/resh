@@ -1,7 +1,7 @@
 mod automation;
 pub mod data;
 mod filesystem;
-mod network;
+pub mod network;
 mod pluginh;
 mod processes;
 mod security;

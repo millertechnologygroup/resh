@@ -173,21 +173,21 @@ dns:// resolve name=example.com mode=host family=ipv4
 
 ```bash
 # Resolve mail servers for domain
-dns:// resolve name=example.com mode=mail family=any
+dns://.resolve name=example.com mode=mail family=any
 ```
 
 #### Service Resolution
 
 ```bash
 # Resolve service endpoints
-dns:// resolve name=_http._tcp.example.com mode=service
+dns://.resolve name=_http._tcp.example.com mode=service
 ```
 
 #### Reverse DNS Resolution
 
 ```bash
 # Reverse resolve IP address
-dns:// resolve name=192.0.2.1 mode=reverse
+dns://.resolve name=192.0.2.1 mode=reverse
 ```
 
 ### Error Handling
@@ -232,21 +232,21 @@ Trace DNS resolution from root servers to show the complete resolution path.
 
 ```bash
 # Trace A record resolution for example.com
-dns:// trace name=example.com rtype=A
+dns://.trace name=example.com rtype=A
 ```
 
 #### Trace with Custom Root Servers
 
 ```bash
 # Trace using specific root servers
-dns:// trace name=test.example.com root_servers=198.41.0.4,192.5.5.241
+dns://.trace name=test.example.com root_servers=198.41.0.4,192.5.5.241
 ```
 
 #### NS Record Trace
 
 ```bash
 # Trace NS records with custom settings
-dns:// trace name=test.example.com rtype=NS max_depth=10 use_tcp=true
+dns://.trace name=test.example.com rtype=NS max_depth=10 use_tcp=true
 ```
 
 ### Error Handling
@@ -290,21 +290,21 @@ Perform DNS zone transfers (AXFR or IXFR) to retrieve zone data.
 
 ```bash
 # Transfer entire zone using AXFR
-dns:// zone.fetch zone=example.com transfer=AXFR servers=["192.0.2.53"]
+dns://.zone.fetch zone=example.com transfer=AXFR servers=["192.0.2.53"]
 ```
 
 #### IXFR Incremental Transfer
 
 ```bash
 # Incremental zone transfer from serial number
-dns:// zone.fetch zone=example.com transfer=IXFR serial=2025112501 servers=["192.0.2.53"]
+dns:/.zone.fetch zone=example.com transfer=IXFR serial=2025112501 servers=["192.0.2.53"]
 ```
 
 #### Zone Transfer with TSIG Authentication
 
 ```bash
 # Authenticated zone transfer using TSIG
-dns:// zone.fetch zone=example.com servers=["192.0.2.53"] tsig_key_name=axfr-key.example.com. tsig_secret=YWJjZDEyMzQ= tsig_algorithm=hmac-sha256
+dns://.zone.fetch zone=example.com servers=["192.0.2.53"] tsig_key_name=axfr-key.example.com. tsig_secret=YWJjZDEyMzQ= tsig_algorithm=hmac-sha256
 ```
 
 ### Error Handling
@@ -349,42 +349,42 @@ Perform dynamic DNS zone updates to modify zone records.
 
 ```bash
 # Add a new A record to the zone
-dns:// zone.update zone=example.com adds='[{"name":"www.example.com","rtype":"A","ttl":300,"data":{"address":"203.0.113.10"}}]'
+dns://.zone.update zone=example.com adds='[{"name":"www.example.com","rtype":"A","ttl":300,"data":{"address":"203.0.113.10"}}]'
 ```
 
 #### Add MX Record
 
 ```bash
 # Add mail exchange record
-dns:// zone.update zone=example.com adds='[{"name":"mail.example.com","rtype":"MX","ttl":3600,"data":{"preference":10,"exchange":"mx.example.com."}}]'
+dns://.zone.update zone=example.com adds='[{"name":"mail.example.com","rtype":"MX","ttl":3600,"data":{"preference":10,"exchange":"mx.example.com."}}]'
 ```
 
 #### Delete Specific Record
 
 ```bash
 # Delete a specific A record
-dns:// zone.update zone=example.com deletes='[{"name":"www.example.com","rtype":"A","data":{"address":"203.0.113.10"}}]'
+dns://.zone.update zone=example.com deletes='[{"name":"www.example.com","rtype":"A","data":{"address":"203.0.113.10"}}]'
 ```
 
 #### Delete All Records of Type
 
 ```bash
 # Delete all A records for a name
-dns:// zone.update zone=example.com deletes='[{"name":"www.example.com","rtype":"A","delete_all":true}]'
+dns://.zone.update zone=example.com deletes='[{"name":"www.example.com","rtype":"A","delete_all":true}]'
 ```
 
 #### Delete All Records for Name
 
 ```bash
 # Delete all records for a name
-dns:// zone.update zone=example.com deletes='[{"name":"www.example.com","delete_all":true}]'
+dns://.zone.update zone=example.com deletes='[{"name":"www.example.com","delete_all":true}]'
 ```
 
 #### Update with Prerequisites
 
 ```bash
 # Update with prerequisite check
-dns:// zone.update zone=example.com prerequisites='[{"kind":"record_exists","name":"www.example.com","rtype":"A"}]' adds='[{"name":"www.example.com","rtype":"A","ttl":300,"data":{"address":"203.0.113.11"}}]'
+dns://.zone.update zone=example.com prerequisites='[{"kind":"record_exists","name":"www.example.com","rtype":"A"}]' adds='[{"name":"www.example.com","rtype":"A","ttl":300,"data":{"address":"203.0.113.11"}}]'
 ```
 
 ### Prerequisites

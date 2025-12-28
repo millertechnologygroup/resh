@@ -5561,3 +5561,335 @@ impl Handle for SystemHandle {
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("system", |u| Ok(Box::new(SystemHandle::from_url(u)?)));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use serde_json::Value;
+
+    /// Mock SystemProvider for testing
+    struct MockSystemProvider {
+        env_vars: Vec<(String, String)>,
+        process_id: i64,
+        should_fail: bool,
+    }
+
+    impl MockSystemProvider {
+        fn new() -> Self {
+            Self {
+                env_vars: vec![
+                    ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+                    ("HOME".to_string(), "/home/testuser".to_string()),
+                    ("USER".to_string(), "testuser".to_string()),
+                    ("SECRET_TOKEN".to_string(), "super_secret_value".to_string()),
+                    ("API_KEY".to_string(), "api_key_value".to_string()),
+                    ("DISPLAY".to_string(), ":0".to_string()),
+                    ("LANG".to_string(), "en_US.UTF-8".to_string()),
+                    ("SHELL".to_string(), "/bin/bash".to_string()),
+                ],
+                process_id: 1234,
+                should_fail: false,
+            }
+        }
+    }
+
+    impl SystemProvider for MockSystemProvider {
+        fn read_file(&self, _path: &str) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_proc_stat(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_proc_meminfo(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_proc_loadavg(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_proc_uptime(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_os_release(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn get_uname(&self) -> anyhow::Result<(String, String, String, String)> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn get_hostname(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn list_mounts(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn get_disk_stats(&self, _mount_point: &str) -> anyhow::Result<(u64, u64, u64)> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn get_cpu_count(&self) -> anyhow::Result<u32> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn now_unix_ms(&self) -> i64 {
+            1609459200000 // 2021-01-01 00:00:00 UTC
+        }
+
+        fn read_cgroup_memory_max(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cgroup_memory_current(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cgroup_memory_swap_max(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cgroup_memory_swap_current(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cpu_frequency_current(&self, _cpu_id: u32) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cpu_frequency_max(&self, _cpu_id: u32) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cpu_topology(&self, _cpu_id: u32) -> anyhow::Result<(Option<u32>, Option<u32>)> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cgroup_cpu_max(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cgroup_cpu_stat(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cgroup_cpu_quota(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cgroup_cpu_period(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_cgroup_cpu_usage(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn sleep_ms(&self, _duration_ms: u64) {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_proc_mounts(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_proc_self_mounts(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn read_proc_diskstats(&self) -> anyhow::Result<String> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn statvfs_mount(&self, _mount_point: &str) -> anyhow::Result<(u64, u64, u64, u64, u64, u64, u64, u64)> {
+            unimplemented!("Not needed for env.list tests")
+        }
+
+        fn get_current_process_env(&self) -> anyhow::Result<Vec<(String, String)>> {
+            if self.should_fail {
+                return Err(SystemError::EnvListUnavailable("Mock failure".to_string()).into());
+            }
+            Ok(self.env_vars.clone())
+        }
+
+        fn get_process_env(&self, _pid: i64) -> anyhow::Result<Vec<(String, String)>> {
+            if self.should_fail {
+                return Err(SystemError::EnvListPidUnavailable("Mock failure for PID".to_string()).into());
+            }
+            Ok(self.env_vars.clone())
+        }
+
+        fn get_current_process_id(&self) -> i64 {
+            self.process_id
+        }
+    }
+
+    #[test]
+    fn test_system_handle_creation() {
+        let url = url::Url::parse("system://test").unwrap();
+        let handle = SystemHandle::from_url(&url).unwrap();
+        
+        // Check that env.list is included in the verbs
+        let verbs = handle.verbs();
+        assert!(verbs.contains(&"env.list"));
+    }
+
+    #[test]
+    fn test_collect_env_list_with_mock() {
+        let url = url::Url::parse("system://test").unwrap();
+        let handle = SystemHandle::from_url(&url).unwrap();
+        
+        let opts = SystemEnvListOptions::default();
+        let provider = MockSystemProvider::new();
+        
+        let response = handle.collect_env_list(&opts, &provider);
+        
+        assert!(response.ok);
+        assert_eq!(response.env_count_total, Some(8)); // MockSystemProvider has 8 env vars
+        assert_eq!(response.env_count_returned, 8);
+        assert_eq!(response.pid, Some(1234));
+        assert!(response.source.is_some());
+    }
+
+    #[test]
+    fn test_sensitive_env_var_detection() {
+        let handle = SystemHandle { alias: "test".to_string() };
+        
+        // Test sensitive variable detection
+        assert!(handle.is_sensitive_env_var("SECRET_TOKEN"));
+        assert!(handle.is_sensitive_env_var("API_KEY"));
+        assert!(handle.is_sensitive_env_var("PASSWORD"));
+        assert!(handle.is_sensitive_env_var("auth_key"));
+        assert!(handle.is_sensitive_env_var("private_key"));
+        
+        // Test non-sensitive variables
+        assert!(!handle.is_sensitive_env_var("PATH"));
+        assert!(!handle.is_sensitive_env_var("HOME"));
+        assert!(!handle.is_sensitive_env_var("USER"));
+    }
+
+    #[test]
+    fn test_value_truncation() {
+        let handle = SystemHandle { alias: "test".to_string() };
+        
+        // Test no truncation
+        let (result, truncated) = handle.truncate_value("short", 10);
+        assert_eq!(result, "short");
+        assert!(!truncated);
+        
+        // Test truncation
+        let (result, truncated) = handle.truncate_value("this is a very long string", 10);
+        assert_eq!(result, "this is a ");
+        assert!(truncated);
+        
+        // Test zero length (no truncation)
+        let (result, truncated) = handle.truncate_value("any string", 0);
+        assert_eq!(result, "any string");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn test_env_var_filtering() {
+        let handle = SystemHandle { alias: "test".to_string() };
+        let regex_filters = vec![regex::Regex::new("^(PATH|HOME)$").unwrap()];
+        
+        let mut opts = SystemEnvListOptions::default();
+        
+        // Test exact name match
+        opts.names = vec!["PATH".to_string(), "HOME".to_string()];
+        assert!(handle.should_include_env_var("PATH", &opts, &[]));
+        assert!(handle.should_include_env_var("HOME", &opts, &[]));
+        assert!(!handle.should_include_env_var("USER", &opts, &[]));
+        
+        // Test prefix filtering
+        opts.names.clear();
+        opts.prefix_filters = vec!["USER".to_string()];
+        assert!(handle.should_include_env_var("USER", &opts, &[]));
+        assert!(handle.should_include_env_var("USERNAME", &opts, &[]));
+        assert!(!handle.should_include_env_var("PATH", &opts, &[]));
+        
+        // Test regex filtering
+        opts.prefix_filters.clear();
+        assert!(handle.should_include_env_var("PATH", &opts, &regex_filters));
+        assert!(handle.should_include_env_var("HOME", &opts, &regex_filters));
+        assert!(!handle.should_include_env_var("USER", &opts, &regex_filters));
+    }
+
+    #[test]
+    fn test_env_var_sorting() {
+        let handle = SystemHandle { alias: "test".to_string() };
+        let mut vars = vec![
+            ("ZEBRA".to_string(), "short".to_string()),
+            ("APPLE".to_string(), "very long string".to_string()),
+            ("BETA".to_string(), "medium".to_string()),
+        ];
+        
+        // Test name sorting (ascending)
+        let mut opts = SystemEnvListOptions::default();
+        opts.sort_by = "name".to_string();
+        opts.sort_order = "asc".to_string();
+        handle.sort_env_vars(&mut vars, &opts);
+        assert_eq!(vars[0].0, "APPLE");
+        assert_eq!(vars[1].0, "BETA");
+        assert_eq!(vars[2].0, "ZEBRA");
+        
+        // Test name sorting (descending)
+        opts.sort_order = "desc".to_string();
+        handle.sort_env_vars(&mut vars, &opts);
+        assert_eq!(vars[0].0, "ZEBRA");
+        assert_eq!(vars[1].0, "BETA");
+        assert_eq!(vars[2].0, "APPLE");
+        
+        // Test length sorting (ascending)
+        opts.sort_by = "length".to_string();
+        opts.sort_order = "asc".to_string();
+        handle.sort_env_vars(&mut vars, &opts);
+        assert_eq!(vars[0].0, "ZEBRA"); // "short" (5 chars)
+        assert_eq!(vars[1].0, "BETA");  // "medium" (6 chars)
+        assert_eq!(vars[2].0, "APPLE"); // "very long string" (16 chars)
+        
+        // Test no sorting
+        opts.sort_by = "none".to_string();
+        vars = vec![
+            ("ZEBRA".to_string(), "short".to_string()),
+            ("APPLE".to_string(), "very long string".to_string()),
+            ("BETA".to_string(), "medium".to_string()),
+        ];
+        handle.sort_env_vars(&mut vars, &opts);
+        assert_eq!(vars[0].0, "ZEBRA");
+        assert_eq!(vars[1].0, "APPLE");
+        assert_eq!(vars[2].0, "BETA");
+    }
+
+    #[test]
+    fn test_masked_sensitive_variables() {
+        let url = url::Url::parse("system://test").unwrap();
+        let handle = SystemHandle::from_url(&url).unwrap();
+        
+        let mut opts = SystemEnvListOptions::default();
+        opts.include_sensitive = false; // Should mask sensitive variables
+        opts.names = vec!["SECRET_TOKEN".to_string(), "PATH".to_string()];
+        
+        let provider = MockSystemProvider::new();
+        let response = handle.collect_env_list(&opts, &provider);
+        
+        assert!(response.ok);
+        assert_eq!(response.env_count_masked, 1); // SECRET_TOKEN should be masked
+        
+        // Find the variables
+        let secret_var = response.variables.iter().find(|v| v.name == "SECRET_TOKEN");
+        let path_var = response.variables.iter().find(|v| v.name == "PATH");
+        
+        assert!(secret_var.is_some());
+        assert!(secret_var.unwrap().masked);
+        
+        assert!(path_var.is_some());
+        assert!(!path_var.unwrap().masked);
+    }
+}
