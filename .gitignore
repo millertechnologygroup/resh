@@ -231,8 +231,11 @@ _book/
 /scripts/*
 /examples
 /examples/*
+/releases
+/releases/*
 test*
 debug_*
+build_*
 
 ## Plugin development
 /plugins/*/target/
