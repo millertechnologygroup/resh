@@ -18,6 +18,7 @@ use crate::core::{
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SshAuthMethod {
+    Auto,    // Automatically detect and try available methods
     Agent,
     Key,
     Password,
@@ -25,7 +26,7 @@ pub enum SshAuthMethod {
 
 impl Default for SshAuthMethod {
     fn default() -> Self {
-        SshAuthMethod::Agent
+        SshAuthMethod::Auto
     }
 }
 
@@ -1469,6 +1470,7 @@ pub struct SshTarget {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub username: Option<String>,
+    pub password: Option<String>,
 }
 
 impl SshTarget {
@@ -1492,10 +1494,13 @@ impl SshTarget {
             Some(url.username().to_string())
         };
 
+        let password = url.password().map(|p| p.to_string());
+
         Self {
             host,
             port,
             username,
+            password,
         }
     }
 }
@@ -2221,6 +2226,71 @@ impl SshHandle {
         Ok(SshHandle { target })
     }
 
+    /// Apply URL target defaults to SSH options
+    fn apply_target_defaults_to_exec(options: &mut SshExecOptions, target: &SshTarget) {
+        if options.host.is_none() {
+            options.host = target.host.clone();
+        }
+        if options.port == 22 {
+            options.port = target.port.unwrap_or(22);
+        }
+        if options.username.is_none() {
+            options.username = target.username.clone();
+        }
+        // Use password from URL if not provided in args
+        if options.password.is_none() {
+            options.password = target.password.clone();
+        }
+    }
+
+    /// Apply URL target defaults to upload options
+    fn apply_target_defaults_to_upload(options: &mut SshUploadOptions, target: &SshTarget) {
+        if options.host.is_none() {
+            options.host = target.host.clone();
+        }
+        if options.port == 22 {
+            options.port = target.port.unwrap_or(22);
+        }
+        if options.username.is_none() {
+            options.username = target.username.clone();
+        }
+        if options.password.is_none() {
+            options.password = target.password.clone();
+        }
+    }
+
+    /// Apply URL target defaults to download options  
+    fn apply_target_defaults_to_download(options: &mut SshDownloadOptions, target: &SshTarget) {
+        if options.host.is_none() {
+            options.host = target.host.clone();
+        }
+        if options.port == 22 {
+            options.port = target.port.unwrap_or(22);
+        }
+        if options.username.is_none() {
+            options.username = target.username.clone();
+        }
+        if options.password.is_none() {
+            options.password = target.password.clone();
+        }
+    }
+
+    /// Apply URL target defaults to tunnel options
+    fn apply_target_defaults_to_tunnel(options: &mut SshTunnelOptions, target: &SshTarget) {
+        if options.host.is_none() {
+            options.host = target.host.clone();
+        }
+        if options.port == 22 {
+            options.port = target.port.unwrap_or(22);
+        }
+        if options.username.is_none() {
+            options.username = target.username.clone();
+        }
+        if options.password.is_none() {
+            options.password = target.password.clone();
+        }
+    }
+
     /// Parse arguments into SshExecOptions
     fn parse_exec_options(&self, args: &Args, target: &SshTarget) -> Result<SshExecOptions> {
         let mut options = SshExecOptions::default();
@@ -2236,6 +2306,17 @@ impl SshHandle {
         if let Some(username) = args.get("username") {
             options.username = Some(username.clone());
         }
+        
+        // Set defaults from target URL
+        if options.host.is_none() {
+            options.host = target.host.clone();
+        }
+        if options.port == 22 {
+            options.port = target.port.unwrap_or(22);
+        }
+        if options.username.is_none() {
+            options.username = target.username.clone();
+        }
 
         // Parse authentication
         if let Some(auth_method) = args.get("auth_method") {
@@ -2243,11 +2324,16 @@ impl SshHandle {
                 "agent" => SshAuthMethod::Agent,
                 "key" => SshAuthMethod::Key,
                 "password" => SshAuthMethod::Password,
+                "auto" => SshAuthMethod::Auto,
                 _ => return Err(SshError::AuthMethodUnsupported(auth_method.clone()).into()),
             };
         }
         
         options.password = args.get("password").cloned();
+        // Use password from URL if not provided in args
+        if options.password.is_none() {
+            options.password = target.password.clone();
+        }
         options.identity_path = args.get("identity_path").cloned();
         options.identity_data = args.get("identity_data").cloned();
         options.identity_passphrase = args.get("identity_passphrase").cloned();
@@ -2329,6 +2415,9 @@ impl SshHandle {
             };
         }
 
+        // Apply defaults from target URL
+        Self::apply_target_defaults_to_exec(&mut options, target);
+
         Ok(options)
     }
 
@@ -2382,11 +2471,16 @@ impl SshHandle {
                 "agent" => SshAuthMethod::Agent,
                 "key" => SshAuthMethod::Key,
                 "password" => SshAuthMethod::Password,
+                "auto" => SshAuthMethod::Auto,
                 _ => return Err(SshError::AuthMethodUnsupported(auth_method.clone()).into()),
             };
         }
         
         options.password = args.get("password").cloned();
+        // Use password from URL if not provided in args
+        if options.password.is_none() {
+            options.password = target.password.clone();
+        }
         options.identity_path = args.get("identity_path").cloned();
         options.identity_data = args.get("identity_data").cloned();
         options.identity_passphrase = args.get("identity_passphrase").cloned();
@@ -2475,11 +2569,14 @@ impl SshHandle {
             };
         }
 
+        // Apply defaults from target URL
+        Self::apply_target_defaults_to_upload(&mut options, target);
+
         Ok(options)
     }
 
     /// Parse arguments into SshDownloadOptions
-    fn parse_download_options(&self, args: &Args, _target: &SshTarget) -> Result<SshDownloadOptions> {
+    fn parse_download_options(&self, args: &Args, target: &SshTarget) -> Result<SshDownloadOptions> {
         let mut options = SshDownloadOptions::default();
 
         // Parse connection parameters
@@ -2500,11 +2597,16 @@ impl SshHandle {
                 "agent" => SshAuthMethod::Agent,
                 "key" => SshAuthMethod::Key,
                 "password" => SshAuthMethod::Password,
+                "auto" => SshAuthMethod::Auto,
                 _ => return Err(SshError::AuthMethodUnsupported(auth_method.clone()).into()),
             };
         }
 
         options.password = args.get("password").cloned();
+        // Use password from URL if not provided in args
+        if options.password.is_none() {
+            options.password = target.password.clone();
+        }
         options.identity_path = args.get("identity_path").cloned();
         options.identity_data = args.get("identity_data").cloned();
         options.identity_passphrase = args.get("identity_passphrase").cloned();
@@ -2585,6 +2687,9 @@ impl SshHandle {
                 _ => OutputFormat::Json,
             };
         }
+
+        // Apply defaults from target URL
+        Self::apply_target_defaults_to_download(&mut options, target);
 
         Ok(options)
     }
@@ -2710,15 +2815,16 @@ impl SshHandle {
 
         // Validate authentication similar to exec
         match options.auth_method {
+            SshAuthMethod::Auto => {
+                // Auto auth doesn't need validation here - will be resolved at execution time
+            },
             SshAuthMethod::Password => {
                 if options.password.is_none() {
                     return Err(SshError::AuthMissingPassword.into());
                 }
             },
             SshAuthMethod::Key => {
-                if options.identity_path.is_none() && options.identity_data.is_none() {
-                    return Err(SshError::AuthMissingKey.into());
-                }
+                // Allow key auth even without explicit paths for SSH default behavior
             },
             SshAuthMethod::Agent => {
                 // Skip agent validation in test mode for now
@@ -3515,15 +3621,16 @@ impl SshHandle {
     /// Validate authentication options for download
     fn validate_download_auth_options(&self, options: &SshDownloadOptions) -> Result<()> {
         match options.auth_method {
+            SshAuthMethod::Auto => {
+                // Auto auth doesn't need validation here - will be resolved at execution time
+            },
             SshAuthMethod::Password => {
                 if options.password.is_none() {
                     return Err(SshError::AuthMissingPassword.into());
                 }
             },
             SshAuthMethod::Key => {
-                if options.identity_path.is_none() && options.identity_data.is_none() {
-                    return Err(SshError::AuthMissingKey.into());
-                }
+                // Allow key auth even without explicit paths for SSH default behavior
             },
             SshAuthMethod::Agent => {
                 if options.agent_socket.is_none() && std::env::var("SSH_AUTH_SOCK").is_err() {
@@ -3757,26 +3864,71 @@ impl SshHandle {
         Ok((host, port, username))
     }
 
-    /// Validate authentication options
-    fn validate_auth_options(&self, options: &SshExecOptions) -> Result<()> {
+    /// Validate password authentication requirements
+    fn validate_password_auth(options: &SshExecOptions) -> Result<()> {
+        if options.password.is_none() {
+            return Err(SshError::AuthMissingPassword.into());
+        }
+        
+        // Check if sshpass is available when testing
+        #[cfg(not(test))]
+        {
+            match std::process::Command::new("which").arg("sshpass").output() {
+                Ok(output) if output.status.success() => Ok(()),
+                _ => Err(anyhow::anyhow!(
+                    "Password authentication requires 'sshpass' to be installed. \
+                    Please install sshpass (e.g., 'sudo apt install sshpass' on Ubuntu) \
+                    or use key-based authentication instead."
+                )),
+            }
+        }
+        #[cfg(test)]
+        Ok(())
+    }
+
+    /// Validate and determine the effective authentication method
+    fn validate_auth_options(&self, options: &SshExecOptions) -> Result<SshAuthMethod> {
         match options.auth_method {
-            SshAuthMethod::Password => {
-                if options.password.is_none() {
-                    return Err(SshError::AuthMissingPassword.into());
+            SshAuthMethod::Auto => {
+                // Try to determine the best available authentication method
+                // Priority: Explicit credentials (Password/Key) -> SSH Agent -> Default SSH behavior
+                
+                // Check if password authentication is explicitly provided
+                if options.password.is_some() {
+                    Self::validate_password_auth(options)?;
+                    return Ok(SshAuthMethod::Password);
                 }
+                
+                // Check if key authentication is explicitly provided
+                if options.identity_path.is_some() || options.identity_data.is_some() {
+                    return Ok(SshAuthMethod::Key);
+                }
+                
+                // Check if SSH agent is available as fallback
+                if options.agent_socket.is_some() || std::env::var("SSH_AUTH_SOCK").is_ok() {
+                    return Ok(SshAuthMethod::Agent);
+                }
+                
+                // If no explicit credentials provided, try default SSH behavior (key-based)
+                // which relies on SSH's default key lookup in ~/.ssh/
+                Ok(SshAuthMethod::Key)
+            },
+            SshAuthMethod::Password => {
+                Self::validate_password_auth(options)?;
+                Ok(SshAuthMethod::Password)
             },
             SshAuthMethod::Key => {
-                if options.identity_path.is_none() && options.identity_data.is_none() {
-                    return Err(SshError::AuthMissingKey.into());
-                }
+                // Allow key authentication even without explicit paths
+                // SSH will try default locations like ~/.ssh/id_rsa, ~/.ssh/id_ed25519, etc.
+                Ok(SshAuthMethod::Key)
             },
             SshAuthMethod::Agent => {
                 if options.agent_socket.is_none() && std::env::var("SSH_AUTH_SOCK").is_err() {
                     return Err(SshError::AgentUnavailable.into());
                 }
+                Ok(SshAuthMethod::Agent)
             },
         }
-        Ok(())
     }
 
     /// Build final command string based on shell mode
@@ -3981,11 +4133,16 @@ impl SshHandle {
                 "agent" => SshAuthMethod::Agent,
                 "key" => SshAuthMethod::Key,
                 "password" => SshAuthMethod::Password,
+                "auto" => SshAuthMethod::Auto,
                 _ => return Err(SshError::AuthMethodUnsupported(auth_method.clone()).into()),
             };
         }
 
         options.password = args.get("password").cloned();
+        // Use password from URL if not provided in args
+        if options.password.is_none() {
+            options.password = target.password.clone();
+        }
         options.identity_path = args.get("identity_path").cloned();
         options.identity_data = args.get("identity_data").cloned();
         options.identity_passphrase = args.get("identity_passphrase").cloned();
@@ -4156,32 +4313,39 @@ impl SshHandle {
             }
         };
 
-        // Validate authentication
-        if let Err(e) = self.validate_auth_options(&options) {
-            let error_response = SshExecResponse {
-                ok: false,
-                dry_run: false,
-                connection: SshConnectionInfo {
-                    host: host.clone(),
-                    port,
-                    username: username.clone(),
-                    backend: "system".to_string(),
-                },
-                command: None,
-                result: None,
-                timing: None,
-                error: Some(SshErrorDetails {
-                    code: "AUTH_ERROR".to_string(),
-                    message: e.to_string(),
-                    details: HashMap::new(),
-                }),
-                warnings: vec![],
-            };
-            
-            let json = serde_json::to_string(&error_response).unwrap();
-            writeln!(io.stdout, "{}", json)?;
-            return Ok(Status::err(1, e.to_string()));
-        }
+        // Validate authentication and get effective method
+        let effective_auth_method = match self.validate_auth_options(&options) {
+            Ok(method) => method,
+            Err(e) => {
+                let error_response = SshExecResponse {
+                    ok: false,
+                    dry_run: false,
+                    connection: SshConnectionInfo {
+                        host: host.clone(),
+                        port,
+                        username: username.clone(),
+                        backend: "system".to_string(),
+                    },
+                    command: None,
+                    result: None,
+                    timing: None,
+                    error: Some(SshErrorDetails {
+                        code: "AUTH_ERROR".to_string(),
+                        message: e.to_string(),
+                        details: HashMap::new(),
+                    }),
+                    warnings: vec![],
+                };
+                
+                let json = serde_json::to_string(&error_response).unwrap();
+                writeln!(io.stdout, "{}", json)?;
+                return Ok(Status::err(1, e.to_string()));
+            }
+        };
+        
+        // Create a modified options struct with the effective auth method
+        let mut effective_options = options.clone();
+        effective_options.auth_method = effective_auth_method;
 
         // Build command
         let command_str = match self.build_command(&options) {
@@ -4255,7 +4419,7 @@ impl SshHandle {
         }
 
         // Execute the SSH command
-        match self.execute_ssh_command(&host, port, &username, &command_str, &options) {
+        match self.execute_ssh_command(&host, port, &username, &command_str, &effective_options) {
             Ok((result, timing)) => {
                 let response = SshExecResponse {
                     ok: true,
@@ -4314,14 +4478,16 @@ impl SshHandle {
         
         // Authentication configuration
         match options.auth_method {
+            SshAuthMethod::Auto => {
+                // Auto should not reach here since validate_auth_options converts it to a specific method
+                // But handle it gracefully by allowing SSH's default behavior
+            },
             SshAuthMethod::Key => {
                 if let Some(identity_path) = &options.identity_path {
                     ssh_args.push("-i".to_string());
                     ssh_args.push(identity_path.clone());
                 }
-                // Disable password auth when using keys
-                ssh_args.push("-o".to_string());
-                ssh_args.push("PasswordAuthentication=no".to_string());
+                // Allow both key and password authentication for flexibility
             },
             SshAuthMethod::Password => {
                 // Enable password authentication
@@ -4371,9 +4537,16 @@ impl SshHandle {
             ssh_args.push("-T".to_string()); // Disable PTY allocation
         }
 
-        // Disable interactive prompts
-        ssh_args.push("-o".to_string());
-        ssh_args.push("BatchMode=yes".to_string());
+        // Interactive prompts setting
+        if matches!(options.auth_method, SshAuthMethod::Password) {
+            // Enable interactive mode for password authentication
+            ssh_args.push("-o".to_string());
+            ssh_args.push("BatchMode=no".to_string());
+        } else {
+            // Disable interactive prompts for other auth methods
+            ssh_args.push("-o".to_string());
+            ssh_args.push("BatchMode=yes".to_string());
+        }
 
         // Target
         ssh_args.push(format!("{}@{}", username, host));
@@ -4407,12 +4580,23 @@ impl SshHandle {
         if matches!(options.auth_method, SshAuthMethod::Password) && options.password.is_some() {
             // For password auth, we'll use sshpass if available, otherwise return an error
             if let Some(password) = &options.password {
-                // Use sshpass for password authentication
-                let mut sshpass_cmd = std::process::Command::new("sshpass");
-                sshpass_cmd.arg("-p").arg(password);
-                sshpass_cmd.arg("ssh");
-                sshpass_cmd.args(&ssh_args);
-                ssh_cmd = sshpass_cmd;
+                // Check if sshpass is available
+                match std::process::Command::new("which").arg("sshpass").output() {
+                    Ok(output) if output.status.success() => {
+                        // Use sshpass for password authentication
+                        let mut sshpass_cmd = std::process::Command::new("sshpass");
+                        sshpass_cmd.arg("-p").arg(password);
+                        sshpass_cmd.arg("ssh");
+                        sshpass_cmd.args(&ssh_args);
+                        ssh_cmd = sshpass_cmd;
+                    }
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "Password authentication requires 'sshpass' to be installed. \
+                            Please install sshpass or use key-based authentication instead."
+                        ));
+                    }
+                }
             }
         }
 
@@ -4722,6 +4906,7 @@ impl SshHandle {
                 "agent" => SshAuthMethod::Agent,
                 "key" => SshAuthMethod::Key,
                 "password" => SshAuthMethod::Password,
+                "auto" => SshAuthMethod::Auto,
                 _ => return Err(SshError::AuthMethodUnsupported(auth_method.clone()).into()),
             };
         }
@@ -4830,6 +5015,9 @@ impl SshHandle {
                 _ => OutputFormat::Json,
             };
         }
+
+        // Apply defaults from target URL
+        Self::apply_target_defaults_to_tunnel(&mut options, target);
 
         Ok(options)
     }
@@ -6787,6 +6975,7 @@ impl SshHandle {
                 "agent" => SshAuthMethod::Agent,
                 "key" => SshAuthMethod::Key,
                 "password" => SshAuthMethod::Password,
+                "auto" => SshAuthMethod::Auto,
                 _ => bail!(SshError::AuthMethodUnsupported(auth_method.clone())),
             };
         }
@@ -6898,15 +7087,16 @@ impl SshHandle {
 
         // Validate auth requirements
         match options.auth_method {
+            SshAuthMethod::Auto => {
+                // Auto auth doesn't need validation here - will be resolved at execution time
+            }
             SshAuthMethod::Password => {
                 if options.password.is_none() {
                     bail!(SshError::AuthMissingPassword);
                 }
             }
             SshAuthMethod::Key => {
-                if options.identity_path.is_none() && options.identity_data.is_none() {
-                    bail!(SshError::AuthMissingKey);
-                }
+                // Allow key auth even without explicit paths for SSH default behavior
             }
             SshAuthMethod::Agent => {
                 // Agent auth doesn't require additional validation here
@@ -7424,6 +7614,7 @@ mod tests {
             host: host.map(|s| s.to_string()),
             port,
             username: username.map(|s| s.to_string()),
+            password: None,
         };
         SshHandle { target }
     }
@@ -7576,9 +7767,58 @@ mod tests {
         let mut options = SshExecOptions::default();
         options.auth_method = SshAuthMethod::Key;
         
+        // Key auth should now succeed even without explicit paths (uses SSH defaults)
         let result = handle.validate_auth_options(&options);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Private key is required"));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SshAuthMethod::Key);
+    }
+
+    #[test]
+    fn test_validate_auth_options_auto_with_agent() {
+        let handle = create_test_handle(Some("host.com"), None, None);
+        let mut options = SshExecOptions::default();
+        options.auth_method = SshAuthMethod::Auto;
+        options.agent_socket = Some("/tmp/ssh-agent".to_string());
+        
+        let result = handle.validate_auth_options(&options);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SshAuthMethod::Agent);
+    }
+
+    #[test]
+    fn test_validate_auth_options_auto_with_key() {
+        let handle = create_test_handle(Some("host.com"), None, None);
+        let mut options = SshExecOptions::default();
+        options.auth_method = SshAuthMethod::Auto;
+        options.identity_path = Some("/path/to/key".to_string());
+        
+        let result = handle.validate_auth_options(&options);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SshAuthMethod::Key);
+    }
+
+    #[test]
+    fn test_validate_auth_options_auto_with_password() {
+        let handle = create_test_handle(Some("host.com"), None, None);
+        let mut options = SshExecOptions::default();
+        options.auth_method = SshAuthMethod::Auto;
+        options.password = Some("secret".to_string());
+        
+        let result = handle.validate_auth_options(&options);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SshAuthMethod::Password);
+    }
+
+    #[test]
+    fn test_validate_auth_options_auto_fallback() {
+        let handle = create_test_handle(Some("host.com"), None, None);
+        let mut options = SshExecOptions::default();
+        options.auth_method = SshAuthMethod::Auto;
+        // No explicit credentials - should fallback to key auth
+        
+        let result = handle.validate_auth_options(&options);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SshAuthMethod::Key);
     }
 
     #[test]
@@ -9026,5 +9266,134 @@ mod tests {
         let response: SshTunnelResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
         assert!(response.warnings.iter().any(|w| w.contains("Host key verification disabled")));
+    }
+
+    #[test] 
+    fn test_ssh_target_from_url_with_password() {
+        let url = url::Url::parse("ssh://user:pass@example.com:2222/").unwrap();
+        let target = SshTarget::from_url(&url);
+        
+        assert_eq!(target.username, Some("user".to_string()));
+        assert_eq!(target.password, Some("pass".to_string()));
+        assert_eq!(target.host, Some("example.com".to_string()));
+        assert_eq!(target.port, Some(2222));
+    }
+
+    #[test]
+    fn test_ssh_target_from_url_encoded_password() {
+        let url = url::Url::parse("ssh://user:p%40ss%21@example.com/").unwrap();
+        let target = SshTarget::from_url(&url);
+        
+        assert_eq!(target.username, Some("user".to_string()));
+        assert_eq!(target.password, Some("p@ss!".to_string()));
+        assert_eq!(target.host, Some("example.com".to_string()));
+    }
+
+    #[test]
+    fn test_ssh_target_from_url_without_password() {
+        let url = url::Url::parse("ssh://user@example.com/").unwrap(); 
+        let target = SshTarget::from_url(&url);
+        
+        assert_eq!(target.username, Some("user".to_string()));
+        assert_eq!(target.password, None);
+        assert_eq!(target.host, Some("example.com".to_string()));
+    }
+
+    #[test]
+    fn test_validate_password_auth_success() {
+        let options = SshExecOptions {
+            username: Some("user".to_string()),
+            password: Some("pass".to_string()),
+            host: Some("host".to_string()),
+            auth_method: SshAuthMethod::Password,
+            ..Default::default()
+        };
+        
+        let handle = create_test_handle(Some("host"), None, Some("user"));
+        let result = handle.validate_auth_options(&options);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SshAuthMethod::Password);
+    }
+
+    #[test] 
+    fn test_validate_password_auth_missing_password() {
+        let options = SshExecOptions {
+            username: Some("user".to_string()),
+            password: None,
+            host: Some("host".to_string()),
+            auth_method: SshAuthMethod::Password,
+            ..Default::default()
+        };
+        
+        let handle = create_test_handle(Some("host"), None, Some("user"));
+        let result = handle.validate_auth_options(&options);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auto_auth_fallback_to_password() {
+        let options = SshExecOptions {
+            username: Some("user".to_string()),
+            password: Some("pass".to_string()),
+            host: Some("host".to_string()),
+            auth_method: SshAuthMethod::Auto,
+            ..Default::default()
+        };
+        
+        let handle = create_test_handle(Some("host"), None, Some("user"));
+        let result = handle.validate_auth_options(&options);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SshAuthMethod::Password);
+    }
+
+    #[test]
+    fn test_apply_target_defaults_to_exec() {
+        let target = SshTarget {
+            host: Some("target-host".to_string()),
+            port: Some(2222),
+            username: Some("target-user".to_string()),
+            password: Some("target-pass".to_string()),
+        };
+
+        let mut options = SshExecOptions {
+            host: None,
+            port: 22,
+            username: None,
+            password: None,
+            ..Default::default()
+        };
+
+        SshHandle::apply_target_defaults_to_exec(&mut options, &target);
+
+        assert_eq!(options.host, Some("target-host".to_string()));
+        assert_eq!(options.port, 2222);
+        assert_eq!(options.username, Some("target-user".to_string()));
+        assert_eq!(options.password, Some("target-pass".to_string()));
+    }
+
+    #[test]
+    fn test_apply_target_defaults_priority() {
+        let target = SshTarget {
+            host: Some("target-host".to_string()),
+            port: Some(2222),
+            username: Some("target-user".to_string()),
+            password: Some("target-pass".to_string()),
+        };
+
+        let mut options = SshExecOptions {
+            host: Some("options-host".to_string()),
+            port: 3333,
+            username: Some("options-user".to_string()),
+            password: Some("options-pass".to_string()),
+            ..Default::default()
+        };
+
+        SshHandle::apply_target_defaults_to_exec(&mut options, &target);
+
+        // Should keep existing values, not overwrite them
+        assert_eq!(options.host, Some("options-host".to_string()));
+        assert_eq!(options.port, 3333);
+        assert_eq!(options.username, Some("options-user".to_string()));
+        assert_eq!(options.password, Some("options-pass".to_string()));
     }
 }
