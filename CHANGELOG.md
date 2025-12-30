@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### [0.9.2] - 2025-12-28
 - ssh:// handle: fixed using credentials with password, i.e. ssh://<username>:<passwd>@<host>.exec command=whoami or ssh://<username>@<host>.exec password=<passwd> command=whoami
 - system:// handle: fixed env.list verb to properly list system environment variables
-- dns:// handle: fixed dns verbs documentation and verb usage
+- dns:// handle: fixed dns verbs documentation and verb command line options
+- mail:// handle: fixed mail verbs documentation and verb command line options
 
 ### [0.9.0] - 2025-12-15
 - 28 of 30 production handles implemented

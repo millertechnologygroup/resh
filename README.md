@@ -297,7 +297,7 @@ cargo test
 
 ```bash
 # Quick install (downloads and builds latest release)
-curl -sSL https://raw.githubusercontent.com/millertechnologygroup/resh/main/scripts/install.sh | bash
+curl -fsSL https://get.reshshell.dev | sh
 ```
 
 ### Binary Releases
