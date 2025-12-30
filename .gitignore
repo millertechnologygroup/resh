@@ -236,7 +236,7 @@ _book/
 test*
 debug_*
 build_*
-build-*
+build-release.sh
 
 ## Plugin development
 /plugins/*/target/
