@@ -236,6 +236,7 @@ _book/
 test*
 debug_*
 build_*
+build-*
 
 ## Plugin development
 /plugins/*/target/

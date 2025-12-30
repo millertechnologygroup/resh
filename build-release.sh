@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VERSION=${1:-"0.9.1"}
+VERSION=${1:-"0.9.2"}
 PROJECT_NAME="resh"
 
 echo "Building ${PROJECT_NAME} v${VERSION} for multiple platforms..."
