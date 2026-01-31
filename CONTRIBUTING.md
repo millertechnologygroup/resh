@@ -4,9 +4,9 @@ Thank you for your interest in contributing to resh! We're building the future o
 
 ---
 
-## 🎉 v0.9 Beta is Available - We Need Your Help!
+## 🎉 v1.0 Beta is Available - We Need Your Help!
 
-**resh v0.9 beta is now available for testing!** With 28 of 30 handles complete, we're ready for community feedback, bug reports, and real-world testing.
+**resh v1.0-beta is now available for testing!** With 28 production-ready handles, we're ready for community feedback, bug reports, and real-world testing.
 
 ### How You Can Contribute Right Now
 
@@ -46,16 +46,30 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 
 ## Contribution Timeline
 
-### v0.7 Alpha - December 2025
+### ✅ Now: v1.0 Beta (January-March 2026)
 **Currently accepting:**
 - Bug reports and issue submissions
 - Feature requests and suggestions
 - Documentation feedback and improvements
 - Testing and validation feedback
 - Use case sharing and examples
-- Community discussions (coming soon)
+- Community discussions
 
-### v0.8 Feature Complete (December 2025)
+**What's available:**
+- All 28 handles ready for testing
+- Complete documentation
+- Multiple output formats (JSON, table, log)
+- Comprehensive automation utilities
+
+### v1.1 Feature Complete (March 2026)
+**Continued focus:**
+- Bug fix validation
+- Performance testing
+- Edge case discovery
+- Real-world workflow testing
+- Documentation refinement
+
+### v1.0 Stable (Q2 2026)
 **We will begin accepting:**
 - Bug fix pull requests
 - Documentation improvements
@@ -63,31 +77,31 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 - Test contributions
 - Handle enhancement suggestions
 
-### ✅ Now v0.9 Beta (January-March 2026)
+**Community infrastructure:**
+- GitHub Discussions activated
+- Discord server launched
+- Community calls initiated
+- Contribution guidelines finalized
+
+### v1.2+ Enhanced (Q3 2026+)
 **Expanded contribution opportunities:**
 - Feature development contributions
 - Performance optimization PRs
 - Plugin development
 - Translation and internationalization
 - Comprehensive testing
-
-### v1.0 Production (Q2/Q3 2026)
-**Full contribution model:**
-- Complete open source contribution workflow
-- Contributor recognition program
-- Plugin marketplace contributions
-- Community governance participation
+- Full open source contribution workflow
 
 ---
 
-## How to Report Bugs (v0.9 Beta)
+## How to Report Bugs (v1.0 Beta)
 
 We welcome and encourage bug reports! Good bug reports help us improve resh quickly.
 
 ### Before Reporting
 
 1. **Check existing issues** - Your bug may already be reported
-2. **Update to latest** - Ensure you're running the latest v0.7.x release
+2. **Update to latest** - Ensure you're running the latest v1.0-beta release
 3. **Verify it's a bug** - Not a documentation or usage issue
 
 ### Bug Report Template
@@ -95,7 +109,7 @@ We welcome and encourage bug reports! Good bug reports help us improve resh quic
 When reporting bugs, please include:
 
 **Environment:**
-- OS and version (e.g., Ubuntu 22.04, Debian 12, RHEL 9)
+- OS and version (e.g., Ubuntu 22.04, Debian 12, RHEL 9, Alpine 3.18)
 - resh version: `resh --version`
 - Installation method (built from source, script, etc.)
 
@@ -123,11 +137,11 @@ What actually happened. Include full error output.
 
 **Environment:**
 - Alpine Linux 3.18
-- resh v0.7.0
+- resh v1.0.0-beta
 - Built from source
 
 **Command:**
-resh svc://nginx status --format json
+resh svc://nginx.status --format json
 
 **Expected:**
 JSON output with service status
@@ -143,7 +157,7 @@ and use OpenRC but appears to only check for systemd.
 ### Where to Report
 
 - **GitHub Issues:** https://github.com/millertechnologygroup/resh/issues
-- Use issue labels: `bug`, `v0.9`, `handle:<name>`
+- Use issue labels: `bug`, `v1.0-beta`, `handle:<name>`
 - Be respectful and constructive
 
 ---
@@ -187,8 +201,8 @@ to operate reliably.
 **Proposed Solution:**
 Add k8s:// handle for Kubernetes operations:
 
-resh k8s://mycluster/pod/nginx-123 status --format json
-resh k8s://mycluster/deployment/web scale --replicas 5
+resh k8s://mycluster/pod/nginx-123.status --format json
+resh k8s://mycluster/deployment/web.scale --replicas 5
 
 **Alternatives:**
 Could use kubectl with jq, but that's fragile and requires
@@ -201,7 +215,7 @@ handle would enable autonomous Kubernetes operations.
 
 ---
 
-## Testing v0.7 Alpha
+## Testing v1.0 Beta
 
 ### What to Test
 
@@ -212,14 +226,16 @@ handle would enable autonomous Kubernetes operations.
 - Service management (systemd vs OpenRC)
 - Template rendering with complex variables
 - Certificate operations and validation
+- Backup operations with different backends
 
 **Medium Priority:**
 - Firewall rule management
 - Archive operations (tar, zip, 7z)
 - Git operations on real repositories
-- Backup operations with restic
+- Plugin installation and management
 - Cache operations with Redis/Memcached
 - HTTP client operations with real APIs
+- Secret management with different backends
 
 **Also Valuable:**
 - Edge cases and error handling
@@ -227,6 +243,7 @@ handle would enable autonomous Kubernetes operations.
 - Concurrent operations
 - Long-running operations
 - Resource cleanup and memory usage
+- AI agent integration workflows
 
 ### How to Share Results
 
@@ -248,9 +265,9 @@ handle would enable autonomous Kubernetes operations.
 - Home lab setups
 - Non-production environments
 
-**Not Recommended (Yet):**
-- Production servers (v0.7 is alpha!)
-- Critical infrastructure
+**Approach with Caution:**
+- Production servers (v1.0-beta is stable but still beta)
+- Critical infrastructure (test thoroughly first)
 - Systems without backups
 - Customer-facing services
 
@@ -264,21 +281,23 @@ If you want to be thorough, try testing:
 4. **Edge cases** - What happens with invalid input?
 5. **Remote operations** - Does SSH work across your network?
 6. **Integration** - Can you build real workflows?
+7. **AI automation** - Can AI agents reliably use the structured output?
 
 ### Sharing Your Experience
 
 Beyond bug reports, we'd love to hear:
 - What workflows did you automate?
-- How does it compare to your current tools?
-- What documentation is missing?
+- How does it compare to your current tools (Ansible, Terraform, scripts)?
+- What documentation is missing or unclear?
 - What features would unlock new use cases?
 - How's the developer experience?
+- How well does it work with AI agents?
 
 ---
 
-## Future Contribution Guidelines (v0.8+)
+## Future Contribution Guidelines (v1.0 Stable+)
 
-When code contributions open with v0.8 in January 2026, here's what the development workflow will look like:
+When code contributions open with v1.0 stable in Q2 2026, here's what the development workflow will look like:
 
 ### Development Setup (Future)
 
@@ -295,7 +314,7 @@ sudo yum install git  # RHEL/CentOS
 **Fork and Clone:**
 ```bash
 # Fork the repository on GitHub, then:
-git clone https://github.com/millertechnologygroup/resh.git
+git clone https://github.com/yourusername/resh.git
 cd resh
 
 # Add upstream remote
@@ -375,9 +394,9 @@ Instances of abusive, harassing, or otherwise unacceptable behavior may be repor
 
 ---
 
-## Pull Request Process (Future - v0.8+)
+## Pull Request Process (Future - v1.0 Stable+)
 
-When we begin accepting PRs, this will be the process:
+When we begin accepting PRs with v1.0 stable (Q2 2026), this will be the process:
 
 ### Before Submitting
 
@@ -512,9 +531,9 @@ mod tests {
 
 ---
 
-## Plugin Development (Future)
+## Plugin Development (Future - v1.2+)
 
-Plugins will allow you to extend resh with custom handles (coming in v0.9+).
+Plugins will allow you to extend resh with custom handles (coming in v1.2+).
 
 ### Plugin Structure
 ```
@@ -547,7 +566,7 @@ impl Plugin for MyPlugin {
 }
 ```
 
-More details will be available in the Plugin Development Guide when the plugin system is ready (v0.9+).
+More details will be available in the Plugin Development Guide when the plugin system is ready (v1.2+).
 
 ---
 
@@ -574,35 +593,36 @@ We believe in recognizing contributors!
 - Conference talk acknowledgments
 
 **Swag and Rewards**
-- Contributors receive resh swag (post-v1.0)
+- Contributors receive resh swag (post-v1.0 stable)
 - Top contributors get special recognition
 - Plugin developers featured in marketplace
 
 **Early Tester Recognition**
-- v0.7 alpha testers will be acknowledged
-- Beta testers get special recognition
-- "Founding Contributors" list for pre-v1.0 contributors
+- v1.0 beta testers will be acknowledged
+- "Founding Contributors" list for pre-v1.0 stable contributors
+- Special recognition in v1.0 stable release notes
 
 ---
 
 ## Communication Channels
 
-### Active Now (v0.7)
+### Active Now (v1.0 Beta)
 - **GitHub Issues** - Bug reports and feature requests
-- **GitHub Discussions** - Coming soon for questions and community
+- **GitHub Discussions** - Coming with v1.0 stable for questions and community
 - **LinkedIn** - Development updates and announcements
 - **Twitter/X** - Daily progress and quick updates
 
-### Coming Soon (v0.8+)
-- **Discord Server** - Real-time community chat (v0.8 - January 2026)
-- **Community Calls** - Monthly video calls (v0.9 - Spring 2026)
-- **Office Hours** - Weekly Q&A with maintainers (v0.9+)
+### Coming Soon (v1.0 Stable - Q2 2026)
+- **Discord Server** - Real-time community chat
+- **Community Calls** - Quarterly roadmap reviews
+- **Office Hours** - Weekly Q&A with maintainers
+- **Email Newsletter** - Major updates and releases
 
 ### Stay Informed
 - **Watch the GitHub repo** for releases and updates
-- **Star the repo** to show support
+- **Star the repo** to show support and track progress
 - **Follow on social media** for daily progress
-- **Join email list** (coming soon with v0.8)
+- **Check the roadmap** for upcoming features
 
 ---
 
@@ -616,28 +636,28 @@ All contributions must be your original work, or properly attributed if derived 
 
 ## Questions?
 
-### About v0.9 Beta
+### About v1.0 Beta
 - **Installation issues?** Open a GitHub Issue
 - **Usage questions?** Check the [README](README.md) and [docs/](docs/)
 - **Found a bug?** Report it via GitHub Issues
 - **Have a feature idea?** Submit a feature request
 
 ### About Contributing
-- **When can I submit PRs?** Code contributions open with v0.8 (January 2026)
+- **When can I submit PRs?** Code contributions open with v1.0 stable (Q2 2026)
 - **How can I help now?** Test, report bugs, provide feedback, spread the word
-- **Where to discuss?** GitHub Issues for specific bugs/features
+- **Where to discuss?** GitHub Issues for specific bugs/features; Discussions coming with v1.0 stable
 
 ### General Questions
 - Review the [README](README.md) for current status
-- Check the [ROADMAP](ROADMAP.md) for timeline
-- Read [docs/](docs/) for usage guides
+- Check the [ROADMAP](ROADMAP.md) for detailed timeline
+- Read [docs/](docs/) for comprehensive usage guides
 - Contact the maintainers via GitHub Issues
 
 ---
 
 ## Thank You!
 
-**Thank you for testing resh v0.9 and being part of this journey!**
+**Thank you for testing resh v1.0 beta and being part of this journey!**
 
 Your bug reports, feedback, and real-world testing are invaluable. Every issue you report, every suggestion you make, and every test you run helps shape resh into a better tool.
 
@@ -645,17 +665,17 @@ We're building resh in public, and you're helping us build it right.
 
 **Your early involvement matters:**
 - You're shaping the future of AI-native automation
-- Your feedback directly influences v1.0 priorities
-- You'll be recognized as an early contributor
+- Your feedback directly influences v1.0 stable and v1.1 priorities
+- You'll be recognized as an early contributor and founding tester
 - You're helping solve real infrastructure problems
 
 **Together, we're building the automation platform for the AI era.** 🚀
 
 ---
 
-**Last Updated:** December 2025 (v0.9 Beta)  
-**Next Review:** January 2026 (when code contributions open with v1.0)
+**Last Updated:** January 2026 (v1.0 Beta)  
+**Next Review:** Q2 2026 (when code contributions open with v1.0 stable)
 
-For questions about contributing, please open a GitHub Issue or check back as we set up GitHub Discussions.
+For questions about contributing, please open a [GitHub Issue](https://github.com/millertechnologygroup/resh/issues) or check back as we set up GitHub Discussions with v1.0 stable.
 
 **Star the repo • Test the beta • Report bugs • Help us build the future**

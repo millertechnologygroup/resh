@@ -3,14 +3,14 @@
 **AI-Native Automation Platform for Modern Infrastructure**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.9.0--alpha-orange.svg)](https://github.com/millertechnologygroup/resh/releases)
-[![Status](https://img.shields.io/badge/status-alpha-orange.svg)]()
+[![Version](https://img.shields.io/badge/version-v1.0.0--beta-blue.svg)](https://github.com/millertechnologygroup/resh/releases)
+[![Status](https://img.shields.io/badge/status-beta-blue.svg)]()
 
 ---
 
-## 🎉 v0.9 Beta Available - 28 of 30 Handles Complete + Automation Utilities
+## 🎉 v1.0 Beta Released - 28 Production-Ready Handles
 
-**resh v0.9 is now available for testing!** This beta release includes 28 production-ready handles plus comprehensive automation utilities for backup management, plugin operations, and template rendering.
+**resh v1.0-beta is ready for testing!** This release includes 28 production-ready handles plus comprehensive automation utilities for backup management, plugin operations, and template rendering.
 
 ⭐ **Star this repo** to follow development and be notified of updates!
 
@@ -18,7 +18,7 @@
 - ✅ 28 handles implemented and functional
 - ✅ JSON, table, and log output formats working
 - ✅ URI-based resource model operational
-- ⏱️ 2 remaining handles coming in v1.0 (March 2026)
+- ⏱️ 2 additional handles coming in v1.1 (March 2026)
 - ⚠️ Beta quality - expect bugs and rough edges
 
 ---
@@ -27,7 +27,7 @@
 
 resh (Resource Shell) is a next-generation automation platform designed for the AI era. While traditional tools like Ansible and Terraform were built for humans writing YAML, resh provides **structured, typed outputs** that both AI agents and human operators can reliably consume.
 
-**v0.9 Beta demonstrates the enhanced automation vision with 28 working handles plus comprehensive automation utilities.**
+**v1.0 Beta demonstrates the enhanced automation vision with 28 working handles plus comprehensive automation utilities.**
 
 ### The Problem
 
@@ -40,18 +40,53 @@ Current infrastructure automation tools face critical limitations:
 
 **When AI agents try to use traditional tools, error rates spike 10-15x higher than human-operated workflows.**
 
+### The Difference
+
+**Traditional approach (brittle, AI-unfriendly):**
+```bash
+# Check if service is running (fragile parsing)
+systemctl status nginx | grep "active (running)" && echo "UP" || echo "DOWN"
+
+# Get disk usage (inconsistent output)
+df -h / | tail -1 | awk '{print $5}' | sed 's/%//'
+
+# Read database (tool-specific syntax)
+mysql -u root -p -e "SELECT COUNT(*) FROM users;" mydb
+```
+
+**resh approach (structured, AI-ready):**
+```bash
+# Check service status (structured JSON)
+resh svc://nginx.status --json
+# {"status": "active", "uptime_seconds": 86400, "pid": 1234}
+
+# Get disk usage (consistent format)
+resh system://.disk --json
+# {"root": {"used_percent": 45, "available_gb": 120}}
+
+# Read database (unified syntax)
+resh db://mydb.query --sql "SELECT COUNT(*) FROM users" --json
+# {"rows": [{"count": 1523}], "affected": 0}
+```
+
+**Why this matters for AI agents:**
+- No regex parsing needed
+- Predictable error handling
+- Same patterns across all operations
+- Type-safe outputs
+
 **3. Comprehensive Operations**
-28 handles operational in v0.9, including automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
+28 handles operational in v1.0-beta, including automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
 
 ---
 
-## Why Test v0.9 Beta?
+## Why Test v1.0 Beta?
 
 ### For DevOps Engineers
 - Test AI-native automation in your environment
 - Compare structured outputs vs traditional tools
 - Provide feedback on handle design
-- Influence v1.0 feature priorities
+- Influence v1.1 feature priorities
 
 ### For SRE Teams
 - Evaluate for fleet management use cases
@@ -74,14 +109,14 @@ Current infrastructure automation tools face critical limitations:
 ### What to Expect
 - ✅ Functional 28 handles you can use today
 - ⚠️ Bugs and rough edges (it's beta!)
-- ⚠️ API may change before v1.0
+- ⚠️ API may change before v1.0 stable
 - ✅ Responsive maintainer (issues answered within 24h)
 - ✅ Rapid iteration and improvements
 - ✅ Your feedback directly shapes development
 
 ---
 
-## New in v0.9: Automation Utilities
+## New in v1.0: Automation Utilities
 
 ### Data Protection & Backup Management
 - ✅ `backup://` - Complete backup lifecycle management
@@ -124,7 +159,7 @@ resh template://config.yml.render --data-file vars.json --output /etc/myapp/
 
 ---
 
-## Implemented in v0.9 (28 Handles)
+## Implemented in v1.0 Beta (28 Handles)
 
 ### Automation Utilities
 - ✅ `template://` - Template operations (render, validate, test)
@@ -196,10 +231,10 @@ resh template://config.yml.render --data-file vars.json --output /etc/myapp/
 | Milestone | Target | Status |
 |-----------|--------|--------|
 | v0.7 Alpha (25 handles) | November 2025 | ✅ **Completed** |
-| v0.8 Feature Complete (27 handles) | December 2025 | ✅ **Completed** |
-| v0.9 Beta (28 handles + Automation Utils) | December 2025 | ✅ **Available Now** |
-| v1.0 Beta Release (30 handles) | March-April 2026 | ⏱️ In Progress |
-| v1.0 Production | Q2/Q3 2026 | ⏱️ Planned |
+| v0.8 Alpha (27 handles) | December 2025 | ✅ **Completed** |
+| v1.0 Beta (28 handles) | January 2026 | ✅ **Released** |
+| v1.1 (30 handles) | March 2026 | ⏱️ In Progress |
+| v1.0 Stable | Q2 2026 | ⏱️ Planned |
 
 See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 
@@ -207,8 +242,8 @@ See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 
 ## Current Status
 
-**What's working in v0.9:**
-- ✅ 28 of 30 handles implemented and functional
+**What's working in v1.0-beta:**
+- ✅ 28 handles implemented and functional
 - ✅ Complete automation utilities (backup, plugin, template)
 - ✅ URI parser and resource dispatcher
 - ✅ JSON, table, and log output formatters
@@ -223,15 +258,15 @@ See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 - ✅ Organized documentation structure by category
 
 **What's next:**
-- ⏱️ webhook:// and lock:// handles (v1.0 - April 2026)
-- ⏱️ Enhanced integration test suite (v1.0)
-- ⏱️ Performance optimization (v1.0)
-- ⏱️ Binary releases for major distributions (v1.0)
-- ⏱️ Production hardening and polish (v1.0)
+- ⏱️ webhook:// and lock:// handles (v1.1 - March 2026)
+- ⏱️ Enhanced integration test suite (v1.1)
+- ⏱️ Performance optimization (v1.1)
+- ⏱️ Binary releases for major distributions (v1.0 stable)
+- ⏱️ Production hardening and polish (v1.0 stable)
 
-**Alpha limitations:**
+**Beta limitations:**
 - ✅ Documentation complete for all 28 handles
-- ⚠️ Test coverage ~80% (expanding to 95%+ in v1.0)
+- ⚠️ Test coverage ~80% (expanding to 95%+ in v1.0 stable)
 - ⚠️ Performance not yet optimized
 - ⚠️ Error messages need improvement
 - ⚠️ Some edge cases not fully handled
@@ -258,8 +293,8 @@ See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 git clone https://github.com/millertechnologygroup/resh.git
 cd resh
 
-# Checkout v0.9 release
-git checkout v0.9.0
+# Checkout v1.0-beta release
+git checkout v1.0.0-beta
 
 # Build in release mode
 cargo build --release
@@ -302,7 +337,7 @@ curl -fsSL https://get.reshshell.dev | sh
 
 ### Binary Releases
 
-**Coming in v0.9 Beta** - Pre-built binaries for:
+**Coming in v1.0 stable** - Pre-built binaries for:
 - Ubuntu/Debian (.deb)
 - RHEL/Fedora/CentOS (.rpm)
 - Arch Linux (AUR)
@@ -313,7 +348,7 @@ curl -fsSL https://get.reshshell.dev | sh
 
 ## Contributing
 
-**resh v0.9 beta is now available for testing!** We welcome:
+**resh v1.0 beta is now available for testing!** We welcome:
 
 ### How You Can Help Now
 
@@ -346,15 +381,15 @@ curl -fsSL https://get.reshshell.dev | sh
 
 ### Code Contributions
 
-**Not accepting pull requests yet** - We'll open contributions with v0.8 (January 2026).
+**Not accepting pull requests yet** - We'll open contributions with v1.0 stable (Q2 2026).
 
-Formal contribution guidelines coming in v0.9 beta.
+Formal contribution guidelines coming with v1.0 stable.
 
 ### Community
 
 - **GitHub Issues:** Bug reports and feature requests
 - **GitHub Discussions:** Questions and ideas (coming soon)
-- **Discord:** Real-time community (coming with v0.8)
+- **Discord:** Real-time community (coming with v1.1)
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
 
@@ -407,16 +442,16 @@ Built with frustration from years of fragile automation tools and excitement abo
 ## FAQ
 
 **Q: Can I use resh now?**  
-A: Yes! v0.9 beta is available for testing. It's not production-ready, but all 28 handles are functional. Great for experimentation and feedback.
+A: Yes! v1.0-beta is available for testing. All 28 handles are functional and stable enough for experimentation and feedback.
 
-**Q: Is v0.9 production-ready?**  
-A: No. This is an beta release. Expect bugs, incomplete features, and potential breaking changes. Production release (v1.0) is planned for Q2/Q3 2026.
+**Q: Is v1.0-beta production-ready?**  
+A: Not yet. This is a beta release with 28 stable handles. We recommend testing in non-production environments. Full production release (v1.0 stable) planned for Q2 2026.
 
-**Q: What's missing in v0.9?**  
-A: 2 handles (webhook://, lock://), comprehensive performance optimization, extensive edge case testing, and production polish. Coming in v1.0.
+**Q: What's missing before v1.0 stable?**  
+A: 2 additional handles (webhook://, lock://), performance optimization, comprehensive testing, and production hardening. Target: Q2 2026.
 
 **Q: Can I contribute code?**  
-A: Not yet. We'll open for code contributions with v0.8 (January 2026). For now, please test, report bugs, and provide feedback.
+A: Not yet. We'll open for code contributions with v1.0 stable (Q2 2026). For now, please test, report bugs, and provide feedback.
 
 **Q: What about Windows/macOS?**  
 A: Initial focus is Linux. macOS support likely post-v1.0. Windows support is being evaluated.
@@ -427,8 +462,8 @@ A: Ansible uses YAML playbooks with unstructured output designed for humans. res
 **Q: How is this different from Terraform?**  
 A: Terraform is for infrastructure-as-code with state management. resh is for real-time operations and automation without state files. They solve different problems and can be complementary.
 
-**Q: Why 28 handles in v0.9 instead of all 30?**  
-A: We focused on delivering comprehensive automation utilities (backup, plugin, template) that provide immediate value. The remaining 2 handles (webhook://, lock://) are advanced features planned for v1.0.
+**Q: Why 28 handles instead of 30?**  
+A: We focused on delivering comprehensive core functionality and automation utilities (backup, plugin, template) that provide immediate value. The remaining 2 handles (webhook://, lock://) are advanced features planned for v1.1.
 
 **Q: Where should I report bugs?**  
 A: [GitHub Issues](https://github.com/millertechnologygroup/resh/issues) - Please include your OS, resh version, command, and output.
@@ -437,10 +472,10 @@ A: [GitHub Issues](https://github.com/millertechnologygroup/resh/issues) - Pleas
 A: Yes, it's Apache 2.0 licensed. However, being beta, we recommend testing in non-production environments first.
 
 **Q: What's the performance like?**  
-A: Functional but not yet optimized. Performance improvements coming in v0.9. Current focus is correctness and features.
+A: Functional but not yet optimized. Performance improvements coming in v1.1. Current focus is correctness and features.
 
 ---
 
-**v0.9 Beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
+**v1.0 Beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
 
-[Download v0.9](https://github.com/millertechnologygroup/resh/releases/tag/v0.9.0) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
+[Download v1.0-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.0-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)

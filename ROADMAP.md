@@ -6,8 +6,8 @@ This roadmap outlines the development plan for resh from early development throu
 
 ---
 
-## v0.9 - Alpha Release with Automation Utilities (Q1 2026)
-**Target: February 2026 - ✅ COMPLETED**
+## v1.0 Beta - Production-Ready Core (Q1 2026)
+**Target: January 2026 - ✅ RELEASED**
 
 28 handles implemented with comprehensive automation utilities for backup management, plugin operations, and template rendering.
 
@@ -50,30 +50,30 @@ This roadmap outlines the development plan for resh from early development throu
 ### System Information (1 handle)
 - [x] `system://` - System information (CPU, memory, disk, uptime)
 
-### Automation Utilities (3 handles) ✅ **COMPLETED IN v0.9**
+### Automation Utilities (3 handles) ✅ **COMPLETED**
 - [x] `backup://` - Complete backup lifecycle management (create, list, restore, verify, prune, schedule) with multiple backend support (restic, borg, rsync, tar)
 - [x] `plugin://` - Full plugin ecosystem management (install, update, remove, search, enable, disable) with registry support and security verification
 - [x] `template://` - Powerful template rendering system with Tera engine, data injection, validation, and testing capabilities
 
-### Status at v0.9 ✅ **COMPLETED**
+### Status at v1.0 Beta ✅ **RELEASED**
 - ✅ All 28 handles functional (25 core + 3 automation utilities)
 - ✅ Complete automation utilities for backup, plugin, and template management
 - ✅ Advanced CLI and URI parser
 - ✅ JSON, table, and log output formats working
 - ✅ Comprehensive documentation for all handles
 - ✅ Organized documentation structure by category
-- ⚠️ Testing coverage ~60% (expanding for v1.0)
+- ⚠️ Testing coverage ~80% (expanding to 95%+ for v1.0 stable)
 - ⚠️ Performance optimization in progress
 - ⚠️ Some edge cases being addressed
 
-**Deliverable:** Alpha release with complete automation utilities for early adoption
+**Deliverable:** Beta release with 28 production-ready handles available for testing and feedback
 
 ---
 
-## v1.0 - Beta Release (Q2-Q3 2026)
-**Target: April-September 2026**
+## v1.1 - Feature Complete (Q1 2026)
+**Target: March 2026 - ⏱️ IN PROGRESS**
 
-**Focus: Production Readiness, Polish & Final Features**
+**Focus: Final Handles & Enhanced Capabilities**
 
 ### Remaining Handles (2 handles)
 - [ ] `webhook://` - Webhook receiver for event-driven automation
@@ -81,8 +81,48 @@ This roadmap outlines the development plan for resh from early development throu
 
 **Goal:** Complete all 30 planned handles for feature-complete platform
 
+### Quality & Performance
+- [ ] Integration test suite expansion (85%+ coverage)
+- [ ] Performance benchmarks and optimization
+- [ ] Error message improvements with actionable suggestions
+- [ ] Edge case handling refinements
+- [ ] Memory leak detection and fixes
+- [ ] Stress testing and load testing
+
+### Developer Experience
+- [ ] Shell completion scripts (bash, zsh, fish)
+- [ ] Improved help system with contextual examples
+- [ ] Better debugging output and verbose modes
+- [ ] Enhanced error reporting with suggestions
+
+### Community Feedback Integration
+- [ ] Beta tester feedback implementation
+- [ ] GitHub issue triage and response
+- [ ] Documentation improvements based on user feedback
+- [ ] Bug fixes from beta testing
+
+**Deliverable:** Feature-complete v1.1 with all 30 handles
+
+---
+
+## v1.0 Stable - Production Release (Q2 2026)
+**Target: April-June 2026 - ⏱️ PLANNED**
+
+**Focus: Production-Ready Quality, Stable API, Major Launch**
+
+### Production Readiness
+- [ ] API stability guarantee (semver compliance)
+- [ ] Production-grade error handling
+- [ ] Complete test coverage (95%+)
+- [ ] Performance optimization complete
+- [ ] Security hardening and audit complete
+- [ ] Memory safety verification
+- [ ] Resource leak detection and fixes
+- [ ] Graceful degradation and failover
+- [ ] Cross-platform testing (Ubuntu, Debian, RHEL, Arch, Alpine, macOS)
+
 ### Documentation & Examples
-- [ ] Comprehensive documentation for all 27 handles
+- [ ] Documentation professionally reviewed and polished
 - [ ] Complete API reference with examples
 - [ ] Handle-specific guides and best practices
 - [ ] Migration guides (from Ansible, Terraform, scripts)
@@ -90,71 +130,16 @@ This roadmap outlines the development plan for resh from early development throu
 - [ ] Real-world use case documentation
 - [ ] Troubleshooting guides
 - [ ] Performance tuning documentation
+- [ ] Man pages for all handles
+- [ ] Plugin development guide
 
-### Testing & Quality
-- [ ] Integration test suite (80%+ coverage)
-- [ ] Unit tests for all handles
-- [ ] Performance benchmarks and optimization
-- [ ] Error message improvements
-- [ ] Edge case handling
-- [ ] Cross-platform testing (Ubuntu, Debian, RHEL, Arch, Alpine)
-- [ ] Security audit of handle implementations
-- [ ] Memory leak detection and fixes
-- [ ] Stress testing and load testing
-
-### Developer Experience
-- [ ] Shell completion scripts (bash, zsh, fish)
-- [ ] Improved error messages with suggestions
-- [ ] Better help system and documentation
-- [ ] Installation improvements
+### Binary Distribution
 - [ ] Binary releases for major Linux distributions
 - [ ] Package repositories (.deb, .rpm, AUR)
 - [ ] Docker images
 - [ ] Homebrew formula (for macOS/Linux)
-
-### Community Engagement
-- [ ] Public beta testing program
-- [ ] GitHub issue triage and response
-- [ ] Community feedback integration
-- [ ] Early adopter case studies
-- [ ] Beta tester recognition program
-- [ ] Community Discord/Slack setup
-
-### Deliverables
-- Beta releases every 2 weeks
-- Comprehensive documentation site
-- Installation packages for all major distros
-- Tutorial videos and blog posts
-- Performance benchmarks published
-
-**Goal:** Production-ready quality, stable API
-
----
-
-## v1.1 - Production Release (Q4 2026)
-**Target: October-December 2026**
-
-**Focus: Production-Ready, Stable API, Major Launch**
-
-### Production Readiness
-- [ ] API stability guarantee (semver compliance)
-- [ ] Production-grade error handling
-- [ ] Complete test coverage (90%+)
-- [ ] Performance optimization complete
-- [ ] Security hardening and audit complete
-- [ ] Memory safety verification
-- [ ] Resource leak detection and fixes
-- [ ] Graceful degradation and failover
-
-### Documentation & Support
-- [ ] Documentation complete and professionally reviewed
-- [ ] Man pages for all handles
-- [ ] Quick start guides for different personas
-- [ ] Architecture documentation
-- [ ] Security best practices guide
-- [ ] FAQ and troubleshooting database
-- [ ] API reference documentation
-- [ ] Plugin development guide
+- [ ] Installation improvements and automation
+- [ ] Portable binary releases (tar.gz)
 
 ### Launch Preparation
 - [ ] Professional website and branding
@@ -176,29 +161,30 @@ This roadmap outlines the development plan for resh from early development throu
 - [ ] Podcast appearances
 - [ ] Press outreach to tech media
 
-### Enterprise Readiness
-- [ ] Enterprise evaluation program
-- [ ] Security compliance documentation
-- [ ] Enterprise installation guides
-- [ ] Support channel setup
-- [ ] SLA framework defined
+### Community Infrastructure
+- [ ] Community Discord/Slack launched
+- [ ] GitHub Discussions activated
+- [ ] Community guidelines published
+- [ ] Contribution guidelines finalized
+- [ ] Code review process established
+- [ ] Community recognition program
 
 ### Success Criteria
-- All handles production-tested
+- All 30 handles production-tested
 - Zero critical bugs
 - <100ms latency for local operations
 - Comprehensive security review passed
 - 1,000+ GitHub stars
 - 50+ contributors
 - 500+ production users
-- Active community (Discord/Discussions)
+- Active community engagement
 
-**Deliverable:** Production-ready v1.0 release
+**Deliverable:** Production-ready v1.0 stable release with long-term support
 
 ---
 
-## v1.2 - Enhanced Operations (Q1 2027)
-**Target: January-March 2027**
+## v1.2 - Enhanced Operations (Q3 2026)
+**Target: July-September 2026**
 
 **Focus: Advanced Features & Ecosystem Growth**
 
@@ -214,32 +200,39 @@ This roadmap outlines the development plan for resh from early development throu
 - [ ] Parallel execution engine
 
 ### Quality of Life Improvements
-- [ ] Better tab completion with context
-- [ ] Improved help system with examples
+- [ ] Better tab completion with context awareness
 - [ ] Interactive configuration wizard
 - [ ] Built-in update mechanism
 - [ ] Telemetry (opt-in) for usage patterns
 - [ ] Performance profiling tools
-- [ ] Debug mode improvements
-- [ ] Verbose logging options
+- [ ] Debug mode enhancements
+- [ ] Improved verbose logging
 
 ### Ecosystem Development
 - [ ] Community plugin showcase
 - [ ] Plugin developer toolkit
 - [ ] Plugin testing framework
 - [ ] Plugin documentation templates
-- [ ] Community contributions integration
+- [ ] Plugin contribution guidelines
+- [ ] Community plugin registry
 
-**Deliverable:** Enhanced v1.1 with ecosystem foundation
+### Code Contributions
+- [ ] Pull request process activated
+- [ ] Contributor guidelines published
+- [ ] Code review standards established
+- [ ] Automated testing for contributions
+- [ ] Community contributor recognition
+
+**Deliverable:** Enhanced v1.2 with ecosystem foundation and open contributions
 
 ---
 
-## v1.3 - Enterprise Features (Q2 2027)
-**Target: April-June 2027**
+## v1.3 - Enterprise Features (Q4 2026)
+**Target: October-December 2026**
 
 **Focus: Enterprise-Grade Capabilities**
 
-### Enterprise Edition (Source Available or Proprietary)
+### Enterprise Edition
 - [ ] RBAC (Role-Based Access Control)
 - [ ] Audit logging and compliance
 - [ ] LDAP/SAML integration
@@ -268,14 +261,21 @@ This roadmap outlines the development plan for resh from early development throu
 - [ ] PagerDuty integration
 - [ ] Datadog/New Relic monitoring
 - [ ] Splunk/ELK logging
-- [ ] SSO integrations
+- [ ] SSO integrations (Okta, Auth0)
 
-**Deliverable:** Enterprise-ready platform with commercial support
+### Enterprise Readiness
+- [ ] Enterprise evaluation program
+- [ ] Security compliance documentation
+- [ ] Enterprise installation guides
+- [ ] Support SLA framework
+- [ ] Training and certification program
+
+**Deliverable:** Enterprise-ready platform with commercial support options
 
 ---
 
-## v2.0 - Advanced Automation (Q3-Q4 2027)
-**Target: July-December 2027**
+## v2.0 - Advanced Automation (Q1-Q2 2027)
+**Target: January-June 2027**
 
 **Focus: AI-Native Enhancements & Cloud Integration**
 
@@ -311,11 +311,11 @@ This roadmap outlines the development plan for resh from early development throu
 ### Enterprise Scale
 - [ ] High availability architecture
 - [ ] Multi-region deployment
-- [ ] Global fleet management
+- [ ] Global fleet management (100K+ servers)
 - [ ] Advanced caching and optimization
-- [ ] Performance at 100K+ servers
+- [ ] Horizontal scaling capabilities
 
-**Deliverable:** Industry-leading automation platform
+**Deliverable:** Industry-leading AI-native automation platform
 
 ---
 
@@ -335,7 +335,7 @@ This roadmap outlines the development plan for resh from early development throu
 - Collaborative automation workflows
 - Real-time collaboration features
 - Mobile monitoring apps
-- Integration with major platforms (Slack, Teams, PagerDuty)
+- Integration with major platforms
 - GraphQL API
 - Multi-tenant SaaS offering
 
@@ -376,32 +376,40 @@ This roadmap outlines the development plan for resh from early development throu
 
 ## Version Strategy
 
-**Alpha/Beta (v0.8-0.9):**
-- Rapid iteration and feedback
-- Breaking changes allowed
-- Community testing focus
-- Documentation in progress
+**Beta (v1.0-beta):**
+- Production-ready core functionality
+- 28 handles operational
+- Community testing and feedback
+- API approaching stability
+- Documentation complete
 
-**Production (v1.x):**
+**Feature Complete (v1.1):**
+- All 30 planned handles
+- Enhanced performance
+- Comprehensive testing
+- API refinements based on feedback
+
+**Production (v1.0 Stable):**
 - API stability guaranteed
 - Semver compliance
-- LTS support for major versions
+- LTS support commitment
 - Production-grade quality
+- Binary distributions
 
-**Enterprise (v1.2+):**
-- Enterprise features and support
-- Compliance certifications
-- Professional services
-- Commercial licensing options
+**Enhanced (v1.2-v1.3):**
+- Advanced features
+- Enterprise capabilities
+- Ecosystem growth
+- Community contributions
 
-**Advanced (v2.x+):**
-- Next-generation features
+**Next Generation (v2.x+):**
 - Cloud-native capabilities
 - AI-enhanced operations
 - Platform expansion
+- Major architectural evolution
 
 **LTS Releases:**
-- Every major version (v1.0, v2.0, etc.)
+- Every major stable version (v1.0, v2.0, etc.)
 - 2 years of support minimum
 - Security patches and critical bug fixes
 - Optional extended support (commercial)
@@ -413,19 +421,42 @@ This roadmap outlines the development plan for resh from early development throu
 ### Community Input
 - **GitHub Discussions:** Propose features and vote on priorities
 - **Issues:** Report bugs and request features
-- **Discord/Slack:** Real-time discussions with maintainers
-- **Community Calls:** Monthly roadmap reviews
+- **Discord/Slack:** Real-time discussions with maintainers (coming with v1.0 stable)
+- **Community Calls:** Quarterly roadmap reviews (starting Q2 2026)
 
-### Enterprise Input
-- **Enterprise Advisory Board:** Direct input for enterprise customers
-- **Feature Sponsorship:** Fund development of specific features
-- **Beta Programs:** Early access and feedback
+### Beta Testing
+- **Test v1.0 Beta:** Help identify bugs and provide feedback
+- **Use Cases:** Share your automation workflows
+- **Documentation:** Report unclear documentation
+- **Feature Requests:** Suggest improvements and new capabilities
 
-### Contributing
+### Contributing (Starting v1.2)
 - **Pull Requests:** Implement features yourself
 - **Plugin Development:** Extend resh via plugins
 - **Documentation:** Improve guides and examples
-- **Testing:** Help test beta releases
+- **Testing:** Help test releases
+
+### Enterprise Input
+- **Enterprise Advisory Board:** Direct input for enterprise customers (v1.3+)
+- **Feature Sponsorship:** Fund development of specific features
+- **Beta Programs:** Early access and feedback
+
+---
+
+## Current Focus (Q1 2026)
+
+**Immediate Priorities:**
+1. **v1.0 Beta Testing** - Gather feedback from early adopters
+2. **Bug Fixes** - Address issues reported by beta testers
+3. **Documentation** - Refine based on user questions
+4. **v1.1 Development** - Implement webhook:// and lock:// handles
+5. **Community Building** - Engage with early users and contributors
+
+**Next Quarter (Q2 2026):**
+1. **v1.0 Stable Launch** - Production-ready release
+2. **Marketing Campaign** - Major public launch
+3. **Binary Distribution** - Package for all major platforms
+4. **Community Infrastructure** - Discord, discussions, documentation site
 
 ---
 
@@ -437,11 +468,11 @@ This roadmap outlines the development plan for resh from early development throu
 - **Transparent development** in public
 - **Community governance** for major decisions
 
-**Enterprise features** (RBAC, compliance, support) may be commercial, but never at the expense of the open source community.
+**Enterprise features** (RBAC, compliance, commercial support) may have commercial licensing, but the core platform remains open source.
 
 ---
 
-**Last Updated:** December 2025  
-**Next Review:** Q2 2026 (at v1.0 release)
+**Last Updated:** January 2026  
+**Next Review:** Q2 2026 (at v1.0 stable release)
 
-For questions or suggestions about the roadmap, please open a GitHub Discussion.
+For questions or suggestions about the roadmap, please open a [GitHub Discussion](https://github.com/millertechnologygroup/resh/discussions) or [Issue](https://github.com/millertechnologygroup/resh/issues).
