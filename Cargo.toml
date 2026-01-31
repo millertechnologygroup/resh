@@ -1,6 +1,6 @@
 [package]
 name = "resh"
-version = "0.9.2"
+version = "1.0.0-beta"
 edition = "2024"
 authors = ["Scott Miller <smiller@millertechnologygroupllc.com>"]
 license = "Apache-2.0"
