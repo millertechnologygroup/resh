@@ -478,4 +478,4 @@ A: Functional but not yet optimized. Performance improvements coming in v1.1. Cu
 
 **v1.0 Beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
 
-[Download v1.0-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.0-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
+[Download v1.0-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.1-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
