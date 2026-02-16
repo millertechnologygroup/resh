@@ -1,46 +1,105 @@
-# Package Manager Handle (pkg://)
+# Resource Shell (resh) – Package Handle Documentation
 
-The Package Manager Handle helps you work with software packages on your computer. You can install, remove, update, and search for programs using different package managers. Think of it like a smart app store that works with many different systems.
+## 1. Overview
 
-## What Package Managers Are Supported?
+### Definition
 
-The pkg handle works with these package managers automatically:
-- **apt** (Ubuntu, Debian)
-- **dnf** (Fedora, CentOS Stream)
-- **yum** (CentOS, RHEL)
-- **pacman** (Arch Linux)
-- **apk** (Alpine Linux)  
-- **brew** (macOS, Linux)
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `pkg://` handle provides package management capabilities across multiple operating systems and package managers.
 
-## Available Actions (Verbs)
+### Purpose
 
-### install
+The Package Manager handle enables:
 
-Install new packages on your system.
+* Installation and removal of software packages
+* System-wide updates and upgrades
+* Package search and metadata inspection
+* Installed package inventory reporting
+* System state snapshot and restoration
+* Cross-platform abstraction across major package managers
 
-**What it does:** Downloads and installs software packages, with options to update package lists and handle dependencies.
+All operations use structured JSON input and produce structured output suitable for automation.
 
-**Input example:**
-```json
-{
-  "manager": "auto",
-  "packages": [
-    {
-      "name": "curl"
-    },
-    {
-      "name": "git"
-    }
-  ],
-  "dry_run": true,
-  "update_cache": true,
-  "assume_yes": true,
-  "only_if_missing": true,
-  "timeout_ms": 300000
-}
+### Architectural Problem Addressed
+
+Traditional package manager tooling:
+
+* Varies significantly across platforms (`apt`, `dnf`, `yum`, `pacman`, `apk`, `brew`)
+* Produces human-oriented output
+* Requires shell parsing for automation
+* Has inconsistent behavior across systems
+
+resh addresses this by:
+
+* Abstracting multiple package managers under a unified interface
+* Standardizing verb semantics
+* Enforcing structured JSON input
+* Returning structured, machine-readable results
+* Supporting dry-run execution and deterministic output contracts
+
+### Resource-Oriented URI Model
+
+resh commands use:
+
+```
+handle://target.verb(options)
 ```
 
-**Expected output:**
+For package management:
+
+* **handle**: `pkg://`
+* **target**: alias (commonly `system`)
+* **verb**: package operation (`install`, `remove`, `update`, etc.)
+* **options**: JSON configuration passed via `input`
+
+Example:
+
+```
+resh pkg://system.install input='{"manager":"auto","packages":[{"name":"curl"}]}'
+```
+
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+* Nine explicit verbs define package lifecycle operations.
+* All configuration is provided via JSON.
+* Structured output reports operation results.
+* Manager auto-detection is standardized.
+
+---
+
+### Safety-First Execution
+
+* `dry_run` available for install, remove, update, upgrade, restore.
+* `only_if_missing` prevents unnecessary reinstallations.
+* `fail_if_missing` controls strict removal behavior.
+* Timeout control (`timeout_ms`) limits execution duration.
+* Snapshot and restore enable state rollback capability.
+
+---
+
+### Deterministic Behavior
+
+* Explicit flags control behavior (e.g., `assume_yes`, `reinstall`, `security_only`).
+* Identical JSON input yields consistent structured output.
+* Auto-detection logic is consistent across supported managers.
+* Exit codes reflect defined failure categories.
+
+---
+
+### JSON-Based Structured Output
+
+Each verb returns structured JSON summarizing:
+
+* Operation counts (installed, upgraded, removed, failed)
+* Metadata (manager, alias)
+* Warnings and errors
+* Status indicators
+
+Example (install result):
+
 ```json
 {
   "installed": 2,
@@ -51,458 +110,411 @@ Install new packages on your system.
 }
 ```
 
-**Configuration options:**
-- `manager`: Which package manager to use ("auto", "apt", "dnf", "yum", "pacman", "apk", "brew")
-- `packages`: List of packages to install, each with a `name` and optional `version`
-- `dry_run`: Test the operation without actually installing (true/false)
-- `update_cache`: Update package lists before installing (true/false)
-- `assume_yes`: Answer yes to all prompts automatically (true/false)
-- `only_if_missing`: Only install if package isn't already installed (true/false)
-- `reinstall`: Force reinstallation even if already installed (true/false)
-- `upgrade`: Upgrade to newer versions if available (true/false)
-- `timeout_ms`: How long to wait before giving up (in milliseconds)
+---
 
-### remove
+### AI-Readiness
 
-Remove packages from your system.
+Structured outputs allow:
 
-**What it does:** Uninstalls software packages, with options to clean up configuration files and dependencies.
+* Automated dependency validation
+* Change detection
+* Idempotent configuration enforcement
+* Snapshot-based state comparison
+* Machine reasoning over system state
 
-**Input example:**
-```json
-{
-  "manager": "auto",
-  "packages": [
-    {
-      "name": "curl"
-    },
-    {
-      "name": "git"
-    }
-  ],
-  "dry_run": true,
-  "purge": false,
-  "recursive": false,
-  "assume_yes": true,
-  "only_if_installed": true,
-  "fail_if_missing": false,
-  "timeout_ms": 300000
-}
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+resh pkg://alias.verb input='{"json":"config"}'
 ```
 
-**Expected output:**
-```json
-{
-  "removed": 2,
-  "purged": 0,
-  "not_installed": 0,
-  "skipped": 0,
-  "failed": 0,
-  "autoremove_run": false
-}
+| Component | Description                           |
+| --------- | ------------------------------------- |
+| `handle`  | `pkg://`                              |
+| `alias`   | Logical system alias (e.g., `system`) |
+| `verb`    | Package operation                     |
+| `input`   | JSON configuration                    |
+
+---
+
+### Supported Verbs
+
+| Verb             | Description                       |
+| ---------------- | --------------------------------- |
+| `install`        | Install packages                  |
+| `remove`         | Remove packages                   |
+| `update`         | Refresh index and update packages |
+| `upgrade`        | Upgrade packages                  |
+| `info`           | Package metadata lookup           |
+| `search`         | Search repositories               |
+| `list_installed` | List installed packages           |
+| `snapshot`       | Capture system package state      |
+| `restore`        | Restore from snapshot             |
+| `apply_lock`     | Alias for `restore`               |
+
+---
+
+### Example Commands
+
+#### Install Packages (Dry Run)
+
+```bash
+resh pkg://system.install input='{
+  "manager":"auto",
+  "packages":[{"name":"curl"},{"name":"git"}],
+  "dry_run":true
+}'
 ```
 
-**Configuration options:**
-- `manager`: Which package manager to use
-- `packages`: List of packages to remove, each with a `name`
-- `dry_run`: Test the operation without actually removing (true/false)
-- `purge`: Also remove configuration files (true/false)
-- `recursive`: Remove dependencies no longer needed (true/false)
-- `assume_yes`: Answer yes to all prompts automatically (true/false)
-- `only_if_installed`: Only try to remove if package is installed (true/false)
-- `fail_if_missing`: Fail if package is not found (true/false)
-- `timeout_ms`: How long to wait before giving up (in milliseconds)
+#### Remove Package
 
-### update
-
-Update package lists and upgrade existing packages.
-
-**What it does:** Refreshes the list of available packages and updates installed packages to newer versions.
-
-**Input example:**
-```json
-{
-  "manager": "auto",
-  "packages": [],
-  "refresh_index": true,
-  "upgrade": true,
-  "assume_yes": true,
-  "security_only": false,
-  "check_only": false,
-  "dry_run": false,
-  "timeout_ms": 900000
-}
+```bash
+resh pkg://system.remove input='{
+  "packages":[{"name":"curl"}],
+  "purge":false,
+  "dry_run":true
+}'
 ```
 
-**Expected output:**
-```json
-{
-  "upgraded": 15,
-  "unchanged": 5,
-  "failed": 0
-}
+#### Update System
+
+```bash
+resh pkg://system.update input='{
+  "refresh_index":true,
+  "upgrade":true
+}'
 ```
 
-**Configuration options:**
-- `manager`: Which package manager to use
-- `packages`: List of specific packages to update (empty list means all)
-- `refresh_index`: Update the package list before upgrading (true/false)
-- `upgrade`: Actually upgrade packages (true/false)
-- `assume_yes`: Answer yes to all prompts automatically (true/false)
-- `security_only`: Only install security updates (true/false)
-- `check_only`: Only check for updates, don't install (true/false)
-- `dry_run`: Test the operation without actually updating (true/false)
-- `timeout_ms`: How long to wait before giving up (in milliseconds)
+#### Search for Packages
 
-### upgrade
-
-Upgrade all packages to their latest versions.
-
-**What it does:** Like update, but focuses on upgrading all packages to the newest available versions.
-
-**Input example:**
-```json
-{
-  "manager": "auto",
-  "packages": [],
-  "refresh_index": true,
-  "assume_yes": true,
-  "security_only": false,
-  "dry_run": false,
-  "check_only": false,
-  "timeout_ms": 900000
-}
+```bash
+resh pkg://system.search input='{
+  "query":"curl",
+  "limit":20
+}'
 ```
 
-**Expected output:**
-```json
-{
-  "upgraded": 20,
-  "unchanged": 2,
-  "failed": 0
-}
+#### Create Snapshot
+
+```bash
+resh pkg://system.snapshot input='{
+  "scope":"all",
+  "include_versions":"exact",
+  "format":"json"
+}'
 ```
 
-**Configuration options:**
-- `manager`: Which package manager to use
-- `packages`: List of specific packages to upgrade (empty list means all)
-- `refresh_index`: Update the package list before upgrading (true/false)
-- `assume_yes`: Answer yes to all prompts automatically (true/false)
-- `security_only`: Only install security upgrades (true/false)
-- `dry_run`: Test the operation without actually upgrading (true/false)
-- `check_only`: Only check for upgrades, don't install (true/false)
-- `timeout_ms`: How long to wait before giving up (in milliseconds)
+#### Restore from Snapshot
 
-### info
-
-Get detailed information about packages.
-
-**What it does:** Shows information about packages like version, description, dependencies, and installation status.
-
-**Input example:**
-```json
-{
-  "manager": "auto",
-  "packages": ["curl"],
-  "include_dependencies": false,
-  "include_reverse_deps": false,
-  "include_files": false,
-  "include_repo": true,
-  "timeout_ms": 5000
-}
+```bash
+resh pkg://system.restore input='{
+  "lockfile":"{...}",
+  "mode":"exact",
+  "dry_run":true
+}'
 ```
 
-**Expected output:**
-```json
-{
-  "packages": [
-    {
-      "name": "curl",
-      "found": true,
-      "installed": true,
-      "installed_version": "7.68.0-1ubuntu2.19",
-      "candidate_version": "7.68.0-1ubuntu2.19",
-      "architecture": "amd64",
-      "summary": "command line tool for transferring data with URL syntax",
-      "description": "curl is a command line tool for transferring data with URL syntax...",
-      "homepage": "https://curl.haxx.se/",
-      "license": "curl",
-      "repository": "main"
-    }
-  ]
-}
-```
+---
 
-**Configuration options:**
-- `manager`: Which package manager to use
-- `packages`: List of package names to get information about
-- `include_dependencies`: Include dependency information (true/false)
-- `include_reverse_deps`: Include packages that depend on this one (true/false)
-- `include_files`: Include list of files in the package (true/false)
-- `include_repo`: Include repository information (true/false)
-- `timeout_ms`: How long to wait before giving up (in milliseconds)
+## 3.2 Execution Semantics
 
-### search
+### Deterministic Behavior
 
-Search for packages by name or description.
+* Operations depend solely on JSON input.
+* Auto-detection selects appropriate backend manager.
+* Snapshot captures reproducible state.
+* Restore behavior controlled via `mode`, `allow_downgrades`, etc.
 
-**What it does:** Finds packages that match your search terms in their names or descriptions.
+---
 
-**Input example:**
-```json
-{
-  "manager": "auto",
-  "query": "curl",
-  "search_in": ["name", "description"],
-  "exact": false,
-  "case_sensitive": false,
-  "limit": 50,
-  "offset": 0,
-  "include_installed": true,
-  "include_versions": true,
-  "include_repo": true,
-  "timeout_ms": 5000
-}
-```
+### Structured Output Contracts
 
-**Expected output:**
-```json
-{
-  "backend": "pkg",
-  "manager": "apt",
-  "alias": "system",
-  "query": "curl",
-  "search_in": ["name", "description"],
-  "exact": false,
-  "case_sensitive": false,
-  "limit": 50,
-  "offset": 0,
-  "total_matches": 25,
-  "results": [
-    {
-      "name": "curl",
-      "version": "7.68.0-1ubuntu2.19",
-      "installed": true,
-      "summary": "command line tool for transferring data with URL syntax",
-      "description": "curl is a command line tool for transferring data...",
-      "repository": "main",
-      "homepage": "https://curl.haxx.se/",
-      "score": 1.0
-    }
-  ]
-}
-```
+Representative snapshot output:
 
-**Configuration options:**
-- `manager`: Which package manager to use
-- `query`: What to search for
-- `search_in`: Where to search ("name", "description", "all")
-- `exact`: Require exact matches only (true/false)
-- `case_sensitive`: Match case exactly (true/false)
-- `limit`: Maximum number of results to return
-- `offset`: Skip this many results (for paging)
-- `include_installed`: Show installed packages in results (true/false)
-- `include_versions`: Show version information (true/false)
-- `include_repo`: Show repository information (true/false)
-- `timeout_ms`: How long to wait before giving up (in milliseconds)
-
-### list_installed
-
-List packages that are currently installed.
-
-**What it does:** Shows all the packages installed on your system, with optional filtering.
-
-**Input example:**
-```json
-{
-  "manager": "auto",
-  "filter": null,
-  "prefix": null,
-  "include_versions": true,
-  "include_repo": true,
-  "include_size": false,
-  "include_install_reason": false,
-  "limit": 500,
-  "offset": 0,
-  "timeout_ms": 600000
-}
-```
-
-**Expected output:**
-```json
-{
-  "total_packages": 1247,
-  "packages": [
-    {
-      "name": "curl",
-      "version": "7.68.0-1ubuntu2.19",
-      "repository": "main",
-      "architecture": "amd64",
-      "installed": true
-    }
-  ]
-}
-```
-
-**Configuration options:**
-- `manager`: Which package manager to use
-- `filter`: Filter packages by pattern (optional)
-- `prefix`: Only show packages starting with this prefix (optional)
-- `include_versions`: Show version information (true/false)
-- `include_repo`: Show repository information (true/false)
-- `include_size`: Show package sizes (true/false)
-- `include_install_reason`: Show why package was installed (true/false)
-- `limit`: Maximum number of packages to return
-- `offset`: Skip this many packages (for paging)
-- `timeout_ms`: How long to wait before giving up (in milliseconds)
-
-### snapshot
-
-Create a snapshot of currently installed packages.
-
-**What it does:** Makes a complete list of all installed packages that can be used to recreate the same setup later.
-
-**Input example:**
-```json
-{
-  "manager": "auto",
-  "scope": "all",
-  "include_versions": "exact",
-  "include_repo": true,
-  "include_arch": true,
-  "include_install_reason": true,
-  "include_os_metadata": true,
-  "exclude_patterns": [],
-  "format": "json",
-  "inline": true,
-  "timeout_ms": 15000
-}
-```
-
-**Expected output:**
 ```json
 {
   "lockfile_version": "1.0",
-  "generated_at": "2024-12-04T10:30:00Z",
   "manager": {
     "name": "apt",
-    "alias": "system",
-    "version": "2.4.8"
+    "alias": "system"
   },
   "platform": {
     "os_family": "unix",
-    "os_name": "ubuntu",
-    "os_version": "20.04",
-    "kernel": "Linux",
     "architecture": "x86_64"
   },
-  "scope": "all",
   "packages": [
     {
       "name": "curl",
-      "version": "7.68.0-1ubuntu2.19",
-      "architecture": "amd64",
-      "repository": "main",
-      "install_reason": "manual"
+      "version": "7.68.0-1ubuntu2.19"
     }
   ]
 }
 ```
 
-**Configuration options:**
-- `manager`: Which package manager to use
-- `scope`: Which packages to include ("all", "manual", "dependency")
-- `include_versions`: Version detail level ("exact", "minimal", "none")
-- `include_repo`: Include repository information (true/false)
-- `include_arch`: Include architecture information (true/false)
-- `include_install_reason`: Include why each package was installed (true/false)
-- `include_os_metadata`: Include system information (true/false)
-- `exclude_patterns`: Patterns of packages to exclude
-- `format`: Output format ("json", "yaml", "text")
-- `inline`: Return data directly instead of saving to file (true/false)
-- `timeout_ms`: How long to wait before giving up (in milliseconds)
+---
 
-### restore
+### Error Handling Structure
 
-Restore packages from a snapshot.
+Representative error:
 
-**What it does:** Installs packages from a snapshot file to recreate a previous system state.
-
-**Input example:**
 ```json
 {
-  "manager": "auto",
-  "lockfile": "{\"lockfile_version\":\"1.0\",\"packages\":[{\"name\":\"curl\",\"version\":\"7.68.0\"}]}",
-  "format": "auto",
-  "mode": "exact",
-  "allow_downgrades": false,
-  "allow_removals": false,
-  "allow_newer": true,
-  "on_missing_package": "fail",
-  "on_repo_mismatch": "warn",
-  "on_platform_mismatch": "warn",
-  "include_dependencies": true,
-  "dry_run": false,
-  "timeout_ms": 180000
-}
-```
-
-**Expected output:**
-```json
-{
-  "status": "success",
-  "restored": 15,
-  "skipped": 2,
-  "failed": 0,
+  "status": "failure",
+  "failed": 1,
   "warnings": [
     "Repository mismatch for package xyz"
   ]
 }
 ```
 
-**Configuration options:**
-- `manager`: Which package manager to use
-- `lockfile`: The snapshot data as a string
-- `format`: Format of the lockfile ("auto", "json", "yaml", "text")
-- `mode`: Restoration mode ("exact", "best_effort")
-- `allow_downgrades`: Allow installing older versions (true/false)
-- `allow_removals`: Allow removing packages not in snapshot (true/false)
-- `allow_newer`: Allow newer versions if exact version unavailable (true/false)
-- `on_missing_package`: What to do if package not found ("fail", "warn", "ignore")
-- `on_repo_mismatch`: What to do if repository doesn't match ("fail", "warn", "ignore")
-- `on_platform_mismatch`: What to do if platform is different ("fail", "warn", "ignore")
-- `include_dependencies`: Also restore dependencies (true/false)
-- `dry_run`: Test the operation without actually restoring (true/false)
-- `timeout_ms`: How long to wait before giving up (in milliseconds)
+Exit codes are defined and documented within built-in help.
 
-### apply_lock
+---
 
-An alias for the `restore` verb. Works exactly the same way.
+## 4. Functional Domains
 
-## How to Use
+### 4.1 Automation Utilities
 
-All pkg handle operations use this format:
-```
-resh pkg://alias.verb input='{"json": "config"}'
-```
+**Scope**
 
-For example:
-```bash
-# Install curl with dry run
-resh pkg://system.install input='{"manager": "auto", "packages": [{"name": "curl"}], "dry_run": true}'
+System provisioning and dependency automation.
 
-# Search for packages
-resh pkg://system.search input='{"manager": "auto", "query": "text editor"}'
+**Use Cases**
 
-# Create a snapshot
-resh pkg://system.snapshot input='{"manager": "auto", "scope": "all", "format": "json"}'
-```
+* CI/CD build agent setup
+* Environment standardization
+* Automated patching
 
-## Tips
+---
 
-- Use `dry_run: true` to test operations safely
-- Use `manager: "auto"` to automatically detect your package manager
-- Set reasonable timeouts for your network speed
-- Use snapshots to backup your package state before major changes
-- The `only_if_missing` option prevents reinstalling packages unnecessarily
-- Search results are sorted by relevance score
+### 4.2 Data & State Management
+
+**Scope**
+
+Package state inspection and reproducibility.
+
+**Use Cases**
+
+* Dependency auditing
+* Drift detection
+* System state backups
+* Lockfile-based enforcement
+
+---
+
+### 4.3 Filesystem & Storage
+
+**Scope**
+
+Snapshot and restore operations managing system package state as lockfiles.
+
+**Use Cases**
+
+* Backup before major upgrades
+* Rollback capability
+* System cloning
+
+---
+
+### 4.4 Network & Remote Operations
+
+Indirectly supports:
+
+* Downloading packages from repositories
+* Remote repository synchronization
+
+---
+
+### 4.5 Packages & Software
+
+**Supported Managers**
+
+* apt
+* dnf
+* yum
+* pacman
+* apk
+* brew
+
+**Core Capabilities**
+
+* Install/remove packages
+* Upgrade system
+* Inspect metadata
+* Search repositories
+* Capture and restore state
+
+---
+
+### 4.6 Process & Service Management
+
+Indirectly supports:
+
+* Installing service binaries
+* Updating service versions
+* Removing deprecated services
+
+---
+
+### 4.7 Security & Secrets
+
+Security-related capabilities:
+
+* Security-only updates (`security_only`)
+* Snapshot validation
+* Strict restore policies (`on_missing_package`)
+* Platform mismatch detection
+
+---
+
+### 4.8 System Information
+
+Structured reporting includes:
+
+* Installed package versions
+* Architecture
+* Repository source
+* Installation reason
+* OS metadata
+* Manager version
+
+---
+
+## 5. Platform Support
+
+Supported package managers:
+
+| Manager | Platform              |
+| ------- | --------------------- |
+| apt     | Ubuntu, Debian        |
+| dnf     | Fedora, CentOS Stream |
+| yum     | RHEL, CentOS          |
+| pacman  | Arch Linux            |
+| apk     | Alpine Linux          |
+| brew    | macOS, Linux          |
+
+Auto-detection (`manager: "auto"`) selects the appropriate backend.
+
+No additional platform limitations are specified in documentation.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Use `dry_run` before applying changes.
+* Take snapshots before upgrades.
+* Use `only_if_missing` to maintain idempotency.
+* Apply security updates regularly.
+* Set appropriate `timeout_ms`.
+
+---
+
+### Automation Considerations
+
+* Always evaluate `failed` and `warnings`.
+* Use snapshots for drift detection.
+* Enforce strict restore policies in production.
+* Use `check_only` when validating changes.
+
+---
+
+### CI/CD Integration
+
+Typical sequence:
+
+1. `update` (refresh index)
+2. `install` dependencies
+3. `snapshot` environment state
+4. Validate build
+5. Restore environment as needed
+
+---
+
+### Production Environment Recommendations
+
+* Maintain periodic snapshots.
+* Use exact version restore for production.
+* Enable `security_only` updates where required.
+* Avoid force removal without validation.
+* Review repository mismatches carefully.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Provision build agents.
+* Automate dependency installation.
+* Standardize environments across teams.
+
+---
+
+### SRE Engineers
+
+* Audit installed packages.
+* Apply security patches.
+* Detect configuration drift via snapshots.
+
+---
+
+### Network Administrators
+
+* Install networking tools.
+* Maintain consistent package baselines.
+* Verify repository sources.
+
+---
+
+### AI / Automation Engineers
+
+* Analyze structured install results.
+* Detect failed operations programmatically.
+* Implement environment compliance validation.
+* Compare snapshot states automatically.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+resh is implemented in Rust, providing:
+
+* Memory safety
+* Strong compile-time guarantees
+* Deterministic execution
+* Efficient subprocess management
+
+---
+
+### Type Safety
+
+* Enumerated verb set
+* Strict JSON schema validation
+* Controlled parameter behavior
+* Structured error typing
+
+---
+
+### Performance Characteristics
+
+* Native binary execution
+* Controlled timeouts
+* Efficient backend invocation
+* Minimal parsing overhead
+
+---
+
+### Cross-Platform Architecture
+
+* Unified abstraction over multiple package managers
+* OS-specific manager detection
+* Consistent JSON output across supported systems
+

@@ -2353,6 +2353,12 @@ impl Handle for ArchiveHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help flag early
+        if should_show_help(verb, args) {
+            display_archive_help(io)?;
+            return Ok(Status::ok());
+        }
+        
         match verb {
             "create" => self.verb_create(args, io),
             "extract" => self.verb_extract(args, io),
@@ -6218,3 +6224,664 @@ fn normalize_archive_path(path: &str) -> String {
     
     normalized
 }
+
+// Help functionality
+fn should_show_help(verb: &str, args: &Args) -> bool {
+    verb == "--help" || verb == "-h" || verb == "help" ||
+    args.get("help").is_some() || args.get("h").is_some()
+}
+
+fn display_archive_help(io: &mut IoStreams) -> Result<()> {
+    writeln!(io.stdout, "{}", ARCHIVE_HELP_TEXT)?;
+    Ok(())
+}
+
+const ARCHIVE_HELP_TEXT: &str = r#"RESOURCE SHELL - ARCHIVE HANDLE
+===============================
+
+USAGE:
+  archive://VERB(arguments)
+
+DESCRIPTION:
+  The archive handle provides comprehensive archive management for multiple
+  formats including tar, zip, 7z, and compressed variants. It supports creating,
+  extracting, listing, testing, modifying, and analyzing archives with advanced
+  features like format detection, compression level control, security protections,
+  and incremental modifications.
+
+VERBS:
+  create          Create a new archive from source files/directories
+  extract         Extract files from an archive to a destination
+  list            List contents of an archive
+  test            Verify archive integrity and test entries
+  info            Get detailed archive information and statistics
+  add             Add files to an existing archive
+  remove          Remove files from an existing archive
+
+SUPPORTED FORMATS:
+  tar             Uncompressed tar archive
+  tar.gz (tgz)    Gzip-compressed tar archive
+  tar.xz (txz)    XZ-compressed tar archive
+  tar.zstd        Zstandard-compressed tar archive
+  zip             ZIP archive with optional compression
+  7z              7-Zip archive (limited support)
+  gzip (gz)       Single-file gzip compression
+  raw             Raw compression stream (gzip/xz/zstd)
+
+  Format Detection: Automatic format detection from file extension
+                   Use format="auto" or specify explicitly
+
+EXAMPLES:
+
+  Create tar.gz archive:
+    archive://create(output="/tmp/backup.tar.gz",sources="[\"/home/user/docs\"]")
+
+  Create zip with compression level:
+    archive://create(output="/tmp/data.zip",sources="[\"/data\"]",compression_level="9")
+
+  Create with include/exclude patterns:
+    archive://create(output="/tmp/filtered.tar.gz",sources="[\"/src\"]",include_patterns="[\"*.rs\",\"*.toml\"]",exclude_patterns="[\"target/**\",\"*.tmp\"]")
+
+  Create with base directory:
+    archive://create(output="/tmp/project.tar.gz",sources="[\"/home/user/project\"]",base_dir="/home/user")
+
+  Create without hidden files:
+    archive://create(output="/tmp/visible.tar.gz",sources="[\"/data\"]",include_hidden="false")
+
+  Extract archive:
+    archive://extract(archive="/tmp/backup.tar.gz",destination="/restore")
+
+  Extract with overwrite:
+    archive://extract(archive="/tmp/backup.tar.gz",destination="/restore",overwrite="true")
+
+  Extract specific files:
+    archive://extract(archive="/tmp/backup.tar.gz",destination="/restore",includes="[\"*.txt\",\"docs/**\"]")
+
+  Extract excluding files:
+    archive://extract(archive="/tmp/backup.tar.gz",destination="/restore",excludes="[\"*.tmp\",\"cache/**\"]")
+
+  Extract with strip components:
+    archive://extract(archive="/tmp/backup.tar.gz",destination="/restore",strip_components="1")
+
+  Extract with safety disabled:
+    archive://extract(archive="/tmp/backup.tar.gz",destination="/restore",allow_absolute_paths="true",allow_parent_traversal="true")
+
+  List archive contents:
+    archive://list(archive="/tmp/backup.tar.gz")
+
+  List with metadata:
+    archive://list(archive="/tmp/backup.tar.gz",include_metadata="true",include_compressed_size="true")
+
+  List with filters:
+    archive://list(archive="/tmp/backup.tar.gz",includes="[\"*.rs\"]",excludes="[\"target/**\"]")
+
+  List with limits:
+    archive://list(archive="/tmp/backup.tar.gz",max_entries="100",max_total_bytes="104857600")
+
+  Test archive integrity:
+    archive://test(archive="/tmp/backup.tar.gz")
+
+  Test with detailed report:
+    archive://test(archive="/tmp/backup.tar.gz",report_entries="true",verify_data="true")
+
+  Test stop on first error:
+    archive://test(archive="/tmp/backup.tar.gz",stop_on_first_error="true")
+
+  Get archive info:
+    archive://info(archive="/tmp/backup.tar.gz")
+
+  Get info with entry scan:
+    archive://info(archive="/tmp/backup.tar.gz",scan_entries="true")
+
+  Get info with limits:
+    archive://info(archive="/tmp/backup.tar.gz",scan_entries="true",max_entries="10000")
+
+  Add files to archive:
+    archive://add(archive="/tmp/backup.tar.gz",inputs="[\"/new/file.txt\"]")
+
+  Add with overwrite:
+    archive://add(archive="/tmp/backup.tar.gz",inputs="[\"/new/file.txt\"]",overwrite="true")
+
+  Add with base directory:
+    archive://add(archive="/tmp/backup.tar.gz",inputs="[\"/home/user/new\"]",base_dir="/home/user")
+
+  Add with filters:
+    archive://add(archive="/tmp/backup.tar.gz",inputs="[\"/src\"]",includes="[\"*.rs\"]",excludes="[\"target/**\"]")
+
+  Add with glob pattern:
+    archive://add(archive="/tmp/backup.tar.gz",inputs="[\"glob:/home/user/docs/*.pdf\"]")
+
+  Remove files by path:
+    archive://remove(archive="/tmp/backup.tar.gz",paths="[\"old/file.txt\",\"obsolete/dir/\"]")
+
+  Remove files by pattern:
+    archive://remove(archive="/tmp/backup.tar.gz",patterns="[\"*.tmp\",\"cache/**\"]")
+
+  Remove directory tree:
+    archive://remove(archive="/tmp/backup.tar.gz",dir_prefixes="[\"old/\",\"temp/\"]")
+
+  Remove with dry run:
+    archive://remove(archive="/tmp/backup.tar.gz",paths="[\"test.txt\"]",dry_run="true")
+
+  Remove with backup:
+    archive://remove(archive="/tmp/backup.tar.gz",paths="[\"old.txt\"]",backup_suffix="bak")
+
+  Create with password (zip/7z):
+    archive://create(output="/tmp/secret.zip",sources="[\"/data\"]",password="secret123")
+
+  Create with all options:
+    archive://create(output="/tmp/full.tar.gz",sources="[\"/src\",\"/docs\"]",format="tar.gz",compression_level="6",base_dir="/home/user",include_patterns="[\"*.rs\",\"*.md\"]",exclude_patterns="[\"target/**\"]",include_hidden="false",follow_symlinks="false",preserve_permissions="true",preserve_timestamps="true",overwrite="true")
+
+  Extract with all safety options:
+    archive://extract(archive="/tmp/untrusted.tar.gz",destination="/safe",overwrite="false",create_destination="true",strip_components="1",allow_absolute_paths="false",allow_parent_traversal="false",allow_symlinks="true",follow_symlinks="false",max_entries="10000",max_total_bytes="1073741824",max_file_bytes="10485760")
+
+CREATE ARGUMENTS:
+  output=PATH            Output archive path (required)
+  sources=JSON_ARRAY     Source paths to archive (required, JSON array)
+  base_dir=PATH          Base directory for relative paths (optional)
+  format=FORMAT          Archive format: auto, tar, tar.gz, tar.xz, tar.zstd,
+                         zip, 7z, gzip, raw (default: auto-detect from extension)
+  compression_level=N    Compression level (1-9 for gzip/zip, 1-22 for zstd)
+                         (default: format-specific, typically 6)
+  include_patterns=JSON  Glob patterns to include (JSON array, optional)
+  exclude_patterns=JSON  Glob patterns to exclude (JSON array, optional)
+  include_hidden=BOOL    Include hidden files (default: true)
+  follow_symlinks=BOOL   Follow symbolic links (default: false)
+  password=TEXT          Password for encryption (zip/7z only)
+  overwrite=BOOL         Overwrite existing output (default: false)
+  preserve_permissions=B Preserve file permissions (default: true)
+  preserve_timestamps=B  Preserve file timestamps (default: true)
+  max_files=N            Maximum files to archive (default: 100000)
+  max_size_mb=N          Maximum total size in MB (default: 10240)
+  progress=BOOL          Show progress information (default: false)
+  format=FORMAT          Output format: json, text (default: json)
+
+EXTRACT ARGUMENTS:
+  archive=PATH           Archive to extract (required)
+  destination=PATH       Destination directory (required)
+  format=FORMAT          Archive format (default: auto-detect)
+  compression=TYPE       Compression: auto, none, gzip, xz, zstd (default: auto)
+  includes=JSON_ARRAY    Patterns to include (JSON array, optional)
+  excludes=JSON_ARRAY    Patterns to exclude (JSON array, optional)
+  overwrite=BOOL         Overwrite existing files (default: false)
+  create_destination=B   Create destination if missing (default: true)
+  fail_on_missing_archive=B  Fail if archive doesn't exist (default: true)
+  strip_components=N     Strip N leading path components (default: 0)
+  allow_absolute_paths=B Allow absolute paths (default: false)
+  allow_parent_traversal=B Allow .. in paths (default: false)
+  allow_symlinks=BOOL    Allow symlink extraction (default: true)
+  follow_symlinks=BOOL   Follow symlinks (default: false)
+  max_entries=N          Maximum entries to extract (default: 1000000)
+  max_total_bytes=N      Maximum total bytes to extract (optional)
+  max_file_bytes=N       Maximum single file size (optional)
+  include_manifest=BOOL  Include manifest in output (default: true)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+LIST ARGUMENTS:
+  archive=PATH           Archive to list (required)
+  format=FORMAT          Archive format (default: auto-detect)
+  compression=TYPE       Compression type (default: auto-detect)
+  includes=JSON_ARRAY    Patterns to include (JSON array, optional)
+  excludes=JSON_ARRAY    Patterns to exclude (JSON array, optional)
+  max_entries=N          Maximum entries to list (default: 1000000)
+  max_total_bytes=N      Maximum total bytes to scan (optional)
+  fail_on_missing_archive=B  Fail if archive doesn't exist (default: true)
+  include_metadata=BOOL  Include file metadata (default: true)
+  include_compressed_size=B Include compressed sizes (default: true)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+TEST ARGUMENTS:
+  archive=PATH           Archive to test (required)
+  format=FORMAT          Archive format (default: auto-detect)
+  compression=TYPE       Compression type (default: auto-detect)
+  stop_on_first_error=B  Stop on first error (default: true)
+  report_entries=BOOL    Report per-entry results (default: true)
+  verify_data=BOOL       Verify data integrity (default: true)
+  max_entries=N          Maximum entries to test (default: 1000000)
+  max_total_bytes=N      Maximum total bytes to test (optional)
+  max_file_bytes=N       Maximum single file size (optional)
+  fail_on_missing_archive=B  Fail if archive doesn't exist (default: true)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+INFO ARGUMENTS:
+  archive=PATH           Archive to analyze (required)
+  format=FORMAT          Archive format (default: auto-detect)
+  compression=TYPE       Compression type (default: auto-detect)
+  scan_entries=BOOL      Scan and count entries (default: true)
+  max_entries=N          Maximum entries to scan (default: 1000000)
+  max_total_bytes=N      Maximum total bytes to scan (optional)
+  fail_on_missing_archive=B  Fail if archive doesn't exist (default: true)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+ADD ARGUMENTS:
+  archive=PATH           Archive to modify (required)
+  inputs=JSON_ARRAY      Paths to add (required, JSON array, supports glob:)
+  format=FORMAT          Archive format (default: auto-detect)
+  compression=TYPE       Compression type (default: auto-detect)
+  base_dir=PATH          Base directory for relative paths (optional)
+  includes=JSON_ARRAY    Patterns to include (JSON array, optional)
+  excludes=JSON_ARRAY    Patterns to exclude (JSON array, optional)
+  follow_symlinks=BOOL   Follow symbolic links (default: false)
+  overwrite=BOOL         Overwrite existing entries (default: false)
+  keep_existing_dirs=B   Keep existing directories (default: true)
+  preserve_owner=BOOL    Preserve file owner (default: false)
+  preserve_permissions=B Preserve file permissions (default: true)
+  preserve_timestamps=B  Preserve file timestamps (default: true)
+  deterministic=BOOL     Create deterministic archive (default: false)
+  max_entries=N          Maximum entries limit (default: 1000000)
+  max_total_bytes=N      Maximum total bytes limit (optional)
+  tmp_dir=PATH           Temporary directory for operations (optional)
+  backup_suffix=SUFFIX   Create backup with suffix (optional)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+REMOVE ARGUMENTS:
+  archive=PATH           Archive to modify (required)
+  format=FORMAT          Archive format (default: auto-detect)
+  compression=TYPE       Compression type (default: auto-detect)
+  paths=JSON_ARRAY       Exact paths to remove (JSON array, optional)
+  patterns=JSON_ARRAY    Glob patterns to match (JSON array, optional)
+  dir_prefixes=JSON_ARRAY Directory prefixes to remove (JSON array, optional)
+  remove_empty_dirs=BOOL Remove empty directories (default: true)
+  dry_run=BOOL           Simulate without changes (default: false)
+  max_entries=N          Maximum entries limit (default: 1000000)
+  max_total_bytes=N      Maximum total bytes limit (optional)
+  fail_on_missing_archive=B  Fail if archive doesn't exist (default: true)
+  tmp_dir=PATH           Temporary directory for operations (optional)
+  backup_suffix=SUFFIX   Create backup with suffix (optional)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+ARCHIVE FORMATS:
+
+  tar (Tape Archive):
+    • Uncompressed archive format
+    • Preserves Unix permissions and metadata
+    • No built-in compression
+    • File extension: .tar
+
+  tar.gz (Gzip-compressed Tar):
+    • Tar archive with gzip compression
+    • Compression level: 1-9 (default: 6)
+    • Good balance of speed and compression
+    • File extensions: .tar.gz, .tgz
+
+  tar.xz (XZ-compressed Tar):
+    • Tar archive with LZMA2/XZ compression
+    • Compression level: 1-9 (default: 6)
+    • Best compression ratio, slower
+    • File extensions: .tar.xz, .txz
+
+  tar.zstd (Zstandard-compressed Tar):
+    • Tar archive with Zstandard compression
+    • Compression level: 1-22 (default: 3)
+    • Fast compression with good ratio
+    • File extensions: .tar.zst, .tar.zstd
+
+  zip (ZIP Archive):
+    • Cross-platform archive format
+    • Per-file compression
+    • Compression level: 1-9 (default: 6)
+    • Supports password protection
+    • File extension: .zip
+
+  7z (7-Zip Archive):
+    • High compression ratio format
+    • Compression level: 1-9 (default: 5)
+    • Supports password protection
+    • Limited support (read-only in some ops)
+    • File extension: .7z
+
+  gzip (Single-file Gzip):
+    • Compresses single file only
+    • Compression level: 1-9 (default: 6)
+    • File extension: .gz
+
+  raw (Raw Compression Stream):
+    • Single-file compression: gzip, xz, or zstd
+    • No archive structure
+    • Requires explicit compression type
+
+COMPRESSION LEVELS:
+
+  Format      Min  Max  Default  Speed      Ratio
+  ─────────────────────────────────────────────────
+  gzip        1    9    6        Fast       Good
+  xz          1    9    6        Slow       Best
+  zstd        1    22   3        Fastest    Good
+  zip         1    9    6        Fast       Good
+  7z          1    9    5        Medium     Best
+
+  Lower levels = faster compression, larger files
+  Higher levels = slower compression, smaller files
+
+FORMAT DETECTION:
+
+  Automatic detection from file extension:
+    .tar        → tar (uncompressed)
+    .tar.gz     → tar.gz (gzip)
+    .tgz        → tar.gz (gzip)
+    .tar.xz     → tar.xz (xz)
+    .txz        → tar.xz (xz)
+    .tar.zst    → tar.zstd (zstandard)
+    .tar.zstd   → tar.zstd (zstandard)
+    .zip        → zip
+    .7z         → 7z
+    .gz         → raw/gzip (if not .tar.gz)
+    .xz         → raw/xz (if not .tar.xz)
+    .zst        → raw/zstd (if not .tar.zst)
+
+  Override with format parameter:
+    format="tar.gz"    Force tar.gz format
+    format="zip"       Force zip format
+    format="auto"      Auto-detect (default)
+
+SECURITY FEATURES:
+
+  Path Traversal Protection:
+    • Blocks ".." components by default
+    • Prevents escape from destination directory
+    • Use allow_parent_traversal="true" to disable
+
+  Absolute Path Protection:
+    • Strips leading "/" by default
+    • Prevents writing to absolute paths
+    • Use allow_absolute_paths="true" to disable
+
+  Symlink Handling:
+    • Allow symlink extraction (default: true)
+    • Control with allow_symlinks parameter
+    • Follow vs preserve with follow_symlinks
+
+  Size Limits:
+    • max_entries: Limit total entries processed
+    • max_total_bytes: Limit total data size
+    • max_file_bytes: Limit individual file size
+    • Prevents decompression bombs
+
+  Safe Defaults:
+    • Path traversal blocked
+    • Absolute paths converted to relative
+    • Symlinks allowed but not followed
+    • All limits enforced
+
+GLOB PATTERNS:
+
+  Supported in include_patterns, exclude_patterns, patterns:
+    *           Match any characters
+    ?           Match single character
+    [abc]       Match any character in set
+    [a-z]       Match character in range
+    **          Match directories recursively
+
+  Examples:
+    "*.txt"           All .txt files
+    "docs/**/*.md"    All .md files in docs/ tree
+    "src/**/*.rs"     All .rs files in src/ tree
+    "[a-z]*.log"      Log files starting with letter
+    "test_*.rs"       Test files matching pattern
+
+  Glob prefix in add verb:
+    inputs=["glob:/home/user/docs/*.pdf"]
+    Expands glob before adding to archive
+
+OUTPUT FORMATS:
+
+  JSON (default):
+    Structured output with complete metadata
+    Machine-parseable
+    Includes: ok, timestamp, query, summary, manifest, error, warnings
+
+    Example create output:
+    {
+      "ok": true,
+      "timestamp_unix_ms": 1234567890000,
+      "query": {...},
+      "result": {
+        "output_path": "/tmp/backup.tar.gz",
+        "format_detected": "tar.gz",
+        "files_archived": 42,
+        "directories_archived": 8,
+        "total_size_bytes": 1048576,
+        "compressed_size_bytes": 262144,
+        "compression_ratio": 0.75,
+        "duration_ms": 1234
+      },
+      "files": [...],
+      "statistics": {...},
+      "warnings": [],
+      "error": null
+    }
+
+  Text:
+    Human-readable output
+    Formatted for terminal display
+    Includes summaries and key information
+
+    Example create output:
+    Archive Creation
+    ================
+    
+    Output      : /tmp/backup.tar.gz (tar.gz format)
+    Files       : 42 files, 8 directories
+    Size        : 1.0 MB → 0.3 MB (75% compression)
+    Duration    : 1.23 seconds
+
+COMMON WORKFLOWS:
+
+  Create backup archive:
+    # Basic backup
+    archive://create(output="/backups/home.tar.gz",sources="[\"/home/user\"]")
+    
+    # Filtered backup
+    archive://create(output="/backups/code.tar.gz",sources="[\"/src\"]",include_patterns="[\"*.rs\",\"*.toml\"]",exclude_patterns="[\"target/**\"]")
+
+  Extract archive safely:
+    # Safe extraction with defaults
+    archive://extract(archive="/tmp/download.tar.gz",destination="/extract")
+    
+    # Extract specific files
+    archive://extract(archive="/tmp/backup.tar.gz",destination="/restore",includes="[\"config/**\",\"*.conf\"]")
+
+  Verify archive integrity:
+    # Quick test
+    archive://test(archive="/backups/important.tar.gz")
+    
+    # Detailed verification
+    archive://test(archive="/backups/important.tar.gz",report_entries="true",verify_data="true")
+
+  Inspect archive contents:
+    # List files
+    archive://list(archive="/tmp/backup.tar.gz")
+    
+    # Get statistics
+    archive://info(archive="/tmp/backup.tar.gz",scan_entries="true")
+
+  Modify existing archive:
+    # Add new files
+    archive://add(archive="/backups/project.tar.gz",inputs="[\"/src/newfile.rs\"]")
+    
+    # Remove old files
+    archive://remove(archive="/backups/project.tar.gz",patterns="[\"*.tmp\",\"cache/**\"]")
+
+  Incremental updates:
+    # Add with overwrite
+    archive://add(archive="/backup.tar.gz",inputs="[\"/data/updated.txt\"]",overwrite="true")
+    
+    # Test before and after
+    archive://test(archive="/backup.tar.gz")
+
+  Compressed migrations:
+    # Create high-compression archive
+    archive://create(output="/migrate/data.tar.xz",sources="[\"/data\"]",compression_level="9")
+    
+    # Extract elsewhere
+    archive://extract(archive="/migrate/data.tar.xz",destination="/newserver/data")
+
+  Secure archives:
+    # Password-protected zip
+    archive://create(output="/secure/data.zip",sources="[\"/sensitive\"]",password="SecurePass123")
+    
+    # Extract with safety checks
+    archive://extract(archive="/untrusted/archive.tar.gz",destination="/safe",max_total_bytes="1073741824",max_file_bytes="10485760")
+
+ERROR CODES:
+
+  create errors:
+    archive.create_invalid_output              Invalid output path
+    archive.create_invalid_sources             Invalid sources array
+    archive.create_invalid_format              Unsupported format
+    archive.create_invalid_compression_level   Invalid compression level
+    archive.create_output_exists               Output exists, overwrite=false
+    archive.create_source_not_found            Source file/dir not found
+    archive.create_max_files_exceeded          Too many files
+    archive.create_max_size_exceeded           Total size too large
+    archive.create_compression_failed          Compression error
+
+  extract errors:
+    archive.extract_missing_archive            Archive not found
+    archive.extract_invalid_destination        Invalid destination path
+    archive.extract_destination_missing        Destination doesn't exist
+    archive.extract_path_traversal_detected    Path traversal attempt
+    archive.extract_absolute_path_rejected     Absolute path blocked
+    archive.extract_symlink_rejected           Symlink blocked
+    archive.extract_max_entries_exceeded       Too many entries
+    archive.extract_max_size_exceeded          Total size too large
+    archive.extract_max_file_size_exceeded     File too large
+
+  list errors:
+    archive.list_missing_archive               Archive not found
+    archive.list_invalid_format                Format detection failed
+    archive.list_max_entries_exceeded          Too many entries
+    archive.list_archive_read_error            Read error
+
+  test errors:
+    archive.test_missing_archive               Archive not found
+    archive.test_entry_checksum_error          Checksum mismatch
+    archive.test_entry_io_error                Entry read error
+    archive.test_entry_size_mismatch           Size mismatch
+    archive.test_max_entries_exceeded          Too many entries
+
+  info errors:
+    archive.info_missing_archive               Archive not found
+    archive.info_invalid_format                Format detection failed
+    archive.info_archive_read_error            Read error
+
+  add errors:
+    archive.add_missing_archive                Archive not found
+    archive.add_invalid_input                  Invalid input path
+    archive.add_unsupported_for_raw            Can't add to raw format
+    archive.add_7z_unsupported                 7z modification unsupported
+    archive.add_max_entries_exceeded           Too many entries
+
+  remove errors:
+    archive.remove_missing_archive             Archive not found
+    archive.remove_nothing_to_remove           No removal criteria
+    archive.remove_unsupported_for_raw         Can't remove from raw format
+    archive.remove_7z_unsupported              7z modification unsupported
+
+EXIT CODES:
+  0                      Success
+  1                      Error (see error code and message)
+
+BEST PRACTICES:
+  • Use tar.gz for Unix/Linux systems (preserves permissions)
+  • Use zip for cross-platform archives
+  • Use tar.xz for maximum compression (slower)
+  • Use tar.zstd for fast compression with good ratio
+  • Always test archives after creation
+  • Use max_entries and size limits for untrusted archives
+  • Enable security features for untrusted archives
+  • Use include/exclude patterns for selective archiving
+  • Preserve timestamps for backups (default)
+  • Use base_dir to control archive structure
+  • Test extraction in safe location first
+  • Use strip_components to remove leading paths
+  • Back up archives before modifying (backup_suffix)
+  • Use dry_run for remove operations first
+  • Set appropriate compression levels (higher = smaller but slower)
+  • Don't archive already-compressed files with compression
+  • Use follow_symlinks=false for backups (default)
+  • Check disk space before extracting
+  • Use format="auto" to let extension determine format
+  • Verify checksums with test verb
+  • Use info verb to inspect before extracting
+  • Filter with includes/excludes to reduce archive size
+  • Use deterministic=true for reproducible archives
+  • Keep archives under max_size_mb limits
+  • Use progress=true for large operations
+  • Exclude temporary files and caches
+  • Use glob: prefix in add verb for pattern expansion
+  • Create incremental backups with add verb
+  • Clean old entries with remove verb
+  • Monitor compression ratios for efficiency
+
+LIMITATIONS:
+  • 7z support is read-only for some operations
+  • Raw format cannot be modified (add/remove)
+  • Password protection only for zip and 7z
+  • Glob expansion only in add verb inputs
+  • Some metadata may be lost in format conversion
+  • Symbolic links handling varies by format
+  • Maximum path length depends on format
+  • Unicode support varies by format
+  • Compression level limits vary by format
+  • File permissions may not preserve across platforms
+
+PERFORMANCE CONSIDERATIONS:
+
+  Format Speed (fastest to slowest):
+    1. tar (no compression)
+    2. tar.zstd (fast compression)
+    3. tar.gz (balanced)
+    4. zip (balanced)
+    5. tar.xz (slow, best compression)
+
+  Memory Usage:
+    • tar formats: Low (streaming)
+    • zip formats: Moderate (random access)
+    • 7z formats: High (solid compression)
+
+  Disk I/O:
+    • Reading: Sequential for tar, random for zip
+    • Writing: Streaming for most formats
+    • Modifying: Rewrites entire archive
+
+  Tips:
+    • Use compression_level wisely (higher ≠ always better)
+    • Don't compress already compressed files
+    • Use include/exclude to reduce work
+    • Set max_entries to limit processing
+    • Use strip_components to reduce path operations
+    • Parallel operations with multiple archives
+
+PLATFORM NOTES:
+
+  Unix/Linux:
+    • Full metadata preservation (permissions, owner)
+    • Symlink support
+    • Case-sensitive filenames
+
+  Windows:
+    • Limited metadata preservation
+    • Limited symlink support
+    • Case-insensitive filenames
+
+  macOS:
+    • Full Unix metadata support
+    • Extended attributes may be lost
+    • Resource forks not preserved
+
+MORE INFO:
+  For complete documentation of archive operations, format specifications,
+  and advanced usage:
+  https://github.com/[your-org]/resource-shell/docs/archive-handle.md
+
+  Archive format documentation:
+  tar:    https://www.gnu.org/software/tar/manual/
+  zip:    https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
+  7z:     https://www.7-zip.org/7z.html
+  gzip:   https://www.gzip.org/
+  xz:     https://tukaani.org/xz/format.html
+  zstd:   https://facebook.github.io/zstd/
+
+  Use 'archive:// --help=VERB' for detailed help on a specific verb.
+"#;

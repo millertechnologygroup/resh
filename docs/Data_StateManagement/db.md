@@ -1,161 +1,156 @@
-# Database Handle (db://)
+# Resource Shell (resh) – Database Handle Documentation
 
-The Database handle provides access to SQL databases including SQLite, PostgreSQL, and MySQL. You can run queries, manage transactions, inspect table schemas, and more.
+## 1. Overview
 
-**Auto-Connect Feature**: Query and exec verbs now support automatic connection establishment when a DSN parameter is provided, eliminating the need for separate connect commands in many CLI scenarios.
+Resource Shell (resh) is a structured command-line framework that standardizes infrastructure operations through a resource-oriented URI execution model.
 
-## Available Verbs
+The `db://` handle provides structured access to SQL databases, including:
 
-The db handle supports these verbs:
-- `connect` - Connect to a database
-- `query` - Run SELECT queries and get results  
-- `exec` - Run INSERT, UPDATE, DELETE statements
-- `tables` - List tables or describe table structure
-- `schema` - Get detailed table schema information
-- `ping` - Test database connection health
-- `transaction` - Manage database transactions
+* SQLite
+* PostgreSQL
+* MySQL / MariaDB
 
-## Connect Verb
+It supports:
 
-Establishes a connection to a database using a Data Source Name (DSN).
+* Connection management
+* Query execution
+* Data modification
+* Schema inspection
+* Transaction control
+* Health verification
 
-### Basic Usage
+Traditional database CLI usage typically involves:
+
+* Driver-specific command tools
+* Manual connection lifecycle management
+* Unstructured output
+* Ad hoc transaction handling
+* Text parsing of results
+
+The `db://` handle addresses these issues by:
+
+* Providing a consistent URI-based command structure
+* Supporting both explicit connect and auto-connect workflows
+* Returning structured JSON output
+* Enforcing parameter binding for safe query execution
+* Supporting deterministic automation integration
+
+All operations follow the URI format:
+
+```
+db://driver/alias.verb(options)
+```
+
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+All database operations follow:
+
+```
+db://driver/alias.verb(arguments)
+```
+
+This standardizes interaction across different SQL engines.
+
+### Safety-First Execution
+
+The handle enforces:
+
+* Parameterized SQL execution
+* Explicit transaction boundaries
+* Timeout controls
+* Structured error reporting
+* TLS configuration support
+
+These controls reduce injection risk and operational instability.
+
+### Deterministic Behavior
+
+Operations:
+
+* Return structured JSON
+* Provide consistent metadata envelopes
+* Separate data from execution metadata
+* Use explicit status indicators
+
+### JSON-Based Structured Output
+
+Query and exec operations return:
+
+* Structured row arrays
+* Metadata describing columns
+* Rows affected counts
+* Explicit scalar values
+
+This eliminates reliance on text parsing in automation.
+
+### AI-Readiness
+
+The predictable grammar and structured output allow orchestration agents and automation frameworks to interact with databases safely and deterministically.
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+db://driver/alias.verb(options)
+```
+
+#### Components
+
+| Component | Description                      |
+| --------- | -------------------------------- |
+| `db`      | Handle identifier                |
+| `driver`  | `sqlite`, `postgres`, or `mysql` |
+| `alias`   | Logical connection name          |
+| `verb`    | Database operation               |
+| `options` | Named parameters                 |
+
+---
+
+### Examples
+
+Connect to SQLite:
 
 ```bash
-# SQLite in-memory database
-resh db://sqlite/mydb.connect dsn=sqlite::memory:
-
-# SQLite file database  
 resh db://sqlite/mydb.connect dsn=sqlite:///path/to/database.db
-
-# PostgreSQL database
-resh db://postgres/mydb.connect dsn=postgresql://user:pass@localhost:5432/dbname
-
-# MySQL database
-resh db://mysql/mydb.connect dsn=mysql://user:pass@localhost:3306/dbname
 ```
 
-### Configuration Options
+Auto-connect query:
 
 ```bash
-# Connection with custom pool settings
-resh db://postgres/mydb.connect \
-  dsn=postgresql://user:pass@localhost:5432/dbname \
-  max_connections=10 \
-  min_connections=2 \
-  connect_timeout_ms=30000 \
-  idle_timeout_ms=600000 \
-  max_lifetime_ms=1800000
-
-# Connection with TLS settings  
-resh db://postgres/mydb.connect \
-  dsn=postgresql://user:pass@localhost:5432/dbname \
-  tls_mode=require
-```
-
-### Example Output
-
-```json
-{
-  "type": "db_connection",
-  "driver": "sqlite",
-  "alias": "mydb", 
-  "reused": false,
-  "pool_stats": {
-    "active_connections": 1,
-    "idle_connections": 0,
-    "max_connections": 10,
-    "min_connections": 1
-  }
-}
-```
-
-## Query Verb
-
-Runs SQL SELECT statements and returns results in different formats. Supports both traditional workflow (connect first) and auto-connect (provide DSN with query).
-
-### Traditional Query Examples (after connect)
-
-```bash
-# First connect to database
-resh db://sqlite/mydb.connect dsn=sqlite:///path/to/database.db
-
-# Then query
-resh db://sqlite/mydb.query \
-  sql="SELECT id, email FROM users WHERE active = ?" \
-  params='[true]' \
-  mode=rows
-```
-
-### Auto-Connect Query Examples (recommended for CLI)
-
-```bash
-# Query with automatic connection establishment
-resh db://sqlite/mydb.query \
-  dsn=sqlite:///path/to/database.db \
-  sql="SELECT id, email FROM users WHERE active = ?" \
-  params='[true]' \
-  mode=rows
-
-# MySQL auto-connect query
 resh db://mysql/stocks.query \
-  dsn='mysql://user:pass@host:3306/database' \
-  sql="SELECT COUNT(*) FROM stocks WHERE price > ?" \
-  params='[100]' \
-  mode=scalar
-
-# PostgreSQL auto-connect with complex query
-resh db://postgres/analytics.query \
-  dsn='postgresql://user:pass@localhost:5432/analytics' \
-  sql="SELECT category, AVG(amount) as avg_amount FROM transactions GROUP BY category" \
-  mode=rows
+  dsn='mysql://user:pass@host:3306/stocks' \
+  sql="SELECT COUNT(*) FROM stocks"
 ```
 
-### Query without Connection (legacy)
+Insert row:
 
 ```bash
-# Query returning single value
-resh db://sqlite/mydb.query \
-  sql="SELECT COUNT(*) FROM users WHERE active = ?" \
-  params='[true]' \
-  mode=scalar
-
-# Query with no parameters  
-resh db://sqlite/mydb.query \
-  sql="SELECT COUNT(*) FROM users" \
-  mode=scalar
+resh db://postgres/app.exec \
+  dsn='postgresql://user:pass@localhost:5432/appdb' \
+  sql="INSERT INTO users (email) VALUES ($1)" \
+  params='["alice@example.com"]'
 ```
 
-### Query Modes
-
-- `rows` - Returns multiple rows as an array (default)
-- `scalar` - Returns single value from first row, first column
-- `exec` - For compatibility; use `exec` verb instead for DML
-
-### Query Configuration
+Begin transaction:
 
 ```bash
-# Query with custom timeout and row limit (traditional)
-resh db://sqlite/mydb.query \
-  sql="SELECT * FROM users" \
-  mode=rows \
-  timeout_ms=10000 \
-  max_rows=500
-
-# Query with auto-connect and custom configuration
-resh db://mysql/mydb.query \
-  dsn='mysql://user:pass@host:3306/database' \
-  sql="SELECT * FROM large_table" \
-  mode=rows \
-  timeout_ms=10000 \
-  max_rows=500
+resh db://postgres/app.transaction action=begin
 ```
 
-**Auto-Connect Parameters**:
-- `dsn` - Database connection string (will auto-connect if no existing connection found)
-- When DSN is provided, connection will be established automatically if the alias is not already connected
+---
 
-### Example Output (rows mode)
+### 3.2 Execution Semantics
+
+All operations return structured JSON responses.
+
+#### Query Example (rows mode)
 
 ```json
 {
@@ -174,112 +169,7 @@ resh db://mysql/mydb.query \
 }
 ```
 
-### Example Output (scalar mode)
-
-```json
-{
-  "value": 2,
-  "meta": {
-    "row_count": 1,
-    "columns": [
-      {"name": "COUNT(*)", "type": "INTEGER", "ordinal": 1}
-    ]
-  }
-}
-```
-
-## Exec Verb
-
-Runs INSERT, UPDATE, DELETE statements and returns the number of affected rows. Supports both traditional workflow (connect first) and auto-connect (provide DSN with exec).
-
-### Traditional Exec Examples (after connect)
-
-```bash
-# First connect to database
-resh db://sqlite/mydb.connect dsn=sqlite:///path/to/database.db
-
-# Then execute statements
-resh db://sqlite/mydb.exec \
-  sql="INSERT INTO users (name, active) VALUES (?, ?)" \
-  params='["Alice", true]'
-```
-
-### Auto-Connect Exec Examples (recommended for CLI)
-
-```bash
-# Insert with automatic connection
-resh db://mysql/mydb.exec \
-  dsn='mysql://user:pass@host:3306/database' \
-  sql="INSERT INTO users (name, email, active) VALUES (?, ?, ?)" \
-  params='["Alice", "alice@example.com", true]'
-
-# Update with auto-connect
-resh db://postgres/mydb.exec \
-  dsn='postgresql://user:pass@localhost:5432/database' \
-  sql="UPDATE users SET last_login = NOW() WHERE id = $1" \
-  params='[123]'
-
-# Delete with auto-connect
-resh db://sqlite/mydb.exec \
-  dsn=sqlite:///path/to/database.db \
-  sql="DELETE FROM users WHERE active = ?" \
-  params='[false]'
-```
-
-### Legacy Exec Examples (without connection)
-
-```bash
-# Insert with parameters
-resh db://sqlite/mydb.exec \
-  sql="INSERT INTO users (name, active) VALUES (?, ?)" \
-  params='["Alice", true]'
-
-# Update with parameters
-resh db://sqlite/mydb.exec \
-  sql="UPDATE users SET active = ? WHERE active = ?" \
-  params='[false, true]'
-
-# Delete with parameters
-resh db://sqlite/mydb.exec \
-  sql="DELETE FROM users WHERE active = ?" \
-  params='[false]'
-```
-
-### Insert with Last Insert ID
-
-```bash
-# Get the last inserted ID (SQLite/MySQL) - traditional
-resh db://sqlite/mydb.exec \
-  sql="INSERT INTO users (name, active) VALUES (?, ?)" \
-  params='["Bob", true]' \
-  return_last_insert_id=true
-
-# Get the last inserted ID with auto-connect
-resh db://mysql/mydb.exec \
-  dsn='mysql://user:pass@host:3306/database' \
-  sql="INSERT INTO products (name, price) VALUES (?, ?)" \
-  params='["Widget", 19.99]' \
-  return_last_insert_id=true
-```
-
-### Exec Configuration
-
-```bash
-# Exec with custom timeout (traditional)
-resh db://postgres/mydb.exec \
-  sql="UPDATE large_table SET status = $1 WHERE processed = $2" \
-  params='["completed", false]' \
-  timeout_ms=30000
-
-# Exec with auto-connect and custom timeout
-resh db://postgres/mydb.exec \
-  dsn='postgresql://user:pass@localhost:5432/database' \
-  sql="UPDATE large_table SET status = $1 WHERE processed = $2" \
-  params='["completed", false]' \
-  timeout_ms=30000
-```
-
-### Example Output
+#### Exec Example
 
 ```json
 {
@@ -287,501 +177,265 @@ resh db://postgres/mydb.exec \
 }
 ```
 
-### Example Output (with last insert ID)
-
-```json
-{
-  "rows_affected": 1,
-  "last_insert_id": 123
-}
-```
-
-## Tables Verb
-
-Lists tables in the database or describes a specific table's structure.
-
-### List All Tables
-
-```bash
-# List base tables only
-resh db://sqlite/mydb.tables
-
-# List tables and views
-resh db://sqlite/mydb.tables include_views=true
-
-# List with custom limits
-resh db://postgres/mydb.tables \
-  max_tables=100 \
-  timeout_ms=10000
-```
-
-### Describe Specific Table
-
-```bash
-# Get table structure
-resh db://sqlite/mydb.tables table=users
-
-# Include system tables in schema information
-resh db://postgres/mydb.tables \
-  table=users \
-  include_system=true
-```
-
-### Example Output (list mode)
-
-```json
-{
-  "tables": [
-    {
-      "name": "users",
-      "type": "BASE TABLE",
-      "schema": "main"
-    },
-    {
-      "name": "orders", 
-      "type": "BASE TABLE",
-      "schema": "main"
-    }
-  ],
-  "meta": {
-    "truncated": false,
-    "table_count": 2
-  }
-}
-```
-
-### Example Output (describe mode)
-
-```json
-{
-  "table": {
-    "name": "users",
-    "type": "BASE TABLE",
-    "schema": "main"
-  },
-  "columns": [
-    {
-      "name": "id",
-      "data_type": "INTEGER", 
-      "is_nullable": false,
-      "is_primary_key": true,
-      "ordinal_position": 1,
-      "default_value": null
-    },
-    {
-      "name": "email",
-      "data_type": "TEXT",
-      "is_nullable": false, 
-      "is_primary_key": false,
-      "ordinal_position": 2,
-      "default_value": null
-    }
-  ]
-}
-```
-
-## Schema Verb
-
-Gets detailed schema information for a specific table including indexes, foreign keys, and constraints.
-
-### Basic Schema Examples
-
-```bash
-# Get basic table schema
-resh db://sqlite/mydb.schema table=users
-
-# Get schema with indexes
-resh db://sqlite/mydb.schema \
-  table=users \
-  include_indexes=true
-
-# Get complete schema information
-resh db://postgres/mydb.schema \
-  table=users \
-  include_indexes=true \
-  include_foreign_keys=true \
-  include_unique_constraints=true
-```
-
-### Schema Configuration Options
-
-- `include_indexes=true` - Include index information
-- `include_foreign_keys=true` - Include foreign key relationships
-- `include_unique_constraints=true` - Include unique constraints
-- `include_checks=true` - Include check constraints  
-- `include_triggers=true` - Include trigger information
-- `timeout_ms=5000` - Custom timeout
-
-### Example Output
-
-```json
-{
-  "table": {
-    "name": "users",
-    "type": "BASE TABLE",
-    "schema": "main"
-  },
-  "columns": [
-    {
-      "name": "id", 
-      "data_type": "INTEGER",
-      "is_nullable": false,
-      "is_primary_key": true,
-      "ordinal_position": 1,
-      "default_value": null
-    },
-    {
-      "name": "email",
-      "data_type": "TEXT", 
-      "is_nullable": false,
-      "is_primary_key": false,
-      "ordinal_position": 2,
-      "default_value": null
-    }
-  ],
-  "primary_key": {
-    "name": "users_pkey",
-    "columns": ["id"]
-  },
-  "indexes": [
-    {
-      "name": "idx_users_email",
-      "columns": ["email"],
-      "is_unique": true,
-      "is_primary": false
-    }
-  ],
-  "foreign_keys": [
-    {
-      "name": "fk_users_account",
-      "columns": ["account_id"],
-      "referenced_table": {
-        "schema": "main",
-        "name": "accounts"  
-      },
-      "referenced_columns": ["id"],
-      "on_delete": "CASCADE",
-      "on_update": "RESTRICT"
-    }
-  ]
-}
-```
-
-## Ping Verb
-
-Tests database connection health and measures response time.
-
-### Basic Ping Examples
-
-```bash
-# Simple ping test
-resh db://sqlite/mydb.ping
-
-# Ping with custom timeout
-resh db://postgres/mydb.ping timeout_ms=2000
-
-# Ping with retries and backoff
-resh db://mysql/mydb.ping \
-  timeout_ms=1000 \
-  retries=3 \
-  backoff_ms=500
-
-# Detailed ping information
-resh db://sqlite/mydb.ping detailed=true
-```
-
-### Ping Configuration Options
-
-- `timeout_ms=1000` - Connection timeout (1ms to max)
-- `retries=0` - Number of retry attempts (0 to 10)
-- `backoff_ms=100` - Delay between retries
-- `detailed=false` - Include extra connection information
-
-### Example Output (success)
+#### Ping Example
 
 ```json
 {
   "status": "ok",
-  "driver": "sqlite",
-  "alias": "mydb", 
+  "driver": "postgres",
+  "alias": "app",
   "attempts": 1,
-  "latency_ms": 2
+  "latency_ms": 12
 }
 ```
 
-### Example Output (detailed)
+Automation systems should evaluate structured response fields and error codes instead of parsing raw output.
 
-```json
-{
-  "status": "ok",
-  "driver": "postgres",
-  "alias": "mydb",
-  "attempts": 1, 
-  "latency_ms": 15,
-  "details": {
-    "pool_stats": {
-      "active_connections": 2,
-      "idle_connections": 3,
-      "max_connections": 10
-    }
-  }
-}
-```
+---
 
-## Transaction Verb
+## 4. Functional Domain – Database Handle
 
-Manages database transactions with begin, commit, and rollback operations.
+---
 
-### Begin Transaction
+### 4.1 Supported Drivers
 
-```bash
-# Start basic transaction
-resh db://sqlite/mydb.transaction action=begin
+| Driver     | Description                         |
+| ---------- | ----------------------------------- |
+| `sqlite`   | Embedded file or in-memory database |
+| `postgres` | PostgreSQL server                   |
+| `mysql`    | MySQL/MariaDB server                |
 
-# Start with specific isolation level
-resh db://postgres/mydb.transaction \
-  action=begin \
-  isolation=serializable \
-  read_only=false \
-  timeout_ms=15000
-```
+---
 
-### Commit Transaction
+### 4.2 Available Verbs
 
-```bash
-# Commit transaction using transaction ID
-resh db://sqlite/mydb.transaction \
-  action=commit \
-  tx_id=550e8400-e29b-41d4-a716-446655440000
-```
+| Verb          | Description                          |
+| ------------- | ------------------------------------ |
+| `connect`     | Establish connection using DSN       |
+| `query`       | Execute SELECT statements            |
+| `exec`        | Execute INSERT/UPDATE/DELETE         |
+| `tables`      | List or describe tables              |
+| `schema`      | Retrieve detailed schema metadata    |
+| `ping`        | Test connection health               |
+| `transaction` | Begin, commit, rollback transactions |
 
-### Rollback Transaction  
+---
 
-```bash
-# Rollback transaction using transaction ID
-resh db://postgres/mydb.transaction \
-  action=rollback \
-  tx_id=550e8400-e29b-41d4-a716-446655440000
-```
+### 4.3 Auto-Connect Capability
 
-### Transaction Isolation Levels
-
-- `default` - Use database default
-- `read_uncommitted` - Allow dirty reads
-- `read_committed` - Prevent dirty reads (PostgreSQL default)
-- `repeatable_read` - Prevent non-repeatable reads (MySQL default)
-- `serializable` - Full isolation
-
-### Example Output (begin)
-
-```json
-{
-  "status": "ok",
-  "action": "begin", 
-  "driver": "postgres",
-  "alias": "mydb",
-  "tx_id": "550e8400-e29b-41d4-a716-446655440000",
-  "isolation": "read_committed",
-  "read_only": false
-}
-```
-
-### Example Output (commit/rollback)
-
-```json
-{
-  "status": "ok",
-  "action": "commit",
-  "tx_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
-## Using Transactions with Queries
-
-Once you have a transaction ID, you can use it with query and exec verbs:
-
-```bash
-# Start transaction
-resh db://postgres/mydb.transaction action=begin
-
-# Run query within transaction 
-resh db://postgres/mydb.query \
-  sql="SELECT COUNT(*) FROM users WHERE name = $1" \
-  params='["John PostgreSQL"]' \
-  mode=scalar \
-  tx_id=550e8400-e29b-41d4-a716-446655440000
-
-# Insert within transaction
-resh db://postgres/mydb.exec \
-  sql="INSERT INTO users (name) VALUES ($1)" \
-  params='["John PostgreSQL"]' \
-  tx_id=550e8400-e29b-41d4-a716-446655440000
-
-# Commit transaction
-resh db://postgres/mydb.transaction \
-  action=commit \
-  tx_id=550e8400-e29b-41d4-a716-446655440000
-```
-
-## Auto-Connect Feature
-
-The auto-connect feature allows query and exec verbs to automatically establish database connections when a DSN parameter is provided. This eliminates the need for separate connect commands in CLI workflows.
-
-### How Auto-Connect Works
-
-1. When a `query` or `exec` command includes a `dsn` parameter
-2. If no existing connection is found for the specified alias  
-3. A connection is automatically established using the provided DSN
-4. The command then executes using the new connection
-
-### Auto-Connect vs Traditional Workflow
+The `query` and `exec` verbs support auto-connect when `dsn` is provided.
 
 **Traditional Workflow:**
-```bash
-# Step 1: Connect explicitly
-resh db://mysql/stocks.connect dsn='mysql://user:pass@host:3306/stocks'
 
-# Step 2: Execute query
-resh db://mysql/stocks.query sql="SELECT COUNT(*) FROM stocks"
+```bash
+resh db://mysql/app.connect dsn='mysql://user:pass@host:3306/app'
+resh db://mysql/app.query sql="SELECT COUNT(*) FROM users"
 ```
 
 **Auto-Connect Workflow:**
-```bash
-# Single step: Query with automatic connection
-resh db://mysql/stocks.query \
-  dsn='mysql://user:pass@host:3306/stocks' \
-  sql="SELECT COUNT(*) FROM stocks"
-```
-
-### Best Practices
-
-**Use Auto-Connect For:**
-- One-off CLI queries and commands
-- Batch processing scripts
-- Quick data exploration
-- Simple automation tasks
-
-**Use Traditional Connect For:**
-- Long-running applications
-- Multiple operations on same connection
-- Transaction-based workflows
-- Connection pooling scenarios
-
-### Auto-Connect with Special Characters
-
-When passwords contain shell special characters, use single quotes around the DSN:
 
 ```bash
-# Password contains $ character - use single quotes
-resh db://mysql/prod.query \
-  dsn='mysql://user:P@ssw0rd$123@host:3306/database' \
-  sql="SELECT version()"
-
-# Alternative: URL-encode special characters  
-resh db://mysql/prod.query \
-  dsn=mysql://user:P@ssw0rd%24123@host:3306/database \
-  sql="SELECT version()"
+resh db://mysql/app.query \
+  dsn='mysql://user:pass@host:3306/app' \
+  sql="SELECT COUNT(*) FROM users"
 ```
 
-## Parameter Binding
+Use auto-connect for CLI and short-lived tasks. Use explicit connect for pooled or transactional workflows.
 
-All verbs that accept SQL support parameter binding to prevent SQL injection:
+---
 
-### SQLite Parameter Style
+### 4.4 Parameter Binding
+
+All SQL execution supports parameter binding.
+
+#### SQLite / MySQL
 
 ```bash
-# Positional parameters with ?
-resh db://sqlite/mydb.query \
-  sql="SELECT * FROM users WHERE id = ? AND active = ?" \
-  params='[1, true]'
+sql="SELECT * FROM users WHERE id = ?"
+params='[1]'
 ```
 
-### PostgreSQL Parameter Style  
+#### PostgreSQL
 
 ```bash
-# Positional parameters with $1, $2, etc.
-resh db://postgres/mydb.query \
-  sql="SELECT * FROM users WHERE id = $1 AND active = $2" \
-  params='[1, true]'
+sql="SELECT * FROM users WHERE id = $1"
+params='[1]'
 ```
 
-### MySQL Parameter Style
+This prevents SQL injection and ensures proper type handling.
 
-```bash  
-# Positional parameters with ?
-resh db://mysql/mydb.query \
-  sql="SELECT * FROM users WHERE id = ? AND active = ?" \
-  params='[1, true]'
+---
+
+### 4.5 Transactions
+
+Transaction management:
+
+```bash
+# Begin
+resh db://postgres/app.transaction action=begin
+
+# Commit
+resh db://postgres/app.transaction action=commit tx_id=<uuid>
+
+# Rollback
+resh db://postgres/app.transaction action=rollback tx_id=<uuid>
 ```
 
-### Supported Parameter Types
+Isolation levels supported:
 
-- Strings: `"text value"`
-- Numbers: `42`, `3.14`
-- Booleans: `true`, `false`  
-- Null: `null`
+* `default`
+* `read_uncommitted`
+* `read_committed`
+* `repeatable_read`
+* `serializable`
 
-## Error Handling
+Queries and exec operations may include `tx_id` to execute within a transaction.
 
-All verbs return structured error information when operations fail:
+---
 
-### Example Error Output
+### 4.6 Schema Inspection
 
-```json
-{
-  "error": {
-    "code": "db.connection_not_found",
-    "message": "Connection not found for driver 'postgres', alias 'nonexistent'",
-    "details": {
-      "driver": "postgres", 
-      "alias": "nonexistent"
-    }
-  }
-}
+Retrieve table list:
+
+```bash
+resh db://sqlite/mydb.tables
 ```
 
-### Common Error Codes
+Describe table:
 
-- `db.unsupported_driver` - Database driver not supported
-- `db.connection_not_found` - No connection exists for the alias
-- `db.invalid_config` - Invalid connection configuration
-- `db.missing_dsn` - Data Source Name not provided
-- `db.query_failed` - SQL query execution failed
-- `db.exec_failed` - SQL execution failed  
-- `db.query_timeout` - Query exceeded timeout limit
-- `db.table_not_found` - Table does not exist
-- `db.transaction_not_found` - Transaction ID not found
-- `db.transaction_timeout` - Transaction exceeded timeout
+```bash
+resh db://sqlite/mydb.tables table=users
+```
 
-## Database-Specific Notes
+Detailed schema:
 
-### SQLite
+```bash
+resh db://postgres/mydb.schema \
+  table=users \
+  include_indexes=true \
+  include_foreign_keys=true
+```
 
-- In-memory databases use `sqlite::memory:` DSN
-- File databases use `sqlite:///path/to/file.db` DSN
-- Supports transactions, but limited concurrency
-- Foreign keys must be enabled with `PRAGMA foreign_keys = ON`
+---
 
-### PostgreSQL  
+### 4.7 Health Checking
 
-- Uses `$1, $2` parameter placeholders
-- Full ACID transaction support
-- Rich schema introspection capabilities
-- Supports multiple isolation levels
+Ping example:
 
-### MySQL
+```bash
+resh db://postgres/mydb.ping timeout_ms=2000 retries=2
+```
 
-- Uses `?` parameter placeholders  
-- Full transaction support
-- Supports AUTO_INCREMENT with last_insert_id
-- Schema introspection varies by version
+Returns latency and connection metadata.
 
-## Best Practices
+---
 
-1. **Always use parameters** instead of string concatenation for SQL queries
-2. **Use transactions** for multiple related operations
-3. **Set appropriate timeouts** for long-running operations  
-4. **Close transactions** promptly with commit or rollback
-5. **Use connection pooling** settings appropriate for your workload
-6. **Test connections** with ping before critical operations
-7. **Handle errors gracefully** by checking error codes in responses
+## 5. Platform Support
+
+| Platform   | Support Level |
+| ---------- | ------------- |
+| Linux      | Supported     |
+| macOS/Unix | Supported     |
+| Windows    | Supported     |
+
+Database functionality depends on network access and driver compatibility.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Always use parameterized SQL.
+* Avoid embedding credentials in scripts.
+* Use TLS for remote databases.
+* Limit result sets using `max_rows`.
+* Set appropriate timeouts.
+
+### Automation Considerations
+
+* Use structured JSON responses for pipeline gating.
+* Validate `rows_affected` or `value` fields.
+* Implement retry logic for network databases.
+* Monitor connection pool settings.
+
+### CI/CD Integration
+
+* Run schema validation checks.
+* Execute migration validation queries.
+* Use ping checks before deployment.
+* Wrap deployment steps in transactions where appropriate.
+
+### Production Recommendations
+
+* Use connection pooling parameters appropriately.
+* Enforce least-privilege database users.
+* Monitor slow queries.
+* Back up data before structural changes.
+* Commit or rollback transactions promptly.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Validate database state during deployments.
+* Run migration checks.
+* Execute maintenance scripts safely.
+* Integrate structured queries into CI pipelines.
+
+### SRE Engineers
+
+* Monitor connection health with ping.
+* Inspect schema during incident analysis.
+* Manage transactions for safe remediation.
+* Analyze performance using structured query results.
+
+### Network Administrators
+
+* Validate database connectivity.
+* Inspect table structures.
+* Monitor authentication and TLS settings.
+
+### AI/Automation Engineers
+
+* Execute deterministic SQL queries.
+* Use structured responses for workflow decisions.
+* Automate schema inspection.
+* Integrate transaction-controlled operations into orchestration engines.
+
+---
+
+## 8. Technical Foundation
+
+The `db://` handle is implemented within resh, written in Rust.
+
+### Rust Implementation Advantages
+
+* Memory safety
+* Strong type guarantees
+* Structured error propagation
+* Efficient async database drivers
+
+### Type Safety
+
+Arguments and parameter bindings are type-validated to reduce runtime ambiguity and injection risk.
+
+### Performance Characteristics
+
+* Efficient connection pooling
+* Configurable timeouts
+* Structured metadata reporting
+* Deterministic execution semantics
+
+### Cross-Platform Architecture
+
+Supported across:
+
+* Linux
+* macOS/Unix
+* Windows
+
+Behavior is dependent on database driver support and network configuration.
+

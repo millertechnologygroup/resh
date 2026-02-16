@@ -1,66 +1,169 @@
-# backup:// Handle
+# Resource Shell (resh) – Backup Handle Documentation
 
-The `backup://` handle provides backup and restore operations using multiple backend systems including restic, borg, rsync, and tar. This handle manages backup creation, listing, restoration, verification, pruning, and scheduling.
+## 1. Overview
 
-## Overview
+Resource Shell (resh) is a structured command-line framework that standardizes system automation through a resource-oriented URI execution model.
 
-The backup handle follows a simple pattern:
+The `backup://` handle provides lifecycle management for backups, including creation, listing, restoration, verification, pruning, and scheduling of backup operations.
+
+Traditional backup tooling often requires:
+
+* Backend-specific command syntax
+* Manual output parsing
+* Separate scheduling configuration
+* Custom scripting for retention policies
+* Inconsistent error handling
+
+The `backup://` handle addresses these issues by:
+
+* Providing a consistent URI-based interface
+* Normalizing backend execution
+* Returning structured JSON output
+* Supporting deterministic automation workflows
+
+All backup operations follow the resource URI format:
 
 ```
 backup://profile.verb(arguments)
 ```
 
-The handle supports six main operations (verbs):
-- **create** - Create a new backup snapshot
-- **list** - List existing backup snapshots
-- **restore** - Restore files from a backup snapshot
-- **verify** - Verify backup integrity
-- **prune** - Remove old snapshots according to retention policy
-- **schedule** - Set up automated backups
+Where:
 
-## Supported Backends
+* `profile` identifies the logical backup configuration
+* `verb` defines the operation
+* `arguments` define execution parameters
 
-The handle automatically selects the best available backend, or you can specify one:
+---
 
-- **restic** - Modern backup program with deduplication and encryption
-- **borg** - Deduplicating backup program
-- **rsync** - File synchronization tool (basic backup functionality)
-- **tar** - Archive utility (simple backup functionality)
+## 2. Design Philosophy and Core Principles
 
-Backend selection order: restic → borg → rsync → tar
+The `backup://` handle follows resh architectural principles.
 
-## Verbs
+### Structured Interface Model
 
-### backup://…create
+All backup operations use:
 
-Creates a new backup snapshot using the specified backend.
+```
+backup://profile.verb(arguments)
+```
 
-**Required Arguments:**
-- `src` - Source path(s) to backup (semicolon-separated)
+This removes backend-specific command complexity and provides a unified abstraction layer across multiple backup tools.
 
-**Optional Arguments:**
-- `backend` - Backend to use (default: "auto")
-- `repo_url` - Repository URL or path
-- `tag` - Tags for the snapshot (semicolon-separated key=value pairs)
-- `label` - Human-readable label for the snapshot
-- `exclude` - Exclude patterns (semicolon-separated)
-- `dry_run` - Simulate without creating backup (default: false)
-- `timeout_ms` - Operation timeout in milliseconds (default: 1800000)
-- `json_pretty` - Pretty-print JSON output (default: false)
+### Safety-First Execution
 
-**Examples**
+The handle supports:
 
-Basic backup creation:
+* `dry_run` simulation
+* Structured error envelopes
+* Timeout control
+* Retention policy management
+* Explicit restore targets
+
+These features reduce operational risk during backup and recovery workflows.
+
+### Deterministic Behavior
+
+Operations provide:
+
+* Predictable command grammar
+* Consistent JSON response structure
+* Explicit status indicators (`ok` or `error`)
+* Standard metadata fields
+
+### JSON-Based Structured Output
+
+All backup operations return structured JSON, enabling:
+
+* CI/CD pipeline validation
+* Programmatic restore automation
+* Monitoring integration
+* Audit logging
+
+### AI-Readiness
+
+The uniform interface and structured responses allow integration with:
+
+* Automation agents
+* Orchestration engines
+* Declarative infrastructure workflows
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+All backup operations follow:
+
+```
+backup://profile.verb(arguments)
+```
+
+#### Components
+
+| Component   | Description                                                            |
+| ----------- | ---------------------------------------------------------------------- |
+| `backup`    | Handle identifier                                                      |
+| `profile`   | Logical backup configuration                                           |
+| `verb`      | Operation (`create`, `list`, `restore`, `verify`, `prune`, `schedule`) |
+| `arguments` | Named parameters controlling execution                                 |
+
+---
+
+### Examples
+
+Create a backup:
+
 ```sh
 backup://myapp.create(src="/data")
 ```
 
-Backup with specific backend and tags:
+List snapshots:
+
 ```sh
-backup://myapp.create(src="/data", backend="restic", tag="env=prod;type=daily", label="daily-backup")
+backup://myapp.list()
 ```
 
-**Output**
+Restore from snapshot:
+
+```sh
+backup://myapp.restore(snapshot_id="abcd1234", dest="/restore")
+```
+
+Verify repository:
+
+```sh
+backup://myapp.verify(mode="thorough")
+```
+
+Prune using retention policy:
+
+```sh
+backup://myapp.prune(keep_daily="7", keep_weekly="4")
+```
+
+Schedule automated backups:
+
+```sh
+backup://myapp.schedule(when="0 2 * * *", src="/data")
+```
+
+---
+
+### 3.2 Execution Semantics
+
+All operations follow a consistent response contract:
+
+* `op` – Operation identifier
+* `status` – `"ok"` or `"error"`
+* `target` – Original URI invocation
+* `backend` – Backend metadata and executed command
+* `result` – Operation-specific output
+* `dry_run` – Boolean simulation flag
+* `duration_ms` – Execution time
+* `warnings` – Non-fatal notices
+
+#### Representative JSON Response
 
 ```json
 {
@@ -74,26 +177,11 @@ backup://myapp.create(src="/data", backend="restic", tag="env=prod;type=daily", 
     "simulated": false
   },
   "result": {
-    "capabilities": {
-      "incremental": true,
-      "dedup": true,
-      "encryption": true,
-      "retention": true,
-      "verify": true,
-      "cloud_targets": ["s3", "azure", "gcs", "file"]
-    },
     "snapshot": {
       "id": "abcd1234",
       "label": "daily-backup",
-      "tags": ["env=prod", "type=daily"],
       "created_at": "2024-01-01T12:00:00Z",
-      "sources": ["/data"],
-      "bytes_sent": 1048576,
-      "bytes_total": 2097152
-    },
-    "backend_raw": {
-      "stdout": "backup completed successfully",
-      "stderr": ""
+      "sources": ["/data"]
     }
   },
   "dry_run": false,
@@ -102,394 +190,241 @@ backup://myapp.create(src="/data", backend="restic", tag="env=prod;type=daily", 
 }
 ```
 
-### backup://…list
-
-Lists all backup snapshots in the repository.
-
-**Optional Arguments:**
-- `backend` - Backend to use (default: "auto")
-- `repo_url` - Repository URL or path
-- `tag` - Filter by tags (semicolon-separated)
-- `timeout_ms` - Operation timeout in milliseconds (default: 10000)
-- `json_pretty` - Pretty-print JSON output (default: false)
-
-**Examples**
-
-List all snapshots:
-```sh
-backup://myapp.list()
-```
-
-List snapshots with specific tags:
-```sh
-backup://myapp.list(tag="env=prod")
-```
-
-**Output**
-
-```json
-{
-  "op": "backup.list",
-  "status": "ok",
-  "target": "backup://myapp.list()",
-  "backend": {
-    "id": "restic",
-    "command": ["restic", "snapshots", "--json"],
-    "timeout_ms": 10000,
-    "simulated": false
-  },
-  "result": {
-    "snapshots": [
-      {
-        "id": "abcd1234",
-        "label": "daily-backup",
-        "tags": ["env=prod", "type=daily"],
-        "created_at": "2024-01-01T12:00:00Z",
-        "sources": ["/data"],
-        "bytes_sent": 1048576,
-        "bytes_total": 2097152
-      }
-    ],
-    "total_count": 1,
-    "capabilities": {
-      "incremental": true,
-      "dedup": true,
-      "encryption": true,
-      "retention": true,
-      "verify": true,
-      "cloud_targets": ["s3", "azure", "gcs", "file"]
-    }
-  },
-  "dry_run": false,
-  "duration_ms": 1000,
-  "warnings": []
-}
-```
-
-### backup://…restore
-
-Restores files from a specific backup snapshot.
-
-**Required Arguments:**
-- `snapshot_id` - ID of the snapshot to restore
-- `dest` - Destination path for restored files
-
-**Optional Arguments:**
-- `backend` - Backend to use (default: "auto")
-- `repo_url` - Repository URL or path
-- `include` - Include patterns (semicolon-separated)
-- `exclude` - Exclude patterns (semicolon-separated)
-- `timeout_ms` - Operation timeout in milliseconds (default: 1800000)
-- `json_pretty` - Pretty-print JSON output (default: false)
-
-**Examples**
-
-Restore a complete snapshot:
-```sh
-backup://myapp.restore(snapshot_id="abcd1234", dest="/restore")
-```
-
-Restore specific files only:
-```sh
-backup://myapp.restore(snapshot_id="abcd1234", dest="/restore", include="*.txt;*.conf")
-```
-
-**Output**
-
-```json
-{
-  "op": "backup.restore",
-  "status": "ok",
-  "target": "backup://myapp.restore()",
-  "backend": {
-    "id": "restic",
-    "command": ["restic", "restore", "abcd1234", "--target", "/restore"],
-    "timeout_ms": 1800000,
-    "simulated": false
-  },
-  "result": {
-    "restored": {
-      "files_restored": 42,
-      "bytes_restored": 1048576,
-      "success": true
-    },
-    "snapshot_id": "abcd1234",
-    "destination": "/restore",
-    "capabilities": {
-      "incremental": true,
-      "dedup": true,
-      "encryption": true,
-      "retention": true,
-      "verify": true,
-      "cloud_targets": ["s3", "azure", "gcs", "file"]
-    }
-  },
-  "dry_run": false,
-  "duration_ms": 10000,
-  "warnings": []
-}
-```
-
-### backup://…verify
-
-Verifies the integrity of backup repositories or specific snapshots.
-
-**Optional Arguments:**
-- `backend` - Backend to use (default: "auto")
-- `repo_url` - Repository URL or path
-- `snapshot_id` - Specific snapshot ID to verify
-- `mode` - Verification mode: "quick" or "thorough" (default: "quick")
-- `timeout_ms` - Operation timeout in milliseconds (default: 3600000)
-- `json_pretty` - Pretty-print JSON output (default: false)
-
-**Examples**
-
-Quick repository verification:
-```sh
-backup://myapp.verify()
-```
-
-Thorough verification including data reads:
-```sh
-backup://myapp.verify(mode="thorough")
-```
-
-**Output**
-
-```json
-{
-  "op": "backup.verify",
-  "status": "ok",
-  "target": "backup://myapp.verify()",
-  "backend": {
-    "id": "restic",
-    "command": ["restic", "check"],
-    "timeout_ms": 3600000,
-    "simulated": false
-  },
-  "result": {
-    "verification": {
-      "checks": [
-        {
-          "name": "repository_structure",
-          "ok": true,
-          "detail": "Repository structure is valid"
-        },
-        {
-          "name": "pack_files",
-          "ok": true,
-          "detail": "All pack files are intact"
-        }
-      ],
-      "success": true,
-      "errors": []
-    },
-    "mode": "quick",
-    "snapshot_id": null,
-    "capabilities": {
-      "incremental": true,
-      "dedup": true,
-      "encryption": true,
-      "retention": true,
-      "verify": true,
-      "cloud_targets": ["s3", "azure", "gcs", "file"]
-    }
-  },
-  "dry_run": false,
-  "duration_ms": 30000,
-  "warnings": []
-}
-```
-
-### backup://…prune
-
-Removes old snapshots according to retention policies.
-
-**Optional Arguments:**
-- `backend` - Backend to use (default: "auto")
-- `repo_url` - Repository URL or path
-- `keep_daily` - Number of daily snapshots to keep
-- `keep_weekly` - Number of weekly snapshots to keep  
-- `keep_monthly` - Number of monthly snapshots to keep
-- `dry_run` - Simulate without actually removing snapshots (default: false)
-- `timeout_ms` - Operation timeout in milliseconds (default: 3600000)
-- `json_pretty` - Pretty-print JSON output (default: false)
-
-**Examples**
-
-Dry run to see what would be pruned:
-```sh
-backup://myapp.prune(keep_daily="7", keep_weekly="4", dry_run="true")
-```
-
-Actually prune snapshots:
-```sh
-backup://myapp.prune(keep_daily="7", keep_weekly="4")
-```
-
-**Output**
-
-```json
-{
-  "op": "backup.prune",
-  "status": "ok",
-  "target": "backup://myapp.prune()",
-  "backend": {
-    "id": "restic",
-    "command": ["restic", "forget", "--keep-daily", "7", "--keep-weekly", "4", "--prune"],
-    "timeout_ms": 3600000,
-    "simulated": false
-  },
-  "result": {
-    "pruned": {
-      "snapshots_removed": 3,
-      "bytes_freed": 5242880,
-      "success": true
-    },
-    "policy": {
-      "keep_daily": 7,
-      "keep_weekly": 4,
-      "keep_monthly": null
-    },
-    "capabilities": {
-      "incremental": true,
-      "dedup": true,
-      "encryption": true,
-      "retention": true,
-      "verify": true,
-      "cloud_targets": ["s3", "azure", "gcs", "file"]
-    }
-  },
-  "dry_run": false,
-  "duration_ms": 15000,
-  "warnings": []
-}
-```
-
-### backup://…schedule
-
-Sets up automated backup scheduling using system schedulers.
-
-**Required Arguments:**
-- `when` - Schedule expression (cron format or systemd timer format)
-- `src` - Source path(s) to backup
-
-**Optional Arguments:**
-- `backend` - Backend to use (default: "auto")
-- `enabled` - Whether schedule is enabled (default: true)
-- `timeout_ms` - Operation timeout in milliseconds (default: 10000)
-- `json_pretty` - Pretty-print JSON output (default: false)
-
-**Examples**
-
-Daily backup at 2 AM:
-```sh
-backup://myapp.schedule(when="0 2 * * *", src="/data")
-```
-
-Weekly backup on Sundays:
-```sh
-backup://myapp.schedule(when="0 3 * * 0", src="/data", enabled="true")
-```
-
-**Output**
-
-```json
-{
-  "op": "backup.schedule",
-  "status": "ok",
-  "target": "backup://myapp.schedule()",
-  "backend": {
-    "id": "restic",
-    "command": [],
-    "timeout_ms": 10000,
-    "simulated": false
-  },
-  "result": {
-    "capabilities": {
-      "incremental": true,
-      "dedup": true,
-      "encryption": true,
-      "retention": true,
-      "verify": true,
-      "cloud_targets": ["s3", "azure", "gcs", "file"]
-    },
-    "schedule": {
-      "when": "0 2 * * *",
-      "enabled": true,
-      "runner": "systemd",
-      "definition_path": "/home/user/resh-backup-myapp.json"
-    }
-  },
-  "dry_run": false,
-  "duration_ms": 100,
-  "warnings": ["Schedule created but requires manual activation"]
-}
-```
-
-## Error Handling
-
-When operations fail, the handle returns error envelopes with detailed information:
+#### Error Example
 
 ```json
 {
   "op": "backup.create",
   "status": "error",
-  "target": "backup://myapp.create()",
-  "backend": {
-    "id": "restic",
-    "command": ["restic", "backup", "/nonexistent"],
-    "timeout_ms": 1800000,
-    "simulated": false
-  },
   "error": {
     "kind": "BACKEND_FAILED",
-    "message": "Backend command failed",
-    "details": {
-      "exit_code": 1,
-      "stderr_tail": "Fatal: unable to open config file: stat /nonexistent: no such file or directory"
-    }
-  },
-  "dry_run": false,
-  "duration_ms": 500,
-  "warnings": []
+    "message": "Backend command failed"
+  }
 }
 ```
 
-## Best Practices
+Automation logic must evaluate the `status` field for success or failure.
 
-1. **Use descriptive labels and tags** for better organization
-2. **Set up retention policies** to manage disk space
-3. **Verify backups regularly** to ensure they can be restored
-4. **Test restore procedures** before you need them
-5. **Use appropriate backends** for your use case:
-   - restic: For encrypted, deduplicated backups
-   - borg: For local deduplicated backups
-   - rsync: For simple file synchronization
-   - tar: For basic archival
+---
 
-## Common Use Cases
+## 4. Functional Domain – Backup Handle
 
-### Daily Incremental Backups
-```sh
-backup://app.create(src="/var/app", tag="type=daily", label="daily-backup")
-```
+### Operational Scope
 
-### Weekly Full Backups with Retention
-```sh
-backup://app.create(src="/var/app", tag="type=weekly", label="weekly-backup")
-backup://app.prune(keep_weekly="4", keep_daily="7")
-```
+The `backup://` handle supports:
 
-### Restore Last Backup
-```sh
-# First list to find the latest snapshot
-backup://app.list()
-# Then restore using the ID
-backup://app.restore(snapshot_id="latest", dest="/restore")
-```
+* Snapshot creation
+* Snapshot listing
+* Snapshot restoration
+* Integrity verification
+* Retention-based pruning
+* Automated scheduling
 
-### Scheduled Automated Backups
-```sh
-backup://app.schedule(when="0 2 * * *", src="/var/app")
-```
+---
+
+### Supported Backends
+
+The handle automatically selects the best available backend in this order:
+
+1. `restic`
+2. `borg`
+3. `rsync`
+4. `tar`
+
+Backend selection may also be explicitly specified using the `backend` argument.
+
+---
+
+### Verbs
+
+#### 4.1 create
+
+Creates a backup snapshot.
+
+**Required Argument:**
+
+* `src` – Source path(s) (semicolon-separated)
+
+**Optional Arguments:**
+
+* `backend`
+* `repo_url`
+* `tag`
+* `label`
+* `exclude`
+* `dry_run`
+* `timeout_ms`
+* `json_pretty`
+
+---
+
+#### 4.2 list
+
+Lists snapshots in the repository.
+
+Optional filtering via:
+
+* `tag`
+* `backend`
+* `repo_url`
+
+---
+
+#### 4.3 restore
+
+Restores a snapshot to a destination.
+
+**Required:**
+
+* `snapshot_id`
+* `dest`
+
+Optional filtering via:
+
+* `include`
+* `exclude`
+
+---
+
+#### 4.4 verify
+
+Verifies repository or snapshot integrity.
+
+Optional:
+
+* `mode` (`quick` or `thorough`)
+* `snapshot_id`
+
+---
+
+#### 4.5 prune
+
+Applies retention policy rules:
+
+* `keep_daily`
+* `keep_weekly`
+* `keep_monthly`
+* `dry_run`
+
+---
+
+#### 4.6 schedule
+
+Configures automated backups using system schedulers.
+
+**Required:**
+
+* `when` (cron or timer format)
+* `src`
+
+Optional:
+
+* `enabled`
+* `backend`
+
+---
+
+## 5. Platform Support
+
+The backup handle supports:
+
+| Platform   | Support Level                               |
+| ---------- | ------------------------------------------- |
+| Linux      | Full support                                |
+| Unix/macOS | Supported                                   |
+| Windows    | Supported (subject to backend availability) |
+
+Platform behavior may vary depending on installed backup backend tools.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Use `dry_run="true"` before prune operations.
+* Verify repositories regularly.
+* Test restore procedures in staging environments.
+* Use explicit `dest` paths during restore operations.
+
+### Automation Considerations
+
+* Parse structured JSON responses.
+* Monitor `duration_ms` for performance tracking.
+* Log `warnings` fields for audit review.
+* Use timeout controls for long-running operations.
+
+### CI/CD Integration
+
+* Run `backup://profile.verify()` before deployment.
+* Create pre-release snapshots.
+* Validate retention compliance automatically.
+* Gate pipeline progression based on `status` value.
+
+### Production Recommendations
+
+* Use descriptive tags and labels.
+* Enable encryption when supported by backend.
+* Define retention policies to control storage growth.
+* Monitor backend health and exit codes.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Create deployment snapshots prior to upgrades.
+* Automate backup retention management.
+* Integrate verification into CI/CD workflows.
+
+### SRE Engineers
+
+* Validate repository integrity during maintenance windows.
+* Restore services during incident recovery.
+* Schedule recurring system backups.
+
+### Network Administrators
+
+* Protect configuration directories.
+* Backup firewall and routing configurations.
+* Restore network state after failure events.
+
+### AI/Automation Engineers
+
+* Integrate deterministic backup workflows into orchestration engines.
+* Evaluate JSON status for automated remediation.
+* Use `dry_run` for safe simulation scenarios.
+
+---
+
+## 8. Technical Foundation
+
+The `backup://` handle is implemented within the resh framework, written in Rust.
+
+### Rust Advantages
+
+* Memory safety
+* Compile-time validation
+* Strong type enforcement
+* Predictable binary behavior
+
+### Type Safety
+
+Argument parsing and response construction are type-validated to reduce runtime ambiguity.
+
+### Performance Characteristics
+
+* Efficient execution model
+* Structured timeout enforcement
+* Backend command encapsulation
+
+### Cross-Platform Architecture
+
+The handle operates across:
+
+* Linux
+* Unix/macOS
+* Windows
+
+Compatibility depends on installed backend utilities.

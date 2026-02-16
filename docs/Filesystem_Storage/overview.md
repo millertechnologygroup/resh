@@ -1,88 +1,412 @@
-# Filesystem & Storage
+# Resource Shell (resh) – Filesystem & Storage Documentation
 
-This section covers tools for working with files, folders, and storage systems on your computer. These tools help you manage your data, organize files, and work with different storage devices.
+## 1. Overview
 
-## What is Filesystem & Storage?
+Resource Shell (resh) is a structured command-line framework that standardizes infrastructure operations using a resource-oriented URI execution model.
 
-Filesystem and storage management involves working with the files and folders on your computer. This includes:
+The **Filesystem & Storage** domain provides tools for managing files, directories, archives, mounted storage, and point-in-time snapshots. It enables consistent, structured interaction with local storage resources using deterministic command syntax and structured output.
 
-- **Managing files and folders** - Creating, reading, writing, and organizing your data
-- **Working with compressed files** - Creating and extracting ZIP files, TAR files, and other archives
-- **Managing storage devices** - Mounting drives, checking disk space, and resizing partitions
-- **Creating backups** - Taking snapshots of important files and folders so you can restore them later
+Traditional filesystem and storage management typically involves:
 
-Think of it like being a librarian for your computer - organizing books (files) on shelves (folders), managing storage rooms (disks), and keeping backup copies of important books (snapshots).
+* Multiple CLI tools (`cp`, `mv`, `tar`, `mount`, `df`, etc.)
+* Inconsistent output formats
+* Backend-specific syntax
+* Manual parsing in automation workflows
+* Increased risk of destructive operations
 
-## Available Tools
+The resh Filesystem & Storage tools address these issues by:
 
-### [File Operations](file.md)
-Work with individual files and directories. Read, write, copy, move, and check file properties. This is your basic toolkit for day-to-day file management.
+* Using a consistent URI-based command structure
+* Grouping related operations under defined handles
+* Providing structured JSON output where applicable
+* Supporting deterministic automation and CI/CD integration
 
-**Use file operations when you need to:**
-- Read or write text files
-- Copy or move files between folders
-- Check file sizes, dates, or permissions
-- Create new directories
-- Compare file contents
+All operations follow the resh URI model:
 
-### [Archive Management](archive.md)
-Create and work with compressed files like ZIP, TAR, and 7-Zip archives. Pack multiple files into smaller packages or extract files from existing archives.
+```
+handle://target.verb(options)
+```
 
-**Use archives when you need to:**
-- Compress files to save space
-- Package multiple files into one file for easy sharing
-- Extract files from ZIP or TAR downloads
-- Create backups with compression
-- Organize related files together
+---
 
-### [Filesystem Operations](fs.md)
-Manage mounted storage devices and filesystems. Mount drives, check disk usage, resize partitions, and work with different types of storage systems.
+## 2. Design Philosophy and Core Principles
 
-**Use filesystem operations when you need to:**
-- Mount USB drives or external storage
-- Check how much disk space is available
-- Resize partitions to make them bigger or smaller
-- Work with different filesystem types (ext4, NTFS, etc.)
-- Manage network storage
+### Structured Interface Model
 
-### [Snapshots](snapshot.md)
-Create point-in-time copies of files and directories. Save important versions of your work that you can restore or compare later.
+Filesystem operations follow a consistent resource-oriented format:
 
-**Use snapshots when you need to:**
-- Create backups of important files or projects
-- Save different versions of your work
-- Restore files to an earlier state
-- Compare how files have changed over time
-- Protect against accidental file loss
+```
+file://path.verb(options)
+archive://path.verb(options)
+fs://target.verb(options)
+snapshot://target.verb(options)
+```
 
-## Choosing the Right Tool
+This eliminates command fragmentation and unifies file and storage management under a consistent grammar.
 
-Here's a simple guide to help you pick the right tool:
+### Safety-First Execution
 
-- **For basic file tasks:** Use [File Operations](file.md)
-- **For working with ZIP/TAR files:** Use [Archive Management](archive.md)
-- **For managing drives and storage:** Use [Filesystem Operations](fs.md)
-- **For backups and versioning:** Use [Snapshots](snapshot.md)
+The Filesystem & Storage domain is designed to:
 
-## Common Workflows
+* Require explicit targets
+* Separate destructive verbs from read-only verbs
+* Encourage snapshot-based backup workflows
+* Provide deterministic argument handling
 
-### Backing Up Your Work
-1. Use [Snapshots](snapshot.md) to create a backup copy
-2. Use [Archive Management](archive.md) to compress the backup
-3. Use [File Operations](file.md) to move the archive to a safe location
+Operations are structured to reduce accidental data loss and support reversible workflows.
 
-### Organizing Downloaded Files
-1. Use [Archive Management](archive.md) to extract downloaded ZIP files
-2. Use [File Operations](file.md) to organize the extracted files into proper folders
-3. Use [Snapshots](snapshot.md) to backup important extracted data
+### Deterministic Behavior
 
-### Managing Storage Space
-1. Use [Filesystem Operations](fs.md) to check available disk space
-2. Use [Archive Management](archive.md) to compress large files
-3. Use [File Operations](file.md) to clean up temporary files
+Each operation:
 
-## Getting Started
+* Follows predictable URI grammar
+* Uses explicit verbs
+* Separates operational intent from parameters
+* Returns consistent status and structured output (where applicable)
 
-Each tool has its own documentation with examples and step-by-step instructions. Start with [File Operations](file.md) if you're new to filesystem management, as it covers the basics that other tools build upon.
+### JSON-Based Structured Output
 
-Remember: always make backups of important data before making major changes to your filesystem or storage configuration. The [Snapshots](snapshot.md) tool is perfect for this!
+Structured output enables:
+
+* Automation-safe parsing
+* CI/CD integration
+* Monitoring and logging
+* Deterministic validation
+
+### AI-Readiness
+
+The uniform command grammar and structured outputs enable integration into automation agents and orchestration workflows without relying on fragile text parsing.
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+handle://target.verb(options)
+```
+
+#### Components
+
+| Component | Description                                                   |
+| --------- | ------------------------------------------------------------- |
+| `handle`  | Domain handle (`file`, `archive`, `fs`, `snapshot`)           |
+| `target`  | File path, archive path, mount target, or snapshot identifier |
+| `verb`    | Operation to perform                                          |
+| `options` | Named parameters controlling behavior                         |
+
+---
+
+### Examples
+
+File read:
+
+```bash
+file:///etc/hosts.read
+```
+
+Copy file:
+
+```bash
+file:///tmp/source.txt.copy(dest="/tmp/destination.txt")
+```
+
+Create archive:
+
+```bash
+archive:///tmp/project.tar.create(src="/home/user/project")
+```
+
+Mount filesystem:
+
+```bash
+fs:///mnt/data.mount(device="/dev/sdb1", type="ext4")
+```
+
+Create snapshot:
+
+```bash
+snapshot:///home/user.create(label="pre-upgrade")
+```
+
+---
+
+### 3.2 Execution Semantics
+
+Operations return structured output where applicable and provide predictable exit status.
+
+#### Representative JSON Example
+
+```json
+{
+  "op": "file.read",
+  "target": "/etc/hosts",
+  "status": "success",
+  "size_bytes": 312,
+  "content": "127.0.0.1 localhost"
+}
+```
+
+Error responses follow a structured format:
+
+```json
+{
+  "op": "file.read",
+  "status": "error",
+  "error": {
+    "kind": "NOT_FOUND",
+    "message": "File does not exist"
+  }
+}
+```
+
+Automation systems must evaluate the `status` field or exit code rather than parsing textual output.
+
+---
+
+## 4. Functional Domains – Filesystem & Storage
+
+---
+
+### 4.1 File Operations (`file://`)
+
+#### Operational Scope
+
+* Read and write files
+* Copy and move files
+* Compare file contents
+* Create directories
+* Inspect file metadata
+
+#### Common Use Cases
+
+* Managing configuration files
+* Copying build artifacts
+* Inspecting file properties
+* Organizing directories
+* Validating deployment outputs
+
+#### Example Commands
+
+```bash
+file:///var/log/app.log.read
+file:///tmp/config.yaml.write(content="key: value")
+file:///data/archive.copy(dest="/backup/archive")
+```
+
+#### Integration Scenarios
+
+* CI artifact validation
+* Automated configuration updates
+* File integrity checks
+* Deployment workflows
+
+---
+
+### 4.2 Archive Management (`archive://`)
+
+#### Operational Scope
+
+* Create compressed archives (ZIP, TAR, 7-Zip)
+* Extract archive contents
+* Package multiple files into single artifacts
+* Compress backups
+
+#### Common Use Cases
+
+* Packaging release artifacts
+* Extracting downloaded files
+* Creating compressed backups
+* Organizing related files
+
+#### Example Commands
+
+```bash
+archive:///tmp/release.zip.create(src="/build/output")
+archive:///tmp/release.zip.extract(dest="/deploy")
+```
+
+#### Integration Scenarios
+
+* Build pipeline artifact packaging
+* Distribution workflows
+* Backup compression
+* Deployment staging
+
+---
+
+### 4.3 Filesystem Operations (`fs://`)
+
+#### Operational Scope
+
+* Mount storage devices
+* Check disk space
+* Resize partitions
+* Manage filesystem types
+* Work with network storage
+
+#### Common Use Cases
+
+* Mounting external drives
+* Validating disk usage before deployment
+* Managing storage capacity
+* Resizing partitions
+
+#### Example Commands
+
+```bash
+fs:///mnt/data.mount(device="/dev/sdb1")
+fs:///.disk
+fs:///mnt/data.resize(size="200G")
+```
+
+#### Integration Scenarios
+
+* Pre-deployment disk validation
+* Infrastructure provisioning
+* Storage expansion workflows
+* Cloud instance preparation
+
+---
+
+### 4.4 Snapshots (`snapshot://`)
+
+#### Operational Scope
+
+* Create point-in-time copies
+* Restore previous file states
+* Compare snapshot versions
+* Protect against data loss
+
+#### Common Use Cases
+
+* Pre-upgrade backups
+* Configuration rollback
+* Version comparison
+* Recovery from accidental deletion
+
+#### Example Commands
+
+```bash
+snapshot:///home/user.create(label="before-change")
+snapshot:///home/user.restore(snapshot_id="snap-123")
+```
+
+#### Integration Scenarios
+
+* Deployment rollback strategies
+* Backup validation
+* Version control outside Git
+* Disaster recovery workflows
+
+---
+
+## 5. Platform Support
+
+| Platform   | Support Level                                            |
+| ---------- | -------------------------------------------------------- |
+| Linux      | Full support                                             |
+| macOS/Unix | Supported                                                |
+| Windows    | Supported with potential filesystem-specific limitations |
+
+Filesystem behavior depends on underlying OS and filesystem type.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Create snapshots before destructive operations.
+* Use explicit destination paths in copy/move operations.
+* Verify disk space before large archive operations.
+* Avoid mounting over existing active mount points.
+
+### Automation Considerations
+
+* Parse structured JSON output.
+* Validate exit codes.
+* Separate read-only checks from write operations.
+* Use snapshot workflows in automated pipelines.
+
+### CI/CD Integration
+
+* Validate artifact integrity before deployment.
+* Compress build outputs using archive operations.
+* Check available disk space during build stages.
+* Create snapshots before applying infrastructure changes.
+
+### Production Environment Recommendations
+
+* Maintain consistent directory structures.
+* Use descriptive snapshot labels.
+* Monitor disk utilization regularly.
+* Implement periodic archive cleanup strategies.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Manage deployment artifacts.
+* Package and distribute releases.
+* Validate filesystem state during CI pipelines.
+* Implement snapshot-based rollback workflows.
+
+### SRE Engineers
+
+* Monitor disk capacity.
+* Restore from snapshots during incidents.
+* Validate file integrity after deployments.
+* Manage storage lifecycle operations.
+
+### Network Administrators
+
+* Mount external storage.
+* Manage shared network drives.
+* Monitor disk usage.
+* Protect configuration files via snapshots.
+
+### AI/Automation Engineers
+
+* Use deterministic file operations in orchestration.
+* Automate backup creation before state changes.
+* Validate storage conditions programmatically.
+* Integrate structured filesystem responses into decision logic.
+
+---
+
+## 8. Technical Foundation
+
+The Filesystem & Storage domain operates within resh, implemented in Rust.
+
+### Rust Implementation Advantages
+
+* Memory safety
+* Strong type guarantees
+* Reliable filesystem interaction
+* Deterministic error handling
+
+### Type Safety
+
+Arguments and response envelopes are type-validated to prevent malformed operations.
+
+### Performance Characteristics
+
+* Efficient file I/O handling
+* Structured metadata reporting
+* Deterministic snapshot management
+* Minimal runtime overhead
+
+### Cross-Platform Architecture
+
+Supported across:
+
+* Linux
+* macOS/Unix
+* Windows
+
+Behavior depends on underlying filesystem capabilities and OS permissions.
+

@@ -23,8 +23,911 @@ pub enum Backend {
     Unknown,
 }
 
+/// Comprehensive help text for the svc handle
+const SVC_HELP_TEXT: &str = r#"RESOURCE SHELL - SVC HANDLE
+===========================
+
+USAGE:
+  svc://service-name.VERB(arguments)
+
+DESCRIPTION:
+  The svc handle provides complete control and monitoring of system services.
+  Works with multiple service managers including systemd, OpenRC, and generic
+  init scripts. Start, stop, restart, and reload services. Configure boot
+  behavior with enable, disable, mask. Monitor service status and logs. Wait
+  for specific states. Scale services with multiple instances. Essential for
+  system administration, service management, deployment automation, and
+  infrastructure orchestration.
+
+URL FORMAT:
+  svc://service-name.VERB(arguments)
+  svc://apache2.start
+  svc://nginx.reload
+  svc://mysql.status
+
+  service-name is the name of the system service
+  VERB specifies the operation to perform
+
+VERBS (13 total):
+
+  Service Status & Information:
+    status          Get current service information and state
+    is-enabled      Check if service starts automatically at boot
+
+  Service Lifecycle Control:
+    start           Start a stopped service
+    stop            Stop a running service
+    restart         Stop and then start a service
+    reload          Reload service configuration without stopping
+
+  Boot Configuration:
+    enable          Configure service to start at boot
+    disable         Prevent service from starting at boot
+    mask            Completely block service from starting
+    unmask          Remove block and allow service to start
+
+  Service Monitoring:
+    wait            Wait for service to reach a specific state
+    logs            View recent log messages from service
+
+  Advanced Operations:
+    scale           Change number of running service instances
+
+EXAMPLES:
+
+  Service Status (status):
+    # Check service status
+    svc://apache2.status
+
+    # Check database service
+    svc://mysql.status
+
+    # Check SSH daemon
+    svc://sshd.status
+
+    # Check system service
+    svc://systemd-resolved.status
+
+    # Check custom application
+    svc://myapp.status
+
+    # Check service with @ notation (template)
+    svc://getty@tty1.status
+
+  Start Services (start):
+    # Start web server
+    svc://apache2.start
+
+    # Start database
+    svc://postgresql.start
+
+    # Start application service
+    svc://myapp.start
+
+    # Start with systemd
+    svc://nginx.start
+
+    # Start multiple services (in scripts)
+    for svc in apache2 mysql redis; do
+      svc://$svc.start
+    done
+
+  Stop Services (stop):
+    # Stop web server
+    svc://apache2.stop
+
+    # Stop with timeout
+    svc://nginx.stop(timeout=30)
+
+    # Force stop service
+    svc://myapp.stop(force=true)
+
+    # Stop with both options
+    svc://service.stop(force=true,timeout=60)
+
+    # Stop gracefully
+    svc://postgresql.stop
+
+    # Stop for maintenance
+    svc://redis.stop
+
+  Restart Services (restart):
+    # Restart web server
+    svc://apache2.restart
+
+    # Restart to apply changes
+    svc://nginx.restart
+
+    # Restart database
+    svc://mysql.restart
+
+    # Restart after config change
+    svc://sshd.restart
+
+    # Restart application
+    svc://myapp.restart
+
+    # Restart with verification
+    svc://service.restart
+    svc://service.wait(state=active,timeout=30)
+
+  Reload Configuration (reload):
+    # Reload web server config
+    svc://nginx.reload
+
+    # Reload without downtime
+    svc://apache2.reload
+
+    # Reload SSH config
+    svc://sshd.reload
+
+    # Reload application settings
+    svc://myapp.reload
+
+    # Reload firewall rules
+    svc://ufw.reload
+
+  Enable at Boot (enable):
+    # Enable web server
+    svc://apache2.enable
+
+    # Enable database
+    svc://mysql.enable
+
+    # Enable SSH
+    svc://sshd.enable
+
+    # Enable custom service
+    svc://myapp.enable
+
+    # Enable and start
+    svc://service.enable
+    svc://service.start
+
+  Disable at Boot (disable):
+    # Disable service
+    svc://apache2.disable
+
+    # Prevent auto-start
+    svc://myapp.disable
+
+    # Disable and stop
+    svc://service.disable
+    svc://service.stop
+
+    # Disable temporary service
+    svc://test-service.disable
+
+  Mask Services (mask):
+    # Block service completely
+    svc://apache2.mask
+
+    # Prevent any activation
+    svc://myapp.mask
+
+    # Mask conflicting service
+    svc://old-service.mask
+
+    # Security: mask vulnerable service
+    svc://vulnerable-daemon.mask
+
+  Unmask Services (unmask):
+    # Remove mask
+    svc://apache2.unmask
+
+    # Allow service again
+    svc://myapp.unmask
+
+    # Unmask and enable
+    svc://service.unmask
+    svc://service.enable
+
+  Check Enabled Status (is-enabled):
+    # Check if enabled
+    svc://apache2.is-enabled
+
+    # Check boot status
+    svc://mysql.is-enabled
+
+    # Verify configuration
+    svc://sshd.is-enabled
+
+    # Check multiple services
+    for svc in apache2 mysql nginx; do
+      svc://$svc.is-enabled
+    done
+
+  Wait for State (wait):
+    # Wait for active
+    svc://apache2.wait(state=active,timeout=30)
+
+    # Wait for inactive
+    svc://myapp.wait(state=inactive,timeout=10)
+
+    # Wait without timeout
+    svc://service.wait(state=active)
+
+    # Wait for specific state
+    svc://service.wait(state=running,timeout=60)
+
+    # Wait in deployment script
+    svc://myapp.restart
+    svc://myapp.wait(state=active,timeout=120)
+
+    # Wait for multiple services
+    svc://db.start
+    svc://db.wait(state=active,timeout=30)
+    svc://app.start
+    svc://app.wait(state=active,timeout=30)
+
+  View Logs (logs):
+    # View recent logs
+    svc://apache2.logs
+
+    # View more lines
+    svc://nginx.logs(lines=100)
+
+    # Follow logs (tail -f)
+    svc://myapp.logs(follow=true)
+
+    # Combine options
+    svc://service.logs(lines=50,follow=true)
+
+    # View specific number of lines
+    svc://sshd.logs(lines=20)
+
+    # Monitor logs
+    svc://mysql.logs(follow=true)
+
+  Scale Services (scale):
+    # Scale to 3 instances
+    svc://myapp@.scale(instances=3)
+
+    # Scale down to 1
+    svc://worker@.scale(instances=1)
+
+    # Scale up
+    svc://app@.scale(instances=5)
+
+    # Scale to zero (stop all)
+    svc://service@.scale(instances=0)
+
+    # Scale template service
+    svc://container@.scale(instances=10)
+
+STATUS ARGUMENTS:
+  (no arguments)
+
+START ARGUMENTS:
+  (no arguments)
+
+STOP ARGUMENTS:
+  force=BOOL             Force stop service (default: false)
+  timeout=SECONDS        Timeout in seconds (default: system default)
+
+RESTART ARGUMENTS:
+  (no arguments)
+
+RELOAD ARGUMENTS:
+  (no arguments)
+
+ENABLE ARGUMENTS:
+  (no arguments)
+
+DISABLE ARGUMENTS:
+  (no arguments)
+
+MASK ARGUMENTS:
+  (no arguments)
+
+UNMASK ARGUMENTS:
+  (no arguments)
+
+IS-ENABLED ARGUMENTS:
+  (no arguments)
+
+WAIT ARGUMENTS:
+  state=STATE            State to wait for (required)
+                         Values: active, inactive, running, stopped, etc.
+  timeout=SECONDS        Maximum wait time in seconds (optional)
+
+LOGS ARGUMENTS:
+  lines=NUMBER           Number of log lines to show (default: 10)
+  follow=BOOL            Follow logs in real-time (default: false)
+
+SCALE ARGUMENTS:
+  instances=NUMBER       Number of service instances (required)
+
+SERVICE STATES:
+
+  Common states across service managers:
+
+  Active states:
+    active               Service is running
+    running              Service is running (alias for active)
+    inactive             Service is stopped
+    stopped              Service is stopped (alias for inactive)
+
+  Transition states:
+    activating           Service is starting
+    deactivating         Service is stopping
+    reloading            Service is reloading configuration
+
+  Error states:
+    failed               Service failed to start or crashed
+    dead                 Service is not running
+
+  Special states:
+    masked               Service is blocked from starting
+    enabled              Service configured to start at boot
+    disabled             Service not configured to start at boot
+    static               Service cannot be enabled/disabled
+
+SERVICE MANAGERS:
+
+  The svc handle automatically detects and uses the appropriate service
+  manager for your system:
+
+  systemd:
+    • Most modern Linux distributions
+    • Full feature support
+    • Rich state information
+    • Advanced logging with journalctl
+    • Template services (service@instance)
+    • Dependencies and ordering
+    • Resource limits and isolation
+
+  OpenRC:
+    • Alpine Linux, Gentoo
+    • Basic service management
+    • Runlevel support
+    • Service dependencies
+    • Parallel service startup
+
+  Generic (init scripts):
+    • Legacy systems
+    • /etc/init.d/ scripts
+    • Basic start/stop/restart
+    • Limited state information
+    • No enable/disable support
+
+  Feature comparison:
+    Feature              systemd    OpenRC    Generic
+    Start/Stop           ✓          ✓         ✓
+    Enable/Disable       ✓          ✓         ✗
+    Status Info          Rich       Basic     Limited
+    Logs                 ✓          ✓         ✗
+    Wait                 ✓          Limited   ✗
+    Scale                ✓          ✗         ✗
+    Mask/Unmask          ✓          ✗         ✗
+
+OUTPUT FORMATS:
+
+  status output:
+    {
+      "backend": "systemd",
+      "service": "apache2",
+      "loaded": true,
+      "active_state": "active",
+      "sub_state": "running",
+      "pid": 1234,
+      "timestamps": {
+        "active_enter": "2025-02-08T10:30:00Z",
+        "active_exit": null
+      },
+      "memory_current": 52428800,
+      "cpu_usage_nsec": 1234567890
+    }
+
+  start output:
+    {
+      "backend": "systemd",
+      "service": "apache2",
+      "action": "start",
+      "success": true
+    }
+
+  stop output:
+    {
+      "backend": "systemd",
+      "service": "apache2",
+      "action": "stop",
+      "success": true,
+      "forced": false
+    }
+
+  restart output:
+    {
+      "backend": "systemd",
+      "service": "nginx",
+      "action": "restart",
+      "success": true
+    }
+
+  enable output:
+    {
+      "backend": "systemd",
+      "service": "apache2",
+      "action": "enable",
+      "success": true,
+      "enabled": true
+    }
+
+  is-enabled output:
+    {
+      "backend": "systemd",
+      "service": "apache2",
+      "enabled": true,
+      "state": "enabled"
+    }
+
+  wait output:
+    {
+      "backend": "systemd",
+      "service": "apache2",
+      "action": "wait",
+      "success": true,
+      "state": "active",
+      "elapsed_ms": 1234
+    }
+
+  logs output:
+    {
+      "backend": "systemd",
+      "service": "apache2",
+      "lines": [
+        "2025-02-08 10:30:00 [info] Server started",
+        "2025-02-08 10:30:01 [info] Listening on port 80"
+      ]
+    }
+
+  scale output:
+    {
+      "backend": "systemd",
+      "service": "myapp@",
+      "action": "scale",
+      "success": true,
+      "instances": 3,
+      "previous_instances": 1
+    }
+
+EXIT CODES:
+  0                      Success
+  1                      General error
+  2                      Service not found
+  3                      Permission denied
+  4                      Service manager not available
+  5                      Invalid arguments
+  6                      Timeout
+  7                      Operation not supported
+
+ERROR MESSAGES:
+
+  Service errors:
+    "service not found"            Service doesn't exist
+    "service already running"      Start when already active
+    "service not running"          Stop when already inactive
+
+  Permission errors:
+    "permission denied"            Insufficient privileges
+    "operation requires root"      Need root access
+
+  Manager errors:
+    "service manager not available"    No service manager found
+    "backend error"                    Service manager failed
+
+  State errors:
+    "timeout waiting for state"    Wait operation timed out
+    "invalid state"                Unknown state value
+
+  Operation errors:
+    "operation not supported"      Backend doesn't support operation
+    "service is masked"            Cannot start masked service
+    "reload not supported"         Service doesn't support reload
+
+COMMON WORKFLOWS:
+
+  Deploy new application:
+    # Copy service file
+    # Enable service
+    svc://myapp.enable
+
+    # Start service
+    svc://myapp.start
+
+    # Wait for ready
+    svc://myapp.wait(state=active,timeout=30)
+
+    # Check status
+    svc://myapp.status
+
+  Update running service:
+    # Stop service
+    svc://myapp.stop
+
+    # Update application files
+    # ...
+
+    # Start service
+    svc://myapp.start
+
+    # Verify
+    svc://myapp.wait(state=active,timeout=30)
+
+  Reload configuration without downtime:
+    # Edit config file
+    # ...
+
+    # Reload service
+    svc://nginx.reload
+
+    # Verify still running
+    svc://nginx.status
+
+  Troubleshoot service issues:
+    # Check status
+    svc://myapp.status
+
+    # View logs
+    svc://myapp.logs(lines=100)
+
+    # Restart service
+    svc://myapp.restart
+
+    # Follow logs
+    svc://myapp.logs(follow=true)
+
+  Disable problematic service:
+    # Stop service
+    svc://problematic.stop
+
+    # Disable from boot
+    svc://problematic.disable
+
+    # Mask to prevent activation
+    svc://problematic.mask
+
+  Clean restart during maintenance:
+    # Stop service
+    svc://db.stop
+
+    # Wait for stopped
+    svc://db.wait(state=inactive,timeout=30)
+
+    # Perform maintenance
+    # ...
+
+    # Start service
+    svc://db.start
+
+    # Wait for active
+    svc://db.wait(state=active,timeout=60)
+
+  Check service health:
+    # Get status
+    svc://service.status
+
+    # Check if enabled
+    svc://service.is-enabled
+
+    # View recent activity
+    svc://service.logs(lines=20)
+
+  Scale application instances:
+    # Scale up
+    svc://worker@.scale(instances=5)
+
+    # Wait for all to start
+    sleep 10
+
+    # Scale down
+    svc://worker@.scale(instances=2)
+
+  Startup sequence for dependent services:
+    # Start database
+    svc://postgresql.start
+    svc://postgresql.wait(state=active,timeout=30)
+
+    # Start cache
+    svc://redis.start
+    svc://redis.wait(state=active,timeout=30)
+
+    # Start application
+    svc://myapp.start
+    svc://myapp.wait(state=active,timeout=60)
+
+  Monitor service during deployment:
+    # Deploy new version
+    # ...
+
+    # Restart
+    svc://app.restart
+
+    # Monitor logs
+    svc://app.logs(follow=true)
+
+BEST PRACTICES:
+  • Always check service status before operations
+  • Use wait verb after start/restart for deployment scripts
+  • Enable services you want to survive reboots
+  • Use reload instead of restart when possible (no downtime)
+  • Check logs when troubleshooting
+  • Use mask for security (blocking unwanted services)
+  • Disable unused services to improve boot time
+  • Use timeout with stop for graceful shutdown
+  • Verify service state after critical operations
+  • Use force stop only as last resort
+  • Test service changes in development first
+  • Document service dependencies
+  • Use systemd for modern systems (best support)
+  • Follow logs during deployment
+  • Scale gradually, monitor performance
+  • Use descriptive service names
+  • Keep service files in version control
+  • Implement health checks in services
+  • Set appropriate timeouts for your workload
+  • Use enable with start for persistent services
+  • Use disable with stop to prevent restart
+  • Monitor resource usage with status
+  • Review logs regularly
+  • Automate service management in deployment scripts
+  • Test start/stop/restart cycles
+  • Use wait to ensure state transitions complete
+  • Implement proper error handling
+  • Set resource limits in service files
+  • Use dependencies to order service startup
+  • Keep services updated
+
+SERVICE MANAGEMENT GUIDELINES:
+  • Prefer reload over restart for configuration changes
+  • Use restart when reload is not sufficient
+  • Stop services before major upgrades
+  • Enable critical services to survive reboots
+  • Disable development/test services in production
+  • Mask services that conflict or are deprecated
+  • Check is-enabled to verify boot configuration
+  • Use wait with appropriate timeouts
+  • Set force=true only when service hangs
+  • Monitor logs during state transitions
+  • Verify status after lifecycle operations
+  • Use scale for horizontal scaling needs
+  • Template services (service@) for multi-instance
+  • Consider dependencies when starting services
+  • Use proper shutdown order for dependent services
+
+BOOT CONFIGURATION GUIDELINES:
+  • Enable services needed for system functionality
+  • Disable optional services to speed boot
+  • Mask deprecated or conflicting services
+  • Verify enabled status: svc://name.is-enabled
+  • Test boot configuration before production
+  • Document boot-enabled services
+  • Review enabled services periodically
+  • Use disable, not mask, for temporary changes
+  • Enable services after testing them
+  • Disable before masking (clearer intent)
+  • Unmask before enable (required for masked)
+
+LOGGING GUIDELINES:
+  • Use logs verb for troubleshooting
+  • Start with lines=50 for recent context
+  • Use follow=true for real-time monitoring
+  • Check logs after failed start/restart
+  • Monitor logs during deployment
+  • Correlate logs with status information
+  • Save logs for post-incident analysis
+  • Use appropriate log levels in services
+  • Implement log rotation
+  • Archive important logs
+
+SECURITY CONSIDERATIONS:
+  • Many operations require root or sudo
+  • Validate service names before operations
+  • Mask unused or vulnerable services
+  • Review enabled services for security
+  • Disable services that aren't needed
+  • Monitor service logs for anomalies
+  • Use proper permissions on service files
+  • Implement authentication where possible
+  • Limit network exposure of services
+  • Use firewalls to protect services
+  • Keep services updated with security patches
+  • Review service configurations regularly
+  • Implement resource limits (CPU, memory)
+  • Use namespaces and isolation (systemd)
+  • Monitor for unauthorized service changes
+  • Audit service management actions
+  • Use secure communication channels
+  • Validate configuration before reload
+  • Test security changes in staging
+  • Document security requirements
+
+TROUBLESHOOTING:
+
+  Service won't start:
+    • Check status: svc://name.status
+    • View logs: svc://name.logs(lines=50)
+    • Check if masked: svc://name.is-enabled
+    • Unmask if needed: svc://name.unmask
+    • Verify configuration files
+    • Check dependencies
+
+  Service fails during restart:
+    • Check logs before restart
+    • Use stop then start instead
+    • Increase timeout
+    • Check for resource limits
+    • Verify no process conflicts
+
+  Permission denied:
+    • Use sudo: sudo resh 'svc://name.start'
+    • Check user permissions
+    • Verify service file permissions
+    • Check SELinux/AppArmor settings
+
+  Service doesn't enable:
+    • Check if service file exists
+    • Verify service file is valid
+    • Use systemctl daemon-reload (systemd)
+    • Check for mask
+    • Review service dependencies
+
+  Timeout waiting for state:
+    • Increase timeout value
+    • Check service logs for issues
+    • Verify service health
+    • Check dependencies
+    • Review resource availability
+
+  Logs not available:
+    • Check service manager support
+    • Verify journald is running (systemd)
+    • Check log file permissions
+    • Review service logging configuration
+
+  Scale doesn't work:
+    • Requires template service (service@)
+    • Only systemd supports scale
+    • Check service file syntax
+    • Verify instance naming
+
+DEBUGGING:
+
+  Check service status:
+    svc://name.status
+
+  View full configuration:
+    systemctl cat name    # systemd
+    rc-service name -v    # OpenRC
+
+  Test service manually:
+    systemctl start name --no-block    # systemd
+    /etc/init.d/name start             # generic
+
+  Check service file:
+    systemctl show name    # systemd
+
+  Verify dependencies:
+    systemctl list-dependencies name    # systemd
+
+  Check all services:
+    systemctl list-units --type=service    # systemd
+    rc-status                              # OpenRC
+
+  Test without enabling:
+    svc://name.start
+    # (don't enable yet)
+
+PLATFORM SUPPORT:
+
+  Linux (systemd):
+    • Full support for all verbs
+    • Ubuntu, Debian, Fedora, RHEL, CentOS, Arch
+    • Best feature set
+    • Rich status information
+    • Template services
+
+  Linux (OpenRC):
+    • Alpine Linux, Gentoo
+    • Basic service management
+    • Limited status information
+    • No scale support
+
+  Linux (Generic init):
+    • Legacy systems
+    • Basic start/stop/restart
+    • No enable/disable
+    • Limited features
+
+  BSD:
+    • Limited support
+    • Depends on init system
+    • May require custom integration
+
+  macOS:
+    • Uses launchd (different system)
+    • Not supported by svc handle
+    • Use macOS-specific tools
+
+  Windows:
+    • Uses Services control manager
+    • Not supported by svc handle
+    • Use Windows-specific tools
+
+PERFORMANCE CONSIDERATIONS:
+  • Service operations may take several seconds
+  • Use wait with reasonable timeouts
+  • Restart causes downtime (use reload when possible)
+  • Scale operations affect multiple instances
+  • Status queries are fast
+  • Log retrieval speed depends on log size
+  • Following logs requires continuous connection
+  • Multiple concurrent operations may conflict
+  • Service manager performance varies
+  • Dependencies can slow start/stop operations
+
+LIMITATIONS:
+  • Cannot create or modify service files
+  • Cannot change service dependencies
+  • Cannot manage service users/permissions
+  • No cross-platform service manager abstraction
+  • Scale only works with systemd templates
+  • Log following requires terminal support
+  • Cannot restart system services that manage svc handle
+  • No service health checks (use external monitoring)
+  • Cannot manage containers (use container tools)
+  • Limited control of service resources
+  • Cannot manage service files in /etc
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With config handle:
+    # Store service state
+    svc://myapp.status | config://services/myapp/status.set
+
+  With log handle:
+    # Save service logs
+    svc://myapp.logs(lines=1000) | log://service-logs/myapp.log.append
+
+  With event handle:
+    # Trigger on service start
+    svc://myapp.start && event://emit(topic="service.started",data="myapp")
+
+  With exec handle:
+    # Run pre/post scripts
+    exec://pre-start.sh
+    svc://myapp.start
+    exec://post-start.sh
+
+  With file handle:
+    # Check service file
+    file:///etc/systemd/system/myapp.service.read
+
+  With proc handle:
+    # Control service process
+    PID=$(svc://myapp.status | jq -r .pid)
+    proc://$PID.nice.set(value=5)
+
+MORE INFO:
+  For complete documentation of svc handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Process_ServiceManagement/svc.md
+
+  systemd documentation:
+  https://www.freedesktop.org/software/systemd/man/systemctl.html
+  https://www.freedesktop.org/software/systemd/man/systemd.service.html
+
+  OpenRC documentation:
+  https://wiki.gentoo.org/wiki/OpenRC
+
+  Service management best practices:
+  https://www.freedesktop.org/software/systemd/man/daemon.html
+
+  Use 'svc:// --help=VERB' for detailed help on a specific verb.
+"#;
+
 pub struct SvcHandle {
     name: String,
+    original_url: Url,
 }
 
 impl SvcHandle {
@@ -40,7 +943,10 @@ impl SvcHandle {
             }
             name.push_str(u.path().trim_start_matches('/'));
         }
-        Ok(Self { name })
+        Ok(Self { 
+            name,
+            original_url: u.clone(),
+        })
     }
 
     fn detect_backend() -> Backend {
@@ -1035,6 +1941,38 @@ impl SvcHandle {
             Ok(Status::ok())
         }
     }
+
+    /// Check if the URL indicates a help request
+    fn should_show_help(url: &Url) -> bool {
+        // Check host for --help or -h
+        if let Some(host) = url.host_str() {
+            if host == "--help" || host == "-h" {
+                return true;
+            }
+        }
+
+        // Check path for --help or -h
+        let path = url.path();
+        if path.contains("--help") || path.contains("-h") {
+            return true;
+        }
+
+        // Check query parameters for help
+        for (key, _) in url.query_pairs() {
+            if key == "help" || key == "h" {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Display comprehensive svc handle help
+    fn display_help(io: &mut IoStreams) -> anyhow::Result<Status> {
+        write!(io.stdout, "{}", SVC_HELP_TEXT)
+            .with_context(|| "Failed to write help text to stdout")?;
+        Ok(Status::ok())
+    }
 }
 
 impl Handle for SvcHandle {
@@ -1053,10 +1991,18 @@ impl Handle for SvcHandle {
             "wait",
             "logs",
             "scale",
+            "help",
+            "--help",
+            "-h",
         ]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
+        // Check if this is a help request first
+        if Self::should_show_help(&self.original_url) {
+            return Self::display_help(io);
+        }
+
         match verb {
             "status" => {
                 let backend = Self::detect_backend();

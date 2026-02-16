@@ -16,6 +16,1155 @@ use crate::core::{
 };
 
 // ===========================================================================
+// Help Text Constants
+// ===========================================================================
+
+const SYSTEM_HELP_TEXT: &str = r#"
+RESOURCE SHELL - SYSTEM HANDLE
+===============================
+
+USAGE:
+  system://.VERB(arguments)
+
+DESCRIPTION:
+  The system handle provides comprehensive system information gathering for
+  Linux systems. Collect CPU metrics, memory usage, disk statistics, load
+  averages, uptime, and environment variables through the /proc filesystem
+  and system calls. Monitor system health, diagnose performance issues, track
+  resource utilization, and inspect system configuration. Essential for system
+  administration, performance monitoring, capacity planning, troubleshooting,
+  and DevOps automation. Supports JSON and text output formats with extensive
+  filtering and customization options.
+
+URL FORMAT:
+  system://.VERB(arguments)
+  system://.info(scopes=["cpu","memory"])
+  system://.cpu(per_cpu=true,sample_duration_ms=500)
+
+  VERB: System information operation to perform
+  arguments: Optional configuration parameters
+
+VERBS (7 total):
+
+  Comprehensive Information:
+    info            Gather system information across multiple scopes
+
+  System Metrics:
+    uptime          System uptime and boot time
+    load            CPU load averages and process counts
+    memory          RAM and swap memory usage
+    cpu             CPU utilization and topology
+    disk            Disk usage and mount points
+
+  Environment:
+    env.list        Environment variables listing
+
+EXAMPLES:
+
+  System Information (info):
+    # Basic system info (all scopes)
+    system://.info
+
+    # Specific scopes
+    system://.info(scopes=["os","kernel","cpu"])
+
+    # OS information only
+    system://.info(scopes=["os"])
+
+    # Kernel information
+    system://.info(scopes=["kernel"])
+
+    # CPU information
+    system://.info(scopes=["cpu"])
+
+    # Memory information
+    system://.info(scopes=["memory"])
+
+    # Load averages
+    system://.info(scopes=["load"])
+
+    # Disk information
+    system://.info(scopes=["disk"])
+
+    # Process information
+    system://.info(scopes=["process"])
+
+    # Multiple scopes
+    system://.info(scopes=["os","kernel","cpu","memory","load"])
+
+    # With raw data
+    system://.info(include_raw=true)
+
+    # With file paths
+    system://.info(include_paths=true)
+
+    # Text format
+    system://.info(format="text")
+
+    # Per-CPU metrics
+    system://.info(scopes=["cpu"],per_cpu=true)
+
+    # Custom sampling
+    system://.info(scopes=["cpu"],sample_duration_ms=500)
+
+    # Limited mounts
+    system://.info(scopes=["disk"],max_mounts=10)
+
+    # Virtualization detection
+    system://.info(scopes=["virtualization"])
+
+    # Pressure metrics
+    system://.info(scopes=["pressure"])
+
+    # Cgroup information
+    system://.info(scopes=["cgroup"])
+
+  System Uptime (uptime):
+    # Basic uptime
+    system://.uptime
+
+    # With idle time
+    system://.uptime(include_idle=true)
+
+    # With boot time
+    system://.uptime(include_boot_time=true)
+
+    # Human-readable format
+    system://.uptime(include_human=true)
+
+    # Complete uptime info
+    system://.uptime(include_idle=true,include_boot_time=true,include_human=true)
+
+    # Text format
+    system://.uptime(format="text")
+
+    # With raw data
+    system://.uptime(include_raw=true)
+
+    # With file paths
+    system://.uptime(include_paths=true)
+
+    # Minimal uptime
+    system://.uptime(include_idle=false,include_boot_time=false)
+
+  System Load (load):
+    # Basic load averages
+    system://.load
+
+    # Normalized per CPU
+    system://.load(normalize_per_cpu=true)
+
+    # With process queue
+    system://.load(include_queue=true)
+
+    # Human-readable analysis
+    system://.load(include_human=true)
+
+    # Complete load info
+    system://.load(normalize_per_cpu=true,include_queue=true,include_human=true)
+
+    # Text format
+    system://.load(format="text")
+
+    # Custom minimum CPU count
+    system://.load(min_cpu_count=2)
+
+    # With raw data
+    system://.load(include_raw=true)
+
+    # With file paths
+    system://.load(include_paths=true)
+
+  Memory Usage (memory):
+    # Basic memory info
+    system://.memory
+
+    # With swap details
+    system://.memory(include_swap=true)
+
+    # With cgroup metrics
+    system://.memory(include_cgroup=true)
+
+    # With hugepages
+    system://.memory(include_hugepages=true)
+
+    # Human-readable summary
+    system://.memory(include_human=true)
+
+    # Complete memory info
+    system://.memory(include_swap=true,include_cgroup=true,include_hugepages=true,include_human=true)
+
+    # Text format
+    system://.memory(format="text")
+
+    # With raw data
+    system://.memory(include_raw=true)
+
+    # With file paths
+    system://.memory(include_paths=true)
+
+    # System memory only
+    system://.memory(include_swap=false,include_cgroup=false)
+
+  CPU Utilization (cpu):
+    # Basic CPU info
+    system://.cpu
+
+    # Per-CPU metrics
+    system://.cpu(per_cpu=true)
+
+    # Custom sampling duration
+    system://.cpu(sample_duration_ms=500)
+
+    # Minimum sampling duration
+    system://.cpu(sample_min_ms=100)
+
+    # With topology
+    system://.cpu(include_topology=true)
+
+    # With frequency
+    system://.cpu(include_frequency=true)
+
+    # With cgroup
+    system://.cpu(include_cgroup=true)
+
+    # Human-readable analysis
+    system://.cpu(include_human=true)
+
+    # Complete CPU info
+    system://.cpu(per_cpu=true,include_topology=true,include_frequency=true,include_cgroup=true,include_human=true)
+
+    # Short sample
+    system://.cpu(sample_duration_ms=50)
+
+    # Long sample
+    system://.cpu(sample_duration_ms=1000)
+
+    # Text format
+    system://.cpu(format="text")
+
+    # With raw data
+    system://.cpu(include_raw=true)
+
+    # With file paths
+    system://.cpu(include_paths=true)
+
+  Disk Usage (disk):
+    # Basic disk info
+    system://.disk
+
+    # Specific mount points
+    system://.disk(mount_points=["/","/home"])
+
+    # Specific devices
+    system://.disk(devices=["sda","sdb"])
+
+    # Specific filesystem types
+    system://.disk(fs_types=["ext4","xfs"])
+
+    # Include virtual filesystems
+    system://.disk(include_virtual=true)
+
+    # With I/O statistics
+    system://.disk(include_io=true)
+
+    # Human-readable summary
+    system://.disk(include_human=true)
+
+    # Complete disk info
+    system://.disk(include_io=true,include_human=true)
+
+    # Limited mounts
+    system://.disk(max_mounts=10)
+
+    # Text format
+    system://.disk(format="text")
+
+    # With raw data
+    system://.disk(include_raw=true)
+
+    # With file paths
+    system://.disk(include_paths=true)
+
+    # Root filesystem only
+    system://.disk(mount_points=["/"])
+
+    # All mounts including virtual
+    system://.disk(include_virtual=true,max_mounts=100)
+
+  Environment Variables (env.list):
+    # List current process environment
+    system://.env.list
+
+    # Specific process ID
+    system://.env.list(pid=1234)
+
+    # Filter by name pattern
+    system://.env.list(name_filter="PATH.*")
+
+    # Mask sensitive variables
+    system://.env.list(mask_sensitive=true)
+
+    # Limit variables returned
+    system://.env.list(max_variables=100)
+
+    # Limit value size
+    system://.env.list(max_value_bytes=1024)
+
+    # Include masked variables
+    system://.env.list(include_masked=true)
+
+    # Complete environment info
+    system://.env.list(mask_sensitive=true,include_masked=true,include_raw=true)
+
+    # Filter environment
+    system://.env.list(name_filter="^USER|^HOME|^PATH$")
+
+    # Process environment
+    system://.env.list(pid=1)
+
+    # Text format
+    system://.env.list(format="text")
+
+    # With raw data
+    system://.env.list(include_raw=true)
+
+    # With file paths
+    system://.env.list(include_paths=true)
+
+    # Security-focused listing
+    system://.env.list(mask_sensitive=true,include_masked=false)
+
+INFO ARGUMENTS:
+  scopes=ARRAY           Information scopes (default: all)
+                         Values: os, kernel, cpu, memory, load, disk,
+                                process, pressure, cgroup, virtualization
+  fields=OBJECT          Specific fields to return (optional)
+  sample_duration_ms=NUMBER  CPU sampling duration (default: 0)
+  sample_min_ms=NUMBER   Minimum sample duration (default: 50)
+  per_cpu=BOOL           Per-CPU metrics (default: false)
+  max_mounts=NUMBER      Maximum mount points (default: 32)
+  max_process_classes=NUMBER  Max process classes (default: 5)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+                         Values: json, text
+
+UPTIME ARGUMENTS:
+  include_idle=BOOL      Include idle time (default: true)
+  include_boot_time=BOOL Include boot timestamp (default: true)
+  include_human=BOOL     Human-readable format (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+
+LOAD ARGUMENTS:
+  normalize_per_cpu=BOOL Normalize by CPU count (default: true)
+  include_queue=BOOL     Process queue info (default: true)
+  include_human=BOOL     Human-readable analysis (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  min_cpu_count=NUMBER   Minimum CPU count (default: 1)
+  format=FORMAT          Output format (default: json)
+
+MEMORY ARGUMENTS:
+  include_swap=BOOL      Include swap info (default: true)
+  include_cgroup=BOOL    Include cgroup metrics (default: true)
+  include_hugepages=BOOL Include hugepage info (default: true)
+  include_human=BOOL     Human-readable summary (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+
+CPU ARGUMENTS:
+  sample_duration_ms=NUMBER  Sampling duration (default: 250)
+  sample_min_ms=NUMBER   Minimum sample duration (default: 50)
+  per_cpu=BOOL           Per-CPU metrics (default: true)
+  include_topology=BOOL  CPU topology info (default: true)
+  include_frequency=BOOL CPU frequency info (default: true)
+  include_cgroup=BOOL    Cgroup CPU metrics (default: true)
+  include_human=BOOL     Human-readable analysis (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+
+DISK ARGUMENTS:
+  mount_points=ARRAY     Specific mount points (optional)
+  devices=ARRAY          Specific devices (optional)
+  fs_types=ARRAY         Filesystem types (optional)
+  include_virtual=BOOL   Include virtual FS (default: false)
+  include_io=BOOL        I/O statistics (default: true)
+  include_human=BOOL     Human-readable summary (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  max_mounts=NUMBER      Maximum mounts (default: 32)
+  format=FORMAT          Output format (default: json)
+
+ENV.LIST ARGUMENTS:
+  pid=NUMBER             Process ID (default: current)
+  name_filter=REGEX      Variable name filter (optional)
+  mask_sensitive=BOOL    Mask sensitive vars (default: true)
+  max_variables=NUMBER   Maximum variables (default: 1000)
+  max_value_bytes=NUMBER Max value size (default: 16384)
+  include_masked=BOOL    Include masked vars (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+
+INFORMATION SCOPES:
+
+  The info verb supports multiple scopes for different system aspects:
+
+  os:
+    • Operating system name and distribution
+    • Distribution version
+    • Hostname
+    • Architecture
+    • Platform information
+
+  kernel:
+    • Kernel release and version
+    • Machine type
+    • Uptime seconds
+    • Boot time Unix timestamp
+
+  cpu:
+    • Logical CPU count
+    • Physical CPU count
+    • Online CPU count
+    • CPU utilization percentage
+    • Per-CPU breakdown (if enabled)
+
+  memory:
+    • Total memory
+    • Free memory
+    • Available memory
+    • Buffers and cache
+    • Swap usage
+    • Memory usage percentage
+
+  load:
+    • 1-minute load average
+    • 5-minute load average
+    • 15-minute load average
+    • Runnable processes
+    • Total processes
+
+  disk:
+    • Mount points
+    • Device names
+    • Filesystem types
+    • Space usage
+    • Inode usage
+    • I/O statistics
+
+  process:
+    • Process count by state
+    • Process classification
+    • Resource usage
+
+  pressure:
+    • CPU pressure metrics (PSI)
+    • Memory pressure metrics
+    • I/O pressure metrics
+
+  cgroup:
+    • Control group information
+    • Resource limits
+    • Usage statistics
+
+  virtualization:
+    • Hypervisor detection
+    • Container detection
+    • Virtual platform info
+
+LOAD STATUS INTERPRETATION:
+
+  Load per CPU thresholds:
+    < 0.1    idle        System very lightly loaded
+    0.1-0.7  normal      Healthy load level
+    0.7-1.0  busy        Approaching full utilization
+    > 1.0    overloaded  Processes waiting for CPU
+
+  Analysis considers:
+    • 1-minute average (recent activity)
+    • 5-minute average (medium trend)
+    • 15-minute average (long-term trend)
+    • CPU count (normalization)
+    • Process queue depth
+
+CPU SAMPLING:
+
+  CPU utilization requires sampling over time:
+    • Default duration: 250ms
+    • Minimum duration: 50ms
+    • Longer = more accurate
+    • Shorter = faster response
+
+  Sample calculation:
+    1. Read /proc/stat (initial)
+    2. Wait sample_duration_ms
+    3. Read /proc/stat (final)
+    4. Calculate differences
+    5. Compute percentages
+
+  Per-CPU sampling:
+    • Individual core utilization
+    • Identifies hotspots
+    • Detects core imbalances
+    • Higher overhead
+
+ENVIRONMENT VARIABLE SECURITY:
+
+  Automatic masking of sensitive variables:
+    • PASSWORD, PASSWD, PWD_*
+    • SECRET, TOKEN, KEY
+    • API_KEY, API_SECRET, API_TOKEN
+    • AUTH_*, OAUTH_*
+    • *_PASSWORD, *_SECRET, *_TOKEN, *_KEY
+    • AWS_SECRET_ACCESS_KEY
+    • DATABASE_URL (if contains password)
+
+  Masking behavior:
+    • Sensitive values replaced with "***MASKED***"
+    • Original length preserved
+    • Masked flag set to true
+    • Can be disabled with mask_sensitive=false
+
+  Security best practices:
+    • Always use mask_sensitive=true in logs
+    • Filter variables with name_filter
+    • Limit output with max_variables
+    • Review masked variables list
+    • Never log environment to untrusted destinations
+
+OUTPUT FORMATS:
+
+  JSON Format (default):
+    • Structured data
+    • Parseable by tools
+    • Complete information
+    • Suitable for automation
+
+  Text Format:
+    • Human-readable
+    • Formatted output
+    • Summary information
+    • Suitable for terminals
+
+EXIT CODES:
+  0                      Success
+  1                      General error
+  2                      Invalid scope specified
+  3                      Invalid fields specification
+  4                      /proc filesystem unavailable
+  5                      Operation timeout
+  6                      Data too large
+  7                      Parse error
+  8                      Permission denied
+  9                      Invalid regex filter
+
+ERROR MESSAGES:
+
+  Common errors:
+    "info_scope_invalid"       Invalid scope name
+    "info_fields_invalid"      Invalid field specification
+    "info_proc_unavailable"    /proc not accessible
+    "info_timeout"             Operation took too long
+    "info_data_too_large"      Response exceeds limits
+
+  Memory errors:
+    "memory_unavailable"       Memory info unavailable
+    "memory_meminfo_unavailable"  /proc/meminfo not readable
+    "memory_parse_error"       Parse failure
+
+  CPU errors:
+    "cpu_unavailable"          CPU info unavailable
+    "cpu_stat_unavailable"     /proc/stat not readable
+    "cpu_parse_error"          Parse failure
+
+  Disk errors:
+    "disk_unavailable"         Disk info unavailable
+    "disk_mounts_unavailable"  Mount info unavailable
+    "disk_statvfs_failed"      Filesystem stat failed
+
+  Environment errors:
+    "env_list_unavailable"     Environment unavailable
+    "env_list_pid_unavailable" Process env unavailable
+    "env_list_invalid_regex"   Invalid name filter
+
+COMMON WORKFLOWS:
+
+  System health check:
+    # Quick overview
+    system://.info(scopes=["os","load","memory","disk"])
+
+    # Detailed CPU analysis
+    system://.cpu(per_cpu=true,sample_duration_ms=1000)
+
+    # Memory pressure check
+    system://.memory(include_cgroup=true,include_human=true)
+
+    # Disk space monitoring
+    system://.disk(include_io=true,include_human=true)
+
+  Performance monitoring:
+    # Sample CPU over time
+    system://.cpu(sample_duration_ms=5000,per_cpu=true)
+
+    # Check load trends
+    system://.load(normalize_per_cpu=true,include_human=true)
+
+    # Memory usage analysis
+    system://.memory(include_swap=true,include_hugepages=true)
+
+    # I/O statistics
+    system://.disk(include_io=true)
+
+  Troubleshooting high load:
+    # Check load averages
+    system://.load
+
+    # Identify CPU hotspots
+    system://.cpu(per_cpu=true,include_human=true)
+
+    # Check memory pressure
+    system://.memory(include_cgroup=true)
+
+    # Review disk I/O
+    system://.disk(include_io=true)
+
+  Capacity planning:
+    # Baseline measurements
+    system://.info
+
+    # Long-term CPU sampling
+    system://.cpu(sample_duration_ms=10000)
+
+    # Trend analysis
+    system://.load(include_human=true)
+
+    # Storage capacity
+    system://.disk(include_virtual=false)
+
+  Container monitoring:
+    # Cgroup limits
+    system://.memory(include_cgroup=true)
+
+    # CPU quotas
+    system://.cpu(include_cgroup=true)
+
+    # Virtualization detection
+    system://.info(scopes=["virtualization"])
+
+  Security audit:
+    # Environment variables
+    system://.env.list(mask_sensitive=true)
+
+    # Process environment
+    system://.env.list(pid=1,mask_sensitive=true)
+
+    # Sensitive variable detection
+    system://.env.list(name_filter=".*SECRET.*|.*PASSWORD.*")
+
+  System inventory:
+    # Complete system info
+    system://.info
+
+    # Hardware topology
+    system://.cpu(include_topology=true)
+
+    # Storage layout
+    system://.disk(include_virtual=true)
+
+    # OS details
+    system://.info(scopes=["os","kernel","virtualization"])
+
+BEST PRACTICES:
+  • Use appropriate sampling duration for CPU metrics
+  • Sample for 1-5 seconds for accurate utilization
+  • Shorter samples for quick checks
+  • Longer samples for baseline measurements
+  • Monitor load averages over time
+  • 1-minute for recent activity
+  • 5-minute for medium trends
+  • 15-minute for long-term patterns
+  • Check all three for complete picture
+  • Normalize load by CPU count
+  • Use include_human for interpretations
+  • Filter disk mounts to relevant filesystems
+  • Exclude virtual filesystems for capacity planning
+  • Include I/O stats for performance analysis
+  • Limit max_mounts to control output size
+  • Always mask sensitive environment variables
+  • Use name_filter to narrow results
+  • Never log unmasked sensitive data
+  • Review masked variable list regularly
+  • Use JSON format for automation
+  • Use text format for human review
+  • Include raw data for debugging only
+  • Parse JSON responses properly
+  • Cache system info appropriately
+  • Avoid excessive polling
+  • Use reasonable intervals (30-60s minimum)
+  • Consider external monitoring tools for high frequency
+  • Monitor cgroup metrics in containers
+  • Check virtualization platform
+  • Understand container resource limits
+  • Use appropriate scopes for context
+  • Combine multiple verbs for complete view
+  • Use info for quick overview
+  • Use specific verbs for detailed analysis
+  • Correlate metrics across verbs
+  • Set reasonable timeouts
+  • Handle unavailable metrics gracefully
+  • Check warnings in responses
+  • Implement error handling
+
+MONITORING GUIDELINES:
+  • Establish baseline metrics first
+  • Collect during normal operation
+  • Measure during peak usage
+  • Document expected ranges
+  • Set thresholds based on baseline
+  • Monitor trends not absolute values
+  • Rising load average = investigation needed
+  • Sudden memory spike = potential issue
+  • Increasing disk usage = capacity planning
+  • Alert on deviations from normal
+  • Use load per CPU for thresholds
+  • < 0.7 = normal, > 1.0 = investigate
+  • Consider sustained high load
+  • Check 15-minute average for persistence
+  • Memory below 10% free = warning
+  • Swap usage > 50% = concern
+  • Check for memory leaks
+  • Monitor OOM killer activity
+  • Disk usage > 80% = warning
+  • Disk usage > 90% = critical
+  • Monitor inodes separately
+  • Check I/O wait times
+
+LINUX PROC FILESYSTEM:
+
+  The system handle uses these /proc files:
+
+  /proc/uptime:
+    • System uptime seconds
+    • Idle time seconds
+    • Boot time calculation
+
+  /proc/loadavg:
+    • Load averages (1, 5, 15 min)
+    • Runnable process count
+    • Total process count
+
+  /proc/meminfo:
+    • Memory totals and usage
+    • Swap information
+    • Buffer and cache details
+    • Hugepage statistics
+
+  /proc/stat:
+    • CPU time breakdowns
+    • Per-CPU statistics
+    • Boot time
+    • Context switches
+
+  /proc/cpuinfo:
+    • CPU model and features
+    • Core and socket topology
+    • CPU frequency (if available)
+
+  /proc/mounts or /etc/mtab:
+    • Mounted filesystems
+    • Mount points and devices
+    • Filesystem types
+
+  /proc/diskstats:
+    • Block device I/O statistics
+    • Read/write operations
+    • Sector counts
+    • I/O timing
+
+  /proc/<pid>/environ:
+    • Process environment variables
+    • Null-separated key=value pairs
+
+  /sys/devices/system/cpu:
+    • CPU topology
+    • Online/offline status
+    • Frequency scaling
+
+SECURITY CONSIDERATIONS:
+  • System handle requires read access to /proc
+  • Some metrics require elevated privileges
+  • Environment access requires process permissions
+  • Never expose raw environment in logs
+  • Always use mask_sensitive=true in production
+  • Filter sensitive variables by name
+  • Limit environment variable disclosure
+  • Review access controls on /proc
+  • Restrict process environment access
+  • Audit system information gathering
+  • Monitor for excessive polling
+  • Implement rate limiting
+  • Control who can access system metrics
+  • Protect sensitive topology information
+  • Be aware of information disclosure
+  • System info can reveal vulnerabilities
+  • CPU topology aids exploit planning
+  • Memory layout is security-sensitive
+  • Consider what to expose externally
+  • Use read-only access where possible
+  • Minimize required privileges
+  • Run with least privilege necessary
+  • Avoid running as root
+
+TROUBLESHOOTING:
+
+  /proc filesystem unavailable:
+    • Verify /proc is mounted
+    • Check mount permissions
+    • Verify not in restricted container
+    • Check kernel supports /proc
+
+  Permission denied:
+    • Check file permissions
+    • Some files require root
+    • Process environment needs permissions
+    • Use appropriate user context
+
+  Parse errors:
+    • Kernel version incompatibility
+    • Unexpected /proc format
+    • Corrupted system state
+    • Check kernel logs
+
+  Metrics unavailable:
+    • Feature not supported
+    • Virtual environment limitations
+    • Cgroup v2 vs v1 differences
+    • Check warnings in response
+
+  Inaccurate CPU utilization:
+    • Sample duration too short
+    • Increase sample_duration_ms
+    • System very idle or busy
+    • Check for CPU frequency scaling
+
+  Missing cgroup metrics:
+    • Not in container
+    • Cgroup v2 not available
+    • Cgroup subsystem not mounted
+    • Check /sys/fs/cgroup
+
+  High memory usage reported:
+    • Linux caches extensively
+    • Check mem_available not mem_free
+    • Cached memory is reclaimable
+    • Use include_human for interpretation
+
+PLATFORM SUPPORT:
+
+  Linux (all distributions):
+    • Full support for all verbs
+    • Requires /proc filesystem
+    • Some features require root
+    • Cgroup support varies by version
+
+  Containers (Docker, Podman, LXC):
+    • Most metrics available
+    • Cgroup metrics important
+    • Some /proc files may be restricted
+    • Virtual filesystem limitations
+
+  WSL (Windows Subsystem for Linux):
+    • Generally works well
+    • Some hardware info unavailable
+    • Frequency scaling may not work
+    • Check warnings for limitations
+
+  Virtual Machines:
+    • Full support typically
+    • Hardware topology may be virtual
+    • Virtualization detected
+    • Performance counters may differ
+
+  macOS/Windows:
+    • Limited or no support
+    • Use platform-specific tools
+
+PERFORMANCE CONSIDERATIONS:
+  • System information gathering is fast (< 10ms typically)
+  • CPU sampling adds latency (sample_duration_ms)
+  • Disk verb can be slow with many mounts
+  • Environment listing scales with variable count
+  • Per-CPU metrics add overhead
+  • Use max_mounts to limit disk output
+  • Use max_variables to limit env output
+  • Caching recommended for frequent access
+  • No internal caching performed
+  • Each request reads /proc fresh
+  • Consider external caching (30-60s TTL)
+
+LIMITATIONS:
+  • Linux-specific implementation
+  • Requires /proc filesystem
+  • Some metrics need root privileges
+  • Cgroup v1 vs v2 differences
+  • Container environment limitations
+  • Virtual environment restrictions
+  • CPU frequency may be unavailable
+  • Hardware details may be limited
+  • No historical data storage
+  • No alerting or threshold triggers
+  • No automatic monitoring
+  • Single-point-in-time measurements
+
+MORE INFO:
+  For complete documentation:
+  https://github.com/[your-org]/resource-shell/docs/SystemInformation/system.md
+
+  Linux /proc documentation:
+  https://www.kernel.org/doc/Documentation/filesystems/proc.txt
+
+  Use 'system:// --help=VERB' for detailed help on a specific verb.
+"#;
+
+const INFO_VERB_HELP: &str = r#"
+SYSTEM HANDLE - INFO VERB
+=========================
+
+USAGE:
+  system://.info(arguments)
+
+DESCRIPTION:
+  Gathers comprehensive system information across configurable scopes including
+  operating system details, kernel information, CPU metrics, memory usage, and
+  load averages. Supports 10 different scopes for targeted information collection.
+
+EXAMPLES:
+  system://.info                                    # Basic system info (all scopes)
+  system://.info(scopes=["os","kernel"])           # OS and kernel only
+  system://.info(scopes=["cpu","memory"])          # CPU and memory only
+  system://.info(per_cpu=true)                     # Per-CPU metrics
+  system://.info(format="text")                    # Text format output
+  system://.info(include_raw=true)                 # Include raw data
+
+ARGUMENTS:
+  scopes=ARRAY           Information scopes (default: ["os","kernel","cpu","memory","load"])
+  fields=OBJECT          Specific fields to return (optional)
+  sample_duration_ms=NUMBER  CPU sampling duration (default: 0)
+  sample_min_ms=NUMBER   Minimum sample duration (default: 50)
+  per_cpu=BOOL           Per-CPU metrics (default: false)
+  max_mounts=NUMBER      Maximum mount points (default: 32)
+  max_process_classes=NUMBER  Max process classes (default: 5)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+
+SCOPES:
+  os                     Operating system information
+  kernel                 Kernel version and system details  
+  cpu                    CPU count and utilization
+  memory                 Memory and swap usage
+  load                   System load averages
+  disk                   Disk usage statistics
+  process                Process information
+  pressure               System pressure metrics
+  cgroup                 Control group information
+  virtualization         Virtualization platform details
+"#;
+
+const UPTIME_VERB_HELP: &str = r#"
+SYSTEM HANDLE - UPTIME VERB
+===========================
+
+USAGE:
+  system://.uptime(arguments)
+
+DESCRIPTION:
+  Reports system uptime, boot time, and idle time information.
+
+EXAMPLES:
+  system://.uptime                                 # Basic uptime
+  system://.uptime(include_human=true)            # Human-readable format
+  system://.uptime(format="text")                 # Text output
+  system://.uptime(include_idle=false)            # Without idle time
+
+ARGUMENTS:
+  include_idle=BOOL      Include idle time (default: true)
+  include_boot_time=BOOL Include boot timestamp (default: true)
+  include_human=BOOL     Human-readable format (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+"#;
+
+const LOAD_VERB_HELP: &str = r#"
+SYSTEM HANDLE - LOAD VERB
+=========================
+
+USAGE:
+  system://.load(arguments)
+
+DESCRIPTION:
+  Provides system load averages, process counts, and load analysis with
+  interpretation of load status relative to CPU count.
+
+EXAMPLES:
+  system://.load                                   # Basic load averages
+  system://.load(include_human=true)              # With analysis
+  system://.load(normalize_per_cpu=true)          # Normalized by CPU count
+  system://.load(format="text")                   # Text output
+
+ARGUMENTS:
+  normalize_per_cpu=BOOL Normalize by CPU count (default: true)
+  include_queue=BOOL     Process queue info (default: true)
+  include_human=BOOL     Human-readable analysis (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  min_cpu_count=NUMBER   Minimum CPU count (default: 1)
+  format=FORMAT          Output format (default: json)
+
+LOAD INTERPRETATION:
+  < 0.1 per CPU          idle
+  0.1-0.7 per CPU        normal
+  0.7-1.0 per CPU        busy
+  > 1.0 per CPU          overloaded
+"#;
+
+const MEMORY_VERB_HELP: &str = r#"
+SYSTEM HANDLE - MEMORY VERB
+===========================
+
+USAGE:
+  system://.memory(arguments)
+
+DESCRIPTION:
+  Shows system memory usage including RAM, swap, buffers, cache, and cgroup
+  information with human-readable summaries.
+
+EXAMPLES:
+  system://.memory                                 # Basic memory info
+  system://.memory(include_cgroup=true)           # With cgroup metrics
+  system://.memory(include_hugepages=true)        # With hugepage info
+  system://.memory(format="text")                 # Text output
+
+ARGUMENTS:
+  include_swap=BOOL      Include swap info (default: true)
+  include_cgroup=BOOL    Include cgroup metrics (default: true)
+  include_hugepages=BOOL Include hugepage info (default: true)
+  include_human=BOOL     Human-readable summary (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+"#;
+
+const CPU_VERB_HELP: &str = r#"
+SYSTEM HANDLE - CPU VERB
+========================
+
+USAGE:
+  system://.cpu(arguments)
+
+DESCRIPTION:
+  Reports CPU utilization, topology, frequency, and per-core statistics with
+  configurable sampling duration for accurate measurements.
+
+EXAMPLES:
+  system://.cpu                                    # Basic CPU info
+  system://.cpu(per_cpu=true)                     # Per-CPU metrics
+  system://.cpu(sample_duration_ms=1000)          # 1-second sample
+  system://.cpu(include_topology=true)            # With topology
+  system://.cpu(format="text")                    # Text output
+
+ARGUMENTS:
+  sample_duration_ms=NUMBER  Sampling duration (default: 250)
+  sample_min_ms=NUMBER   Minimum sample duration (default: 50)
+  per_cpu=BOOL           Per-CPU metrics (default: true)
+  include_topology=BOOL  CPU topology info (default: true)
+  include_frequency=BOOL CPU frequency info (default: true)
+  include_cgroup=BOOL    Cgroup CPU metrics (default: true)
+  include_human=BOOL     Human-readable analysis (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+
+SAMPLING NOTES:
+  • Longer sampling = more accurate
+  • Minimum 50ms, default 250ms
+  • Use 1-5 seconds for baseline measurements
+"#;
+
+const DISK_VERB_HELP: &str = r#"
+SYSTEM HANDLE - DISK VERB
+=========================
+
+USAGE:
+  system://.disk(arguments)
+
+DESCRIPTION:
+  Shows disk usage statistics for mounted filesystems including space
+  utilization and I/O metrics with filtering options.
+
+EXAMPLES:
+  system://.disk                                   # Basic disk info
+  system://.disk(include_io=true)                 # With I/O statistics
+  system://.disk(mount_points=["/"])              # Root filesystem only
+  system://.disk(include_virtual=true)            # Include virtual filesystems
+  system://.disk(format="text")                   # Text output
+
+ARGUMENTS:
+  mount_points=ARRAY     Specific mount points (optional)
+  devices=ARRAY          Specific devices (optional)
+  fs_types=ARRAY         Filesystem types (optional)
+  include_virtual=BOOL   Include virtual FS (default: false)
+  include_io=BOOL        I/O statistics (default: true)
+  include_human=BOOL     Human-readable summary (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  max_mounts=NUMBER      Maximum mounts (default: 32)
+  format=FORMAT          Output format (default: json)
+"#;
+
+const ENV_LIST_VERB_HELP: &str = r#"
+SYSTEM HANDLE - ENV.LIST VERB
+=============================
+
+USAGE:
+  system://.env.list(arguments)
+
+DESCRIPTION:
+  Lists and filters environment variables from the current process or a
+  specified process ID with automatic masking of sensitive variables.
+
+EXAMPLES:
+  system://.env.list                               # Current process environment
+  system://.env.list(pid=1234)                    # Specific process
+  system://.env.list(name_filter="PATH.*")        # Filter by pattern
+  system://.env.list(mask_sensitive=true)         # Mask sensitive vars
+  system://.env.list(format="text")               # Text output
+
+ARGUMENTS:
+  pid=NUMBER             Process ID (default: current)
+  name_filter=REGEX      Variable name filter (optional)
+  mask_sensitive=BOOL    Mask sensitive vars (default: true)
+  max_variables=NUMBER   Maximum variables (default: 1000)
+  max_value_bytes=NUMBER Max value size (default: 16384)
+  include_masked=BOOL    Include masked vars (default: true)
+  include_raw=BOOL       Include raw data (default: false)
+  include_paths=BOOL     Include file paths (default: false)
+  format=FORMAT          Output format (default: json)
+
+SECURITY:
+  • Automatically masks passwords, tokens, keys
+  • Use mask_sensitive=true in production
+  • Filter with name_filter for specific needs
+"#;
+
+// ===========================================================================
 // Error Types
 // ===========================================================================
 
@@ -1365,7 +2514,62 @@ impl SystemHandle {
         Ok(SystemHandle { alias })
     }
 
+    /// Check if help should be displayed based on command arguments
+    fn should_show_help(&self, args: &Args) -> bool {
+        // Check for --help or -h flags in the arguments
+        args.contains_key("help") || args.contains_key("h") || 
+        args.get("input").map_or(false, |input| input.contains("--help") || input.contains("-h"))
+    }
+
+    /// Check if verb-specific help should be displayed
+    fn should_show_verb_help(&self, args: &Args) -> Option<String> {
+        // Check for --help=VERB pattern
+        if let Some(input) = args.get("input") {
+            if let Some(help_eq_pos) = input.find("--help=") {
+                let start = help_eq_pos + 7; // Length of "--help="
+                if let Some(end) = input[start..].find(|c: char| c.is_whitespace() || c == ')' || c == ',') {
+                    return Some(input[start..start + end].to_string());
+                } else {
+                    return Some(input[start..].to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Display comprehensive system handle help text
+    fn display_system_help(&self, io: &mut IoStreams) -> Result<Status> {
+        writeln!(io.stdout, "{}", SYSTEM_HELP_TEXT)?;
+        Ok(Status::ok())
+    }
+
+    /// Display verb-specific help text
+    fn display_verb_help(&self, verb: &str, io: &mut IoStreams) -> Result<Status> {
+        let help_text = match verb {
+            "info" => INFO_VERB_HELP,
+            "uptime" => UPTIME_VERB_HELP,
+            "load" => LOAD_VERB_HELP,
+            "memory" => MEMORY_VERB_HELP,
+            "cpu" => CPU_VERB_HELP,
+            "disk" => DISK_VERB_HELP,
+            "env.list" => ENV_LIST_VERB_HELP,
+            _ => {
+                writeln!(io.stdout, "Unknown verb: {}. Use --help for full list.", verb)?;
+                return Ok(Status::err(1, format!("Unknown verb: {}", verb)));
+            }
+        };
+        writeln!(io.stdout, "{}", help_text)?;
+        Ok(Status::ok())
+    }
+
     fn info_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help flags first
+        if self.should_show_help(args) {
+            return self.display_system_help(io);
+        }
+        if let Some(verb) = self.should_show_verb_help(args) {
+            return self.display_verb_help(&verb, io);
+        }
         // Parse options
         let opts = self.parse_options(args)?;
 
@@ -1417,6 +2621,14 @@ impl SystemHandle {
     }
 
     fn uptime_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help flags first
+        if self.should_show_help(args) {
+            return self.display_system_help(io);
+        }
+        if let Some(verb) = self.should_show_verb_help(args) {
+            return self.display_verb_help(&verb, io);
+        }
+
         // Parse options
         let opts = self.parse_uptime_options(args)?;
 
@@ -1790,6 +3002,14 @@ impl SystemHandle {
     }
 
     fn memory_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help flags first
+        if self.should_show_help(args) {
+            return self.display_system_help(io);
+        }
+        if let Some(verb) = self.should_show_verb_help(args) {
+            return self.display_verb_help(&verb, io);
+        }
+
         // Parse options
         let opts = self.parse_memory_options(args)?;
 
@@ -1838,6 +3058,14 @@ impl SystemHandle {
     }
 
     fn load_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help flags first
+        if self.should_show_help(args) {
+            return self.display_system_help(io);
+        }
+        if let Some(verb) = self.should_show_verb_help(args) {
+            return self.display_verb_help(&verb, io);
+        }
+
         // Parse options
         let opts = self.parse_load_options(args)?;
 
@@ -1873,6 +3101,14 @@ impl SystemHandle {
     }
 
     fn cpu_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help flags first
+        if self.should_show_help(args) {
+            return self.display_system_help(io);
+        }
+        if let Some(verb) = self.should_show_verb_help(args) {
+            return self.display_verb_help(&verb, io);
+        }
+
         // Parse options
         let opts = self.parse_cpu_options(args)?;
 
@@ -1908,6 +3144,14 @@ impl SystemHandle {
     }
 
     fn disk_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help flags first
+        if self.should_show_help(args) {
+            return self.display_system_help(io);
+        }
+        if let Some(verb) = self.should_show_verb_help(args) {
+            return self.display_verb_help(&verb, io);
+        }
+
         // Parse options
         let opts = self.parse_disk_options(args)?;
 
@@ -2474,6 +3718,14 @@ impl SystemHandle {
 
     // Environment listing verb implementation
     fn env_list_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help flags first
+        if self.should_show_help(args) {
+            return self.display_system_help(io);
+        }
+        if let Some(verb) = self.should_show_verb_help(args) {
+            return self.display_verb_help(&verb, io);
+        }
+
         // Parse options
         let opts = self.parse_env_list_options(args)?;
 
@@ -5541,6 +6793,11 @@ impl Handle for SystemHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help verbs
+        if verb == "help" || verb == "--help" || verb == "-h" {
+            return self.display_system_help(io);
+        }
+        
         match verb {
             "info" => self.info_verb(args, io),
             "uptime" => self.uptime_verb(args, io),

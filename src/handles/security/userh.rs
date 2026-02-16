@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::ffi::CString;
+use std::io::Write;
 use thiserror::Error;
 use url::Url;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -20,6 +21,1024 @@ use crate::core::{
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
+
+// Help text for --help command
+const USER_HELP_TEXT: &str = r#"
+RESOURCE SHELL - USER HANDLE
+============================
+
+USAGE:
+  user://target.VERB(arguments)
+
+DESCRIPTION:
+  The user handle manages user accounts, groups, and user passwords on Linux/Unix
+  systems. Create, delete, and modify users and groups. Change passwords, lock and
+  unlock accounts, manage group memberships. Check user existence and list group
+  memberships. Supports both real system operations and mock backend for testing.
+  Essential for system administration, user provisioning, access management, and
+  automated user account lifecycle management.
+
+URL FORMAT:
+  user://target.VERB(arguments)
+  user://alice.add(mode=user,username=alice)
+  user://group/admins.add(mode=group,group_name=admins)
+  user://membership/alice.add(mode=membership,member=alice,groups=admins,dev)
+
+  target: User, group, or membership identifier
+  VERB: Operation to perform
+
+TARGET TYPES:
+
+  User targets:
+    user://alice                Work with user "alice"
+    user://bob                  Work with user "bob"
+    user://dev1                 Work with user "dev1"
+
+  Group targets:
+    user://group/admins         Work with group "admins"
+    user://group/dev            Work with group "dev"
+    user://group/docker         Work with group "docker"
+
+  Membership targets:
+    user://membership/alice     Work with alice's group memberships
+    user://membership/bob       Work with bob's group memberships
+
+VERBS (7 total):
+
+  User/Group Creation:
+    add             Create users, groups, or group memberships
+
+  User/Group Removal:
+    delete          Remove users, groups, or group memberships
+
+  Password Management:
+    passwd          Change user passwords
+
+  Account Control:
+    lock            Lock user accounts to prevent login
+    unlock          Unlock user accounts to allow login
+
+  Information & Queries:
+    groups          List groups that a user belongs to
+    exists          Check if a user exists
+
+EXAMPLES:
+
+  Add Users (add - mode=user):
+    # Create basic user
+    user://alice.add(mode=user,backend=mock,username=alice)
+
+    # Create user with specific UID
+    user://alice.add(mode=user,username=alice,uid=1001)
+
+    # Create user with groups
+    user://dev1.add(mode=user,username=dev1,groups=dev,docker)
+
+    # Create user with home directory
+    user://alice.add(mode=user,username=alice,home=/home/alice)
+
+    # Create user with shell
+    user://alice.add(mode=user,username=alice,shell=/bin/bash)
+
+    # Create user with full name
+    user://alice.add(mode=user,username=alice,gecos="Alice Example")
+
+    # Create user with primary group
+    user://alice.add(mode=user,username=alice,primary_group=users)
+
+    # Create system user
+    user://sysuser.add(mode=user,username=sysuser,system=true)
+
+    # Dry run - test without creating
+    user://alice.add(mode=user,username=alice,dry_run=true)
+
+    # Don't fail if user exists
+    user://alice.add(mode=user,username=alice,ignore_if_exists=true)
+
+    # Create user with all options
+    user://alice.add(mode=user,username=alice,uid=1001,primary_group=alice,groups=dev,docker,home=/home/alice,shell=/bin/bash,gecos="Alice Developer")
+
+  Add Groups (add - mode=group):
+    # Create basic group
+    user://group/admins.add(mode=group,group_name=admins)
+
+    # Create group with specific GID
+    user://group/admins.add(mode=group,group_name=admins,gid=1001)
+
+    # Create system group
+    user://group/sysgroup.add(mode=group,group_name=sysgroup,system=true)
+
+    # Dry run - test without creating
+    user://group/admins.add(mode=group,group_name=admins,dry_run=true)
+
+    # Don't fail if group exists
+    user://group/admins.add(mode=group,group_name=admins,ignore_if_exists=true)
+
+  Add Memberships (add - mode=membership):
+    # Add user to single group
+    user://membership/alice.add(mode=membership,member=alice,groups=admins)
+
+    # Add user to multiple groups
+    user://membership/alice.add(mode=membership,member=alice,groups=admins,dev,docker)
+
+    # Dry run - test without adding
+    user://membership/alice.add(mode=membership,member=alice,groups=admins,dry_run=true)
+
+  Delete Users (delete - mode=user):
+    # Delete user
+    user://alice.delete(mode=user,username=alice)
+
+    # Delete user and remove home
+    user://alice.delete(mode=user,username=alice,remove_home=true)
+
+    # Delete user and remove from all groups
+    user://alice.delete(mode=user,username=alice,remove_from_all_groups=true)
+
+    # Delete with both cleanup options
+    user://alice.delete(mode=user,username=alice,remove_home=true,remove_from_all_groups=true)
+
+    # Don't fail if user doesn't exist
+    user://bob.delete(mode=user,username=bob,ignore_if_missing=true)
+
+    # Dry run - test without deleting
+    user://alice.delete(mode=user,username=alice,dry_run=true)
+
+    # Delete system user with protection
+    user://root.delete(mode=user,username=root,protect_system_users=true,min_uid_for_delete=1000,force=false)
+
+    # Force delete system user
+    user://root.delete(mode=user,username=root,protect_system_users=true,min_uid_for_delete=1000,force=true)
+
+  Delete Groups (delete - mode=group):
+    # Delete group
+    user://group/admins.delete(mode=group,group_name=admins)
+
+    # Delete only if empty
+    user://group/admins.delete(mode=group,group_name=admins,only_if_empty=true)
+
+    # Force delete non-empty group
+    user://group/admins.delete(mode=group,group_name=admins,only_if_empty=false,force=true)
+
+    # Don't fail if group doesn't exist
+    user://group/oldgroup.delete(mode=group,group_name=oldgroup,ignore_if_missing=true)
+
+    # Dry run - test without deleting
+    user://group/admins.delete(mode=group,group_name=admins,dry_run=true)
+
+  Delete Memberships (delete - mode=membership):
+    # Remove user from single group
+    user://membership/alice.delete(mode=membership,member=alice,groups=dev)
+
+    # Remove user from multiple groups
+    user://membership/alice.delete(mode=membership,member=alice,groups=dev,docker)
+
+    # Remove user from all groups
+    user://membership/alice.delete(mode=membership,member=alice,all_groups=true)
+
+    # Dry run - test without removing
+    user://membership/alice.delete(mode=membership,member=alice,groups=dev,dry_run=true)
+
+  Change Passwords (passwd):
+    # Set password from plain text
+    user://alice.passwd(username=alice,new_password_plain=Secret123!)
+
+    # Set password from hash
+    user://alice.passwd(username=alice,new_password_hash='$pbkdf2-sha512$100000$c2FsdA==$aGFzaA==')
+
+    # Require old password verification
+    user://alice.passwd(username=alice,new_password_plain=NewSecret123!,require_old_password=true,old_password_plain=OldSecret123!)
+
+    # Don't fail if user doesn't exist
+    user://bob.passwd(username=bob,new_password_plain=Secret123!,ignore_if_missing=true)
+
+    # Dry run - test without changing
+    user://alice.passwd(username=alice,new_password_plain=Secret123!,dry_run=true)
+
+    # With specific backend
+    user://alice.passwd(backend=mock,username=alice,new_password_plain=Secret123!)
+
+  Lock Accounts (lock):
+    # Lock user account
+    user://alice.lock(username=alice)
+
+    # Lock with backend
+    user://alice.lock(backend=mock,username=alice)
+
+    # Don't fail if user doesn't exist
+    user://bob.lock(username=bob,ignore_if_missing=true)
+
+    # Protect system users
+    user://root.lock(username=root,protect_system_users=true,min_uid_for_lock=1000,force=false)
+
+    # Force lock system user
+    user://root.lock(username=root,protect_system_users=true,min_uid_for_lock=1000,force=true)
+
+    # Dry run - test without locking
+    user://alice.lock(username=alice,dry_run=true)
+
+  Unlock Accounts (unlock):
+    # Unlock user account
+    user://alice.unlock(username=alice)
+
+    # Unlock with backend
+    user://alice.unlock(backend=mock,username=alice)
+
+    # Don't fail if user doesn't exist
+    user://bob.unlock(username=bob,ignore_if_missing=true)
+
+    # Protect system users
+    user://root.unlock(username=root,protect_system_users=true,min_uid_for_unlock=1000,force=false)
+
+    # Force unlock system user
+    user://root.unlock(username=root,protect_system_users=true,min_uid_for_unlock=1000,force=true)
+
+    # Dry run - test without unlocking
+    user://alice.unlock(username=alice,dry_run=true)
+
+  List Groups (groups):
+    # List all groups for user
+    user://alice.groups(username=alice)
+
+    # Exclude system groups
+    user://alice.groups(username=alice,include_system_groups=false,min_gid_for_system=1000)
+
+    # Show only supplementary groups
+    user://alice.groups(username=alice,include_primary=false)
+
+    # Show only primary group
+    user://alice.groups(username=alice,include_supplementary=false)
+
+    # Filter by group name
+    user://alice.groups(username=alice,group_name_filter=dev)
+
+    # Don't fail if user doesn't exist
+    user://bob.groups(username=bob,ignore_if_missing=true)
+
+    # With specific backend
+    user://alice.groups(backend=mock,username=alice)
+
+  Check User Exists (exists):
+    # Check by username
+    user://alice.exists(username=alice)
+
+    # Check by UID
+    user://.exists(uid=1001)
+
+    # Check both username and UID match
+    user://alice.exists(username=alice,uid=1001)
+
+    # With specific backend
+    user://alice.exists(backend=mock,username=alice)
+
+    # Check if UID exists
+    user://.exists(backend=mock,uid=2000)
+
+ADD ARGUMENTS:
+  mode=MODE              What to add (required)
+                         Values: user, group, membership
+
+  User mode (mode=user):
+    username=NAME        Username (required)
+    uid=NUMBER           User ID (optional, auto-assigned if not specified)
+    primary_group=NAME   Primary group (default: username)
+    groups=LIST          Supplementary groups (comma-separated)
+    home=PATH            Home directory (default: /home/username)
+    shell=PATH           Login shell (default: /bin/bash)
+    gecos=TEXT           Full name/comment
+    system=BOOL          Create system user (default: false)
+    ignore_if_exists=BOOL  Don't fail if exists (default: false)
+    dry_run=BOOL         Test without creating (default: false)
+
+  Group mode (mode=group):
+    group_name=NAME      Group name (required)
+    gid=NUMBER           Group ID (optional, auto-assigned if not specified)
+    system=BOOL          Create system group (default: false)
+    ignore_if_exists=BOOL  Don't fail if exists (default: false)
+    dry_run=BOOL         Test without creating (default: false)
+
+  Membership mode (mode=membership):
+    member=USERNAME      User to add to groups (required)
+    groups=LIST          Groups to add user to (required, comma-separated)
+    dry_run=BOOL         Test without adding (default: false)
+
+DELETE ARGUMENTS:
+  mode=MODE              What to delete (required)
+                         Values: user, group, membership
+
+  User mode (mode=user):
+    username=NAME        Username (required)
+    remove_home=BOOL     Remove home directory (default: false)
+    remove_from_all_groups=BOOL  Remove from all groups (default: false)
+    ignore_if_missing=BOOL  Don't fail if missing (default: false)
+    protect_system_users=BOOL  Protect system users (default: true)
+    min_uid_for_delete=NUM  Minimum UID for deletion (default: 1000)
+    force=BOOL           Override protection (default: false)
+    dry_run=BOOL         Test without deleting (default: false)
+
+  Group mode (mode=group):
+    group_name=NAME      Group name (required)
+    only_if_empty=BOOL   Delete only if no members (default: true)
+    ignore_if_missing=BOOL  Don't fail if missing (default: false)
+    force=BOOL           Override empty check (default: false)
+    dry_run=BOOL         Test without deleting (default: false)
+
+  Membership mode (mode=membership):
+    member=USERNAME      User to remove from groups (required)
+    groups=LIST          Groups to remove from (comma-separated, or use all_groups)
+    all_groups=BOOL      Remove from all groups (default: false)
+    dry_run=BOOL         Test without removing (default: false)
+
+PASSWD ARGUMENTS:
+  username=NAME          Username (required)
+  new_password_plain=PASS  New password in plain text (required or new_password_hash)
+  new_password_hash=HASH   Pre-computed password hash
+  require_old_password=BOOL  Require old password (default: false)
+  old_password_plain=PASS    Old password for verification
+  ignore_if_missing=BOOL  Don't fail if user missing (default: false)
+  dry_run=BOOL           Test without changing (default: false)
+
+LOCK ARGUMENTS:
+  username=NAME          Username (required)
+  ignore_if_missing=BOOL  Don't fail if user missing (default: false)
+  protect_system_users=BOOL  Protect system users (default: true)
+  min_uid_for_lock=NUM   Minimum UID for locking (default: 1000)
+  force=BOOL             Override protection (default: false)
+  dry_run=BOOL           Test without locking (default: false)
+
+UNLOCK ARGUMENTS:
+  username=NAME          Username (required)
+  ignore_if_missing=BOOL  Don't fail if user missing (default: false)
+  protect_system_users=BOOL  Protect system users (default: true)
+  min_uid_for_unlock=NUM  Minimum UID for unlocking (default: 1000)
+  force=BOOL             Override protection (default: false)
+  dry_run=BOOL           Test without unlocking (default: false)
+
+GROUPS ARGUMENTS:
+  username=NAME          Username (required)
+  include_system_groups=BOOL  Include system groups (default: true)
+  min_gid_for_system=NUM  Minimum GID for system (default: 1000)
+  include_primary=BOOL   Include primary group (default: true)
+  include_supplementary=BOOL  Include supplementary groups (default: true)
+  group_name_filter=NAME  Filter by group name (optional)
+  ignore_if_missing=BOOL  Don't fail if user missing (default: false)
+
+EXISTS ARGUMENTS:
+  username=NAME          Username to check (optional)
+  uid=NUMBER             UID to check (optional)
+                         Note: Must provide username, uid, or both
+
+BACKENDS:
+
+  The user handle supports two backends:
+
+  system:
+    • Real system operations
+    • Uses system commands: useradd, userdel, usermod, passwd, etc.
+    • Modifies actual user accounts
+    • Requires appropriate permissions (usually root)
+    • Default backend
+    • Persistent changes
+    • Production use
+
+  mock:
+    • Simulated operations
+    • Used for testing
+    • No real system changes
+    • No special permissions required
+    • Each operation starts fresh
+    • Development and testing only
+    • Predictable behavior
+
+VALIDATION RULES:
+
+  Username validation:
+    • Not empty
+    • No @ character
+    • Cannot start with hyphen (-)
+    • Maximum 32 characters
+    • Alphanumeric, underscore, hyphen allowed
+    • Valid: alice, user_123, test-user
+    • Invalid: (empty), user@domain, -badstart
+
+  Group name validation:
+    • Same rules as username
+    • Maximum 32 characters
+    • Alphanumeric, underscore, hyphen allowed
+
+  UID/GID ranges:
+    • System users: UID < 1000
+    • Regular users: UID >= 1000, UID <= 65533
+    • UID 65534: nobody user (reserved)
+    • Same rules for groups (GID)
+
+  Password requirements:
+    • Must provide new_password_plain or new_password_hash
+    • Cannot provide both
+    • If require_old_password=true, must provide old_password_plain
+
+OUTPUT FORMATS:
+
+  add output (user created):
+    {
+      "ok": true,
+      "mode": "user",
+      "backend": "mock",
+      "dry_run": false,
+      "user": {
+        "username": "alice",
+        "uid": 1001,
+        "primary_group": "alice",
+        "supplementary_groups": ["dev"],
+        "home": "/home/alice",
+        "shell": "/bin/bash",
+        "gecos": "Alice Example",
+        "created": true,
+        "existed": false
+      },
+      "warnings": []
+    }
+
+  add output (group created):
+    {
+      "ok": true,
+      "mode": "group",
+      "backend": "mock",
+      "dry_run": false,
+      "group": {
+        "name": "admins",
+        "gid": 1001,
+        "created": true,
+        "existed": false
+      },
+      "warnings": []
+    }
+
+  delete output (user deleted):
+    {
+      "ok": true,
+      "mode": "user",
+      "backend": "mock",
+      "user": {
+        "username": "alice",
+        "existed": true,
+        "deleted": true,
+        "missing": false
+      },
+      "warnings": []
+    }
+
+  delete output (user missing):
+    {
+      "ok": true,
+      "mode": "user",
+      "backend": "mock",
+      "user": {
+        "username": "bob",
+        "existed": false,
+        "deleted": false,
+        "missing": true
+      },
+      "warnings": ["User bob did not exist"]
+    }
+
+  passwd output:
+    {
+      "ok": true,
+      "backend": "mock",
+      "dry_run": false,
+      "user": {
+        "username": "alice",
+        "existed": true,
+        "missing": false
+      },
+      "password": {
+        "changed": true,
+        "scheme": "sha512_crypt",
+        "source": "plain",
+        "old_password_verified": false
+      },
+      "warnings": []
+    }
+
+  lock output:
+    {
+      "ok": true,
+      "backend": "mock",
+      "dry_run": false,
+      "user": {
+        "username": "alice",
+        "uid": 1001,
+        "existed": true,
+        "missing": false
+      },
+      "lock": {
+        "requested": true,
+        "was_locked": false,
+        "is_locked": true,
+        "changed": true
+      },
+      "warnings": []
+    }
+
+  unlock output:
+    {
+      "ok": true,
+      "backend": "mock",
+      "dry_run": false,
+      "user": {
+        "username": "alice",
+        "uid": 1001,
+        "existed": true,
+        "missing": false
+      },
+      "unlock": {
+        "requested": true,
+        "was_locked": true,
+        "is_locked": false,
+        "changed": true
+      },
+      "warnings": []
+    }
+
+  groups output:
+    {
+      "ok": true,
+      "backend": "mock",
+      "user": {
+        "username": "alice",
+        "uid": 1001,
+        "existed": true,
+        "missing": false
+      },
+      "groups": [
+        {
+          "name": "alice",
+          "gid": 1001,
+          "primary": true,
+          "supplementary": false,
+          "system_group": false
+        },
+        {
+          "name": "dev",
+          "gid": 1002,
+          "primary": false,
+          "supplementary": true,
+          "system_group": false
+        }
+      ],
+      "warnings": []
+    }
+
+  exists output (exists):
+    {
+      "ok": true,
+      "backend": "mock",
+      "query": {
+        "username": "alice",
+        "uid": null
+      },
+      "user": {
+        "exists": true,
+        "username": "alice",
+        "uid": 1001
+      },
+      "warnings": []
+    }
+
+  exists output (does not exist):
+    {
+      "ok": true,
+      "backend": "mock",
+      "query": {
+        "username": "bob",
+        "uid": null
+      },
+      "user": {
+        "exists": false,
+        "username": null,
+        "uid": null
+      },
+      "warnings": ["User bob does not exist"]
+    }
+
+EXIT CODES:
+  0                      Success
+  1                      General error
+  2                      User/group not found
+  3                      User/group already exists
+  4                      Invalid username/group name
+  5                      Permission denied
+  6                      System user protection
+  7                      Invalid arguments
+
+ERROR MESSAGES:
+
+  Validation errors:
+    "username is required"         Missing username
+    "username cannot be empty"     Empty username
+    "invalid username"             Invalid characters
+    "username too long"            Over 32 characters
+    "group name is required"       Missing group name
+
+  Existence errors:
+    "user already exists"          User exists
+    "user does not exist"          User not found
+    "group already exists"         Group exists
+    "group does not exist"         Group not found
+    "uid already in use"           UID conflict
+
+  Protection errors:
+    "system user protection"       Cannot modify system user
+    "uid below minimum"            UID too low
+    "must use force to delete"     System user deletion blocked
+
+  Password errors:
+    "password is required"         Missing password
+    "conflicting password sources" Both plain and hash provided
+    "old password verification failed"  Old password incorrect
+    "hash scheme not supported"    Unknown hash format
+
+  Membership errors:
+    "groups is required"           Missing groups list
+    "member is required"           Missing member username
+
+  Mode errors:
+    "mode is required"             Missing mode parameter
+    "invalid mode"                 Unknown mode value
+
+COMMON WORKFLOWS:
+
+  Create developer user:
+    # Create user with development groups
+    user://dev1.add(mode=user,username=dev1,groups=dev,docker,sudo,gecos="Developer User")
+
+    # Verify creation
+    user://dev1.exists(username=dev1)
+
+    # Check groups
+    user://dev1.groups(username=dev1)
+
+  Set up new employee:
+    # Create user account
+    user://jsmith.add(mode=user,username=jsmith,uid=2001,gecos="John Smith")
+
+    # Set initial password
+    user://jsmith.passwd(username=jsmith,new_password_plain=InitialPass123!)
+
+    # Add to required groups
+    user://membership/jsmith.add(mode=membership,member=jsmith,groups=employees,project_a)
+
+    # Verify setup
+    user://jsmith.groups(username=jsmith)
+
+  Lock compromised account:
+    # Lock account immediately
+    user://suspicious.lock(username=suspicious)
+
+    # Verify locked
+    user://suspicious.groups(username=suspicious)
+
+    # Remove from sensitive groups
+    user://membership/suspicious.delete(mode=membership,member=suspicious,groups=sudo,admin)
+
+  Offboard employee:
+    # Lock account
+    user://former_employee.lock(username=former_employee)
+
+    # Remove from all groups
+    user://membership/former_employee.delete(mode=membership,member=former_employee,all_groups=true)
+
+    # Later, delete completely
+    user://former_employee.delete(mode=user,username=former_employee,remove_home=true,remove_from_all_groups=true)
+
+  Reset user password:
+    # Reset password
+    user://alice.passwd(username=alice,new_password_plain=NewPassword123!)
+
+    # Unlock if locked
+    user://alice.unlock(username=alice)
+
+  Create service account:
+    # Create system user
+    user://myapp.add(mode=user,username=myapp,system=true,shell=/usr/sbin/nologin,gecos="My Application Service Account")
+
+    # Verify creation
+    user://myapp.exists(username=myapp)
+
+  Migrate user between systems:
+    # Check user on old system
+    user://alice.exists(username=alice)
+    user://alice.groups(username=alice)
+
+    # Create on new system with same UID
+    user://alice.add(mode=user,username=alice,uid=1001,groups=dev,docker)
+
+    # Set password from hash
+    user://alice.passwd(username=alice,new_password_hash='$hash_from_old_system')
+
+  Test user operations:
+    # Test user creation
+    user://testuser.add(mode=user,username=testuser,dry_run=true)
+
+    # Test password change
+    user://testuser.passwd(username=testuser,new_password_plain=test123,dry_run=true)
+
+    # Test deletion
+    user://testuser.delete(mode=user,username=testuser,dry_run=true)
+
+  Audit user groups:
+    # List all non-system groups
+    user://alice.groups(username=alice,include_system_groups=false)
+
+    # Check supplementary groups only
+    user://alice.groups(username=alice,include_primary=false)
+
+  Create project group:
+    # Create group
+    user://group/project_x.add(mode=group,group_name=project_x,gid=3001)
+
+    # Add team members
+    user://membership/alice.add(mode=membership,member=alice,groups=project_x)
+    user://membership/bob.add(mode=membership,member=bob,groups=project_x)
+    user://membership/charlie.add(mode=membership,member=charlie,groups=project_x)
+
+  Clean up old users:
+    # List and verify
+    user://olduser.exists(username=olduser)
+    user://olduser.groups(username=olduser)
+
+    # Delete if exists
+    user://olduser.delete(mode=user,username=olduser,remove_home=true,ignore_if_missing=true)
+
+BEST PRACTICES:
+  • Always use dry_run=true to test changes first
+  • Use ignore_if_missing=true for idempotent scripts
+  • Keep system user protection enabled (protect_system_users=true)
+  • Specify UID when creating users to avoid conflicts
+  • Use meaningful gecos (full name) for users
+  • Set appropriate shells for service accounts (/usr/sbin/nologin)
+  • Remove home directories when deleting users (remove_home=true)
+  • Remove users from groups before deletion (remove_from_all_groups=true)
+  • Lock accounts before deletion as extra safety
+  • Use system=true for service accounts
+  • Verify operations with exists and groups verbs
+  • Use strong passwords with special characters
+  • Rotate passwords regularly
+  • Lock unused accounts
+  • Audit group memberships regularly
+  • Document user purposes in gecos field
+  • Use consistent UID/GID ranges
+  • Keep UIDs below 65534
+  • Avoid reusing UIDs immediately
+  • Test with mock backend before system backend
+  • Use force=true only when absolutely necessary
+  • Monitor warnings in output
+  • Keep user creation logs
+  • Implement approval workflow for user creation
+  • Review group memberships periodically
+  • Remove temporary users promptly
+  • Use descriptive group names
+  • Organize users by function/department
+  • Implement least privilege principle
+  • Separate system and user accounts clearly
+
+USER MANAGEMENT GUIDELINES:
+  • Create users with minimum required groups
+  • Add supplementary groups as needed
+  • Review group memberships quarterly
+  • Remove access when no longer needed
+  • Use service accounts for applications
+  • Lock accounts instead of deleting (initially)
+  • Keep audit trail of user changes
+  • Document user roles and purposes
+  • Implement user lifecycle policy
+  • Coordinate with HR for employee changes
+
+PASSWORD MANAGEMENT GUIDELINES:
+  • Use strong password policies
+  • Never store passwords in plain text
+  • Use password hashes when possible
+  • Rotate passwords regularly (quarterly)
+  • Require password change on first login
+  • Use different passwords per system
+  • Implement password complexity requirements
+  • Monitor for weak passwords
+  • Disable accounts after failed login attempts
+  • Use password managers
+
+GROUP MANAGEMENT GUIDELINES:
+  • Use groups for access control
+  • Create groups by function/project
+  • Keep group memberships up to date
+  • Remove users from groups when access no longer needed
+  • Use primary group for main affiliation
+  • Use supplementary groups for additional access
+  • Document group purposes
+  • Review group memberships regularly
+  • Delete empty groups
+  • Use consistent group naming
+
+SECURITY CONSIDERATIONS:
+  • Protect system users (UID < 1000)
+  • Never use force=true in automated scripts
+  • Lock accounts instead of deleting immediately
+  • Monitor user creation/deletion
+  • Audit password changes
+  • Use sudo for system backend operations
+  • Implement approval workflow
+  • Log all user management operations
+  • Review user accounts regularly
+  • Remove unnecessary accounts
+  • Use service accounts for applications
+  • Limit sudo/admin group membership
+  • Implement separation of duties
+  • Use multi-factor authentication
+  • Monitor for unauthorized changes
+  • Keep user database backed up
+  • Test disaster recovery procedures
+  • Implement account expiration
+  • Use password aging policies
+  • Monitor failed login attempts
+  • Implement session timeouts
+  • Use encrypted connections
+  • Protect /etc/passwd and /etc/shadow
+  • Set proper file permissions
+  • Use SELinux/AppArmor policies
+  • Implement intrusion detection
+  • Monitor privilege escalation
+  • Review access logs
+  • Implement change management
+  • Document security procedures
+
+TROUBLESHOOTING:
+
+  Permission denied:
+    • Use sudo for system backend
+    • Check user permissions
+    • Verify backend selection
+    • Check file permissions on /etc/passwd, /etc/shadow
+
+  User already exists:
+    • Use ignore_if_exists=true
+    • Check with exists verb first
+    • Use different username
+    • Delete old user if appropriate
+
+  User not found:
+    • Verify username spelling
+    • Use ignore_if_missing=true
+    • Check with exists verb
+    • Verify backend selection
+
+  Cannot delete system user:
+    • Check UID (system users < 1000)
+    • Use force=true if intentional
+    • Verify min_uid_for_delete setting
+    • Consider if deletion is safe
+
+  Password change failed:
+    • Verify user exists
+    • Check password format
+    • Verify old password if required
+    • Check password complexity requirements
+
+  Group membership error:
+    • Verify group exists
+    • Check group name spelling
+    • Verify user exists
+    • Check permissions
+
+  Invalid username:
+    • Check length (max 32 chars)
+    • Remove invalid characters (@, -)
+    • Don't start with hyphen
+    • Use alphanumeric, underscore, hyphen only
+
+DEBUGGING:
+
+  Check if user exists:
+    user://username.exists(username=username)
+
+  Check user groups:
+    user://username.groups(username=username)
+
+  Test operation without changes:
+    user://username.add(mode=user,username=username,dry_run=true)
+
+  Check system user protection:
+    user://username.delete(mode=user,username=username,protect_system_users=true,min_uid_for_delete=1000)
+
+  Verify UID:
+    user://.exists(uid=1001)
+
+  Check backend:
+    user://username.exists(backend=mock,username=username)
+
+  View all groups including system:
+    user://username.groups(username=username,include_system_groups=true)
+
+  Check specific group membership:
+    user://username.groups(username=username,group_name_filter=sudo)
+
+PLATFORM SUPPORT:
+
+  Linux (all distributions):
+    • Full support for all verbs
+    • Uses: useradd, userdel, usermod, passwd, etc.
+    • /etc/passwd, /etc/shadow, /etc/group
+    • Supports system and mock backends
+
+  Unix (BSD, macOS):
+    • Limited support
+    • May use different commands
+    • File locations may vary
+    • Test thoroughly before production use
+
+  Windows:
+    • Not supported
+    • Use Windows-specific user management tools
+    • PowerShell user cmdlets
+
+  System commands used:
+    useradd              Create user
+    userdel              Delete user
+    usermod              Modify user
+    passwd               Change password
+    groupadd             Create group
+    groupdel             Delete group
+    gpasswd              Manage groups
+
+PERFORMANCE CONSIDERATIONS:
+  • User operations are typically fast
+  • Group operations scan membership lists
+  • Large group counts may slow operations
+  • System backend slower than mock
+  • Home directory creation adds time
+  • File I/O for /etc files
+  • PAM modules may add overhead
+  • Password hashing is CPU-intensive
+  • Multiple group changes are sequential
+  • Use dry_run for testing (fast)
+
+LIMITATIONS:
+  • Cannot modify running user's own UID
+  • Cannot delete user with running processes
+  • Cannot delete primary group if users exist
+  • No bulk user operations
+  • No user templates
+  • No automatic UID allocation policy
+  • No user quotas management
+  • No password history
+  • No account expiration dates
+  • No password aging configuration
+  • No login shell validation
+  • No home directory skeleton customization
+  • Limited Windows support
+  • Cannot manage LDAP/AD users
+  • No remote user management
+  • No user synchronization
+  • Mock backend state doesn't persist
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With file handle:
+    # Verify home directory
+    file:///home/alice.exists
+
+  With exec handle:
+    # Run command as user
+    exec://su - alice -c 'whoami'
+
+  With config handle:
+    # Store user info
+    config://users/alice/uid.set(value=1001)
+
+  With log handle:
+    # Log user creation
+    user://alice.add(...) | log://user-audit.log.append
+
+  With secret handle:
+    # Store password securely
+    secret://local/users/alice/password.set(value="...")
+
+  With backup handle:
+    # Backup user database
+    backup://users.create(target=/etc/passwd,/etc/group,/etc/shadow)
+
+MORE INFO:
+  For complete documentation of user handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Security_Secrets/user.md
+
+  Linux user management:
+  https://www.linux.org/docs/man8/useradd.html
+  https://www.linux.org/docs/man8/userdel.html
+  https://www.linux.org/docs/man8/usermod.html
+
+  PAM (Pluggable Authentication Modules):
+  https://www.linux-pam.org/
+
+  Use 'user:// --help=VERB' for detailed help on a specific verb.
+"#;
 
 /// User management error types
 #[derive(Debug, Error)]
@@ -4697,6 +5716,19 @@ impl Handle for UserHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check if this is a help request based on args or help verb
+        if args.contains_key("--help") || args.contains_key("-h") || verb == "help" || verb == "h" {
+            // Check for specific verb help request
+            if let Some(specific_verb) = args.get("verb") {
+                writeln!(io.stdout, "Detailed help for '{}' verb is not yet implemented.", specific_verb)?;
+                writeln!(io.stdout, "Please refer to the general help below:\n")?;
+            }
+            
+            // Display the comprehensive help text
+            writeln!(io.stdout, "{}", USER_HELP_TEXT)?;
+            return Ok(Status::ok());
+        }
+        
         match verb {
             "add" => {
                 // Create target from args if needed
@@ -4992,6 +6024,17 @@ impl Handle for UserHandle {
                     }
                 }
             }
+            "help" | "h" => {
+                // Check for specific verb help request
+                if let Some(specific_verb) = args.get("verb") {
+                    writeln!(io.stdout, "Detailed help for '{}' verb is not yet implemented.", specific_verb)?;
+                    writeln!(io.stdout, "Please refer to the general help below:\n")?;
+                }
+                
+                // Display the comprehensive help text
+                writeln!(io.stdout, "{}", USER_HELP_TEXT)?;
+                Ok(Status::ok())
+            }
             _ => bail!("unknown verb for user://: {}", verb),
         }
     }
@@ -5268,7 +6311,10 @@ mod tests {
         assert!(verbs.contains(&"delete"));
         assert!(verbs.contains(&"passwd"));
         assert!(verbs.contains(&"lock"));
-        assert_eq!(verbs.len(), 4);
+        assert!(verbs.contains(&"unlock"));
+        assert!(verbs.contains(&"groups"));
+        assert!(verbs.contains(&"exists"));
+        assert_eq!(verbs.len(), 7);
     }
 
     #[test]

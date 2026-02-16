@@ -13,6 +13,916 @@ use crate::core::{
     status::Status,
 };
 
+const HTTP_HELP_TEXT: &str = r#"
+RESOURCE SHELL - HTTP HANDLE
+============================
+
+USAGE:
+  http://HOST:PORT/PATH.VERB(arguments)
+  https://HOST:PORT/PATH.VERB(arguments)
+
+DESCRIPTION:
+  The HTTP handle allows you to make HTTP/HTTPS requests to web servers and
+  APIs. Supports all standard REST methods, custom headers, request bodies,
+  query parameters, CORS preflight, JSON/text/binary response modes, and
+  HTTPS with certificate validation. Perfect for API testing, web scraping,
+  and service integration.
+
+URL FORMATS:
+  http://example.com/path.VERB(arguments)
+  https://api.example.com/v1/resource.VERB(arguments)
+  http://localhost:8080/endpoint.VERB(arguments)
+  https://example.com:443/api/data.VERB(arguments)
+
+VERBS (10 total):
+
+  Standard HTTP Methods:
+    get             Retrieve data from a server (GET request)
+    head            Get only response headers, no body (HEAD request)
+    post            Send data to create new resources (POST request)
+    put             Send data to create or update resources (PUT request)
+    patch           Send data to partially update resources (PATCH request)
+    delete          Remove resources from a server (DELETE request)
+    options         Check what HTTP methods are allowed (OPTIONS request)
+
+  Special Purpose:
+    preflight       Perform CORS preflight requests (OPTIONS with CORS headers)
+    json            Make requests with JSON response envelope
+    headers         Get only response headers as structured JSON
+
+EXAMPLES:
+
+  GET Requests:
+    # Basic GET request
+    http://example.com/api/data.get
+
+    # GET with JSON response
+    http://api.example.com/users.get(accept="json")
+
+    # GET with query parameters
+    http://api.example.com/search.get(query="q=rust&limit=10")
+
+    # GET with custom headers
+    http://api.example.com/data.get(headers="Authorization:Bearer token123;Accept:application/json")
+
+    # GET with timeout
+    http://slow-api.com/data.get(timeout_ms=5000)
+
+    # GET binary data
+    http://example.com/image.png.get(accept="bytes")
+
+    # GET with multiple query parameters
+    http://api.example.com/items.get(query="category=books&sort=price&order=asc")
+
+  HEAD Requests:
+    # Check if resource exists
+    http://example.com/file.txt.head
+
+    # Get headers with custom request headers
+    http://api.example.com/resource.head(headers="X-API-Key:secret")
+
+    # Check content type and size
+    http://cdn.example.com/large-file.zip.head
+
+  POST Requests:
+    # POST with text body
+    http://api.example.com/echo.post(body="hello world")
+
+    # POST with JSON body
+    http://api.example.com/users.post(body="{{\"name\":\"Alice\",\"email\":\"alice@example.com\"}}",content_type="application/json")
+
+    # POST from file
+    http://api.example.com/upload.post(body_file="/path/to/data.json",content_type="application/json")
+
+    # POST with headers and query
+    http://api.example.com/items.post(body="{{\"title\":\"New Item\"}}",headers="Authorization:Bearer token;Content-Type:application/json",query="notify=true")
+
+    # POST form data
+    http://api.example.com/form.post(body="name=John&email=john@example.com",content_type="application/x-www-form-urlencoded")
+
+  PUT Requests:
+    # PUT to create/update resource
+    http://api.example.com/users/123.put(body="{{\"name\":\"Bob\"}}",content_type="application/json")
+
+    # PUT from file
+    http://api.example.com/document.put(body_file="/path/to/doc.pdf",content_type="application/pdf")
+
+    # PUT with JSON response
+    http://api.example.com/config.put(body="{{\"setting\":\"value\"}}",content_type="application/json",accept="json")
+
+  PATCH Requests:
+    # PATCH partial update
+    http://api.example.com/users/123.patch(body="{{\"email\":\"newemail@example.com\"}}",content_type="application/json")
+
+    # PATCH with query parameters
+    http://api.example.com/resource.patch(body="{{\"status\":\"active\"}}",query="version=2",content_type="application/json")
+
+    # PATCH from file
+    http://api.example.com/document.patch(body_file="/path/to/changes.json",content_type="application/json")
+
+  DELETE Requests:
+    # Simple DELETE
+    http://api.example.com/users/123.delete
+
+    # DELETE with confirmation parameter
+    http://api.example.com/resource.delete(query="force=true")
+
+    # DELETE with headers
+    http://api.example.com/item.delete(headers="Authorization:Bearer token;X-Request-ID:abc123")
+
+    # DELETE with JSON response
+    http://api.example.com/resource/456.delete(accept="json")
+
+  OPTIONS Requests:
+    # Check allowed methods
+    http://api.example.com/resource.options
+
+    # OPTIONS with response body
+    http://api.example.com/endpoint.options(include_body="true")
+
+    # Check CORS support
+    http://api.example.com/api/data.options
+
+  CORS Preflight:
+    # Basic preflight check
+    http://api.example.com/resource.preflight
+
+    # Preflight with origin
+    http://api.example.com/api/users.preflight(origin="https://myapp.example.com")
+
+    # Preflight with method and headers
+    http://api.example.com/api/data.preflight(origin="https://app.com",method="POST",request_headers="Authorization,Content-Type")
+
+    # Check credentials support
+    http://api.example.com/auth.preflight(origin="https://app.com",method="POST")
+
+  JSON Envelope:
+    # GET with JSON envelope
+    http://api.example.com/data.json(method="GET")
+
+    # POST with JSON envelope
+    http://api.example.com/users.json(method="POST",body="{{\"name\":\"Alice\"}}",content_type="application/json")
+
+    # Include metadata in response
+    http://api.example.com/resource.json(method="GET",accept="json")
+
+  Headers Only:
+    # Get headers as JSON
+    http://api.example.com/resource.headers(method="GET")
+
+    # Get POST response headers
+    http://api.example.com/data.headers(method="POST",body="test")
+
+    # Check authentication headers
+    http://api.example.com/auth.headers(method="GET",headers="Authorization:Bearer token")
+
+  HTTPS with Certificate Options:
+    # HTTPS with valid certificate
+    https://api.example.com/secure.get
+
+    # HTTPS allowing self-signed certificates
+    https://localhost:8443/api.get(allow_insecure="true")
+
+    # HTTPS with custom headers
+    https://secure-api.com/data.get(headers="Authorization:Bearer secret",allow_insecure="false")
+
+  Authentication Examples:
+    # Bearer token
+    http://api.example.com/protected.get(headers="Authorization:Bearer eyJhbGc...")
+
+    # API key in header
+    http://api.example.com/data.get(headers="X-API-Key:your-api-key-here")
+
+    # Basic auth (base64 encoded)
+    http://api.example.com/resource.get(headers="Authorization:Basic dXNlcjpwYXNz")
+
+    # Multiple auth headers
+    http://api.example.com/data.get(headers="X-API-Key:key123;X-Client-ID:client456")
+
+  API Integration Patterns:
+    # List resources with pagination
+    http://api.example.com/users.get(query="page=1&per_page=20",accept="json")
+
+    # Create resource
+    http://api.example.com/users.post(body="{{\"name\":\"New User\"}}",content_type="application/json",accept="json")
+
+    # Update resource
+    http://api.example.com/users/42.put(body="{{\"name\":\"Updated\"}}",content_type="application/json")
+
+    # Partial update
+    http://api.example.com/users/42.patch(body="{{\"active\":true}}",content_type="application/json")
+
+    # Delete resource
+    http://api.example.com/users/42.delete(accept="json")
+
+    # Check resource status
+    http://api.example.com/jobs/123.head
+
+COMMON PARAMETERS:
+
+  All Verbs:
+    headers=HEADERS        Custom HTTP headers (format: "Key:value;Another:value")
+    query=QUERY            Query parameters (format: "param=value&other=value")
+    accept=FORMAT          Response format: json, text, bytes (default: text)
+    timeout_ms=MILLISECONDS Request timeout (default: 30000)
+    allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+  POST, PUT, PATCH:
+    body=TEXT              Request body as text
+    body_file=PATH         Request body from file (takes priority over body)
+    content_type=TYPE      Content-Type header (e.g., "application/json")
+
+  OPTIONS:
+    include_body=BOOL      Include response body (default: false)
+
+  PREFLIGHT:
+    origin=URL             Origin for CORS check (e.g., "https://app.com")
+    method=METHOD          HTTP method to preflight (default: GET)
+    request_headers=HEADERS Headers to request permission for (comma-separated)
+
+  JSON, HEADERS:
+    method=METHOD          HTTP method to use (GET, POST, PUT, PATCH, DELETE, etc.)
+    body=TEXT              Request body (when method is POST/PUT/PATCH)
+    body_file=PATH         Request body from file
+    content_type=TYPE      Content-Type header
+
+HEADERS FORMAT:
+
+  Headers are specified as semicolon-separated key:value pairs:
+    "Header-Name:value"
+    "Header1:value1;Header2:value2"
+    "Authorization:Bearer token;Content-Type:application/json"
+
+  Common headers:
+    Authorization:Bearer TOKEN         Bearer token authentication
+    Authorization:Basic BASE64         Basic authentication
+    X-API-Key:KEY                      API key authentication
+    Content-Type:application/json      JSON content type
+    Content-Type:application/xml       XML content type
+    Content-Type:text/plain            Plain text
+    Accept:application/json            Request JSON response
+    User-Agent:MyApp/1.0               Custom user agent
+    X-Request-ID:uuid                  Request tracking ID
+
+  Notes:
+    • Header names are case-insensitive
+    • Values can contain spaces
+    • Use semicolon (;) to separate multiple headers
+    • Colons (:) separate name from value
+
+QUERY PARAMETERS FORMAT:
+
+  Query parameters are specified as ampersand-separated key=value pairs:
+    "param=value"
+    "param1=value1&param2=value2"
+    "search=rust%20programming&limit=10&offset=0"
+
+  URL encoding:
+    • Spaces → %20 or +
+    • Special characters are URL-encoded
+    • Example: "q=hello world&lang=en" → "q=hello%20world&lang=en"
+
+  Notes:
+    • Parameters are appended to the URL
+    • Use & to separate multiple parameters
+    • Use = to separate name from value
+
+CONTENT TYPES:
+
+  Common content types for request bodies:
+
+  JSON:
+    application/json                   JSON data
+
+  Form Data:
+    application/x-www-form-urlencoded  Form submissions
+    multipart/form-data                File uploads (not directly supported)
+
+  Text:
+    text/plain                         Plain text
+    text/html                          HTML content
+    text/csv                           CSV data
+    text/xml                           XML content
+
+  Binary:
+    application/octet-stream           Generic binary
+    application/pdf                    PDF documents
+    image/png                          PNG images
+    image/jpeg                         JPEG images
+    application/zip                    ZIP archives
+
+RESPONSE FORMATS:
+
+  text (default):
+    Returns response body as plain text
+    Falls back to binary if invalid UTF-8
+    Suitable for HTML, plain text, JSON strings
+
+  json:
+    Parses response body as JSON
+    Command fails if response is not valid JSON
+    Returns structured JSON data
+    Best for API responses
+
+  bytes:
+    Returns raw response bytes
+    No text conversion
+    Suitable for binary data (images, files)
+    Preserves exact byte content
+
+  Format selection:
+    accept="text"     Plain text output
+    accept="json"     Parsed JSON output
+    accept="bytes"    Raw binary output
+
+HTTPS SUPPORT:
+
+  The HTTP handle supports HTTPS URLs with certificate validation:
+
+  Valid certificates (default):
+    https://example.com/api.get
+
+  Self-signed or invalid certificates:
+    https://localhost:8443/api.get(allow_insecure="true")
+
+  Certificate validation:
+    • Default: Certificates are validated
+    • allow_insecure="true": Skip validation (development/testing only)
+    • Production: Always use valid certificates
+
+  Security notes:
+    • Only use allow_insecure for development/testing
+    • Never use allow_insecure in production
+    • Valid certificates are free (Let's Encrypt)
+    • Self-signed certificates should not be trusted in production
+
+VERB-SPECIFIC BEHAVIORS:
+
+  get, post, put, patch, delete:
+    • Exit with non-zero code for non-2xx status
+    • Output response body regardless of status
+    • Text mode by default
+    • Support all response formats
+
+  head:
+    • Always returns JSON with status and headers
+    • No response body
+    • Never fails on non-2xx status
+    • Useful for checking resource existence
+
+  options:
+    • Returns JSON with allowed methods and headers
+    • Includes "allowed_methods" array
+    • Never fails on non-2xx status
+    • Optional body inclusion with include_body="true"
+
+  preflight:
+    • Performs CORS preflight (OPTIONS with CORS headers)
+    • Returns JSON with CORS policy
+    • Includes allowed_origins, allowed_methods, allowed_headers
+    • Never fails on non-2xx status
+
+  json:
+    • Wraps response in JSON envelope
+    • Includes status, url, headers, body
+    • Body type: "json", "text", or "bytes"
+    • Never fails on non-2xx status
+    • Useful for getting full response metadata
+
+  headers:
+    • Returns only headers as JSON
+    • No response body in output
+    • Never fails on non-2xx status
+    • Headers with multiple values become arrays
+    • Useful for inspecting server responses
+
+OUTPUT FORMATS:
+
+  Standard verbs (text mode):
+    hello world
+
+  Standard verbs (JSON mode):
+    {{
+      "ok": true,
+      "data": {{...}}
+    }}
+
+  head verb:
+    {{
+      "status": 200,
+      "ok": true,
+      "headers": {{
+        "content-type": "text/plain",
+        "content-length": "42"
+      }}
+    }}
+
+  options verb:
+    {{
+      "status": 204,
+      "reason": "No Content",
+      "backend": "reqwest",
+      "has_body": false,
+      "allowed_methods": ["GET", "POST", "PUT", "DELETE"],
+      "headers": {{
+        "allow": "GET, POST, PUT, DELETE"
+      }},
+      "url": "http://example.com/resource"
+    }}
+
+  preflight verb:
+    {{
+      "method": "OPTIONS",
+      "status": 204,
+      "ok": true,
+      "url": "http://api.example.com/resource",
+      "cors": {{
+        "allowed_origins": ["*"],
+        "allowed_methods": ["GET", "POST", "PUT", "DELETE"],
+        "allowed_headers": ["Content-Type", "Authorization"],
+        "exposed_headers": ["X-RateLimit-Remaining"],
+        "allow_credentials": true,
+        "max_age_seconds": 600
+      }},
+      "raw_headers": {{
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, POST, PUT, DELETE"
+      }}
+    }}
+
+  json verb:
+    {{
+      "status": 200,
+      "status_text": "OK",
+      "url": "http://api.example.com/data",
+      "body": {{
+        "type": "json",
+        "value": {{
+          "ok": true,
+          "data": [...]
+        }}
+      }}
+    }}
+
+  headers verb:
+    {{
+      "status": 200,
+      "status_text": "OK",
+      "url": "http://api.example.com/resource",
+      "headers": {{
+        "content-type": ["application/json"],
+        "x-custom": ["value"],
+        "set-cookie": ["session=abc", "token=xyz"]
+      }},
+      "body": null
+    }}
+
+EXIT CODES:
+  0                      Success (2xx status for standard verbs)
+  1                      General error (network, timeout, invalid arguments)
+  2                      Non-2xx HTTP status (for get, post, put, patch, delete)
+  3                      Invalid JSON (when accept="json")
+
+ERROR HANDLING:
+
+  Network errors:
+    • Connection refused
+    • DNS resolution failure
+    • Timeout exceeded
+    • SSL/TLS handshake failure
+
+  HTTP errors (standard verbs):
+    • Non-2xx status codes cause non-zero exit
+    • Response body is still output
+    • Example: 404 Not Found, 500 Internal Server Error
+
+  Parsing errors:
+    • Invalid JSON with accept="json"
+    • Command fails with error message
+    • Use accept="text" as fallback
+
+  Timeout errors:
+    • Request exceeds timeout_ms
+    • Default timeout: 30000ms (30 seconds)
+    • Increase timeout for slow APIs
+
+  Certificate errors:
+    • Invalid HTTPS certificate
+    • Use allow_insecure="true" for testing only
+    • Fix certificate issues in production
+
+  Error examples:
+
+    Connection refused:
+      Error: connection refused
+
+    Timeout:
+      Error: request timeout after 5000ms
+
+    Invalid certificate:
+      Error: invalid SSL certificate
+      Solution: Use allow_insecure="true" or fix certificate
+
+    404 Not Found:
+      HTTP 404: {{"error": "resource not found"}}
+      Exit code: 2
+
+    Invalid JSON:
+      Error: response is not valid JSON
+      Use accept="text" to see raw response
+
+COMMON WORKFLOWS:
+
+  REST API CRUD Operations:
+    # Create (POST)
+    http://api.example.com/users.post(body="{{\"name\":\"Alice\"}}",content_type="application/json",accept="json")
+    
+    # Read (GET)
+    http://api.example.com/users/123.get(accept="json")
+    
+    # Update (PUT - full replacement)
+    http://api.example.com/users/123.put(body="{{\"name\":\"Alice Smith\"}}",content_type="application/json")
+    
+    # Partial Update (PATCH)
+    http://api.example.com/users/123.patch(body="{{\"email\":\"alice@example.com\"}}",content_type="application/json")
+    
+    # Delete
+    http://api.example.com/users/123.delete(accept="json")
+
+  API Authentication Flow:
+    # Get auth token
+    http://api.example.com/auth/login.post(body="{{\"user\":\"alice\",\"pass\":\"secret\"}}",content_type="application/json",accept="json")
+    
+    # Use token in subsequent requests
+    http://api.example.com/protected.get(headers="Authorization:Bearer eyJhbGc...")
+    
+    # Refresh token
+    http://api.example.com/auth/refresh.post(headers="Authorization:Bearer old_token",accept="json")
+
+  Health Checks and Monitoring:
+    # Check if service is up
+    http://api.example.com/health.head
+    
+    # Get service status
+    http://api.example.com/health.get(accept="json")
+    
+    # Check response time
+    http://api.example.com/ping.get(timeout_ms=1000)
+
+  CORS Configuration Check:
+    # Check CORS policy
+    http://api.example.com/resource.preflight(origin="https://myapp.com")
+    
+    # Test specific method
+    http://api.example.com/api/data.preflight(origin="https://myapp.com",method="POST")
+    
+    # Check allowed headers
+    http://api.example.com/upload.preflight(origin="https://app.com",method="POST",request_headers="Authorization,Content-Type")
+
+  File Download:
+    # Download binary file
+    http://cdn.example.com/file.pdf.get(accept="bytes") > file.pdf
+    
+    # Download JSON data
+    http://api.example.com/export.get(accept="json") > data.json
+    
+    # Check file size before download
+    http://cdn.example.com/largefile.zip.head
+
+  Web Scraping:
+    # Get HTML page
+    http://example.com/page.html.get(accept="text")
+    
+    # Get with custom user agent
+    http://example.com/data.get(headers="User-Agent:Mozilla/5.0 MyBot")
+    
+    # Follow redirects (automatic)
+    http://example.com/redirect.get
+
+  API Testing:
+    # Test endpoint availability
+    http://api.example.com/v1/users.options
+    
+    # Test with different content types
+    http://api.example.com/data.post(body="test",content_type="text/plain")
+    http://api.example.com/data.post(body="{{}}",content_type="application/json")
+    
+    # Test error handling
+    http://api.example.com/error.get(accept="json")
+
+  Pagination:
+    # First page
+    http://api.example.com/items.get(query="page=1&per_page=20",accept="json")
+    
+    # Next page
+    http://api.example.com/items.get(query="page=2&per_page=20",accept="json")
+    
+    # With cursor-based pagination
+    http://api.example.com/items.get(query="cursor=next_token",accept="json")
+
+  Batch Operations:
+    # Multiple creates
+    for user in users; do
+      http://api.example.com/users.post(body="$user",content_type="application/json")
+    done
+    
+    # Bulk delete
+    for id in ids; do
+      http://api.example.com/items/$id.delete
+    done
+
+  Development and Testing:
+    # Test against local server
+    http://localhost:8080/api/test.get(accept="json")
+    
+    # Test with self-signed certificate
+    https://localhost:8443/api.get(allow_insecure="true")
+    
+    # Debug response headers
+    http://localhost:8080/debug.headers(method="GET")
+    
+    # Get full response envelope
+    http://localhost:8080/test.json(method="GET")
+
+BEST PRACTICES:
+  • Use appropriate HTTP methods (GET for retrieval, POST for creation, etc.)
+  • Include proper Content-Type headers for request bodies
+  • Use accept="json" for API responses to get structured data
+  • Set reasonable timeout values based on expected response times
+  • Use HTTPS in production for secure communication
+  • Never use allow_insecure="true" in production
+  • Include authentication headers (Authorization, X-API-Key) for protected endpoints
+  • Use query parameters for filtering and pagination
+  • Use POST/PUT/PATCH appropriately (POST=create, PUT=replace, PATCH=update)
+  • Check with HEAD before downloading large files
+  • Use OPTIONS to discover API capabilities
+  • Use preflight to verify CORS configuration
+  • Handle errors gracefully (check exit codes)
+  • Use body_file for large request bodies
+  • Include User-Agent header for web scraping
+  • Use X-Request-ID for request tracing
+  • Implement retry logic for transient failures
+  • Cache responses when appropriate
+  • Use JSON envelope verb for metadata needs
+  • Use headers verb to inspect server responses
+  • Test with different content types
+  • Validate JSON responses
+  • Use proper URL encoding for query parameters
+  • Include Accept header to specify response format
+  • Use Bearer tokens for OAuth2
+  • Use Basic auth only over HTTPS
+  • Monitor rate limits via response headers
+  • Use proper HTTP status codes in your own services
+  • Document your API endpoints
+  • Version your APIs (e.g., /v1/, /v2/)
+  • Use standard HTTP headers
+  • Implement proper CORS policies
+  • Use compression when available (gzip, deflate)
+
+CORS (Cross-Origin Resource Sharing):
+
+  CORS allows web applications to make requests to different domains.
+
+  Preflight requests:
+    • Browser sends OPTIONS request before actual request
+    • Checks if server allows the origin, method, and headers
+    • Server responds with CORS headers
+
+  CORS headers:
+    Access-Control-Allow-Origin       Allowed origins (* or specific)
+    Access-Control-Allow-Methods      Allowed HTTP methods
+    Access-Control-Allow-Headers      Allowed request headers
+    Access-Control-Expose-Headers     Headers exposed to client
+    Access-Control-Allow-Credentials  Allow credentials (cookies)
+    Access-Control-Max-Age            Cache duration for preflight
+
+  Using preflight verb:
+    # Check if cross-origin request is allowed
+    http://api.example.com/data.preflight(origin="https://myapp.com",method="POST")
+
+  Common scenarios:
+    • JavaScript fetch() from different domain
+    • AJAX requests to external APIs
+    • WebSocket connections
+    • Font loading from CDN
+
+AUTHENTICATION PATTERNS:
+
+  Bearer Token (OAuth2, JWT):
+    headers="Authorization:Bearer eyJhbGciOiJIUzI1NiIs..."
+
+  API Key (Header):
+    headers="X-API-Key:your-api-key-here"
+
+  API Key (Query):
+    query="api_key=your-api-key"
+
+  Basic Auth:
+    # Encode "user:pass" as base64
+    headers="Authorization:Basic dXNlcjpwYXNz"
+
+  Custom Authentication:
+    headers="X-Auth-Token:token123;X-Client-ID:client456"
+
+  Multiple Headers:
+    headers="Authorization:Bearer token;X-API-Key:key;X-Client-Version:1.0"
+
+BODY PARAMETER PRIORITY:
+
+  When both body and body_file are specified:
+    • body_file takes priority
+    • body parameter is ignored
+    • Useful for conditional file uploads
+
+  Example:
+    http://api.example.com/data.post(body="fallback",body_file="/path/to/data.json")
+    # Uses content from /path/to/data.json, ignores "fallback"
+
+HEADER NORMALIZATION:
+
+  Response headers are normalized:
+    • Converted to lowercase
+    • Multiple values preserved as arrays
+    • Example: Set-Cookie becomes ["cookie1", "cookie2"]
+
+  Request headers:
+    • Case-insensitive
+    • Standard format: "Header-Name:value"
+    • Example: "content-type:application/json" or "Content-Type:application/json"
+
+TIMEOUT BEHAVIOR:
+
+  Default timeout: 30000ms (30 seconds)
+
+  Timeout includes:
+    • DNS resolution
+    • Connection establishment
+    • Request sending
+    • Response receiving
+    • SSL/TLS handshake
+
+  Timeout examples:
+    timeout_ms=1000          1 second (fast operations)
+    timeout_ms=5000          5 seconds (typical API)
+    timeout_ms=30000         30 seconds (default)
+    timeout_ms=60000         1 minute (slow operations)
+    timeout_ms=300000        5 minutes (large uploads/downloads)
+
+BINARY DATA:
+
+  Downloading binary files:
+    http://cdn.example.com/file.pdf.get(accept="bytes") > output.pdf
+    http://example.com/image.png.get(accept="bytes") > image.png
+
+  Uploading binary files:
+    http://api.example.com/upload.post(body_file="/path/to/file.bin",content_type="application/octet-stream")
+
+  Binary response handling:
+    • accept="bytes" preserves exact byte content
+    • No text encoding/decoding
+    • Suitable for images, PDFs, archives
+
+RATE LIMITING:
+
+  Many APIs implement rate limiting. Common patterns:
+
+  Check rate limit headers:
+    http://api.example.com/data.headers(method="GET")
+    # Look for: X-RateLimit-Limit, X-RateLimit-Remaining
+
+  Common rate limit headers:
+    X-RateLimit-Limit         Total requests allowed
+    X-RateLimit-Remaining     Requests remaining
+    X-RateLimit-Reset         Reset timestamp
+    Retry-After               Seconds until retry allowed
+
+  Handling rate limits:
+    • Check headers before making requests
+    • Implement exponential backoff
+    • Space out requests
+    • Use appropriate timeout values
+
+DEBUGGING:
+
+  Inspect full response:
+    http://api.example.com/data.json(method="GET")
+
+  Check response headers:
+    http://api.example.com/data.headers(method="GET")
+
+  Test with verbose output:
+    # Use json or headers verb for full details
+
+  Common debugging steps:
+    1. Check if server is reachable (HEAD request)
+    2. Inspect response headers (headers verb)
+    3. Get full response envelope (json verb)
+    4. Test with different accept formats
+    5. Verify authentication headers
+    6. Check for rate limiting
+    7. Test with increased timeout
+    8. Verify request body format
+    9. Check Content-Type header
+    10. Test with allow_insecure for HTTPS issues
+
+PERFORMANCE CONSIDERATIONS:
+
+  Connection reuse:
+    • HTTP/1.1 keep-alive (automatic)
+    • Consider connection pooling for batch operations
+
+  Response size:
+    • Use HEAD to check Content-Length before GET
+    • Use query parameters for filtering
+    • Request only needed fields if API supports it
+
+  Timeouts:
+    • Set appropriate timeouts for operation type
+    • Too short: false failures
+    • Too long: wasted time on failures
+
+  Compression:
+    • Most servers support gzip/deflate (automatic)
+    • Reduces transfer time for large responses
+
+  Parallel requests:
+    • Use shell job control for concurrent requests
+    • Mind rate limits
+
+LIMITATIONS:
+
+  • No built-in retry logic (implement in shell scripts)
+  • No connection pooling across commands
+  • No cookie jar persistence
+  • No automatic redirect following for all verbs (GET follows automatically)
+  • No form-data multipart encoding (use application/x-www-form-urlencoded)
+  • No WebSocket support
+  • No HTTP/2 server push
+  • No progress indicators for large transfers
+  • Headers must be specified as single parameter
+  • Query parameters must be URL-encoded manually
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With file handle:
+    # Download and save
+    http://api.example.com/data.get(accept="json") > data.json
+    file:///data.json.read
+
+  With log handle:
+    # Log API responses
+    http://api.example.com/data.get | log://./api-log.txt.append
+
+  With event handle:
+    # Emit event on API call
+    http://api.example.com/webhook.post(body="{{...}}",content_type="application/json")
+    event://emit(topic="api.called")
+
+  With config handle:
+    # Store API configuration
+    config://app/api_endpoint.set(value="https://api.example.com")
+    config://app/api_key.set(value="secret-key")
+
+SECURITY CONSIDERATIONS:
+
+  • Always use HTTPS in production
+  • Never log or expose authentication tokens
+  • Use environment variables for secrets
+  • Validate SSL certificates (don't use allow_insecure)
+  • Implement proper authentication
+  • Use short-lived tokens
+  • Rotate API keys regularly
+  • Use HTTPS for Basic auth
+  • Validate and sanitize inputs
+  • Implement rate limiting
+  • Monitor for suspicious activity
+  • Use proper CORS policies
+  • Keep dependencies updated
+  • Use strong authentication methods
+  • Implement proper error handling
+  • Don't expose internal errors to clients
+
+MORE INFO:
+  For complete documentation of HTTP handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Network_RemoteOperations/http.md
+
+  HTTP specification:
+  https://www.rfc-editor.org/rfc/rfc7230 (HTTP/1.1 Message Syntax)
+  https://www.rfc-editor.org/rfc/rfc7231 (HTTP/1.1 Semantics)
+
+  HTTP methods:
+  https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods
+
+  HTTP status codes:
+  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status
+
+  CORS:
+  https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+
+  Use 'http:// --help=VERB' or 'https:// --help=VERB' for detailed help
+  on a specific verb.
+"#;
+
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("http", |u| Ok(Box::new(HttpHandle::from_url(u)?)));
     reg.register_scheme("https", |u| Ok(Box::new(HttpHandle::from_url(u)?)));
@@ -27,6 +937,507 @@ impl HttpHandle {
         Ok(HttpHandle {
             url: url.clone(),
         })
+    }
+
+    /// Check if this is a help request and display help if so
+    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
+        // Check for help verbs
+        if verb == "--help" || verb == "-h" || verb == "help" {
+            write!(io.stdout, "{}", HTTP_HELP_TEXT)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        // Check for verb-specific help
+        if verb.starts_with("--help=") {
+            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
+            Self::display_verb_help(help_verb, io)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        Ok(None)
+    }
+    
+    /// Display help for a specific verb
+    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
+        match verb {
+            "get" => {
+                write!(io.stdout, r#"
+GET VERB - HTTP HANDLE
+=====================
+
+DESCRIPTION:
+  Retrieve data from a server using an HTTP GET request. This is the most
+  common HTTP method for fetching data from APIs, web services, and websites.
+
+SYNTAX:
+  http://HOST:PORT/PATH.get(arguments)
+  https://HOST:PORT/PATH.get(arguments)
+
+COMMON PARAMETERS:
+  headers=HEADERS        Custom HTTP headers (format: "Key:value;Another:value")
+  query=QUERY            Query parameters (format: "param=value&other=value")
+  accept=FORMAT          Response format: json, text, bytes (default: text)
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # Basic GET request
+  http://example.com/api/data.get
+
+  # GET with JSON response
+  http://api.example.com/users.get(accept="json")
+
+  # GET with query parameters
+  http://api.example.com/search.get(query="q=rust&limit=10")
+
+  # GET with authentication
+  http://api.example.com/protected.get(headers="Authorization:Bearer token123")
+
+  # GET with timeout
+  http://slow-api.com/data.get(timeout_ms=5000)
+
+  # GET binary data
+  http://example.com/image.png.get(accept="bytes")
+
+RESPONSE:
+  • Text format (default): Returns response body as plain text
+  • JSON format: Parses response as JSON, fails if invalid
+  • Bytes format: Returns raw binary data
+
+EXIT CODES:
+  0    Success (2xx HTTP status)
+  1    Network error or invalid arguments
+  2    Non-2xx HTTP status
+  3    Invalid JSON (when accept="json")
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "head" => {
+                write!(io.stdout, r#"
+HEAD VERB - HTTP HANDLE
+======================
+
+DESCRIPTION:
+  Get only the response headers from a server without retrieving the body.
+  Useful for checking if a resource exists, getting content length, or
+  checking the last-modified date without downloading the entire resource.
+
+SYNTAX:
+  http://HOST:PORT/PATH.head(arguments)
+  https://HOST:PORT/PATH.head(arguments)
+
+COMMON PARAMETERS:
+  headers=HEADERS        Custom HTTP headers for the request
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # Check if resource exists
+  http://example.com/file.txt.head
+
+  # Get headers with authentication
+  http://api.example.com/resource.head(headers="X-API-Key:secret")
+
+  # Check content type and size
+  http://cdn.example.com/large-file.zip.head
+
+RESPONSE:
+  Always returns JSON with status and headers:
+  {{
+    "status": 200,
+    "ok": true,
+    "headers": {{
+      "content-type": "text/plain",
+      "content-length": "42"
+    }}
+  }}
+
+EXIT CODES:
+  Always returns 0 (never fails on HTTP status)
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "post" => {
+                write!(io.stdout, r#"
+POST VERB - HTTP HANDLE
+======================
+
+DESCRIPTION:
+  Send data to a server to create new resources. Commonly used for form
+  submissions, API resource creation, and uploading data.
+
+SYNTAX:
+  http://HOST:PORT/PATH.post(arguments)
+  https://HOST:PORT/PATH.post(arguments)
+
+PARAMETERS:
+  body=TEXT              Request body as text
+  body_file=PATH         Request body from file (takes priority over body)
+  content_type=TYPE      Content-Type header (e.g., "application/json")
+  headers=HEADERS        Custom HTTP headers
+  query=QUERY            Query parameters
+  accept=FORMAT          Response format: json, text, bytes (default: text)
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # POST with text body
+  http://api.example.com/echo.post(body="hello world")
+
+  # POST JSON data
+  http://api.example.com/users.post(body="{{\"name\":\"Alice\"}}",content_type="application/json")
+
+  # POST from file
+  http://api.example.com/upload.post(body_file="/path/to/data.json",content_type="application/json")
+
+  # POST form data
+  http://api.example.com/form.post(body="name=John&email=john@example.com",content_type="application/x-www-form-urlencoded")
+
+EXIT CODES:
+  0    Success (2xx HTTP status)
+  1    Network error or invalid arguments
+  2    Non-2xx HTTP status
+  3    Invalid JSON (when accept="json")
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "put" => {
+                write!(io.stdout, r#"
+PUT VERB - HTTP HANDLE
+=====================
+
+DESCRIPTION:
+  Send data to a server to create or completely replace a resource.
+  PUT is idempotent - multiple identical requests have the same effect.
+
+SYNTAX:
+  http://HOST:PORT/PATH.put(arguments)
+  https://HOST:PORT/PATH.put(arguments)
+
+PARAMETERS:
+  body=TEXT              Request body as text
+  body_file=PATH         Request body from file (takes priority over body)
+  content_type=TYPE      Content-Type header (e.g., "application/json")
+  headers=HEADERS        Custom HTTP headers
+  query=QUERY            Query parameters
+  accept=FORMAT          Response format: json, text, bytes (default: text)
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # PUT to create/update resource
+  http://api.example.com/users/123.put(body="{{\"name\":\"Bob\"}}",content_type="application/json")
+
+  # PUT from file
+  http://api.example.com/document.put(body_file="/path/to/doc.pdf",content_type="application/pdf")
+
+  # PUT with JSON response
+  http://api.example.com/config.put(body="{{\"setting\":\"value\"}}",content_type="application/json",accept="json")
+
+EXIT CODES:
+  0    Success (2xx HTTP status)
+  1    Network error or invalid arguments
+  2    Non-2xx HTTP status
+  3    Invalid JSON (when accept="json")
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "patch" => {
+                write!(io.stdout, r#"
+PATCH VERB - HTTP HANDLE
+=======================
+
+DESCRIPTION:
+  Send data to a server to partially update a resource. Unlike PUT,
+  PATCH only modifies the specified fields, leaving other fields unchanged.
+
+SYNTAX:
+  http://HOST:PORT/PATH.patch(arguments)
+  https://HOST:PORT/PATH.patch(arguments)
+
+PARAMETERS:
+  body=TEXT              Request body as text
+  body_file=PATH         Request body from file (takes priority over body)
+  content_type=TYPE      Content-Type header (e.g., "application/json")
+  headers=HEADERS        Custom HTTP headers
+  query=QUERY            Query parameters
+  accept=FORMAT          Response format: json, text, bytes (default: text)
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # PATCH partial update
+  http://api.example.com/users/123.patch(body="{{\"email\":\"new@example.com\"}}",content_type="application/json")
+
+  # PATCH with query parameters
+  http://api.example.com/resource.patch(body="{{\"status\":\"active\"}}",query="version=2",content_type="application/json")
+
+  # PATCH from file
+  http://api.example.com/document.patch(body_file="/path/to/changes.json",content_type="application/json")
+
+EXIT CODES:
+  0    Success (2xx HTTP status)
+  1    Network error or invalid arguments
+  2    Non-2xx HTTP status
+  3    Invalid JSON (when accept="json")
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "delete" => {
+                write!(io.stdout, r#"
+DELETE VERB - HTTP HANDLE
+========================
+
+DESCRIPTION:
+  Remove a resource from the server. DELETE requests should be idempotent -
+  deleting the same resource multiple times has the same effect.
+
+SYNTAX:
+  http://HOST:PORT/PATH.delete(arguments)
+  https://HOST:PORT/PATH.delete(arguments)
+
+PARAMETERS:
+  headers=HEADERS        Custom HTTP headers
+  query=QUERY            Query parameters
+  accept=FORMAT          Response format: json, text, bytes (default: text)
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # Simple DELETE
+  http://api.example.com/users/123.delete
+
+  # DELETE with confirmation parameter
+  http://api.example.com/resource.delete(query="force=true")
+
+  # DELETE with authentication
+  http://api.example.com/item.delete(headers="Authorization:Bearer token")
+
+  # DELETE with JSON response
+  http://api.example.com/resource/456.delete(accept="json")
+
+EXIT CODES:
+  0    Success (2xx HTTP status)
+  1    Network error or invalid arguments
+  2    Non-2xx HTTP status
+  3    Invalid JSON (when accept="json")
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "options" => {
+                write!(io.stdout, r#"
+OPTIONS VERB - HTTP HANDLE
+=========================
+
+DESCRIPTION:
+  Check what HTTP methods are allowed for a resource. Often used for
+  API discovery and CORS preflight checks.
+
+SYNTAX:
+  http://HOST:PORT/PATH.options(arguments)
+  https://HOST:PORT/PATH.options(arguments)
+
+PARAMETERS:
+  include_body=BOOL      Include response body (default: false)
+  headers=HEADERS        Custom HTTP headers
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # Check allowed methods
+  http://api.example.com/resource.options
+
+  # OPTIONS with response body
+  http://api.example.com/endpoint.options(include_body="true")
+
+  # Check CORS support
+  http://api.example.com/api/data.options
+
+RESPONSE:
+  Returns JSON with allowed methods and headers:
+  {{
+    "status": 204,
+    "allowed_methods": ["GET", "POST", "PUT", "DELETE"],
+    "headers": {{
+      "allow": "GET, POST, PUT, DELETE"
+    }}
+  }}
+
+EXIT CODES:
+  Always returns 0 (never fails on HTTP status)
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "preflight" => {
+                write!(io.stdout, r#"
+PREFLIGHT VERB - HTTP HANDLE
+===========================
+
+DESCRIPTION:
+  Perform CORS preflight requests (OPTIONS with CORS headers) to check
+  if a cross-origin request would be allowed.
+
+SYNTAX:
+  http://HOST:PORT/PATH.preflight(arguments)
+  https://HOST:PORT/PATH.preflight(arguments)
+
+PARAMETERS:
+  origin=URL             Origin for CORS check (e.g., "https://app.com")
+  method=METHOD          HTTP method to preflight (default: GET)
+  request_headers=HEADERS Headers to request permission for (comma-separated)
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # Basic preflight check
+  http://api.example.com/resource.preflight
+
+  # Preflight with origin
+  http://api.example.com/api/users.preflight(origin="https://myapp.example.com")
+
+  # Preflight for POST with headers
+  http://api.example.com/api/data.preflight(origin="https://app.com",method="POST",request_headers="Authorization,Content-Type")
+
+RESPONSE:
+  Returns JSON with CORS policy:
+  {{
+    "status": 204,
+    "cors": {{
+      "allowed_origins": ["*"],
+      "allowed_methods": ["GET", "POST"],
+      "allowed_headers": ["Content-Type", "Authorization"],
+      "allow_credentials": true
+    }}
+  }}
+
+EXIT CODES:
+  Always returns 0 (never fails on HTTP status)
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "json" => {
+                write!(io.stdout, r#"
+JSON VERB - HTTP HANDLE
+======================
+
+DESCRIPTION:
+  Make requests with JSON response envelope. Wraps the response in metadata
+  including status, headers, and body type. Never fails on HTTP status.
+
+SYNTAX:
+  http://HOST:PORT/PATH.json(arguments)
+  https://HOST:PORT/PATH.json(arguments)
+
+PARAMETERS:
+  method=METHOD          HTTP method to use (GET, POST, PUT, PATCH, DELETE, etc.)
+  body=TEXT              Request body (when method is POST/PUT/PATCH)
+  body_file=PATH         Request body from file
+  content_type=TYPE      Content-Type header
+  headers=HEADERS        Custom HTTP headers
+  query=QUERY            Query parameters
+  accept=FORMAT          Response format for body: json, text, bytes
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # GET with JSON envelope
+  http://api.example.com/data.json(method="GET")
+
+  # POST with JSON envelope
+  http://api.example.com/users.json(method="POST",body="{{\"name\":\"Alice\"}}",content_type="application/json")
+
+RESPONSE:
+  Always returns JSON envelope:
+  {{
+    "status": 200,
+    "status_text": "OK",
+    "url": "http://api.example.com/data",
+    "body": {{
+      "type": "json",
+      "value": {{...}}
+    }}
+  }}
+
+EXIT CODES:
+  Always returns 0 (never fails on HTTP status)
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "headers" => {
+                write!(io.stdout, r#"
+HEADERS VERB - HTTP HANDLE
+=========================
+
+DESCRIPTION:
+  Get only response headers as structured JSON. No response body is included
+  in the output. Useful for inspecting server responses and debugging.
+
+SYNTAX:
+  http://HOST:PORT/PATH.headers(arguments)
+  https://HOST:PORT/PATH.headers(arguments)
+
+PARAMETERS:
+  method=METHOD          HTTP method to use (GET, POST, PUT, PATCH, DELETE, etc.)
+  body=TEXT              Request body (when method is POST/PUT/PATCH)
+  body_file=PATH         Request body from file
+  content_type=TYPE      Content-Type header
+  headers=HEADERS        Custom HTTP headers
+  query=QUERY            Query parameters
+  timeout_ms=MILLISECONDS Request timeout (default: 30000)
+  allow_insecure=BOOL    Allow invalid HTTPS certificates (default: false)
+
+EXAMPLES:
+  # Get headers as JSON
+  http://api.example.com/resource.headers(method="GET")
+
+  # Get POST response headers
+  http://api.example.com/data.headers(method="POST",body="test")
+
+  # Check authentication headers
+  http://api.example.com/auth.headers(method="GET",headers="Authorization:Bearer token")
+
+RESPONSE:
+  Returns JSON with headers only:
+  {{
+    "status": 200,
+    "status_text": "OK",
+    "headers": {{
+      "content-type": ["application/json"],
+      "x-custom": ["value"]
+    }},
+    "body": null
+  }}
+
+EXIT CODES:
+  Always returns 0 (never fails on HTTP status)
+
+Use 'http:// --help' for complete HTTP handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            _ => {
+                write!(io.stdout, "Unknown verb: {}. Available verbs are: get, head, post, put, patch, delete, options, preflight, json, headers.\n\nUse 'http:// --help' for complete documentation.\n", verb)?;
+                Ok(Status::ok())
+            }
+        }
     }
 
     fn parse_headers(headers_str: &str) -> Result<HashMap<String, String>, String> {
@@ -1797,10 +3208,15 @@ impl HttpHandle {
 
 impl Handle for HttpHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["get", "head", "post", "put", "patch", "delete", "options", "preflight", "json", "headers"]
+        &["get", "head", "post", "put", "patch", "delete", "options", "preflight", "json", "headers", "help", "--help", "-h"]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests first
+        if let Some(status) = Self::check_and_display_help(verb, io)? {
+            return Ok(status);
+        }
+        
         match verb {
             "get" => self.verb_get(args, io),
             "head" => self.verb_head(args, io),

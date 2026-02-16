@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use url::Url;
@@ -17,6 +17,744 @@ use crate::core::{
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
+
+// Help text for --help command
+const HELP_TEXT: &str = r#"RESOURCE SHELL - SNAPSHOT HANDLE
+================================
+
+USAGE:
+  snapshot://TARGET.VERB(arguments)
+  snapshot://NAME.VERB(arguments)
+
+DESCRIPTION:
+  The snapshot handle allows you to create, restore, compare, and list
+  filesystem snapshots. Snapshots capture the current state of files and
+  directories, allowing you to save important versions or restore data later.
+  All snapshots are stored locally on your system with atomic operations
+  ensuring data integrity.
+
+URL FORMATS:
+  Create/Diff:       snapshot://TARGET_PATH.VERB(arguments)
+  Restore/List:      snapshot://SNAPSHOT_NAME.VERB(arguments)
+
+VERBS (4 total):
+
+  Snapshot Management:
+    create          Create a new snapshot of file or directory
+    restore         Restore a snapshot to a target location
+    diff            Compare snapshots or snapshots with live filesystem
+    ls              List snapshots in a group
+
+EXAMPLES:
+
+  Create Snapshots:
+    # Create directory snapshot
+    snapshot:///home/user/myproject.create(name="backup-v1")
+
+    # Create file snapshot
+    snapshot:///home/user/important.txt.create(name="filebackup")
+
+    # Create with description and TTL (7 days)
+    snapshot:///srv/app.create(name="deploy-v2",description="Production deployment backup",ttl=604800)
+
+    # Skip if snapshot already exists
+    snapshot:///home/user/data.create(name="existing-snapshot",if_exists="skip")
+
+    # Overwrite existing snapshot
+    snapshot:///home/user/data.create(name="my-snapshot",if_exists="overwrite")
+
+    # Create timestamped backup
+    snapshot:///important/data.create(name="backup-20250207",description="Daily backup")
+
+    # Create snapshot with specific backend
+    snapshot:///srv/config.create(name="config-backup",backend="local")
+
+  Restore Snapshots:
+    # Restore directory snapshot
+    snapshot://backup-v1.restore(target="/home/user/restored-project")
+
+    # Restore file snapshot
+    snapshot://filebackup.restore(target="/home/user/recovered.txt")
+
+    # Force restore over existing data
+    snapshot://backup-v1.restore(target="/home/user/existing-folder",force=true)
+
+    # Dry run to see what would happen
+    snapshot://backup-v1.restore(target="/home/user/test",force=true,dry_run=true)
+
+    # Restore with overwrite mode
+    snapshot://deploy-v2.restore(target="/srv/app",mode="overwrite",force=true)
+
+  Compare Snapshots:
+    # Compare two snapshots
+    snapshot:///srv/app.diff(from="snap-001",to="snap-002",format="json")
+
+    # Compare snapshot to live filesystem
+    snapshot:///home/user/project.diff(from="snap-001",to="live",format="json")
+
+    # Compare live to snapshot (reverse)
+    snapshot:///home/user/project.diff(from="live",to="snap-001",format="json")
+
+    # Get summary format output
+    snapshot:///srv/app.diff(from="snap-001",to="live",format="summary")
+
+    # Compare with path filter
+    snapshot:///srv/app.diff(from="snap-001",to="live",path="/subdir",format="json")
+
+    # Compare specific subdirectory only
+    snapshot:///home/user/docs.diff(from="backup-old",to="backup-new",path="/reports")
+
+  List Snapshots:
+    # List all snapshots in a group
+    snapshot://myapp.ls
+
+    # Filter by state
+    snapshot://myapp.ls(state="ready")
+
+    # Filter by tag
+    snapshot://myapp.ls(tag="prod")
+
+    # Limit results
+    snapshot://myapp.ls(limit=2)
+
+    # Filter by time range (created after)
+    snapshot://myapp.ls(since="2025-11-15T10:00:00Z")
+
+    # Filter by time range (created before)
+    snapshot://myapp.ls(until="2025-11-15T23:00:00Z")
+
+    # Filter by name prefix
+    snapshot://myapp.ls(name_prefix="prod-")
+
+    # Combine filters
+    snapshot://myapp.ls(state="ready",tag="prod",limit=10)
+
+    # Pretty print JSON
+    snapshot://myapp.ls(json_pretty=true)
+
+CREATE ARGUMENTS:
+  name=NAME              Snapshot name (required, case-sensitive)
+  description=TEXT       Description of the snapshot (optional)
+  ttl=SECONDS            Time in seconds before snapshot expires (optional)
+  backend=BACKEND        Storage backend: local (default: local)
+  if_exists=ACTION       Action if snapshot exists: error (default), skip,
+                         overwrite
+
+RESTORE ARGUMENTS:
+  target=PATH            Where to restore the snapshot (required)
+  force=BOOL             Overwrite existing files/directories (default: false)
+  mode=MODE              Restore mode: overwrite (default: overwrite)
+  dry_run=BOOL           Show what would be done without doing it (default: false)
+
+DIFF ARGUMENTS:
+  from=SOURCE            Source snapshot ID or "live" (optional)
+  to=TARGET              Target snapshot ID or "live" (optional)
+  path=PATH              Filter to specific path (default: "/")
+  format=FORMAT          Output format: json (default), summary
+
+  Note: At least one of 'from' or 'to' must be provided.
+        Cannot diff "live" against itself.
+
+LS ARGUMENTS:
+  state=STATE            Filter by state (optional)
+  tag=TAG                Filter by tag (optional)
+  since=TIMESTAMP        Filter by creation time - after (RFC3339 format)
+  until=TIMESTAMP        Filter by creation time - before (RFC3339 format)
+  name_prefix=PREFIX     Filter by name prefix (optional)
+  limit=NUMBER           Maximum number of results (optional)
+  json_pretty=BOOL       Pretty print JSON (default: false)
+
+SNAPSHOT NAMES:
+  Snapshot names are case-sensitive and should be unique within a group.
+
+  Naming conventions:
+    backup-v1             Simple version naming
+    deploy-20250207       Date-based naming
+    before-update         Descriptive purpose
+    prod-v2.1            Version with environment
+    config-backup        Component-based naming
+
+  Best practices:
+  • Use descriptive, meaningful names
+  • Include version numbers or dates
+  • Use consistent naming schemes
+  • Keep names under 64 characters
+  • Avoid special characters (use hyphens, underscores)
+
+IF_EXISTS ACTIONS:
+  error                  Return error if snapshot exists (default, safe)
+  skip                   Skip creation, return existing snapshot
+  overwrite              Replace existing snapshot with new one
+
+  Examples:
+    if_exists="error"    Fail if snapshot exists (prevents accidents)
+    if_exists="skip"     Idempotent, use existing if present
+    if_exists="overwrite" Always create fresh snapshot
+
+TTL (TIME TO LIVE):
+  Specify expiration time in seconds from creation.
+
+  Common TTL values:
+    3600                 1 hour
+    86400                1 day (24 hours)
+    604800               1 week (7 days)
+    2592000              30 days
+    7776000              90 days
+
+  Examples:
+    ttl=3600             Expire after 1 hour
+    ttl=86400            Expire after 1 day
+    ttl=604800           Expire after 1 week
+
+  Note: Expired snapshots may be automatically cleaned up by the system.
+
+DIFF FORMATS:
+
+  json (default):
+    Structured JSON output with detailed file information including:
+    • File paths
+    • Status (added, removed, modified, unchanged)
+    • File metadata (size, mtime, mode, hash)
+    • Summary counts
+
+  summary:
+    Human-readable text summary with:
+    • Snapshot information
+    • Count of added files
+    • Count of removed files
+    • Count of modified files
+    • Count of unchanged files
+
+DIFF STATUS VALUES:
+  added                  File exists in 'to' but not in 'from'
+  removed                File exists in 'from' but not in 'to'
+  modified               File exists in both but content differs
+  unchanged              File exists in both with same content
+
+OUTPUT FORMATS:
+
+  create success:
+    {
+      "ok": true,
+      "backend": "local",
+      "id": "generated-snapshot-id",
+      "name": "backup-v1",
+      "target": "/home/user/myproject",
+      "path": "/path/to/snapshot/storage",
+      "created_at": "2025-11-15T18:01:02Z",
+      "expires_at": null,
+      "skipped": false
+    }
+
+  create with TTL:
+    {
+      "ok": true,
+      "backend": "local",
+      "id": "generated-snapshot-id",
+      "name": "deploy-v2",
+      "target": "/srv/app",
+      "path": "/path/to/snapshot/storage",
+      "created_at": "2025-11-15T18:01:02Z",
+      "expires_at": "2025-11-22T18:01:02Z",
+      "skipped": false
+    }
+
+  create skipped:
+    {
+      "ok": true,
+      "backend": "local",
+      "id": "existing-snapshot-id",
+      "name": "existing-snapshot",
+      "target": "/home/user/data",
+      "path": "/path/to/existing/snapshot",
+      "created_at": "2025-11-15T18:01:02Z",
+      "expires_at": null,
+      "skipped": true
+    }
+
+  restore success:
+    {
+      "snapshot": "backup-v1",
+      "target": "/home/user/restored-project",
+      "mode": "overwrite",
+      "status": "ok"
+    }
+
+  restore dry run:
+    {
+      "dry_run": true,
+      "snapshot": "backup-v1",
+      "target": "/home/user/test",
+      "mode": "overwrite",
+      "force": true,
+      "actions": [
+        "DELETE DIRECTORY \"/home/user/test\"",
+        "COPY \"/path/to/snapshot\" -> \"/home/user/test\""
+      ]
+    }
+
+  diff (JSON format):
+    {
+      "name": "/srv/app",
+      "from": "snap-001",
+      "to": "snap-002",
+      "from_kind": "snapshot",
+      "to_kind": "snapshot",
+      "root": "/srv/app",
+      "path": "/",
+      "summary": {
+        "added": 2,
+        "removed": 1,
+        "modified": 2,
+        "unchanged": 5
+      },
+      "entries": [
+        {
+          "path": "file1.txt",
+          "type": "file",
+          "status": "modified",
+          "from": {
+            "exists": true,
+            "file_type": "file",
+            "size": 9,
+            "mtime": "2025-11-15T18:01:02Z",
+            "mode": "0644",
+            "hash": "abc123"
+          },
+          "to": {
+            "exists": true,
+            "file_type": "file",
+            "size": 17,
+            "mtime": "2025-11-15T18:02:02Z",
+            "mode": "0644",
+            "hash": "def456"
+          }
+        }
+      ]
+    }
+
+  diff (summary format):
+    snapshot: /srv/app
+    from: snap-001 (snapshot)
+    to:   live (live)
+    root: /srv/app
+    path: /
+    
+    added: 2
+    removed: 1
+    modified: 2
+    unchanged: 5
+
+  ls output:
+    [
+      {
+        "id": "snap-003",
+        "name": "latest-backup",
+        "created_at": "2025-11-15T18:03:02Z",
+        "backend": "local",
+        "target": "/srv/myapp",
+        "state": "ready",
+        "size_bytes": 1048576,
+        "tags": ["deploy", "prod"],
+        "description": "Production deployment backup"
+      },
+      {
+        "id": "snap-002",
+        "name": "previous-backup",
+        "created_at": "2025-11-15T17:01:02Z",
+        "backend": "local",
+        "target": "/srv/myapp",
+        "state": "ready",
+        "size_bytes": 1024000,
+        "tags": ["deploy"],
+        "description": "Previous backup"
+      }
+    ]
+
+  ls empty group:
+    []
+
+ERROR OUTPUTS:
+
+  create - missing name:
+    {
+      "ok": false,
+      "error": "missing required argument: name"
+    }
+
+  create - target doesn't exist:
+    {
+      "ok": false,
+      "error": "target path does not exist: \"/nonexistent/path\""
+    }
+
+  create - snapshot exists (if_exists=error):
+    {
+      "ok": false,
+      "error": "snapshot already exists: \"existing-snapshot\""
+    }
+
+  restore - missing target:
+    {
+      "error": "missing_argument",
+      "argument": "target",
+      "message": "missing required argument: target"
+    }
+
+  restore - snapshot not found:
+    {
+      "error": "snapshot_not_found",
+      "snapshot": "nonexistent",
+      "message": "snapshot not found: nonexistent"
+    }
+
+  restore - target not empty:
+    {
+      "error": "target_not_empty",
+      "target": "/existing/nonempty/dir",
+      "message": "target directory exists and is not empty (use force=true to overwrite): \"/existing/nonempty/dir\""
+    }
+
+  diff - no from or to:
+    {
+      "error": "invalid_arguments",
+      "message": "at least one of 'from' or 'to' must be provided"
+    }
+
+  diff - both live:
+    {
+      "error": "invalid_arguments",
+      "message": "cannot diff live against itself"
+    }
+
+  diff - snapshot not found:
+    {
+      "error": "snapshot_not_found",
+      "snapshot": "missing-snap",
+      "message": "snapshot not found: missing-snap"
+    }
+
+EXIT CODES:
+  0                      Success
+  1                      General error (invalid arguments, operation failed)
+  2                      Not found (snapshot or target doesn't exist)
+  3                      Already exists (snapshot name conflict)
+  4                      Target not empty (restore without force)
+
+STORAGE LOCATION:
+  Snapshots are stored in your system's state directory:
+
+  Linux:
+    $XDG_STATE_HOME/resh/snapshots
+    or
+    $HOME/.local/state/resh/snapshots
+
+  macOS:
+    ~/Library/Application Support/resh/snapshots
+
+  Windows:
+    %APPDATA%/resh/snapshots
+
+  Storage structure:
+    <state_dir>/snapshots/
+      ├── group1/
+      │   ├── snapshot1/
+      │   │   ├── metadata.json
+      │   │   └── data/
+      │   └── snapshot2/
+      │       ├── metadata.json
+      │       └── data/
+      └── group2/
+          └── snapshot3/
+              ├── metadata.json
+              └── data/
+
+COMMON WORKFLOWS:
+
+  Backup before changes:
+    # Create backup before making changes
+    snapshot:///home/user/project.create(name="before-update")
+    
+    # Make your changes...
+    
+    # If something goes wrong, restore
+    snapshot://before-update.restore(target="/home/user/project",force=true)
+
+  Compare changes after deployment:
+    # Create snapshot before deployment
+    snapshot:///srv/app.create(name="before-deploy")
+    
+    # Deploy new version...
+    
+    # Compare what changed
+    snapshot:///srv/app.diff(from="before-deploy",to="live",format="summary")
+    
+    # Review detailed differences
+    snapshot:///srv/app.diff(from="before-deploy",to="live",format="json")
+
+  Regular automated backups:
+    # Create timestamped backup
+    snapshot:///important/data.create(name="backup-$(date +%Y%m%d)",description="Daily backup",ttl=2592000)
+    
+    # List recent backups
+    snapshot://backup.ls(name_prefix="backup-",limit=10)
+    
+    # Clean up old backups (handled automatically by TTL)
+
+  Version tracking:
+    # Create version snapshots
+    snapshot:///srv/api.create(name="v1.0.0",description="Initial release")
+    snapshot:///srv/api.create(name="v1.1.0",description="Feature update")
+    snapshot:///srv/api.create(name="v2.0.0",description="Major release")
+    
+    # List all versions
+    snapshot://versions.ls
+    
+    # Compare versions
+    snapshot:///srv/api.diff(from="v1.0.0",to="v2.0.0",format="summary")
+
+  Safe restore with verification:
+    # Dry run first to see what will happen
+    snapshot://backup-v1.restore(target="/home/user/project",force=true,dry_run=true)
+    
+    # Review the actions
+    
+    # Actually restore if satisfied
+    snapshot://backup-v1.restore(target="/home/user/project",force=true)
+
+  Configuration management:
+    # Snapshot before config changes
+    snapshot:///etc/app/config.create(name="config-before-update")
+    
+    # Update configuration files...
+    
+    # Compare changes
+    snapshot:///etc/app/config.diff(from="config-before-update",to="live")
+    
+    # Rollback if needed
+    snapshot://config-before-update.restore(target="/etc/app/config",force=true)
+
+  Development workflow:
+    # Snapshot before experimental changes
+    snapshot:///home/dev/project.create(name="stable-state",description="Working version before experiment")
+    
+    # Try experimental changes...
+    
+    # Compare what changed
+    snapshot:///home/dev/project.diff(from="stable-state",to="live",format="json")
+    
+    # Restore if experiment fails
+    snapshot://stable-state.restore(target="/home/dev/project",force=true)
+
+  Disaster recovery preparation:
+    # Create regular snapshots with TTL
+    snapshot:///critical/data.create(name="hourly-$(date +%H)",ttl=86400)
+    snapshot:///critical/data.create(name="daily-$(date +%d)",ttl=2592000)
+    snapshot:///critical/data.create(name="weekly-$(date +%V)",ttl=7776000)
+    
+    # List available recovery points
+    snapshot://recovery.ls(state="ready")
+
+  Testing and validation:
+    # Create clean state snapshot
+    snapshot:///test/environment.create(name="clean-state")
+    
+    # Run tests...
+    
+    # Restore clean state for next test run
+    snapshot://clean-state.restore(target="/test/environment",force=true)
+
+BEST PRACTICES:
+  - Use descriptive snapshot names with versions or dates
+  - Set appropriate TTL values to manage storage automatically  
+  - Use if_exists="skip" for idempotent scripts
+  - Use if_exists="error" (default) for safety in manual operations
+  - Always use dry_run=true before restore with force=true
+  - Create snapshots before risky operations
+  - Use diff to verify changes before restoring
+  - List snapshots regularly to manage storage
+  - Use consistent naming conventions within projects
+  - Tag snapshots for better organization
+  - Include descriptions for complex snapshots
+  - Use path filters in diff for large directory trees
+  - Set reasonable TTL values to prevent storage bloat 
+  - Test restore operations in non-critical environments first
+  - Keep snapshot names under 64 characters
+  - Use summary format for quick overview, JSON for automation
+  - Compare against "live" to track ongoing changes
+  - Create snapshots before upgrades or deployments
+  - Verify snapshot creation success in scripts
+  - Use force=true cautiously, only when intended
+  - Document snapshot naming conventions in team workflows
+  - Monitor snapshot storage usage regularly
+  - Use timestamps in automated backup names
+  - Filter ls output with state and tags for better management
+  - Combine diff with path filters for targeted comparisons
+  - Back up configuration files separately for quick access
+  - Use exclude patterns to avoid backing up temporary files
+  - Schedule regular cleanup of old snapshots
+  - Implement retention policies based on snapshot age and usage
+  - Create snapshots in off-peak hours for large datasets
+
+ATOMIC OPERATIONS:
+  Snapshot operations are designed to be atomic:
+
+  Create:
+  • Snapshot created in temporary location first
+  • Moved to final location atomically
+  • Metadata written last
+  • Failure leaves no partial snapshots
+
+  Restore:
+  • Original data remains until restore completes
+  • Restoration happens in staging area
+  • Final swap is atomic
+  • Failure leaves original data intact
+
+  This ensures:
+  • No data loss during operations
+  • No corrupted snapshots
+  • Safe concurrent operations
+  • Reliable recovery even if operations fail
+
+PERMISSIONS:
+  Snapshots preserve Unix file permissions:
+
+  • File mode (read, write, execute)
+  • Directory permissions
+  • Owner and group (when possible)
+  • Special bits (setuid, setgid, sticky)
+
+  Notes:
+  • Restoring as different user may not preserve ownership
+  • Root privileges required to restore ownership exactly
+  • Symbolic links are preserved
+  • Hard links may not be preserved
+
+TIME ZONES:
+  All timestamps use UTC format (ISO 8601):
+
+  Format: YYYY-MM-DDTHH:MM:SSZ
+  Example: 2025-11-15T18:01:02Z
+
+  When filtering by time:
+  • Use RFC3339 format with 'Z' suffix
+  • Times are always in UTC
+  • Local time conversion is your responsibility
+
+CASE SENSITIVITY:
+  Snapshot operations are case-sensitive:
+
+  • Snapshot names: "Backup" ≠ "backup"
+  • File paths: "/Home" ≠ "/home"
+  • Tag names: "Prod" ≠ "prod"
+  • State filters: "Ready" ≠ "ready"
+
+  Best practice: Use lowercase for consistency
+
+RELATIVE PATHS:
+  When using relative paths in snapshot URLs:
+
+  • Resolved based on current working directory
+  • Converted to absolute paths for storage
+  • Restore target can be relative or absolute
+  • Use absolute paths for scripts and automation
+
+SNAPSHOT SIZE:
+  Snapshots consume disk space equal to target size:
+
+  • No compression (currently)
+  • No deduplication between snapshots
+  • Full copy of all files
+  • Plan storage capacity accordingly
+
+  Tips for managing size:
+  • Use TTL to auto-expire old snapshots
+  • Snapshot only necessary directories
+  • Exclude temporary or cache directories
+  • Monitor storage with ls command
+  • Clean up unneeded snapshots regularly
+
+LIMITATIONS:
+  Current limitations of the snapshot handle:
+
+  • Local storage only (no remote backends)
+  • No incremental snapshots
+  • No compression
+  • No deduplication
+  • No snapshot scheduling (use cron/systemd timers)
+  • Cannot snapshot across filesystem boundaries
+  • Large files may take time to snapshot/restore
+  • No encryption (use encrypted filesystems)
+  • No snapshot merging or branching
+  • Single backend type (local)
+
+PERFORMANCE CONSIDERATIONS:
+  • Large directories take longer to snapshot
+  • Snapshot time proportional to data size
+  • Restore speed depends on target filesystem
+  • Diff operations faster than full snapshots
+  • Path filters reduce diff processing time
+  • Listing snapshots is fast (metadata only)
+  • Many small files slower than few large files
+  • SSDs significantly faster than HDDs
+
+DEBUGGING:
+  Use dry_run to test operations:
+    snapshot://test.restore(target="/tmp/test",dry_run=true)
+
+  Check snapshot metadata:
+    snapshot://backups.ls(json_pretty=true)
+
+  Compare against live for verification:
+    snapshot:///path.diff(from="snapshot-name",to="live")
+
+  List recent snapshots:
+    snapshot://group.ls(limit=10)
+
+  Filter by state to find issues:
+    snapshot://group.ls(state="error")
+
+ERROR RECOVERY:
+  If snapshot operation fails:
+
+  1. Check error message for specific issue
+  2. Verify target path exists and is accessible
+  3. Ensure sufficient disk space
+  4. Check permissions on source and destination
+  5. Review snapshot name for conflicts
+  6. Use dry_run for restore to verify before executing
+  7. Check storage location permissions
+  8. Verify snapshot exists with ls command
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With file handle:
+    # Create snapshot before file operations
+    snapshot:///config.create(name="before-edit")
+    file:///config/app.conf.replace(pattern="old",replacement="new")
+    snapshot:///config.diff(from="before-edit",to="live")
+
+  With backup handle:
+    # Snapshot before restore
+    snapshot:///data.create(name="before-restore")
+    backup://mybackup.restore(snapshot_id="latest",dest="/data")
+    snapshot:///data.diff(from="before-restore",to="live")
+
+  With event handle:
+    # Emit events on snapshot operations
+    snapshot:///srv/app.create(name="deploy-v1")
+    event://emit(topic="snapshot.created",data="{\"name\":\"deploy-v1\"}")
+
+MORE INFO:
+  For complete documentation of snapshot handle operations:
+  https://github.com/[your-org]/resource-shell/docs/FileSystem_Storage/snapshot.md
+
+  For backup strategies and best practices:
+  https://github.com/[your-org]/resource-shell/docs/backup-strategies.md
+
+  Use 'snapshot:// --help=VERB' for detailed help on a specific verb.
+"#;
 
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("snapshot", |u| Ok(Box::new(SnapshotHandle::from_url(u)?)));
@@ -427,6 +1165,13 @@ impl SnapshotHandle {
         let decoded = percent_decode_str(path_str)
             .decode_utf8()
             .with_context(|| format!("invalid UTF-8 in URL path: {}", path_str))?;
+
+        // Check for help flags in the decoded path
+        if decoded.contains("--help") || decoded.contains("-h") {
+            // Create a dummy path for help display
+            let help_path = PathBuf::from("--help");
+            return Ok(Self { target: help_path });
+        }
 
         let target = PathBuf::from(decoded.as_ref());
         
@@ -1751,6 +2496,19 @@ impl Handle for SnapshotHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check if this is a help request based on the path
+        if self.target.to_string_lossy().contains("--help") || self.target.to_string_lossy().contains("-h") {
+            // Check for specific verb help request
+            if let Some(specific_verb) = args.get("verb") {
+                writeln!(io.stdout, "Detailed help for '{}' verb is not yet implemented.", specific_verb)?;
+                writeln!(io.stdout, "Please refer to the general help below:\n")?;
+            }
+            
+            // Display the comprehensive help text
+            writeln!(io.stdout, "{}", HELP_TEXT)?;
+            return Ok(Status::ok());
+        }
+
         match verb {
             "create" => self.create(args, io),
             "diff" => self.diff(args, io),

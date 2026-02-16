@@ -1,4 +1,4 @@
-mod cacheh;
+pub mod cacheh;
 mod config;
 pub mod dbh;
 pub mod eventh;

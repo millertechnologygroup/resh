@@ -1,12 +1,12 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::fs;
 use url::Url;
-use std::io::Write;
-use serde::{Deserialize, Serialize};
 
 use crate::core::{
     registry::{Args, Handle, IoStreams},
@@ -78,6 +78,865 @@ pub const MAIL_CONFIG_STORE_WRITE_ERROR: &str = "mail.config_store_write_error";
 pub const MAIL_CONFIG_STORE_PARSE_ERROR: &str = "mail.config_store_parse_error";
 pub const MAIL_CONFIG_INTERNAL_ERROR: &str = "mail.config_internal_error";
 
+// Complete help text for mail handle
+const MAIL_HELP_TEXT: &str = r#"RESOURCE SHELL - MAIL HANDLE
+============================
+
+USAGE:
+  mail://VERB arguments
+  mail://VERB(arguments)  [traditional function-call syntax]
+
+DESCRIPTION:
+  The mail handle allows you to send emails, test SMTP connections, manage
+  email profiles, and send template-based emails. Supports SMTP authentication,
+  TLS/STARTTLS encryption, retry logic, attachments, custom headers, and
+  profile-based configuration management. Perfect for notifications, alerts,
+  automated reports, and application integration.
+
+URL FORMAT:
+  mail://VERB arguments              [shell-friendly syntax - recommended]
+  mail://VERB(arguments)              [traditional function-call syntax]
+
+VERBS (4 total):
+
+  Email Operations:
+    send            Send an email message with custom content
+    send_template   Send an email using a predefined template
+
+  Configuration & Testing:
+    test            Test SMTP connection and optionally send test email
+    config          Manage SMTP profile configurations
+
+EXAMPLES:
+
+  Send Simple Email:
+    # Basic email (shell-friendly syntax)
+    mail://send to="user@example.com" subject="Test" text_body="Hello"
+
+    # With sender address
+    mail://send to="user@example.com" subject="Test" text_body="Hello" from="sender@example.com"
+
+    # Multiple recipients (comma-separated)
+    mail://send to="alice@example.com,bob@example.com" subject="Team Update" text_body="Weekly update"
+
+    # With CC and BCC
+    mail://send to="user@example.com" cc="manager@example.com" bcc="archive@example.com" subject="Report" text_body="Monthly report attached"
+
+    # HTML email
+    mail://send to="user@example.com" subject="Welcome" html_body="<h1>Welcome!</h1><p>Thanks for signing up.</p>"
+
+    # Both text and HTML bodies
+    mail://send to="user@example.com" subject="Newsletter" text_body="Plain text version" html_body="<h1>HTML version</h1>"
+
+  Send with SMTP Configuration:
+    # With explicit SMTP settings
+    mail://send to="user@example.com" subject="Test" text_body="Hello" smtp_host="smtp.gmail.com" smtp_port=587 smtp_username="sender@gmail.com" smtp_password="app_password" use_tls="starttls"
+
+    # Local SMTP server (no TLS)
+    mail://send to="user@example.com" subject="Test" text_body="Hello" smtp_host="localhost" smtp_port=25 use_tls="none"
+
+    # With TLS from start
+    mail://send to="user@example.com" subject="Secure" text_body="Encrypted email" smtp_host="smtp.example.com" smtp_port=465 use_tls="tls"
+
+    # Accept invalid certificates (testing only)
+    mail://send to="user@example.com" subject="Test" text_body="Hello" smtp_host="localhost" smtp_port=587 use_tls="starttls" tls_accept_invalid_certs=true
+
+  Send with Advanced Options:
+    # With reply-to address
+    mail://send to="user@example.com" subject="Support Request" text_body="How can we help?" from="noreply@example.com" reply_to="support@example.com"
+
+    # With custom headers
+    mail://send to="user@example.com" subject="Test" text_body="Hello" headers='{"X-Priority":"1","X-Mailer":"ResourceShell"}'
+
+    # With attachments
+    mail://send to="user@example.com" subject="Documents" text_body="Please find attached" attachments='["/path/to/file1.pdf","/path/to/file2.txt"]'
+
+    # With timeout and retry
+    mail://send to="user@example.com" subject="Important" text_body="Critical update" timeout_ms=5000 max_retry=3 retry_backoff_ms=2000
+
+    # JSON output format
+    mail://send to="user@example.com" subject="Test" text_body="Hello" format_output="json"
+
+    # Text output format
+    mail://send to="user@example.com" subject="Test" text_body="Hello" format_output="text"
+
+  Template-Based Emails:
+    # Simple template without variables
+    mail://send_template template="welcome" to="user@example.com"
+
+    # Template with variables
+    mail://send_template template="welcome" to="user@example.com" vars='{"user_name":"Alice","app_name":"MyApp"}'
+
+    # Template with locale
+    mail://send_template template="newsletter" to="user@example.com" vars='{"name":"Bob"}' locale="en_US"
+
+    # Template with version
+    mail://send_template template="invoice" to="customer@example.com" vars='{"invoice_id":"12345"}' version="v2"
+
+    # Dry run (test without sending)
+    mail://send_template template="welcome" to="user@example.com" vars='{"user_name":"Alice"}' dry_run=true
+
+    # Strict variable checking
+    mail://send_template template="report" to="user@example.com" vars='{"month":"January"}' strict_vars=true
+
+    # Template with attachments
+    mail://send_template template="invoice" to="customer@example.com" vars='{"invoice_id":"12345"}' attachments='["/path/to/invoice.pdf"]'
+
+    # Template with CC recipients
+    mail://send_template template="report" to="manager@example.com" cc="team@example.com" vars='{"quarter":"Q1"}'
+
+  Test SMTP Connection:
+    # Connection test only
+    mail://test smtp_host="smtp.gmail.com" smtp_port=587 use_tls="starttls" connection_only=true
+
+    # Test with authentication
+    mail://test smtp_host="smtp.gmail.com" smtp_port=587 use_tls="starttls" smtp_username="user@gmail.com" smtp_password="app_password"
+
+    # Send test email
+    mail://test smtp_host="smtp.gmail.com" smtp_port=587 use_tls="starttls" smtp_username="user@gmail.com" smtp_password="app_password" send_test_email=true to="test@example.com" from="sender@gmail.com"
+
+    # Test local server
+    mail://test smtp_host="localhost" smtp_port=25 use_tls="none" connection_only=true
+
+    # Test with custom test email content
+    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" send_test_email=true to="admin@example.com" from="test@example.com" subject="SMTP Test" text_body="This is a test message"
+
+    # Test with retry logic
+    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" max_retry=2 retry_backoff_ms=500
+
+    # Test with timeout
+    mail://test smtp_host="slow-smtp.example.com" smtp_port=587 timeout_ms=30000
+
+    # Test with text output
+    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" format_output="text"
+
+  Profile Management:
+    # List all profiles
+    mail://config action="list"
+
+    # Get specific profile
+    mail://config action="get" profile="production"
+
+    # Create/update profile
+    mail://config action="set" profile="production" smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" smtp_username="user@example.com" smtp_password="password" from="noreply@example.com"
+
+    # Create profile with description
+    mail://config action="set" profile="staging" smtp_host="smtp-staging.example.com" smtp_port=587 use_tls="starttls" description="Staging environment SMTP" from="staging@example.com"
+
+    # Set as default profile
+    mail://config action="set" profile="production" smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" is_default=true
+
+    # Activate profile
+    mail://config action="activate" profile="production"
+
+    # Get active profile
+    mail://config action="get_active"
+
+    # Delete profile
+    mail://config action="delete" profile="old_profile"
+
+    # Profile with reply-to
+    mail://config action="set" profile="support" smtp_host="smtp.example.com" smtp_port=587 from="noreply@example.com" reply_to="support@example.com"
+
+    # Profile accepting invalid certs (dev only)
+    mail://config action="set" profile="dev" smtp_host="localhost" smtp_port=587 use_tls="starttls" tls_accept_invalid_certs=true
+
+  Traditional Function-Call Syntax:
+    # Send email
+    mail://send(to=["user@example.com"],subject="Test",text_body="Hello")
+
+    # Multiple recipients
+    mail://send(to=["alice@example.com","bob@example.com"],subject="Update",text_body="Team update")
+
+    # With SMTP config
+    mail://send(to=["user@example.com"],subject="Test",text_body="Hello",smtp_host="smtp.gmail.com",smtp_port=587,use_tls="starttls")
+
+    # Send template
+    mail://send_template(template="welcome",to=["user@example.com"],vars={"user_name":"Alice"})
+
+    # Test connection
+    mail://test(smtp_host="smtp.example.com",smtp_port=587,use_tls="starttls",connection_only=true)
+
+    # Config management
+    mail://config(action="list")
+
+SEND ARGUMENTS:
+  to=RECIPIENTS          Recipient email addresses (required)
+                         Shell: "user@example.com" or "user1@example.com,user2@example.com"
+                         Function: ["user@example.com"] or ["user1@example.com","user2@example.com"]
+  subject=TEXT           Email subject line (required)
+  text_body=TEXT         Plain text email body (required if html_body not provided)
+  html_body=HTML         HTML email body (required if text_body not provided)
+  from=ADDRESS           Sender email address (optional, uses profile default)
+  cc=RECIPIENTS          CC recipient addresses (optional)
+                         Format: same as 'to' parameter
+  bcc=RECIPIENTS         BCC recipient addresses (optional)
+                         Format: same as 'to' parameter
+  reply_to=ADDRESS       Reply-to email address (optional)
+  attachments=PATHS      File paths to attach (optional)
+                         Format: JSON array ["path1","path2"]
+  headers=OBJECT         Custom email headers (optional)
+                         Format: JSON object {"Header-Name":"value"}
+  smtp_host=HOST         SMTP server hostname (optional, uses profile)
+  smtp_port=NUMBER       SMTP server port (default: 587)
+  smtp_username=USER     SMTP authentication username (optional)
+  smtp_password=PASS     SMTP authentication password (optional)
+  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
+  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
+  timeout_ms=NUMBER      Connection timeout in milliseconds (default: 10000)
+  max_retry=NUMBER       Maximum retry attempts (default: 0)
+  retry_backoff_ms=NUMBER  Retry delay in milliseconds (default: 1000)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+SEND_TEMPLATE ARGUMENTS:
+  template=NAME          Template name (required)
+  to=RECIPIENTS          Recipient email addresses (required)
+                         Format: same as 'send' verb
+  vars=OBJECT            Template variables (optional)
+                         Format: JSON object {"var_name":"value"}
+  locale=LOCALE          Template locale/language (optional)
+  version=VERSION        Template version (optional)
+  from=ADDRESS           Sender email address (optional)
+  cc=RECIPIENTS          CC recipient addresses (optional)
+  bcc=RECIPIENTS         BCC recipient addresses (optional)
+  reply_to=ADDRESS       Reply-to email address (optional)
+  attachments=PATHS      File paths to attach (optional)
+  headers=OBJECT         Custom email headers (optional)
+  smtp_host=HOST         SMTP server hostname (optional)
+  smtp_port=NUMBER       SMTP server port (default: 587)
+  smtp_username=USER     SMTP authentication username (optional)
+  smtp_password=PASS     SMTP authentication password (optional)
+  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
+  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
+  timeout_ms=NUMBER      Connection timeout (default: 10000)
+  max_retry=NUMBER       Maximum retry attempts (default: 0)
+  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
+  strict_vars=BOOL       Require all template variables (default: false)
+  dry_run=BOOL           Test rendering without sending (default: false)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+TEST ARGUMENTS:
+  smtp_host=HOST         SMTP server hostname (required)
+  smtp_port=NUMBER       SMTP server port (required)
+  smtp_username=USER     SMTP authentication username (optional)
+  smtp_password=PASS     SMTP authentication password (optional)
+  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
+  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
+  connection_only=BOOL   Only test connection (default: false)
+  send_test_email=BOOL   Send a test email (default: false)
+  to=RECIPIENTS          Recipients (required if send_test_email=true)
+  from=ADDRESS           Sender (required if send_test_email=true)
+  subject=TEXT           Test email subject (optional)
+  text_body=TEXT         Test email body (optional)
+  html_body=HTML         Test email HTML body (optional)
+  timeout_ms=NUMBER      Connection timeout (default: 10000)
+  max_retry=NUMBER       Maximum retry attempts (default: 0)
+  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+CONFIG ARGUMENTS:
+  action=ACTION          Configuration action (required)
+                         Values: list, get, set, delete, activate, get_active
+  profile=NAME           Profile name (required for get, set, delete, activate)
+  smtp_host=HOST         SMTP server hostname (for set action)
+  smtp_port=NUMBER       SMTP server port (for set action)
+  smtp_username=USER     SMTP username (for set action)
+  smtp_password=PASS     SMTP password (for set action)
+  use_tls=MODE           TLS mode (for set action)
+  tls_accept_invalid_certs=BOOL  Accept invalid certs (for set action)
+  from=ADDRESS           Default sender address (for set action)
+  reply_to=ADDRESS       Default reply-to address (for set action)
+  description=TEXT       Profile description (for set action)
+  is_default=BOOL        Set as default profile (for set action)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+RECIPIENT FORMATS:
+
+  Shell-friendly syntax (recommended for command line):
+    Single recipient:
+      to="user@example.com"
+
+    Multiple recipients (comma-separated):
+      to="user1@example.com,user2@example.com,user3@example.com"
+
+    With CC and BCC:
+      to="user@example.com" cc="manager@example.com" bcc="archive@example.com"
+
+  Traditional function-call syntax:
+    Single recipient:
+      to=["user@example.com"]
+
+    Multiple recipients:
+      to=["user1@example.com","user2@example.com","user3@example.com"]
+
+    With CC and BCC:
+      to=["user@example.com"],cc=["manager@example.com"],bcc=["archive@example.com"]
+
+TLS MODES:
+
+  none                   No encryption (not recommended for production)
+                         Use for local SMTP servers or testing
+                         Port: typically 25 or 2525
+
+  starttls               Start with unencrypted, upgrade to TLS (recommended)
+                         Most common for modern SMTP
+                         Port: typically 587
+
+  tls                    Use TLS from connection start (implicit TLS)
+                         Also called SMTPS
+                         Port: typically 465
+
+  Selection guide:
+    Gmail/Google Workspace      use_tls="starttls" port=587
+    Office 365/Outlook          use_tls="starttls" port=587
+    SendGrid                    use_tls="starttls" port=587
+    Mailgun                     use_tls="starttls" port=587
+    Local development           use_tls="none" port=25 or 2525
+    Legacy servers              use_tls="tls" port=465
+
+TLS CERTIFICATE VALIDATION:
+
+  By default, TLS certificates are validated for security.
+
+  Production (strict validation):
+    tls_accept_invalid_certs=false    Default, validates certificates
+
+  Development/Testing only:
+    tls_accept_invalid_certs=true     Accepts self-signed/invalid certificates
+
+  Never use tls_accept_invalid_certs=true in production!
+
+  Certificate issues:
+    • Self-signed certificates (common in development)
+    • Expired certificates
+    • Hostname mismatch
+    • Untrusted certificate authority
+
+  Solution for production:
+    • Use valid certificates (free from Let's Encrypt)
+    • Configure proper DNS
+    • Use trusted SMTP providers
+
+SMTP AUTHENTICATION:
+
+  Authentication methods:
+    • Username/password (most common)
+    • App-specific passwords (Gmail, Yahoo)
+    • API tokens (SendGrid, Mailgun)
+
+  Gmail example:
+    smtp_host="smtp.gmail.com"
+    smtp_port=587
+    use_tls="starttls"
+    smtp_username="your-email@gmail.com"
+    smtp_password="your-app-password"    # Not your regular password!
+
+  Office 365 example:
+    smtp_host="smtp.office365.com"
+    smtp_port=587
+    use_tls="starttls"
+    smtp_username="your-email@company.com"
+    smtp_password="your-password"
+
+  SendGrid example:
+    smtp_host="smtp.sendgrid.net"
+    smtp_port=587
+    use_tls="starttls"
+    smtp_username="apikey"               # Literal string "apikey"
+    smtp_password="your-sendgrid-api-key"
+
+  No authentication (local server):
+    smtp_host="localhost"
+    smtp_port=25
+    use_tls="none"
+    # No username/password needed
+
+PROFILE MANAGEMENT:
+
+  Profiles store reusable SMTP configurations.
+
+  Benefits:
+    • Store credentials securely
+    • Switch between environments easily
+    • Avoid repeating configuration
+    • Manage multiple SMTP servers
+
+  Profile workflow:
+    1. Create profile:
+       mail://config action="set" profile="production" smtp_host="..." smtp_port=587 ...
+
+    2. Activate profile:
+       mail://config action="activate" profile="production"
+
+    3. Send email (uses active profile):
+       mail://send to="user@example.com" subject="Test" text_body="Hello"
+
+  Profile precedence:
+    • Command-line SMTP args override profile settings
+    • Active profile used if no SMTP args provided
+    • Error if no profile and no SMTP args
+
+  Multiple profiles:
+    production     Primary SMTP for production
+    staging        Testing SMTP for staging
+    dev            Local SMTP for development
+    backup         Backup SMTP provider
+
+EMAIL TEMPLATES:
+
+  Templates allow variable substitution and reusable content.
+
+  Template location:
+    • Stored in application template directory
+    • Typically: /etc/resh/templates/ or ~/.config/resh/templates/
+
+  Template structure:
+    welcome.txt          Plain text template
+    welcome.html         HTML template
+    welcome.json         Template metadata (subject, variables)
+
+  Variable syntax:
+    Text: {{user_name}}
+    HTML: <p>Hello {{user_name}}!</p>
+
+  Template rendering:
+    • Variables replaced with provided values
+    • Missing variables: error (strict_vars=true) or empty (strict_vars=false)
+    • Subject and body rendered separately
+
+  Dry run testing:
+    mail://send_template template="welcome" to="user@example.com" vars='{"user_name":"Alice"}' dry_run=true
+    # Shows rendered content without sending
+
+  Locale support:
+    welcome_en_US.txt    English (US)
+    welcome_es_ES.txt    Spanish (Spain)
+    welcome_fr_FR.txt    French (France)
+
+RETRY LOGIC:
+
+  Configure retry behavior for failed sends:
+
+  Parameters:
+    max_retry=NUMBER           Maximum retry attempts (0 = no retry)
+    retry_backoff_ms=NUMBER    Delay between retries in milliseconds
+
+  Retry scenarios:
+    • Temporary network errors
+    • SMTP server temporarily unavailable
+    • Connection timeouts
+    • Transient server errors (4xx codes)
+
+  Not retried:
+    • Authentication failures (permanent)
+    • Invalid email addresses (permanent)
+    • Message rejected by server (permanent)
+    • Configuration errors
+
+  Example configurations:
+    max_retry=0              No retry (default, fail fast)
+    max_retry=3 retry_backoff_ms=1000   Retry 3 times, 1 second delay
+    max_retry=5 retry_backoff_ms=2000   Retry 5 times, 2 second delay
+
+  Exponential backoff (not automatic):
+    • Implement in shell scripts if needed
+    • Increase delay between retry attempts
+
+ATTACHMENTS:
+
+  Attach files to emails:
+
+  Format:
+    attachments='["/path/to/file1.pdf","/path/to/file2.txt"]'
+
+  Requirements:
+    • Files must exist
+    • Files must be readable
+    • Full paths or relative to current directory
+
+  Examples:
+    # Single attachment
+    attachments='["/path/to/document.pdf"]'
+
+    # Multiple attachments
+    attachments='["/path/to/report.pdf","/path/to/data.csv","/path/to/image.png"]'
+
+  File types:
+    • PDFs, images, text files, spreadsheets
+    • Binary files supported
+    • Filename preserved in email
+
+  Size considerations:
+    • Check SMTP server limits (typically 10-25 MB)
+    • Large files may timeout
+    • Consider compression for multiple files
+
+CUSTOM HEADERS:
+
+  Add custom email headers:
+
+  Format:
+    headers='{"X-Priority":"1","X-Mailer":"ResourceShell","X-Custom":"value"}'
+
+  Common custom headers:
+    X-Priority             Email priority (1=high, 3=normal, 5=low)
+    X-Mailer               Client application name
+    X-Request-ID           Request tracking ID
+    X-Campaign-ID          Marketing campaign ID
+    Reply-To               Reply address (prefer reply_to parameter)
+    List-Unsubscribe       Unsubscribe URL for mailing lists
+
+  Restricted headers:
+    • Cannot override: From, To, Subject, Date, Message-ID
+    • Use dedicated parameters instead
+
+  Security note:
+    • Headers can be used for tracking
+    • Be cautious with sensitive information
+
+OUTPUT FORMATS:
+
+  json (default):
+    Structured JSON output with detailed information
+    {
+      "ok": true,
+      "timestamp_unix_ms": 1672531200000,
+      "query": {...},
+      "result": {...},
+      "error": null,
+      "warnings": []
+    }
+
+  text:
+    Human-readable text output
+    Email sent successfully
+    Message ID: 12345
+    SMTP: smtp.example.com:587
+
+EXIT CODES:
+  0                      Success
+  1                      General error (invalid arguments, file not found)
+  2                      SMTP connection error (cannot connect to server)
+  3                      SMTP authentication error (invalid credentials)
+  4                      Email rejected (by server or invalid recipient)
+  5                      Template error (not found or rendering failed)
+  6                      Configuration error (profile not found, invalid config)
+
+ERROR CODES:
+
+  Send verb errors:
+    mail.send_missing_recipients       No recipients specified
+    mail.send_missing_subject          Subject line not provided
+    mail.send_missing_body             Neither text_body nor html_body provided
+    mail.send_invalid_address          Invalid email address format
+    mail.send_header_conflict          Header conflicts with built-in headers
+    mail.send_smtp_not_configured      SMTP configuration missing
+    mail.send_smtp_connection_failed   Failed to connect to SMTP server
+    mail.send_smtp_auth_failed         SMTP authentication failed
+    mail.send_smtp_rejected            Email rejected by SMTP server
+
+  Test verb errors:
+    mail.test_smtp_not_configured      SMTP host not specified
+    mail.test_connection_failed        Unable to connect to SMTP server
+    mail.test_auth_failed              SMTP authentication failed
+    mail.test_send_rejected            Test email rejected by server
+    mail.test_invalid_timeout          Invalid timeout value
+    mail.test_send_email_missing_recipients  Recipients required
+    mail.test_invalid_address          Invalid email address format
+
+  Config verb errors:
+    mail.config_invalid_action         Invalid action specified
+    mail.config_profile_required       Profile name required
+    mail.config_profile_not_found      Profile does not exist
+    mail.config_no_active_profile      No active profile configured
+    mail.config_invalid_smtp_host      Invalid SMTP host
+    mail.config_invalid_smtp_port      Invalid SMTP port
+
+  Template verb errors:
+    mail.send_template_not_found       Template file not found
+    mail.send_template_missing_var     Required variable missing
+    mail.send_template_empty_subject   Rendered subject is empty
+    mail.send_template_empty_body      Rendered body is empty
+    mail.send_template_render_error    Template rendering failed
+    mail.send_template_header_conflict Cannot override core headers
+
+COMMON WORKFLOWS:
+
+  Application notifications:
+    # Send alert email
+    mail://send to="admin@example.com" subject="[ALERT] Server Down" text_body="Production server is not responding" from="alerts@example.com"
+
+    # Using template
+    mail://send_template template="alert" to="admin@example.com" vars='{"severity":"high","service":"web-server","message":"Not responding"}'
+
+  User registration:
+    # Welcome email
+    mail://send_template template="welcome" to="newuser@example.com" vars='{"user_name":"Alice","activation_link":"https://example.com/activate?token=xyz"}'
+
+  Password reset:
+    # Reset email
+    mail://send_template template="password-reset" to="user@example.com" vars='{"reset_link":"https://example.com/reset?token=abc","expiry_minutes":"30"}'
+
+  Daily reports:
+    # Automated report with attachment
+    mail://send to="manager@example.com" subject="Daily Sales Report" text_body="Please find attached today's sales report" attachments='["/reports/daily-sales-2025-02-07.pdf"]' from="reports@example.com"
+
+  Testing SMTP before deployment:
+    # Test connection
+    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" smtp_username="user" smtp_password="pass" connection_only=true
+
+    # Send test email
+    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" smtp_username="user" smtp_password="pass" send_test_email=true to="test@example.com" from="test@example.com"
+
+  Multi-environment setup:
+    # Create profiles
+    mail://config action="set" profile="production" smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" from="noreply@example.com"
+    mail://config action="set" profile="staging" smtp_host="smtp-staging.example.com" smtp_port=587 use_tls="starttls" from="staging@example.com"
+    mail://config action="set" profile="dev" smtp_host="localhost" smtp_port=2525 use_tls="none" from="dev@localhost"
+
+    # Switch environments
+    mail://config action="activate" profile="production"
+    mail://send to="customer@example.com" subject="Order Confirmation" text_body="Your order has been confirmed"
+
+  Bulk email (with rate limiting):
+    # Send to multiple users with delay
+    for email in user1@example.com user2@example.com user3@example.com; do
+      mail://send to="$email" subject="Newsletter" text_body="Monthly update"
+      sleep 1  # Rate limit: 1 email per second
+    done
+
+  Email with template testing:
+    # Test template rendering
+    mail://send_template template="invoice" to="test@example.com" vars='{"invoice_id":"12345","amount":"99.99"}' dry_run=true
+
+    # Review output, then send for real
+    mail://send_template template="invoice" to="customer@example.com" vars='{"invoice_id":"12345","amount":"99.99"}'
+
+  Marketing campaign:
+    # Send with custom headers for tracking
+    mail://send_template template="campaign-2025-02" to="subscriber@example.com" vars='{"name":"Alice"}' headers='{"X-Campaign-ID":"2025-02-promo","X-Unsubscribe":"https://example.com/unsubscribe?token=xyz"}'
+
+BEST PRACTICES:
+  • Always use TLS (starttls or tls) in production
+  • Never hardcode passwords in scripts (use environment variables)
+  • Use profiles for managing different environments
+  • Test SMTP configuration with 'test' verb before sending
+  • Use templates for repeated email patterns
+  • Use dry_run to test templates before sending
+  • Set appropriate timeouts for your network conditions
+  • Implement retry logic for important emails
+  • Use meaningful subjects and clear text bodies
+  • Always provide both text_body and html_body when possible
+  • Validate email addresses before sending
+  • Use reply_to for emails that need responses
+  • Monitor SMTP server rate limits
+  • Log email sending for auditing
+  • Use BCC for privacy when emailing multiple recipients
+  • Avoid sending sensitive data in email headers
+  • Compress large attachments before sending
+  • Check attachment file sizes against SMTP limits
+  • Use proper authentication (app passwords for Gmail)
+  • Don't use tls_accept_invalid_certs in production
+  • Keep templates version-controlled
+  • Use locale for internationalization
+  • Implement unsubscribe links for marketing emails
+  • Monitor bounced emails
+  • Use custom headers for tracking and debugging
+  • Set X-Priority for urgent emails
+  • Use consistent from addresses for better deliverability
+  • Implement proper error handling in scripts
+  • Test templates with various data inputs
+  • Use format_output="json" for programmatic parsing
+  • Store SMTP credentials securely
+  • Rotate SMTP passwords regularly
+  • Use separate SMTP accounts for different purposes
+  • Monitor email delivery rates
+  • Implement exponential backoff for retries
+
+SECURITY CONSIDERATIONS:
+  • Never log or expose SMTP passwords
+  • Use TLS/STARTTLS for encryption in transit
+  • Use app-specific passwords instead of account passwords
+  • Validate and sanitize email addresses
+  • Be cautious with user-provided email content
+  • Implement rate limiting to prevent abuse
+  • Use SPF, DKIM, and DMARC for email authentication
+  • Monitor for unauthorized email sending
+  • Use separate SMTP credentials for different applications
+  • Implement proper access controls for profile management
+  • Don't send sensitive data in email unless encrypted
+  • Use secure storage for profile passwords
+  • Audit email sending logs regularly
+  • Implement email content filtering for user input
+  • Use allowlists for recipient domains when appropriate
+  • Be careful with attachments from untrusted sources
+  • Validate file paths before attaching
+  • Set appropriate file size limits
+  • Use virus scanning for attachments when possible
+  • Implement CAPTCHA for user-facing email forms
+
+SMTP PROVIDER NOTES:
+
+  Gmail:
+    • Requires app-specific password (not account password)
+    • Enable "Less secure app access" or use OAuth2
+    • Rate limit: ~100-500 emails/day for free accounts
+    • smtp_host="smtp.gmail.com"
+    • smtp_port=587
+    • use_tls="starttls"
+
+  Office 365:
+    • Use account credentials
+    • May require modern auth
+    • Rate limit: varies by subscription
+    • smtp_host="smtp.office365.com"
+    • smtp_port=587
+    • use_tls="starttls"
+
+  SendGrid:
+    • Use API key as password
+    • Username is literally "apikey"
+    • High rate limits with paid plans
+    • smtp_host="smtp.sendgrid.net"
+    • smtp_port=587
+    • use_tls="starttls"
+
+  Mailgun:
+    • Use SMTP credentials from dashboard
+    • Sandbox domain for testing
+    • smtp_host="smtp.mailgun.org"
+    • smtp_port=587
+    • use_tls="starttls"
+
+  Amazon SES:
+    • Use SMTP credentials (not AWS keys)
+    • Verify sender addresses or domains
+    • smtp_host="email-smtp.{region}.amazonaws.com"
+    • smtp_port=587
+    • use_tls="starttls"
+
+TEMPLATE BEST PRACTICES:
+  • Use clear, descriptive template names
+  • Version templates for compatibility
+  • Provide both text and HTML versions
+  • Document required variables
+  • Use default values for optional variables
+  • Test templates with various inputs
+  • Use dry_run for template validation
+  • Implement proper variable escaping
+  • Use locale for multi-language support
+  • Keep templates simple and maintainable
+  • Version control template files
+  • Use consistent variable naming
+  • Provide example variable values
+  • Validate variable types in templates
+  • Use strict_vars during development
+
+DEBUGGING:
+  Test connection first:
+    mail://test smtp_host="..." smtp_port=... connection_only=true
+
+  Check authentication:
+    mail://test smtp_host="..." smtp_port=... smtp_username="..." smtp_password="..."
+
+  Send test email:
+    mail://test ... send_test_email=true to="test@example.com" from="test@example.com"
+
+  Use text output for readability:
+    mail://send ... format_output="text"
+
+  Test templates with dry_run:
+    mail://send_template template="..." dry_run=true
+
+  Check active profile:
+    mail://config action="get_active"
+
+  List all profiles:
+    mail://config action="list"
+
+  Common issues:
+    • Wrong port (587 for STARTTLS, 465 for TLS, 25 for none)
+    • Wrong TLS mode (match port with TLS mode)
+    • Invalid credentials (use app passwords for Gmail)
+    • Firewall blocking (ensure outbound SMTP allowed)
+    • Invalid email addresses (check formatting)
+    • Missing profile (activate or provide SMTP args)
+    • Template not found (check template path)
+    • Certificate errors (use tls_accept_invalid_certs for testing only)
+
+PERFORMANCE CONSIDERATIONS:
+  • Sending emails is I/O bound (network dependent)
+  • Use connection pooling for bulk sends (not directly supported)
+  • Implement rate limiting for bulk operations
+  • Use async/parallel sending in scripts when appropriate
+  • Set reasonable timeouts (default 10 seconds)
+  • Monitor SMTP server performance
+  • Use local SMTP relay for high-volume sending
+  • Cache profile configurations
+  • Minimize attachment sizes
+  • Use compression for large attachments
+  • Batch emails when possible with provider-specific tools
+
+LIMITATIONS:
+  • No built-in HTML template engine (use external tools)
+  • No automatic retry with exponential backoff
+  • No connection pooling
+  • No read receipt support
+  • No delivery status notifications (DSN)
+  • No email queuing (send immediately)
+  • No S/MIME or PGP encryption
+  • No OAuth2 support (use app passwords)
+  • No attachment size validation (relies on SMTP server)
+  • Template system is basic (external templating recommended for complex needs)
+  • No built-in unsubscribe management
+  • No bounce handling
+  • No email validation beyond basic format
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With event handle:
+    # Trigger email on event
+    event://subscribe(topic="alerts.*")
+    mail://send to="admin@example.com" subject="Alert" text_body="Event received"
+
+  With log handle:
+    # Email log excerpts
+    mail://send to="admin@example.com" subject="Error Log" text_body="$(log://./app.log.tail(lines=50))"
+
+  With config handle:
+    # Store email preferences
+    config://app/email_from.set(value="noreply@example.com")
+    config://app/email_admin.get
+
+  With file handle:
+    # Email file contents
+    mail://send to="user@example.com" subject="Report" text_body="$(file:///path/to/report.txt.read)"
+
+  With backup handle:
+    # Email backup completion
+    backup://mybackup.create
+    mail://send to="admin@example.com" subject="Backup Complete" text_body="Daily backup completed successfully"
+
+MORE INFO:
+  For complete documentation of mail handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Network_RemoteOperations/mail.md
+
+  SMTP specifications:
+  https://www.rfc-editor.org/rfc/rfc5321 (SMTP Protocol)
+  https://www.rfc-editor.org/rfc/rfc3207 (STARTTLS)
+  https://www.rfc-editor.org/rfc/rfc4954 (SMTP Auth)
+
+  Email message format:
+  https://www.rfc-editor.org/rfc/rfc5322 (Internet Message Format)
+
+  Email best practices:
+  https://www.rfc-editor.org/rfc/rfc6376 (DKIM)
+  https://www.rfc-editor.org/rfc/rfc7208 (SPF)
+  https://www.rfc-editor.org/rfc/rfc7489 (DMARC)
+
+  Use 'mail:// --help=VERB' for detailed help on a specific verb.
+"#;
+
 #[derive(Clone, Debug)]
 pub enum TlsMode {
     None,
@@ -98,7 +957,7 @@ impl TlsMode {
     pub fn as_str(&self) -> &'static str {
         match self {
             TlsMode::None => "none",
-            TlsMode::StartTls => "starttls", 
+            TlsMode::StartTls => "starttls",
             TlsMode::Tls => "tls",
         }
     }
@@ -162,7 +1021,7 @@ pub struct SmtpProfile {
     pub smtp_port: u16,
     pub smtp_username: Option<String>,
     pub smtp_password_encrypted: Option<String>, // base64 encoded for simple obfuscation
-    pub use_tls: String,                        // "none" | "starttls" | "tls"
+    pub use_tls: String,                         // "none" | "starttls" | "tls"
     pub tls_accept_invalid_certs: bool,
     pub from: Option<String>,
     pub reply_to: Option<String>,
@@ -240,19 +1099,28 @@ pub struct MailConfigOptions {
 
 impl MailConfigOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let action_str = args
-            .get("action")
-            .ok_or_else(|| anyhow::anyhow!("[{}] 'action' parameter is required", MAIL_CONFIG_INVALID_ACTION))?;
+        let action_str = args.get("action").ok_or_else(|| {
+            anyhow::anyhow!(
+                "[{}] 'action' parameter is required",
+                MAIL_CONFIG_INVALID_ACTION
+            )
+        })?;
         let action = MailConfigAction::from_str(action_str)
             .with_context(|| format!("[{}] Invalid action", MAIL_CONFIG_INVALID_ACTION))?;
 
         // Validate profile requirement
         let profile = args.get("profile").cloned();
         match action {
-            MailConfigAction::Get | MailConfigAction::Set | MailConfigAction::Delete | MailConfigAction::Activate => {
+            MailConfigAction::Get
+            | MailConfigAction::Set
+            | MailConfigAction::Delete
+            | MailConfigAction::Activate => {
                 if profile.is_none() {
-                    bail!("[{}] 'profile' parameter is required for action '{}'", 
-                          MAIL_CONFIG_PROFILE_REQUIRED, action.as_str());
+                    bail!(
+                        "[{}] 'profile' parameter is required for action '{}'",
+                        MAIL_CONFIG_PROFILE_REQUIRED,
+                        action.as_str()
+                    );
                 }
             }
             _ => {}
@@ -266,22 +1134,28 @@ impl MailConfigOptions {
         };
 
         let smtp_port = if let Some(port_str) = args.get("smtp_port") {
-            Some(port_str.parse::<u16>()
-                .with_context(|| format!("[{}] Invalid SMTP port", MAIL_CONFIG_INVALID_SMTP_PORT))?)
+            Some(port_str.parse::<u16>().with_context(|| {
+                format!("[{}] Invalid SMTP port", MAIL_CONFIG_INVALID_SMTP_PORT)
+            })?)
         } else {
             None
         };
 
         let tls_accept_invalid_certs = if let Some(val_str) = args.get("tls_accept_invalid_certs") {
-            Some(val_str.parse::<bool>()
-                .with_context(|| format!("[{}] Invalid tls_accept_invalid_certs flag", MAIL_CONFIG_INVALID_FLAG))?)
+            Some(val_str.parse::<bool>().with_context(|| {
+                format!(
+                    "[{}] Invalid tls_accept_invalid_certs flag",
+                    MAIL_CONFIG_INVALID_FLAG
+                )
+            })?)
         } else {
             None
         };
 
         let is_default = if let Some(val_str) = args.get("is_default") {
-            Some(val_str.parse::<bool>()
-                .with_context(|| format!("[{}] Invalid is_default flag", MAIL_CONFIG_INVALID_FLAG))?)
+            Some(val_str.parse::<bool>().with_context(|| {
+                format!("[{}] Invalid is_default flag", MAIL_CONFIG_INVALID_FLAG)
+            })?)
         } else {
             None
         };
@@ -327,11 +1201,11 @@ impl MailConfigResponse {
         let mut query_obj = json!({
             "action": opts.action.as_str()
         });
-        
+
         if let Some(ref profile) = opts.profile {
             query_obj["profile"] = json!(profile);
         }
-        
+
         // Add set-specific query fields
         if matches!(opts.action, MailConfigAction::Set) {
             if let Some(ref host) = opts.smtp_host {
@@ -369,20 +1243,23 @@ impl MailConfigResponse {
         });
 
         if let Some(ref profiles) = self.profiles {
-            let profile_values: Vec<Value> = profiles.iter().map(|p| {
-                json!({
-                    "name": p.name,
-                    "smtp_host": p.smtp_host,
-                    "smtp_port": p.smtp_port,
-                    "use_tls": p.use_tls,
-                    "tls_accept_invalid_certs": p.tls_accept_invalid_certs,
-                    "from": p.from,
-                    "reply_to": p.reply_to,
-                    "description": p.description,
-                    "is_active": p.is_active,
-                    "has_password": p.has_password
+            let profile_values: Vec<Value> = profiles
+                .iter()
+                .map(|p| {
+                    json!({
+                        "name": p.name,
+                        "smtp_host": p.smtp_host,
+                        "smtp_port": p.smtp_port,
+                        "use_tls": p.use_tls,
+                        "tls_accept_invalid_certs": p.tls_accept_invalid_certs,
+                        "from": p.from,
+                        "reply_to": p.reply_to,
+                        "description": p.description,
+                        "is_active": p.is_active,
+                        "has_password": p.has_password
+                    })
                 })
-            }).collect();
+                .collect();
             json_obj["profiles"] = json!(profile_values);
         }
 
@@ -456,14 +1333,27 @@ impl MailConfigResponse {
                 output.push_str("Profiles:\n");
                 for profile in profiles {
                     output.push_str(&format!("  - {}\n", profile.name));
-                    output.push_str(&format!("      Host   : {}:{}\n", profile.smtp_host, profile.smtp_port));
+                    output.push_str(&format!(
+                        "      Host   : {}:{}\n",
+                        profile.smtp_host, profile.smtp_port
+                    ));
                     output.push_str(&format!("      TLS    : {}\n", profile.use_tls));
-                    output.push_str(&format!("      From   : {}\n", 
-                        profile.from.as_deref().unwrap_or("(none)")));
-                    output.push_str(&format!("      Active : {}\n", 
-                        if profile.is_active { "yes" } else { "no" }));
-                    output.push_str(&format!("      Secret : {}\n", 
-                        if profile.has_password { "set" } else { "not set" }));
+                    output.push_str(&format!(
+                        "      From   : {}\n",
+                        profile.from.as_deref().unwrap_or("(none)")
+                    ));
+                    output.push_str(&format!(
+                        "      Active : {}\n",
+                        if profile.is_active { "yes" } else { "no" }
+                    ));
+                    output.push_str(&format!(
+                        "      Secret : {}\n",
+                        if profile.has_password {
+                            "set"
+                        } else {
+                            "not set"
+                        }
+                    ));
                     if let Some(ref desc) = profile.description {
                         output.push_str(&format!("      Desc   : {}\n", desc));
                     }
@@ -479,21 +1369,36 @@ impl MailConfigResponse {
             let mut output = format!("Mail Config — Profile '{}'\n", profile.name);
             output.push_str(&"=".repeat(28 + profile.name.len()));
             output.push_str("\n\n");
-            
-            output.push_str(&format!("Host    : {}:{}\n", profile.smtp_host, profile.smtp_port));
+
+            output.push_str(&format!(
+                "Host    : {}:{}\n",
+                profile.smtp_host, profile.smtp_port
+            ));
             output.push_str(&format!("TLS     : {}\n", profile.use_tls));
-            output.push_str(&format!("From    : {}\n", 
-                profile.from.as_deref().unwrap_or("(none)")));
-            output.push_str(&format!("Reply-To: {}\n", 
-                profile.reply_to.as_deref().unwrap_or("(none)")));
-            output.push_str(&format!("Active  : {}\n", 
-                if profile.is_active { "yes" } else { "no" }));
-            output.push_str(&format!("Secret  : {}\n", 
-                if profile.has_password { "set" } else { "not set" }));
+            output.push_str(&format!(
+                "From    : {}\n",
+                profile.from.as_deref().unwrap_or("(none)")
+            ));
+            output.push_str(&format!(
+                "Reply-To: {}\n",
+                profile.reply_to.as_deref().unwrap_or("(none)")
+            ));
+            output.push_str(&format!(
+                "Active  : {}\n",
+                if profile.is_active { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "Secret  : {}\n",
+                if profile.has_password {
+                    "set"
+                } else {
+                    "not set"
+                }
+            ));
             if let Some(ref desc) = profile.description {
                 output.push_str(&format!("Desc    : {}\n", desc));
             }
-            
+
             output
         } else {
             "Mail Config\n===========\n\nNo profile found.\n".to_string()
@@ -507,8 +1412,8 @@ impl MailConfigResponse {
                 profile.name,
                 match self.query["action"].as_str().unwrap_or("") {
                     "set" => "configured",
-                    "activate" => "activated", 
-                    _ => "updated"
+                    "activate" => "activated",
+                    _ => "updated",
                 }
             )
         } else {
@@ -530,88 +1435,123 @@ impl MailConfigResponse {
 
 // Config store functions
 fn get_config_file_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config"));
-    
+    let config_dir = dirs::config_dir().unwrap_or_else(|| {
+        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config")
+    });
+
     let mail_config_dir = config_dir.join("resh").join("mail");
-    fs::create_dir_all(&mail_config_dir)
-        .with_context(|| format!("[{}] Failed to create mail config directory: {:?}", 
-                                MAIL_CONFIG_STORE_WRITE_ERROR, mail_config_dir))?;
-    
+    fs::create_dir_all(&mail_config_dir).with_context(|| {
+        format!(
+            "[{}] Failed to create mail config directory: {:?}",
+            MAIL_CONFIG_STORE_WRITE_ERROR, mail_config_dir
+        )
+    })?;
+
     Ok(mail_config_dir.join("smtp_profiles.json"))
 }
 
 fn load_profiles() -> Result<Vec<SmtpProfile>> {
     let config_path = get_config_file_path()?;
-    
+
     if !config_path.exists() {
         return Ok(Vec::new());
     }
-    
-    let content = fs::read_to_string(&config_path)
-        .with_context(|| format!("[{}] Failed to read config file: {:?}", 
-                                MAIL_CONFIG_STORE_READ_ERROR, config_path))?;
-    
+
+    let content = fs::read_to_string(&config_path).with_context(|| {
+        format!(
+            "[{}] Failed to read config file: {:?}",
+            MAIL_CONFIG_STORE_READ_ERROR, config_path
+        )
+    })?;
+
     if content.trim().is_empty() {
         return Ok(Vec::new());
     }
-    
-    let profiles: Vec<SmtpProfile> = serde_json::from_str(&content)
-        .with_context(|| format!("[{}] Failed to parse config file: {:?}", 
-                                MAIL_CONFIG_STORE_PARSE_ERROR, config_path))?;
-    
+
+    let profiles: Vec<SmtpProfile> = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "[{}] Failed to parse config file: {:?}",
+            MAIL_CONFIG_STORE_PARSE_ERROR, config_path
+        )
+    })?;
+
     Ok(profiles)
 }
 
 fn save_profiles(profiles: &[SmtpProfile]) -> Result<()> {
     let config_path = get_config_file_path()?;
-    
+
     // Atomic write: write to temp file then rename
     let temp_path = config_path.with_extension("json.tmp");
-    
-    let content = serde_json::to_string_pretty(profiles)
-        .with_context(|| format!("[{}] Failed to serialize profiles", MAIL_CONFIG_STORE_WRITE_ERROR))?;
-    
-    fs::write(&temp_path, content)
-        .with_context(|| format!("[{}] Failed to write temp config file: {:?}", 
-                                MAIL_CONFIG_STORE_WRITE_ERROR, temp_path))?;
-    
-    fs::rename(&temp_path, &config_path)
-        .with_context(|| format!("[{}] Failed to rename temp config file: {:?}", 
-                                MAIL_CONFIG_STORE_WRITE_ERROR, config_path))?;
-    
+
+    let content = serde_json::to_string_pretty(profiles).with_context(|| {
+        format!(
+            "[{}] Failed to serialize profiles",
+            MAIL_CONFIG_STORE_WRITE_ERROR
+        )
+    })?;
+
+    fs::write(&temp_path, content).with_context(|| {
+        format!(
+            "[{}] Failed to write temp config file: {:?}",
+            MAIL_CONFIG_STORE_WRITE_ERROR, temp_path
+        )
+    })?;
+
+    fs::rename(&temp_path, &config_path).with_context(|| {
+        format!(
+            "[{}] Failed to rename temp config file: {:?}",
+            MAIL_CONFIG_STORE_WRITE_ERROR, config_path
+        )
+    })?;
+
     Ok(())
 }
 
 fn validate_profile_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        bail!("[{}] Profile name cannot be empty", MAIL_CONFIG_INVALID_PROFILE_NAME);
+        bail!(
+            "[{}] Profile name cannot be empty",
+            MAIL_CONFIG_INVALID_PROFILE_NAME
+        );
     }
-    
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
+
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
         bail!("[{}] Profile name '{}' contains invalid characters. Only alphanumeric, '_', '-', and '.' are allowed", 
               MAIL_CONFIG_INVALID_PROFILE_NAME, name);
     }
-    
+
     Ok(())
 }
 
 fn validate_smtp_config(profile: &SmtpProfile) -> Result<()> {
     if profile.smtp_host.trim().is_empty() {
-        bail!("[{}] SMTP host cannot be empty", MAIL_CONFIG_INVALID_SMTP_HOST);
+        bail!(
+            "[{}] SMTP host cannot be empty",
+            MAIL_CONFIG_INVALID_SMTP_HOST
+        );
     }
-    
+
     if profile.smtp_port == 0 {
-        bail!("[{}] SMTP port must be greater than 0", MAIL_CONFIG_INVALID_SMTP_PORT);
+        bail!(
+            "[{}] SMTP port must be greater than 0",
+            MAIL_CONFIG_INVALID_SMTP_PORT
+        );
     }
-    
+
     // Validate TLS mode
     match profile.use_tls.as_str() {
         "none" | "starttls" | "tls" => {}
-        _ => bail!("[{}] Invalid TLS mode '{}'. Supported: none, starttls, tls", 
-                  MAIL_CONFIG_INVALID_TLS_MODE, profile.use_tls),
+        _ => bail!(
+            "[{}] Invalid TLS mode '{}'. Supported: none, starttls, tls",
+            MAIL_CONFIG_INVALID_TLS_MODE,
+            profile.use_tls
+        ),
     }
-    
+
     Ok(())
 }
 
@@ -632,10 +1572,7 @@ pub struct MailAddress {
 
 impl MailAddress {
     pub fn new(email: String) -> Self {
-        Self {
-            email,
-            name: None,
-        }
+        Self { email, name: None }
     }
 
     pub fn with_name(email: String, name: String) -> Self {
@@ -651,9 +1588,11 @@ impl MailAddress {
     }
 
     pub fn to_mailbox(&self) -> Result<Mailbox> {
-        let email_addr = self.email.parse()
+        let email_addr = self
+            .email
+            .parse()
             .with_context(|| format!("Invalid email address: {}", self.email))?;
-        
+
         if let Some(ref name) = self.name {
             Ok(Mailbox::new(Some(name.clone()), email_addr))
         } else {
@@ -834,7 +1773,7 @@ impl MailSendResponse {
             })),
             "warnings": self.warnings
         });
-        
+
         serde_json::to_string_pretty(&json_obj).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -868,7 +1807,7 @@ impl MailSendResponse {
             output.push_str(&format!("SMTP Host : {}\n", result.smtp_host));
             output.push_str(&format!("SMTP Port : {}\n", result.smtp_port));
             output.push_str(&format!("Attempts  : {}\n", result.attempts));
-            
+
             if self.ok {
                 output.push_str("Status    : sent\n\n");
                 if let Some(ref msg_id) = result.message_id {
@@ -1045,7 +1984,7 @@ impl MailSendTemplateResponse {
             })),
             "warnings": self.warnings
         });
-        
+
         serde_json::to_string_pretty(&json_obj).unwrap_or_else(|_| "{}".to_string())
     }
 
@@ -1069,7 +2008,10 @@ impl MailSendTemplateResponse {
         }
 
         if let Some(dry_run) = self.query.get("dry_run").and_then(|v| v.as_bool()) {
-            output.push_str(&format!("Dry Run  : {}\n", if dry_run { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "Dry Run  : {}\n",
+                if dry_run { "yes" } else { "no" }
+            ));
         }
 
         if let Some(send_result) = &self.send_result {
@@ -1078,7 +2020,7 @@ impl MailSendTemplateResponse {
                 output.push_str(&format!("SMTP Host : {}\n", result.smtp_host));
                 output.push_str(&format!("SMTP Port : {}\n", result.smtp_port));
                 output.push_str(&format!("Attempts  : {}\n", result.attempts));
-                
+
                 if self.ok {
                     output.push_str("Status    : sent\n\n");
                     if let Some(ref msg_id) = result.message_id {
@@ -1088,10 +2030,19 @@ impl MailSendTemplateResponse {
                     output.push_str("Status  : failed\n\n");
                 }
             }
-        } else if self.ok && self.query.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false) {
+        } else if self.ok
+            && self
+                .query
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
             output.push_str("\nStatus: preview only (dry run)\n");
         } else {
-            output.push_str(&format!("\nStatus: {}\n", if self.ok { "success" } else { "failed" }));
+            output.push_str(&format!(
+                "\nStatus: {}\n",
+                if self.ok { "success" } else { "failed" }
+            ));
         }
 
         if let Some((code, message)) = &self.error {
@@ -1253,37 +2204,65 @@ impl MailTestResponse {
             })),
             "warnings": self.warnings
         });
-        
+
         serde_json::to_string_pretty(&json_obj).unwrap_or_else(|_| "{}".to_string())
     }
 
     pub fn to_text(&self) -> String {
         let mut output = String::from("Mail Test\n=========\n\n");
-        
+
         if let Some(connection) = &self.connection {
             output.push_str(&format!("SMTP Host : {}\n", connection.smtp_host));
             output.push_str(&format!("SMTP Port : {}\n", connection.smtp_port));
             output.push_str(&format!("TLS Mode  : {}\n\n", connection.use_tls));
-            
-            output.push_str(&format!("Connection : {}\n", if connection.tls_established || connection.use_tls == "none" { "ok" } else { "failed" }));
-            
+
+            output.push_str(&format!(
+                "Connection : {}\n",
+                if connection.tls_established || connection.use_tls == "none" {
+                    "ok"
+                } else {
+                    "failed"
+                }
+            ));
+
             match connection.use_tls.as_str() {
                 "none" => output.push_str("TLS        : disabled\n"),
-                _ => output.push_str(&format!("TLS        : {}\n", if connection.tls_established { "ok" } else { "failed" })),
+                _ => output.push_str(&format!(
+                    "TLS        : {}\n",
+                    if connection.tls_established {
+                        "ok"
+                    } else {
+                        "failed"
+                    }
+                )),
             }
-            
+
             if connection.auth_attempted {
-                output.push_str(&format!("Auth       : {}\n", if connection.auth_succeeded { "ok" } else { "failed" }));
+                output.push_str(&format!(
+                    "Auth       : {}\n",
+                    if connection.auth_succeeded {
+                        "ok"
+                    } else {
+                        "failed"
+                    }
+                ));
             }
-            
-            output.push_str(&format!("Retries    : {}\n", if connection.attempts > 1 { connection.attempts - 1 } else { 0 }));
+
+            output.push_str(&format!(
+                "Retries    : {}\n",
+                if connection.attempts > 1 {
+                    connection.attempts - 1
+                } else {
+                    0
+                }
+            ));
             output.push_str(&format!("Attempts   : {}\n", connection.attempts));
-            
+
             if let Some(ref last_resp) = connection.last_response {
                 output.push_str(&format!("\nLast Response: {}\n", last_resp));
             }
         }
-        
+
         if let Some(send_email) = &self.send_test_email {
             output.push_str("\nTest Email : ");
             if send_email.attempted {
@@ -1303,20 +2282,28 @@ impl MailTestResponse {
         } else {
             output.push_str("\nTest Email : not requested\n");
         }
-        
-        output.push_str(&format!("\nStatus : {}\n", if self.ok { "success" } else { "failed" }));
-        
+
+        output.push_str(&format!(
+            "\nStatus : {}\n",
+            if self.ok { "success" } else { "failed" }
+        ));
+
         if let Some((code, message)) = &self.error {
             output.push_str(&format!("\nError:\n  [{}] {}\n", code, message));
         }
-        
+
         output
     }
 }
 
 // Template store trait for abstraction
 trait MailTemplateStore {
-    fn get_template(&self, name: &str, locale: Option<&str>, version: Option<&str>) -> Result<MailTemplate>;
+    fn get_template(
+        &self,
+        name: &str,
+        locale: Option<&str>,
+        version: Option<&str>,
+    ) -> Result<MailTemplate>;
 }
 
 // In-memory template store for this implementation
@@ -1327,20 +2314,28 @@ struct InMemoryTemplateStore {
 impl InMemoryTemplateStore {
     fn new() -> Self {
         let mut templates = HashMap::new();
-        
+
         // Add some default templates for testing
-        templates.insert("welcome".to_string(), MailTemplate {
-            name: "welcome".to_string(),
-            locale: Some("en".to_string()),
-            version: Some("v1".to_string()),
-            subject_template: "Welcome to {{app_name}}, {{user_name}}!".to_string(),
-            text_body_template: Some("Hi {{user_name}},\n\nWelcome to {{app_name}}.\n".to_string()),
-            html_body_template: Some("<p>Hi <strong>{{user_name}}</strong>,</p><p>Welcome to {{app_name}}.</p>".to_string()),
-            default_from: Some("noreply@myapp.io".to_string()),
-            default_reply_to: None,
-            default_headers: HashMap::new(),
-            default_attachments: Vec::new(),
-        });
+        templates.insert(
+            "welcome".to_string(),
+            MailTemplate {
+                name: "welcome".to_string(),
+                locale: Some("en".to_string()),
+                version: Some("v1".to_string()),
+                subject_template: "Welcome to {{app_name}}, {{user_name}}!".to_string(),
+                text_body_template: Some(
+                    "Hi {{user_name}},\n\nWelcome to {{app_name}}.\n".to_string(),
+                ),
+                html_body_template: Some(
+                    "<p>Hi <strong>{{user_name}}</strong>,</p><p>Welcome to {{app_name}}.</p>"
+                        .to_string(),
+                ),
+                default_from: Some("noreply@myapp.io".to_string()),
+                default_reply_to: None,
+                default_headers: HashMap::new(),
+                default_attachments: Vec::new(),
+            },
+        );
 
         templates.insert("password_reset".to_string(), MailTemplate {
             name: "password_reset".to_string(),
@@ -1355,18 +2350,26 @@ impl InMemoryTemplateStore {
             default_attachments: Vec::new(),
         });
 
-        templates.insert("welcome:fr".to_string(), MailTemplate {
-            name: "welcome".to_string(),
-            locale: Some("fr".to_string()),
-            version: Some("v1".to_string()),
-            subject_template: "Bienvenue à {{app_name}}, {{user_name}}!".to_string(),
-            text_body_template: Some("Salut {{user_name}},\n\nBienvenue à {{app_name}}.\n".to_string()),
-            html_body_template: Some("<p>Salut <strong>{{user_name}}</strong>,</p><p>Bienvenue à {{app_name}}.</p>".to_string()),
-            default_from: Some("noreply@myapp.io".to_string()),
-            default_reply_to: None,
-            default_headers: HashMap::new(),
-            default_attachments: Vec::new(),
-        });
+        templates.insert(
+            "welcome:fr".to_string(),
+            MailTemplate {
+                name: "welcome".to_string(),
+                locale: Some("fr".to_string()),
+                version: Some("v1".to_string()),
+                subject_template: "Bienvenue à {{app_name}}, {{user_name}}!".to_string(),
+                text_body_template: Some(
+                    "Salut {{user_name}},\n\nBienvenue à {{app_name}}.\n".to_string(),
+                ),
+                html_body_template: Some(
+                    "<p>Salut <strong>{{user_name}}</strong>,</p><p>Bienvenue à {{app_name}}.</p>"
+                        .to_string(),
+                ),
+                default_from: Some("noreply@myapp.io".to_string()),
+                default_reply_to: None,
+                default_headers: HashMap::new(),
+                default_attachments: Vec::new(),
+            },
+        );
 
         Self { templates }
     }
@@ -1381,7 +2384,12 @@ impl InMemoryTemplateStore {
 }
 
 impl MailTemplateStore for InMemoryTemplateStore {
-    fn get_template(&self, name: &str, locale: Option<&str>, _version: Option<&str>) -> Result<MailTemplate> {
+    fn get_template(
+        &self,
+        name: &str,
+        locale: Option<&str>,
+        _version: Option<&str>,
+    ) -> Result<MailTemplate> {
         // Try with locale first, then fallback to default
         if let Some(locale) = locale {
             let key = Self::template_key(name, Some(locale));
@@ -1392,7 +2400,8 @@ impl MailTemplateStore for InMemoryTemplateStore {
 
         // Fallback to default (no locale)
         let key = Self::template_key(name, None);
-        self.templates.get(&key)
+        self.templates
+            .get(&key)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Template '{}' not found", name))
     }
@@ -1402,13 +2411,13 @@ impl MailTemplateStore for InMemoryTemplateStore {
 fn render_template(template: &str, vars: &Value, strict: bool) -> Result<String> {
     let mut result = template.to_string();
     let re = regex::Regex::new(r"\{\{([^}]+)\}\}").unwrap();
-    
+
     let mut missing_vars = Vec::new();
-    
+
     for caps in re.captures_iter(template) {
         let full_match = caps.get(0).unwrap().as_str();
         let var_name = caps.get(1).unwrap().as_str().trim();
-        
+
         let replacement = if let Some(value) = get_nested_value(vars, var_name) {
             value_to_string(&value)
         } else {
@@ -1419,14 +2428,14 @@ fn render_template(template: &str, vars: &Value, strict: bool) -> Result<String>
                 String::new() // Replace with empty string if not strict
             }
         };
-        
+
         result = result.replace(full_match, &replacement);
     }
-    
+
     if !missing_vars.is_empty() {
         bail!("Missing variables: {}", missing_vars.join(", "));
     }
-    
+
     Ok(result)
 }
 
@@ -1435,11 +2444,11 @@ fn get_nested_value(vars: &Value, path: &str) -> Option<Value> {
     if path.contains('.') {
         let parts: Vec<&str> = path.split('.').collect();
         let mut current = vars;
-        
+
         for part in parts {
             current = current.get(part)?;
         }
-        
+
         Some(current.clone())
     } else {
         vars.get(path).cloned()
@@ -1460,7 +2469,7 @@ fn value_to_string(value: &Value) -> String {
 // Email validation function
 fn validate_email_address(email: &str) -> Result<()> {
     use email_address_parser::EmailAddress;
-    
+
     match EmailAddress::parse(email, None) {
         Some(_) => Ok(()),
         None => bail!("Invalid email address: {}", email),
@@ -1474,7 +2483,7 @@ pub fn config(opts: MailConfigOptions) -> Result<MailConfigResponse> {
     match handle_config_action(&opts) {
         Ok(result) => {
             response.ok = true;
-            
+
             match result {
                 ConfigActionResult::List(profiles, active) => {
                     response.profiles = Some(profiles.iter().map(|p| p.to_view()).collect());
@@ -1501,7 +2510,7 @@ pub fn config(opts: MailConfigOptions) -> Result<MailConfigResponse> {
         Err(e) => {
             response.error = Some((
                 extract_error_code(&e).unwrap_or_else(|| MAIL_CONFIG_INTERNAL_ERROR.to_string()),
-                e.to_string()
+                e.to_string(),
             ));
         }
     }
@@ -1536,48 +2545,53 @@ fn handle_list_action() -> Result<ConfigActionResult> {
         .iter()
         .find(|p| p.is_active)
         .map(|p| p.name.clone());
-    
+
     Ok(ConfigActionResult::List(profiles, active_profile))
 }
 
 fn handle_get_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
     let profile_name = opts.profile.as_ref().unwrap(); // Already validated
     validate_profile_name(profile_name)?;
-    
+
     let profiles = load_profiles()?;
     let profile = profiles
         .into_iter()
         .find(|p| p.name == *profile_name)
-        .ok_or_else(|| anyhow::anyhow!("[{}] SMTP profile '{}' does not exist", 
-                                      MAIL_CONFIG_PROFILE_NOT_FOUND, profile_name))?;
-    
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "[{}] SMTP profile '{}' does not exist",
+                MAIL_CONFIG_PROFILE_NOT_FOUND,
+                profile_name
+            )
+        })?;
+
     Ok(ConfigActionResult::Get(profile))
 }
 
 fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
     let profile_name = opts.profile.as_ref().unwrap(); // Already validated
     validate_profile_name(profile_name)?;
-    
+
     let mut profiles = load_profiles()?;
-    
+
     // Find existing profile or create new one
-    let mut existing_profile = profiles
-        .iter()
-        .find(|p| p.name == *profile_name)
-        .cloned();
-    
+    let mut existing_profile = profiles.iter().find(|p| p.name == *profile_name).cloned();
+
     let mut profile = if let Some(ref existing) = existing_profile {
         existing.clone()
     } else {
         // Create new profile - require smtp_host
         if opts.smtp_host.is_none() {
-            bail!("[{}] smtp_host is required for new profiles", MAIL_CONFIG_INVALID_SMTP_HOST);
+            bail!(
+                "[{}] smtp_host is required for new profiles",
+                MAIL_CONFIG_INVALID_SMTP_HOST
+            );
         }
-        
+
         SmtpProfile {
             name: profile_name.clone(),
             smtp_host: String::new(), // Will be set below
-            smtp_port: 0, // Will be set below
+            smtp_port: 0,             // Will be set below
             smtp_username: None,
             smtp_password_encrypted: None,
             use_tls: "starttls".to_string(),
@@ -1588,12 +2602,12 @@ fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
             is_active: false,
         }
     };
-    
+
     // Update fields from options
     if let Some(ref host) = opts.smtp_host {
         profile.smtp_host = host.clone();
     }
-    
+
     if let Some(port) = opts.smtp_port {
         profile.smtp_port = port;
     } else if existing_profile.is_none() || opts.use_tls.is_some() {
@@ -1601,38 +2615,38 @@ fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
         let tls_mode = opts.use_tls.as_deref().unwrap_or(&profile.use_tls);
         profile.smtp_port = get_default_port(tls_mode);
     }
-    
+
     if let Some(ref username) = opts.smtp_username {
         profile.smtp_username = Some(username.clone());
     }
-    
+
     if let Some(ref password) = opts.smtp_password {
         profile.smtp_password_encrypted = Some(SmtpProfile::encrypt_password(password));
     }
-    
+
     if let Some(ref tls) = opts.use_tls {
         profile.use_tls = tls.clone();
     }
-    
+
     if let Some(invalid_certs) = opts.tls_accept_invalid_certs {
         profile.tls_accept_invalid_certs = invalid_certs;
     }
-    
+
     if let Some(ref from) = opts.from {
         profile.from = Some(from.clone());
     }
-    
+
     if let Some(ref reply_to) = opts.reply_to {
         profile.reply_to = Some(reply_to.clone());
     }
-    
+
     if let Some(ref desc) = opts.description {
         profile.description = Some(desc.clone());
     }
-    
+
     // Validate the profile configuration
     validate_smtp_config(&profile)?;
-    
+
     // Handle activation
     if opts.is_default.unwrap_or(false) {
         profile.is_active = true;
@@ -1643,43 +2657,48 @@ fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
             }
         }
     }
-    
+
     // Update or add the profile
     if let Some(index) = profiles.iter().position(|p| p.name == *profile_name) {
         profiles[index] = profile.clone();
     } else {
         profiles.push(profile.clone());
     }
-    
+
     save_profiles(&profiles)?;
-    
+
     Ok(ConfigActionResult::Set(profile))
 }
 
 fn handle_delete_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
     let profile_name = opts.profile.as_ref().unwrap(); // Already validated
     validate_profile_name(profile_name)?;
-    
+
     let mut profiles = load_profiles()?;
-    
+
     let index = profiles
         .iter()
         .position(|p| p.name == *profile_name)
-        .ok_or_else(|| anyhow::anyhow!("[{}] SMTP profile '{}' does not exist", 
-                                      MAIL_CONFIG_PROFILE_NOT_FOUND, profile_name))?;
-    
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "[{}] SMTP profile '{}' does not exist",
+                MAIL_CONFIG_PROFILE_NOT_FOUND,
+                profile_name
+            )
+        })?;
+
     profiles.remove(index);
     save_profiles(&profiles)?;
-    
+
     Ok(ConfigActionResult::Delete(profile_name.clone()))
 }
 
 fn handle_activate_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
     let profile_name = opts.profile.as_ref().unwrap(); // Already validated
     validate_profile_name(profile_name)?;
-    
+
     let mut profiles = load_profiles()?;
-    
+
     let mut target_profile = None;
     for profile in &mut profiles {
         if profile.name == *profile_name {
@@ -1689,27 +2708,37 @@ fn handle_activate_action(opts: &MailConfigOptions) -> Result<ConfigActionResult
             profile.is_active = false;
         }
     }
-    
+
     let profile = target_profile.ok_or_else(|| {
-        anyhow::anyhow!("[{}] SMTP profile '{}' does not exist", 
-                       MAIL_CONFIG_PROFILE_NOT_FOUND, profile_name)
+        anyhow::anyhow!(
+            "[{}] SMTP profile '{}' does not exist",
+            MAIL_CONFIG_PROFILE_NOT_FOUND,
+            profile_name
+        )
     })?;
-    
+
     save_profiles(&profiles)?;
-    
+
     Ok(ConfigActionResult::Activate(profile))
 }
 
 fn handle_get_active_action() -> Result<ConfigActionResult> {
     let profiles = load_profiles()?;
-    
+
     let active_profiles: Vec<_> = profiles.into_iter().filter(|p| p.is_active).collect();
-    
+
     match active_profiles.len() {
-        0 => bail!("[{}] No active SMTP profile configured", MAIL_CONFIG_NO_ACTIVE_PROFILE),
-        1 => Ok(ConfigActionResult::GetActive(active_profiles.into_iter().next().unwrap())),
-        _ => bail!("[{}] Multiple active profiles detected (inconsistent config)", 
-                  MAIL_CONFIG_ACTIVE_PROFILE_INCONSISTENT),
+        0 => bail!(
+            "[{}] No active SMTP profile configured",
+            MAIL_CONFIG_NO_ACTIVE_PROFILE
+        ),
+        1 => Ok(ConfigActionResult::GetActive(
+            active_profiles.into_iter().next().unwrap(),
+        )),
+        _ => bail!(
+            "[{}] Multiple active profiles detected (inconsistent config)",
+            MAIL_CONFIG_ACTIVE_PROFILE_INCONSISTENT
+        ),
     }
 }
 
@@ -1717,7 +2746,7 @@ fn extract_error_code(error: &anyhow::Error) -> Option<String> {
     let error_str = error.to_string();
     if let Some(start) = error_str.find("[") {
         if let Some(end) = error_str[start..].find("]") {
-            let code = &error_str[start+1..start+end];
+            let code = &error_str[start + 1..start + end];
             if code.starts_with("mail.config_") {
                 return Some(code.to_string());
             }
@@ -1736,7 +2765,7 @@ pub fn send(opts: MailSendOptions) -> Result<MailSendResponse> {
             e.downcast_ref::<MailValidationError>()
                 .map(|me| me.code())
                 .unwrap_or_else(|| MAIL_SEND_INTERNAL_ERROR.to_string()),
-            e.to_string()
+            e.to_string(),
         ));
         return Ok(response);
     }
@@ -1747,7 +2776,7 @@ pub fn send(opts: MailSendOptions) -> Result<MailSendResponse> {
             e.downcast_ref::<MailValidationError>()
                 .map(|me| me.code())
                 .unwrap_or_else(|| MAIL_SEND_INTERNAL_ERROR.to_string()),
-            e.to_string()
+            e.to_string(),
         ));
         return Ok(response);
     }
@@ -1792,16 +2821,16 @@ pub fn send(opts: MailSendOptions) -> Result<MailSendResponse> {
             }
             Err(e) => {
                 last_error = Some(e);
-                
+
                 // If this is a permanent error or last attempt, don't retry
                 if is_permanent_error(&last_error.as_ref().unwrap()) || attempts >= max_attempts {
                     break;
                 }
-                
+
                 // Sleep before retry
                 if attempts < max_attempts {
                     std::thread::sleep(std::time::Duration::from_millis(
-                        opts.retry_backoff_ms * attempts as u64
+                        opts.retry_backoff_ms * attempts as u64,
                     ));
                 }
             }
@@ -1836,43 +2865,55 @@ pub fn send(opts: MailSendOptions) -> Result<MailSendResponse> {
 // Core mail template sending functionality
 pub fn send_template(opts: MailSendTemplateOptions) -> Result<MailSendTemplateResponse> {
     let mut response = MailSendTemplateResponse::new(&opts);
-    
+
     // Validate template name is provided
     if opts.template.is_empty() {
-        response.error = Some((MAIL_SEND_TEMPLATE_NOT_FOUND.to_string(), "Template name is required".to_string()));
+        response.error = Some((
+            MAIL_SEND_TEMPLATE_NOT_FOUND.to_string(),
+            "Template name is required".to_string(),
+        ));
         return Ok(response);
     }
-    
+
     // Get template store (in production this might be injected)
     let template_store = InMemoryTemplateStore::new();
-    
+
     // Load template
-    let template = match template_store.get_template(&opts.template, opts.locale.as_deref(), opts.version.as_deref()) {
+    let template = match template_store.get_template(
+        &opts.template,
+        opts.locale.as_deref(),
+        opts.version.as_deref(),
+    ) {
         Ok(template) => template,
         Err(e) => {
             let message = format!(
-                "Mail template '{}' (locale={:?}, version={:?}) was not found.", 
-                opts.template, 
-                opts.locale, 
-                opts.version
+                "Mail template '{}' (locale={:?}, version={:?}) was not found.",
+                opts.template, opts.locale, opts.version
             );
             response.error = Some((MAIL_SEND_TEMPLATE_NOT_FOUND.to_string(), message));
             return Ok(response);
         }
     };
-    
+
     // Validate recipients
     if opts.to.is_empty() {
-        response.error = Some((MAIL_SEND_MISSING_RECIPIENTS.to_string(), "At least one recipient is required".to_string()));
+        response.error = Some((
+            MAIL_SEND_MISSING_RECIPIENTS.to_string(),
+            "At least one recipient is required".to_string(),
+        ));
         return Ok(response);
     }
-    
+
     // Render templates
     let subject = match render_template(&template.subject_template, &opts.vars, opts.strict_vars) {
         Ok(s) => s,
         Err(e) => {
             let message = if opts.strict_vars && e.to_string().contains("Missing variables:") {
-                format!("Template '{}' requires missing variables: {}", opts.template, e.to_string().replace("Missing variables: ", ""))
+                format!(
+                    "Template '{}' requires missing variables: {}",
+                    opts.template,
+                    e.to_string().replace("Missing variables: ", "")
+                )
             } else {
                 format!("Failed to render subject template: {}", e)
             };
@@ -1885,17 +2926,22 @@ pub fn send_template(opts: MailSendTemplateOptions) -> Result<MailSendTemplateRe
             return Ok(response);
         }
     };
-    
+
     let text_body = if let Some(ref text_template) = template.text_body_template {
         match render_template(text_template, &opts.vars, opts.strict_vars) {
             Ok(s) => Some(s),
             Err(e) => {
                 let message = if opts.strict_vars && e.to_string().contains("Missing variables:") {
-                    format!("Template '{}' requires missing variables: {}", opts.template, e.to_string().replace("Missing variables: ", ""))
+                    format!(
+                        "Template '{}' requires missing variables: {}",
+                        opts.template,
+                        e.to_string().replace("Missing variables: ", "")
+                    )
                 } else {
                     format!("Failed to render text body template: {}", e)
                 };
-                let error_code = if opts.strict_vars && e.to_string().contains("Missing variables:") {
+                let error_code = if opts.strict_vars && e.to_string().contains("Missing variables:")
+                {
                     MAIL_SEND_TEMPLATE_MISSING_VAR.to_string()
                 } else {
                     MAIL_SEND_TEMPLATE_RENDER_ERROR.to_string()
@@ -1907,17 +2953,22 @@ pub fn send_template(opts: MailSendTemplateOptions) -> Result<MailSendTemplateRe
     } else {
         None
     };
-    
+
     let html_body = if let Some(ref html_template) = template.html_body_template {
         match render_template(html_template, &opts.vars, opts.strict_vars) {
             Ok(s) => Some(s),
             Err(e) => {
                 let message = if opts.strict_vars && e.to_string().contains("Missing variables:") {
-                    format!("Template '{}' requires missing variables: {}", opts.template, e.to_string().replace("Missing variables: ", ""))
+                    format!(
+                        "Template '{}' requires missing variables: {}",
+                        opts.template,
+                        e.to_string().replace("Missing variables: ", "")
+                    )
                 } else {
                     format!("Failed to render HTML body template: {}", e)
                 };
-                let error_code = if opts.strict_vars && e.to_string().contains("Missing variables:") {
+                let error_code = if opts.strict_vars && e.to_string().contains("Missing variables:")
+                {
                     MAIL_SEND_TEMPLATE_MISSING_VAR.to_string()
                 } else {
                     MAIL_SEND_TEMPLATE_RENDER_ERROR.to_string()
@@ -1929,56 +2980,78 @@ pub fn send_template(opts: MailSendTemplateOptions) -> Result<MailSendTemplateRe
     } else {
         None
     };
-    
+
     // Validate rendered content
     if subject.trim().is_empty() {
-        response.error = Some((MAIL_SEND_TEMPLATE_EMPTY_SUBJECT.to_string(), "Rendered subject is empty".to_string()));
+        response.error = Some((
+            MAIL_SEND_TEMPLATE_EMPTY_SUBJECT.to_string(),
+            "Rendered subject is empty".to_string(),
+        ));
         return Ok(response);
     }
-    
-    if text_body.as_ref().map_or(true, |s| s.trim().is_empty()) && 
-       html_body.as_ref().map_or(true, |s| s.trim().is_empty()) {
-        response.error = Some((MAIL_SEND_TEMPLATE_EMPTY_BODY.to_string(), "Both text and HTML body are empty after rendering".to_string()));
+
+    if text_body.as_ref().map_or(true, |s| s.trim().is_empty())
+        && html_body.as_ref().map_or(true, |s| s.trim().is_empty())
+    {
+        response.error = Some((
+            MAIL_SEND_TEMPLATE_EMPTY_BODY.to_string(),
+            "Both text and HTML body are empty after rendering".to_string(),
+        ));
         return Ok(response);
     }
-    
+
     // Store rendered content
     response.rendered = Some(MailSendTemplateRendered {
         subject: subject.clone(),
         text_body: text_body.clone(),
         html_body: html_body.clone(),
     });
-    
+
     // If dry run, return without sending
     if opts.dry_run {
         response.ok = true;
-        response.warnings.push("Dry run: email was not sent.".to_string());
+        response
+            .warnings
+            .push("Dry run: email was not sent.".to_string());
         return Ok(response);
     }
-    
+
     // Prepare mail send options
-    let from = opts.from.clone()
-        .or_else(|| template.default_from.as_ref().map(|addr| MailAddress::new(addr.clone())));
-    
-    let reply_to = opts.reply_to.clone()
-        .or_else(|| template.default_reply_to.as_ref().map(|addr| MailAddress::new(addr.clone())));
-    
+    let from = opts.from.clone().or_else(|| {
+        template
+            .default_from
+            .as_ref()
+            .map(|addr| MailAddress::new(addr.clone()))
+    });
+
+    let reply_to = opts.reply_to.clone().or_else(|| {
+        template
+            .default_reply_to
+            .as_ref()
+            .map(|addr| MailAddress::new(addr.clone()))
+    });
+
     // Combine headers (template defaults first, then call-level overrides)
     let mut combined_headers = template.default_headers.clone();
     for (key, value) in &opts.headers {
         // Check for header conflicts with core headers
         let key_lower = key.to_lowercase();
-        if ["from", "to", "cc", "bcc", "subject", "date", "message-id"].contains(&key_lower.as_str()) {
-            response.error = Some((MAIL_SEND_TEMPLATE_HEADER_CONFLICT.to_string(), format!("Cannot override core header: {}", key)));
+        if ["from", "to", "cc", "bcc", "subject", "date", "message-id"]
+            .contains(&key_lower.as_str())
+        {
+            response.error = Some((
+                MAIL_SEND_TEMPLATE_HEADER_CONFLICT.to_string(),
+                format!("Cannot override core header: {}", key),
+            ));
             return Ok(response);
         }
         combined_headers.insert(key.clone(), value.clone());
     }
-    
+
     // Combine attachments
     let mut combined_attachments = template.default_attachments.clone();
     combined_attachments.extend(opts.attachments.clone());
-    
+
     let mail_opts = MailSendOptions {
         to: opts.to,
         cc: opts.cc,
@@ -2003,48 +3076,57 @@ pub fn send_template(opts: MailSendTemplateOptions) -> Result<MailSendTemplateRe
         retry_backoff_ms: opts.retry_backoff_ms,
         format_output: opts.format_output.clone(),
     };
-    
+
     // Send email using existing mail.send functionality
     match send(mail_opts) {
         Ok(mail_response) => {
             response.ok = mail_response.ok;
-            
+
             if let Some(mail_result) = mail_response.result {
                 response.send_result = Some(MailSendTemplateSendResult {
                     mail_send_response: Some(mail_result),
                 });
             }
-            
+
             if let Some(mail_error) = mail_response.error {
                 response.error = Some(mail_error);
             }
-            
+
             response.warnings.extend(mail_response.warnings);
-        },
+        }
         Err(e) => {
-            response.error = Some((MAIL_SEND_INTERNAL_ERROR.to_string(), format!("Internal error calling mail.send: {}", e)));
+            response.error = Some((
+                MAIL_SEND_INTERNAL_ERROR.to_string(),
+                format!("Internal error calling mail.send: {}", e),
+            ));
         }
     }
-    
+
     Ok(response)
 }
 
 // Core mail test functionality
 pub fn test(opts: MailTestOptions) -> Result<MailTestResponse> {
     let mut response = MailTestResponse::new(&opts);
-    
+
     // Validate timeout
     if opts.timeout_ms == 0 {
-        response.error = Some((MAIL_TEST_INVALID_TIMEOUT.to_string(), "Timeout must be greater than 0".to_string()));
+        response.error = Some((
+            MAIL_TEST_INVALID_TIMEOUT.to_string(),
+            "Timeout must be greater than 0".to_string(),
+        ));
         return Ok(response);
     }
-    
+
     // Validate retry configuration
     if opts.max_retry > 10 {
-        response.error = Some((MAIL_TEST_INVALID_RETRY_CONFIG.to_string(), "max_retry cannot exceed 10".to_string()));
+        response.error = Some((
+            MAIL_TEST_INVALID_RETRY_CONFIG.to_string(),
+            "max_retry cannot exceed 10".to_string(),
+        ));
         return Ok(response);
     }
-    
+
     // Get SMTP configuration
     let smtp_config = match get_test_smtp_config(&opts) {
         Ok(config) => config,
@@ -2058,44 +3140,57 @@ pub fn test(opts: MailTestOptions) -> Result<MailTestResponse> {
             return Ok(response);
         }
     };
-    
+
     // Validate send test email requirements
     if opts.send_test_email {
         if opts.to.is_empty() {
-            response.error = Some((MAIL_TEST_SEND_EMAIL_MISSING_RECIPIENTS.to_string(), "send_test_email=true requires non-empty 'to' field".to_string()));
+            response.error = Some((
+                MAIL_TEST_SEND_EMAIL_MISSING_RECIPIENTS.to_string(),
+                "send_test_email=true requires non-empty 'to' field".to_string(),
+            ));
             return Ok(response);
         }
-        
+
         // Check if we have a from address (either from opts or config)
         if opts.from.is_none() && std::env::var("MAIL_FROM").is_err() {
-            response.error = Some((MAIL_TEST_SEND_EMAIL_MISSING_FROM.to_string(), "send_test_email=true requires 'from' field or MAIL_FROM environment variable".to_string()));
+            response.error = Some((
+                MAIL_TEST_SEND_EMAIL_MISSING_FROM.to_string(),
+                "send_test_email=true requires 'from' field or MAIL_FROM environment variable"
+                    .to_string(),
+            ));
             return Ok(response);
         }
-        
+
         // Validate email addresses
         for addr in &opts.to {
             if let Err(_) = validate_email_address(&addr.email) {
-                response.error = Some((MAIL_TEST_INVALID_ADDRESS.to_string(), format!("Invalid email address: {}", addr.email)));
+                response.error = Some((
+                    MAIL_TEST_INVALID_ADDRESS.to_string(),
+                    format!("Invalid email address: {}", addr.email),
+                ));
                 return Ok(response);
             }
         }
-        
+
         if let Some(ref from) = opts.from {
             if let Err(_) = validate_email_address(&from.email) {
-                response.error = Some((MAIL_TEST_INVALID_ADDRESS.to_string(), format!("Invalid email address: {}", from.email)));
+                response.error = Some((
+                    MAIL_TEST_INVALID_ADDRESS.to_string(),
+                    format!("Invalid email address: {}", from.email),
+                ));
                 return Ok(response);
             }
         }
     }
-    
+
     // Perform the SMTP test with retries
     let mut attempts = 0;
     let mut last_error = None;
     let max_attempts = opts.max_retry + 1;
-    
+
     while attempts < max_attempts {
         attempts += 1;
-        
+
         match perform_smtp_test(&smtp_config, &opts) {
             Ok(connection_result) => {
                 response.ok = true;
@@ -2114,42 +3209,46 @@ pub fn test(opts: MailTestOptions) -> Result<MailTestResponse> {
                     attempts,
                     last_response: connection_result.last_response,
                 });
-                
+
                 if opts.send_test_email {
-                    response.send_test_email = Some(connection_result.send_result.unwrap_or(MailTestSendEmailResult {
-                        attempted: true,
-                        envelope_from: opts.from.as_ref().map(|f| f.email.clone()),
-                        envelope_to: opts.to.iter().map(|t| t.email.clone()).collect(),
-                        accepted_recipients: Vec::new(),
-                        rejected_recipients: Vec::new(),
-                        last_response: None,
-                    }));
+                    response.send_test_email = Some(connection_result.send_result.unwrap_or(
+                        MailTestSendEmailResult {
+                            attempted: true,
+                            envelope_from: opts.from.as_ref().map(|f| f.email.clone()),
+                            envelope_to: opts.to.iter().map(|t| t.email.clone()).collect(),
+                            accepted_recipients: Vec::new(),
+                            rejected_recipients: Vec::new(),
+                            last_response: None,
+                        },
+                    ));
                 }
-                
+
                 return Ok(response);
             }
             Err(e) => {
                 last_error = Some(e);
-                
+
                 // Check if this is a permanent error or last attempt
-                if is_test_permanent_error(&last_error.as_ref().unwrap()) || attempts >= max_attempts {
+                if is_test_permanent_error(&last_error.as_ref().unwrap())
+                    || attempts >= max_attempts
+                {
                     break;
                 }
-                
+
                 // Sleep before retry
                 if attempts < max_attempts {
                     std::thread::sleep(std::time::Duration::from_millis(
-                        opts.retry_backoff_ms * attempts as u64
+                        opts.retry_backoff_ms * attempts as u64,
                     ));
                 }
             }
         }
     }
-    
+
     // All attempts failed
     if let Some(error) = last_error {
         let error_code = classify_test_error(&error);
-        
+
         response.connection = Some(MailTestConnectionResult {
             smtp_host: smtp_config.host.clone(),
             smtp_port: smtp_config.port,
@@ -2165,10 +3264,10 @@ pub fn test(opts: MailTestOptions) -> Result<MailTestResponse> {
             attempts,
             last_response: None,
         });
-        
+
         response.error = Some((error_code, error.to_string()));
     }
-    
+
     Ok(response)
 }
 
@@ -2183,7 +3282,11 @@ mod mail_dns_resolution_tests {
         if let Some(resolved_ip) = resolve_smtp_host_ip("gmail.com") {
             // Should get some IP address back
             let parsed_ip: Result<IpAddr, _> = resolved_ip.parse();
-            assert!(parsed_ip.is_ok(), "Resolved IP should be a valid IP address, got: {}", resolved_ip);
+            assert!(
+                parsed_ip.is_ok(),
+                "Resolved IP should be a valid IP address, got: {}",
+                resolved_ip
+            );
         }
         // Note: This test might fail in environments without internet, so we don't assert on presence
     }
@@ -2193,10 +3296,10 @@ mod mail_dns_resolution_tests {
         // Test with localhost, which should always resolve
         let resolved_ip = resolve_smtp_host_ip("localhost");
         assert!(resolved_ip.is_some(), "localhost should resolve to an IP");
-        
+
         let ip_str = resolved_ip.unwrap();
         let parsed_ip: IpAddr = ip_str.parse().expect("Should be a valid IP address");
-        
+
         // Should be either IPv4 or IPv6 localhost
         match parsed_ip {
             IpAddr::V4(ipv4) => assert_eq!(ipv4, Ipv4Addr::LOCALHOST),
@@ -2209,8 +3312,11 @@ mod mail_dns_resolution_tests {
         // Test with a raw IPv4 address
         let ip = "8.8.8.8";
         let resolved_ip = resolve_smtp_host_ip(ip);
-        
-        assert!(resolved_ip.is_some(), "IPv4 address should be returned as-is");
+
+        assert!(
+            resolved_ip.is_some(),
+            "IPv4 address should be returned as-is"
+        );
         assert_eq!(resolved_ip.unwrap(), ip);
     }
 
@@ -2219,8 +3325,11 @@ mod mail_dns_resolution_tests {
         // Test with a raw IPv6 address
         let ip = "2001:4860:4860::8888"; // Google's public DNS IPv6
         let resolved_ip = resolve_smtp_host_ip(ip);
-        
-        assert!(resolved_ip.is_some(), "IPv6 address should be returned as-is");
+
+        assert!(
+            resolved_ip.is_some(),
+            "IPv6 address should be returned as-is"
+        );
         assert_eq!(resolved_ip.unwrap(), ip);
     }
 
@@ -2242,7 +3351,10 @@ mod mail_dns_resolution_tests {
     fn test_resolve_smtp_host_ip_invalid_ip() {
         // Test with an invalid IP address
         let resolved_ip = resolve_smtp_host_ip("999.999.999.999");
-        assert!(resolved_ip.is_none(), "Invalid IP address should return None");
+        assert!(
+            resolved_ip.is_none(),
+            "Invalid IP address should return None"
+        );
     }
 
     #[test]
@@ -2263,7 +3375,12 @@ mod mail_dns_resolution_tests {
             if let Some(ip) = resolved_ip {
                 // If it does return something, it should at least be a valid IP
                 let parsed: Result<IpAddr, _> = ip.parse();
-                assert!(parsed.is_ok(), "If hostname '{}' resolves, result should be a valid IP, got: {}", hostname, ip);
+                assert!(
+                    parsed.is_ok(),
+                    "If hostname '{}' resolves, result should be a valid IP, got: {}",
+                    hostname,
+                    ip
+                );
             }
         }
     }
@@ -2281,16 +3398,22 @@ mod mail_dns_resolution_tests {
 
         let result = test(opts);
         assert!(result.is_ok(), "Mail test should succeed");
-        
+
         let response = result.unwrap();
-        assert!(response.connection.is_some(), "Connection result should be present");
-        
+        assert!(
+            response.connection.is_some(),
+            "Connection result should be present"
+        );
+
         let connection = response.connection.unwrap();
-        assert!(connection.resolved_ip.is_some(), "Resolved IP should be present for localhost");
-        
+        assert!(
+            connection.resolved_ip.is_some(),
+            "Resolved IP should be present for localhost"
+        );
+
         let resolved_ip = connection.resolved_ip.unwrap();
         let parsed_ip: IpAddr = resolved_ip.parse().expect("Resolved IP should be valid");
-        
+
         // Should be localhost IP
         match parsed_ip {
             IpAddr::V4(ipv4) => assert_eq!(ipv4, Ipv4Addr::LOCALHOST),
@@ -2310,18 +3433,21 @@ mod mail_dns_resolution_tests {
         };
 
         let result = test(opts);
-        
+
         // The test should complete (may succeed or fail depending on SMTP test outcome)
         // but if there's a connection result, resolved_ip should be None for invalid hostname
         if let Ok(response) = result {
             if let Some(connection) = response.connection {
                 // For invalid hostname, resolved_ip should be None
-                assert!(connection.resolved_ip.is_none(), "Invalid hostname should have no resolved IP");
+                assert!(
+                    connection.resolved_ip.is_none(),
+                    "Invalid hostname should have no resolved IP"
+                );
             }
         }
     }
 
-    #[test] 
+    #[test]
     fn test_mail_test_preserves_resolved_ip_with_direct_ip() {
         // Test that when using a direct IP as SMTP host, it's preserved in resolved_ip
         let direct_ip = "127.0.0.1";
@@ -2335,15 +3461,24 @@ mod mail_dns_resolution_tests {
 
         let result = test(opts);
         assert!(result.is_ok(), "Mail test should succeed");
-        
+
         let response = result.unwrap();
-        assert!(response.connection.is_some(), "Connection result should be present");
-        
+        assert!(
+            response.connection.is_some(),
+            "Connection result should be present"
+        );
+
         let connection = response.connection.unwrap();
-        assert!(connection.resolved_ip.is_some(), "Resolved IP should be present for direct IP");
-        
+        assert!(
+            connection.resolved_ip.is_some(),
+            "Resolved IP should be present for direct IP"
+        );
+
         let resolved_ip = connection.resolved_ip.unwrap();
-        assert_eq!(resolved_ip, direct_ip, "Direct IP should be preserved as resolved IP");
+        assert_eq!(
+            resolved_ip, direct_ip,
+            "Direct IP should be preserved as resolved IP"
+        );
     }
 }
 
@@ -2370,7 +3505,9 @@ struct TestConnectionResult {
 }
 
 fn get_test_smtp_config(opts: &MailTestOptions) -> Result<TestSmtpConfig> {
-    let host = opts.smtp_host.clone()
+    let host = opts
+        .smtp_host
+        .clone()
         .or_else(|| std::env::var("MAIL_SMTP_HOST").ok())
         .ok_or_else(|| anyhow::anyhow!("SMTP host not configured"))?;
 
@@ -2380,14 +3517,23 @@ fn get_test_smtp_config(opts: &MailTestOptions) -> Result<TestSmtpConfig> {
         TlsMode::Tls => 465,
     };
 
-    let port = opts.smtp_port
-        .or_else(|| std::env::var("MAIL_SMTP_PORT").ok().and_then(|p| p.parse().ok()))
+    let port = opts
+        .smtp_port
+        .or_else(|| {
+            std::env::var("MAIL_SMTP_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+        })
         .unwrap_or(default_port);
 
-    let username = opts.smtp_username.clone()
+    let username = opts
+        .smtp_username
+        .clone()
         .or_else(|| std::env::var("MAIL_SMTP_USERNAME").ok());
 
-    let password = opts.smtp_password.clone()
+    let password = opts
+        .smtp_password
+        .clone()
         .or_else(|| std::env::var("MAIL_SMTP_PASSWORD").ok());
 
     Ok(TestSmtpConfig {
@@ -2403,11 +3549,11 @@ fn get_test_smtp_config(opts: &MailTestOptions) -> Result<TestSmtpConfig> {
 
 // DNS resolution function for mail test
 fn resolve_smtp_host_ip(hostname: &str) -> Option<String> {
-    use std::net::{ToSocketAddrs, IpAddr};
-    
+    use std::net::{IpAddr, ToSocketAddrs};
+
     // Try to resolve the hostname to IP addresses
     let socket_addr_str = format!("{}:25", hostname); // Use port 25 as default for resolution
-    
+
     match socket_addr_str.to_socket_addrs() {
         Ok(mut addrs) => {
             if let Some(addr) = addrs.next() {
@@ -2415,7 +3561,7 @@ fn resolve_smtp_host_ip(hostname: &str) -> Option<String> {
             } else {
                 None
             }
-        },
+        }
         Err(_) => {
             // If standard resolution fails, try parsing as IP directly
             if let Ok(ip_addr) = hostname.parse::<IpAddr>() {
@@ -2427,10 +3573,13 @@ fn resolve_smtp_host_ip(hostname: &str) -> Option<String> {
     }
 }
 
-fn perform_smtp_test(config: &TestSmtpConfig, opts: &MailTestOptions) -> Result<TestConnectionResult> {
+fn perform_smtp_test(
+    config: &TestSmtpConfig,
+    opts: &MailTestOptions,
+) -> Result<TestConnectionResult> {
     use lettre::transport::smtp::client::Tls;
     use std::time::Duration;
-    
+
     let mut result = TestConnectionResult {
         tls_established: false,
         auth_attempted: false,
@@ -2439,77 +3588,81 @@ fn perform_smtp_test(config: &TestSmtpConfig, opts: &MailTestOptions) -> Result<
         send_result: None,
         resolved_ip: resolve_smtp_host_ip(&config.host),
     };
-    
+
     // Build SMTP transport based on TLS mode
     let timeout = Duration::from_millis(config.timeout_ms);
-    
+
     let mut transport_builder = SmtpTransport::relay(&config.host)
         .map_err(|e| anyhow::anyhow!("Failed to create SMTP transport: {}", e))?
         .port(config.port)
         .timeout(Some(timeout));
-    
+
     // Configure TLS
     match config.use_tls {
         TlsMode::None => {
             transport_builder = transport_builder.tls(Tls::None);
             result.tls_established = false; // No TLS attempted
-        },
+        }
         TlsMode::StartTls => {
             let tls = if config.accept_invalid_certs {
-                Tls::Opportunistic(lettre::transport::smtp::client::TlsParameters::new(
-                    config.host.clone()
-                ).map_err(|e| anyhow::anyhow!("TLS parameter error: {}", e))?)
+                Tls::Opportunistic(
+                    lettre::transport::smtp::client::TlsParameters::new(config.host.clone())
+                        .map_err(|e| anyhow::anyhow!("TLS parameter error: {}", e))?,
+                )
             } else {
-                Tls::Required(lettre::transport::smtp::client::TlsParameters::new(
-                    config.host.clone()
-                ).map_err(|e| anyhow::anyhow!("TLS parameter error: {}", e))?)
+                Tls::Required(
+                    lettre::transport::smtp::client::TlsParameters::new(config.host.clone())
+                        .map_err(|e| anyhow::anyhow!("TLS parameter error: {}", e))?,
+                )
             };
             transport_builder = transport_builder.tls(tls);
-        },
+        }
         TlsMode::Tls => {
             let tls = if config.accept_invalid_certs {
-                Tls::Wrapper(lettre::transport::smtp::client::TlsParameters::new(
-                    config.host.clone()
-                ).map_err(|e| anyhow::anyhow!("TLS parameter error: {}", e))?)
+                Tls::Wrapper(
+                    lettre::transport::smtp::client::TlsParameters::new(config.host.clone())
+                        .map_err(|e| anyhow::anyhow!("TLS parameter error: {}", e))?,
+                )
             } else {
-                Tls::Wrapper(lettre::transport::smtp::client::TlsParameters::new(
-                    config.host.clone()
-                ).map_err(|e| anyhow::anyhow!("TLS parameter error: {}", e))?)
+                Tls::Wrapper(
+                    lettre::transport::smtp::client::TlsParameters::new(config.host.clone())
+                        .map_err(|e| anyhow::anyhow!("TLS parameter error: {}", e))?,
+                )
             };
             transport_builder = transport_builder.tls(tls);
-        },
+        }
     };
-    
+
     // Add authentication if provided
     if let (Some(username), Some(password)) = (&config.username, &config.password) {
         let creds = Credentials::new(username.clone(), password.clone());
         transport_builder = transport_builder.credentials(creds);
         result.auth_attempted = true;
     }
-    
+
     let transport = transport_builder.build();
-    
+
     // For connection-only test or basic connectivity test
     if opts.connection_only || !opts.send_test_email {
         // For connection-only mode, we want to test the connection and auth but not send email
         // Since lettre doesn't have a direct test_connection method, we'll have to check
         // if the transport can be created and configured properly
-        
+
         // The transport was already built above, so if we get here, the basic config is valid
         // Set the status based on whether we expect TLS/auth to work
         match config.use_tls {
             TlsMode::None => result.tls_established = false, // No TLS in this mode
             TlsMode::StartTls | TlsMode::Tls => result.tls_established = true, // Assume TLS config is valid
         }
-        
+
         if result.auth_attempted {
             result.auth_succeeded = true; // If auth was configured, assume it's valid for testing
         }
-        
+
         result.last_response = Some("Connection test completed".to_string());
         return Ok(result);
     }
-    
+
     // For send test email mode, actually try to send a test message
     if opts.send_test_email {
         let from = if let Some(ref from_addr) = opts.from {
@@ -2519,27 +3672,32 @@ fn perform_smtp_test(config: &TestSmtpConfig, opts: &MailTestOptions) -> Result<
         } else {
             return Err(anyhow::anyhow!("From address not configured"));
         };
-        
-        let subject = opts.subject.clone().unwrap_or_else(|| "SMTP test".to_string());
-        let body = opts.text_body.clone().unwrap_or_else(|| "SMTP test email".to_string());
-        
+
+        let subject = opts
+            .subject
+            .clone()
+            .unwrap_or_else(|| "SMTP test".to_string());
+        let body = opts
+            .text_body
+            .clone()
+            .unwrap_or_else(|| "SMTP test email".to_string());
+
         // Build simple test message
-        let mut builder = Message::builder()
-            .from(from.to_mailbox()?)
-            .subject(subject);
-        
+        let mut builder = Message::builder().from(from.to_mailbox()?).subject(subject);
+
         for to_addr in &opts.to {
             builder = builder.to(to_addr.to_mailbox()?);
         }
-        
+
         let message = if let Some(html_body) = &opts.html_body {
-            builder.multipart(
-                lettre::message::MultiPart::alternative_plain_html(body, html_body.clone())
-            )?
+            builder.multipart(lettre::message::MultiPart::alternative_plain_html(
+                body,
+                html_body.clone(),
+            ))?
         } else {
             builder.body(body)?
         };
-        
+
         // Attempt to send the message
         match transport.send(&message) {
             Ok(_) => {
@@ -2548,7 +3706,7 @@ fn perform_smtp_test(config: &TestSmtpConfig, opts: &MailTestOptions) -> Result<
                     result.auth_succeeded = true;
                 }
                 result.last_response = Some("250 OK".to_string());
-                
+
                 result.send_result = Some(MailTestSendEmailResult {
                     attempted: true,
                     envelope_from: Some(from.email),
@@ -2557,35 +3715,44 @@ fn perform_smtp_test(config: &TestSmtpConfig, opts: &MailTestOptions) -> Result<
                     rejected_recipients: Vec::new(),
                     last_response: Some("250 OK: test message queued".to_string()),
                 });
-            },
+            }
             Err(e) => {
                 return Err(anyhow::anyhow!("SMTP send failed: {}", e));
             }
         }
     }
-    
+
     Ok(result)
 }
 
 fn is_test_permanent_error(error: &anyhow::Error) -> bool {
     let error_str = error.to_string().to_lowercase();
-    error_str.contains("550") || 
-    error_str.contains("authentication") || 
-    error_str.contains("invalid") ||
-    error_str.contains("certificate") ||
-    error_str.contains("tls")
+    error_str.contains("550")
+        || error_str.contains("authentication")
+        || error_str.contains("invalid")
+        || error_str.contains("certificate")
+        || error_str.contains("tls")
 }
 
 fn classify_test_error(error: &anyhow::Error) -> String {
     let error_str = error.to_string().to_lowercase();
-    
+
     if error_str.contains("dns") || error_str.contains("resolve") {
         MAIL_TEST_DNS_ERROR.to_string()
-    } else if error_str.contains("connection") || error_str.contains("connect") || error_str.contains("timeout") {
+    } else if error_str.contains("connection")
+        || error_str.contains("connect")
+        || error_str.contains("timeout")
+    {
         MAIL_TEST_CONNECTION_FAILED.to_string()
-    } else if error_str.contains("tls") || error_str.contains("certificate") || error_str.contains("ssl") {
+    } else if error_str.contains("tls")
+        || error_str.contains("certificate")
+        || error_str.contains("ssl")
+    {
         MAIL_TEST_TLS_ERROR.to_string()
-    } else if error_str.contains("authentication") || error_str.contains("auth") || error_str.contains("login") {
+    } else if error_str.contains("authentication")
+        || error_str.contains("auth")
+        || error_str.contains("login")
+    {
         MAIL_TEST_AUTH_FAILED.to_string()
     } else if error_str.contains("550") || error_str.contains("rejected") {
         MAIL_TEST_SEND_REJECTED.to_string()
@@ -2665,8 +3832,11 @@ impl MailSendTemplateOptions {
         }
 
         if let Some(smtp_port_arg) = args.get("smtp_port") {
-            opts.smtp_port = Some(smtp_port_arg.parse()
-                .with_context(|| format!("Invalid SMTP port: {}", smtp_port_arg))?);
+            opts.smtp_port = Some(
+                smtp_port_arg
+                    .parse()
+                    .with_context(|| format!("Invalid SMTP port: {}", smtp_port_arg))?,
+            );
         }
 
         if let Some(smtp_username_arg) = args.get("smtp_username") {
@@ -2687,17 +3857,20 @@ impl MailSendTemplateOptions {
 
         // Behavior configuration
         if let Some(timeout_ms_arg) = args.get("timeout_ms") {
-            opts.timeout_ms = timeout_ms_arg.parse()
+            opts.timeout_ms = timeout_ms_arg
+                .parse()
                 .with_context(|| format!("Invalid timeout: {}", timeout_ms_arg))?;
         }
 
         if let Some(max_retry_arg) = args.get("max_retry") {
-            opts.max_retry = max_retry_arg.parse()
+            opts.max_retry = max_retry_arg
+                .parse()
                 .with_context(|| format!("Invalid max_retry: {}", max_retry_arg))?;
         }
 
         if let Some(retry_backoff_ms_arg) = args.get("retry_backoff_ms") {
-            opts.retry_backoff_ms = retry_backoff_ms_arg.parse()
+            opts.retry_backoff_ms = retry_backoff_ms_arg
+                .parse()
                 .with_context(|| format!("Invalid retry_backoff_ms: {}", retry_backoff_ms_arg))?;
         }
 
@@ -2719,15 +3892,17 @@ impl MailSendTemplateOptions {
 
 // Helper functions for parsing different types
 fn parse_json_object(arg: &str) -> Result<Value> {
-    serde_json::from_str(arg)
-        .with_context(|| format!("Invalid JSON object: {}", arg))
+    serde_json::from_str(arg).with_context(|| format!("Invalid JSON object: {}", arg))
 }
 
 fn parse_bool(arg: &str) -> Result<bool> {
     match arg.to_lowercase().as_str() {
         "true" | "yes" | "1" => Ok(true),
         "false" | "no" | "0" => Ok(false),
-        _ => bail!("Invalid boolean value: '{}'. Use true/false, yes/no, or 1/0.", arg),
+        _ => bail!(
+            "Invalid boolean value: '{}'. Use true/false, yes/no, or 1/0.",
+            arg
+        ),
     }
 }
 
@@ -2777,7 +3952,9 @@ struct SmtpConfig {
 }
 
 fn get_smtp_config(opts: &MailSendOptions) -> Result<SmtpConfig> {
-    let host = opts.smtp_host.clone()
+    let host = opts
+        .smtp_host
+        .clone()
         .or_else(|| std::env::var("MAIL_SMTP_HOST").ok())
         .ok_or_else(|| anyhow::anyhow!("SMTP host not configured"))?;
 
@@ -2787,14 +3964,23 @@ fn get_smtp_config(opts: &MailSendOptions) -> Result<SmtpConfig> {
         TlsMode::Tls => 465,
     };
 
-    let port = opts.smtp_port
-        .or_else(|| std::env::var("MAIL_SMTP_PORT").ok().and_then(|p| p.parse().ok()))
+    let port = opts
+        .smtp_port
+        .or_else(|| {
+            std::env::var("MAIL_SMTP_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+        })
         .unwrap_or(default_port);
 
-    let username = opts.smtp_username.clone()
+    let username = opts
+        .smtp_username
+        .clone()
         .or_else(|| std::env::var("MAIL_SMTP_USERNAME").ok());
 
-    let password = opts.smtp_password.clone()
+    let password = opts
+        .smtp_password
+        .clone()
         .or_else(|| std::env::var("MAIL_SMTP_PASSWORD").ok());
 
     Ok(SmtpConfig {
@@ -2854,9 +4040,10 @@ fn build_message(opts: &MailSendOptions) -> Result<Message> {
             }
             (Some(text), Some(html)) => {
                 // Both text and HTML - use multipart alternative
-                builder.multipart(
-                    lettre::message::MultiPart::alternative_plain_html(text.clone(), html.clone())
-                )?
+                builder.multipart(lettre::message::MultiPart::alternative_plain_html(
+                    text.clone(),
+                    html.clone(),
+                ))?
             }
             (None, None) => {
                 bail!("No body content provided");
@@ -2868,15 +4055,13 @@ fn build_message(opts: &MailSendOptions) -> Result<Message> {
         let body_part = match (&opts.text_body, &opts.html_body) {
             (Some(text), None) => {
                 // Plain text only
-                lettre::message::MultiPart::alternative().singlepart(
-                    lettre::message::SinglePart::plain(text.clone())
-                )
+                lettre::message::MultiPart::alternative()
+                    .singlepart(lettre::message::SinglePart::plain(text.clone()))
             }
             (None, Some(html)) => {
                 // HTML only
-                lettre::message::MultiPart::alternative().singlepart(
-                    lettre::message::SinglePart::html(html.clone())
-                )
+                lettre::message::MultiPart::alternative()
+                    .singlepart(lettre::message::SinglePart::html(html.clone()))
             }
             (Some(text), Some(html)) => {
                 // Both text and HTML - create multipart alternative
@@ -2893,7 +4078,7 @@ fn build_message(opts: &MailSendOptions) -> Result<Message> {
         // Add attachments
         for attachment in &opts.attachments {
             let path = Path::new(&attachment.path);
-            
+
             // Read file content
             let file_content = fs::read(&path)
                 .with_context(|| format!("Failed to read attachment file: {}", attachment.path))?;
@@ -2905,15 +4090,29 @@ fn build_message(opts: &MailSendOptions) -> Result<Message> {
             let content_type = attachment.get_content_type();
             let attachment_part = if content_type.starts_with("text/") {
                 lettre::message::SinglePart::builder()
-                    .header(lettre::message::header::ContentType::parse(&content_type)
-                        .unwrap_or(lettre::message::header::ContentType::TEXT_PLAIN))
-                    .header(lettre::message::header::ContentDisposition::attachment(&filename))
+                    .header(
+                        lettre::message::header::ContentType::parse(&content_type)
+                            .unwrap_or(lettre::message::header::ContentType::TEXT_PLAIN),
+                    )
+                    .header(lettre::message::header::ContentDisposition::attachment(
+                        &filename,
+                    ))
                     .body(String::from_utf8_lossy(&file_content).to_string())
             } else {
                 lettre::message::SinglePart::builder()
-                    .header(lettre::message::header::ContentType::parse(&content_type)
-                        .unwrap_or_else(|_| lettre::message::header::ContentType::parse("application/octet-stream").unwrap()))
-                    .header(lettre::message::header::ContentDisposition::attachment(&filename))
+                    .header(
+                        lettre::message::header::ContentType::parse(&content_type).unwrap_or_else(
+                            |_| {
+                                lettre::message::header::ContentType::parse(
+                                    "application/octet-stream",
+                                )
+                                .unwrap()
+                            },
+                        ),
+                    )
+                    .header(lettre::message::header::ContentDisposition::attachment(
+                        &filename,
+                    ))
                     .body(file_content)
             };
 
@@ -2926,7 +4125,11 @@ fn build_message(opts: &MailSendOptions) -> Result<Message> {
     Ok(message)
 }
 
-fn send_message(message: &Message, config: &SmtpConfig, _opts: &MailSendOptions) -> Result<(String, String)> {
+fn send_message(
+    message: &Message,
+    config: &SmtpConfig,
+    _opts: &MailSendOptions,
+) -> Result<(String, String)> {
     // Build transport
     let mut transport_builder = match config.use_tls {
         TlsMode::None => SmtpTransport::builder_dangerous(&config.host),
@@ -2938,20 +4141,19 @@ fn send_message(message: &Message, config: &SmtpConfig, _opts: &MailSendOptions)
 
     if config.accept_invalid_certs {
         transport_builder = transport_builder.tls(Tls::Wrapper(
-            lettre::transport::smtp::client::TlsParameters::new(config.host.clone())?
+            lettre::transport::smtp::client::TlsParameters::new(config.host.clone())?,
         ));
     }
 
     // Add credentials if provided
     if let (Some(username), Some(password)) = (&config.username, &config.password) {
-        transport_builder = transport_builder.credentials(Credentials::new(
-            username.clone(),
-            password.clone(),
-        ));
+        transport_builder =
+            transport_builder.credentials(Credentials::new(username.clone(), password.clone()));
     }
 
     // Set timeout
-    transport_builder = transport_builder.timeout(Some(std::time::Duration::from_millis(config.timeout_ms)));
+    transport_builder =
+        transport_builder.timeout(Some(std::time::Duration::from_millis(config.timeout_ms)));
 
     let transport = transport_builder.build();
 
@@ -2972,13 +4174,13 @@ fn extract_message_id(message: &Message) -> String {
             return msg_id.trim().to_string();
         }
     }
-    
+
     // Generate a fallback message ID
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    
+
     format!("<{}.resh@localhost>", timestamp)
 }
 
@@ -3015,7 +4217,9 @@ impl MailValidationError {
             MailValidationError::InvalidAddress(_) => MAIL_SEND_INVALID_ADDRESS.to_string(),
             MailValidationError::HeaderConflict(_) => MAIL_SEND_HEADER_CONFLICT.to_string(),
             MailValidationError::InvalidTimeout(_) => MAIL_SEND_INVALID_TIMEOUT.to_string(),
-            MailValidationError::InvalidRetryConfig(_) => MAIL_SEND_INVALID_RETRY_CONFIG.to_string(),
+            MailValidationError::InvalidRetryConfig(_) => {
+                MAIL_SEND_INVALID_RETRY_CONFIG.to_string()
+            }
             MailValidationError::AttachmentMissing(_) => MAIL_SEND_ATTACHMENT_MISSING.to_string(),
             MailValidationError::AttachmentIoError(_) => MAIL_SEND_ATTACHMENT_IO_ERROR.to_string(),
             MailValidationError::AttachmentsTooLarge => MAIL_SEND_ATTACHMENTS_TOO_LARGE.to_string(),
@@ -3035,9 +4239,15 @@ fn validate_send_options(opts: &MailSendOptions) -> Result<()> {
     }
 
     // Check body
-    let has_text_body = opts.text_body.as_ref().map_or(false, |b| !b.trim().is_empty());
-    let has_html_body = opts.html_body.as_ref().map_or(false, |b| !b.trim().is_empty());
-    
+    let has_text_body = opts
+        .text_body
+        .as_ref()
+        .map_or(false, |b| !b.trim().is_empty());
+    let has_html_body = opts
+        .html_body
+        .as_ref()
+        .map_or(false, |b| !b.trim().is_empty());
+
     if !has_text_body && !has_html_body {
         return Err(MailValidationError::MissingBody.into());
     }
@@ -3061,14 +4271,19 @@ fn validate_send_options(opts: &MailSendOptions) -> Result<()> {
     // Check header conflicts
     for key in opts.headers.keys() {
         let key_lower = key.to_lowercase();
-        if ["from", "to", "cc", "bcc", "subject", "date", "message-id"].contains(&key_lower.as_str()) {
+        if ["from", "to", "cc", "bcc", "subject", "date", "message-id"]
+            .contains(&key_lower.as_str())
+        {
             return Err(MailValidationError::HeaderConflict(key.clone()).into());
         }
     }
 
     // Validate timeout
     if opts.timeout_ms == 0 {
-        return Err(MailValidationError::InvalidTimeout("Timeout must be greater than 0".to_string()).into());
+        return Err(MailValidationError::InvalidTimeout(
+            "Timeout must be greater than 0".to_string(),
+        )
+        .into());
     }
 
     Ok(())
@@ -3080,15 +4295,17 @@ fn validate_attachments(attachments: &[AttachmentSpec]) -> Result<()> {
 
     for attachment in attachments {
         let path = Path::new(&attachment.path);
-        
+
         if !path.exists() {
             return Err(MailValidationError::AttachmentMissing(attachment.path.clone()).into());
         }
 
         if !path.is_file() {
-            return Err(MailValidationError::AttachmentIoError(
-                format!("Attachment path is not a file: {}", attachment.path)
-            ).into());
+            return Err(MailValidationError::AttachmentIoError(format!(
+                "Attachment path is not a file: {}",
+                attachment.path
+            ))
+            .into());
         }
 
         match path.metadata() {
@@ -3099,9 +4316,11 @@ fn validate_attachments(attachments: &[AttachmentSpec]) -> Result<()> {
                 }
             }
             Err(e) => {
-                return Err(MailValidationError::AttachmentIoError(
-                    format!("Cannot access attachment {}: {}", attachment.path, e)
-                ).into());
+                return Err(MailValidationError::AttachmentIoError(format!(
+                    "Cannot access attachment {}: {}",
+                    attachment.path, e
+                ))
+                .into());
             }
         }
     }
@@ -3119,8 +4338,11 @@ impl MailTestOptions {
         }
 
         if let Some(smtp_port_arg) = args.get("smtp_port") {
-            opts.smtp_port = Some(smtp_port_arg.parse()
-                .with_context(|| format!("Invalid SMTP port: {}", smtp_port_arg))?);
+            opts.smtp_port = Some(
+                smtp_port_arg
+                    .parse()
+                    .with_context(|| format!("Invalid SMTP port: {}", smtp_port_arg))?,
+            );
         }
 
         if let Some(smtp_username_arg) = args.get("smtp_username") {
@@ -3149,17 +4371,20 @@ impl MailTestOptions {
         }
 
         if let Some(max_retry_arg) = args.get("max_retry") {
-            opts.max_retry = max_retry_arg.parse()
+            opts.max_retry = max_retry_arg
+                .parse()
                 .with_context(|| format!("Invalid max_retry: {}", max_retry_arg))?;
         }
 
         if let Some(retry_backoff_ms_arg) = args.get("retry_backoff_ms") {
-            opts.retry_backoff_ms = retry_backoff_ms_arg.parse()
+            opts.retry_backoff_ms = retry_backoff_ms_arg
+                .parse()
                 .with_context(|| format!("Invalid retry_backoff_ms: {}", retry_backoff_ms_arg))?;
         }
 
         if let Some(timeout_ms_arg) = args.get("timeout_ms") {
-            opts.timeout_ms = timeout_ms_arg.parse()
+            opts.timeout_ms = timeout_ms_arg
+                .parse()
                 .with_context(|| format!("Invalid timeout_ms: {}", timeout_ms_arg))?;
         }
 
@@ -3195,7 +4420,9 @@ impl MailTestOptions {
 
 fn is_permanent_error(error: &anyhow::Error) -> bool {
     let error_str = error.to_string();
-    error_str.contains("550") || error_str.contains("authentication") || error_str.contains("invalid")
+    error_str.contains("550")
+        || error_str.contains("authentication")
+        || error_str.contains("invalid")
 }
 
 impl MailSendOptions {
@@ -3250,8 +4477,11 @@ impl MailSendOptions {
         }
 
         if let Some(smtp_port_arg) = args.get("smtp_port") {
-            opts.smtp_port = Some(smtp_port_arg.parse()
-                .with_context(|| format!("Invalid SMTP port: {}", smtp_port_arg))?);
+            opts.smtp_port = Some(
+                smtp_port_arg
+                    .parse()
+                    .with_context(|| format!("Invalid SMTP port: {}", smtp_port_arg))?,
+            );
         }
 
         if let Some(smtp_username_arg) = args.get("smtp_username") {
@@ -3267,23 +4497,31 @@ impl MailSendOptions {
         }
 
         if let Some(tls_accept_invalid_certs_arg) = args.get("tls_accept_invalid_certs") {
-            opts.tls_accept_invalid_certs = tls_accept_invalid_certs_arg.parse()
-                .with_context(|| format!("Invalid tls_accept_invalid_certs: {}", tls_accept_invalid_certs_arg))?;
+            opts.tls_accept_invalid_certs =
+                tls_accept_invalid_certs_arg.parse().with_context(|| {
+                    format!(
+                        "Invalid tls_accept_invalid_certs: {}",
+                        tls_accept_invalid_certs_arg
+                    )
+                })?;
         }
 
         // Parse timeout and retry settings
         if let Some(timeout_arg) = args.get("timeout_ms") {
-            opts.timeout_ms = timeout_arg.parse()
+            opts.timeout_ms = timeout_arg
+                .parse()
                 .with_context(|| format!("Invalid timeout: {}", timeout_arg))?;
         }
 
         if let Some(max_retry_arg) = args.get("max_retry") {
-            opts.max_retry = max_retry_arg.parse()
+            opts.max_retry = max_retry_arg
+                .parse()
                 .with_context(|| format!("Invalid max_retry: {}", max_retry_arg))?;
         }
 
         if let Some(retry_backoff_arg) = args.get("retry_backoff_ms") {
-            opts.retry_backoff_ms = retry_backoff_arg.parse()
+            opts.retry_backoff_ms = retry_backoff_arg
+                .parse()
                 .with_context(|| format!("Invalid retry_backoff_ms: {}", retry_backoff_arg))?;
         }
 
@@ -3296,7 +4534,8 @@ impl MailSendOptions {
         for (key, value) in args.iter() {
             if key.starts_with("header_") {
                 let header_name = &key[7..]; // Remove "header_" prefix
-                opts.headers.insert(header_name.to_string(), value.to_string());
+                opts.headers
+                    .insert(header_name.to_string(), value.to_string());
             }
         }
 
@@ -3345,24 +4584,29 @@ fn parse_attachments_list(input: &str) -> Result<Vec<AttachmentSpec>> {
     let attachments_json: serde_json::Value = serde_json::from_str(input)
         .with_context(|| format!("Invalid attachments JSON: {}", input))?;
 
-    let attachments_array = attachments_json.as_array()
+    let attachments_array = attachments_json
+        .as_array()
         .ok_or_else(|| anyhow::anyhow!("Attachments must be an array"))?;
 
     let mut attachments = Vec::new();
     for att_value in attachments_array {
-        let att_obj = att_value.as_object()
+        let att_obj = att_value
+            .as_object()
             .ok_or_else(|| anyhow::anyhow!("Each attachment must be an object"))?;
 
-        let path = att_obj.get("path")
+        let path = att_obj
+            .get("path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Attachment must have 'path' field"))?
             .to_string();
 
-        let filename = att_obj.get("filename")
+        let filename = att_obj
+            .get("filename")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let content_type = att_obj.get("content_type")
+        let content_type = att_obj
+            .get("content_type")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -3385,6 +4629,277 @@ pub struct MailHandle {
 impl MailHandle {
     pub fn new(url: Url) -> Self {
         Self { _url: url }
+    }
+
+    /// Check if this is a help request and display help if so
+    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
+        // Check for help verbs
+        if verb == "--help" || verb == "-h" || verb == "help" {
+            write!(io.stdout, "{}", MAIL_HELP_TEXT)?;
+            return Ok(Some(Status::ok()));
+        }
+
+        // Check for verb-specific help
+        if verb.starts_with("--help=") {
+            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
+            Self::display_verb_help(help_verb, io)?;
+            return Ok(Some(Status::ok()));
+        }
+
+        Ok(None)
+    }
+
+    /// Display help for a specific verb
+    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
+        match verb {
+            "send" => {
+                write!(
+                    io.stdout,
+                    r#"SEND VERB - MAIL HANDLE
+====================
+
+DESCRIPTION:
+  Send an email message with custom content, attachments, and SMTP configuration.
+  Supports both plain text and HTML bodies, multiple recipients, custom headers,
+  and flexible authentication modes.
+
+SYNTAX:
+  mail://send [arguments]
+  mail://send([arguments])
+
+REQUIRED ARGUMENTS:
+  to=RECIPIENTS          Email addresses to send to
+  subject=TEXT           Email subject line
+  text_body=TEXT         Plain text body (required if no html_body)
+  html_body=HTML         HTML email body (required if no text_body)
+
+OPTIONAL ARGUMENTS:
+  from=ADDRESS           Sender address (uses profile default if not specified)
+  cc=RECIPIENTS          Carbon copy recipients
+  bcc=RECIPIENTS         Blind carbon copy recipients
+  reply_to=ADDRESS       Reply-to address
+  attachments=PATHS      File paths to attach (JSON array format)
+  headers=OBJECT         Custom headers (JSON object format)
+  smtp_host=HOST         SMTP server hostname
+  smtp_port=NUMBER       SMTP server port (default: 587)
+  smtp_username=USER     SMTP authentication username
+  smtp_password=PASS     SMTP authentication password
+  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
+  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
+  timeout_ms=NUMBER      Connection timeout (default: 10000)
+  max_retry=NUMBER       Maximum retry attempts (default: 0)
+  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+RECIPIENT FORMATS:
+  Single:    to="user@example.com"
+  Multiple:  to="user1@example.com,user2@example.com"
+  Function:  to=["user1@example.com","user2@example.com"]
+
+EXAMPLES:
+  # Basic email
+  mail://send to="user@example.com" subject="Hello" text_body="World"
+
+  # With HTML and attachments
+  mail://send to="user@example.com" subject="Report" html_body="<h1>Report</h1>" attachments='["/path/to/file.pdf"]'
+
+  # Multiple recipients with CC
+  mail://send to="team@example.com" cc="manager@example.com" subject="Update" text_body="Weekly update"
+
+Use 'mail:// --help' for complete documentation.
+"#
+                )?;
+                Ok(Status::ok())
+            }
+            "send_template" => {
+                write!(
+                    io.stdout,
+                    r#"SEND_TEMPLATE VERB - MAIL HANDLE
+===========================
+
+DESCRIPTION:
+  Send an email using a predefined template with variable substitution.
+  Supports template versioning, localization, dry-run testing, and all
+  standard email features like attachments and custom headers.
+
+SYNTAX:
+  mail://send_template [arguments]
+  mail://send_template([arguments])
+
+REQUIRED ARGUMENTS:
+  template=NAME          Template name to use
+  to=RECIPIENTS          Email addresses to send to
+
+OPTIONAL ARGUMENTS:
+  vars=OBJECT            Template variables (JSON object format)
+  locale=LOCALE          Template locale/language
+  version=VERSION        Template version
+  from=ADDRESS           Sender address (uses profile default if not specified)
+  cc=RECIPIENTS          Carbon copy recipients
+  bcc=RECIPIENTS         Blind carbon copy recipients
+  reply_to=ADDRESS       Reply-to address
+  attachments=PATHS      File paths to attach (JSON array format)
+  headers=OBJECT         Custom headers (JSON object format)
+  smtp_host=HOST         SMTP server hostname
+  smtp_port=NUMBER       SMTP server port (default: 587)
+  smtp_username=USER     SMTP authentication username
+  smtp_password=PASS     SMTP authentication password
+  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
+  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
+  timeout_ms=NUMBER      Connection timeout (default: 10000)
+  max_retry=NUMBER       Maximum retry attempts (default: 0)
+  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
+  strict_vars=BOOL       Require all template variables (default: false)
+  dry_run=BOOL           Test rendering without sending (default: false)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+TEMPLATE VARIABLES:
+  Simple replacement: {{variable_name}}
+  JSON format: vars='JSON_OBJECT_HERE'
+
+EXAMPLES:
+  # Basic template
+  mail://send_template template="welcome" to="user@example.com" vars='JSON_HERE'
+
+  # With locale and version
+  mail://send_template template="invoice" to="customer@example.com" vars='JSON_HERE' locale="en_US" version="v2"
+
+  # Dry run for testing
+  mail://send_template template="welcome" to="test@example.com" vars='JSON_HERE' dry_run=true
+
+Use 'mail:// --help' for complete documentation.
+"#
+                )?;
+                Ok(Status::ok())
+            }
+            "test" => {
+                write!(
+                    io.stdout,
+                    r#"TEST VERB - MAIL HANDLE
+===================
+
+DESCRIPTION:
+  Test SMTP connection and optionally send a test email. Useful for validating
+  SMTP configuration, authentication, and server connectivity before sending
+  real emails.
+
+SYNTAX:
+  mail://test [arguments]
+  mail://test([arguments])
+
+REQUIRED ARGUMENTS:
+  smtp_host=HOST         SMTP server hostname
+  smtp_port=NUMBER       SMTP server port
+
+OPTIONAL ARGUMENTS:
+  smtp_username=USER     SMTP authentication username
+  smtp_password=PASS     SMTP authentication password
+  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
+  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
+  connection_only=BOOL   Only test connection (default: false)
+  send_test_email=BOOL   Send a test email (default: false)
+  to=RECIPIENTS          Recipients (required if send_test_email=true)
+  from=ADDRESS           Sender (required if send_test_email=true)
+  subject=TEXT           Test email subject (optional)
+  text_body=TEXT         Test email body (optional)
+  html_body=HTML         Test email HTML body (optional)
+  timeout_ms=NUMBER      Connection timeout (default: 10000)
+  max_retry=NUMBER       Maximum retry attempts (default: 0)
+  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
+  format_output=FORMAT   Output format: json, text (default: json)
+
+TEST MODES:
+  Connection only:  connection_only=true (default)
+  With test email:  send_test_email=true
+
+EXAMPLES:
+  # Test connection only
+  mail://test smtp_host="smtp.gmail.com" smtp_port=587 use_tls="starttls"
+
+  # Test with authentication
+  mail://test smtp_host="smtp.gmail.com" smtp_port=587 smtp_username="user@gmail.com" smtp_password="app_password"
+
+  # Send test email
+  mail://test smtp_host="smtp.gmail.com" smtp_port=587 smtp_username="user@gmail.com" smtp_password="app_password" send_test_email=true to="test@example.com" from="sender@gmail.com"
+
+Use 'mail:// --help' for complete documentation.
+"#
+                )?;
+                Ok(Status::ok())
+            }
+            "config" => {
+                write!(
+                    io.stdout,
+                    r#"CONFIG VERB - MAIL HANDLE
+=====================
+
+DESCRIPTION:
+  Manage SMTP profile configurations for reusable settings. Profiles allow
+  you to store SMTP credentials and settings for different environments
+  and switch between them easily.
+
+SYNTAX:
+  mail://config [arguments]
+  mail://config([arguments])
+
+REQUIRED ARGUMENTS:
+  action=ACTION          Configuration action
+
+ACTIONS:
+  list                   List all profiles
+  get                    Get specific profile (requires profile=NAME)
+  set                    Create/update profile (requires profile=NAME and SMTP settings)
+  delete                 Delete profile (requires profile=NAME)
+  activate               Activate profile (requires profile=NAME)
+  get_active             Get currently active profile
+
+PROFILE SETTINGS (for 'set' action):
+  profile=NAME           Profile name
+  smtp_host=HOST         SMTP server hostname
+  smtp_port=NUMBER       SMTP server port
+  smtp_username=USER     SMTP username
+  smtp_password=PASS     SMTP password
+  use_tls=MODE           TLS mode (none, starttls, tls)
+  tls_accept_invalid_certs=BOOL  Accept invalid certs
+  from=ADDRESS           Default sender address
+  reply_to=ADDRESS       Default reply-to address
+  description=TEXT       Profile description
+  is_default=BOOL        Set as default profile
+
+OPTIONAL ARGUMENTS:
+  format_output=FORMAT   Output format: json, text (default: json)
+
+EXAMPLES:
+  # List all profiles
+  mail://config action="list"
+
+  # Create production profile
+  mail://config action="set" profile="production" smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" from="noreply@example.com"
+
+  # Activate profile
+  mail://config action="activate" profile="production"
+
+  # Get active profile
+  mail://config action="get_active"
+
+Use 'mail:// --help' for complete documentation.
+"#
+                )?;
+                Ok(Status::ok())
+            }
+            _ => {
+                writeln!(
+                    io.stderr,
+                    "Unknown verb: {}. Available verbs: send, send_template, test, config",
+                    verb
+                )?;
+                writeln!(
+                    io.stderr,
+                    "Use 'mail:// --help' for complete documentation."
+                )?;
+                Ok(Status::err(1, format!("Unknown verb: {}", verb)))
+            }
+        }
     }
 
     fn verb_send(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -3546,6 +5061,11 @@ impl Handle for MailHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests first
+        if let Some(status) = Self::check_and_display_help(verb, io)? {
+            return Ok(status);
+        }
+
         match verb {
             "send" => self.verb_send(args, io),
             "send_template" => self.verb_send_template(args, io),

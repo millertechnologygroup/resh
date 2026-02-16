@@ -14,6 +14,909 @@ use crate::core::{
     status::Status,
 };
 
+// ===== COMPREHENSIVE SSH HELP TEXT =====
+
+static SSH_HELP_TEXT: &str = r#"
+RESOURCE SHELL - SSH HANDLE
+===========================
+
+USAGE:
+  ssh://[username@]hostname[:port].VERB(arguments)
+
+DESCRIPTION:
+  The SSH handle allows you to connect to remote systems using the SSH protocol.
+  Execute commands, transfer files, create secure tunnels, and manage SSH keys
+  on remote hosts. Supports multiple authentication methods including SSH agent,
+  password (requires sshpass), and key-based authentication. Perfect for remote
+  system administration, automation, deployment, and secure communication.
+
+URL FORMAT:
+  ssh://username@hostname.VERB
+  ssh://username@hostname:port.VERB
+  ssh://hostname.VERB                    [uses current username]
+
+  CRITICAL: SSH URLs require an explicit verb with a dot (.)
+            ssh://user@host will fail - use ssh://user@host.exec instead
+
+VERBS (8 total):
+
+  Command Execution:
+    exec            Execute commands on remote hosts
+
+  File Transfer:
+    upload          Upload files to remote hosts
+    download        Download files from remote hosts
+
+  Tunneling:
+    tunnel          Create SSH tunnels (local, remote, dynamic/SOCKS)
+
+  Key Management:
+    keys.list       List SSH keys (authorized_keys, host keys)
+    key.add         Add SSH keys to remote authorized_keys
+
+  Configuration & Testing:
+    config.get      Get SSH configuration values
+    test            Test SSH connections (connectivity and authentication)
+
+EXAMPLES:
+
+  Command Execution (exec):
+    # Simple command - no quotes needed
+    ssh://user@host.exec command=whoami
+
+    # Simple command with explicit auth
+    ssh://user@host.exec command=uptime method=key
+
+    # Command with spaces - quotes required
+    ssh://user@host.exec command="ls -la /tmp"
+
+    # Command with pipe
+    ssh://user@host.exec command="ps aux | grep ssh"
+
+    # SSH key authentication
+    ssh://user@host.exec command=whoami method=key identity_path="$HOME/.ssh/id_rsa"
+
+    # Password authentication (requires sshpass)
+    ssh://user@host.exec command=whoami method=password password="yourpassword"
+
+    # SSH agent authentication (default)
+    ssh://user@host.exec command=whoami method=agent
+
+    # Execute in bash shell
+    ssh://user@host.exec command="echo \$HOME" shell_mode=bash
+
+    # Execute with working directory
+    ssh://user@host.exec command=pwd shell_mode=bash cwd=/tmp
+
+    # Dry run (test without executing)
+    ssh://user@host.exec command="rm -rf /tmp/*" dry_run=true
+
+    # Custom timeout
+    ssh://user@host.exec command="long-task" connect_timeout_ms=5000 command_timeout_ms=30000
+
+    # Base64 output encoding
+    ssh://user@host.exec command="cat /bin/data" output_encoding=base64
+
+    # Disable output capture
+    ssh://user@host.exec command="echo hello" capture_output=false
+
+    # Text format output
+    ssh://user@host.exec command=whoami format=text
+
+    # Custom port
+    ssh://user@host:2222.exec command=whoami
+
+  File Upload (upload):
+    # Upload inline content
+    ssh://user@host.upload source="Hello World" source_mode=inline dest="/tmp/test.txt" overwrite=true
+
+    # Upload from file
+    ssh://user@host.upload source="/local/file.txt" source_mode=file dest="/remote/file.txt" overwrite=true
+
+    # Upload base64 content
+    ssh://user@host.upload source="SGVsbG8gV29ybGQh" source_mode=inline source_encoding=base64 dest="/tmp/file.txt"
+
+    # Atomic upload (temp file then rename)
+    ssh://user@host.upload source="data" source_mode=inline dest="/tmp/file.txt" atomic=true
+
+    # Upload with checksum verification
+    ssh://user@host.upload source="data" source_mode=inline dest="/tmp/file.txt" verify_checksum=true checksum_algorithm=sha256
+
+    # Dry run upload
+    ssh://user@host.upload source="test" source_mode=inline dest="/tmp/test.txt" dry_run=true
+
+    # Upload with password auth
+    ssh://user@host.upload source="data" source_mode=inline dest="/tmp/file.txt" method=password password="pass"
+
+    # Upload with key auth
+    ssh://user@host.upload source="/local/file" source_mode=file dest="/remote/file" method=key identity_path="$HOME/.ssh/id_rsa"
+
+    # Text format output
+    ssh://user@host.upload source="data" source_mode=inline dest="/tmp/file.txt" format=text
+
+  File Download (download):
+    # Download to local file
+    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt"
+
+    # Download content only (no file)
+    ssh://user@host.download source="/remote/config.yaml" dest_mode=none return_content=true
+
+    # Download with content in response
+    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt" return_content=true
+
+    # Download as base64
+    ssh://user@host.download source="/bin/data" dest_mode=none return_content=true return_encoding=base64
+
+    # Download with overwrite
+    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt" overwrite=true
+
+    # Download with parent directory creation
+    ssh://user@host.download source="/remote/file.txt" dest="/local/nested/dir/file.txt" mkdir_parents=true
+
+    # Download with checksum verification
+    ssh://user@host.download source="/remote/file.txt" dest_mode=none return_content=true verify_checksum=true checksum_algorithm=sha256
+
+    # Dry run download
+    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt" dry_run=true
+
+    # Download with size limit
+    ssh://user@host.download source="/remote/file.txt" dest_mode=none max_size_bytes=1048576
+
+    # Download with password auth
+    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt" method=password password="pass"
+
+  SSH Tunneling (tunnel):
+    # Local tunnel (forward local port to remote)
+    ssh://user@host.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432
+
+    # Remote tunnel (forward remote port to local)
+    ssh://user@host.tunnel mode=remote remote_bind_port=9090 local_dest_host=localhost local_dest_port=8080
+
+    # Dynamic tunnel (SOCKS proxy)
+    ssh://user@host.tunnel mode=dynamic local_bind_port=1080 socks_version=socks5
+
+    # Local tunnel with custom bind address
+    ssh://user@host.tunnel mode=local local_bind_host=127.0.0.1 local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432
+
+    # Tunnel with lifetime limits
+    ssh://user@host.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 tunnel_timeout_ms=60000 idle_timeout_ms=30000 max_connections=10
+
+    # Tunnel with bandwidth limits
+    ssh://user@host.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 max_bytes_in=1048576 max_bytes_out=2097152
+
+    # Wildcard bind (use with caution)
+    ssh://user@host.tunnel mode=local local_bind_host=0.0.0.0 local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 allow_wildcard_binds=true
+
+    # Tunnel dry run
+    ssh://user@host.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 dry_run=true
+
+    # SOCKS4 proxy
+    ssh://user@host.tunnel mode=dynamic local_bind_port=1080 socks_version=socks4
+
+  Key Management (keys.list):
+    # List authorized keys
+    ssh://user@host.keys.list
+
+    # List authorized keys with scope
+    ssh://user@host.keys.list scope=authorized
+
+    # List host keys
+    ssh://user@host.keys.list scope=host
+
+    # List keys from custom paths
+    ssh://user@host.keys.list scope=custom custom_paths="/path/to/keys1,/path/to/keys2"
+
+    # Filter by key types
+    ssh://user@host.keys.list key_types="ed25519,rsa"
+
+    # List with specific fingerprint algorithm
+    ssh://user@host.keys.list fingerprint_algorithm=sha256
+
+    # List keys without raw key data
+    ssh://user@host.keys.list include_raw_key=false
+
+  Add Keys (key.add):
+    # Add public key to authorized_keys
+    ssh://user@host.key.add public_key="ssh-rsa AAAAB3NzaC1yc2E... user@host" target_path="~/.ssh/authorized_keys"
+
+    # Add key with custom path
+    ssh://user@host.key.add public_key="ssh-ed25519 AAAAC3N... user@host" target_path="/home/user/.ssh/authorized_keys"
+
+  Configuration (config.get):
+    # Get SSH configuration
+    ssh://user@host.config.get
+
+    # Get config with specific auth
+    ssh://user@host.config.get method=key identity_path="$HOME/.ssh/id_rsa"
+
+  Connection Testing (test):
+    # Test connection
+    ssh://user@host.test
+
+    # Test with password auth
+    ssh://user@host.test method=password password="secret"
+
+    # Test with key auth
+    ssh://user@host.test method=key identity_path="$HOME/.ssh/id_rsa"
+
+    # Test custom port
+    ssh://user@host:2222.test
+
+SYNTAX RULES:
+
+  Critical SSH URL requirement:
+    ✅ CORRECT:   ssh://user@host.exec command=whoami
+    ❌ WRONG:     ssh://user@host command=whoami
+    ❌ WRONG:     ssh://user@host .exec command=whoami
+
+    SSH URLs MUST include an explicit verb with a dot (.)
+
+  When to use quotes:
+    No quotes needed:
+      • Simple commands:           command=whoami
+      • Simple parameters:         method=key
+      • Numbers:                   port=2222
+      • Paths without spaces:      dest=/tmp/file.txt
+
+    Quotes required:
+      • Commands with spaces:      command="ls -la"
+      • Commands with pipes:       command="ps | grep ssh"
+      • Paths with spaces:         dest="/path with spaces/file.txt"
+      • Complex strings:           source="Hello World"
+
+  Examples:
+    # No quotes needed
+    ssh://user@host.exec command=whoami method=key port=2222
+
+    # Quotes required
+    ssh://user@host.exec command="ls -la /tmp" dest="/path with spaces/file.txt"
+
+EXEC ARGUMENTS:
+  command=CMD            Command to execute (required)
+  shell_mode=SHELL       Shell to use: bash, sh, none (default: none)
+  cwd=PATH               Working directory for command
+  method=METHOD          Authentication method: agent, password, key
+  password=PASS          Password (requires sshpass)
+  identity_path=PATH     Path to private key file
+  identity_data=DATA     Private key data inline
+  identity_passphrase=PASS  Key passphrase
+  connect_timeout_ms=MS  Connection timeout (default: 30000)
+  command_timeout_ms=MS  Command timeout (default: none)
+  capture_output=BOOL    Capture stdout/stderr (default: true)
+  output_encoding=ENC    Output encoding: utf8, base64 (default: utf8)
+  max_output_bytes=N     Max output size in bytes
+  dry_run=BOOL           Test without executing (default: false)
+  format=FORMAT          Output format: json, text (default: json)
+
+UPLOAD ARGUMENTS:
+  source=DATA            Source data or file path (required)
+  source_mode=MODE       Source mode: inline, file (required)
+  source_encoding=ENC    Source encoding: utf8, base64 (default: utf8)
+  dest=PATH              Destination path on remote host (required)
+  overwrite=BOOL         Overwrite if exists (default: false)
+  atomic=BOOL            Use atomic write (temp + rename) (default: false)
+  verify_checksum=BOOL   Verify after upload (default: false)
+  checksum_algorithm=ALG Checksum algorithm: md5, sha256 (default: sha256)
+  method=METHOD          Authentication method
+  password=PASS          Password
+  identity_path=PATH     Private key path
+  dry_run=BOOL           Test without uploading (default: false)
+  format=FORMAT          Output format: json, text (default: json)
+
+DOWNLOAD ARGUMENTS:
+  source=PATH            Source path on remote host (required)
+  dest=PATH              Destination path on local system
+  dest_mode=MODE         Destination mode: file, none (default: file)
+  overwrite=BOOL         Overwrite if exists (default: false)
+  mkdir_parents=BOOL     Create parent directories (default: false)
+  return_content=BOOL    Include content in response (default: false)
+  return_encoding=ENC    Content encoding: utf8, base64 (default: utf8)
+  max_size_bytes=N       Maximum file size
+  verify_checksum=BOOL   Verify after download (default: false)
+  checksum_algorithm=ALG Checksum algorithm (default: sha256)
+  method=METHOD          Authentication method
+  password=PASS          Password
+  identity_path=PATH     Private key path
+  dry_run=BOOL           Test without downloading (default: false)
+  format=FORMAT          Output format: json, text (default: json)
+
+TUNNEL ARGUMENTS:
+  mode=MODE              Tunnel mode: local, remote, dynamic (required)
+  
+  Local tunnel:
+    local_bind_host=HOST   Local bind address (default: 127.0.0.1)
+    local_bind_port=PORT   Local bind port (required)
+    remote_dest_host=HOST  Remote destination host (required)
+    remote_dest_port=PORT  Remote destination port (required)
+  
+  Remote tunnel:
+    remote_bind_host=HOST  Remote bind address (default: 127.0.0.1)
+    remote_bind_port=PORT  Remote bind port (required)
+    local_dest_host=HOST   Local destination host (required)
+    local_dest_port=PORT   Local destination port (required)
+  
+  Dynamic tunnel:
+    local_bind_host=HOST   Local bind address (default: 127.0.0.1)
+    local_bind_port=PORT   Local bind port (required)
+    socks_version=VER      SOCKS version: socks4, socks5 (default: socks5)
+  
+  Lifetime controls:
+    connect_timeout_ms=MS  Connection timeout (default: 30000)
+    tunnel_timeout_ms=MS   Total tunnel lifetime
+    idle_timeout_ms=MS     Idle timeout
+    max_connections=N      Max concurrent connections
+    max_bytes_in=N         Max bytes received
+    max_bytes_out=N        Max bytes sent
+  
+  Security:
+    allow_wildcard_binds=BOOL  Allow 0.0.0.0 binds (default: false)
+    known_hosts_mode=MODE      Host verification: strict, accept_new, insecure
+  
+  Other:
+    method=METHOD          Authentication method
+    password=PASS          Password
+    identity_path=PATH     Private key path
+    dry_run=BOOL           Test without creating tunnel (default: false)
+    format=FORMAT          Output format: json, text (default: json)
+
+KEYS.LIST ARGUMENTS:
+  scope=SCOPE            Key scope: authorized, host, custom (default: authorized)
+  custom_paths=PATHS     Comma-separated paths (for scope=custom)
+  key_types=TYPES        Filter key types: rsa,ecdsa,ed25519,dsa
+  fingerprint_algorithm=ALG  Algorithm: md5, sha256 (default: sha256)
+  max_keys=N             Maximum keys to return (default: 1024)
+  max_bytes=N            Maximum bytes to read (default: 1048576)
+  include_options=BOOL   Include key options (default: true)
+  include_raw_key=BOOL   Include raw key data (default: true)
+  method=METHOD          Authentication method
+  format=FORMAT          Output format: json, text (default: json)
+
+KEY.ADD ARGUMENTS:
+  public_key=KEY         Public key to add (required)
+  target_path=PATH       Target authorized_keys path (default: ~/.ssh/authorized_keys)
+  method=METHOD          Authentication method
+  password=PASS          Password
+  identity_path=PATH     Private key path
+  format=FORMAT          Output format: json, text (default: json)
+
+CONFIG.GET ARGUMENTS:
+  method=METHOD          Authentication method
+  password=PASS          Password
+  identity_path=PATH     Private key path
+  format=FORMAT          Output format: json, text (default: json)
+
+TEST ARGUMENTS:
+  method=METHOD          Authentication method
+  password=PASS          Password
+  identity_path=PATH     Private key path
+  connect_timeout_ms=MS  Connection timeout (default: 30000)
+  format=FORMAT          Output format: json, text (default: json)
+
+AUTHENTICATION METHODS:
+
+  agent (default):
+    Uses SSH agent for authentication
+    No additional parameters required
+    Requires SSH agent to be running
+    Most convenient for interactive use
+
+    Example:
+      ssh://user@host.exec command=whoami method=agent
+
+  password:
+    Uses password authentication
+    Requires 'sshpass' utility to be installed
+    Less secure than key-based authentication
+    Suitable for automation with stored passwords
+
+    Install sshpass:
+      Ubuntu/Debian:  sudo apt-get install sshpass
+      CentOS/RHEL:    sudo yum install sshpass
+      macOS:          brew install sshpass
+
+    Example:
+      ssh://user@host.exec command=whoami method=password password="secret"
+
+  key:
+    Uses SSH key authentication
+    Most secure method
+    Recommended for automation
+    Supports key passphrases
+
+    Example:
+      ssh://user@host.exec command=whoami method=key identity_path="$HOME/.ssh/id_rsa"
+
+    With passphrase:
+      ssh://user@host.exec command=whoami method=key identity_path="$HOME/.ssh/id_rsa" identity_passphrase="keypass"
+
+    Inline key data:
+      ssh://user@host.exec command=whoami method=key identity_data="-----BEGIN RSA PRIVATE KEY-----..."
+
+TUNNEL MODES:
+
+  local (Local Port Forwarding):
+    Forward local port to remote destination through SSH server
+    Use case: Access remote service through jump host
+
+    Flow: localhost:local_port → SSH server → remote_dest_host:remote_dest_port
+
+    Example:
+      ssh://jump.example.com.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432
+      # Access: localhost:5433 → jump.example.com → db.internal:5432
+      # Connect to database: psql -h localhost -p 5433
+
+  remote (Remote Port Forwarding):
+    Forward remote port to local destination through SSH server
+    Use case: Expose local service to remote network
+
+    Flow: SSH server:remote_port → localhost → local_dest_host:local_dest_port
+
+    Example:
+      ssh://server.example.com.tunnel mode=remote remote_bind_port=9090 local_dest_host=localhost local_dest_port=8080
+      # Remote users access: server.example.com:9090 → your machine → localhost:8080
+
+  dynamic (Dynamic Port Forwarding / SOCKS Proxy):
+    Create SOCKS proxy for dynamic forwarding
+    Use case: Browse through SSH tunnel, bypass restrictions
+
+    Flow: Application → SOCKS proxy:local_port → SSH server → destination
+
+    Example:
+      ssh://proxy.example.com.tunnel mode=dynamic local_bind_port=1080 socks_version=socks5
+      # Configure browser: SOCKS5 proxy localhost:1080
+      # All browser traffic goes through proxy.example.com
+
+SHELL MODES:
+
+  none (default):
+    Execute command directly without shell
+    No shell interpretation
+    Safest option, no injection risks
+    Command: exactly as specified
+
+  bash:
+    Execute through bash shell
+    Shell interpretation enabled
+    Variables expanded: $HOME, $USER, etc.
+    Command: bash -c 'command'
+
+  sh:
+    Execute through sh shell
+    POSIX shell interpretation
+    Command: sh -c 'command'
+
+  Working directory with shell:
+    When cwd is specified with shell_mode:
+    Command becomes: bash -c 'cd "/path" && command'
+
+HOST KEY VERIFICATION:
+
+  strict (default):
+    Verify against known_hosts
+    Fail if host key doesn't match
+    Secure, recommended for production
+
+  accept_new:
+    Accept unknown hosts automatically
+    Add to known_hosts
+    Reject if key changes
+    Convenient for first connection
+
+  insecure:
+    Skip host key verification entirely
+    Accept any host key
+    SECURITY WARNING: Vulnerable to MITM
+    Only use for testing/development
+
+OUTPUT FORMATS:
+
+  json (default):
+    Structured JSON output
+    {
+      "ok": true,
+      "connection": {...},
+      "result": {...}
+    }
+
+  text:
+    Human-readable text output
+    SSH Exec
+    ========
+    Host: example.com
+    Command: whoami
+    Exit Code: 0
+    ...
+
+EXIT CODES:
+  0                      Success
+  1                      General error
+  2                      Connection failed
+  3                      Authentication failed
+  4                      Command execution failed
+  5                      File transfer failed
+  6                      Tunnel creation failed
+  7                      Invalid arguments
+
+ERROR CODES:
+
+  Connection errors:
+    ssh.host_required              Host not specified
+    ssh.connection_failed          Cannot connect to host
+    ssh.connection_timeout         Connection timed out
+
+  Authentication errors:
+    ssh.auth_failed                Authentication failed
+    ssh.auth_missing_password      Password required but not provided
+    ssh.auth_missing_key           Key required but not provided
+    ssh.agent_not_available        SSH agent not running
+
+  Exec errors:
+    ssh.command_required           Command not specified
+    ssh.command_failed             Command execution failed
+    ssh.command_timeout            Command execution timed out
+
+  Upload errors:
+    ssh.upload_source_missing      Source not specified
+    ssh.upload_dest_missing        Destination not specified
+    ssh.upload_dest_exists         File exists and overwrite=false
+    ssh.upload_checksum_mismatch   Upload verification failed
+    ssh.upload_remote_write_failed Permission denied or disk full
+    ssh.upload_timeout             Upload operation timed out
+
+  Download errors:
+    ssh.download_source_missing    Source not specified
+    ssh.download_dest_missing      Destination required for file mode
+    ssh.download_dest_exists       File exists and overwrite=false
+    ssh.download_too_large         File exceeds max_size_bytes
+    ssh.download_checksum_mismatch Download verification failed
+    ssh.download_failed            Download operation failed
+
+  Tunnel errors:
+    ssh.tunnel_mode_required       Tunnel mode not specified
+    ssh.tunnel_missing_remote_dest Remote destination required
+    ssh.tunnel_missing_local_dest  Local destination required
+    ssh.tunnel_wildcard_bind_forbidden  Wildcard bind not allowed
+    ssh.tunnel_creation_failed     Failed to create tunnel
+
+COMMON WORKFLOWS:
+
+  Remote command execution:
+    # Check system status
+    ssh://server.example.com.exec command=uptime
+
+    # Check disk usage
+    ssh://server.example.com.exec command="df -h"
+
+    # Process management
+    ssh://server.example.com.exec command="ps aux | grep nginx"
+
+    # System maintenance
+    ssh://server.example.com.exec command="sudo apt-get update" method=key identity_path="$HOME/.ssh/id_rsa"
+
+  File deployment:
+    # Upload configuration
+    ssh://server.example.com.upload source="/local/config.yaml" source_mode=file dest="/etc/app/config.yaml" method=key identity_path="$HOME/.ssh/id_rsa" overwrite=true
+
+    # Download logs
+    ssh://server.example.com.download source="/var/log/app.log" dest="/local/logs/app.log" method=key identity_path="$HOME/.ssh/id_rsa"
+
+    # Backup configuration
+    ssh://server.example.com.download source="/etc/app/config.yaml" dest="/backups/config-$(date +%Y%m%d).yaml" method=key identity_path="$HOME/.ssh/id_rsa"
+
+  Database access through bastion:
+    # Create tunnel to database
+    ssh://bastion.example.com.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 method=key identity_path="$HOME/.ssh/id_rsa"
+
+    # Connect to database
+    psql -h localhost -p 5433 -U dbuser -d mydb
+
+  Service monitoring:
+    # Check if service is running
+    ssh://server.example.com.exec command="systemctl status nginx" method=key identity_path="$HOME/.ssh/id_rsa"
+
+    # Check service logs
+    ssh://server.example.com.exec command="journalctl -u nginx -n 50" method=key identity_path="$HOME/.ssh/id_rsa"
+
+  Remote development:
+    # Create SOCKS proxy
+    ssh://dev-server.example.com.tunnel mode=dynamic local_bind_port=1080 method=key identity_path="$HOME/.ssh/id_rsa"
+
+    # Configure browser to use SOCKS5 proxy localhost:1080
+    # Access internal services through tunnel
+
+  Key management:
+    # List authorized keys
+    ssh://server.example.com.keys.list method=key identity_path="$HOME/.ssh/id_rsa"
+
+    # Add new key
+    ssh://server.example.com.key.add public_key="$(cat ~/.ssh/new_key.pub)" method=key identity_path="$HOME/.ssh/id_rsa"
+
+  Automation scripts:
+    # Deploy application
+    ssh://app-server.example.com.upload source="/local/app.tar.gz" source_mode=file dest="/tmp/app.tar.gz" method=key identity_path="$HOME/.ssh/deploy_key"
+    ssh://app-server.example.com.exec command="cd /opt/app && tar xzf /tmp/app.tar.gz" method=key identity_path="$HOME/.ssh/deploy_key"
+    ssh://app-server.example.com.exec command="systemctl restart app" method=key identity_path="$HOME/.ssh/deploy_key"
+
+  Testing connectivity:
+    # Test before operations
+    ssh://server.example.com.test method=key identity_path="$HOME/.ssh/id_rsa"
+
+    # Test password auth
+    ssh://server.example.com.test method=password password="secret"
+
+BEST PRACTICES:
+  • Use SSH keys instead of passwords for automation
+  • Always use key authentication for production systems
+  • Protect private keys with proper permissions (chmod 600)
+  • Use SSH agent for interactive sessions
+  • Test connections with .test verb before operations
+  • Use dry_run to verify commands before execution
+  • Set appropriate timeouts for long-running commands
+  • Use atomic uploads for critical files
+  • Verify checksums for important transfers
+  • Use strict host key verification in production
+  • Limit tunnel lifetime and connections
+  • Avoid wildcard binds (0.0.0.0) in production
+  • Use local tunnels for accessing remote services
+  • Use remote tunnels for exposing local services
+  • Use dynamic tunnels for SOCKS proxy
+  • Always specify explicit verbs in SSH URLs
+  • Use quotes for commands with spaces or special characters
+  • Store passwords and keys securely (environment variables, vaults)
+  • Rotate SSH keys regularly
+  • Use different keys for different purposes
+  • Monitor SSH access logs
+  • Implement proper error handling in scripts
+  • Use meaningful command timeouts
+  • Capture output for logging and debugging
+  • Test in development before production deployment
+  • Use format=text for human-readable output
+  • Use format=json for programmatic parsing
+  • Document SSH access patterns
+  • Implement backup procedures for SSH keys
+  • Use SSH config file for common settings
+  • Implement connection retry logic for flaky networks
+
+SECURITY CONSIDERATIONS:
+  • Password authentication is less secure than keys
+  • Password auth requires sshpass utility
+  • Never hardcode passwords in scripts (use environment variables)
+  • Protect private keys with file permissions (600)
+  • Use key passphrases for additional security
+  • Never share private keys
+  • Use SSH agent forwarding carefully (security risk)
+  • Verify host keys to prevent MITM attacks
+  • Use strict host key verification in production
+  • Only use known_hosts_mode=insecure for testing
+  • Wildcard binds (0.0.0.0) expose tunnels to network
+  • Limit tunnel lifetime and connection counts
+  • Monitor tunnel usage for security incidents
+  • Use firewall rules to restrict SSH access
+  • Implement fail2ban or similar for brute force protection
+  • Use non-standard SSH ports for obscurity (not security)
+  • Keep SSH server and client software updated
+  • Disable root login over SSH
+  • Use SSH certificates for large deployments
+  • Implement proper key rotation policies
+  • Log all SSH connections and commands
+  • Use separate keys for different environments
+  • Implement two-factor authentication where possible
+  • Monitor for unauthorized key additions
+  • Audit authorized_keys files regularly
+  • Use jump hosts (bastions) for production access
+  • Implement network segmentation
+  • Use VPN in conjunction with SSH for additional security
+
+SSHPASS REQUIREMENT:
+
+  Password authentication requires the sshpass utility.
+
+  Installation:
+    Ubuntu/Debian:
+      sudo apt-get install sshpass
+
+    CentOS/RHEL/Fedora:
+      sudo yum install sshpass
+      # or
+      sudo dnf install sshpass
+
+    macOS:
+      brew install sshpass
+
+    Arch Linux:
+      sudo pacman -S sshpass
+
+  Without sshpass:
+    Error: "Failed to spawn ssh process"
+    Solution: Install sshpass or use key-based authentication
+
+  Security note:
+    • sshpass is convenient but less secure than keys
+    • Passwords may appear in process lists
+    • Use keys for production systems
+
+TROUBLESHOOTING:
+
+  "Cannot parse stage" error:
+    Problem: ssh://user@host fails
+    Solution: Add explicit verb
+      ✅ ssh://user@host.exec command=whoami
+
+  "SSH agent is not available" error:
+    Problem: Default auth method (agent) not available
+    Solution: Specify auth method
+      ssh://user@host.exec command=whoami method=key identity_path="$HOME/.ssh/id_rsa"
+
+  "Failed to spawn ssh process" error:
+    Problem: sshpass not installed (password auth)
+    Solution: Install sshpass or use key auth
+
+  "Permission denied (publickey)" error:
+    Solutions:
+      • Check key is in remote authorized_keys
+      • Verify correct key path
+      • Check key permissions (chmod 600)
+      • Test with: ssh user@host
+
+  Connection timeout:
+    Solutions:
+      • Increase connect_timeout_ms
+      • Check firewall rules
+      • Verify host is reachable
+      • Check DNS resolution
+
+  Command timeout:
+    Solutions:
+      • Increase command_timeout_ms
+      • Optimize command for speed
+      • Run command in background if appropriate
+
+  File transfer fails:
+    Solutions:
+      • Check disk space on remote
+      • Verify file permissions
+      • Use overwrite=true if file exists
+      • Check network bandwidth
+
+  Tunnel fails to create:
+    Solutions:
+      • Check if port is already in use
+      • Verify remote service is accessible
+      • Check firewall rules
+      • Use dry_run to test configuration
+
+  Host key verification failed:
+    Solutions:
+      • Add host to known_hosts manually
+      • Use known_hosts_mode=accept_new for first connection
+      • Use known_hosts_mode=insecure for testing only
+      • Check if host key has changed (security concern)
+
+PLATFORM SUPPORT:
+
+  All verbs:               Linux, macOS, Windows (with limitations)
+  Password auth:           Requires sshpass (all platforms)
+  SSH agent:               All platforms (requires agent running)
+  Key auth:                All platforms
+  Tunneling:               All platforms
+
+  Platform notes:
+
+  Linux:
+    • Full support for all features
+    • Native SSH client
+    • sshpass available in repositories
+
+  macOS:
+    • Full support for all features
+    • Native SSH client
+    • sshpass available via Homebrew
+
+  Windows:
+    • Requires OpenSSH client
+    • sshpass support limited
+    • Use WSL for best experience
+    • PowerShell SSH support varies
+
+PERFORMANCE CONSIDERATIONS:
+  • SSH connections have overhead (handshake, encryption)
+  • Connection pooling not supported (each command = new connection)
+  • File transfers limited by network bandwidth
+  • Large file transfers may timeout (increase timeout_ms)
+  • Compression can improve transfer speeds (SSH config)
+  • Tunnels add latency overhead
+  • Multiple concurrent connections may strain server
+  • Use keep-alive for long-running operations
+  • Consider connection reuse in SSH config
+  • Monitor network latency and packet loss
+
+LIMITATIONS:
+  • No connection pooling (new connection per operation)
+  • No built-in SCP support (uses SFTP/SSH)
+  • No rsync integration
+  • Limited SSH config file support
+  • No interactive shell sessions
+  • No X11 forwarding
+  • No agent forwarding
+  • Tunnels don't auto-reconnect
+  • No built-in retry logic for failed operations
+  • No progress indicators for file transfers
+  • No bandwidth limiting for transfers
+  • Command output size limited by max_output_bytes
+  • No built-in log tailing (use exec with tail -f)
+
+DEBUGGING:
+
+  Enable dry_run:
+    ssh://user@host.exec command="rm -rf /" dry_run=true
+
+  Use text format:
+    ssh://user@host.exec command=whoami format=text
+
+  Test connection first:
+    ssh://user@host.test
+
+  Check authentication:
+    ssh://user@host.test method=password password="secret"
+    ssh://user@host.test method=key identity_path="$HOME/.ssh/id_rsa"
+
+  Verbose SSH output:
+    # Use native ssh command with -v flag for debugging
+    ssh -v user@host
+
+  Common issues:
+    • Wrong verb (missing or incorrect)
+    • Missing quotes for complex commands
+    • Wrong authentication method
+    • sshpass not installed (password auth)
+    • SSH agent not running (agent auth)
+    • Wrong key path or permissions
+    • Host not in known_hosts
+    • Firewall blocking connection
+    • DNS resolution issues
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With file handle:
+    # Copy local file content to remote
+    ssh://server.example.com.upload source="$(file:///local/file.txt.read)" source_mode=inline dest="/remote/file.txt"
+
+  With log handle:
+    # Log remote command output
+    ssh://server.example.com.exec command=whoami | log://./ssh-output.log.append
+
+  With backup handle:
+    # Backup remote file
+    ssh://server.example.com.download source="/etc/app/config.yaml" dest="/backups/config.yaml"
+    backup://config-backup.create target="/backups"
+
+  With event handle:
+    # Trigger on SSH operation
+    ssh://server.example.com.exec command="deploy.sh" && event://emit topic="deploy.complete"
+
+  With config handle:
+    # Store SSH credentials
+    config://ssh/servers/production.set value="server.example.com"
+    config://ssh/keys/production.set value="/path/to/key"
+
+MORE INFO:
+  For complete documentation of SSH handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Network_RemoteOperations/ssh.md
+
+  SSH protocol specifications:
+  https://www.rfc-editor.org/rfc/rfc4251 (SSH Protocol Architecture)
+  https://www.rfc-editor.org/rfc/rfc4252 (SSH Authentication Protocol)
+  https://www.rfc-editor.org/rfc/rfc4253 (SSH Transport Layer Protocol)
+
+  OpenSSH documentation:
+  https://www.openssh.com/manual.html
+
+  SSH security best practices:
+  https://www.ssh.com/academy/ssh/security
+
+  Use 'ssh:// --help=VERB' for detailed help on a specific verb.
+"#;
+
 /// SSH authentication methods
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -2224,6 +3127,443 @@ impl SshHandle {
     pub fn from_url(url: &Url) -> Result<Self> {
         let target = SshTarget::from_url(url);
         Ok(SshHandle { target })
+    }
+
+    /// Check if this is a help request and display help if so
+    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
+        // Check for help verbs
+        if verb == "--help" || verb == "-h" || verb == "help" {
+            write!(io.stdout, "{}", SSH_HELP_TEXT)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        // Check for verb-specific help
+        if verb.starts_with("--help=") {
+            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
+            Self::display_verb_help(help_verb, io)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        Ok(None)
+    }
+
+    /// Display help for a specific verb
+    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
+        match verb {
+            "exec" => {
+                write!(io.stdout, r#"
+EXEC VERB - SSH HANDLE
+=====================
+
+DESCRIPTION:
+  Execute commands on remote systems via SSH connection. Supports various shell
+  modes, authentication methods, output formats, and execution options like
+  working directory, timeouts, and dry-run testing.
+
+SYNTAX:
+  ssh://[username@]hostname[:port].exec(command="COMMAND" [options])
+
+REQUIRED ARGUMENTS:
+  command=CMD            Command to execute on remote host
+
+OPTIONAL ARGUMENTS:
+  Authentication:
+    method=METHOD          Authentication: agent, password, key (default: agent)
+    password=PASS          Password for authentication (requires sshpass)
+    identity_path=PATH     Path to private key file
+    identity_data=DATA     Private key content inline (PEM format)
+    identity_passphrase=PASS  Passphrase for encrypted private keys
+    agent_socket=PATH      Custom SSH agent socket path
+
+  Execution:
+    shell_mode=SHELL       Shell: bash, sh, none (default: none)
+    cwd=PATH               Working directory for command execution
+    env=KEY=VAL,KEY2=VAL2  Environment variables to set
+    allocate_pty=BOOL      Allocate pseudo-TTY (default: false)
+
+  Timeouts:
+    connect_timeout_ms=MS  SSH connection timeout (default: 30000)
+    command_timeout_ms=MS  Command execution timeout (default: unlimited)
+
+  Output:
+    capture_output=BOOL    Capture stdout/stderr (default: true)
+    output_encoding=ENC    Encoding: utf8, base64 (default: utf8)
+    max_output_bytes=N     Maximum output size in bytes
+    trim_trailing_newlines=BOOL  Remove trailing newlines (default: true)
+
+  Control:
+    dry_run=BOOL           Test without executing (default: false)
+    format=FORMAT          Output: json, text (default: json)
+
+EXAMPLES:
+  # Simple command
+  ssh://user@server.exec command=whoami
+
+  # Command with authentication
+  ssh://user@server.exec command=uptime method=key identity_path="$HOME/.ssh/id_rsa"
+
+  # Complex command with shell
+  ssh://user@server.exec command="cd /var/log && tail -n 20 syslog" shell_mode=bash
+
+  # Dry run test
+  ssh://user@server.exec command="sudo reboot" dry_run=true
+
+For complete help: ssh:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "upload" => {
+                write!(io.stdout, r#"
+UPLOAD VERB - SSH HANDLE
+=======================
+
+DESCRIPTION:
+  Upload files or data to remote systems via SFTP/SSH. Supports inline content,
+  file uploads, atomic operations, checksum verification, and various encoding
+  options for secure file transfer.
+
+SYNTAX:
+  ssh://[username@]hostname[:port].upload(source="DATA" source_mode="MODE" dest="PATH" [options])
+
+REQUIRED ARGUMENTS:
+  source=DATA            Source data (content or file path)
+  source_mode=MODE       Source type: inline, file
+  dest=PATH              Destination path on remote system
+
+OPTIONAL ARGUMENTS:
+  Source:
+    source_encoding=ENC    Source encoding: utf8, base64 (default: utf8)
+    content_type=TYPE      MIME content type hint
+
+  Transfer:
+    overwrite=BOOL         Overwrite existing files (default: false)
+    atomic=BOOL            Atomic upload (temp file + rename) (default: false)
+    verify_checksum=BOOL   Verify transfer integrity (default: false)
+    checksum_algorithm=ALG Algorithm: md5, sha256 (default: sha256)
+
+  Authentication:
+    method=METHOD          Authentication: agent, password, key (default: agent)
+    password=PASS          Password (requires sshpass)
+    identity_path=PATH     Private key file path
+
+  Control:
+    dry_run=BOOL           Test without uploading (default: false)
+    format=FORMAT          Output: json, text (default: json)
+
+EXAMPLES:
+  # Upload inline content
+  ssh://user@server.upload source="Hello World" source_mode=inline dest="/tmp/hello.txt"
+
+  # Upload file with overwrite
+  ssh://user@server.upload source="/local/config.yaml" source_mode=file dest="/etc/app/config.yaml" overwrite=true
+
+  # Atomic upload with verification
+  ssh://user@server.upload source="important data" source_mode=inline dest="/critical/file.txt" atomic=true verify_checksum=true
+
+For complete help: ssh:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "download" => {
+                write!(io.stdout, r#"
+DOWNLOAD VERB - SSH HANDLE
+=========================
+
+DESCRIPTION:
+  Download files from remote systems via SFTP/SSH. Supports file downloads,
+  content-only retrieval, checksum verification, and various encoding options
+  for secure file transfer.
+
+SYNTAX:
+  ssh://[username@]hostname[:port].download(source="PATH" [options])
+
+REQUIRED ARGUMENTS:
+  source=PATH            Source path on remote system
+
+OPTIONAL ARGUMENTS:
+  Destination:
+    dest=PATH              Local destination path
+    dest_mode=MODE         Mode: file, none (default: file)
+    overwrite=BOOL         Overwrite existing files (default: false)
+    mkdir_parents=BOOL     Create parent directories (default: false)
+
+  Content:
+    return_content=BOOL    Include content in response (default: false)
+    return_encoding=ENC    Content encoding: utf8, base64 (default: utf8)
+    max_size_bytes=N       Maximum file size to download
+
+  Verification:
+    verify_checksum=BOOL   Verify transfer integrity (default: false)
+    checksum_algorithm=ALG Algorithm: md5, sha256 (default: sha256)
+
+  Authentication:
+    method=METHOD          Authentication: agent, password, key (default: agent)
+    password=PASS          Password (requires sshpass)
+    identity_path=PATH     Private key file path
+
+  Control:
+    dry_run=BOOL           Test without downloading (default: false)
+    format=FORMAT          Output: json, text (default: json)
+
+EXAMPLES:
+  # Download to local file
+  ssh://user@server.download source="/remote/data.txt" dest="/local/data.txt"
+
+  # Download content only (no file)
+  ssh://user@server.download source="/remote/config.json" dest_mode=none return_content=true
+
+  # Download with verification
+  ssh://user@server.download source="/important/file.txt" dest="/backup/file.txt" verify_checksum=true
+
+For complete help: ssh:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "tunnel" => {
+                write!(io.stdout, r#"
+TUNNEL VERB - SSH HANDLE
+=======================
+
+DESCRIPTION:
+  Create SSH tunnels for port forwarding and SOCKS proxy functionality.
+  Supports local forwarding (access remote services), remote forwarding
+  (expose local services), and dynamic forwarding (SOCKS proxy).
+
+SYNTAX:
+  ssh://[username@]hostname[:port].tunnel(mode="MODE" [options])
+
+REQUIRED ARGUMENTS:
+  mode=MODE              Tunnel type: local, remote, dynamic
+
+MODE-SPECIFIC ARGUMENTS:
+
+Local Tunnel (access remote service through SSH):
+  local_bind_host=HOST   Local bind address (default: 127.0.0.1)
+  local_bind_port=PORT   Local port to bind (required)
+  remote_dest_host=HOST  Remote target host (required)
+  remote_dest_port=PORT  Remote target port (required)
+
+Remote Tunnel (expose local service to remote):
+  remote_bind_host=HOST  Remote bind address (default: 127.0.0.1)
+  remote_bind_port=PORT  Remote port to bind (required)
+  local_dest_host=HOST   Local target host (required)
+  local_dest_port=PORT   Local target port (required)
+
+Dynamic Tunnel (SOCKS proxy):
+  local_bind_host=HOST   Local bind address (default: 127.0.0.1)
+  local_bind_port=PORT   Local SOCKS port (required)
+  socks_version=VER      SOCKS version: socks4, socks5 (default: socks5)
+
+OPTIONAL ARGUMENTS:
+  Lifetime:
+    tunnel_timeout_ms=MS   Total tunnel lifetime
+    idle_timeout_ms=MS     Idle connection timeout
+    max_connections=N      Maximum concurrent connections
+    max_bytes_in=N         Maximum bytes received
+    max_bytes_out=N        Maximum bytes sent
+
+  Security:
+    allow_wildcard_binds=BOOL  Allow 0.0.0.0 binds (default: false)
+    known_hosts_mode=MODE      Host verification mode
+
+  Control:
+    dry_run=BOOL           Test configuration without creating tunnel
+    format=FORMAT          Output: json, text (default: json)
+
+EXAMPLES:
+  # Local tunnel to database
+  ssh://jump.example.com.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432
+
+  # Remote tunnel to expose local service
+  ssh://server.example.com.tunnel mode=remote remote_bind_port=8080 local_dest_host=localhost local_dest_port=3000
+
+  # SOCKS proxy
+  ssh://proxy.example.com.tunnel mode=dynamic local_bind_port=1080 socks_version=socks5
+
+For complete help: ssh:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "keys.list" => {
+                write!(io.stdout, r#"
+KEYS.LIST VERB - SSH HANDLE
+===========================
+
+DESCRIPTION:
+  List SSH keys from remote systems including authorized_keys, host keys,
+  or custom key files. Supports filtering by key type, fingerprint format,
+  and inclusion of key metadata.
+
+SYNTAX:
+  ssh://[username@]hostname[:port].keys.list([options])
+
+OPTIONAL ARGUMENTS:
+  Scope:
+    scope=SCOPE            Key scope: authorized, host, custom (default: authorized)
+    custom_paths=PATHS     Comma-separated paths (for scope=custom)
+
+  Filtering:
+    key_types=TYPES        Filter by types: rsa,ecdsa,ed25519,dsa
+    fingerprint_algorithm=ALG  Algorithm: md5, sha256 (default: sha256)
+    max_keys=N             Maximum keys to return (default: 1024)
+    max_bytes=N            Maximum file size to read (default: 1MB)
+
+  Output:
+    include_options=BOOL   Include key options/restrictions (default: true)
+    include_raw_key=BOOL   Include full key data (default: true)
+    format=FORMAT          Output: json, text (default: json)
+
+  Authentication:
+    method=METHOD          Authentication: agent, password, key (default: agent)
+    password=PASS          Password (requires sshpass)
+    identity_path=PATH     Private key file path
+
+EXAMPLES:
+  # List authorized keys
+  ssh://user@server.keys.list
+
+  # List only Ed25519 keys
+  ssh://user@server.keys.list key_types=ed25519
+
+  # List host keys
+  ssh://user@server.keys.list scope=host
+
+  # List keys from custom locations
+  ssh://user@server.keys.list scope=custom custom_paths="/path/to/keys1,/path/to/keys2"
+
+For complete help: ssh:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "key.add" => {
+                write!(io.stdout, r#"
+KEY.ADD VERB - SSH HANDLE
+========================
+
+DESCRIPTION:
+  Add SSH public keys to remote authorized_keys files. Supports duplicate
+  detection, key validation, and secure key management operations.
+
+SYNTAX:
+  ssh://[username@]hostname[:port].key.add(public_key="KEY" [options])
+
+REQUIRED ARGUMENTS:
+  public_key=KEY         SSH public key to add
+
+OPTIONAL ARGUMENTS:
+  Target:
+    target_path=PATH       Target file path (default: ~/.ssh/authorized_keys)
+    on_duplicate=ACTION    Action: ignore, replace, error (default: ignore)
+
+  Authentication:
+    method=METHOD          Authentication: agent, password, key (default: agent)
+    password=PASS          Password (requires sshpass)
+    identity_path=PATH     Private key file path
+
+  Control:
+    dry_run=BOOL           Test without modifying files (default: false)
+    format=FORMAT          Output: json, text (default: json)
+
+EXAMPLES:
+  # Add public key
+  ssh://user@server.key.add public_key="ssh-rsa AAAAB3NzaC... user@local"
+
+  # Add key to custom location
+  ssh://user@server.key.add public_key="ssh-ed25519 AAAAC3N... user@local" target_path="/home/user/.ssh/authorized_keys"
+
+  # Add key with duplicate replacement
+  ssh://user@server.key.add public_key="ssh-rsa AAAAB3N... user@local" on_duplicate=replace
+
+For complete help: ssh:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "config.get" => {
+                write!(io.stdout, r#"
+CONFIG.GET VERB - SSH HANDLE
+===========================
+
+DESCRIPTION:
+  Retrieve SSH client configuration information from remote systems including
+  effective configuration, SSH client settings, and connection parameters.
+
+SYNTAX:
+  ssh://[username@]hostname[:port].config.get([options])
+
+OPTIONAL ARGUMENTS:
+  Authentication:
+    method=METHOD          Authentication: agent, password, key (default: agent)
+    password=PASS          Password (requires sshpass)
+    identity_path=PATH     Private key file path
+
+  Control:
+    format=FORMAT          Output: json, text (default: json)
+
+EXAMPLES:
+  # Get SSH configuration
+  ssh://user@server.config.get
+
+  # Get config with key auth
+  ssh://user@server.config.get method=key identity_path="$HOME/.ssh/id_rsa"
+
+For complete help: ssh:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "test" => {
+                write!(io.stdout, r#"
+TEST VERB - SSH HANDLE
+=====================
+
+DESCRIPTION:
+  Test SSH connectivity and authentication to remote systems. Validates
+  connection parameters, authentication methods, and provides diagnostic
+  information for troubleshooting.
+
+SYNTAX:
+  ssh://[username@]hostname[:port].test([options])
+
+OPTIONAL ARGUMENTS:
+  Authentication:
+    method=METHOD          Authentication: agent, password, key (default: agent)
+    password=PASS          Password (requires sshpass)
+    identity_path=PATH     Private key file path
+    identity_passphrase=PASS  Key passphrase
+
+  Testing:
+    tests=TEST1,TEST2      Tests to run (default: all available)
+    exec_command=CMD       Command to test execution (default: echo)
+
+  Timeouts:
+    connect_timeout_ms=MS  Connection timeout (default: 30000)
+    handshake_timeout_ms=MS  SSH handshake timeout
+    auth_timeout_ms=MS     Authentication timeout
+    exec_timeout_ms=MS     Command execution timeout
+    overall_timeout_ms=MS  Total test timeout
+
+  Control:
+    dry_run=BOOL           Validate parameters without connecting
+    format=FORMAT          Output: json, text (default: json)
+
+EXAMPLES:
+  # Basic connectivity test
+  ssh://user@server.test
+
+  # Test with specific authentication
+  ssh://user@server.test method=key identity_path="$HOME/.ssh/id_rsa"
+
+  # Test password authentication
+  ssh://user@server.test method=password password="secret"
+
+For complete help: ssh:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            _ => {
+                write!(io.stdout, "Unknown verb: {}. Available verbs: exec, upload, download, tunnel, keys.list, key.add, config.get, test.\n\nUse 'ssh:// --help' for complete documentation.\n", verb)?;
+                Ok(Status::ok())
+            }
+        }
     }
 
     /// Apply URL target defaults to SSH options
@@ -7579,10 +8919,15 @@ impl SshHandle {
 
 impl Handle for SshHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["exec", "upload", "download", "tunnel", "keys.list", "key.add", "config.get", "test"]
+        &["exec", "upload", "download", "tunnel", "keys.list", "key.add", "config.get", "test", "help", "--help", "-h"]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check if this is a help request and display help if so
+        if let Some(status) = Self::check_and_display_help(verb, io)? {
+            return Ok(status);
+        }
+
         match verb {
             "exec" => self.verb_exec(args, io),
             "upload" => self.verb_upload(args, io),

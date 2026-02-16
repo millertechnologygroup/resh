@@ -35,6 +35,763 @@ use crate::core::{
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10GB limit
 const BUFFER_SIZE: usize = 8192; // 8KB chunks for streaming
 
+// Help text for --help command
+const HELP_TEXT: &str = r#"RESOURCE SHELL - FILE HANDLE
+============================
+
+USAGE:
+  file:///path/to/file.txt.VERB(arguments)
+
+DESCRIPTION:
+  The file handle lets you work with files and directories on your computer.
+  It provides comprehensive operations to manage files, check contents, manipulate
+  properties, calculate hashes, search content, and work with extended attributes.
+  Supports both Unix and Windows platforms with platform-specific features.
+
+URL FORMAT:
+  file:///absolute/path/to/file.txt
+  file:///path/to/directory
+
+VERB CATEGORIES:
+  Basic I/O:         read, write, append
+  File Info:         exists, stat
+  File Operations:   copy, delete, rename, move
+  Permissions:       chmod, chown (Unix only)
+  Hashing:           md5, sha1, sha256, sha512, hash, verify
+  Search/Analysis:   find, grep, replace, tail, preview, schema, summary, watch, analyze
+  Extended Attrs:    ea.get, ea.set, tag.add, tag.rm (Unix only)
+
+VERBS (30 total):
+
+  Basic I/O Operations:
+    read            Read and output entire file contents
+    write           Create new file or overwrite with content
+    append          Add content to end of existing file
+
+  File Information:
+    exists          Check if file/directory exists (JSON output)
+    stat            Get detailed file metadata (JSON output)
+
+  File Operations:
+    copy            Copy file to another location
+    delete          Delete file or directory (alias: remove)
+    rename          Rename or move file to different location
+    move            Move file to another location (alias: mv)
+
+  Permissions (Unix only):
+    chmod           Change file permissions
+    chown           Change file ownership
+
+  Hashing Operations:
+    md5             Calculate MD5 hash
+    sha1            Calculate SHA-1 hash
+    sha256          Calculate SHA-256 hash
+    sha512          Calculate SHA-512 hash
+    hash            Calculate hash with specified algorithm
+    verify          Verify file hash against expected values
+
+  Search and Analysis:
+    find            Search for files recursively
+    grep            Search for text patterns in file
+    replace         Replace text patterns in file
+    tail            Show last lines of file
+    preview         Show preview with intelligent formatting
+    schema          Analyze file structure and generate schema
+    summary         Provide summary of file/directory contents
+    watch           Monitor file for changes
+    analyze         Perform detailed file content analysis
+
+  Extended Attributes (Unix only):
+    ea.get          Get extended attributes
+    ea.set          Set extended attributes
+    tag.add         Add tags to file
+    tag.rm          Remove tags from file
+
+EXAMPLES:
+
+  Basic I/O:
+    # Read entire file
+    file:///tmp/myfile.txt.read
+
+    # Write new content (create if needed)
+    file:///tmp/test.txt.write(data="hello")
+
+    # Overwrite existing file
+    file:///tmp/existing.txt.write(data="new content")
+
+    # Write with create disabled
+    file:///tmp/nofile.txt.write(data="x",create=false)
+
+    # Append to file
+    file:///tmp/log.txt.append(data="bar")
+
+    # Append with create disabled
+    file:///tmp/missing.txt.append(data="zzz",create=false)
+
+  File Information:
+    # Check if file exists
+    file:///tmp/existing.txt.exists
+
+    # Check if directory exists
+    file:///tmp/directory.exists
+
+    # Check missing file
+    file:///tmp/missing.txt.exists
+
+    # Get detailed file metadata
+    file:///tmp/test.txt.stat
+
+    # Stat symlink without following
+    file:///tmp/symlink.stat(nofollow=true)
+
+  File Operations:
+    # Copy file
+    file:///tmp/source.txt.copy(to="/tmp/destination.txt")
+
+    # Copy with overwrite
+    file:///tmp/file.txt.copy(to="/tmp/existing.txt",overwrite=true)
+
+    # Copy preserving timestamps
+    file:///tmp/file.txt.copy(to="/tmp/dest.txt",preserve_times=true)
+
+    # Delete file
+    file:///tmp/file.txt.delete
+
+    # Delete directory recursively
+    file:///tmp/directory.delete(recursive=true)
+
+    # Delete with missing_ok
+    file:///tmp/missing.txt.delete(missing_ok=true)
+
+    # Rename file
+    file:///tmp/old.txt.rename(to="/tmp/new.txt")
+
+    # Rename with overwrite
+    file:///tmp/file.txt.rename(to="/tmp/existing.txt",overwrite=true)
+
+    # Rename creating parent directories
+    file:///tmp/file.txt.rename(to="/new/path/file.txt",create_parents=true)
+
+    # Move file
+    file:///tmp/source.txt.move(to="/home/user/dest.txt")
+
+    # Move with overwrite (using mv alias)
+    file:///tmp/file.txt.mv(to="/tmp/existing.txt",overwrite=true)
+
+  Permissions (Unix):
+    # Make script executable
+    file:///tmp/script.sh.chmod(mode=755)
+
+    # Private file (owner only)
+    file:///tmp/secret.txt.chmod(mode=600)
+
+    # Public readable
+    file:///tmp/public.txt.chmod(mode=644)
+
+    # Change owner by username
+    file:///tmp/file.txt.chown(user="alice")
+
+    # Change owner by ID
+    file:///tmp/file.txt.chown(uid=1000,gid=100)
+
+    # Change owner recursively
+    file:///tmp/directory.chown(user="alice",recursive=true)
+
+  Hashing:
+    # Calculate MD5 hash
+    file:///tmp/file.txt.md5
+
+    # Calculate SHA-1 hash
+    file:///tmp/file.txt.sha1
+
+    # Calculate SHA-256 hash
+    file:///tmp/file.txt.sha256
+
+    # Calculate SHA-512 hash
+    file:///tmp/file.txt.sha512
+
+    # Calculate hash with default algorithm (SHA-256)
+    file:///tmp/file.txt.hash
+
+    # Calculate BLAKE3 hash
+    file:///tmp/file.txt.hash(algo=blake3)
+
+    # Verify file hash
+    file:///tmp/file.txt.verify(algo=sha256,expected="a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447")
+
+    # Verify hash and size
+    file:///tmp/file.txt.verify(algo=md5,expected="098f6bcd4621d373cade4e832627b4f6",size=4)
+
+    # Verify against multiple acceptable hashes
+    file:///tmp/file.txt.verify(algo=sha256,expected_any="hash1;hash2;hash3")
+
+  Search and Analysis:
+    # Find all files
+    file:///tmp/directory.find
+
+    # Find .txt files only
+    file:///tmp/directory.find(pattern="*.txt",type=f)
+
+    # Find directories only
+    file:///tmp/directory.find(type=d)
+
+    # Find with max depth
+    file:///tmp/directory.find(max_depth=2)
+
+    # Find including hidden files
+    file:///tmp/directory.find(hidden=true)
+
+    # Search for text in file
+    file:///tmp/log.txt.grep(pattern="foo")
+
+    # Case-insensitive search
+    file:///tmp/file.txt.grep(pattern="error",ignore_case=true)
+
+    # Regex search
+    file:///tmp/file.txt.grep(pattern="[0-9]+",regex=true)
+
+    # Search without line numbers
+    file:///tmp/file.txt.grep(pattern="test",line_numbers=false)
+
+    # Replace text
+    file:///tmp/config.txt.replace(pattern="old_value",replacement="new_value")
+
+    # Replace with regex
+    file:///tmp/file.txt.replace(pattern="v[0-9]+",replacement="v2.0",regex=true)
+
+    # Replace with backup
+    file:///tmp/config.txt.replace(pattern="old",replacement="new",backup=true)
+
+    # Tail last 10 lines (default)
+    file:///var/log/app.log.tail
+
+    # Tail specific number of lines
+    file:///var/log/app.log.tail(lines=5)
+
+    # Tail last N bytes
+    file:///var/log/app.log.tail(bytes=1024)
+
+    # Follow file (continuous monitoring)
+    file:///var/log/app.log.tail(follow=true)
+
+    # Preview file
+    file:///tmp/document.txt.preview
+
+    # Preview with custom limits
+    file:///tmp/document.txt.preview(max_lines=100,max_bytes=131072)
+
+    # Analyze CSV schema
+    file:///tmp/data.csv.schema
+
+    # Analyze JSON schema
+    file:///tmp/data.json.schema(format=json)
+
+    # Analyze with sample size
+    file:///tmp/large.csv.schema(sample_size=5000)
+
+    # Summarize file
+    file:///tmp/document.txt.summary
+
+    # Summarize directory
+    file:///tmp/directory.summary
+
+    # Summarize including hidden files
+    file:///tmp/directory.summary(include_hidden=true)
+
+    # Watch file for changes
+    file:///tmp/config.conf.watch
+
+    # Watch with custom timeout
+    file:///tmp/dir.watch(timeout=60)
+
+    # Watch specific events
+    file:///tmp/dir.watch(events="create,modify")
+
+    # Analyze file
+    file:///tmp/source.py.analyze
+
+    # Analyze with type hint
+    file:///tmp/image.jpg.analyze(type=image)
+
+    # Deep analysis
+    file:///tmp/binary.analyze(deep=true)
+
+  Extended Attributes (Unix):
+    # List all extended attributes
+    file:///tmp/file.txt.ea.get
+
+    # Get specific attribute
+    file:///tmp/file.txt.ea.get(name="user.comment")
+
+    # Set extended attribute
+    file:///tmp/file.txt.ea.set(name="user.comment",value="Important file")
+
+    # Add tags
+    file:///tmp/document.pdf.tag.add(tags="work,important,draft")
+
+    # Remove tags
+    file:///tmp/document.pdf.tag.rm(tags="draft")
+
+READ ARGUMENTS:
+  None - reads entire file to output
+
+WRITE ARGUMENTS:
+  data=TEXT              Content to write (required)
+  create=BOOL            Create file if doesn't exist (default: true)
+
+APPEND ARGUMENTS:
+  data=TEXT              Content to append (required)
+  create=BOOL            Create file if doesn't exist (default: true)
+
+EXISTS ARGUMENTS:
+  None - returns JSON with existence and type info
+
+STAT ARGUMENTS:
+  nofollow=BOOL          Don't follow symbolic links (default: false)
+
+COPY ARGUMENTS:
+  to=PATH                Destination path (required)
+  overwrite=BOOL         Allow overwriting existing files (default: false)
+  preserve_mode=BOOL     Preserve file permissions (default: true on Unix)
+  preserve_times=BOOL    Preserve timestamps (default: false)
+
+DELETE ARGUMENTS (alias: remove):
+  recursive=BOOL         Delete directories and contents (default: false)
+  force=BOOL             Don't error if file doesn't exist (default: false)
+  missing_ok=BOOL        Same as force (default: false)
+
+RENAME ARGUMENTS:
+  to=PATH                New path (required)
+  overwrite=BOOL         Allow overwriting (default: false)
+  create_parents=BOOL    Create parent directories (default: false)
+  atomic=BOOL            Use atomic operation if possible (default: true)
+
+MOVE ARGUMENTS (alias: mv):
+  to=PATH                Destination path (required)
+  overwrite=BOOL         Allow overwriting (default: false)
+
+CHMOD ARGUMENTS (Unix only):
+  mode=OCTAL             Octal permission mode (required, e.g., 755, 644)
+
+CHOWN ARGUMENTS (Unix only):
+  user=USERNAME          Username to set as owner
+  uid=NUMBER             User ID to set as owner
+  group=GROUPNAME        Group name to set
+  gid=NUMBER             Group ID to set
+  recursive=BOOL         Apply recursively (default: false)
+
+MD5/SHA1/SHA256/SHA512 ARGUMENTS:
+  None - calculates hash and returns JSON
+
+HASH ARGUMENTS:
+  algo=ALGORITHM         Hash algorithm: sha256, sha512, blake3 (default: sha256)
+
+VERIFY ARGUMENTS:
+  algo=ALGORITHM         Hash algorithm: sha256, sha1, md5, blake3 (default: sha256)
+  expected=HASH          Single expected hash value
+  expected_any=HASHES    Semicolon-separated list of acceptable hashes
+  size=BYTES             Expected file size in bytes
+
+FIND ARGUMENTS:
+  pattern=GLOB           Glob pattern to match filenames (e.g., *.txt)
+  type=TYPE              Filter by type: f (files), d (dirs), l (symlinks)
+  hidden=BOOL            Include hidden files (default: false)
+  max_depth=NUMBER       Maximum directory depth to search
+
+GREP ARGUMENTS:
+  pattern=TEXT           Text or regex pattern to search (required)
+  regex=BOOL             Treat pattern as regex (default: false)
+  ignore_case=BOOL       Case-insensitive search (default: false)
+  line_numbers=BOOL      Show line numbers (default: true)
+  max_count=NUMBER       Stop after this many matches
+
+REPLACE ARGUMENTS:
+  pattern=TEXT           Text or regex pattern to find (required)
+  replacement=TEXT       Text to replace with (required)
+  regex=BOOL             Treat pattern as regex (default: false)
+  global=BOOL            Replace all matches (default: true)
+  backup=BOOL            Create backup before modifying (default: false)
+
+TAIL ARGUMENTS:
+  lines=NUMBER           Number of lines to show (default: 10)
+  bytes=NUMBER           Show last N bytes instead of lines
+  follow=BOOL            Continue reading as file grows (default: false)
+
+PREVIEW ARGUMENTS:
+  max_lines=NUMBER       Maximum lines to show (default: 50)
+  max_bytes=NUMBER       Maximum bytes to read (default: 64KB)
+
+SCHEMA ARGUMENTS:
+  format=FORMAT          Output format: auto, json, csv, text (default: auto)
+  sample_size=NUMBER     Number of records to analyze (default: 1000)
+
+SUMMARY ARGUMENTS:
+  max_bytes=NUMBER       Maximum bytes to read (default: 1MB)
+  include_hidden=BOOL    Include hidden files in directory summary
+
+WATCH ARGUMENTS:
+  timeout=SECONDS        How long to watch (default: 30)
+  events=TYPES           Event types: create, modify, delete (default: all)
+
+ANALYZE ARGUMENTS:
+  type=TYPE              Analysis type: text, binary, image, code (default: auto)
+  deep=BOOL              Perform deep analysis (default: false)
+
+EA.GET ARGUMENTS (Unix only):
+  name=ATTRIBUTE         Specific attribute name to retrieve
+
+EA.SET ARGUMENTS (Unix only):
+  name=ATTRIBUTE         Attribute name (required)
+  value=VALUE            Attribute value (required)
+
+TAG.ADD ARGUMENTS (Unix only):
+  tags=TAG_LIST          Comma-separated list of tags (required)
+
+TAG.RM ARGUMENTS (Unix only):
+  tags=TAG_LIST          Comma-separated list of tags to remove (required)
+
+OUTPUT FORMATS:
+
+  read success:
+    (file contents to stdout)
+
+  write/append success:
+    {"written": true, "bytes": 1024, "path": "/tmp/file.txt"}
+
+  exists output:
+    {"path":"/tmp/file.txt","exists":true,"kind":"file"}
+    {"path":"/tmp/dir","exists":true,"kind":"dir"}
+    {"path":"/tmp/missing","exists":false,"kind":"none"}
+
+  stat output:
+    {
+      "path": "/tmp/file.txt",
+      "size": 1024,
+      "file_type": "file",
+      "readonly": false,
+      "mode": "0644",
+      "uid": 1000,
+      "gid": 100,
+      "modified": "2025-01-15T10:30:00Z",
+      "accessed": "2025-01-15T11:00:00Z",
+      "created": "2025-01-10T08:00:00Z"
+    }
+
+  hash output (md5, sha1, sha256, sha512, hash):
+    {
+      "path": "/tmp/file.txt",
+      "algorithm": "sha256",
+      "hash": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+      "size": 5
+    }
+
+  verify output:
+    {
+      "path": "/tmp/file.txt",
+      "algorithm": "sha256",
+      "expected": "a948904f...",
+      "digest": "a948904f...",
+      "match": true,
+      "size_match": true,
+      "verified": true,
+      "error": null
+    }
+
+  find output:
+    [
+      {
+        "path": "/tmp/dir/file1.txt",
+        "kind": "file",
+        "size": 1024
+      },
+      {
+        "path": "/tmp/dir/subdir",
+        "kind": "dir"
+      }
+    ]
+
+  grep output:
+    3: pattern found here
+    7: another match
+    12: third occurrence
+
+ERROR CODES:
+  0                      Success
+  1                      General error (operation failed)
+  2                      File not found or doesn't exist
+  3                      Permission denied
+  95                     Feature not supported on this platform
+
+PLATFORM SUPPORT:
+
+  All platforms (Unix, Linux, macOS, Windows):
+    • Basic I/O: read, write, append
+    • File info: exists, stat
+    • File operations: copy, delete, rename, move
+    • Hashing: md5, sha1, sha256, sha512, hash, verify
+    • Search: find, grep, replace, tail
+    • Analysis: preview, schema, summary, watch, analyze
+
+  Unix only (Linux, macOS):
+    • Permissions: chmod, chown
+    • Extended attributes: ea.get, ea.set
+    • File tagging: tag.add, tag.rm
+
+  Notes:
+    • Unix-only features return exit code 95 on Windows
+    • Some features have platform-specific behavior
+    • Always check exit codes for portability
+
+HASH ALGORITHMS:
+
+  Supported algorithms:
+    md5            MD5 (128-bit, legacy)
+    sha1           SHA-1 (160-bit, legacy)
+    sha256         SHA-256 (256-bit, recommended)
+    sha512         SHA-512 (512-bit)
+    blake3         BLAKE3 (256-bit, modern)
+
+  Security recommendations:
+    • Use SHA-256 or SHA-512 for security
+    • Avoid MD5 and SHA-1 for security purposes
+    • Use BLAKE3 for performance + security
+    • File size limit: 10GB for security
+
+  Performance:
+    • BLAKE3 is fastest for large files
+    • SHA-256 is good balance of speed/security
+    • MD5/SHA-1 are fast but insecure
+
+PERMISSION MODES (Unix):
+
+  Common octal modes:
+    755    rwxr-xr-x    Executable by owner, readable by all
+    644    rw-r--r--    Writable by owner, readable by all
+    600    rw-------    Private to owner only
+    777    rwxrwxrwx    Full access for everyone (dangerous)
+    700    rwx------    Private executable
+    444    r--r--r--    Read-only for everyone
+
+  Permission bits:
+    4    Read (r)
+    2    Write (w)
+    1    Execute (x)
+
+  Examples:
+    7 = 4+2+1 = rwx (read, write, execute)
+    6 = 4+2   = rw- (read, write)
+    5 = 4+1   = r-x (read, execute)
+    4 = 4     = r-- (read only)
+
+GLOB PATTERNS:
+
+  Pattern syntax for find:
+    *              Match any characters
+    ?              Match single character
+    [abc]          Match any character in set
+    [!abc]         Match any character not in set
+    **             Match directories recursively
+
+  Examples:
+    *.txt          All .txt files
+    test?.log      test1.log, test2.log, etc.
+    **/*.py        All .py files in any subdirectory
+    [Mm]akefile    Makefile or makefile
+
+REGEX PATTERNS:
+
+  Basic regex syntax for grep and replace:
+    .              Any character
+    ^              Start of line
+    $              End of line
+    *              Zero or more
+    +              One or more
+    ?              Zero or one
+    [abc]          Character class
+    [^abc]         Negated class
+    \d             Digit
+    \w             Word character
+    \s             Whitespace
+
+  Examples:
+    [0-9]+         One or more digits
+    ^ERROR         Lines starting with ERROR
+    \berror\b      Word boundary matching
+    (foo|bar)      Alternation
+
+COMMON WORKFLOWS:
+
+  File backup:
+    # Create backup copy
+    file:///important/file.txt.copy(to="/backup/file.txt")
+    
+    # Verify backup integrity
+    file:///important/file.txt.sha256
+    file:///backup/file.txt.verify(algo=sha256,expected="<hash>")
+
+  Configuration management:
+    # Update config value
+    file:///etc/app/config.ini.replace(pattern="old_value",replacement="new_value",backup=true)
+    
+    # Verify changes
+    file:///etc/app/config.ini.grep(pattern="new_value")
+
+  Log analysis:
+    # Find errors in logs
+    file:///var/log/app.log.grep(pattern="ERROR",ignore_case=true)
+    
+    # Get recent errors
+    file:///var/log/app.log.tail(lines=100)
+
+  File integrity checking:
+    # Generate checksums
+    file:///downloads/file.iso.sha256
+    
+    # Verify downloaded file
+    file:///downloads/file.iso.verify(algo=sha256,expected="<published-hash>")
+
+  Directory organization:
+    # Find all Python files
+    file:///project.find(pattern="*.py",type=f)
+    
+    # Find large files over 1MB
+    file:///data.find(type=f)
+
+  Security and permissions:
+    # Make script executable
+    file:///scripts/deploy.sh.chmod(mode=755)
+    
+    # Secure sensitive file
+    file:///config/secrets.json.chmod(mode=600)
+    
+    # Change ownership
+    file:///var/www.chown(user="www-data",recursive=true)
+
+  File metadata management:
+    # Tag important documents
+    file:///docs/proposal.pdf.tag.add(tags="work,important,q1-2025,reviewed")
+    
+    # Add custom metadata
+    file:///archive/report.pdf.ea.set(name="user.author",value="John Doe")
+
+  Search and replace:
+    # Update API endpoint
+    file:///src/config.js.replace(pattern="api.old.com",replacement="api.new.com")
+    
+    # Update version numbers
+    file:///package.json.replace(pattern="\"version\": \".*\"",replacement="\"version\": \"2.0.0\"",regex=true)
+
+  Data analysis:
+    # Analyze CSV structure
+    file:///data/sales.csv.schema
+    
+    # Preview large file
+    file:///data/large-dataset.json.preview(max_lines=100)
+    
+    # Get directory statistics
+    file:///project.summary
+
+  File monitoring:
+    # Watch config for changes
+    file:///etc/app/config.yaml.watch(timeout=60)
+    
+    # Monitor log file
+    file:///var/log/app.log.tail(follow=true)
+
+BEST PRACTICES:
+  • Always use absolute paths for reliability
+  • Check exit codes in scripts for error handling
+  • Use appropriate hash algorithms (SHA-256+ for security)
+  • Create backups before destructive operations
+  • Use atomic operations when available (rename, write)
+  • Verify file integrity with hash.verify
+  • Use chmod to secure sensitive files (600, 640)
+  • Enable create=false for safety when appropriate
+  • Use overwrite=false to prevent accidental data loss
+  • Leverage find with patterns for efficient searching
+  • Use grep for content searching within files
+  • Preview large files before processing
+  • Use schema to understand data structure
+  • Monitor logs with tail(follow=true)
+  • Tag files for better organization (Unix)
+  • Use extended attributes for metadata (Unix)
+  • Handle URL encoding for special characters
+  • Test regex patterns before using in replace
+  • Use backup=true when using replace
+  • Check platform support for Unix-only features
+  • Use glob patterns efficiently in find
+  • Combine verbs with Unix pipes for workflows
+  • Use stat to check file metadata
+  • Use exists before operations to prevent errors
+  • Monitor file changes with watch
+  • Use analyze for automated content detection
+  • Respect hash size limits (10GB)
+  • Use appropriate permission modes for security
+  • Document permission requirements
+  • Use deep=true for thorough analysis when needed
+
+PERFORMANCE CONSIDERATIONS:
+
+  Hashing large files:
+    • 10GB file size limit enforced
+    • BLAKE3 is fastest for large files
+    • Consider using hash instead of specific algorithm verbs
+
+  Search operations:
+    • find with max_depth limits directory traversal
+    • grep with max_count stops early
+    • Use specific patterns to reduce matches
+
+  File I/O:
+    • read loads entire file into memory
+    • Use tail for large log files
+    • Use preview for quick inspection
+    • watch has timeout parameter
+
+  Analysis operations:
+    • schema has sample_size parameter
+    • summary has max_bytes limit
+    • Use type hints for faster analyze
+
+LIMITATIONS:
+  • Hash operations limited to 10GB files
+  • File paths must use URL encoding for special chars
+  • Some features Unix-only (chmod, chown, ea.*, tag.*)
+  • Extended attributes have platform limitations
+  • Watch timeout maximum depends on system
+  • Follow mode (tail) runs indefinitely
+  • Regex engine has standard limitations
+  • Find performance depends on directory size
+  • Schema analysis limited by sample size
+  • Binary analysis limited by file type detection
+
+FILE ENCODING:
+  • Files are read/written with UTF-8 encoding by default
+  • Binary data is preserved in read/write operations
+  • grep works with text files
+  • hash works with any file type (binary-safe)
+  • Use analyze to detect encoding issues
+
+ATOMIC OPERATIONS:
+  • write uses atomic file creation when possible
+  • rename uses atomic move when possible (atomic=true)
+  • append is atomic on most filesystems
+  • copy is not atomic (destination created progressively)
+  • delete is atomic for single files
+
+MORE INFO:
+  For complete documentation of all file handle verbs and examples:
+  https://github.com/smiller/resh/blob/main/docs/Filesystem_Storage/file.md
+
+  Unix file permissions reference:
+  https://man7.org/linux/man-pages/man1/chmod.1.html
+
+  Extended attributes documentation:
+  https://man7.org/linux/man-pages/man7/xattr.7.html
+
+  Use 'file:// --help=VERB' for detailed help on a specific verb.
+"#;
+
 // Helper functions for streaming hash calculation
 fn calculate_sha1_hash(file_path: &std::path::Path) -> Result<(String, u64)> {
     let mut file = File::open(file_path).with_context(|| format!("open {:?}", file_path))?;
@@ -361,6 +1118,14 @@ impl FileHandle {
         // Decode URL encoding and escape sequences
         let decoded = percent_decode_str(path_str).decode_utf8_lossy().to_string();
         let unescaped = unescape_backslashes(&decoded);
+        
+        // Check for help flags in the path
+        if unescaped.contains("--help") || unescaped.contains("-h") {
+            // Create a dummy path for help display
+            let help_path = PathBuf::from("--help");
+            return Ok(FileHandle { path: help_path });
+        }
+        
         let path = PathBuf::from(unescaped);
         let normalized = normalize_path(&path);
 
@@ -3593,11 +4358,24 @@ impl Handle for FileHandle {
             "read", "rename", "write", "copy", "delete", "remove", "move", "mv", "exists", "stat", "chmod",
             "chown", "md5", "sha1", "sha256", "sha512", "verify", "append", "find", "grep",
             "replace", "tail", "preview", "schema", "summary", "watch", "analyze", "hash",
-            "ea.get", "ea.set", "tag.add", "tag.rm",
+            "ea.get", "ea.set", "tag.add", "tag.rm", "help", "h",
         ]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check if this is a help request based on the path
+        if self.path.to_string_lossy().contains("--help") || self.path.to_string_lossy().contains("-h") {
+            // Check for specific verb help request
+            if let Some(specific_verb) = args.get("verb") {
+                writeln!(io.stdout, "Detailed help for '{}' verb is not yet implemented.", specific_verb)?;
+                writeln!(io.stdout, "Please refer to the general help below:\n")?;
+            }
+            
+            // Display the comprehensive help text
+            writeln!(io.stdout, "{}", HELP_TEXT)?;
+            return Ok(Status::ok());
+        }
+        
         match verb {
             "read" => {
                 let resolved_path = resolve_file_path(&self.path)?;
@@ -4606,9 +5384,20 @@ impl Handle for FileHandle {
             "ea.set" => self.verb_ea_set(args, io),
             "tag.add" => self.verb_tag_add(args, io),
             "tag.rm" => self.verb_tag_rm(args, io),
+            "help" | "h" => {
+                // Check for specific verb help request
+                if let Some(specific_verb) = args.get("verb") {
+                    writeln!(io.stdout, "Detailed help for '{}' verb is not yet implemented.", specific_verb)?;
+                    writeln!(io.stdout, "Please refer to the general help below:\n")?;
+                }
+                
+                // Display the comprehensive help text
+                writeln!(io.stdout, "{}", HELP_TEXT)?;
+                Ok(Status::ok())
+            }
             _ => {
                 bail!(
-                    "unknown verb for file://: {} (available: read, rename, write, copy, delete, move, mv, exists, stat, chmod, chown, md5, sha1, sha256, sha512, verify, append, find, grep, replace, tail, preview, schema, summary, watch, analyze, hash, ea.get, ea.set, tag.add, tag.rm)",
+                    "unknown verb for file://: {} (available: read, rename, write, copy, delete, move, mv, exists, stat, chmod, chown, md5, sha1, sha256, sha512, verify, append, find, grep, replace, tail, preview, schema, summary, watch, analyze, hash, ea.get, ea.set, tag.add, tag.rm, help, h)",
                     verb
                 )
             }

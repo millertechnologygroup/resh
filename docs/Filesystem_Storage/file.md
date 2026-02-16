@@ -1,544 +1,491 @@
-# File Handle Documentation
+# Resource Shell (resh) – File Handle Documentation
 
-The file handle in Resource Shell lets you work with files and directories on your computer. It provides many useful actions to manage files, check their contents, and manipulate file properties.
+## 1. Overview
 
-## URL Format
+Resource Shell (resh) is a structured command-line framework that standardizes infrastructure operations using a resource-oriented URI execution model.
 
-File handle URLs use the `file://` scheme followed by the path to the file:
-```
-file:///path/to/file.txt.verb(arguments)
-```
+The `file://` handle provides comprehensive file and directory management capabilities for local filesystems. It supports:
 
-## Available Verbs
+* Basic file I/O operations
+* Metadata inspection
+* File manipulation
+* Permission management (Unix)
+* Cryptographic hashing and verification
+* Content search and replacement
+* File structure analysis
+* Change monitoring
+* Extended attributes (Unix)
 
-### read
-Reads and outputs the entire contents of a file.
+Traditional file management from shell environments often relies on multiple utilities (`cat`, `cp`, `mv`, `chmod`, `grep`, `find`, `sha256sum`, etc.) with inconsistent syntax and output formats. This complicates automation and increases parsing fragility.
 
-**Example:**
-```
-file:///tmp/myfile.txt.read
-```
+The `file://` handle addresses these limitations by:
 
-This reads all content from `/tmp/myfile.txt` and prints it to output.
+* Providing a unified URI-based interface
+* Enforcing absolute-path addressing
+* Returning structured JSON output where appropriate
+* Standardizing exit codes
+* Supporting deterministic automation workflows
 
-### write
-Creates a new file or overwrites an existing file with content.
-
-**Arguments:**
-- `data` - Text content to write to the file
-- `create` - Whether to create file if it doesn't exist (default: true)
-
-**Examples:**
-```
-file:///tmp/test.txt.write(data=hello)
-```
-Creates `/tmp/test.txt` with content "hello".
+All file operations follow the URI format:
 
 ```
-file:///tmp/existing.txt.write(data=new)
+file:///absolute/path/to/resource.VERB(arguments)
 ```
-Overwrites existing file with "new" content.
+
+Absolute paths are required for reliability and determinism.
+
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+All operations follow:
 
 ```
-file:///tmp/nofile.txt.write(data=x,create=false)
+file://absolute-path.verb(arguments)
 ```
-Returns error if file doesn't exist (exit code 2).
 
-### append
-Adds content to the end of an existing file.
+Examples:
 
-**Arguments:**
-- `data` - Text content to append to the file
-- `create` - Whether to create file if it doesn't exist (default: true)
-
-**Examples:**
+```bash
+file:///tmp/data.txt.read
+file:///var/log/app.log.tail(lines=50)
+file:///etc/config.yaml.replace(pattern="old",replacement="new")
 ```
-file:///tmp/log.txt.append(data=bar)
-```
-If file contains "foo", it will now contain "foobar".
 
-```
-file:///tmp/missing.txt.append(data=zzz,create=false)
-```
-Returns error if file doesn't exist (exit code 2).
+This enforces consistent grammar across 30 verbs covering file lifecycle operations.
 
-### exists
-Checks if a file or directory exists and returns information about it.
+---
 
-**Output:** JSON with existence status and type information
+### Safety-First Execution
 
-**Examples:**
-```
-file:///tmp/existing.txt.exists
-```
-Returns: `{"path":"/tmp/existing.txt","exists":true,"kind":"file"}`
+The `file://` handle implements:
 
-```
-file:///tmp/directory.exists
-```
-Returns: `{"path":"/tmp/directory","exists":true,"kind":"dir"}`
+* Atomic write and append operations (where possible)
+* Explicit overwrite controls
+* Backup options for destructive operations
+* Exit codes for deterministic error handling
+* Optional creation flags (`create=false`)
+* Hash size limits (10GB maximum)
 
-```
-file:///tmp/missing.txt.exists
-```
-Returns: `{"path":"/tmp/missing.txt","exists":false,"kind":"none"}`
+Platform-specific operations (e.g., `chmod`, `chown`, extended attributes) return exit code `95` when unsupported.
 
-### stat
-Returns detailed metadata about a file or directory.
+---
 
-**Arguments:**
-- `nofollow` - Don't follow symbolic links (default: false)
+### Deterministic Behavior
 
-**Output:** JSON with file metadata including size, timestamps, and permissions
+Operations:
 
-**Examples:**
+* Require absolute paths
+* Use strict argument validation
+* Return structured JSON for metadata and hashing
+* Use predictable exit codes
+* Avoid implicit shell expansion
+
+Exit Codes:
+
+| Code | Meaning               |
+| ---- | --------------------- |
+| 0    | Success               |
+| 1    | General error         |
+| 2    | File not found        |
+| 3    | Permission denied     |
+| 95   | Feature not supported |
+
+Automation should rely on exit codes and JSON responses rather than parsing textual output.
+
+---
+
+### JSON-Based Structured Output
+
+Structured JSON output is provided for:
+
+* `exists`
+* `stat`
+* Hashing operations
+* `verify`
+* `find`
+* Metadata and analysis verbs
+
+Example:
+
+```json
+{
+  "path": "/tmp/file.txt",
+  "algorithm": "sha256",
+  "hash": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+  "size": 5
+}
 ```
-file:///tmp/test.txt.stat
-```
-Returns detailed file information including size, modification time, and permissions.
 
-```
-file:///tmp/symlink.stat(nofollow=true)
-```
-Returns information about the symbolic link itself, not the target.
+---
 
-### copy
-Copies a file to another location.
+### AI-Readiness
 
-**Arguments:**
-- `to` - Destination path (required)
-- `overwrite` - Allow overwriting existing files (default: false)
-- `preserve_mode` - Preserve file permissions (default: true on Unix)
-- `preserve_times` - Preserve timestamps (default: false)
+The predictable URI grammar and structured outputs enable:
 
-**Examples:**
-```
-file:///tmp/source.txt.copy(to=/tmp/destination.txt)
-```
-Copies source.txt to destination.txt.
+* Deterministic automation
+* CI/CD pipeline integration
+* Integrity validation workflows
+* Agent-based orchestration
+* Programmatic content inspection
 
-```
-file:///tmp/file.txt.copy(to=/tmp/existing.txt,overwrite=true)
-```
-Overwrites existing destination file.
+---
 
-### delete (remove)
-Deletes a file or directory.
+## 3. Command Syntax and Execution Model
 
-**Arguments:**
-- `recursive` - Delete directories and their contents (default: false)
-- `force` - Don't return error if file doesn't exist (default: false)
-- `missing_ok` - Same as force (default: false)
-
-**Examples:**
-```
-file:///tmp/file.txt.delete
-```
-Deletes the file.
+### 3.1 URI Structure
 
 ```
-file:///tmp/directory.delete(recursive=true)
+file:///absolute/path.VERB(arguments)
 ```
-Deletes directory and all its contents.
 
+#### Components
+
+| Component     | Description              |
+| ------------- | ------------------------ |
+| `file`        | Handle identifier        |
+| Absolute Path | Target file or directory |
+| `VERB`        | Operation                |
+| `arguments`   | Named parameters         |
+
+**Requirements:**
+
+* Absolute paths required
+* Case-sensitive
+* URL encoding required for special characters
+
+---
+
+### Example Commands
+
+Basic read:
+
+```bash
+file:///tmp/example.txt.read
 ```
-file:///tmp/missing.txt.delete(missing_ok=true)
+
+Write content:
+
+```bash
+file:///tmp/example.txt.write(data="hello")
 ```
-Succeeds even if file doesn't exist.
 
-### rename
-Renames or moves a file to a different location.
+Calculate SHA-256:
 
-**Arguments:**
-- `to` - New path (required)
-- `overwrite` - Allow overwriting existing files (default: false)
-- `create_parents` - Create parent directories if needed (default: false)
-- `atomic` - Use atomic operation if possible (default: true)
-
-**Examples:**
+```bash
+file:///tmp/example.txt.sha256
 ```
-file:///tmp/old.txt.rename(to="/tmp/new.txt")
-```
-Renames old.txt to new.txt.
 
-```
-file:///tmp/file.txt.rename(to="/another/location.txt",overwrite=true)
-```
-Moves and renames file, overwriting destination if it exists.
+Search text:
 
-### move (mv)
-Moves a file to another location (similar to rename).
-
-**Arguments:**
-- `to` - Destination path (required)
-- `overwrite` - Allow overwriting existing files (default: false)
-
-**Examples:**
+```bash
+file:///tmp/example.txt.grep(pattern="ERROR")
 ```
-file:///tmp/source.txt.move(to=/home/user/dest.txt)
-```
-Moves source.txt to the destination.
 
-```
-file:///tmp/file.txt.mv(to=/tmp/existing.txt,overwrite=true)
-```
-Moves file and overwrites destination.
+---
 
-### chmod
-Changes file permissions (Unix only).
+### 3.2 Execution Semantics
 
-**Arguments:**
-- `mode` - Octal permission mode (required)
+Operations return either:
 
-**Examples:**
+* Raw output (e.g., `read`)
+* Structured JSON (e.g., `stat`, `hash`)
+* Exit-code-based success/failure
+
+#### Representative JSON Output (exists)
+
+```json
+{
+  "path": "/tmp/file.txt",
+  "exists": true,
+  "kind": "file"
+}
 ```
+
+#### Representative JSON Output (verify)
+
+```json
+{
+  "path": "/tmp/file.txt",
+  "algorithm": "sha256",
+  "verified": true,
+  "size": 1024
+}
+```
+
+Automation must inspect:
+
+* Exit codes
+* `verified` flag
+* Structured JSON fields
+
+---
+
+## 4. Functional Domain – File Handle
+
+The `file://` handle belongs to the **Filesystem & Storage** domain.
+
+It provides 30 verbs across several categories.
+
+---
+
+### 4.1 Basic I/O
+
+| Verb     | Description                |
+| -------- | -------------------------- |
+| `read`   | Stream entire file         |
+| `write`  | Atomic overwrite or create |
+| `append` | Atomic append              |
+
+Example:
+
+```bash
+file:///tmp/log.txt.append(data="entry")
+```
+
+---
+
+### 4.2 File Information
+
+| Verb     | Description          |
+| -------- | -------------------- |
+| `exists` | Check file existence |
+| `stat`   | Retrieve metadata    |
+
+---
+
+### 4.3 File Operations
+
+| Verb     | Description |
+| -------- | ----------- |
+| `copy`   | Copy file   |
+| `delete` | Remove file |
+| `rename` | Rename file |
+| `move`   | Move file   |
+
+Example:
+
+```bash
+file:///tmp/file.txt.copy(to="/backup/file.txt",overwrite=true)
+```
+
+---
+
+### 4.4 Permissions (Unix Only)
+
+| Verb    | Description      |
+| ------- | ---------------- |
+| `chmod` | Change file mode |
+| `chown` | Change ownership |
+
+Example:
+
+```bash
 file:///tmp/script.sh.chmod(mode=755)
 ```
-Makes file executable by owner and readable by all.
 
-```
-file:///tmp/secret.txt.chmod(mode=600)
-```
-Makes file readable and writable by owner only.
-
-### chown
-Changes file ownership (Unix only).
-
-**Arguments:**
-- `user` - Username to set as owner
-- `uid` - User ID to set as owner
-- `group` - Group name to set as group
-- `gid` - Group ID to set as group
-- `recursive` - Apply to directories recursively (default: false)
-
-**Examples:**
-```
-file:///tmp/file.txt.chown(user=alice)
-```
-Changes file owner to user 'alice'.
-
-```
-file:///tmp/file.txt.chown(uid=1000,gid=100)
-```
-Changes owner to user ID 1000 and group ID 100.
-
-### md5
-Calculates MD5 hash of file contents.
+---
 
-**Output:** JSON with file path, algorithm, hash, and size
+### 4.5 Hashing & Integrity
 
-**Examples:**
-```
-file:///tmp/file.txt.md5
-```
-Returns: `{"path":"/tmp/file.txt","algorithm":"md5","hash":"5d41402abc4b2a76b9719d911017c592","size":5}`
+Supported algorithms:
 
-### sha1
-Calculates SHA-1 hash of file contents.
+* MD5
+* SHA-1
+* SHA-256
+* SHA-512
+* BLAKE3
 
-**Output:** JSON with file path, algorithm, hash, and size
-
-**Examples:**
-```
-file:///tmp/file.txt.sha1
-```
-Returns: `{"path":"/tmp/file.txt","algorithm":"sha1","hash":"356a192b7913b04c54574d18c28d46e6395428ab","size":5}`
+Verbs:
 
-### sha256
-Calculates SHA-256 hash of file contents.
+| Verb                              | Description             |
+| --------------------------------- | ----------------------- |
+| `md5`, `sha1`, `sha256`, `sha512` | Fixed algorithm         |
+| `hash(algo=...)`                  | Configurable            |
+| `verify(...)`                     | Verify hash and/or size |
 
-**Output:** JSON with file path, algorithm, hash, and size
+Example:
 
-**Examples:**
-```
-file:///tmp/file.txt.sha256
+```bash
+file:///tmp/file.iso.verify(algo=sha256,expected=<hash>)
 ```
-Returns: `{"path":"/tmp/file.txt","algorithm":"sha256","hash":"2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae","size":5}`
 
-### sha512
-Calculates SHA-512 hash of file contents.
+Security Note:
 
-**Output:** JSON with file path, algorithm, hash, and size
-
-**Examples:**
-```
-file:///tmp/file.txt.sha512
-```
-Returns: `{"path":"/tmp/file.txt","algorithm":"sha512","hash":"...","size":5}`
+* SHA-256+ recommended
+* 10GB hash size limit enforced
 
-### hash
-Calculates file hash using specified algorithm.
+---
 
-**Arguments:**
-- `algo` - Hash algorithm: sha256, sha512, blake3 (default: sha256)
+### 4.6 Search and Analysis
 
-**Output:** JSON with file path, algorithm, hash, and size
+| Verb      | Description         |
+| --------- | ------------------- |
+| `find`    | Recursive search    |
+| `grep`    | Pattern search      |
+| `replace` | Pattern replacement |
+| `tail`    | Last lines          |
+| `preview` | Intelligent preview |
+| `schema`  | Structure detection |
+| `summary` | File summary        |
+| `watch`   | Monitor changes     |
+| `analyze` | Content analysis    |
 
-**Examples:**
-```
-file:///tmp/file.txt.hash
-```
-Uses SHA-256 by default.
+Example:
 
-```
-file:///tmp/file.txt.hash(algo=blake3)
+```bash
+file:///var/log/app.log.tail(lines=100,follow=true)
 ```
-Calculates BLAKE3 hash.
 
-### verify
-Verifies file hash against expected values.
+---
 
-**Arguments:**
-- `algo` - Hash algorithm: sha256, sha1, md5, blake3 (default: sha256)
-- `expected` - Single expected hash value
-- `expected_any` - Semicolon-separated list of acceptable hash values
-- `size` - Expected file size in bytes
+### 4.7 Extended Attributes (Unix Only)
 
-**Output:** JSON with verification results
+| Verb      | Description             |
+| --------- | ----------------------- |
+| `ea.get`  | Get extended attributes |
+| `ea.set`  | Set extended attributes |
+| `tag.add` | Add tags                |
+| `tag.rm`  | Remove tags             |
 
-**Examples:**
-```
-file:///tmp/file.txt.verify(algo=sha256,expected=a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447)
-```
-Verifies file matches expected SHA-256 hash.
+These operations return exit code `95` on unsupported platforms.
 
-```
-file:///tmp/file.txt.verify(algo=md5,expected=098f6bcd4621d373cade4e832627b4f6,size=4)
-```
-Verifies both hash and file size.
+---
 
-### find
-Searches for files and directories recursively.
+## 5. Platform Support
 
-**Arguments:**
-- `pattern` - Glob pattern to match filenames
-- `type` - Filter by type: f (files), d (directories), l (symlinks)
-- `hidden` - Include hidden files (default: false)
-- `max_depth` - Maximum directory depth to search
+| Platform | Support                        |
+| -------- | ------------------------------ |
+| Linux    | Full support                   |
+| macOS    | Full support                   |
+| Windows  | Supported (no Unix-only verbs) |
 
-**Output:** JSON array of matching files with metadata
+Unix-only features:
 
-**Examples:**
-```
-file:///tmp/directory.find
-```
-Finds all files and directories under /tmp/directory.
+* `chmod`
+* `chown`
+* Extended attributes
+* Tag operations
 
-```
-file:///tmp/directory.find(pattern=*.txt,type=f)
-```
-Finds only .txt files.
-
-### grep
-Searches for text patterns within files.
-
-**Arguments:**
-- `pattern` - Text or regex pattern to search for (required)
-- `regex` - Treat pattern as regular expression (default: false)
-- `ignore_case` - Case-insensitive search (default: false)
-- `line_numbers` - Show line numbers (default: true)
-- `max_count` - Stop after this many matches
-
-**Examples:**
-```
-file:///tmp/log.txt.grep(pattern=foo)
-```
-Searches for "foo" in the file, showing line numbers.
+---
 
-```
-file:///tmp/file.txt.grep(pattern=[0-9]+,regex=true)
-```
-Searches for numbers using regex.
-
-### replace
-Replaces text patterns in files.
-
-**Arguments:**
-- `pattern` - Text or regex pattern to find (required)
-- `replacement` - Text to replace matches with (required)
-- `regex` - Treat pattern as regular expression (default: false)
-- `global` - Replace all matches, not just first (default: true)
-- `backup` - Create backup before modifying (default: false)
-
-**Examples:**
-```
-file:///tmp/config.txt.replace(pattern=old_value,replacement=new_value)
-```
-Replaces "old_value" with "new_value" in the file.
+## 6. Operational Best Practices
 
-### tail
-Shows the last lines of a file.
+### Safe Usage Guidelines
 
-**Arguments:**
-- `lines` - Number of lines to show (default: 10)
-- `bytes` - Show last N bytes instead of lines
-- `follow` - Continue reading as file grows (default: false)
+* Always use absolute paths.
+* Use `create=false` to prevent unintended file creation.
+* Use `overwrite=false` to prevent accidental overwrites.
+* Create backups before `replace` operations.
+* Use secure permission modes (600, 640) for sensitive files.
+* Use `verify` after critical file transfers.
 
-**Examples:**
-```
-file:///var/log/app.log.tail
-```
-Shows last 10 lines of the log file.
+---
 
-```
-file:///var/log/app.log.tail(lines=5)
-```
-Shows last 5 lines.
+### Automation Considerations
 
-### preview
-Shows a preview of file contents with intelligent formatting.
+* Always inspect exit codes.
+* Use JSON-returning verbs in CI pipelines.
+* Limit search depth in `find`.
+* Use `max_count` in `grep`.
+* Avoid hashing files near 10GB limit.
 
-**Arguments:**
-- `max_lines` - Maximum lines to show (default: 50)
-- `max_bytes` - Maximum bytes to read (default: 64KB)
+---
 
-**Examples:**
-```
-file:///tmp/document.txt.preview
-```
-Shows formatted preview of the document.
+### CI/CD Integration
 
-### schema
-Analyzes file structure and generates schema information.
+Typical workflows:
 
-**Arguments:**
-- `format` - Output format: auto, json, csv, text (default: auto)
-- `sample_size` - Number of records to analyze (default: 1000)
+* Validate file integrity after artifact download.
+* Replace configuration safely with backup enabled.
+* Verify permission modes post-deployment.
+* Monitor log files in post-deployment checks.
 
-**Examples:**
-```
-file:///tmp/data.csv.schema
-```
-Analyzes CSV structure and shows column information.
+Example:
 
-```
-file:///tmp/data.json.schema(format=json)
+```bash
+file:///deploy/app.bin.verify(algo=sha256,expected=<published>)
 ```
-Analyzes JSON structure.
-
-### summary
-Provides a summary of file or directory contents.
-
-**Arguments:**
-- `max_bytes` - Maximum bytes to read for analysis (default: 1MB)
-- `include_hidden` - Include hidden files in directory summary
 
-**Examples:**
-```
-file:///tmp/document.txt.summary
-```
-Provides summary of text file contents.
+---
 
-```
-file:///tmp/directory.summary
-```
-Provides summary of directory contents.
+### Production Environment Recommendations
 
-### watch
-Monitors file for changes and reports them.
+* Use SHA-256 or SHA-512 for security validation.
+* Restrict permissions using `chmod`.
+* Use atomic `write` and `rename`.
+* Monitor file changes with `watch`.
+* Avoid MD5 and SHA-1 for security-sensitive validation.
 
-**Arguments:**
-- `timeout` - How long to watch in seconds (default: 30)
-- `events` - Event types to watch: create, modify, delete (default: all)
+---
 
-**Examples:**
-```
-file:///tmp/config.conf.watch
-```
-Watches file for changes for 30 seconds.
+## 7. Use Cases by Role
 
-```
-file:///tmp/dir.watch(timeout=60,events=create,modify)
-```
-Watches directory for create and modify events.
+### DevOps Engineers
 
-### analyze
-Performs detailed analysis of file contents.
+* Validate deployment artifacts.
+* Manage configuration files.
+* Monitor logs during rollout.
+* Replace values programmatically.
 
-**Arguments:**
-- `type` - Analysis type: text, binary, image, code (default: auto)
-- `deep` - Perform deep analysis (default: false)
+### SRE Engineers
 
-**Examples:**
-```
-file:///tmp/source.py.analyze
-```
-Analyzes Python source code file.
+* Investigate incidents via file inspection.
+* Verify integrity after transfers.
+* Secure sensitive files.
+* Monitor change events.
 
-```
-file:///tmp/image.jpg.analyze(type=image)
-```
-Analyzes image file properties.
+### Network Administrators
 
-### ea.get
-Gets extended attributes of a file (Unix only).
+* Manage configuration backups.
+* Secure credentials with strict permissions.
+* Analyze log files.
+* Track file changes.
 
-**Arguments:**
-- `name` - Specific attribute name to retrieve
+### AI/Automation Engineers
 
-**Examples:**
-```
-file:///tmp/file.txt.ea.get
-```
-Lists all extended attributes.
+* Use deterministic JSON output for orchestration.
+* Validate file integrity in automated pipelines.
+* Extract schema metadata programmatically.
+* Monitor configuration drift via `watch`.
 
-```
-file:///tmp/file.txt.ea.get(name=user.comment)
-```
-Gets specific extended attribute.
+---
 
-### ea.set
-Sets extended attributes on a file (Unix only).
+## 8. Technical Foundation
 
-**Arguments:**
-- `name` - Attribute name (required)
-- `value` - Attribute value (required)
+The `file://` handle is implemented in Rust as part of resh.
 
-**Examples:**
-```
-file:///tmp/file.txt.ea.set(name=user.comment,value=Important file)
-```
-Sets extended attribute.
+### Rust Implementation Advantages
 
-### tag.add
-Adds tags to a file using extended attributes (Unix only).
+* Memory safety
+* Deterministic file I/O
+* Strong type enforcement
+* Safe concurrency primitives
 
-**Arguments:**
-- `tags` - Comma-separated list of tags (required)
+### Type Safety
 
-**Examples:**
-```
-file:///tmp/document.pdf.tag.add(tags=work,important,draft)
-```
-Adds multiple tags to the file.
+* Validated argument parsing
+* Algorithm whitelist enforcement
+* Strict path handling
+* Explicit exit code mapping
 
-### tag.rm
-Removes tags from a file (Unix only).
+### Performance Characteristics
 
-**Arguments:**
-- `tags` - Comma-separated list of tags to remove (required)
+* Atomic write/append
+* Efficient streaming for `read`
+* Hash size enforcement
+* Directory traversal optimization in `find`
 
-**Examples:**
-```
-file:///tmp/document.pdf.tag.rm(tags=draft)
-```
-Removes the "draft" tag from the file.
+### Cross-Platform Architecture
 
-## Error Codes
+Supported on:
 
-Common exit codes returned by file operations:
+* Linux
+* macOS
+* Windows
 
-- `0` - Success
-- `1` - General error (file operation failed)
-- `2` - File not found or doesn't exist
-- `3` - Permission denied
-- `95` - Feature not supported on this platform
+Unix-only features return exit code `95` on unsupported platforms.
 
-## Notes
 
-- File paths can contain spaces and special characters
-- Use URL encoding for special characters in paths
-- Some features (chmod, chown, extended attributes) are Unix-only
-- Hash operations have a 10GB file size limit for security
-- Write and append operations are atomic when possible
-- Always use absolute paths for reliability

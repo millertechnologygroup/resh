@@ -19,6 +19,1034 @@ use crate::core::{
     status::Status,
 };
 
+// Help text for the net handle
+const NET_HELP_TEXT: &str = r#"
+RESOURCE SHELL - NET HANDLE
+===========================
+
+USAGE:
+  net://TARGET.VERB(arguments)
+
+DESCRIPTION:
+  The net handle provides network utilities including interface listing,
+  connectivity testing, DNS lookups, port scanning, and routing table
+  inspection. Essential for network diagnostics, monitoring, system
+  administration, and troubleshooting. Supports ICMP ping, TCP checks,
+  DNS queries (A, AAAA, MX, TXT, SRV, PTR, etc.), port scanning with
+  concurrency control, and routing table inspection.
+
+URL FORMATS:
+  net://if.list                         List network interfaces
+  net://iface.list                      List network interfaces (alias)
+  net://interfaces.list                 List network interfaces (alias)
+  net://host.ping                       Ping host (ICMP or TCP fallback)
+  net://host:port.tcp_check             TCP connection check
+  net://host.tcp_check                  TCP connection check
+  net://host.scan                       Port scan
+  net://domain.dns                      DNS lookup
+  net://ip.dns                          DNS lookup (PTR for reverse)
+  net://host.route.list                 List routing table
+
+VERBS (6 total):
+
+  Network Interfaces:
+    list            List network interfaces on the system
+
+  Connectivity Testing:
+    ping            Test network connectivity using ICMP or TCP fallback
+    tcp_check       Test TCP connectivity to specific host and port
+
+  Network Scanning:
+    scan            Perform TCP port scanning on target host
+
+  DNS Operations:
+    dns             Perform DNS lookups for various record types
+
+  Routing:
+    route.list      List system routing table (Linux only)
+
+EXAMPLES:
+
+  List Network Interfaces:
+    # List all interfaces
+    net://if.list
+
+    # List all interfaces (alternative aliases)
+    net://iface.list
+    net://interfaces.list
+
+    # Filter by IPv4 addresses only
+    net://if.list(family="ipv4")
+
+    # Filter by IPv6 addresses only
+    net://if.list(family="ipv6")
+
+    # Show all address families
+    net://if.list(family="all")
+
+    # Show only UP interfaces
+    net://if.list(up=true)
+
+    # Show only DOWN interfaces
+    net://if.list(up=false)
+
+    # Combine filters
+    net://if.list(family="ipv4",up=true)
+
+  Ping Tests:
+    # Basic ping (3 packets default)
+    net://example.com.ping
+
+    # Ping localhost
+    net://127.0.0.1.ping
+
+    # Ping with custom count
+    net://example.com.ping(count=5)
+
+    # Single ping packet
+    net://8.8.8.8.ping(count=1)
+
+    # Ping with custom timeout
+    net://example.com.ping(timeout_ms=5000)
+
+    # Ping with count and timeout
+    net://example.com.ping(count=10,timeout_ms=2000)
+
+    # Ping with specific port for TCP fallback
+    net://example.com.ping(port=443)
+
+    # Force IPv4
+    net://example.com.ping(family="ipv4")
+
+    # Force IPv6
+    net://example.com.ping(family="ipv6")
+
+    # Auto family detection (default)
+    net://example.com.ping(family="auto")
+
+    # Show raw ping output
+    net://example.com.ping(raw=true)
+
+    # Fast ping with short timeout
+    net://192.168.1.1.ping(count=1,timeout_ms=100)
+
+    # Multiple pings for statistics
+    net://example.com.ping(count=100,timeout_ms=1000)
+
+  TCP Connection Checks:
+    # Check HTTP port
+    net://example.com:80.tcp_check
+
+    # Check HTTPS port
+    net://example.com:443.tcp_check
+
+    # Check SSH port
+    net://192.168.1.10:22.tcp_check
+
+    # Check with custom timeout
+    net://example.com:80.tcp_check(timeout_ms=5000)
+
+    # Check with retries
+    net://example.com:80.tcp_check(retries=3)
+
+    # Check with retry backoff
+    net://example.com:80.tcp_check(retries=3,backoff_ms=1000)
+
+    # Port specified in argument
+    net://example.com.tcp_check(port=8080)
+
+    # Multiple retry attempts with backoff
+    net://slow-server.com:80.tcp_check(timeout_ms=10000,retries=5,backoff_ms=2000)
+
+    # Expect TLS connection
+    net://example.com:443.tcp_check(expect_tls=true)
+
+    # Check database port
+    net://db.example.com:5432.tcp_check(timeout_ms=3000)
+
+    # Check mail server
+    net://mail.example.com:587.tcp_check
+
+    # Check localhost service
+    net://localhost:8080.tcp_check(timeout_ms=1000)
+
+  Port Scanning:
+    # Scan common ports (80, 443 default)
+    net://example.com.scan
+
+    # Scan single port
+    net://192.168.1.10.scan(ports=22)
+
+    # Scan multiple ports
+    net://example.com.scan(ports="80,443,8080")
+
+    # Scan port range
+    net://192.168.1.10.scan(ports="20-25")
+
+    # Scan mixed ports and ranges
+    net://example.com.scan(ports="22,80,443,8000-8005")
+
+    # Scan with custom timeout
+    net://example.com.scan(ports="1-100",timeout_ms=1000)
+
+    # Scan with low concurrency
+    net://example.com.scan(ports="1-1000",concurrency=10)
+
+    # Scan with high concurrency
+    net://example.com.scan(ports="1-1000",concurrency=128)
+
+    # Fast scan (short timeout, high concurrency)
+    net://192.168.1.10.scan(ports="1-1000",timeout_ms=200,concurrency=256)
+
+    # Careful scan (long timeout, low concurrency)
+    net://example.com.scan(ports="1-100",timeout_ms=5000,concurrency=5)
+
+    # Scan common web ports
+    net://example.com.scan(ports="80,443,8000,8080,8443")
+
+    # Scan mail server ports
+    net://mail.example.com.scan(ports="25,465,587,993,995")
+
+    # Scan database ports
+    net://db.example.com.scan(ports="1433,3306,5432,6379,27017")
+
+    # Full port scan (careful with this!)
+    net://localhost.scan(ports="1-65535",timeout_ms=100,concurrency=256)
+
+  DNS Lookups:
+    # A record lookup (default)
+    net://example.com.dns
+
+    # AAAA record (IPv6)
+    net://example.com.dns(type="AAAA")
+
+    # CNAME record
+    net://www.example.com.dns(type="CNAME")
+
+    # MX records (mail servers)
+    net://example.com.dns(type="MX")
+
+    # TXT records (SPF, DKIM, etc.)
+    net://example.com.dns(type="TXT")
+
+    # NS records (name servers)
+    net://example.com.dns(type="NS")
+
+    # SRV records (service discovery)
+    net://_http._tcp.example.com.dns(type="SRV")
+
+    # PTR record (reverse DNS)
+    net://8.8.8.8.dns(type="PTR")
+
+    # DNS with custom server
+    net://example.com.dns(server="8.8.8.8")
+
+    # DNS with custom server and port
+    net://example.com.dns(server="8.8.8.8",port=53)
+
+    # DNS with Cloudflare
+    net://example.com.dns(server="1.1.1.1")
+
+    # DNS with Google
+    net://example.com.dns(server="8.8.8.8")
+
+    # DNS with custom timeout
+    net://example.com.dns(timeout_ms=5000)
+
+    # DMARC record
+    net://_dmarc.example.com.dns(type="TXT")
+
+    # DKIM record
+    net://default._domainkey.example.com.dns(type="TXT")
+
+    # SPF record
+    net://example.com.dns(type="TXT")
+
+  Routing Table:
+    # List IPv4 routes (default)
+    net://host.route.list
+
+    # List IPv6 routes
+    net://host.route.list(family="ipv6")
+
+    # List all routes
+    net://host.route.list(family="all")
+
+LIST ARGUMENTS:
+  family=FAMILY          Address family filter (default: all)
+                         Values: ipv4, ipv6, all
+  up=BOOL                Interface status filter (default: all interfaces)
+                         Values: true (only UP), false (only DOWN)
+
+PING ARGUMENTS:
+  count=NUMBER           Number of ping packets (default: 3, minimum: 1)
+  timeout_ms=NUMBER      Timeout per packet in milliseconds
+                         (default: 3000, minimum: 100)
+  port=NUMBER            Port for TCP fallback (default: 80)
+  family=FAMILY          IP family preference (default: auto)
+                         Values: auto, ipv4, ipv6
+  raw=BOOL               Show raw ping output (default: false)
+                         Values: true, false
+
+TCP_CHECK ARGUMENTS:
+  port=NUMBER            Target port (required if not in URL)
+  timeout_ms=NUMBER      Connection timeout in milliseconds
+                         (default: 3000, minimum: 1)
+  retries=NUMBER         Number of retry attempts (default: 1, minimum: 1)
+  backoff_ms=NUMBER      Delay between retries in milliseconds (default: 0)
+  expect_tls=BOOL        Expect TLS connection (default: false)
+                         Values: true, false
+
+SCAN ARGUMENTS:
+  ports=SPEC             Port specification (default: "80,443")
+                         Formats:
+                           Single port: "80"
+                           Multiple: "80,443,8080"
+                           Range: "8000-8005"
+                           Mixed: "80,443,8000-8005"
+  timeout_ms=NUMBER      Timeout per port in milliseconds (default: 500)
+  concurrency=NUMBER     Max concurrent connections (default: 32)
+                         Range: 1-256
+  protocol=PROTOCOL      Protocol to scan (default: tcp)
+                         Values: tcp (only tcp supported currently)
+  host=HOST              Override target host from URL
+
+DNS ARGUMENTS:
+  type=RECORD_TYPE       DNS record type (default: A)
+                         Values: A, AAAA, CNAME, MX, TXT, NS, SRV, PTR
+  server=IP              Custom DNS server IP address
+  port=NUMBER            Custom DNS server port (default: 53)
+  timeout_ms=NUMBER      Query timeout in milliseconds
+                         (default: 3000, minimum: 1)
+
+ROUTE.LIST ARGUMENTS:
+  family=FAMILY          Route family filter (default: ipv4)
+                         Values: ipv4, ipv6, all
+  table=TABLE            Routing table filter (not implemented yet)
+
+DNS RECORD TYPES:
+
+  A                      IPv4 address record
+                         Returns IPv4 addresses for domain
+
+  AAAA                   IPv6 address record
+                         Returns IPv6 addresses for domain
+
+  CNAME                  Canonical name record
+                         Returns alias target for domain
+
+  MX                     Mail exchange record
+                         Returns mail servers with priority
+
+  TXT                    Text record
+                         Returns text data (SPF, DKIM, DMARC, verification)
+
+  NS                     Name server record
+                         Returns authoritative name servers
+
+  SRV                    Service record
+                         Returns service endpoints with priority, weight, port
+
+  PTR                    Pointer record (reverse DNS)
+                         Returns hostname for IP address
+
+  Common uses:
+    A/AAAA               Website IP addresses
+    CNAME                Domain aliases (www -> apex)
+    MX                   Email routing
+    TXT                  Email authentication (SPF, DKIM, DMARC)
+    NS                   Domain delegation
+    SRV                  Service discovery (XMPP, SIP, LDAP)
+    PTR                  Reverse DNS lookup
+
+PORT SCAN STATES:
+
+  open                   Port is accepting connections
+                         Service is listening and accessible
+
+  closed                 Port is not accepting connections
+                         Connection refused by host
+
+  timeout                Connection attempt timed out
+                         Firewall may be blocking or host is down
+
+  error                  Other connection error occurred
+                         See error field for details
+
+IP FAMILY VALUES:
+
+  For ping and list verbs:
+
+  auto                   Automatically detect (ping only)
+                         Try IPv4 first, fall back to IPv6
+
+  ipv4                   IPv4 addresses only
+                         Filter to IPv4 or force IPv4 use
+
+  ipv6                   IPv6 addresses only
+                         Filter to IPv6 or force IPv6 use
+
+  all                    Both IPv4 and IPv6 (list only)
+                         Show all addresses
+
+OUTPUT FORMATS:
+
+  list output:
+    {
+      "interfaces": [
+        {
+          "name": "eth0",
+          "index": 2,
+          "mac": "00:11:22:33:44:55",
+          "flags": ["up", "broadcast", "multicast"],
+          "mtu": 1500,
+          "addresses": [
+            {
+              "family": "ipv4",
+              "addr": "192.168.1.100",
+              "netmask": "255.255.255.0",
+              "broadcast": "192.168.1.255",
+              "scope": "global"
+            },
+            {
+              "family": "ipv6",
+              "addr": "fe80::211:22ff:fe33:4455",
+              "prefix_len": 64,
+              "scope": "link"
+            }
+          ]
+        }
+      ]
+    }
+
+  ping output (successful):
+    {
+      "host": "example.com",
+      "port": 80,
+      "backend": "system_ping",
+      "sent": 3,
+      "received": 3,
+      "loss": 0.0,
+      "avg_rtt_ms": 15.3,
+      "min_rtt_ms": 14.8,
+      "max_rtt_ms": 16.1,
+      "timeout_ms": 3000,
+      "reachable": true
+    }
+
+  ping output (failed):
+    {
+      "host": "192.0.2.1",
+      "port": 80,
+      "backend": "tcp_fallback",
+      "sent": 3,
+      "received": 0,
+      "loss": 1.0,
+      "avg_rtt_ms": null,
+      "timeout_ms": 3000,
+      "reachable": false
+    }
+
+  tcp_check output (success):
+    {
+      "host": "example.com",
+      "port": 80,
+      "ok": true,
+      "attempts": 1,
+      "latency_ms": 23,
+      "timeout_ms": 3000,
+      "retries": 1,
+      "backend": "tcp",
+      "tls_checked": false
+    }
+
+  tcp_check output (failure):
+    {
+      "host": "192.168.1.1",
+      "port": 65534,
+      "ok": false,
+      "attempts": 3,
+      "timeout_ms": 3000,
+      "retries": 3,
+      "backend": "tcp",
+      "error": "Connection refused (os error 111)",
+      "tls_checked": false
+    }
+
+  scan output:
+    {
+      "target": "example.com",
+      "protocol": "tcp",
+      "ports": [
+        {
+          "port": 80,
+          "state": "open"
+        },
+        {
+          "port": 443,
+          "state": "open"
+        },
+        {
+          "port": 8080,
+          "state": "closed",
+          "error": "connection refused"
+        }
+      ],
+      "scan": {
+        "timeout_ms": 500,
+        "concurrency": 32,
+        "started_at": "2025-02-07T12:34:56Z",
+        "duration_ms": 342
+      }
+    }
+
+  dns output (A record):
+    {
+      "query": "example.com",
+      "rtype": "A",
+      "server": "system",
+      "records": [
+        {
+          "name": "example.com.",
+          "ttl": 300,
+          "data": "93.184.216.34"
+        }
+      ]
+    }
+
+  dns output (MX record):
+    {
+      "query": "example.com",
+      "rtype": "MX",
+      "server": "system",
+      "records": [
+        {
+          "name": "example.com.",
+          "ttl": 3600,
+          "data": {
+            "priority": 10,
+            "exchange": "mail.example.com."
+          }
+        }
+      ]
+    }
+
+  dns output (SRV record):
+    {
+      "query": "_http._tcp.example.com",
+      "rtype": "SRV",
+      "server": "system",
+      "records": [
+        {
+          "name": "_http._tcp.example.com.",
+          "ttl": 300,
+          "data": {
+            "priority": 10,
+            "weight": 20,
+            "port": 80,
+            "target": "www.example.com."
+          }
+        }
+      ]
+    }
+
+  route.list output:
+    [
+      {
+        "family": "ipv4",
+        "dst": "0.0.0.0/0",
+        "gateway": "192.168.1.1",
+        "iface": "eth0",
+        "metric": 100,
+        "table": "main",
+        "protocol": "dhcp",
+        "scope": null,
+        "flags": ["up", "gateway"]
+      },
+      {
+        "family": "ipv4",
+        "dst": "192.168.1.0/24",
+        "gateway": null,
+        "iface": "eth0",
+        "metric": 100,
+        "table": "main",
+        "protocol": "kernel",
+        "scope": "link",
+        "flags": ["up", "link"]
+      }
+    ]
+
+EXIT CODES:
+  0                      Success
+  1                      General failure
+  2                      Invalid arguments
+  3                      Missing required parameters
+  50                     System error (e.g., failed to get interfaces)
+  111                    Connection failed (tcp_check)
+
+ERROR FORMATS:
+
+  dns error:
+    {
+      "error": "invalid_type",
+      "detail": "Unknown record type: FOO",
+      "query": "example.com",
+      "rtype": "FOO"
+    }
+
+  tcp_check error:
+    {
+      "error": "connection_failed",
+      "detail": "Connection refused (os error 111)",
+      "host": "192.168.1.1",
+      "port": 22
+    }
+
+  scan error:
+    {
+      "error": "invalid_port_spec",
+      "detail": "Invalid port range: 100-50",
+      "ports": "100-50"
+    }
+
+COMMON WORKFLOWS:
+
+  Network interface discovery:
+    # Check all interfaces
+    net://if.list
+
+    # Find active interfaces
+    net://if.list(up=true)
+
+    # Check IPv4 configuration
+    net://if.list(family="ipv4",up=true)
+
+    # Check IPv6 configuration
+    net://if.list(family="ipv6",up=true)
+
+  Connectivity testing:
+    # Quick reachability test
+    net://example.com.ping(count=1,timeout_ms=1000)
+
+    # Check if host is up
+    net://192.168.1.10.ping(count=3)
+
+    # Test specific service
+    net://example.com:443.tcp_check
+
+    # Test with retries
+    net://example.com:80.tcp_check(retries=3,backoff_ms=1000)
+
+  Service availability checks:
+    # Check web server
+    net://web.example.com:80.tcp_check
+    net://web.example.com:443.tcp_check
+
+    # Check database
+    net://db.example.com:5432.tcp_check
+
+    # Check mail server
+    net://mail.example.com:587.tcp_check
+    net://mail.example.com:993.tcp_check
+
+    # Check SSH access
+    net://server.example.com:22.tcp_check
+
+  Port scanning for security:
+    # Scan common ports
+    net://example.com.scan(ports="21,22,23,25,80,443")
+
+    # Scan web ports
+    net://example.com.scan(ports="80,443,8000,8080,8443")
+
+    # Find open ports in range
+    net://192.168.1.10.scan(ports="1-1024",timeout_ms=200)
+
+    # Comprehensive scan (careful!)
+    net://localhost.scan(ports="1-65535",timeout_ms=100,concurrency=256)
+
+  DNS diagnostics:
+    # Check domain resolution
+    net://example.com.dns
+
+    # Check IPv6 support
+    net://example.com.dns(type="AAAA")
+
+    # Check mail configuration
+    net://example.com.dns(type="MX")
+
+    # Check SPF record
+    net://example.com.dns(type="TXT")
+
+    # Check name servers
+    net://example.com.dns(type="NS")
+
+    # Reverse DNS lookup
+    net://93.184.216.34.dns(type="PTR")
+
+    # Use specific DNS server
+    net://example.com.dns(server="8.8.8.8")
+
+  Email server validation:
+    # Check MX records
+    net://example.com.dns(type="MX")
+
+    # Check mail server connectivity
+    net://mail.example.com:25.tcp_check
+    net://mail.example.com:587.tcp_check
+    net://mail.example.com:465.tcp_check
+
+    # Check SPF
+    net://example.com.dns(type="TXT")
+
+    # Check DMARC
+    net://_dmarc.example.com.dns(type="TXT")
+
+    # Check DKIM
+    net://default._domainkey.example.com.dns(type="TXT")
+
+  Network troubleshooting:
+    # Test connectivity
+    net://example.com.ping(count=10)
+
+    # Check routing
+    net://host.route.list
+
+    # Test specific port
+    net://example.com:80.tcp_check
+
+    # Check DNS resolution
+    net://example.com.dns
+
+    # Verify reverse DNS
+    net://server-ip.dns(type="PTR")
+
+  Monitoring automation:
+    # Monitor web service
+    while true; do
+      net://api.example.com:443.tcp_check
+      sleep 60
+    done
+
+    # Check multiple hosts
+    for host in web1 web2 web3; do
+      net://$host.example.com.ping(count=1)
+    done
+
+    # Port sweep
+    for port in 80 443 8080 8443; do
+      net://example.com:$port.tcp_check
+    done
+
+  Service discovery:
+    # Find XMPP server
+    net://_xmpp-client._tcp.example.com.dns(type="SRV")
+
+    # Find SIP server
+    net://_sip._tcp.example.com.dns(type="SRV")
+
+    # Find LDAP server
+    net://_ldap._tcp.example.com.dns(type="SRV")
+
+  Security auditing:
+    # Check for open services
+    net://target.example.com.scan(ports="1-1024")
+
+    # Check specific vulnerable ports
+    net://target.example.com.scan(ports="21,23,139,445,3389")
+
+    # Verify firewall
+    net://external-ip.scan(ports="22,80,443")
+
+BEST PRACTICES:
+  • Use ping for quick connectivity tests
+  • Use tcp_check for service-specific checks
+  • Set appropriate timeouts for your network conditions
+  • Use retries for flaky connections
+  • Scan responsibly (don't overwhelm targets)
+  • Use low concurrency for careful scans
+  • Always check localhost before remote hosts
+  • Use specific DNS servers for consistent results
+  • Verify DNS with multiple record types
+  • Check both IPv4 and IPv6 when applicable
+  • Use PTR records for reverse DNS validation
+  • Monitor interface status regularly
+  • Check routing tables for network issues
+  • Use meaningful timeout values
+  • Implement error handling in scripts
+  • Log connectivity checks for trends
+  • Use port scanning ethically and legally
+  • Respect rate limits on public services
+  • Test against localhost first when possible
+  • Use custom DNS servers to bypass caching
+  • Combine multiple verbs for complete diagnostics
+  • Document network baselines
+  • Automate routine network checks
+  • Use family filters to test dual-stack
+  • Check TLS on appropriate ports
+  • Validate email infrastructure with MX and TXT records
+  • Use SRV records for modern service discovery
+  • Monitor routing changes
+  • Test during different times for patterns
+  • Keep scan concurrency reasonable (32-64)
+
+PING BACKEND BEHAVIOR:
+
+  The ping verb tries multiple approaches:
+
+  1. System ping (preferred):
+     • Uses native ping command
+     • Requires ICMP permissions
+     • Most accurate RTT measurements
+     • May fail without proper permissions
+
+  2. TCP fallback (automatic):
+     • Falls back when ICMP fails
+     • Connects to specified port (default 80)
+     • Less accurate but more reliable
+     • Works in restricted environments
+
+  The "backend" field in output shows which was used:
+    "system_ping"      Native ICMP ping
+    "tcp_fallback"     TCP connectivity test
+
+INTERFACE FLAGS:
+
+  Common interface flags in list output:
+
+  up                     Interface is up
+  down                   Interface is down
+  broadcast              Supports broadcast
+  multicast              Supports multicast
+  loopback               Loopback interface
+  pointopoint            Point-to-point link
+  running                Interface is running
+  promisc                Promiscuous mode
+  noarp                  No ARP protocol
+
+ROUTING TABLE FIELDS:
+
+  family                 IP family (ipv4, ipv6)
+  dst                    Destination network (CIDR)
+  gateway                Gateway IP address (null for direct)
+  iface                  Interface name
+  metric                 Route metric/priority
+  table                  Routing table name
+  protocol               Route source protocol
+  scope                  Route scope (global, link, host)
+  flags                  Route flags
+
+  Common protocols:
+    kernel               Added by kernel
+    dhcp                 From DHCP
+    static               Static configuration
+    ra                   IPv6 Router Advertisement
+
+PORT SCAN PERFORMANCE:
+
+  Scanning performance depends on:
+
+  Timeout (timeout_ms):
+    • Lower = faster but may miss slow services
+    • Higher = more accurate but slower
+    • Typical: 200-1000ms
+
+  Concurrency (concurrency):
+    • Higher = faster but may overwhelm target
+    • Lower = slower but more polite
+    • Typical: 32-128
+    • Maximum: 256
+
+  Example scan times:
+    100 ports, 500ms timeout, 32 concurrency   ~  2 seconds
+    1000 ports, 500ms timeout, 32 concurrency  ~ 16 seconds
+    1000 ports, 200ms timeout, 128 concurrency ~  2 seconds
+    65535 ports, 100ms timeout, 256 concurrency ~ 30 seconds
+
+  Recommendations:
+    • Quick scan: timeout_ms=200, concurrency=128
+    • Thorough scan: timeout_ms=1000, concurrency=32
+    • Stealth scan: timeout_ms=2000, concurrency=5
+
+DNS SERVER SELECTION:
+
+  Default (system resolver):
+    • Uses OS-configured DNS servers
+    • Respects /etc/resolv.conf or equivalent
+    • May include caching
+
+  Public DNS servers:
+    Google:              8.8.8.8, 8.8.4.4
+    Cloudflare:          1.1.1.1, 1.0.0.1
+    Quad9:               9.9.9.9, 149.112.112.112
+    OpenDNS:             208.67.222.222, 208.67.220.220
+
+  When to use custom DNS:
+    • Testing DNS propagation
+    • Bypassing local DNS cache
+    • Validating DNS configuration
+    • Troubleshooting DNS issues
+    • Testing against specific resolver
+
+SECURITY CONSIDERATIONS:
+  • Port scanning may be restricted by network policy
+  • Always have authorization before scanning networks
+  • Scanning can trigger IDS/IPS alerts
+  • Respect network usage policies
+  • Use rate limiting for bulk operations
+  • Be aware of firewall rules
+  • Some networks block ICMP ping
+  • DNS queries may be logged
+  • Reverse DNS may reveal system information
+  • Use scanning responsibly and ethically
+  • Document scanning activities
+  • Notify network administrators before large scans
+  • Avoid scanning production systems during peak hours
+  • Use VPN or proper network segmentation
+  • Understand legal implications of scanning
+
+PLATFORM SUPPORT:
+
+  list:                  All platforms (Linux, macOS, Windows)
+  ping:                  All platforms (with TCP fallback)
+  tcp_check:             All platforms
+  scan:                  All platforms
+  dns:                   All platforms
+  route.list:            Linux only
+
+  Platform-specific notes:
+
+  Linux:
+    • Full support for all verbs
+    • Native ICMP ping available
+    • Routing table fully supported
+    • May require permissions for ICMP
+
+  macOS:
+    • All verbs except route.list
+    • Native ICMP ping available
+    • May require permissions for ICMP
+    • TCP fallback always available
+
+  Windows:
+    • All verbs except route.list
+    • Native ICMP ping available
+    • May require administrator privileges
+    • TCP fallback always available
+
+PERMISSIONS:
+
+  Some operations may require elevated permissions:
+
+  ICMP ping:
+    • May require root/administrator
+    • Falls back to TCP if unavailable
+
+  Interface listing:
+    • Usually works without elevation
+    • Full details may require privileges
+
+  Routing table:
+    • May require root on Linux
+    • Platform-specific restrictions
+
+  Port scanning:
+    • Usually works without elevation
+    • Source port selection may require privileges
+
+PERFORMANCE CONSIDERATIONS:
+  • Ping uses minimal resources
+  • TCP checks are fast (milliseconds)
+  • Port scanning is I/O bound
+  • Use concurrency for faster scans
+  • DNS lookups cached by system
+  • Route listing is fast (reads from kernel)
+  • Interface listing is instant
+  • Large port ranges take time
+  • Network latency affects all operations
+  • Timeouts should match network conditions
+
+LIMITATIONS:
+  • No UDP port scanning (TCP only)
+  • No OS fingerprinting
+  • No service version detection
+  • No traceroute functionality
+  • Limited route manipulation (read-only)
+  • No packet capture
+  • No raw socket operations (except ping)
+  • No ARP operations
+  • route.list Linux-only
+  • No Windows routing table support
+  • No interface configuration changes
+  • No bandwidth testing
+  • No packet loss measurement (except ping)
+
+DEBUGGING:
+
+  Test connectivity:
+    net://8.8.8.8.ping(count=1)
+
+  Check interface configuration:
+    net://if.list(up=true)
+
+  Verify DNS resolution:
+    net://example.com.dns
+
+  Test specific service:
+    net://example.com:80.tcp_check
+
+  Check routing:
+    net://host.route.list
+
+  Common issues:
+    • ICMP blocked (use TCP fallback)
+    • DNS resolution fails (check server parameter)
+    • Connection timeout (increase timeout_ms)
+    • Port scan too slow (increase concurrency)
+    • route.list fails (check platform support)
+    • Permission denied (may need elevation)
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With log handle:
+    # Log connectivity checks
+    net://example.com.ping | log://./network-monitor.log.append
+
+  With event handle:
+    # Trigger on connectivity loss
+    net://critical-host.ping(count=1) || event://emit(topic="host.down")
+
+  With file handle:
+    # Save scan results
+    net://example.com.scan(ports="1-1000") > scan-results.json
+
+  With config handle:
+    # Store monitoring targets
+    config://monitoring/targets.get
+
+  With mail handle:
+    # Email on failure
+    net://critical-server.tcp_check || mail://send(to="admin@example.com",subject="Server Down")
+
+MORE INFO:
+  For complete documentation of net handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Network_RemoteOperations/net.md
+
+  Network tools documentation:
+  https://linux.die.net/man/8/ping
+  https://linux.die.net/man/8/ip (route command)
+
+  DNS specifications:
+  https://www.rfc-editor.org/rfc/rfc1035 (DNS)
+  https://www.rfc-editor.org/rfc/rfc3596 (AAAA records)
+
+  TCP/IP reference:
+  https://www.rfc-editor.org/rfc/rfc793 (TCP)
+  https://www.rfc-editor.org/rfc/rfc791 (IP)
+
+  Use 'net:// --help=VERB' for detailed help on a specific verb.
+"#;
+
 // DNS-related types and traits
 
 #[derive(Debug, Clone, PartialEq)]
@@ -319,14 +1347,230 @@ impl NetHandle {
 
         Ok(query_name.to_string())
     }
+
+    /// Check if this is a help request and display help if so
+    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
+        // Check for help verbs
+        if verb == "--help" || verb == "-h" || verb == "help" {
+            write!(io.stdout, "{}", NET_HELP_TEXT)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        // Check for verb-specific help
+        if verb.starts_with("--help=") {
+            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
+            Self::display_verb_help(help_verb, io)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        Ok(None)
+    }
+    
+    /// Display help for a specific verb
+    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
+        match verb {
+            "list" => {
+                write!(io.stdout, r#"
+LIST VERB - NET HANDLE
+=====================
+
+DESCRIPTION:
+  Lists network interfaces on the system with detailed information including
+  MAC addresses, MTU, flags, and all IP addresses (IPv4 and IPv6).
+
+USAGE:
+  net://if.list [arguments]
+  net://iface.list [arguments]
+  net://interfaces.list [arguments]
+
+ARGUMENTS:
+  family=FAMILY          Address family filter (default: all)
+                         Values: ipv4, ipv6, all
+  up=BOOL               Interface status filter (default: all interfaces)
+                         Values: true (only UP), false (only DOWN)
+
+EXAMPLES:
+  net://if.list
+  net://if.list(family="ipv4")
+  net://if.list(up=true)
+  net://if.list(family="ipv6",up=true)
+
+For complete help, use: net:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "ping" => {
+                write!(io.stdout, r#"
+PING VERB - NET HANDLE  
+=====================
+
+DESCRIPTION:
+  Tests network connectivity to a host using ICMP ping or TCP fallback.
+  Automatically falls back to TCP if ICMP fails or is not available.
+
+USAGE:
+  net://host.ping [arguments]
+  net://ip.ping [arguments]
+
+ARGUMENTS:
+  count=NUMBER           Number of ping packets (default: 3, minimum: 1)
+  timeout_ms=NUMBER      Timeout per packet in milliseconds
+                         (default: 3000, minimum: 100)
+  port=NUMBER           Port for TCP fallback (default: 80)
+  family=FAMILY         IP family preference (default: auto)
+                         Values: auto, ipv4, ipv6
+  raw=BOOL             Show raw ping output (default: false)
+
+EXAMPLES:
+  net://example.com.ping
+  net://8.8.8.8.ping(count=1)
+  net://example.com.ping(count=5,timeout_ms=2000)
+  net://example.com.ping(family="ipv4")
+
+For complete help, use: net:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "tcp_check" => {
+                write!(io.stdout, r#"
+TCP_CHECK VERB - NET HANDLE
+===========================
+
+DESCRIPTION:
+  Tests TCP connectivity to a specific host and port. Verifies that
+  a service is listening and accepting connections.
+
+USAGE:
+  net://host:port.tcp_check [arguments]
+  net://host.tcp_check port=PORT [arguments]
+
+ARGUMENTS:
+  port=NUMBER           Target port (required if not in URL)
+  timeout_ms=NUMBER     Connection timeout in milliseconds
+                         (default: 3000, minimum: 1)
+  retries=NUMBER        Number of retry attempts (default: 1, minimum: 1)
+  backoff_ms=NUMBER     Delay between retries in milliseconds (default: 0)
+  expect_tls=BOOL       Expect TLS connection (default: false)
+
+EXAMPLES:
+  net://example.com:80.tcp_check
+  net://example.com:443.tcp_check(expect_tls=true)
+  net://example.com.tcp_check(port=8080)
+  net://example.com:80.tcp_check(retries=3,backoff_ms=1000)
+
+For complete help, use: net:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "scan" => {
+                write!(io.stdout, r#"
+SCAN VERB - NET HANDLE
+======================
+
+DESCRIPTION:
+  Performs TCP port scanning on a target host. Checks which ports
+  are open, closed, or filtered. Use responsibly and ethically.
+
+USAGE:
+  net://host.scan [arguments]
+
+ARGUMENTS:
+  ports=SPEC            Port specification (default: "80,443")
+                         Formats: "80", "80,443", "20-25", "80,443,8000-8005"
+  timeout_ms=NUMBER     Timeout per port in milliseconds (default: 500)
+  concurrency=NUMBER    Max concurrent connections (default: 32, max: 256)
+  protocol=PROTOCOL     Protocol to scan (default: tcp)
+  host=HOST            Override target host from URL
+
+EXAMPLES:
+  net://example.com.scan
+  net://example.com.scan(ports="22,80,443")
+  net://example.com.scan(ports="1-1024",timeout_ms=200)
+  net://example.com.scan(ports="1-1000",concurrency=64)
+
+For complete help, use: net:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "dns" => {
+                write!(io.stdout, r#"
+DNS VERB - NET HANDLE
+====================
+
+DESCRIPTION:
+  Performs DNS lookups for various record types. Supports A, AAAA, CNAME,
+  MX, TXT, NS, SRV, and PTR records with custom DNS servers.
+
+USAGE:
+  net://domain.dns [arguments]
+  net://ip.dns [arguments] (for PTR lookups)
+
+ARGUMENTS:
+  type=RECORD_TYPE      DNS record type (default: A)
+                         Values: A, AAAA, CNAME, MX, TXT, NS, SRV, PTR
+  server=IP            Custom DNS server IP address
+  port=NUMBER          Custom DNS server port (default: 53)
+  timeout_ms=NUMBER    Query timeout in milliseconds (default: 3000)
+
+EXAMPLES:
+  net://example.com.dns
+  net://example.com.dns(type="MX")
+  net://8.8.8.8.dns(type="PTR")
+  net://example.com.dns(server="1.1.1.1")
+  net://example.com.dns(type="TXT",server="8.8.8.8")
+
+For complete help, use: net:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            "route.list" => {
+                write!(io.stdout, r#"
+ROUTE.LIST VERB - NET HANDLE
+============================
+
+DESCRIPTION:
+  Lists the system routing table. Shows routes with destination networks,
+  gateways, interfaces, and metrics. Linux only.
+
+USAGE:
+  net://host.route.list [arguments]
+
+ARGUMENTS:
+  family=FAMILY         Route family filter (default: ipv4)
+                         Values: ipv4, ipv6, all
+  table=TABLE          Routing table filter (not implemented yet)
+
+EXAMPLES:
+  net://host.route.list
+  net://host.route.list(family="ipv6")
+  net://host.route.list(family="all")
+
+PLATFORM:
+  Linux only - not supported on macOS or Windows
+
+For complete help, use: net:// --help
+"#)?;
+                Ok(Status::ok())
+            },
+            _ => {
+                write!(io.stdout, "\nUnknown verb: {}. Available verbs: list, ping, tcp_check, scan, dns, route.list.\n\nUse --help for full list of verbs.\n", verb)?;
+                Ok(Status::err(2, "unknown verb"))
+            }
+        }
+    }
 }
 
 impl Handle for NetHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["list", "ping", "tcp_check", "scan", "dns", "route.list"]
+        &["list", "ping", "tcp_check", "scan", "dns", "route.list", "help", "--help", "-h"]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests first
+        if let Some(status) = Self::check_and_display_help(verb, io)? {
+            return Ok(status);
+        }
+
         match verb {
             "list" => list_interfaces(args, io),
             "ping" => self.verb_ping(args, io),

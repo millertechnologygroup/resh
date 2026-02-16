@@ -1,101 +1,459 @@
-# Packages & Software
+# Resource Shell (resh) – Packages & Software Documentation
 
-This section covers tools for managing software on your computer. These tools help you install programs, keep them updated, and work with code repositories.
+## 1. Overview
 
-## What is Package & Software Management?
+### Definition
 
-Package and software management involves taking care of the programs on your computer. This includes:
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The **Packages & Software** domain provides tools for managing system software and version-controlled code repositories.
 
-- **Installing new programs** - Getting software from app stores or package managers
-- **Updating existing programs** - Keeping your software current with the latest versions
-- **Removing old programs** - Uninstalling software you no longer need
-- **Managing code projects** - Working with Git repositories to track changes in your code
-- **Searching for software** - Finding new programs that do what you need
+### Purpose
 
-Think of it like managing a library - you add new books (install software), keep books organized and updated (manage versions), remove books you don't need (uninstall), and keep track of changes to books you're writing (version control with Git).
+This domain enables:
 
-## Available Tools
+* Installation, update, removal, and inspection of software packages
+* Cross-platform package manager abstraction
+* Git repository management and version control workflows
+* Deterministic, structured output for automation
 
-### [Package Management](pkg.md)
-Install, update, remove, and search for software packages on your system. Works with different package managers like apt (Ubuntu), brew (macOS), dnf (Fedora), and others automatically.
+### Architectural Problem Addressed
 
-**Use package management when you need to:**
-- Install new programs or tools
-- Update all your software to the latest versions
-- Remove programs you no longer use
-- Search for software that does specific tasks
-- Get information about installed programs
-- Keep your system secure with security updates
+Traditional package and Git tooling:
 
-### [Git Version Control](git.md)
-Manage Git repositories for tracking code changes, collaborating with others, and keeping your projects organized. Git helps you save different versions of your work and share code with teammates.
+* Produces unstructured terminal output
+* Varies across platforms and package managers
+* Requires manual scripting for automation
+* Provides inconsistent exit semantics
 
-**Use Git when you need to:**
-- Save different versions of your code projects
-- Work on code with other people
-- Download code from websites like GitHub
-- Keep track of what changes you made and when
-- Merge changes from different contributors
-- Create branches to try new features safely
+resh addresses these issues by:
 
-## Choosing the Right Tool
+* Standardizing package and Git operations behind typed handles
+* Providing structured JSON output
+* Enforcing explicit verbs and parameters
+* Supporting automation-friendly execution
 
-Here's a simple guide to help you pick the right tool:
+### Resource-Oriented URI Model
 
-- **For installing and managing programs:** Use [Package Management](pkg.md)
-- **For working with code projects:** Use [Git Version Control](git.md)
+resh commands follow:
 
-## Common Workflows
+```
+handle://target.verb(options)
+```
 
-### Setting Up a New Development Environment
-1. Use [Package Management](pkg.md) to install development tools like code editors, compilers, and utilities
-2. Use [Git Version Control](git.md) to clone code repositories you want to work on
-3. Use [Package Management](pkg.md) to install any additional dependencies your projects need
+For package and Git operations:
 
-### Maintaining Your System
-1. Use [Package Management](pkg.md) to update all installed software regularly
-2. Use [Package Management](pkg.md) to remove software you no longer need
-3. Use [Git Version Control](git.md) to pull updates for code repositories you're following
+* **handle**: `pkg://`, `git://`
+* **target**: System, repository, or project
+* **verb**: Operation such as install, update, clone, commit
+* **options**: Explicit parameters
 
-### Starting a New Code Project
-1. Use [Git Version Control](git.md) to create a new repository for your project
-2. Use [Package Management](pkg.md) to install any tools or libraries your project needs
-3. Use [Git Version Control](git.md) to commit your code changes as you work
+Example:
 
-### Sharing Your Work
-1. Use [Git Version Control](git.md) to push your code to online repositories like GitHub
-2. Use [Package Management](pkg.md) to document what software others need to install to use your project
-3. Use [Git Version Control](git.md) to collaborate with others through branches and merges
+```
+pkg://system.install(name="nginx")
+git://repo.clone(url="https://github.com/org/project.git")
+```
 
-## Best Practices
+---
 
-### For Package Management
-- **Keep software updated** - Run updates regularly to stay secure
-- **Only install what you need** - Avoid cluttering your system with unused programs
-- **Use official sources** - Install software from trusted repositories when possible
-- **Test before production** - Use dry run options to see what will happen before making changes
+## 2. Design Philosophy and Core Principles
 
-### For Git Version Control
-- **Commit often** - Save your work frequently with descriptive messages
-- **Use branches** - Try new features in separate branches before merging
-- **Write good commit messages** - Explain what you changed and why
-- **Keep repositories clean** - Don't commit temporary files or sensitive information
+### Structured Interface Model
 
-## Security Considerations
+* Each capability is exposed via a typed handle.
+* Verbs represent explicit operations.
+* Parameters are validated before execution.
+* Output is consistent and machine-readable.
 
-- **Verify software sources** - Make sure you're installing from trusted repositories
-- **Keep systems updated** - Install security updates promptly
-- **Review code changes** - Check what changes are being made before accepting them
-- **Use version control** - Git helps you track who made what changes and when
-- **Backup important work** - Use Git remotes to keep copies of your code in safe places
+---
 
-## Getting Started
+### Safety-First Execution
 
-Choose the tool that matches your immediate need:
+* Explicit install/update/remove verbs.
+* Dry-run capabilities where supported.
+* Explicit overwrite and dependency behavior.
+* Version tracking for Git repositories.
 
-- **Installing or managing software?** Start with [Package Management](pkg.md)
-- **Working with code projects?** Begin with [Git Version Control](git.md)
+---
 
-Both tools have detailed documentation with step-by-step examples. Package management helps you set up your system with the right software, while Git helps you organize and track your code projects. They work great together for development workflows.
+### Deterministic Behavior
 
-Remember: good software management keeps your computer running smoothly and your projects organized. Start with the basics and gradually learn more advanced features as you need them.
+* Identical inputs yield consistent output structure.
+* Exit codes reflect operation success or failure.
+* Platform-specific differences are abstracted where possible.
+
+---
+
+### JSON-Based Structured Output
+
+Operations return structured responses including:
+
+* `ok`
+* Operation metadata
+* Result summary
+* Error details when applicable
+
+---
+
+### AI-Readiness
+
+Structured responses allow:
+
+* Automated dependency validation
+* Repository state inspection
+* Package version auditing
+* Programmatic remediation workflows
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+handle://target.verb(options)
+```
+
+| Component | Description                                      |
+| --------- | ------------------------------------------------ |
+| `handle`  | `pkg://` or `git://`                             |
+| `target`  | System or repository context                     |
+| `verb`    | Operation (install, update, clone, commit, etc.) |
+| `options` | Structured parameters                            |
+
+---
+
+### Production Examples
+
+#### Install Software Package
+
+```
+pkg://system.install(name="curl")
+```
+
+#### Update All Packages
+
+```
+pkg://system.update
+```
+
+#### Remove Package
+
+```
+pkg://system.remove(name="nginx")
+```
+
+#### Search for Software
+
+```
+pkg://system.search(query="database")
+```
+
+#### Clone Git Repository
+
+```
+git://repo.clone(url="https://github.com/example/project.git")
+```
+
+#### Commit Changes
+
+```
+git://repo.commit(message="Fix configuration issue")
+```
+
+#### Pull Updates
+
+```
+git://repo.pull
+```
+
+---
+
+## 3.2 Execution Semantics
+
+### Deterministic Behavior
+
+* Explicit package manager abstraction.
+* Git operations reflect repository state.
+* Structured reporting of versions and status.
+
+---
+
+### Structured Output Contracts
+
+Representative JSON example (package install):
+
+```json
+{
+  "ok": true,
+  "operation": "install",
+  "package": "curl",
+  "manager": "apt",
+  "result": {
+    "installed": true,
+    "version": "7.88.1",
+    "changed": true
+  }
+}
+```
+
+---
+
+### Error Handling Structure
+
+Structured error example:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "pkg.package_not_found",
+    "message": "Package not found in repositories"
+  }
+}
+```
+
+---
+
+## 4. Functional Domains
+
+### 4.1 Automation Utilities
+
+**Scope**
+
+Automated system setup and dependency management.
+
+**Use Cases**
+
+* CI/CD dependency provisioning
+* Automated environment bootstrapping
+* System maintenance automation
+
+---
+
+### 4.2 Data & State Management
+
+**Scope**
+
+Package version tracking and repository state inspection.
+
+**Use Cases**
+
+* Dependency auditing
+* Version validation
+* Repository status inspection
+
+---
+
+### 4.3 Filesystem & Storage
+
+**Scope**
+
+Git repository storage and working tree management.
+
+**Use Cases**
+
+* Cloning repositories
+* Managing branches
+* Staging and committing changes
+
+---
+
+### 4.4 Network & Remote Operations
+
+**Scope**
+
+Fetching packages from remote repositories and pulling Git changes.
+
+**Use Cases**
+
+* Downloading updates
+* Cloning remote repositories
+* Synchronizing codebases
+
+---
+
+### 4.5 Packages & Software
+
+**Supported Handles**
+
+* `pkg://` (Package Management)
+* `git://` (Git Version Control)
+
+**Package Management Capabilities**
+
+* Install software
+* Update software
+* Remove packages
+* Search for software
+* Inspect installed versions
+
+**Git Capabilities**
+
+* Clone repositories
+* Commit changes
+* Pull updates
+* Branch management
+* Version tracking
+
+---
+
+### 4.6 Process & Service Management
+
+Indirectly supports:
+
+* Installing services
+* Updating service binaries
+* Removing deprecated services
+
+---
+
+### 4.7 Security & Secrets
+
+**Security Considerations**
+
+* Install from trusted repositories.
+* Keep systems updated.
+* Avoid committing sensitive data.
+* Use version control to track changes.
+
+---
+
+### 4.8 System Information
+
+Provides structured reporting of:
+
+* Installed package versions
+* Repository status
+* Branch information
+* Commit history metadata
+
+---
+
+## 5. Platform Support
+
+Package management supports multiple platform-specific managers:
+
+* `apt` (Ubuntu/Debian)
+* `brew` (macOS)
+* `dnf` (Fedora)
+* Other system managers where available
+
+Git operations are cross-platform where Git is installed.
+
+No additional OS-specific limitations are defined in the provided documentation.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Update software regularly.
+* Install only required packages.
+* Use official repositories.
+* Test updates before applying to production.
+
+---
+
+### Automation Considerations
+
+* Use structured output for dependency validation.
+* Validate versions before deployment.
+* Use dry-run where supported.
+* Automate environment provisioning.
+
+---
+
+### CI/CD Integration
+
+Typical workflow:
+
+1. Install required dependencies via `pkg`.
+2. Clone repository via `git`.
+3. Pull updates before build.
+4. Commit changes during automation workflows.
+5. Validate installed versions.
+
+---
+
+### Production Environment Recommendations
+
+* Maintain consistent package versions.
+* Regularly apply security updates.
+* Keep repositories clean and organized.
+* Avoid committing temporary or sensitive files.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Provision development environments.
+* Automate dependency installation.
+* Manage repository workflows.
+
+---
+
+### SRE Engineers
+
+* Ensure systems remain patched.
+* Audit package versions.
+* Track infrastructure code changes.
+
+---
+
+### Network Administrators
+
+* Install networking tools.
+* Maintain secure system packages.
+* Audit system software inventory.
+
+---
+
+### AI / Automation Engineers
+
+* Automate environment setup.
+* Analyze dependency state programmatically.
+* Trigger updates based on structured version checks.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+resh is implemented in Rust, providing:
+
+* Memory safety
+* Strong compile-time guarantees
+* Deterministic execution behavior
+* Efficient process invocation
+
+---
+
+### Type Safety
+
+* Enumerated verbs
+* Explicit parameter validation
+* Structured error codes
+* Consistent output schemas
+
+---
+
+### Performance Characteristics
+
+* Native binary execution
+* Efficient package manager invocation
+* Controlled Git command execution
+* Minimal parsing overhead
+
+---
+
+### Cross-Platform Architecture
+
+* CLI-based execution model
+* Platform-specific package manager abstraction
+* Cross-platform Git integration
+* Consistent structured JSON output
+

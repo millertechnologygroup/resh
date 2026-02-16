@@ -15,6 +15,1469 @@ use crate::core::{
     status::Status,
 };
 
+// ===========================================================================
+// Help Text Constants
+// ===========================================================================
+
+const FIREWALL_HELP_TEXT: &str = "RESOURCE SHELL - FIREWALL HANDLE
+================================
+
+USAGE:
+  firewall://.VERB(arguments)
+
+DESCRIPTION:
+  The firewall handle provides complete firewall management across multiple
+  Linux firewall backends. Manage firewall rules, check status, control
+  firewall services, save and reload configurations. Supports iptables,
+  nftables, UFW (Uncomplicated Firewall), and firewalld with automatic
+  backend detection. Add, delete, and list rules with filtering by protocol,
+  port, address, interface, and direction. Essential for network security,
+  access control, traffic filtering, and security hardening on Linux systems.
+
+URL FORMAT:
+  firewall://.VERB(arguments)
+  firewall://.rules.list
+  firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=22)
+  firewall://.status
+
+  No path component required
+  VERB specifies the operation to perform
+
+VERBS (8 total):
+
+  Rule Management:
+    rules.list      List existing firewall rules with filtering
+    rules.add       Add new firewall rules
+    rules.delete    Delete existing firewall rules
+    rules.save      Save current rules to files
+    rules.reload    Reload rules from saved files
+
+  Service Control:
+    status          Check firewall status and backend availability
+    enable          Enable firewall service
+    disable         Disable firewall service
+
+EXAMPLES:
+
+  List Rules (rules.list):
+    # List all rules (auto-detect backend)
+    firewall://.rules.list
+
+    # List rules from specific backend
+    firewall://.rules.list(backend=iptables)
+    firewall://.rules.list(backend=nftables)
+    firewall://.rules.list(backend=ufw)
+    firewall://.rules.list(backend=firewalld)
+
+    # List all available backends
+    firewall://.rules.list(backend=all)
+
+    # List IPv4 rules only
+    firewall://.rules.list(family=ipv4)
+
+    # List IPv6 rules only
+    firewall://.rules.list(family=ipv6)
+
+    # Filter by table
+    firewall://.rules.list(backend=iptables,table=filter)
+    firewall://.rules.list(backend=iptables,table=nat)
+    firewall://.rules.list(backend=iptables,table=mangle)
+
+    # Filter by chain
+    firewall://.rules.list(backend=iptables,chain=INPUT)
+    firewall://.rules.list(backend=iptables,chain=OUTPUT)
+    firewall://.rules.list(backend=iptables,chain=FORWARD)
+
+    # Filter by direction
+    firewall://.rules.list(direction=input)
+    firewall://.rules.list(direction=output)
+    firewall://.rules.list(direction=forward)
+
+    # Filter by action
+    firewall://.rules.list(action=accept)
+    firewall://.rules.list(action=drop)
+    firewall://.rules.list(action=reject)
+
+    # Filter by protocol
+    firewall://.rules.list(proto=tcp)
+    firewall://.rules.list(proto=udp)
+    firewall://.rules.list(proto=icmp)
+
+    # Filter by destination port
+    firewall://.rules.list(dport=22)
+    firewall://.rules.list(dport=80)
+    firewall://.rules.list(dport=443)
+
+    # Filter by source port
+    firewall://.rules.list(sport=1024)
+
+    # Filter by source address
+    firewall://.rules.list(saddr=192.168.1.0/24)
+    firewall://.rules.list(saddr=10.0.0.0/8)
+
+    # Filter by destination address
+    firewall://.rules.list(daddr=203.0.113.0/24)
+
+    # Filter by input interface
+    firewall://.rules.list(in_iface=eth0)
+    firewall://.rules.list(in_iface=wlan0)
+
+    # Filter by output interface
+    firewall://.rules.list(out_iface=eth1)
+
+    # Filter by comment content
+    firewall://.rules.list(comment_contains=\"SSH\")
+    firewall://.rules.list(comment_contains=\"Allow HTTP\")
+
+    # Include backend raw output
+    firewall://.rules.list(include_backend_raw=true)
+
+    # Include packet/byte counters
+    firewall://.rules.list(include_counters=true)
+
+    # Limit maximum rules returned
+    firewall://.rules.list(max_rules=100)
+
+    # Set timeout
+    firewall://.rules.list(timeout_ms=10000)
+
+    # Text output format
+    firewall://.rules.list(format_output=text)
+
+    # Complex filter
+    firewall://.rules.list(backend=iptables,family=ipv4,direction=input,proto=tcp,dport=22,action=accept)
+
+  Add Rules (rules.add):
+    # Allow SSH (iptables)
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=22,comment=\"Allow SSH\")
+
+    # Allow HTTPS (iptables)
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=443,comment=\"Allow HTTPS\")
+
+    # Allow HTTP (iptables)
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=80,comment=\"Allow HTTP\")
+
+    # Block telnet (iptables)
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=drop,proto=tcp,dport=23,comment=\"Block telnet\")
+
+    # Allow from specific subnet
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=8080,saddr=10.0.0.0/8,comment=\"Allow from corporate\")
+
+    # Block from specific IP
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=drop,saddr=192.0.2.100,comment=\"Block malicious IP\")
+
+    # Allow to specific destination
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=output,action=accept,proto=tcp,daddr=203.0.113.0/24,dport=443)
+
+    # Allow source port range
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=output,action=accept,proto=tcp,sport=1024:65535)
+
+    # IPv6 rule
+    firewall://.rules.add(backend=iptables,family=ipv6,direction=input,action=accept,proto=tcp,dport=22)
+
+    # ICMP rule
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=icmp)
+
+    # Allow all protocols
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=all,saddr=192.168.1.0/24)
+
+    # Dry run mode
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=3306,dry_run=true)
+
+    # nftables rule
+    firewall://.rules.add(backend=nftables,family=ipv4,direction=input,action=drop,proto=tcp,dport=23,comment=\"Block telnet\")
+
+    # UFW rule
+    firewall://.rules.add(backend=ufw,direction=input,action=accept,proto=tcp,dport=8080,saddr=10.0.0.0/8,comment=\"Allow app\")
+
+    # firewalld rule (requires zone)
+    firewall://.rules.add(backend=firewalld,family=ipv4,direction=input,action=accept,proto=tcp,dport=80,zone=public)
+
+    # firewalld with zone
+    firewall://.rules.add(backend=firewalld,family=ipv4,direction=input,action=accept,proto=tcp,dport=443,zone=external)
+
+  Delete Rules (rules.delete):
+    # Delete SSH rule
+    firewall://.rules.delete(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=22)
+
+    # Delete by protocol and port
+    firewall://.rules.delete(backend=iptables,family=ipv4,proto=tcp,dport=8080)
+
+    # Delete by source address
+    firewall://.rules.delete(backend=iptables,family=ipv4,saddr=192.0.2.100)
+
+    # Delete with no match allowed
+    firewall://.rules.delete(backend=iptables,family=ipv4,direction=input,proto=tcp,dport=65535,require_match=false)
+
+    # Delete requiring match
+    firewall://.rules.delete(backend=iptables,family=ipv4,direction=input,proto=tcp,dport=22,require_match=true)
+
+    # Dry run delete
+    firewall://.rules.delete(backend=iptables,family=ipv4,direction=input,proto=tcp,dport=3306,dry_run=true)
+
+    # Delete IPv6 rule
+    firewall://.rules.delete(backend=iptables,family=ipv6,direction=input,proto=tcp,dport=22)
+
+    # Delete ICMP rule
+    firewall://.rules.delete(backend=iptables,family=ipv4,proto=icmp)
+
+    # Delete nftables rule
+    firewall://.rules.delete(backend=nftables,family=ipv4,direction=input,proto=tcp,dport=23)
+
+    # Delete UFW rule
+    firewall://.rules.delete(backend=ufw,direction=input,proto=tcp,dport=8080)
+
+    # Delete firewalld rule
+    firewall://.rules.delete(backend=firewalld,family=ipv4,direction=input,proto=tcp,dport=80)
+
+  Save Rules (rules.save):
+    # Save as normalized JSON
+    firewall://.rules.save(backend=iptables,family=ipv4,format=normalized_json,path=/tmp/firewall.json)
+
+    # Save in backend native format
+    firewall://.rules.save(backend=iptables,family=ipv4,format=backend_native,path=/tmp/iptables.rules)
+
+    # Save both formats
+    firewall://.rules.save(backend=iptables,family=ipv4,format=both,path=/tmp/firewall)
+
+    # Auto-generate path
+    firewall://.rules.save(backend=iptables,family=ipv4,format=normalized_json)
+
+    # Save IPv6 rules
+    firewall://.rules.save(backend=iptables,family=ipv6,format=normalized_json,path=/tmp/ip6tables.json)
+
+    # Save all families
+    firewall://.rules.save(backend=iptables,family=any,format=normalized_json,path=/tmp/all-rules.json)
+
+    # Compress with gzip
+    firewall://.rules.save(backend=iptables,family=ipv4,format=normalized_json,path=/tmp/firewall.json,compress=gzip)
+
+    # Compress with bzip2
+    firewall://.rules.save(backend=iptables,family=ipv4,format=normalized_json,path=/tmp/firewall.json,compress=bzip2)
+
+    # Include metadata
+    firewall://.rules.save(backend=iptables,format=normalized_json,path=/tmp/firewall.json,include_metadata=true)
+
+    # Save all backends
+    firewall://.rules.save(backend=auto,format=normalized_json,path=/tmp/all-backends.json,include_all_backends=true)
+
+    # Dry run save
+    firewall://.rules.save(backend=iptables,format=normalized_json,path=/tmp/test.json,dry_run=true)
+
+    # Overwrite existing file
+    firewall://.rules.save(backend=iptables,format=normalized_json,path=/tmp/firewall.json,overwrite=true)
+
+    # Create directories if needed
+    firewall://.rules.save(backend=iptables,format=normalized_json,path=/backup/firewall/rules.json,create_dirs=true)
+
+    # Save nftables
+    firewall://.rules.save(backend=nftables,format=backend_native,path=/tmp/nft.rules)
+
+    # Save UFW
+    firewall://.rules.save(backend=ufw,format=normalized_json,path=/tmp/ufw.json)
+
+  Reload Rules (rules.reload):
+    # Reload from native format
+    firewall://.rules.reload(backend=iptables,source_format=backend_native,path=/tmp/iptables.rules)
+
+    # Reload from normalized JSON
+    firewall://.rules.reload(backend=iptables,source_format=normalized_json,path=/tmp/firewall.json)
+
+    # Auto-detect format
+    firewall://.rules.reload(backend=iptables,source_format=auto,path=/tmp/firewall.json)
+
+    # Reload IPv6 rules
+    firewall://.rules.reload(backend=iptables,source_format=backend_native,path=/tmp/ip6tables.rules,family=ipv6)
+
+    # Reload with backup
+    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,backup_before_apply=true)
+
+    # Reload without backup
+    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,backup_before_apply=false)
+
+    # Reload with validation
+    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,validate_before_apply=true)
+
+    # Reload without validation (risky)
+    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,validate_before_apply=false)
+
+    # Dry run reload
+    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,dry_run=true)
+
+    # Reload with timeout
+    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,timeout_ms=60000)
+
+    # Reload nftables
+    firewall://.rules.reload(backend=nftables,path=/tmp/nft.rules)
+
+  Check Status (status):
+    # Check status (auto-detect)
+    firewall://.status
+
+    # Check specific backend
+    firewall://.status(backend=iptables)
+    firewall://.status(backend=nftables)
+    firewall://.status(backend=ufw)
+    firewall://.status(backend=firewalld)
+
+    # Check all backends
+    firewall://.status(backend=all)
+
+    # Check IPv4 status
+    firewall://.status(family=ipv4)
+
+    # Check IPv6 status
+    firewall://.status(family=ipv6)
+
+    # Include metrics
+    firewall://.status(include_metrics=true)
+
+    # Exclude metrics
+    firewall://.status(include_metrics=false)
+
+    # Include rules summary
+    firewall://.status(include_rules_summary=true)
+
+    # Set timeout
+    firewall://.status(timeout_ms=10000)
+
+    # Text format
+    firewall://.status(format_output=text)
+
+  Enable Firewall (enable):
+    # Enable auto-detected backend
+    firewall://.enable
+
+    # Enable specific backend
+    firewall://.enable(backend=ufw)
+    firewall://.enable(backend=firewalld)
+    firewall://.enable(backend=iptables)
+    firewall://.enable(backend=nftables)
+
+    # Enable with rules file
+    firewall://.enable(backend=iptables,path=/etc/iptables/rules.v4)
+
+    # Dry run enable
+    firewall://.enable(backend=ufw,dry_run=true)
+
+    # Validate only
+    firewall://.enable(backend=ufw,validate_only=true)
+
+    # Enable with timeout
+    firewall://.enable(backend=firewalld,timeout_ms=60000)
+
+  Disable Firewall (disable):
+    # Disable auto-detected backend
+    firewall://.disable
+
+    # Disable specific backend
+    firewall://.disable(backend=ufw)
+    firewall://.disable(backend=firewalld)
+    firewall://.disable(backend=iptables)
+    firewall://.disable(backend=nftables)
+
+    # Disable with backup
+    firewall://.disable(backend=iptables,backup_before_apply=true)
+
+    # Disable without backup (risky)
+    firewall://.disable(backend=iptables,backup_before_apply=false)
+
+    # Dry run disable
+    firewall://.disable(backend=ufw,dry_run=true)
+
+    # Validate only
+    firewall://.disable(backend=ufw,validate_only=true)
+
+    # Disable with timeout
+    firewall://.disable(backend=firewalld,timeout_ms=60000)
+
+RULES.LIST ARGUMENTS:
+  backend=BACKEND        Firewall backend (default: auto)
+                         Values: auto, iptables, nftables, ufw, firewalld, all
+  family=FAMILY          IP family (default: any)
+                         Values: any, ipv4, ipv6
+  table=TABLE            Table to list rules from
+                         Values: filter, nat, mangle, raw, security
+  chain=CHAIN            Chain to list rules from
+                         Values: INPUT, OUTPUT, FORWARD, PREROUTING, POSTROUTING
+  direction=DIRECTION    Rule direction
+                         Values: input, output, forward
+  action=ACTION          Rule action
+                         Values: accept, drop, reject
+  proto=PROTOCOL         Protocol filter
+                         Values: tcp, udp, icmp, all
+  sport=PORT             Source port filter
+  dport=PORT             Destination port filter
+  saddr=ADDRESS          Source address filter (IP or CIDR)
+  daddr=ADDRESS          Destination address filter (IP or CIDR)
+  in_iface=INTERFACE     Input interface filter
+  out_iface=INTERFACE    Output interface filter
+  comment_contains=TEXT  Filter by comment content
+  include_backend_raw=BOOL    Include raw backend output (default: false)
+  include_counters=BOOL  Include packet/byte counters (default: false)
+  max_rules=NUMBER       Maximum rules to return (default: 10000)
+  timeout_ms=NUMBER      Command timeout (default: 5000)
+  format_output=FORMAT   Output format (default: json)
+                         Values: json, text
+
+RULES.ADD ARGUMENTS:
+  backend=BACKEND        Firewall backend (required)
+                         Values: iptables, nftables, ufw, firewalld
+  family=FAMILY          IP family (default: ipv4)
+                         Values: ipv4, ipv6
+  direction=DIRECTION    Rule direction (required)
+                         Values: input, output, forward
+  action=ACTION          Rule action (required)
+                         Values: accept, drop, reject
+  proto=PROTOCOL         Protocol
+                         Values: tcp, udp, icmp, all
+  dport=PORT             Destination port
+  sport=PORT             Source port
+  saddr=ADDRESS          Source address/network (IP or CIDR)
+  daddr=ADDRESS          Destination address/network (IP or CIDR)
+  comment=TEXT           Rule comment
+  zone=ZONE              Zone (required for firewalld)
+                         Values: public, external, internal, dmz, work, home, trusted, block, drop
+  dry_run=BOOL           Generate commands without executing (default: false)
+  format_output=FORMAT   Output format (default: json)
+
+RULES.DELETE ARGUMENTS:
+  backend=BACKEND        Firewall backend (required)
+                         Values: iptables, nftables, ufw, firewalld
+  family=FAMILY          IP family (default: ipv4)
+                         Values: ipv4, ipv6
+  direction=DIRECTION    Rule direction
+                         Values: input, output, forward
+  action=ACTION          Rule action
+                         Values: accept, drop, reject
+  proto=PROTOCOL         Protocol
+                         Values: tcp, udp, icmp, all
+  dport=PORT             Destination port
+  sport=PORT             Source port
+  saddr=ADDRESS          Source address/network
+  daddr=ADDRESS          Destination address/network
+  require_match=BOOL     Require rules to match for success (default: true)
+  dry_run=BOOL           Show what would be deleted (default: false)
+  format_output=FORMAT   Output format (default: json)
+
+RULES.SAVE ARGUMENTS:
+  backend=BACKEND        Firewall backend (default: auto)
+                         Values: auto, iptables, nftables, ufw, firewalld
+  family=FAMILY          IP family (default: any)
+                         Values: any, ipv4, ipv6
+  format=FORMAT          Save format (default: normalized_json)
+                         Values: normalized_json, backend_native, both
+  path=PATH              Output file path (auto-generated if not specified)
+  compress=COMPRESSION   Compression method (default: none)
+                         Values: none, gzip, bzip2
+  include_metadata=BOOL  Include metadata (default: true)
+  include_all_backends=BOOL  Save all backends (default: false)
+  dry_run=BOOL           Show what would be saved (default: false)
+  overwrite=BOOL         Overwrite existing files (default: false)
+  create_dirs=BOOL       Create directories (default: true)
+  timeout_ms=NUMBER      Command timeout (default: 5000)
+  format_output=FORMAT   Output format (default: json)
+
+RULES.RELOAD ARGUMENTS:
+  backend=BACKEND        Target firewall backend (default: auto)
+                         Values: auto, iptables, nftables, ufw, firewalld
+  source_format=FORMAT   Source format (default: auto)
+                         Values: auto, backend_native, normalized_json
+  path=PATH              Path to rules file (required)
+  family=FAMILY          IP family (default: any)
+                         Values: any, ipv4, ipv6
+  backup_before_apply=BOOL    Create backup before applying (default: true)
+  validate_before_apply=BOOL  Validate rules first (default: true)
+  dry_run=BOOL           Show what would be reloaded (default: false)
+  timeout_ms=NUMBER      Command timeout (default: 30000)
+  format_output=FORMAT   Output format (default: json)
+
+STATUS ARGUMENTS:
+  backend=BACKEND        Backend to check (default: auto)
+                         Values: auto, all, iptables, nftables, ufw, firewalld
+  family=FAMILY          IP family (default: any)
+                         Values: any, ipv4, ipv6
+  include_metrics=BOOL   Include performance metrics (default: true)
+  include_rules_summary=BOOL  Include rules count (default: false)
+  timeout_ms=NUMBER      Command timeout (default: 5000)
+  format_output=FORMAT   Output format (default: json)
+
+ENABLE ARGUMENTS:
+  backend=BACKEND        Firewall backend (default: auto)
+                         Values: auto, ufw, firewalld, iptables, nftables
+  path=PATH              Path to rules file to apply during enable
+  dry_run=BOOL           Show what would be enabled (default: false)
+  validate_only=BOOL     Only validate parameters (default: false)
+  timeout_ms=NUMBER      Command timeout (default: 30000)
+  format_output=FORMAT   Output format (default: json)
+
+DISABLE ARGUMENTS:
+  backend=BACKEND        Firewall backend (default: auto)
+                         Values: auto, ufw, firewalld, iptables, nftables
+  path=PATH              Path to rules file to apply during disable
+  backup_before_apply=BOOL    Create backup before disabling (default: true)
+  dry_run=BOOL           Show what would be disabled (default: false)
+  validate_only=BOOL     Only validate parameters (default: false)
+  timeout_ms=NUMBER      Command timeout (default: 30000)
+  format_output=FORMAT   Output format (default: json)
+
+FIREWALL BACKENDS:
+
+  The firewall handle supports multiple Linux firewall backends with
+  automatic detection and unified interface:
+
+  auto:
+    • Automatically detects best available backend
+    • Tries backends in order: firewalld, ufw, nftables, iptables
+    • Recommended for most use cases
+    • Simplifies cross-distribution compatibility
+
+  iptables:
+    • Traditional Linux netfilter firewall
+    • Widely supported across all distributions
+    • IPv4: iptables, IPv6: ip6tables
+    • Tables: filter, nat, mangle, raw, security
+    • Chains: INPUT, OUTPUT, FORWARD, PREROUTING, POSTROUTING
+    • Mature, well-documented, extensive tooling
+    • Lower-level, more complex syntax
+
+  nftables:
+    • Modern replacement for iptables
+    • Unified syntax for IPv4/IPv6
+    • Better performance than iptables
+    • More flexible rule syntax
+    • Fewer kernel modules needed
+    • Default in newer distributions
+    • Backward compatible with iptables
+
+  ufw (Uncomplicated Firewall):
+    • Simplified firewall interface
+    • Default on Ubuntu/Debian
+    • Easy to use, good for desktops
+    • Frontend for iptables/nftables
+    • Profile-based rule management
+    • Less granular control than iptables
+
+  firewalld:
+    • Dynamic firewall manager
+    • Default on RHEL/CentOS/Fedora
+    • Zone-based configuration
+    • Runtime vs permanent rules
+    • D-Bus interface
+    • Rich rule syntax
+    • Service-based rules
+
+  Backend comparison:
+    Feature          iptables  nftables  ufw     firewalld
+    Complexity       High      Medium    Low     Medium
+    Performance      Good      Better    Good    Good
+    IPv4/IPv6        Separate  Unified   Unified Unified
+    Distribution     Universal Newer     Ubuntu  RHEL
+    Ease of use      Hard      Medium    Easy    Medium
+    Flexibility      High      Highest   Low     High
+
+IP FAMILIES:
+
+  ipv4:
+    • IPv4 addresses (192.168.1.0/24, 10.0.0.0/8)
+    • Most common configuration
+    • iptables command for iptables backend
+    • Default family for most operations
+
+  ipv6:
+    • IPv6 addresses (2001:db8::/32, fe80::/10)
+    • Growing adoption
+    • ip6tables command for iptables backend
+    • Separate rules from IPv4 in iptables
+
+  any:
+    • Both IPv4 and IPv6
+    • nftables, ufw, firewalld handle both
+    • iptables requires separate rules
+
+RULE COMPONENTS:
+
+  Direction:
+    input              Incoming traffic to system
+    output             Outgoing traffic from system
+    forward            Traffic being routed through system
+
+  Action:
+    accept             Allow traffic through
+    drop               Silently discard traffic
+    reject             Discard and send error response
+
+  Protocol:
+    tcp                Transmission Control Protocol
+    udp                User Datagram Protocol
+    icmp               Internet Control Message Protocol
+    all                All protocols
+
+  Ports:
+    Single port        22, 80, 443
+    Port range         1024:65535
+    Service names      ssh, http, https (backend-dependent)
+
+  Addresses:
+    Single IP          192.168.1.100
+    CIDR notation      192.168.1.0/24
+    Network ranges     10.0.0.0/8, 172.16.0.0/12
+
+  Interfaces:
+    eth0, eth1         Ethernet interfaces
+    wlan0              Wireless interface
+    tun0, tap0         VPN interfaces
+    docker0            Docker bridge
+    br0                Bridge interface
+
+OUTPUT FORMATS:
+
+  rules.list output:
+    {
+      \"ok\": true,
+      \"backends\": [
+        {
+          \"backend\": \"iptables\",
+          \"family\": \"ipv4\",
+          \"rules\": [
+            {
+              \"chain\": \"INPUT\",
+              \"action\": \"ACCEPT\",
+              \"proto\": \"tcp\",
+              \"dport\": \"22\"
+            }
+          ]
+        }
+      ]
+    }
+
+  rules.add output:
+    {
+      \"ok\": true,
+      \"rule\": {
+        \"backend\": \"iptables\",
+        \"action\": \"accept\",
+        \"proto\": \"tcp\",
+        \"dport\": \"22\"
+      },
+      \"backend_commands\": [
+        \"iptables -A INPUT -p tcp --dport 22 -j ACCEPT\"
+      ]
+    }
+
+  rules.delete output:
+    {
+      \"ok\": true,
+      \"result\": {
+        \"deleted_count\": 1
+      }
+    }
+
+  rules.save output:
+    {
+      \"ok\": true,
+      \"timestamp_unix_ms\": 1732538560123,
+      \"summary\": {
+        \"backends\": [
+          {
+            \"backend\": \"iptables\",
+            \"family\": \"ipv4\",
+            \"rules_count\": 15
+          }
+        ],
+        \"path\": \"/tmp/firewall.json\"
+      }
+    }
+
+  rules.reload output:
+    {
+      \"ok\": true,
+      \"backend\": \"iptables\",
+      \"source_format\": \"backend_native\",
+      \"actions\": [
+        \"iptables-restore < /tmp/iptables.rules\"
+      ]
+    }
+
+  status output:
+    {
+      \"ok\": true,
+      \"backends\": [
+        {
+          \"backend\": \"iptables\",
+          \"available\": true,
+          \"active\": true,
+          \"enabled\": true
+        }
+      ]
+    }
+
+  enable output:
+    {
+      \"ok\": true,
+      \"backend\": \"ufw\",
+      \"previous_state\": {
+        \"active\": false,
+        \"enabled\": false
+      },
+      \"actions\": [
+        \"ufw --force enable\"
+      ]
+    }
+
+  disable output:
+    {
+      \"ok\": true,
+      \"backend\": \"ufw\",
+      \"previous_state\": {
+        \"active\": true,
+        \"enabled\": true
+      },
+      \"current_state\": {
+        \"active\": false,
+        \"enabled\": false
+      }
+    }
+
+EXIT CODES:
+  0                      Success
+  1                      General error
+  2                      Backend not available
+  3                      Invalid arguments/parameters
+  4                      Permission denied (need root)
+  5                      Timeout
+  6                      No rules match (when require_match=true)
+  7                      File operation error
+
+ERROR MESSAGES:
+
+  Backend errors:
+    \"firewall.status_invalid_backend\"     Unknown backend specified
+    \"firewall.backend_not_available\"      Backend not installed
+    \"firewall.backend_detection_failed\"   Cannot detect backend
+
+  Rule errors:
+    \"firewall.rules_add_failed\"           Rule addition failed
+    \"firewall.rules_delete_no_match\"      No matching rules found
+    \"firewall.rules_invalid_port\"         Invalid port number
+    \"firewall.rules_invalid_address\"      Invalid IP address/CIDR
+
+  File errors:
+    \"firewall.save_failed\"                Save operation failed
+    \"firewall.reload_failed\"              Reload operation failed
+    \"firewall.file_not_found\"             Rules file not found
+    \"firewall.file_exists\"                File exists, overwrite=false
+
+  Permission errors:
+    \"firewall.permission_denied\"          Root privileges required
+    \"firewall.operation_not_permitted\"    Operation not allowed
+
+  Validation errors:
+    \"firewall.invalid_family\"             Invalid IP family
+    \"firewall.invalid_direction\"          Invalid rule direction
+    \"firewall.invalid_action\"             Invalid rule action
+    \"firewall.missing_required_param\"     Required parameter missing
+
+  Timeout errors:
+    \"firewall.operation_timeout\"          Operation exceeded timeout
+
+COMMON WORKFLOWS:
+
+  Allow SSH access:
+    # Add SSH rule
+    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=22,comment=\"Allow SSH\")
+
+    # Verify rule was added
+    firewall://.rules.list(proto=tcp,dport=22)
+
+    # Save configuration
+    firewall://.rules.save(backend=iptables,format=backend_native,path=/etc/iptables/rules.v4)
+
+  Set up web server firewall:
+    # Allow HTTP
+    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=80,comment=\"Allow HTTP\")
+
+    # Allow HTTPS
+    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=443,comment=\"Allow HTTPS\")
+
+    # Allow SSH from management network
+    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=22,saddr=10.0.0.0/8,comment=\"Allow SSH from mgmt\")
+
+    # Save rules
+    firewall://.rules.save(backend=iptables,path=/etc/iptables/rules.v4)
+
+  Backup and restore firewall:
+    # Save current configuration
+    firewall://.rules.save(backend=iptables,family=any,format=both,path=/backup/firewall,compress=gzip)
+
+    # Later, restore from backup
+    firewall://.rules.reload(backend=iptables,path=/backup/firewall-iptables-v4.rules,backup_before_apply=true)
+
+  Block malicious IP:
+    # Add drop rule
+    firewall://.rules.add(backend=iptables,direction=input,action=drop,saddr=192.0.2.100,comment=\"Block malicious IP\")
+
+    # Verify blocking
+    firewall://.rules.list(saddr=192.0.2.100)
+
+  Migrate from iptables to nftables:
+    # Save iptables rules as JSON
+    firewall://.rules.save(backend=iptables,format=normalized_json,path=/tmp/iptables.json)
+
+    # Disable iptables
+    firewall://.disable(backend=iptables,backup_before_apply=true)
+
+    # Reload into nftables
+    firewall://.rules.reload(backend=nftables,source_format=normalized_json,path=/tmp/iptables.json)
+
+    # Enable nftables
+    firewall://.enable(backend=nftables)
+
+  Allow service from specific network:
+    # Allow database from app servers
+    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=3306,saddr=192.168.10.0/24,comment=\"MySQL from app servers\")
+
+    # Allow Redis from cache network
+    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=6379,saddr=192.168.20.0/24,comment=\"Redis from cache network\")
+
+  Test firewall configuration:
+    # Test adding rule (dry run)
+    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=8080,dry_run=true)
+
+    # Add rule for real
+    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=8080)
+
+    # Test if rule works
+    # ... external testing ...
+
+    # Remove if not needed
+    firewall://.rules.delete(backend=iptables,direction=input,proto=tcp,dport=8080)
+
+  Check firewall status across systems:
+    # Check all backends
+    firewall://.status(backend=all)
+
+    # Check specific backend
+    firewall://.status(backend=iptables,include_rules_summary=true)
+
+  Emergency firewall disable:
+    # Check current state
+    firewall://.status
+
+    # Disable with backup
+    firewall://.disable(backend=iptables,backup_before_apply=true)
+
+    # Later, re-enable
+    firewall://.enable(backend=iptables)
+
+  Set up DMZ zone (firewalld):
+    # Add HTTP to DMZ
+    firewall://.rules.add(backend=firewalld,direction=input,action=accept,proto=tcp,dport=80,zone=dmz)
+
+    # Add HTTPS to DMZ
+    firewall://.rules.add(backend=firewalld,direction=input,action=accept,proto=tcp,dport=443,zone=dmz)
+
+    # List DMZ rules
+    firewall://.rules.list(backend=firewalld)
+
+BEST PRACTICES:
+  • Always use dry_run=true to test changes first
+  • Save firewall configuration after changes
+  • Keep backups of working configurations
+  • Test firewall changes before applying to production
+  • Use specific source addresses when possible
+  • Limit SSH access to management networks
+  • Document rules with meaningful comments
+  • Review firewall rules regularly
+  • Use allow-list (default deny) approach
+  • Block unused services by default
+  • Enable firewall on boot
+  • Monitor firewall logs
+  • Use CIDR notation for network ranges
+  • Apply least privilege principle
+  • Test connectivity after rule changes
+  • Use stateful connection tracking
+  • Separate rules by function/service
+  • Keep rules organized and maintainable
+  • Avoid overly complex rule sets
+  • Use zones (firewalld) or chains for organization
+  • Implement defense in depth
+  • Use rate limiting for public services
+  • Block known malicious networks
+  • Allow ICMP for diagnostics (carefully)
+  • Protect management interfaces
+  • Use separate rules for IPv4 and IPv6
+  • Validate IP addresses before adding rules
+  • Use timeouts to prevent hanging operations
+  • Monitor for unauthorized rule changes
+  • Implement change management for firewall rules
+
+RULE MANAGEMENT GUIDELINES:
+  • Start with minimal rules (SSH only)
+  • Add rules incrementally
+  • Test each rule after adding
+  • Use descriptive comments for all rules
+  • Group related rules together
+  • Order rules from specific to general
+  • Place frequently matched rules first
+  • Use default deny policies
+  • Explicitly allow required traffic
+  • Review and prune unused rules
+  • Document rule purposes
+  • Use consistent naming conventions
+  • Track rule changes in version control
+  • Audit rules periodically
+  • Remove temporary rules promptly
+
+BACKEND SELECTION GUIDELINES:
+  • Use auto for simplicity
+  • Use iptables for universal compatibility
+  • Use nftables for modern systems
+  • Use ufw for Ubuntu/Debian desktops
+  • Use firewalld for RHEL/CentOS
+  • Consider distribution defaults
+  • Match backend to system service manager
+  • Avoid mixing backends on one system
+  • Use native backend tools when available
+  • Understand backend-specific features
+
+SECURITY CONSIDERATIONS:
+  • Firewall operations require root privileges
+  • Test changes in non-production first
+  • Always maintain SSH access
+  • Use backup_before_apply for safety
+  • Validate rules before applying
+  • Monitor firewall for bypass attempts
+  • Keep firewall software updated
+  • Implement logging for security events
+  • Review logs regularly
+  • Use fail-safe configurations
+  • Document security requirements
+  • Implement change approval process
+  • Avoid overly permissive rules
+  • Use source address restrictions
+  • Limit exposure of sensitive services
+  • Implement network segmentation
+  • Use encrypted protocols when possible
+  • Monitor for configuration drift
+  • Implement automated compliance checking
+  • Use intrusion detection systems
+  • Coordinate with other security controls
+  • Test disaster recovery procedures
+  • Maintain firewall documentation
+  • Train staff on firewall operations
+  • Implement least privilege access
+
+TROUBLESHOOTING:
+
+  Permission denied:
+    • Use sudo or run as root
+    • Check user permissions: sudo -l
+    • Verify group membership
+    • Check SELinux/AppArmor policies
+
+  Backend not available:
+    • Install required package
+    • Check service status: systemctl status
+    • Verify binary exists: which iptables
+    • Check PATH environment variable
+
+  Rule not added:
+    • Check syntax: dry_run=true
+    • Verify port numbers are valid
+    • Check IP address format
+    • Ensure required parameters present
+    • Check backend-specific requirements
+
+  Rules not persisting:
+    • Save rules after changes
+    • Check persistence mechanism
+    • Verify service is enabled
+    • Check for conflicting tools
+    • Ensure systemd service loads rules
+
+  No matching rules found:
+    • Use rules.list to see current rules
+    • Check filter criteria
+    • Verify family (ipv4 vs ipv6)
+    • Use require_match=false if acceptable
+
+  Timeout errors:
+    • Increase timeout_ms value
+    • Check system load
+    • Verify no hanging processes
+    • Check for large rule sets
+
+  Cannot reload rules:
+    • Verify file path exists
+    • Check file format
+    • Validate file syntax
+    • Use validate_before_apply=true
+    • Check file permissions
+
+DEBUGGING:
+
+  Check backend availability:
+    firewall://.status(backend=all)
+
+  List all rules:
+    firewall://.rules.list(include_backend_raw=true,include_counters=true)
+
+  Test rule syntax:
+    firewall://.rules.add(...,dry_run=true)
+
+  View backend commands:
+    firewall://.rules.add(...,dry_run=true)
+
+  Check specific rule:
+    firewall://.rules.list(proto=tcp,dport=22)
+
+  Verify firewall is active:
+    firewall://.status(include_rules_summary=true)
+
+  Check rule counters:
+    firewall://.rules.list(include_counters=true)
+
+  Test backend commands manually:
+    iptables -L -n -v           # List iptables rules
+    nft list ruleset            # List nftables rules
+    ufw status verbose          # UFW status
+    firewall-cmd --list-all     # firewalld status
+
+  Check logs:
+    journalctl -u iptables      # iptables service logs
+    journalctl -u ufw           # UFW logs
+    journalctl -u firewalld     # firewalld logs
+
+PLATFORM SUPPORT:
+
+  Linux (all distributions):
+    • Full support for all backends
+    • iptables: Universal support
+    • nftables: Kernel 3.13+
+    • ufw: Ubuntu, Debian, derivatives
+    • firewalld: RHEL, CentOS, Fedora
+
+  Distribution-specific:
+    Ubuntu/Debian    ufw (default), iptables, nftables
+    RHEL/CentOS      firewalld (default), iptables, nftables
+    Fedora           firewalld (default), nftables
+    Arch Linux       iptables, nftables
+    Alpine Linux     iptables, nftables
+
+  BSD:
+    • Not supported (different firewall: pf, ipfw)
+    • Use BSD-native firewall tools
+
+  macOS:
+    • Not supported (uses pf firewall)
+    • Use macOS-native pf configuration
+
+  Windows:
+    • Not supported (uses Windows Firewall)
+    • Use Windows-specific firewall tools
+
+PERFORMANCE CONSIDERATIONS:
+  • Rule evaluation is sequential (order matters)
+  • More rules = slower packet processing
+  • Place common rules earlier
+  • Use specific matches to reduce checks
+  • Avoid excessive rule sets (>1000 rules)
+  • Use connection tracking efficiently
+  • nftables generally faster than iptables
+  • Stateful rules add processing overhead
+  • Rule counters add minimal overhead
+  • Backend detection is fast (cached)
+  • rules.list can be slow with many rules
+  • Use max_rules to limit output
+  • Timeout settings prevent hanging
+  • Dry run is fast (no execution)
+
+LIMITATIONS:
+  • Requires root privileges for most operations
+  • Cannot create custom chains/tables (use backend tools)
+  • Limited advanced features per backend
+  • Cannot manage all backend-specific features
+  • No IPv6 NAT in iptables (use nftables)
+  • Cannot manage firewall logging directly
+  • No connection tracking management
+  • Cannot configure advanced NAT scenarios
+  • Limited QoS/traffic shaping support
+  • Cannot manage all firewalld rich rules
+  • No direct eBPF/XDP integration
+  • Cannot manage SELinux/AppArmor integration
+  • Limited support for complex rule sets
+  • Cannot manage failover configurations
+  • No built-in rule conflict detection
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With service handle:
+    # Start firewall service
+    svc://iptables.start
+    
+    # Add firewall rule
+    firewall://.rules.add(backend=iptables,...)
+
+  With config handle:
+    # Store firewall backend preference
+    config://firewall/backend.set(value=\"iptables\")
+
+  With file handle:
+    # Read firewall rules
+    file:///etc/iptables/rules.v4.read
+
+  With backup handle:
+    # Backup firewall configuration
+    backup://firewall-config.create(target=\"/etc/iptables\")
+
+  With log handle:
+    # Log firewall changes
+    firewall://.rules.add(...) | log://firewall-changes.log.append
+
+  With monitor handle:
+    # Monitor firewall status
+    while true; do
+      firewall://.status
+      sleep 60
+    done
+
+MORE INFO:
+  For complete documentation of firewall handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Security_Secrets/firewall.md
+
+  iptables documentation:
+  https://netfilter.org/documentation/
+  https://linux.die.net/man/8/iptables
+
+  nftables documentation:
+  https://wiki.nftables.org/
+  https://netfilter.org/projects/nftables/
+
+  UFW documentation:
+  https://help.ubuntu.com/community/UFW
+  https://manpages.ubuntu.com/manpages/focal/man8/ufw.8.html
+
+  firewalld documentation:
+  https://firewalld.org/documentation/
+  https://firewalld.org/documentation/man-pages/
+
+  Linux netfilter:
+  https://netfilter.org/
+
+  Use 'firewall:// --help=VERB' for detailed help on a specific verb.
+";
+
+const RULES_LIST_HELP: &str = "RULES.LIST VERB - FIREWALL HANDLE
+================================
+
+DESCRIPTION:
+  List existing firewall rules with comprehensive filtering options.
+  Supports multiple backends and can filter by protocol, port, address,
+  interface, direction, and more. Includes rule counting, backend raw
+  output, and packet/byte counters when requested.
+
+SYNTAX:
+  firewall://.rules.list(arguments)
+
+ARGUMENTS:
+  backend=BACKEND        Firewall backend (default: auto)
+                         Values: auto, iptables, nftables, ufw, firewalld, all
+  family=FAMILY          IP family (default: any)
+                         Values: any, ipv4, ipv6
+  table=TABLE            Table to list rules from
+                         Values: filter, nat, mangle, raw, security
+  chain=CHAIN            Chain to list rules from
+                         Values: INPUT, OUTPUT, FORWARD, PREROUTING, POSTROUTING
+  direction=DIRECTION    Rule direction
+                         Values: input, output, forward
+  action=ACTION          Rule action
+                         Values: accept, drop, reject
+  proto=PROTOCOL         Protocol filter
+                         Values: tcp, udp, icmp, all
+  sport=PORT             Source port filter
+  dport=PORT             Destination port filter
+  saddr=ADDRESS          Source address filter (IP or CIDR)
+  daddr=ADDRESS          Destination address filter (IP or CIDR)
+  in_iface=INTERFACE     Input interface filter
+  out_iface=INTERFACE    Output interface filter
+  comment_contains=TEXT  Filter by comment content
+  include_backend_raw=BOOL    Include raw backend output (default: false)
+  include_counters=BOOL  Include packet/byte counters (default: false)
+  max_rules=NUMBER       Maximum rules to return (default: 10000)
+  timeout_ms=NUMBER      Command timeout (default: 5000)
+  format_output=FORMAT   Output format (default: json)
+                         Values: json, text
+
+EXAMPLES:
+  # List all rules
+  firewall://.rules.list
+
+  # List SSH rules
+  firewall://.rules.list(proto=tcp,dport=22)
+
+  # List INPUT chain rules
+  firewall://.rules.list(backend=iptables,chain=INPUT)
+
+  # Include packet counters
+  firewall://.rules.list(include_counters=true)
+";
+
+const RULES_ADD_HELP: &str = "RULES.ADD VERB - FIREWALL HANDLE
+===============================
+
+DESCRIPTION:
+  Add new firewall rules with comprehensive parameter support.
+  Supports multiple backends with unified parameter interface.
+  Includes dry run mode for testing rule syntax before applying.
+
+SYNTAX:
+  firewall://.rules.add(arguments)
+
+ARGUMENTS:
+  backend=BACKEND        Firewall backend (required)
+                         Values: iptables, nftables, ufw, firewalld
+  family=FAMILY          IP family (default: ipv4)
+                         Values: ipv4, ipv6
+  direction=DIRECTION    Rule direction (required)
+                         Values: input, output, forward
+  action=ACTION          Rule action (required)
+                         Values: accept, drop, reject
+  proto=PROTOCOL         Protocol
+                         Values: tcp, udp, icmp, all
+  dport=PORT             Destination port
+  sport=PORT             Source port
+  saddr=ADDRESS          Source address/network (IP or CIDR)
+  daddr=ADDRESS          Destination address/network (IP or CIDR)
+  comment=TEXT           Rule comment
+  zone=ZONE              Zone (required for firewalld)
+                         Values: public, external, internal, dmz, work, home, trusted, block, drop
+  dry_run=BOOL           Generate commands without executing (default: false)
+  format_output=FORMAT   Output format (default: json)
+
+EXAMPLES:
+  # Allow SSH
+  firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=22)
+
+  # Block telnet
+  firewall://.rules.add(backend=iptables,direction=input,action=drop,proto=tcp,dport=23)
+
+  # Test rule (dry run)
+  firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=80,dry_run=true)
+";
+
+const RULES_DELETE_HELP: &str = "RULES.DELETE VERB - FIREWALL HANDLE
+===================================
+
+DESCRIPTION:
+  Delete existing firewall rules using pattern matching.
+  Can delete multiple matching rules or require exact matches.
+  Includes dry run mode for testing what would be deleted.
+
+SYNTAX:
+  firewall://.rules.delete(arguments)
+
+ARGUMENTS:
+  backend=BACKEND        Firewall backend (required)
+                         Values: iptables, nftables, ufw, firewalld
+  family=FAMILY          IP family (default: ipv4)
+                         Values: ipv4, ipv6
+  direction=DIRECTION    Rule direction
+                         Values: input, output, forward
+  action=ACTION          Rule action
+                         Values: accept, drop, reject
+  proto=PROTOCOL         Protocol
+                         Values: tcp, udp, icmp, all
+  dport=PORT             Destination port
+  sport=PORT             Source port
+  saddr=ADDRESS          Source address/network
+  daddr=ADDRESS          Destination address/network
+  require_match=BOOL     Require rules to match for success (default: true)
+  dry_run=BOOL           Show what would be deleted (default: false)
+  format_output=FORMAT   Output format (default: json)
+
+EXAMPLES:
+  # Delete SSH rule
+  firewall://.rules.delete(backend=iptables,direction=input,proto=tcp,dport=22)
+
+  # Delete by address
+  firewall://.rules.delete(backend=iptables,saddr=192.0.2.100)
+
+  # Test delete (dry run)
+  firewall://.rules.delete(backend=iptables,direction=input,proto=tcp,dport=80,dry_run=true)
+";
+
+const RULES_SAVE_HELP: &str = "RULES.SAVE VERB - FIREWALL HANDLE
+=================================
+
+DESCRIPTION:
+  Save current firewall rules to files in various formats.
+  Supports compression, metadata inclusion, and multiple output formats.
+  Can save from specific backends or all available backends.
+
+SYNTAX:
+  firewall://.rules.save(arguments)
+
+ARGUMENTS:
+  backend=BACKEND        Firewall backend (default: auto)
+                         Values: auto, iptables, nftables, ufw, firewalld
+  family=FAMILY          IP family (default: any)
+                         Values: any, ipv4, ipv6
+  format=FORMAT          Save format (default: normalized_json)
+                         Values: normalized_json, backend_native, both
+  path=PATH              Output file path (auto-generated if not specified)
+  compress=COMPRESSION   Compression method (default: none)
+                         Values: none, gzip, bzip2
+  include_metadata=BOOL  Include metadata (default: true)
+  include_all_backends=BOOL  Save all backends (default: false)
+  dry_run=BOOL           Show what would be saved (default: false)
+  overwrite=BOOL         Overwrite existing files (default: false)
+  create_dirs=BOOL       Create directories (default: true)
+  timeout_ms=NUMBER      Command timeout (default: 5000)
+  format_output=FORMAT   Output format (default: json)
+
+EXAMPLES:
+  # Save as JSON
+  firewall://.rules.save(backend=iptables,path=/tmp/firewall.json)
+
+  # Save in native format
+  firewall://.rules.save(backend=iptables,format=backend_native,path=/tmp/iptables.rules)
+
+  # Save compressed
+  firewall://.rules.save(backend=iptables,path=/tmp/firewall.json,compress=gzip)
+";
+
+const RULES_RELOAD_HELP: &str = "RULES.RELOAD VERB - FIREWALL HANDLE
+===================================
+
+DESCRIPTION:
+  Reload firewall rules from previously saved files.
+  Supports auto-detection of file format and includes backup/validation options.
+  Can reload into same or different backend than original.
+
+SYNTAX:
+  firewall://.rules.reload(arguments)
+
+ARGUMENTS:
+  backend=BACKEND        Target firewall backend (default: auto)
+                         Values: auto, iptables, nftables, ufw, firewalld
+  source_format=FORMAT   Source format (default: auto)
+                         Values: auto, backend_native, normalized_json
+  path=PATH              Path to rules file (required)
+  family=FAMILY          IP family (default: any)
+                         Values: any, ipv4, ipv6
+  backup_before_apply=BOOL    Create backup before applying (default: true)
+  validate_before_apply=BOOL  Validate rules first (default: true)
+  dry_run=BOOL           Show what would be reloaded (default: false)
+  timeout_ms=NUMBER      Command timeout (default: 30000)
+  format_output=FORMAT   Output format (default: json)
+
+EXAMPLES:
+  # Reload from file
+  firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules)
+
+  # Reload JSON format
+  firewall://.rules.reload(backend=iptables,source_format=normalized_json,path=/tmp/firewall.json)
+
+  # Test reload (dry run)
+  firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,dry_run=true)
+";
+
+const STATUS_HELP: &str = "STATUS VERB - FIREWALL HANDLE
+=============================
+
+DESCRIPTION:
+  Check firewall status and backend availability.
+  Reports which backends are available, active, and enabled.
+  Can include performance metrics and rule counts.
+
+SYNTAX:
+  firewall://.status(arguments)
+
+ARGUMENTS:
+  backend=BACKEND        Backend to check (default: auto)
+                         Values: auto, all, iptables, nftables, ufw, firewalld
+  family=FAMILY          IP family (default: any)
+                         Values: any, ipv4, ipv6
+  include_metrics=BOOL   Include performance metrics (default: true)
+  include_rules_summary=BOOL  Include rules count (default: false)
+  timeout_ms=NUMBER      Command timeout (default: 5000)
+  format_output=FORMAT   Output format (default: json)
+
+EXAMPLES:
+  # Check status
+  firewall://.status
+
+  # Check all backends
+  firewall://.status(backend=all)
+
+  # Include rule counts
+  firewall://.status(include_rules_summary=true)
+";
+
+const ENABLE_HELP: &str = "ENABLE VERB - FIREWALL HANDLE
+=============================
+
+DESCRIPTION:
+  Enable firewall service on the system.
+  Can load rules from file during enable process.
+  Supports dry run and validation modes.
+
+SYNTAX:
+  firewall://.enable(arguments)
+
+ARGUMENTS:
+  backend=BACKEND        Firewall backend (default: auto)
+                         Values: auto, ufw, firewalld, iptables, nftables
+  path=PATH              Path to rules file to apply during enable
+  dry_run=BOOL           Show what would be enabled (default: false)
+  validate_only=BOOL     Only validate parameters (default: false)
+  timeout_ms=NUMBER      Command timeout (default: 30000)
+  format_output=FORMAT   Output format (default: json)
+
+EXAMPLES:
+  # Enable firewall
+  firewall://.enable
+
+  # Enable with rules
+  firewall://.enable(backend=iptables,path=/etc/iptables/rules.v4)
+
+  # Test enable (dry run)
+  firewall://.enable(backend=ufw,dry_run=true)
+";
+
+const DISABLE_HELP: &str = "DISABLE VERB - FIREWALL HANDLE
+==============================
+
+DESCRIPTION:
+  Disable firewall service on the system.
+  Includes backup options to preserve current configuration.
+  Supports dry run and validation modes.
+
+SYNTAX:
+  firewall://.disable(arguments)
+
+ARGUMENTS:
+  backend=BACKEND        Firewall backend (default: auto)
+                         Values: auto, ufw, firewalld, iptables, nftables
+  path=PATH              Path to rules file to apply during disable
+  backup_before_apply=BOOL    Create backup before disabling (default: true)
+  dry_run=BOOL           Show what would be disabled (default: false)
+  validate_only=BOOL     Only validate parameters (default: false)
+  timeout_ms=NUMBER      Command timeout (default: 30000)
+  format_output=FORMAT   Output format (default: json)
+
+EXAMPLES:
+  # Disable firewall
+  firewall://.disable
+
+  # Disable with backup
+  firewall://.disable(backend=iptables,backup_before_apply=true)
+
+  # Test disable (dry run)
+  firewall://.disable(backend=ufw,dry_run=true)
+";
+
 // Status operation error codes
 const FIREWALL_STATUS_INVALID_BACKEND: &str = "firewall.status_invalid_backend";
 const FIREWALL_STATUS_INVALID_FAMILY: &str = "firewall.status_invalid_family";
@@ -82,6 +1545,58 @@ impl FirewallHandle {
             _url: url.clone(),
         })
     }
+
+    /// Check if this is a help request and display help if so
+    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
+        // Check for help verbs
+        if verb == "--help" || verb == "-h" || verb == "help" {
+            write!(io.stdout, "{}", FIREWALL_HELP_TEXT)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        // Check for verb-specific help
+        if verb.starts_with("--help=") {
+            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
+            Self::display_verb_help(help_verb, io)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        Ok(None)
+    }
+    
+    /// Display help for a specific verb
+    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
+        match verb {
+            "rules.list" => {
+                write!(io.stdout, "{}", RULES_LIST_HELP)?;
+            }
+            "rules.add" => {
+                write!(io.stdout, "{}", RULES_ADD_HELP)?;
+            }
+            "rules.delete" => {
+                write!(io.stdout, "{}", RULES_DELETE_HELP)?;
+            }
+            "rules.save" => {
+                write!(io.stdout, "{}", RULES_SAVE_HELP)?;
+            }
+            "rules.reload" => {
+                write!(io.stdout, "{}", RULES_RELOAD_HELP)?;
+            }
+            "status" => {
+                write!(io.stdout, "{}", STATUS_HELP)?;
+            }
+            "enable" => {
+                write!(io.stdout, "{}", ENABLE_HELP)?;
+            }
+            "disable" => {
+                write!(io.stdout, "{}", DISABLE_HELP)?;
+            }
+            _ => {
+                write!(io.stdout, "Unknown verb: {}. Use --help for full list of available verbs.", verb)?;
+            }
+        }
+        Ok(Status::ok())
+    }
 }
 
 impl Handle for FirewallHandle {
@@ -90,6 +1605,11 @@ impl Handle for FirewallHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests first
+        if let Some(status) = Self::check_and_display_help(verb, io)? {
+            return Ok(status);
+        }
+
         match verb {
             "rules.list" => self.handle_rules_list(args, io),
             "rules.add" => self.handle_rules_add(args, io),

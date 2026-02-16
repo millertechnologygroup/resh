@@ -45,6 +45,1006 @@ use crate::core::{
     status::Status,
 };
 
+const CERT_HELP_TEXT: &str = r#"
+RESOURCE SHELL - CERT HANDLE
+============================
+
+USAGE:
+  cert://path/to/file.VERB(arguments)
+
+DESCRIPTION:
+  The cert handle provides complete management of digital certificates and
+  cryptographic keys. View certificate information, generate new certificates
+  and keys, create Certificate Signing Requests (CSRs), sign certificates,
+  verify certificate chains, and manage PKI infrastructure. Supports X.509
+  certificates, RSA/ECDSA/Ed25519 keys, PEM/DER formats, self-signed and
+  CA-signed certificates, password-protected keys, and complete certificate
+  lifecycle management. Essential for TLS/SSL setup, PKI operations, security
+  infrastructure, and cryptographic key management.
+
+URL FORMAT:
+  cert://path/to/certificate.pem.VERB(arguments)
+  cert://path/to/key.pem.VERB(arguments)
+  cert://path/to/request.csr.VERB(arguments)
+
+  Path can be absolute or relative
+  VERB specifies the operation to perform
+
+VERBS (8 total):
+
+  Certificate Information:
+    info            View detailed certificate/key/CSR information
+    chain.info      Analyze certificate chains and trust paths
+
+  Certificate Generation:
+    generate        Create keys, self-signed certificates, CSRs, leaf certs
+    csr.create      Generate Certificate Signing Requests
+
+  Certificate Signing:
+    sign            Sign data or CSRs to create certificates
+    csr.sign        Sign CSRs with CA to create certificates
+
+  Certificate Management:
+    verify          Validate certificates and check signatures
+    renew           Renew existing certificates with updated dates
+
+EXAMPLES:
+
+  View Certificate Information (info):
+    # View certificate details
+    cert:///tmp/certificate.pem.info
+
+    # View in human-readable text format
+    cert:///tmp/certificate.pem.info(format=text)
+
+    # View private key information
+    cert:///tmp/private-key.pem.info
+
+    # View CSR information
+    cert:///tmp/request.csr.info
+
+    # Include PEM data in output
+    cert:///tmp/certificate.pem.info(include_pem=true)
+
+    # Include raw DER data
+    cert:///tmp/certificate.pem.info(include_raw=true)
+
+    # Specify encoding
+    cert:///tmp/certificate.der.info(encoding=der)
+    cert:///tmp/certificate.pem.info(encoding=pem)
+
+    # Auto-detect encoding
+    cert:///tmp/certificate.pem.info(encoding=auto)
+
+    # Multiple fingerprint algorithms
+    cert:///tmp/certificate.pem.info(fingerprint_algs=["sha1","sha256","sha512"])
+
+    # View certificate chain file
+    cert:///tmp/chain.pem.info
+
+  Generate Keys (generate - mode=key):
+    # Generate RSA 2048-bit key
+    cert:///tmp/key.generate(mode=key,algorithm=rsa,rsa_bits=2048)
+
+    # Generate RSA 4096-bit key
+    cert:///tmp/key.generate(mode=key,algorithm=rsa,rsa_bits=4096)
+
+    # Generate ECDSA P-256 key
+    cert:///tmp/key.generate(mode=key,algorithm=ecdsa,ecdsa_curve=P-256)
+
+    # Generate ECDSA P-384 key
+    cert:///tmp/key.generate(mode=key,algorithm=ecdsa,ecdsa_curve=P-384)
+
+    # Generate Ed25519 key
+    cert:///tmp/key.generate(mode=key,algorithm=ed25519)
+
+    # Generate key with custom path
+    cert:///tmp/cert.generate(mode=key,algorithm=rsa,key_path=/keys/custom.pem)
+
+    # Generate key in PKCS1 format
+    cert:///tmp/key.generate(mode=key,algorithm=rsa,key_format=pkcs1)
+
+    # Generate key in PKCS8 format (default)
+    cert:///tmp/key.generate(mode=key,algorithm=rsa,key_format=pkcs8)
+
+    # Generate key in DER encoding
+    cert:///tmp/key.generate(mode=key,algorithm=rsa,key_encoding=der)
+
+    # Generate password-protected key
+    cert:///tmp/key.generate(mode=key,algorithm=rsa,password="secret123")
+
+    # Generate key with Argon2 KDF
+    cert:///tmp/key.generate(mode=key,algorithm=rsa,password="secret",kdf=argon2id)
+
+    # Generate key with PBKDF2
+    cert:///tmp/key.generate(mode=key,algorithm=rsa,password="secret",kdf=pbkdf2,kdf_iterations=200000)
+
+  Generate Self-Signed Certificates (generate - mode=self_signed):
+    # Basic self-signed certificate
+    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}')
+
+    # Self-signed with organization
+    cert:///tmp/cert.generate(mode=self_signed,subject='{{{"common_name":"example.com","organization":"Test Corp","country":"US"}}')
+
+    # Self-signed CA certificate
+    cert:///tmp/ca.generate(mode=self_signed,subject='{{"common_name":"My CA"}',is_ca=true)
+
+    # Self-signed with RSA 4096
+    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',algorithm=rsa,rsa_bits=4096)
+
+    # Self-signed with ECDSA
+    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',algorithm=ecdsa,ecdsa_curve=P-256)
+
+    # Self-signed with Ed25519
+    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',algorithm=ed25519)
+
+    # Self-signed with SANs
+    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',sans='["DNS:example.com","DNS:www.example.com","IP:192.0.2.1"]')
+
+    # Self-signed with custom validity
+    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',validity_days=730)
+
+    # Self-signed 10-year CA
+    cert:///tmp/ca.generate(mode=self_signed,subject='{{"common_name":"Root CA"}',is_ca=true,validity_days=3650)
+
+    # Overwrite existing certificate
+    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',overwrite=true)
+
+  Generate CSRs (generate - mode=csr):
+    # Basic CSR
+    cert:///tmp/request.generate(mode=csr,subject='{{"common_name":"server.example.com"}')
+
+    # CSR with SANs
+    cert:///tmp/request.generate(mode=csr,subject='{{"common_name":"server.example.com"}',sans='["DNS:server.example.com","DNS:www.server.example.com"]')
+
+    # CSR with organization details
+    cert:///tmp/request.generate(mode=csr,subject='{{"common_name":"example.com","organization":"Test Corp","organizational_unit":"IT","locality":"San Francisco","state":"CA","country":"US"}')
+
+  Generate Leaf Certificates (generate - mode=leaf_cert):
+    # Generate leaf certificate signed by CA
+    cert:///tmp/server.generate(mode=leaf_cert,subject='{{"common_name":"server.example.com"}',signer_cert=/ca/ca.pem,signer_key=/ca/ca-key.pem)
+
+    # Leaf certificate with SANs
+    cert:///tmp/server.generate(mode=leaf_cert,subject='{{"common_name":"server.example.com"}',signer_cert=/ca/ca.pem,signer_key=/ca/ca-key.pem,sans='["DNS:server.example.com","IP:192.0.2.1"]')
+
+    # Leaf certificate with custom validity
+    cert:///tmp/server.generate(mode=leaf_cert,subject='{{"common_name":"server.example.com"}',signer_cert=/ca/ca.pem,signer_key=/ca/ca-key.pem,validity_days=90)
+
+  Create CSRs (csr.create):
+    # Generate new key and CSR
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/server.pem,subject='{{"common_name":"example.com"}')
+
+    # CSR with existing key
+    cert:///tmp/request.csr.create(key_strategy=reuse,existing_key_path=/keys/existing.pem,subject='{{"common_name":"example.com"}')
+
+    # CSR with RSA 4096
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,rsa_bits=4096,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}')
+
+    # CSR with ECDSA P-256
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=ecdsa,ecdsa_curve=P-256,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}')
+
+    # CSR with ECDSA P-384
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=ecdsa,ecdsa_curve=P-384,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}')
+
+    # CSR with Ed25519
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=ed25519,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}')
+
+    # CSR with SANs
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',sans='["DNS:example.com","DNS:www.example.com","IP:192.0.2.1","EMAIL:admin@example.com"]')
+
+    # CSR with key usage
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',key_usage='["digitalSignature","keyEncipherment"]')
+
+    # CSR with extended key usage
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',extended_key_usage='["serverAuth","clientAuth"]')
+
+    # CSR in DER format
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',csr_encoding=der)
+
+    # CSR with key in PKCS1 format
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',key_format=pkcs1)
+
+    # Include CSR PEM in response
+    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',include_csr_pem=true)
+
+  Sign CSRs (csr.sign):
+    # Sign CSR with CA
+    cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem)
+
+    # Sign with password-protected CA key
+    cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,signer_key_password="secret",cert_output_path=/certs/server.pem)
+
+    # Sign with custom validity
+    cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem,validity_days=90)
+
+    # Sign and copy all attributes
+    cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem,copy_subject=true,copy_sans=true,copy_key_usage=true)
+
+  Sign Data (sign - mode=data):
+    # Sign data with RSA-PSS
+    cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/private.pem,algorithm=rsa_pss_sha256)
+
+    # Sign data with ECDSA
+    cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/ecdsa.pem,algorithm=ecdsa_sha256)
+
+    # Sign data with Ed25519
+    cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/ed25519.pem,algorithm=ed25519)
+
+    # Sign with password-protected key
+    cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/private.pem,signer_key_password="secret",algorithm=rsa_pss_sha256)
+
+  Verify Certificates (verify):
+    # Basic verification
+    cert:///tmp/certificate.pem.verify
+
+    # Verify with CA bundle
+    cert:///tmp/certificate.pem.verify(ca_bundle=/ca/bundle.pem)
+
+    # Allow self-signed certificates
+    cert:///tmp/certificate.pem.verify(allow_self_signed=true)
+
+    # Check revocation status
+    cert:///tmp/certificate.pem.verify(check_revocation=true)
+
+    # Full verification with all options
+    cert:///tmp/certificate.pem.verify(ca_bundle=/ca/bundle.pem,check_revocation=true,allow_self_signed=false)
+
+  Renew Certificates (renew):
+    # Renew self-signed certificate
+    cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=reuse)
+
+    # Renew and rekey
+    cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=rekey,algorithm=rsa,rsa_bits=4096)
+
+    # Renew with custom validity
+    cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=reuse,validity_days=730)
+
+    # Renew CA-signed certificate
+    cert:///tmp/certificate.pem.renew(mode=ca_signed,signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem)
+
+  Analyze Certificate Chains (chain.info):
+    # View chain information
+    cert:///tmp/chain.pem.chain.info
+
+    # Include detailed certificate info
+    cert:///tmp/chain.pem.chain.info(include_details=true)
+
+    # Verify against trust store
+    cert:///tmp/chain.pem.chain.info(trust_store=/etc/ssl/certs/ca-certificates.crt)
+
+INFO ARGUMENTS:
+  format=FORMAT          Output format (default: json)
+                         Values: json, text
+  encoding=ENCODING      File encoding (default: auto)
+                         Values: auto, pem, der
+  include_pem=BOOL       Include PEM data in output (default: false)
+  include_raw=BOOL       Include raw DER as base64 (default: false)
+  fingerprint_algs=ARRAY Fingerprint algorithms (default: ["sha256"])
+                         Values: sha1, sha256, sha512
+
+GENERATE ARGUMENTS:
+  mode=MODE              What to generate (required)
+                         Values: key, self_signed, csr, leaf_cert
+
+  Key generation (mode=key):
+    algorithm=ALG        Key algorithm (default: rsa)
+                         Values: rsa, ecdsa, ed25519
+    rsa_bits=NUMBER      RSA key size (default: 2048)
+                         Values: 2048, 3072, 4096
+    ecdsa_curve=CURVE    ECDSA curve (default: P-256)
+                         Values: P-256, P-384
+    key_format=FORMAT    Key format (default: pkcs8)
+                         Values: pkcs8, pkcs1 (RSA), sec1 (ECDSA)
+    key_encoding=ENC     Encoding (default: pem)
+                         Values: pem, der
+    key_path=PATH        Custom output path for key
+    password=PASSWORD    Encrypt key with password
+    kdf=KDF              Key derivation function (default: pbkdf2)
+                         Values: pbkdf2, argon2id
+    kdf_iterations=NUM   KDF iterations (default: 100000)
+
+  Certificate generation (mode=self_signed, leaf_cert):
+    subject=JSON         Certificate subject (required)
+                         Format: {{"common_name":"...", "organization":"...",
+                                 "organizational_unit":"...", "locality":"...",
+                                 "state":"...", "country":"..."}
+    sans=JSON_ARRAY      Subject Alternative Names
+                         Format: ["DNS:example.com", "IP:192.0.2.1",
+                                 "EMAIL:user@example.com"]
+    validity_days=NUM    Certificate validity (default: 365)
+    is_ca=BOOL           CA certificate (default: false)
+    overwrite=BOOL       Overwrite existing (default: false)
+
+  Leaf certificate (mode=leaf_cert):
+    signer_cert=PATH     CA certificate path (required)
+    signer_key=PATH      CA private key path (required)
+
+CSR.CREATE ARGUMENTS:
+  key_strategy=STRATEGY  Key handling (required)
+                         Values: generate, reuse
+  subject=JSON           Certificate subject (required)
+                         Format: {{"common_name":"..."}
+
+  Generate strategy:
+    new_key_output_path=PATH  Where to save new key (required)
+    algorithm=ALG        Key algorithm (default: rsa)
+                         Values: rsa, ecdsa, ed25519
+    rsa_bits=NUMBER      RSA key size (default: 2048)
+    ecdsa_curve=CURVE    ECDSA curve (default: P-256)
+    key_format=FORMAT    Key format (default: pkcs8)
+    key_encoding=ENC     Key encoding (default: pem)
+
+  Reuse strategy:
+    existing_key_path=PATH    Existing key path (required)
+
+  Optional:
+    sans=JSON_ARRAY      Subject Alternative Names
+    key_usage=JSON_ARRAY Key usage extensions
+                         Values: digitalSignature, keyEncipherment,
+                                dataEncipherment, keyAgreement, etc.
+    extended_key_usage=ARRAY  Extended key usage
+                         Values: serverAuth, clientAuth, codeSigning,
+                                emailProtection, timeStamping, etc.
+    csr_encoding=ENC     CSR encoding (default: pem)
+    overwrite=BOOL       Overwrite existing (default: false)
+    include_csr_pem=BOOL Include CSR PEM in response (default: false)
+    include_new_key_pem=BOOL  Include key PEM in response (default: false)
+
+CSR.SIGN ARGUMENTS:
+  signer_ca=PATH         CA certificate path (required)
+  signer_key=PATH        CA private key path (required)
+  cert_output_path=PATH  Certificate output path (required)
+  signer_key_password=PASS  CA key password (optional)
+  validity_days=NUM      Certificate validity (default: 365)
+  copy_subject=BOOL      Copy subject from CSR (default: true)
+  copy_sans=BOOL         Copy SANs from CSR (default: true)
+  copy_key_usage=BOOL    Copy key usage from CSR (default: true)
+
+SIGN ARGUMENTS:
+  mode=MODE              What to sign (required)
+                         Values: data, csr
+
+  Data signing (mode=data):
+    data=STRING          Data to sign (required)
+    signer_key=PATH      Private key path (required)
+    algorithm=ALG        Signature algorithm (required)
+                         Values: rsa_pss_sha256, rsa_pss_sha384,
+                                rsa_pss_sha512, ecdsa_sha256, ecdsa_sha384,
+                                ecdsa_sha512, ed25519
+    signer_key_password=PASS  Key password (optional)
+
+  CSR signing (mode=csr):
+    signer_cert=PATH     CA certificate path (required)
+    signer_key=PATH      CA private key path (required)
+    cert_output_path=PATH  Certificate output path (required)
+    validity_days=NUM    Certificate validity (default: 365)
+    copy_extensions=BOOL Copy extensions from CSR (default: false)
+
+VERIFY ARGUMENTS:
+  ca_bundle=PATH         CA certificates bundle
+  check_revocation=BOOL  Check revocation status (default: false)
+  allow_self_signed=BOOL Allow self-signed (default: false)
+
+RENEW ARGUMENTS:
+  mode=MODE              Renewal mode (required)
+                         Values: self_signed, ca_signed
+  key_strategy=STRATEGY  Key handling (default: reuse)
+                         Values: reuse, rekey
+  validity_days=NUM      New validity period (default: 365)
+  algorithm=ALG          Algorithm for new key (if rekeying)
+  rsa_bits=NUMBER        RSA key size (if rekeying, default: 2048)
+
+CHAIN.INFO ARGUMENTS:
+  trust_store=PATH       Trust store path for validation
+  include_details=BOOL   Include detailed info (default: false)
+
+CERTIFICATE FORMATS:
+
+  Supported file types:
+    .pem                 PEM-encoded (Base64 with headers)
+    .crt, .cer           Certificate files (usually PEM)
+    .key                 Private key files (usually PEM)
+    .csr                 Certificate Signing Request
+    .der                 DER-encoded (binary)
+
+  Encoding types:
+    PEM                  ASCII armor format with BEGIN/END markers
+                         Human-readable, Base64 encoded
+                         Default for most operations
+
+    DER                  Binary format, more compact
+                         Used in some legacy systems
+                         Can be converted to/from PEM
+
+KEY ALGORITHMS:
+
+  RSA (Rivest-Shamir-Adleman):
+    • Most widely supported
+    • Key sizes: 2048, 3072, 4096 bits
+    • 2048 bits minimum recommended
+    • 4096 bits for high security
+    • Slower than ECDSA/Ed25519
+    • Larger keys and signatures
+
+  ECDSA (Elliptic Curve Digital Signature Algorithm):
+    • Modern algorithm
+    • Curves: P-256 (256-bit), P-384 (384-bit)
+    • Smaller keys than RSA
+    • Faster operations
+    • P-256 roughly equivalent to RSA 3072
+    • P-384 roughly equivalent to RSA 7680
+    • Growing adoption
+
+  Ed25519 (Edwards-curve Digital Signature Algorithm):
+    • Modern, high-performance algorithm
+    • Fixed 256-bit key size
+    • Fastest signature generation
+    • Smaller signatures
+    • Strong security guarantees
+    • Best choice for new systems
+    • Not universally supported yet
+
+  Algorithm comparison:
+    Feature          RSA       ECDSA     Ed25519
+    Key size         Large     Small     Small
+    Speed            Slow      Fast      Fastest
+    Signature size   Large     Small     Small
+    Security         Proven    Strong    Strong
+    Compatibility    Universal Good      Limited
+
+CERTIFICATE TYPES:
+
+  Self-signed certificates:
+    • Issuer = Subject
+    • Used for: testing, development, private CAs
+    • Not trusted by browsers by default
+    • Fast to create, no external CA needed
+
+  CA certificates:
+    • is_ca=true flag
+    • Can sign other certificates
+    • Forms trust hierarchy
+    • Long validity period (10+ years typical)
+
+  Leaf/End-entity certificates:
+    • is_ca=false (default)
+    • Used by servers, clients, devices
+    • Cannot sign other certificates
+    • Shorter validity (90-365 days typical)
+
+  Intermediate certificates:
+    • is_ca=true
+    • Signed by root or another intermediate
+    • Signs leaf certificates
+    • Allows root CA to stay offline
+
+SUBJECT FIELDS:
+
+  Common Name (CN):
+    • Primary identifier
+    • Domain name for TLS certificates
+    • Required for most certificates
+
+  Organization (O):
+    • Company or entity name
+    • Displayed in certificate details
+
+  Organizational Unit (OU):
+    • Department or division
+    • Optional, informational
+
+  Locality (L):
+    • City name
+    • Optional
+
+  State/Province (ST):
+    • State or province
+    • Optional
+
+  Country (C):
+    • Two-letter country code (US, GB, etc.)
+    • Optional
+
+  Example subject:
+    {
+      "common_name": "example.com",
+      "organization": "Example Corp",
+      "organizational_unit": "IT Department",
+      "locality": "San Francisco",
+      "state": "California",
+      "country": "US"
+    }
+
+SUBJECT ALTERNATIVE NAMES (SANS):
+
+  DNS names:
+    Format: "DNS:example.com"
+    Use for: Domain names, subdomains
+    Example: "DNS:www.example.com"
+
+  IP addresses:
+    Format: "IP:192.0.2.1"
+    Use for: Server IP addresses
+    Example: "IP:10.0.1.50"
+
+  Email addresses:
+    Format: "EMAIL:user@example.com"
+    Use for: Email certificates
+    Example: "EMAIL:admin@example.com"
+
+  URI:
+    Format: "URI:https://example.com"
+    Use for: Service endpoints
+
+  Multiple SANs:
+    ["DNS:example.com", "DNS:www.example.com", "IP:192.0.2.1"]
+
+KEY FORMATS:
+
+  PKCS#8:
+    • Standard format for private keys
+    • Algorithm-agnostic
+    • Supports encryption
+    • Recommended for new keys
+    • BEGIN PRIVATE KEY (unencrypted)
+    • BEGIN ENCRYPTED PRIVATE KEY (encrypted)
+
+  PKCS#1:
+    • Legacy RSA-specific format
+    • Only for RSA keys
+    • BEGIN RSA PRIVATE KEY
+
+  SEC1:
+    • ECDSA-specific format
+    • Only for ECDSA keys
+    • BEGIN EC PRIVATE KEY
+
+OUTPUT FORMATS:
+
+  info output (JSON):
+    {
+      "type": "certificate",
+      "encoding": "pem",
+      "objects": [
+        {
+          "kind": "certificate",
+          "version": 2,
+          "serial_number": "123456789",
+          "subject": {...},
+          "issuer": {...},
+          "validity": {...},
+          "public_key": {...},
+          "fingerprints": {...}
+        }
+      ]
+    }
+
+  info output (text):
+    Type: Certificate
+    Encoding: pem
+    Valid From: 2023-01-01 00:00:00 UTC
+    Valid To: 2024-01-01 00:00:00 UTC
+    Subject: CN=example.com
+    SHA256: AB:CD:EF:...
+
+  generate output:
+    {
+      "ok": true,
+      "mode": "self_signed",
+      "certificate": {...},
+      "key": {...},
+      "validity": {...}
+    }
+
+  verify output:
+    {
+      "valid": true,
+      "errors": [],
+      "warnings": [],
+      "is_self_signed": true,
+      "expires_in_days": 364
+    }
+
+  csr.create output:
+    {
+      "ok": true,
+      "key_strategy": "generate",
+      "csr": {...},
+      "key": {...}
+    }
+
+  chain.info output:
+    {
+      "chain_length": 3,
+      "certificates": [...],
+      "trust_path_valid": true
+    }
+
+EXIT CODES:
+  0                      Success
+  1                      General error
+  2                      Certificate not found
+  3                      Parse error (invalid format)
+  4                      Invalid options/arguments
+  5                      Target file exists (overwrite=false)
+  6                      Verification failed
+  7                      Permission denied
+
+ERROR MESSAGES:
+
+  File errors:
+    "cert.not_found"             Certificate file doesn't exist
+    "cert.target_exists"         Output file exists, overwrite=false
+    "cert.read_error"            Cannot read certificate file
+
+  Parse errors:
+    "cert.parse_failed"          Invalid certificate format
+    "cert.invalid_pem"           Malformed PEM format
+    "cert.invalid_der"           Malformed DER format
+    "cert.unsupported_format"    Unknown file format
+
+  Validation errors:
+    "cert.invalid_options"       Invalid command options
+    "cert.missing_required"      Required parameter missing
+    "cert.invalid_subject"       Invalid subject format
+    "cert.invalid_sans"          Invalid SAN format
+
+  Generation errors:
+    "cert.generation_failed"     Certificate generation failed
+    "cert.key_generation_failed" Key generation failed
+    "cert.invalid_algorithm"     Unknown algorithm
+
+  Signing errors:
+    "cert.signing_failed"        Certificate signing failed
+    "cert.invalid_signer"        Invalid CA certificate
+    "cert.signer_not_ca"         Signer is not a CA certificate
+
+  Verification errors:
+    "cert.verification_failed"   Certificate verification failed
+    "cert.expired"               Certificate has expired
+    "cert.not_yet_valid"         Certificate not yet valid
+    "cert.untrusted"             Certificate not trusted
+
+COMMON WORKFLOWS:
+
+  Create self-signed certificate for testing:
+    # Generate certificate and key
+    cert:///tmp/test.generate(mode=self_signed,subject='{{"common_name":"test.local"}',algorithm=rsa,rsa_bits=2048)
+
+    # Verify it works
+    cert:///tmp/test.pem.verify(allow_self_signed=true)
+
+    # View details
+    cert:///tmp/test.pem.info(format=text)
+
+  Set up Certificate Authority:
+    # Create CA certificate
+    cert:///ca/root-ca.generate(mode=self_signed,subject='{{"common_name":"My Root CA","organization":"My Org"}',is_ca=true,validity_days=3650,algorithm=rsa,rsa_bits=4096)
+
+    # View CA info
+    cert:///ca/root-ca.pem.info
+
+  Issue server certificate:
+    # Create CSR
+    cert:///server/server.csr.create(key_strategy=generate,algorithm=ecdsa,ecdsa_curve=P-256,new_key_output_path=/server/server-key.pem,subject='{{"common_name":"server.example.com"}',sans='["DNS:server.example.com","DNS:www.server.example.com"]')
+
+    # Sign with CA
+    cert:///server/server.csr.sign(signer_ca=/ca/root-ca.pem,signer_key=/ca/root-ca-key.pem,cert_output_path=/server/server.pem,validity_days=90)
+
+    # Verify certificate
+    cert:///server/server.pem.verify(ca_bundle=/ca/root-ca.pem)
+
+  Renew expiring certificate:
+    # Check current certificate
+    cert:///certs/old.pem.info
+
+    # Renew with same key
+    cert:///certs/old.pem.renew(mode=self_signed,key_strategy=reuse,validity_days=365)
+
+    # Verify renewed certificate
+    cert:///certs/old.pem.verify
+
+  Create intermediate CA:
+    # Create intermediate CA CSR
+    cert:///ca/intermediate.csr.create(key_strategy=generate,algorithm=rsa,rsa_bits=4096,new_key_output_path=/ca/intermediate-key.pem,subject='{{"common_name":"Intermediate CA"}')
+
+    # Sign with root CA
+    cert:///ca/intermediate.csr.sign(signer_ca=/ca/root-ca.pem,signer_key=/ca/root-ca-key.pem,cert_output_path=/ca/intermediate.pem,validity_days=1825)
+
+    # Create certificate chain
+    cat /ca/intermediate.pem /ca/root-ca.pem > /ca/chain.pem
+
+    # Verify chain
+    cert:///ca/chain.pem.chain.info
+
+  Set up TLS for web server:
+    # Generate CSR for server
+    cert:///etc/ssl/server.csr.create(key_strategy=generate,algorithm=ecdsa,ecdsa_curve=P-384,new_key_output_path=/etc/ssl/private/server-key.pem,subject='{{"common_name":"www.example.com"}',sans='["DNS:www.example.com","DNS:example.com"]')
+
+    # Send CSR to CA (or sign with internal CA)
+    cert:///etc/ssl/server.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/etc/ssl/certs/server.pem)
+
+    # Verify certificate
+    cert:///etc/ssl/certs/server.pem.verify(ca_bundle=/ca/ca.pem)
+
+    # Configure web server with:
+    # Certificate: /etc/ssl/certs/server.pem
+    # Private key: /etc/ssl/private/server-key.pem
+
+  Client certificate authentication:
+    # Create client CSR
+    cert:///client/client.csr.create(key_strategy=generate,algorithm=rsa,rsa_bits=2048,new_key_output_path=/client/client-key.pem,subject='{{"common_name":"client01"}',extended_key_usage='["clientAuth"]')
+
+    # Sign with CA
+    cert:///client/client.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/client/client.pem,validity_days=365)
+
+    # Verify client certificate
+    cert:///client/client.pem.verify(ca_bundle=/ca/ca.pem)
+
+  Password-protected keys:
+    # Generate encrypted key
+    cert:///secure/key.generate(mode=key,algorithm=rsa,rsa_bits=4096,password="strong-password",kdf=argon2id)
+
+    # Use in certificate generation
+    cert:///secure/cert.generate(mode=self_signed,subject='{{"common_name":"secure.example.com"}',key_path=/secure/key.pem)
+
+BEST PRACTICES:
+  • Use RSA 2048-bit minimum, 4096-bit for CAs
+  • Use ECDSA P-256 or Ed25519 for modern systems
+  • Use Ed25519 when compatibility allows (fastest, smallest)
+  • Never use RSA 1024-bit (insecure)
+  • Set appropriate validity periods (90 days for leaf, longer for CA)
+  • Use SANs instead of CN for domain names
+  • Include all required SANs (www and apex domain)
+  • Use is_ca=true only for CA certificates
+  • Protect private keys with file permissions (chmod 600)
+  • Use password encryption for highly sensitive keys
+  • Use Argon2id KDF for password protection
+  • Store CA keys offline or in HSM
+  • Use intermediate CAs to protect root CA
+  • Keep root CA offline after initial setup
+  • Verify certificates after generation
+  • Test certificates before deployment
+  • Monitor certificate expiration dates
+  • Automate certificate renewal
+  • Use certificate chains properly
+  • Include intermediate certificates in server config
+  • Keep backups of private keys (securely)
+  • Document your PKI structure
+  • Use consistent subject field formats
+  • Follow naming conventions
+  • Implement certificate rotation
+  • Use short validity for leaf certificates (90 days)
+  • Use long validity for CA certificates (10+ years)
+  • Implement proper key storage
+  • Audit certificate usage
+  • Revoke compromised certificates immediately
+
+CERTIFICATE LIFECYCLE MANAGEMENT:
+  • Plan certificate validity periods
+  • Set up expiration monitoring
+  • Automate renewal 30 days before expiry
+  • Test renewal process regularly
+  • Keep certificate inventory
+  • Track certificate purposes
+  • Document renewal procedures
+  • Implement automated deployment
+  • Use consistent file naming
+  • Maintain certificate history
+  • Monitor for unauthorized certificates
+  • Implement certificate pinning where appropriate
+  • Use OCSP or CRL for revocation checking
+  • Plan for emergency revocation
+  • Keep audit logs of certificate operations
+
+KEY MANAGEMENT GUIDELINES:
+  • Generate keys on secure systems
+  • Never reuse keys across certificates
+  • Use key_strategy=rekey when security required
+  • Use key_strategy=reuse for continuity
+  • Store keys separate from certificates
+  • Encrypt keys at rest
+  • Use HSM for production CA keys
+  • Implement key rotation schedule
+  • Backup keys securely
+  • Destroy old keys properly
+  • Never email or transmit keys unencrypted
+  • Use secure key generation (not weak RNGs)
+  • Monitor key access
+  • Limit key access to authorized personnel
+
+SECURITY CONSIDERATIONS:
+  • Protect private keys (chmod 600 or 400)
+  • Never commit keys to version control
+  • Use password protection for sensitive keys
+  • Use strong passwords (12+ characters)
+  • Use Argon2id for password-based encryption
+  • Verify certificate chains before trusting
+  • Check certificate revocation status
+  • Validate certificate purposes
+  • Use appropriate key sizes
+  • Don't use deprecated algorithms
+  • Monitor for certificate vulnerabilities
+  • Implement certificate pinning for high-security
+  • Use separate keys for different purposes
+  • Audit certificate operations
+  • Implement proper access control
+  • Secure certificate storage
+  • Use secure random number generation
+  • Validate all inputs
+  • Check certificate extensions
+  • Verify signature algorithms
+  • Don't trust self-signed certs in production
+  • Implement defense in depth
+  • Monitor certificate transparency logs
+  • Implement incident response for key compromise
+
+TROUBLESHOOTING:
+
+  Certificate not found:
+    • Check file path
+    • Verify file exists: ls -la /path/to/cert.pem
+    • Check file permissions
+    • Use absolute paths
+
+  Parse failed:
+    • Check file encoding (PEM vs DER)
+    • Verify file is not corrupted
+    • Check for correct BEGIN/END markers
+    • Try specifying encoding explicitly
+
+  Verification failed:
+    • Check certificate validity dates
+    • Verify CA chain
+    • Check if self-signed (use allow_self_signed=true)
+    • Verify CA bundle path
+    • Check certificate purposes
+
+  Generation failed:
+    • Check subject format (valid JSON)
+    • Verify algorithm support
+    • Check key size validity
+    • Ensure output path is writable
+    • Check for existing files (use overwrite=true)
+
+  Key format issues:
+    • Use correct key_format for algorithm
+    • PKCS1 only for RSA
+    • SEC1 only for ECDSA
+    • PKCS8 for all algorithms
+    • Check PEM headers match format
+
+  Password issues:
+    • Verify password is correct
+    • Check KDF settings
+    • Use kdf_iterations=100000 minimum
+    • Try different KDF (pbkdf2 vs argon2id)
+
+  Permission denied:
+    • Check file permissions: ls -la
+    • Ensure write access to output directory
+    • Check parent directory permissions
+    • May need sudo for system paths
+
+DEBUGGING:
+
+  View certificate details:
+    cert:///path/cert.pem.info(format=text)
+
+  Check certificate chain:
+    cert:///path/chain.pem.chain.info(include_details=true)
+
+  Verify certificate:
+    cert:///path/cert.pem.verify(ca_bundle=/ca/bundle.pem)
+
+  Check key format:
+    openssl rsa -in key.pem -text -noout    # RSA
+    openssl ec -in key.pem -text -noout     # ECDSA
+    openssl pkey -in key.pem -text -noout   # Any
+
+  Verify key matches certificate:
+    openssl x509 -in cert.pem -pubkey -noout | md5sum
+    openssl rsa -in key.pem -pubout | md5sum
+
+  Check certificate dates:
+    openssl x509 -in cert.pem -dates -noout
+
+  View CSR:
+    openssl req -in request.csr -text -noout
+
+PLATFORM SUPPORT:
+
+  All platforms:
+    • Certificate generation
+    • Key generation
+    • Certificate verification
+    • CSR creation and signing
+    • Certificate parsing
+    • Chain validation
+
+  RSA support:
+    • All platforms
+    • All key sizes (2048, 3072, 4096)
+
+  ECDSA support:
+    • All platforms with modern crypto libraries
+    • P-256 and P-384 curves
+
+  Ed25519 support:
+    • Most platforms
+    • Requires recent crypto library
+    • Check compatibility if targeting older systems
+
+PERFORMANCE CONSIDERATIONS:
+  • RSA key generation is slow (especially 4096-bit)
+  • ECDSA key generation is fast
+  • Ed25519 key generation is fastest
+  • RSA signing is slower than ECDSA/Ed25519
+  • Certificate parsing is fast
+  • Chain validation depends on chain length
+  • Password-based encryption adds overhead
+  • Argon2id is slower but more secure than PBKDF2
+  • DER encoding is more compact than PEM
+  • Large key sizes increase computation time
+
+LIMITATIONS:
+  • Cannot interact with external CAs directly
+  • No ACME protocol support (Let's Encrypt)
+  • No automatic certificate renewal
+  • No built-in revocation (CRL/OCSP)
+  • No hardware security module (HSM) support
+  • No PKCS#11 interface
+  • No smart card support
+  • Cannot create CRLs
+  • No OCSP responder
+  • No certificate transparency log submission
+  • No automatic chain building
+  • Limited extension support
+  • No custom OIDs
+  • No name constraints
+  • No policy mappings
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With file handle:
+    # Read certificate for verification
+    cert://$(file:///path/cert.pem.path).verify
+
+  With config handle:
+    # Store certificate paths
+    config://certs/server/path.set(value="/etc/ssl/server.pem")
+
+  With secret handle:
+    # Store private key passwords
+    secret://cert-passwords/ca-key.set(value="password")
+
+  With log handle:
+    # Log certificate operations
+    cert:///tmp/cert.generate(...) | log://cert-operations.log.append
+
+  With backup handle:
+    # Backup certificates and keys
+    backup://certs.create(target="/etc/ssl")
+
+MORE INFO:
+  For complete documentation of cert handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Security_Secrets/cert.md
+
+  X.509 certificate standards:
+  https://tools.ietf.org/html/rfc5280
+
+  Key management best practices:
+  https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf
+
+  TLS/SSL configuration:
+  https://ssl-config.mozilla.org/
+
+  Certificate transparency:
+  https://certificate.transparency.dev/
+
+  Use 'cert:// --help=VERB' for detailed help on a specific verb.
+"#;
+
 // Certificate generation types
 #[derive(Debug, Clone)]
 pub enum CertGenerateMode {
@@ -1183,6 +2183,19 @@ pub struct ChainInfoError {
 
 impl CertHandle {
     pub fn from_url(url: Url) -> Result<Self> {
+        // Check for help flags in URL path or host early
+        let path = url.path();
+        let host = url.host_str().unwrap_or("");
+        
+        // Special handling for help requests at URL level
+        if host == "--help" || host == "-h" || 
+           path.contains("--help") || path.contains("-h") {
+            // Return a dummy handle - help will be detected in call()
+            return Ok(Self {
+                target_path: "help".to_string(),
+            });
+        }
+        
         // Extract the target path from the URL
         let target_path = if let Some(host) = url.host_str() {
             // cert://hostname/path
@@ -8082,12 +9095,339 @@ impl CertHandle {
     }
 }
 
+impl CertHandle {
+    /// Check if this is a help request and display help if so
+    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
+        // Check for help verbs
+        if verb == "--help" || verb == "-h" || verb == "help" {
+            write!(io.stdout, "{}", CERT_HELP_TEXT)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        // Check for verb-specific help
+        if verb.starts_with("--help=") {
+            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
+            Self::display_verb_help(help_verb, io)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        Ok(None)
+    }
+    
+    /// Display help for a specific verb
+    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
+        match verb {
+            "info" => {
+                write!(io.stdout, r#"
+INFO VERB - CERT HANDLE
+======================
+
+DESCRIPTION:
+  View detailed information about certificates, private keys, or CSRs including
+  subject, validity dates, fingerprints, and key details.
+
+SYNTAX:
+  cert://path/to/file.info(arguments)
+
+ARGUMENTS:
+  format=FORMAT          Output format (default: json)
+                         Values: json, text
+  encoding=ENCODING      File encoding (default: auto)
+                         Values: auto, pem, der
+  include_pem=BOOL       Include PEM data in output (default: false)
+  include_raw=BOOL       Include raw DER as base64 (default: false)
+  fingerprint_algs=ARRAY Fingerprint algorithms (default: ["sha256"])
+                         Values: sha1, sha256, sha512
+
+EXAMPLES:
+  # View certificate details in JSON
+  cert:///tmp/certificate.pem.info
+
+  # View in human-readable format
+  cert:///tmp/certificate.pem.info(format=text)
+
+  # Include PEM data
+  cert:///tmp/certificate.pem.info(include_pem=true)
+
+  # Multiple fingerprints
+  cert:///tmp/certificate.pem.info(fingerprint_algs=["sha1","sha256"])
+
+Use 'cert:// --help' for complete cert handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "verify" => {
+                write!(io.stdout, r#"
+VERIFY VERB - CERT HANDLE
+========================
+
+DESCRIPTION:
+  Validate certificates, check signatures, and verify certificate chains.
+
+SYNTAX:
+  cert://path/to/certificate.verify(arguments)
+
+ARGUMENTS:
+  ca_bundle=PATH         CA certificates bundle
+  check_revocation=BOOL  Check revocation status (default: false)
+  allow_self_signed=BOOL Allow self-signed (default: false)
+
+EXAMPLES:
+  # Basic verification
+  cert:///tmp/certificate.pem.verify
+
+  # Verify with CA bundle
+  cert:///tmp/certificate.pem.verify(ca_bundle=/ca/bundle.pem)
+
+  # Allow self-signed
+  cert:///tmp/certificate.pem.verify(allow_self_signed=true)
+
+Use 'cert:// --help' for complete cert handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "generate" => {
+                write!(io.stdout, r#"
+GENERATE VERB - CERT HANDLE
+==========================
+
+DESCRIPTION:
+  Generate keys, self-signed certificates, CSRs, and leaf certificates.
+
+SYNTAX:
+  cert://path/to/output.generate(arguments)
+
+REQUIRED ARGUMENTS:
+  mode=MODE              What to generate
+                         Values: key, self_signed, csr, leaf_cert
+
+KEY GENERATION (mode=key):
+  algorithm=ALG          Key algorithm (default: rsa)
+                         Values: rsa, ecdsa, ed25519
+  rsa_bits=NUMBER        RSA key size (default: 2048)
+  ecdsa_curve=CURVE      ECDSA curve (default: P-256)
+  key_format=FORMAT      Key format (default: pkcs8)
+
+CERTIFICATE GENERATION (mode=self_signed, leaf_cert):
+  subject=JSON           Certificate subject (required)
+  sans=JSON_ARRAY        Subject Alternative Names
+  validity_days=NUM      Certificate validity (default: 365)
+  is_ca=BOOL             CA certificate (default: false)
+
+EXAMPLES:
+  # Generate RSA key
+  cert:///tmp/key.generate(mode=key,algorithm=rsa,rsa_bits=2048)
+
+  # Generate self-signed certificate
+  cert:///tmp/cert.generate(mode=self_signed,subject='{{\"common_name\":\"example.com\"}}')
+
+  # Generate CA certificate
+  cert:///tmp/ca.generate(mode=self_signed,subject='{{\"common_name\":\"My CA\"}}',is_ca=true)
+
+Use 'cert:// --help' for complete cert handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "sign" => {
+                write!(io.stdout, r#"
+SIGN VERB - CERT HANDLE
+======================
+
+DESCRIPTION:
+  Sign data or CSRs to create digital signatures or certificates.
+
+SYNTAX:
+  cert://path/to/data.sign(arguments)
+
+REQUIRED ARGUMENTS:
+  mode=MODE              What to sign
+                         Values: data, csr
+
+DATA SIGNING (mode=data):
+  data=STRING            Data to sign (required)
+  signer_key=PATH        Private key path (required)
+  algorithm=ALG          Signature algorithm (required)
+                         Values: rsa_pss_sha256, ecdsa_sha256, ed25519
+
+CSR SIGNING (mode=csr):
+  signer_cert=PATH       CA certificate path (required)
+  signer_key=PATH        CA private key path (required)
+  cert_output_path=PATH  Certificate output path (required)
+
+EXAMPLES:
+  # Sign data with RSA-PSS
+  cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/private.pem,algorithm=rsa_pss_sha256)
+
+  # Sign CSR with CA
+  cert:///tmp/request.csr.sign(mode=csr,signer_cert=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem)
+
+Use 'cert:// --help' for complete cert handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "renew" => {
+                write!(io.stdout, r#"
+RENEW VERB - CERT HANDLE
+=======================
+
+DESCRIPTION:
+  Renew existing certificates with updated validity dates.
+
+SYNTAX:
+  cert://path/to/certificate.renew(arguments)
+
+REQUIRED ARGUMENTS:
+  mode=MODE              Renewal mode
+                         Values: self_signed, ca_signed
+
+OPTIONAL ARGUMENTS:
+  key_strategy=STRATEGY  Key handling (default: reuse)
+                         Values: reuse, rekey
+  validity_days=NUM      New validity period (default: 365)
+
+EXAMPLES:
+  # Renew self-signed certificate
+  cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=reuse)
+
+  # Renew and rekey
+  cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=rekey,algorithm=rsa,rsa_bits=4096)
+
+  # Renew with custom validity
+  cert:///tmp/certificate.pem.renew(mode=self_signed,validity_days=730)
+
+Use 'cert:// --help' for complete cert handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "csr.create" => {
+                write!(io.stdout, r#"
+CSR.CREATE VERB - CERT HANDLE
+============================
+
+DESCRIPTION:
+  Generate Certificate Signing Requests (CSRs) for CA signing.
+
+SYNTAX:
+  cert://path/to/request.csr.create(arguments)
+
+REQUIRED ARGUMENTS:
+  key_strategy=STRATEGY  Key handling
+                         Values: generate, reuse
+  subject=JSON           Certificate subject
+                         Format: {{\"common_name\":\"...\"}}
+
+GENERATE STRATEGY:
+  new_key_output_path=PATH  Where to save new key (required)
+  algorithm=ALG        Key algorithm (default: rsa)
+  rsa_bits=NUMBER      RSA key size (default: 2048)
+
+REUSE STRATEGY:
+  existing_key_path=PATH    Existing key path (required)
+
+OPTIONAL:
+  sans=JSON_ARRAY      Subject Alternative Names
+  key_usage=JSON_ARRAY Key usage extensions
+  csr_encoding=ENC     CSR encoding (default: pem)
+
+EXAMPLES:
+  # Generate new key and CSR
+  cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/server.pem,subject='{{\"common_name\":\"example.com\"}}')
+
+  # CSR with existing key
+  cert:///tmp/request.csr.create(key_strategy=reuse,existing_key_path=/keys/existing.pem,subject='{{\"common_name\":\"example.com\"}}')
+
+  # CSR with SANs
+  cert:///tmp/request.csr.create(key_strategy=generate,new_key_output_path=/keys/key.pem,subject='{{\"common_name\":\"example.com\"}}',sans='[\"DNS:example.com\",\"IP:192.0.2.1\"]')
+
+Use 'cert:// --help' for complete cert handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "csr.sign" => {
+                write!(io.stdout, r#"
+CSR.SIGN VERB - CERT HANDLE
+==========================
+
+DESCRIPTION:
+  Sign CSRs with a Certificate Authority to create certificates.
+
+SYNTAX:
+  cert://path/to/request.csr.sign(arguments)
+
+REQUIRED ARGUMENTS:
+  signer_ca=PATH         CA certificate path
+  signer_key=PATH        CA private key path
+  cert_output_path=PATH  Certificate output path
+
+OPTIONAL ARGUMENTS:
+  signer_key_password=PASS  CA key password
+  validity_days=NUM      Certificate validity (default: 365)
+  copy_subject=BOOL      Copy subject from CSR (default: true)
+  copy_sans=BOOL         Copy SANs from CSR (default: true)
+  copy_key_usage=BOOL    Copy key usage from CSR (default: true)
+
+EXAMPLES:
+  # Sign CSR with CA
+  cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem)
+
+  # Sign with password-protected CA key
+  cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,signer_key_password="secret",cert_output_path=/certs/server.pem)
+
+  # Sign with custom validity
+  cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem,validity_days=90)
+
+Use 'cert:// --help' for complete cert handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            "chain.info" => {
+                write!(io.stdout, r#"
+CHAIN.INFO VERB - CERT HANDLE
+============================
+
+DESCRIPTION:
+  Analyze certificate chains and trust paths.
+
+SYNTAX:
+  cert://path/to/chain.pem.chain.info(arguments)
+
+OPTIONAL ARGUMENTS:
+  trust_store=PATH       Trust store path for validation
+  include_details=BOOL   Include detailed info (default: false)
+
+EXAMPLES:
+  # View chain information
+  cert:///tmp/chain.pem.chain.info
+
+  # Include detailed certificate info
+  cert:///tmp/chain.pem.chain.info(include_details=true)
+
+  # Verify against trust store
+  cert:///tmp/chain.pem.chain.info(trust_store=/etc/ssl/certs/ca-certificates.crt)
+
+Use 'cert:// --help' for complete cert handle documentation.
+"#)?;
+                Ok(Status::ok())
+            }
+            _ => {
+                writeln!(io.stdout, "Unknown verb: {}. Use --help for full list of verbs.", verb)?;
+                Ok(Status::ok())
+            }
+        }
+    }
+}
+
 impl Handle for CertHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["info", "verify", "generate", "sign", "renew", "csr.create", "csr.sign", "chain.info"]
+        &["info", "verify", "generate", "sign", "renew", "csr.create", "csr.sign", "chain.info", "help"]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests first
+        if let Some(status) = Self::check_and_display_help(verb, io)? {
+            return Ok(status);
+        }
+        
         match verb {
             "info" => self.handle_info(args, io),
             "verify" => self.handle_verify(args, io),
@@ -8097,6 +9437,11 @@ impl Handle for CertHandle {
             "csr.create" => self.handle_csr_create(args, io),
             "csr.sign" => self.handle_csr_sign(args, io),
             "chain.info" => self.handle_chain_info(args, io),
+            "help" => {
+                write!(io.stdout, "{}", CERT_HELP_TEXT)
+                    .with_context(|| "Failed to write help text to stdout")?;
+                Ok(Status::ok())
+            },
             _ => bail!("unknown verb for cert://: {}", verb),
         }
     }
@@ -8138,7 +9483,7 @@ mod tests {
         args.insert("mode".to_string(), "self_signed".to_string());
         args.insert("algorithm".to_string(), "ecdsa".to_string());
         args.insert("ecdsa_curve".to_string(), "P-384".to_string());
-        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
         args.insert("sans".to_string(), r#"["DNS:example.com", "DNS:www.example.com"]"#.to_string());
         args.insert("is_ca".to_string(), "true".to_string());
         args.insert("overwrite".to_string(), "true".to_string());
@@ -8182,7 +9527,7 @@ mod tests {
         // Missing signer for leaf cert
         let mut args = HashMap::new();
         args.insert("mode".to_string(), "leaf_cert".to_string());
-        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
         assert!(handle.parse_generate_options(&args).is_err());
     }
 
@@ -8410,7 +9755,7 @@ mod tests {
         args.insert("algorithm".to_string(), "rsa".to_string());
         args.insert("rsa_bits".to_string(), "2048".to_string());
         args.insert("new_key_output_path".to_string(), "cert://keys/test-key.pem".to_string());
-        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
         
         let opts = handle.parse_csr_create_options(&args).unwrap();
         
@@ -8427,7 +9772,7 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("key_strategy".to_string(), "reuse".to_string());
         args.insert("existing_key_path".to_string(), "cert://keys/existing-key.pem".to_string());
-        args.insert("subject".to_string(), r#"{"common_name": "example.com", "organization": ["Example Corp"]}"#.to_string());
+        args.insert("subject".to_string(), r#"{{"common_name": "example.com", "organization": ["Example Corp"]}"#.to_string());
         args.insert("sans".to_string(), r#"["DNS:example.com", "DNS:www.example.com", "IP:192.0.2.1"]"#.to_string());
         
         let opts = handle.parse_csr_create_options(&args).unwrap();
@@ -8445,7 +9790,7 @@ mod tests {
         
         // Test missing common_name
         let mut args = HashMap::new();
-        args.insert("subject".to_string(), r#"{"organization": ["Example Corp"]}"#.to_string());
+        args.insert("subject".to_string(), r#"{{"organization": ["Example Corp"]}"#.to_string());
         let result = handle.parse_csr_create_options(&args);
         assert!(result.is_err());
         let err_msg = result.err().unwrap().to_string();
@@ -8454,7 +9799,7 @@ mod tests {
         // Test generate mode without new_key_output_path
         let mut args = HashMap::new();
         args.insert("key_strategy".to_string(), "generate".to_string());
-        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
         let result = handle.parse_csr_create_options(&args);
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("new_key_output_path is required"));
@@ -8462,7 +9807,7 @@ mod tests {
         // Test reuse mode without existing_key_path
         let mut args = HashMap::new();
         args.insert("key_strategy".to_string(), "reuse".to_string());
-        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
         let result = handle.parse_csr_create_options(&args);
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("existing_key_path is required"));
@@ -8472,7 +9817,7 @@ mod tests {
         args.insert("key_strategy".to_string(), "generate".to_string());
         args.insert("rsa_bits".to_string(), "1024".to_string());
         args.insert("new_key_output_path".to_string(), "test.key".to_string());
-        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
         let result = handle.parse_csr_create_options(&args);
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("rsa_bits must be at least 2048"));

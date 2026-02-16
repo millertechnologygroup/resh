@@ -725,8 +725,82 @@ pub struct DbHandle {
 }
 
 impl DbHandle {
+    /// Check if help was requested based on verb or arguments
+    pub fn should_show_help(&self, verb: &str, args: &Args) -> bool {
+        // Check if verb is a help request
+        verb == "--help" || verb == "-h" || verb == "help" ||
+        // Check if args contain help flags
+        args.get("help").is_some() || 
+        args.get("h").is_some() ||
+        args.contains_key("--help") ||
+        args.contains_key("-h") ||
+        // Check if verb ends with --help pattern
+        verb.ends_with("--help") ||
+        verb.ends_with("-h")
+    }
+
+    /// Display comprehensive help for the database handle
+    pub fn display_help(&self, io: &mut IoStreams, verb_specific: Option<&str>) -> Result<Status> {
+        if let Some(specific_verb) = verb_specific {
+            // Show verb-specific help if implemented
+            self.display_verb_help(specific_verb, io)?;
+        } else {
+            // Show general help
+            writeln!(io.stdout, "{}", DB_HELP_TEXT)?;
+        }
+        Ok(Status::ok())
+    }
+
+    /// Display help for a specific verb (optional feature)
+    pub fn display_verb_help(&self, verb: &str, io: &mut IoStreams) -> Result<()> {
+        match verb {
+            "connect" => {
+                writeln!(io.stdout, "{}", CONNECT_VERB_HELP)?;
+            }
+            "query" => {
+                writeln!(io.stdout, "{}", QUERY_VERB_HELP)?;
+            }
+            "exec" => {
+                writeln!(io.stdout, "{}", EXEC_VERB_HELP)?;
+            }
+            "tables" => {
+                writeln!(io.stdout, "{}", TABLES_VERB_HELP)?;
+            }
+            "schema" => {
+                writeln!(io.stdout, "{}", SCHEMA_VERB_HELP)?;
+            }
+            "ping" => {
+                writeln!(io.stdout, "{}", PING_VERB_HELP)?;
+            }
+            "transaction" => {
+                writeln!(io.stdout, "{}", TRANSACTION_VERB_HELP)?;
+            }
+            _ => {
+                writeln!(io.stdout, "Unknown verb '{}' for db:// handle.", verb)?;
+                writeln!(io.stdout, "Available verbs: connect, query, exec, tables, schema, ping, transaction")?;
+                writeln!(io.stdout, "\nUse 'db:// --help' for complete help.")?;
+            }
+        }
+        Ok(())
+    }
+
     /// Create new DbHandle from URL
     pub fn from_url(url: Url) -> Result<Self> {
+        // Check for help flags in URL path or host early
+        let path = url.path();
+        let host = url.host_str().unwrap_or("");
+        
+        // Special handling for help requests at URL level
+        if host == "--help" || host == "-h" || 
+           path.contains("--help") || path.contains("-h") {
+            // Return a dummy handle - help will be detected in call()
+            return Ok(Self {
+                driver: DbDriver::Sqlite, // Dummy value
+                driver_str: "help".to_string(),
+                alias: "help".to_string(),
+            });
+        }
+        
         // Parse URL format: db://<driver>/<alias>
         let host = url.host_str()
             .context("db:// URL must have driver as host")?;
@@ -4209,6 +4283,18 @@ impl Handle for DbHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests before normal verb processing
+        if self.should_show_help(verb, args) {
+            // Extract verb name for specific help if requested (e.g., --help=connect)
+            let verb_specific = if verb.contains('=') {
+                verb.split('=').nth(1)
+            } else {
+                // Check if help is requested for a specific verb via arguments
+                args.get("verb").map(|s| s.as_str())
+            };
+            
+            return self.display_help(io, verb_specific);
+        }
         // Since we need async for database operations, we need to use tokio runtime
         let rt = tokio::runtime::Runtime::new()
             .context("failed to create tokio runtime")?;
@@ -4621,6 +4707,736 @@ impl Handle for DbHandle {
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("db", |u| Ok(Box::new(DbHandle::from_url(u.clone())?)));
 }
+
+/// Main help text for the database handle
+const DB_HELP_TEXT: &str = r#"RESOURCE SHELL - DATABASE HANDLE
+================================
+
+USAGE:
+  db://driver/alias.VERB(arguments)
+
+DESCRIPTION:
+  The database handle provides access to SQL databases including SQLite,
+  PostgreSQL, and MySQL. You can run queries, manage transactions, inspect
+  table schemas, and more. Supports both traditional workflow (connect first)
+  and auto-connect (provide DSN with query/exec).
+
+SUPPORTED DRIVERS:
+  sqlite          SQLite embedded database
+  postgres        PostgreSQL database server
+  mysql           MySQL/MariaDB database server
+
+CONNECTION FORMAT:
+  db://driver/alias.verb()
+  
+  Examples:
+    db://sqlite/mydb.connect()
+    db://postgres/analytics.query()
+    db://mysql/production.exec()
+
+VERBS:
+  connect         Connect to a database
+  query           Run SELECT queries and get results
+  exec            Run INSERT, UPDATE, DELETE statements
+  tables          List tables or describe table structure
+  schema          Get detailed table schema information
+  ping            Test database connection health
+  transaction     Manage database transactions (begin, commit, rollback)
+
+EXAMPLES:
+
+  Connect to SQLite (in-memory):
+    db://sqlite/mydb.connect(dsn="sqlite::memory:")
+
+  Connect to SQLite (file):
+    db://sqlite/mydb.connect(dsn="sqlite:///path/to/database.db")
+
+  Connect to PostgreSQL:
+    db://postgres/mydb.connect(dsn="postgresql://user:pass@localhost:5432/dbname")
+
+  Connect to MySQL:
+    db://mysql/mydb.connect(dsn="mysql://user:pass@localhost:3306/dbname")
+
+  Connect with pool settings:
+    db://postgres/mydb.connect(dsn="postgresql://user:pass@localhost:5432/dbname",max_connections=10,min_connections=2,connect_timeout_ms=30000)
+
+  Connect with TLS:
+    db://postgres/mydb.connect(dsn="postgresql://user:pass@localhost:5432/dbname",tls_mode="require")
+
+  Query (traditional - after connect):
+    db://sqlite/mydb.query(sql="SELECT id, email FROM users WHERE active = ?",params="[true]",mode="rows")
+
+  Query with auto-connect (recommended for CLI):
+    db://sqlite/mydb.query(dsn="sqlite:///path/to/database.db",sql="SELECT id, email FROM users WHERE active = ?",params="[true]",mode="rows")
+
+  Query scalar value with auto-connect:
+    db://mysql/stocks.query(dsn="mysql://user:pass@host:3306/database",sql="SELECT COUNT(*) FROM stocks WHERE price > ?",params="[100]",mode="scalar")
+
+  Query without parameters:
+    db://sqlite/mydb.query(sql="SELECT COUNT(*) FROM users",mode="scalar")
+
+  Query with timeout and row limit:
+    db://postgres/mydb.query(sql="SELECT * FROM users",mode="rows",timeout_ms=10000,max_rows=500)
+
+  Execute insert (traditional):
+    db://sqlite/mydb.exec(sql="INSERT INTO users (name, active) VALUES (?, ?)",params="[\"Alice\", true]")
+
+  Execute insert with auto-connect:
+    db://mysql/mydb.exec(dsn="mysql://user:pass@host:3306/database",sql="INSERT INTO users (name, email, active) VALUES (?, ?, ?)",params="[\"Alice\", \"alice@example.com\", true]")
+
+  Execute update:
+    db://postgres/mydb.exec(sql="UPDATE users SET last_login = NOW() WHERE id = $1",params="[123]")
+
+  Execute delete:
+    db://sqlite/mydb.exec(dsn="sqlite:///path/to/database.db",sql="DELETE FROM users WHERE active = ?",params="[false]")
+
+  Execute with last insert ID:
+    db://sqlite/mydb.exec(sql="INSERT INTO users (name, active) VALUES (?, ?)",params="[\"Bob\", true]",return_last_insert_id=true)
+
+  Execute with timeout:
+    db://postgres/mydb.exec(sql="UPDATE large_table SET status = $1 WHERE processed = $2",params="[\"completed\", false]",timeout_ms=30000)
+
+  List all tables:
+    db://sqlite/mydb.tables()
+
+  List tables and views:
+    db://postgres/mydb.tables(include_views=true)
+
+  Describe specific table:
+    db://sqlite/mydb.tables(table="users")
+
+  Get table schema:
+    db://sqlite/mydb.schema(table="users")
+
+  Get schema with indexes:
+    db://postgres/mydb.schema(table="users",include_indexes=true)
+
+  Get complete schema:
+    db://postgres/mydb.schema(table="users",include_indexes=true,include_foreign_keys=true,include_unique_constraints=true)
+
+  Simple ping test:
+    db://sqlite/mydb.ping()
+
+  Ping with timeout:
+    db://postgres/mydb.ping(timeout_ms=2000)
+
+  Ping with retries:
+    db://mysql/mydb.ping(timeout_ms=1000,retries=3,backoff_ms=500)
+
+  Detailed ping:
+    db://sqlite/mydb.ping(detailed=true)
+
+  Begin transaction:
+    db://sqlite/mydb.transaction(action="begin")
+
+  Begin with isolation level:
+    db://postgres/mydb.transaction(action="begin",isolation="serializable",read_only=false)
+
+  Commit transaction:
+    db://sqlite/mydb.transaction(action="commit",tx_id="550e8400-e29b-41d4-a716-446655440000")
+
+  Rollback transaction:
+    db://postgres/mydb.transaction(action="rollback",tx_id="550e8400-e29b-41d4-a716-446655440000")
+
+  Query within transaction:
+    db://postgres/mydb.query(sql="SELECT * FROM users",tx_id="550e8400-e29b-41d4-a716-446655440000")
+
+  Execute within transaction:
+    db://postgres/mydb.exec(sql="INSERT INTO users (name) VALUES ($1)",params="[\"John\"]",tx_id="550e8400-e29b-41d4-a716-446655440000")
+
+CONNECT ARGUMENTS:
+  dsn=DSN                Database connection string (required)
+  max_connections=N      Maximum pool connections (default: 10)
+  min_connections=N      Minimum pool connections (default: 1)
+  connect_timeout_ms=N   Connection timeout in milliseconds (default: 30000)
+  idle_timeout_ms=N      Idle connection timeout (default: 600000)
+  max_lifetime_ms=N      Maximum connection lifetime (default: 1800000)
+  tls_mode=MODE          TLS mode: disable, allow, prefer, require
+
+QUERY ARGUMENTS:
+  dsn=DSN                Database connection string (for auto-connect)
+  sql=SQL                SQL SELECT statement (required)
+  params=JSON            Parameter values as JSON array (e.g., "[1, \"text\", true]")
+  mode=MODE              Query mode: rows, scalar, exec (default: rows)
+  timeout_ms=N           Query timeout in milliseconds
+  max_rows=N             Maximum rows to return (default: unlimited)
+  tx_id=UUID             Transaction ID to execute within
+
+EXEC ARGUMENTS:
+  dsn=DSN                Database connection string (for auto-connect)
+  sql=SQL                SQL INSERT/UPDATE/DELETE statement (required)
+  params=JSON            Parameter values as JSON array
+  return_last_insert_id=BOOL Return last inserted ID (default: false)
+  timeout_ms=N           Execution timeout in milliseconds
+  tx_id=UUID             Transaction ID to execute within
+
+TABLES ARGUMENTS:
+  table=NAME             Specific table to describe (optional)
+  include_views=BOOL     Include views in listing (default: false)
+  include_system=BOOL    Include system tables (default: false)
+  max_tables=N           Maximum tables to return (default: unlimited)
+  timeout_ms=N           Operation timeout in milliseconds
+
+SCHEMA ARGUMENTS:
+  table=NAME             Table name to get schema for (required)
+  include_indexes=BOOL   Include index information (default: false)
+  include_foreign_keys=BOOL Include foreign key relationships (default: false)
+  include_unique_constraints=BOOL Include unique constraints (default: false)
+  include_checks=BOOL    Include check constraints (default: false)
+  include_triggers=BOOL  Include trigger information (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
+
+PING ARGUMENTS:
+  timeout_ms=N           Connection timeout (default: 1000, min: 1ms)
+  retries=N              Number of retry attempts (default: 0, max: 10)
+  backoff_ms=N           Delay between retries (default: 100)
+  detailed=BOOL          Include extra connection info (default: false)
+
+TRANSACTION ARGUMENTS:
+  action=ACTION          Transaction action: begin, commit, rollback (required)
+  tx_id=UUID             Transaction ID (required for commit/rollback)
+  isolation=LEVEL        Isolation level: default, read_uncommitted, 
+                         read_committed, repeatable_read, serializable
+  read_only=BOOL         Read-only transaction (default: false)
+  timeout_ms=N           Transaction timeout (default: 15000)
+
+AUTO-CONNECT FEATURE:
+  The query and exec verbs support automatic connection establishment
+  when a DSN parameter is provided. This eliminates the need for separate connect commands
+  in simple workflows.
+
+  How it works:
+  1. Provide dsn parameter with query or exec command
+  2. If no existing connection found for alias
+  3. Connection automatically established using DSN
+  4. Command executes using new connection
+
+  Use auto-connect for:
+  • One-off CLI queries and commands
+  • Batch processing scripts
+  • Quick data exploration
+  • Simple automation tasks
+
+  Use traditional connect for:
+  • Long-running applications
+  • Multiple operations on same connection
+  • Transaction-based workflows
+  • Connection pooling scenarios
+
+PARAMETER BINDING:
+  All SQL operations support parameter binding to prevent SQL injection.
+
+  SQLite style (positional with ?):
+    sql="SELECT * FROM users WHERE id = ? AND active = ?"
+    params="[1, true]"
+
+  PostgreSQL style (positional with $1, $2):
+    sql="SELECT * FROM users WHERE id = $1 AND active = $2"
+    params="[1, true]"
+
+  MySQL style (positional with ?):
+    sql="SELECT * FROM users WHERE id = ? AND active = ?"
+    params="[1, true]"
+
+  Supported parameter types:
+  • Strings: "text value"
+  • Numbers: 42, 3.14
+  • Booleans: true, false
+  • Null: null
+
+DSN FORMAT:
+  SQLite in-memory:
+    sqlite::memory:
+
+  SQLite file:
+    sqlite:///path/to/database.db
+    sqlite:///absolute/path/database.db
+    sqlite://relative/path/database.db
+
+  PostgreSQL:
+    postgresql://user:password@host:port/database
+    postgres://user:password@host:port/database
+
+  MySQL:
+    mysql://user:password@host:port/database
+
+  Special characters in passwords:
+    Use single quotes: 'mysql://user:P@ssw0rd$123@host:3306/db'
+    Or URL-encode: mysql://user:P@ssw0rd%24123@host:3306/db
+
+QUERY MODES:
+  rows                   Returns multiple rows as array (default)
+  scalar                 Returns single value from first row, first column
+  exec                   For compatibility; use exec verb for DML
+
+TRANSACTION ISOLATION LEVELS:
+  default                Use database default
+  read_uncommitted       Allow dirty reads
+  read_committed         Prevent dirty reads (PostgreSQL default)
+  repeatable_read        Prevent non-repeatable reads (MySQL default)
+  serializable           Full isolation (strongest)
+
+OUTPUT FORMATS:
+
+  Connect success:
+  {
+    "type": "db_connection",
+    "driver": "sqlite",
+    "alias": "mydb",
+    "reused": false,
+    "pool_stats": {
+      "active_connections": 1,
+      "idle_connections": 0,
+      "max_connections": 10,
+      "min_connections": 1
+    }
+  }
+
+  Query success (rows mode):
+  {
+    "rows": [
+      {"id": 1, "email": "alice@example.com"},
+      {"id": 2, "email": "bob@example.com"}
+    ],
+    "meta": {
+      "row_count": 2,
+      "truncated": false,
+      "columns": [
+        {"name": "id", "type": "INTEGER", "ordinal": 1},
+        {"name": "email", "type": "TEXT", "ordinal": 2}
+      ]
+    }
+  }
+
+  Query success (scalar mode):
+  {
+    "value": 42,
+    "meta": {
+      "row_count": 1,
+      "columns": [{"name": "COUNT(*)", "type": "INTEGER", "ordinal": 1}]
+    }
+  }
+
+  Exec success:
+  {
+    "rows_affected": 1
+  }
+
+  Exec success (with last insert ID):
+  {
+    "rows_affected": 1,
+    "last_insert_id": 123
+  }
+
+  Tables list:
+  {
+    "tables": [
+      {"name": "users", "type": "BASE TABLE", "schema": "main"},
+      {"name": "orders", "type": "BASE TABLE", "schema": "main"}
+    ],
+    "meta": {"truncated": false, "table_count": 2}
+  }
+
+  Table describe:
+  {
+    "table": {"name": "users", "type": "BASE TABLE", "schema": "main"},
+    "columns": [
+      {
+        "name": "id",
+        "data_type": "INTEGER",
+        "is_nullable": false,
+        "is_primary_key": true,
+        "ordinal_position": 1,
+        "default_value": null
+      }
+    ]
+  }
+
+  Schema output:
+  {
+    "table": {"name": "users", "type": "BASE TABLE", "schema": "main"},
+    "columns": [...],
+    "primary_key": {"name": "users_pkey", "columns": ["id"]},
+    "indexes": [
+      {
+        "name": "idx_users_email",
+        "columns": ["email"],
+        "is_unique": true,
+        "is_primary": false
+      }
+    ],
+    "foreign_keys": [
+      {
+        "name": "fk_users_account",
+        "columns": ["account_id"],
+        "referenced_table": {"schema": "main", "name": "accounts"},
+        "referenced_columns": ["id"],
+        "on_delete": "CASCADE",
+        "on_update": "RESTRICT"
+      }
+    ]
+  }
+
+  Ping success:
+  {
+    "status": "ok",
+    "driver": "sqlite",
+    "alias": "mydb",
+    "attempts": 1,
+    "latency_ms": 2
+  }
+
+  Transaction begin:
+  {
+    "status": "ok",
+    "action": "begin",
+    "driver": "postgres",
+    "alias": "mydb",
+    "tx_id": "550e8400-e29b-41d4-a716-446655440000",
+    "isolation": "read_committed",
+    "read_only": false
+  }
+
+  Transaction commit/rollback:
+  {
+    "status": "ok",
+    "action": "commit",
+    "tx_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+
+COMMON WORKFLOWS:
+
+  Simple query workflow (auto-connect):
+    # Single command - connection and query
+    db://mysql/stocks.query(dsn="mysql://user:pass@host:3306/stocks",sql="SELECT COUNT(*) FROM stocks")
+
+  Traditional workflow (explicit connect):
+    # Step 1: Connect
+    db://postgres/analytics.connect(dsn="postgresql://user:pass@localhost:5432/analytics")
+    
+    # Step 2: Query multiple times
+    db://postgres/analytics.query(sql="SELECT * FROM users")
+    db://postgres/analytics.query(sql="SELECT * FROM orders")
+
+  Transaction workflow:
+    # Begin transaction
+    db://postgres/mydb.transaction(action="begin")
+    # Returns: {"tx_id": "550e8400..."}
+    
+    # Execute within transaction
+    db://postgres/mydb.exec(sql="INSERT INTO users (name) VALUES ($1)",params="[\"Alice\"]",tx_id="550e8400...")
+    db://postgres/mydb.exec(sql="UPDATE accounts SET balance = balance - 100",tx_id="550e8400...")
+    
+    # Commit transaction
+    db://postgres/mydb.transaction(action="commit",tx_id="550e8400...")
+
+  Schema exploration:
+    # List all tables
+    db://sqlite/mydb.tables()
+    
+    # Describe specific table
+    db://sqlite/mydb.tables(table="users")
+    
+    # Get complete schema
+    db://sqlite/mydb.schema(table="users",include_indexes=true,include_foreign_keys=true)
+
+  Data migration:
+    # Connect to source
+    db://mysql/source.connect(dsn="mysql://user:pass@old-host:3306/olddb")
+    
+    # Query source data
+    db://mysql/source.query(sql="SELECT * FROM users",mode="rows")
+    
+    # Connect to destination
+    db://postgres/dest.connect(dsn="postgresql://user:pass@new-host:5432/newdb")
+    
+    # Insert data to destination with return_last_insert_id=true
+    db://postgres/dest.exec(sql="INSERT INTO users (id, name) VALUES ($1, $2)",params="[123, \"Alice\"]",return_last_insert_id=true)
+    
+    # Insert into destination (using transaction)
+    db://postgres/dest.transaction(action="begin")
+    db://postgres/dest.exec(sql="INSERT INTO users (id, name) VALUES ($1, $2)",params="[1, \"Alice\"]",tx_id="...")
+    db://postgres/dest.transaction(action="commit",tx_id="...")
+
+  Health check:
+    # Test connection with detailed output
+    db://postgres/prod.ping(timeout_ms=2000,retries=3,detailed=true)
+    
+    # If ping fails, reconnect
+    db://postgres/prod.connect(dsn="postgresql://user:pass@host:5432/db")
+    
+    # Use include_views=true for table listing
+    db://sqlite/mydb.tables(include_views=true)
+
+  Performance monitoring:
+    # Monitor query performance with timeout
+    db://mysql/analytics.query(sql="SELECT COUNT(*) FROM large_table",timeout_ms=30000)
+    
+    # Check table statistics with system tables
+    db://postgres/metrics.tables(include_system=true,detailed=true)
+    
+    # Query with all options
+    db://mysql/stats.query(sql="SELECT COUNT(*) FROM logs",mode="scalar",timeout_ms=30000)
+    
+    # Test with specific retry settings 
+    db://postgres/health.ping(retries=3,timeout_ms=5000)
+
+ERROR CODES:
+  db.unsupported_driver         Database driver not supported
+  db.connection_not_found       No connection exists for the alias
+  db.invalid_config             Invalid connection configuration
+  db.missing_dsn                Data Source Name not provided
+  db.query_failed               SQL query execution failed
+  db.exec_failed                SQL execution failed
+  db.query_timeout              Query exceeded timeout limit
+  db.table_not_found            Table does not exist
+  db.transaction_not_found      Transaction ID not found
+  db.transaction_timeout        Transaction exceeded timeout
+
+ERROR HANDLING:
+  All verbs return structured error information:
+  {
+    "error": {
+      "code": "db.connection_not_found",
+      "message": "Connection not found for driver 'postgres', alias 'nonexistent'",
+      "details": {"driver": "postgres", "alias": "nonexistent"}
+    }
+  }
+
+DATABASE-SPECIFIC NOTES:
+
+  SQLite:
+  • In-memory: sqlite::memory:
+  • File: sqlite:///path/to/file.db
+  • Limited concurrency
+  • Enable foreign keys: PRAGMA foreign_keys = ON
+  • Supports transactions
+
+  PostgreSQL:
+  • Parameter placeholders: $1, $2, $3
+  • Full ACID transactions
+  • Rich schema introspection
+  • Multiple isolation levels
+  • Default isolation: read_committed
+
+  MySQL:
+  • Parameter placeholders: ?
+  • Full transaction support
+  • AUTO_INCREMENT with last_insert_id
+  • Default isolation: repeatable_read
+  • Schema introspection varies by version
+
+BEST PRACTICES:
+  • Always use parameter binding (never string concatenation)
+  • Use transactions for multiple related operations
+  • Set appropriate timeouts for long operations
+  • Close transactions promptly (commit or rollback)
+  • Use connection pool settings appropriate for workload
+  • Test connections with ping before critical operations
+  • Handle errors gracefully by checking error codes
+  • Use auto-connect for CLI and one-off queries
+  • Use traditional connect for long-running applications
+  • Use scalar mode for single-value queries
+  • Always specify isolation level for critical transactions
+  • Use max_rows to limit result set size
+  • Set reasonable timeouts based on query complexity
+  • Use descriptive alias names (analytics, prod, cache)
+  • Keep connection pools sized appropriately
+  • Monitor connection pool stats with detailed ping
+  • Use read_only transactions when possible for safety
+
+MORE INFO:
+  For complete documentation of all verbs, drivers, and transaction
+  management, visit:
+  https://github.com/[your-org]/resource-shell/docs/db-handle.md
+
+  Database driver documentation:
+  • SQLite: https://www.sqlite.org/docs.html
+  • PostgreSQL: https://www.postgresql.org/docs/
+  • MySQL: https://dev.mysql.com/doc/
+
+  Use 'db:// --help=VERB' for detailed help on a specific verb.
+"#;
+
+/// Help text for the connect verb
+const CONNECT_VERB_HELP: &str = r#"DATABASE CONNECT VERB
+====================
+
+DESCRIPTION:
+  Establish a connection to a database with connection pooling.
+
+USAGE:
+  db://driver/alias.connect(dsn="CONNECTION_STRING", [options...])
+
+REQUIRED ARGUMENTS:
+  dsn=CONNECTION_STRING     Database connection string
+
+OPTIONAL ARGUMENTS:
+  max_connections=N         Maximum pool connections (default: 10)
+  min_connections=N         Minimum pool connections (default: 1)
+  connect_timeout_ms=N      Connection timeout in milliseconds (default: 30000)
+  idle_timeout_ms=N         Idle connection timeout (default: 600000)
+  max_lifetime_ms=N         Maximum connection lifetime (default: 1800000)
+  tls_mode=MODE             TLS mode: disable, allow, prefer, require
+
+EXAMPLES:
+  db://sqlite/local.connect(dsn="sqlite::memory:")
+  db://postgres/prod.connect(dsn="postgresql://user:pass@host:5432/db")
+  db://mysql/analytics.connect(dsn="mysql://user:pass@host:3306/db",max_connections=20)
+"#;
+
+/// Help text for the query verb
+const QUERY_VERB_HELP: &str = r#"DATABASE QUERY VERB
+===================
+
+DESCRIPTION:
+  Execute SELECT queries and retrieve results. Supports auto-connect.
+
+USAGE:
+  db://driver/alias.query(sql=SELECT_STATEMENT, [options...])
+
+REQUIRED ARGUMENTS:
+  sql=SQL                   SQL SELECT statement
+
+OPTIONAL ARGUMENTS:
+  dsn=DSN                   Database connection string (for auto-connect)
+  params=JSON               Parameter values as JSON array
+  mode=MODE                 Query mode: rows, scalar, exec (default: rows)
+  timeout_ms=N              Query timeout in milliseconds
+  max_rows=N                Maximum rows to return (default: unlimited)
+  tx_id=UUID                Transaction ID to execute within
+
+EXAMPLES:
+  db://sqlite/mydb.query(sql="SELECT * FROM users")
+  db://postgres/mydb.query(sql="SELECT COUNT(*) FROM users",mode="scalar")
+  db://mysql/mydb.query(dsn="mysql://user:pass@host:3306/db",sql="SELECT * FROM users WHERE active = ?",params="[true]")
+"#;
+
+/// Help text for the exec verb
+const EXEC_VERB_HELP: &str = r#"DATABASE EXEC VERB
+==================
+
+DESCRIPTION:
+  Execute INSERT, UPDATE, DELETE statements. Supports auto-connect.
+
+USAGE:
+  db://driver/alias.exec(sql=DML_STATEMENT, [options...])
+
+REQUIRED ARGUMENTS:
+  sql=SQL                   SQL INSERT/UPDATE/DELETE statement
+
+OPTIONAL ARGUMENTS:
+  dsn=DSN                   Database connection string (for auto-connect)
+  params=JSON               Parameter values as JSON array
+  return_last_insert_id=BOOL Return last inserted ID (default: false)
+  timeout_ms=N              Execution timeout in milliseconds
+  tx_id=UUID                Transaction ID to execute within
+
+EXAMPLES:
+  db://sqlite/mydb.exec(sql="INSERT INTO users (name) VALUES (?)",params="[\"Alice\"]")
+  db://postgres/mydb.exec(sql="UPDATE users SET active = $1 WHERE id = $2",params="[true, 123]")
+  db://mysql/mydb.exec(dsn="mysql://user:pass@host:3306/db",sql="DELETE FROM users WHERE active = ?",params="[false]")
+"#;
+
+/// Help text for the tables verb
+const TABLES_VERB_HELP: &str = r#"DATABASE TABLES VERB
+====================
+
+DESCRIPTION:
+  List tables in database or describe specific table structure.
+
+USAGE:
+  db://driver/alias.tables([table=TABLE_NAME], [options...])
+
+OPTIONAL ARGUMENTS:
+  table=NAME                Specific table to describe (optional)
+  include_views=BOOL        Include views in listing (default: false)
+  include_system=BOOL       Include system tables (default: false)
+  max_tables=N              Maximum tables to return (default: unlimited)
+  timeout_ms=N              Operation timeout in milliseconds
+
+EXAMPLES:
+  db://sqlite/mydb.tables()
+  db://postgres/mydb.tables(include_views=true)
+  db://mysql/mydb.tables(table="users")
+"#;
+
+/// Help text for the schema verb
+const SCHEMA_VERB_HELP: &str = r#"DATABASE SCHEMA VERB
+====================
+
+DESCRIPTION:
+  Get detailed table schema information including columns, indexes, and constraints.
+
+USAGE:
+  db://driver/alias.schema(table="TABLE_NAME", [options...])
+
+REQUIRED ARGUMENTS:
+  table=NAME                Table name to get schema for
+
+OPTIONAL ARGUMENTS:
+  include_indexes=BOOL      Include index information (default: false)
+  include_foreign_keys=BOOL Include foreign key relationships (default: false)
+  include_unique_constraints=BOOL Include unique constraints (default: false)
+  include_checks=BOOL       Include check constraints (default: false)
+  include_triggers=BOOL     Include trigger information (default: false)
+  timeout_ms=N              Operation timeout in milliseconds (default: 5000)
+
+EXAMPLES:
+  db://sqlite/mydb.schema(table="users")
+  db://postgres/mydb.schema(table="users",include_indexes=true,include_foreign_keys=true)
+  db://mysql/mydb.schema(table="orders",include_indexes=true)
+"#;
+
+/// Help text for the ping verb
+const PING_VERB_HELP: &str = r#"DATABASE PING VERB
+==================
+
+DESCRIPTION:
+  Test database connection health and measure latency.
+
+USAGE:
+  db://driver/alias.ping([options...])
+
+OPTIONAL ARGUMENTS:
+  timeout_ms=N              Connection timeout (default: 1000, min: 1ms)
+  retries=N                 Number of retry attempts (default: 0, max: 10)
+  backoff_ms=N              Delay between retries (default: 100)
+  detailed=BOOL             Include extra connection info (default: false)
+
+EXAMPLES:
+  db://sqlite/mydb.ping()
+  db://postgres/mydb.ping(timeout_ms=2000,retries=3)
+  db://mysql/mydb.ping(detailed=true)
+"#;
+
+/// Help text for the transaction verb
+const TRANSACTION_VERB_HELP: &str = r#"DATABASE TRANSACTION VERB
+=========================
+
+DESCRIPTION:
+  Manage database transactions for ACID operations.
+
+USAGE:
+  db://driver/alias.transaction(action="ACTION", [options...])
+
+REQUIRED ARGUMENTS:
+  action=ACTION             Transaction action: begin, commit, rollback
+
+REQUIRED FOR COMMIT/ROLLBACK:
+  tx_id=UUID                Transaction ID (returned from begin)
+
+OPTIONAL ARGUMENTS (for begin):
+  isolation=LEVEL           Isolation level: default, read_uncommitted, read_committed, repeatable_read, serializable
+  read_only=BOOL            Read-only transaction (default: false)
+  timeout_ms=N              Transaction timeout (default: 15000)
+
+EXAMPLES:
+  db://postgres/mydb.transaction(action="begin")
+  db://postgres/mydb.transaction(action="begin",isolation="serializable")
+  db://postgres/mydb.transaction(action="commit",tx_id="550e8400-e29b-41d4-a716-446655440000")
+  db://postgres/mydb.transaction(action="rollback",tx_id="550e8400-e29b-41d4-a716-446655440000")
+"#;
 
 #[cfg(test)]
 mod tests {

@@ -2,7 +2,7 @@ pub mod archiveh;
 mod fileh;
 mod fs_atomic;
 pub mod fsh;
-mod snapshot;
+pub mod snapshot;
 
 use crate::core::Registry;
 

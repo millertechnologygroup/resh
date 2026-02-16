@@ -1,386 +1,533 @@
-# Process Control Handle (`proc://`)
+# Resource Shell (resh) – Proc Handle Documentation
 
-The `proc://` handle lets you control and monitor processes running on your system. You can send signals, change priority levels, check output logs, and set resource limits.
+## 1. Overview
 
-## URL Format
+### Definition
+
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `proc://` handle provides structured process control capabilities, including signaling, priority management, output inspection, and resource limit configuration.
+
+### Purpose
+
+The process control domain enables:
+
+* Sending POSIX signals to running processes
+* Managing process scheduling priority (nice values and priority classes)
+* Inspecting process output streams
+* Applying resource limits using rlimit controls
+
+All operations return structured JSON responses suitable for automation and infrastructure orchestration.
+
+### Architectural Problem Addressed
+
+Traditional process management tooling:
+
+* Produces unstructured text output
+* Requires manual interpretation of signal behavior
+* Varies in syntax across commands (`kill`, `renice`, `ulimit`)
+* Lacks consistent automation contracts
+
+resh addresses these limitations by:
+
+* Exposing process operations as typed verbs
+* Standardizing parameter validation
+* Providing structured JSON output
+* Enforcing explicit argument requirements
+* Defining deterministic exit codes
+
+### Resource-Oriented URI Model
+
+Process control operations follow:
 
 ```
-proc://PID
-proc://self
+handle://target.verb(options)
 ```
 
-- `PID` - The process ID number of the target process
-- `self` - Refers to the current process
+For process control:
 
-## Available Verbs
+* **handle**: `proc://`
+* **target**: Process ID (PID) or `self`
+* **verb**: Process operation
+* **options**: Operation-specific parameters
+
+Examples:
+
+```
+proc://1234.term
+proc://self.nice.get
+proc://1234.limits.set(nofile=4096:8192)
+```
+
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+* Sixteen verbs organized into logical categories:
+
+  * Signal Operations
+  * Priority Operations
+  * Output Monitoring
+  * Resource Limits
+* Explicit argument validation per verb
+* Structured JSON response schema for all operations
+* Built-in help system accessible via `resh proc:// --help`
+
+---
+
+### Safety-First Execution
+
+* Explicit PID required for all operations
+* Missing arguments result in structured errors
+* `dry_run` supported for resource limits
+* Clear separation between inspection and modification
+* Permission enforcement aligned with OS policies
+
+---
+
+### Deterministic Behavior
+
+* Identical input produces consistent JSON output
+* Explicit signal naming or numbering
+* Strict nice value range enforcement (-20 to 19)
+* Structured backend reporting for limit changes
+
+---
+
+### JSON-Based Structured Output
+
+All operations return structured JSON including:
+
+* `pid`
+* `verb`
+* Operation result fields
+* `ok` boolean
+* `error` (if applicable)
+
+Representative example:
+
+```json
+{
+  "pid": 1234,
+  "verb": "term",
+  "signal": "TERM",
+  "signal_num": 15,
+  "ok": true
+}
+```
+
+---
+
+### AI-Readiness
+
+Structured output enables:
+
+* Automated signal escalation workflows
+* Programmatic priority enforcement
+* Process output monitoring
+* Automated resource sandboxing
+* Deterministic remediation logic
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+proc://PID.verb(arguments)
+proc://self.verb(arguments)
+```
+
+| Component   | Description           |
+| ----------- | --------------------- |
+| `handle`    | `proc://`             |
+| `PID`       | Process ID number     |
+| `self`      | Current process       |
+| `verb`      | Operation             |
+| `arguments` | Structured parameters |
+
+---
+
+### Core Categories and Examples
+
+---
 
 ### Signal Operations
 
-#### `signal` - Send a custom signal
+Send signals by name or number:
 
-Send any signal to a process by name or number.
-
-**Arguments:**
-- `sig` - Signal name (like "TERM") or signal number (like 15)
-
-**Examples:**
-```bash
+```
 proc://1234.signal(sig=TERM)
-proc://1234.signal(sig=15)
-```
-
-**Success Output:**
-```json
-{"pid":1234,"verb":"signal","signal":"TERM","signal_num":15,"ok":true}
-```
-
-**Error Output (process not found):**
-```json
-{"pid":99999999,"verb":"signal","signal":"TERM","signal_num":15,"ok":false,"error":"process not found"}
-```
-
-**Error Output (invalid signal):**
-```json
-{"pid":1234,"verb":"signal","ok":false,"error":"invalid signal: NOPE"}
-```
-
-**Error Output (missing argument):**
-```json
-{"pid":1234,"verb":"signal","ok":false,"error":"missing arg: sig"}
-```
-
-#### Signal Shortcuts
-
-These verbs send specific signals without needing the `sig` argument:
-
-- `kill` - Send SIGKILL (signal 9) - forces process to stop
-- `term` - Send SIGTERM (signal 15) - asks process to stop nicely
-- `int` - Send SIGINT (signal 2) - interrupt signal (like Ctrl+C)
-- `hup` - Send SIGHUP (signal 1) - hangup signal
-- `stop` - Send SIGSTOP (signal 19) - pause process
-- `cont` - Send SIGCONT (signal 18) - resume paused process
-- `usr1` - Send SIGUSR1 (signal 30) - user-defined signal 1
-- `usr2` - Send SIGUSR2 (signal 31) - user-defined signal 2
-
-**Examples:**
-```bash
 proc://1234.kill
 proc://1234.term
-proc://1234.int
 proc://1234.hup
-proc://1234.usr1
-proc://1234.usr2
-```
-
-**Success Output:**
-```json
-{"pid":1234,"verb":"kill","signal":"KILL","signal_num":9,"ok":true}
-```
-
-### Priority Operations
-
-#### `nice.get` - Get current priority level
-
-Get the nice value (priority level) of a process. Lower numbers mean higher priority.
-
-**Example:**
-```bash
-proc://self.nice.get
-```
-
-**Success Output:**
-```json
-{"pid":12345,"nice":0}
-```
-
-**Error Output (process not found):**
-```json
-{"pid":null,"verb":"nice.get","ok":false,"error":"no such process"}
-```
-
-#### `nice.set` - Set priority level
-
-Set the nice value (priority level) of a process. Range is -20 (highest priority) to 19 (lowest priority).
-
-**Arguments:**
-- `value` - New nice value (-20 to 19)
-
-**Example:**
-```bash
-proc://self.nice.set(value=5)
-```
-
-**Success Output:**
-```json
-{"pid":12345,"nice":5,"changed":true}
-```
-
-**Error Output (missing argument):**
-```json
-{"pid":12345,"verb":"nice.set","ok":false,"error":"missing arg: value"}
-```
-
-**Error Output (out of range):**
-```json
-{"pid":12345,"verb":"nice.set","ok":false,"error":"nice value out of range (-20..19)"}
-```
-
-**Error Output (invalid value):**
-```json
-{"pid":12345,"verb":"nice.set","ok":false,"error":"value must be an integer"}
-```
-
-#### `nice.inc` - Increase priority level (make lower priority)
-
-Add to the nice value, making the process lower priority.
-
-**Arguments:**
-- `delta` - Amount to add to current nice value
-
-**Example:**
-```bash
-proc://self.nice.inc(delta=1)
-```
-
-**Success Output:**
-```json
-{"pid":12345,"nice_before":0,"nice_after":1,"delta":1,"changed":true}
-```
-
-**Error Output (missing argument):**
-```json
-{"pid":12345,"verb":"nice.inc","ok":false,"error":"missing arg: delta"}
-```
-
-**Error Output (out of range):**
-```json
-{"pid":12345,"verb":"nice.inc","ok":false,"error":"nice value out of range (-20..19)"}
-```
-
-#### `nice.dec` - Decrease priority level (make higher priority)
-
-Subtract from the nice value, making the process higher priority.
-
-**Arguments:**
-- `delta` - Amount to subtract from current nice value
-
-**Example:**
-```bash
-proc://self.nice.dec(delta=1)
-```
-
-**Success Output:**
-```json
-{"pid":12345,"nice_before":1,"nice_after":0,"delta":1,"changed":true}
-```
-
-**Error Output (missing argument):**
-```json
-{"pid":12345,"verb":"nice.dec","ok":false,"error":"missing arg: delta"}
-```
-
-#### `setPriority` - Set priority using classes or exact values
-
-Set process priority using either predefined classes or exact nice values.
-
-**Arguments (choose one):**
-- `class` - Priority class: "idle", "background", "normal", "high", or "realtime"
-- `nice` - Exact nice value (-20 to 19)
-
-**Class Examples:**
-```bash
-proc://1234.setPriority(class=background)
-proc://1234.setPriority(class=normal)
-```
-
-**Nice Value Example:**
-```bash
-proc://1234.setPriority(nice=5)
-```
-
-**Success Output (class):**
-```json
-{"pid":1234,"class":"background","nice":10,"previous_nice":0,"backend":"linux-setpriority"}
-```
-
-**Success Output (nice value):**
-```json
-{"pid":1234,"class":"custom","nice":5,"previous_nice":0,"backend":"linux-setpriority"}
-```
-
-**Error Output (invalid class):**
-```json
-{"pid":1234,"setPriority","ok":false,"error":"invalid class"}
-```
-
-**Error Output (invalid nice value):**
-```json
-{"pid":1234,"setPriority","ok":false,"error":"invalid nice value"}
-```
-
-**Priority Class Mappings:**
-- `idle` - Nice value 19 (lowest priority)
-- `background` - Nice value 10 (low priority)
-- `normal` - Nice value 0 (default priority)
-- `high` - Nice value -5 (high priority)
-- `realtime` - Nice value -10 (very high priority)
-
-### Output Monitoring
-
-#### `io.peek` - Check process output logs
-
-Read recent output from a process's stdout or stderr logs.
-
-**Arguments (all optional):**
-- `stream` - Which stream to read: "stdout", "stderr", or "both" (default: "stdout")
-- `max_bytes` - Maximum bytes to return (default: 4096)
-- `tail` - Read from end of file, max bytes (default: same as max_bytes)
-- `encoding` - How to encode output: "auto", "utf8", or "base64" (default: "auto")
-- `json` - Return JSON format: "true" or "false" (default: "true")
-
-**Examples:**
-```bash
-proc://1234.io.peek
-proc://1234.io.peek(stream=stderr)
-proc://1234.io.peek(stream=both)
-proc://1234.io.peek(max_bytes=100,tail=100)
-proc://1234.io.peek(encoding=base64)
-proc://1234.io.peek(json=false)
-```
-
-**Success Output (single stream):**
-```json
-{"pid":1234,"stream":"stdout","encoding":"utf8","auto_fallback":false,"bytes_read":23,"truncated":false,"data":"hello world\nmore data\n"}
-```
-
-**Success Output (both streams):**
-```json
-{"pid":1234,"streams":{"stdout":{"encoding":"utf8","auto_fallback":false,"bytes_read":13,"truncated":false,"data":"stdout content"},"stderr":{"encoding":"utf8","auto_fallback":false,"bytes_read":13,"truncated":false,"data":"stderr content"}}}
-```
-
-**Error Output (invalid stream):**
-```json
-{"error":"invalid stream value: invalid"}
-```
-
-**Error Output (log file not found):**
-```json
-{"error":"log file not found: /path/to/log"}
-```
-
-### Resource Limits
-
-#### `limits.set` - Set resource limits
-
-Set resource limits for a process using the rlimit system.
-
-**Arguments:**
-- Resource names with values (see supported resources below)
-- `pid` - Target process ID (optional, defaults to handle PID)
-- `dry_run` - Check without applying: "true" or "false" (optional)
-
-**Supported Resources:**
-- `cpu` - CPU time in seconds (suffix: `s`)
-- `as` - Address space in bytes (suffixes: `K`, `M`, `G`)
-- `data` - Data segment size in bytes
-- `stack` - Stack size in bytes  
-- `core` - Core file size in bytes
-- `nofile` - Number of open files
-- `fsize` - File size in bytes
-- `memlock` - Locked memory in bytes
-- `nproc` - Number of processes (Linux only)
-
-**Limit Value Formats:**
-- Single number: Sets soft limit, keeps hard limit unchanged
-- `soft:hard` format: Sets both limits
-- `unlimited` - Remove limit
-- Suffixes for bytes: `K` (1000), `M` (1000000), `G` (1000000000)
-- Suffixes for time: `s` (seconds)
-
-**Examples:**
-```bash
-proc://1234.limits.set(nofile=4096:8192)
-proc://self.limits.set(cpu=300s)
-proc://1234.limits.set(as=1G,data=512M)
-proc://1234.limits.set(dry_run=true,nofile=4096:8192)
-```
-
-**Success Output:**
-```json
-{"pid":1234,"backend":"rlimit","results":{"nofile":{"requested":"4096:8192","before":{"soft":1024,"hard":4096},"after":{"soft":4096,"hard":8192},"status":"ok"}}}
-```
-
-**Error Output (invalid resource):**
-```json
-{"pid":1234,"backend":"rlimit","results":{"invalid":{"requested":"1024","status":"error","error":"unknown resource: 'invalid'"}}}
-```
-
-**Error Output (invalid limit value):**
-```json
-{"pid":1234,"backend":"rlimit","results":{"nofile":{"requested":"abc","status":"error","error":"invalid limit value: 'abc'"}}}
-```
-
-## Platform Support
-
-- **Unix/Linux**: All verbs supported
-- **Windows**: Not supported - all verbs will return platform error
-
-## Error Codes
-
-- **1** - General error (unknown verb, invalid signal, etc.)
-- **2** - Missing or invalid arguments
-- **3** - Process not found or invalid parameters
-- **4** - Permission denied or process access error
-- **5** - Platform not supported
-
-## Examples
-
-### Basic Process Control
-```bash
-# Check if process exists by getting its priority
-proc://1234.nice.get
-
-# Stop a process nicely, then force kill if needed
-proc://1234.term
-proc://1234.kill
-
-# Pause and resume a process
 proc://1234.stop
 proc://1234.cont
 ```
 
-### Priority Management
-```bash
-# Set process to background priority
-proc://1234.setPriority(class=background)
+Supported signal references include:
 
-# Make current process lower priority
-proc://self.nice.inc(delta=5)
+* SIGHUP (1)
+* SIGINT (2)
+* SIGQUIT (3)
+* SIGKILL (9)
+* SIGTERM (15)
+* SIGSTOP (19)
+* SIGCONT (18)
+* SIGUSR1 (30)
+* SIGUSR2 (31)
 
-# Set specific nice value
-proc://1234.nice.set(value=10)
+---
+
+### Priority Operations
+
+Inspect and modify nice values:
+
 ```
+proc://self.nice.get
+proc://1234.nice.set(value=5)
+proc://1234.nice.inc(delta=1)
+proc://1234.nice.dec(delta=1)
+proc://1234.setPriority(class=background)
+```
+
+Nice range: `-20` (highest priority) to `19` (lowest priority)
+
+Priority classes:
+
+| Class      | Nice Value |
+| ---------- | ---------- |
+| idle       | 19         |
+| background | 10         |
+| normal     | 0          |
+| high       | -5         |
+| realtime   | -20        |
+
+---
 
 ### Output Monitoring
-```bash
-# Check recent output
+
+Inspect process output logs:
+
+```
 proc://1234.io.peek
-
-# Get last 200 bytes from stderr
-proc://1234.io.peek(stream=stderr,max_bytes=200)
-
-# Check both stdout and stderr
-proc://1234.io.peek(stream=both)
+proc://1234.io.peek(stream=stderr)
+proc://1234.io.peek(stream=both,max_bytes=200)
 ```
 
-### Resource Management
-```bash
-# Limit file handles
-proc://1234.limits.set(nofile=2048:4096)
+---
 
-# Set CPU time limit
-proc://1234.limits.set(cpu=600s)
+### Resource Limits
 
-# Test limits without applying
-proc://1234.limits.set(dry_run=true,as=1G)
+Apply rlimit-based constraints:
+
 ```
+proc://1234.limits.set(nofile=4096:8192)
+proc://self.limits.set(cpu=300s)
+proc://1234.limits.set(as=1G,data=512M)
+proc://1234.limits.set(dry_run=true,nofile=2048)
+```
+
+Supported limit types include:
+
+* cpu
+* as
+* data
+* stack
+* core
+* nofile
+* fsize
+* memlock
+* nproc (Linux only)
+
+---
+
+## 3.2 Execution Semantics
+
+### Deterministic Behavior
+
+* Missing arguments produce structured errors.
+* Invalid signal names are rejected.
+* Nice values strictly validated.
+* Resource limit values validated for format and range.
+* Platform support enforced at runtime.
+
+---
+
+### Structured Output Contracts
+
+Example: Resource limit application
+
+```json
+{
+  "pid": 1234,
+  "backend": "rlimit",
+  "results": {
+    "nofile": {
+      "requested": "4096:8192",
+      "before": {"soft":1024,"hard":4096},
+      "after": {"soft":4096,"hard":8192},
+      "status": "ok"
+    }
+  }
+}
+```
+
+---
+
+### Error Handling Structure
+
+Example: Invalid signal
+
+```json
+{
+  "pid": 1234,
+  "verb": "signal",
+  "ok": false,
+  "error": "invalid signal: NOPE"
+}
+```
+
+Defined exit codes:
+
+| Code | Meaning                   |
+| ---- | ------------------------- |
+| 1    | General error             |
+| 2    | Missing/invalid arguments |
+| 3    | Process not found         |
+| 4    | Permission denied         |
+| 5    | Platform not supported    |
+
+---
+
+## 4. Functional Domains
+
+---
+
+### 4.1 Automation Utilities
+
+**Handle:** `proc://`
+
+**Scope**
+
+* Automated process lifecycle control
+* Signal-based remediation
+* Priority tuning in automation pipelines
+
+**Use Cases**
+
+* Graceful shutdown escalation (TERM → KILL)
+* Background job demotion
+* Scheduled maintenance control
+
+---
+
+### 4.2 Data & State Management
+
+**Scope**
+
+* Process state inspection
+* Nice value auditing
+* Limit enforcement verification
+
+---
+
+### 4.3 Filesystem & Storage
+
+Indirectly supports:
+
+* Log inspection via `io.peek`
+* Core dump size control
+* File descriptor limits
+
+---
+
+### 4.4 Network & Remote Operations
+
+Supports management of:
+
+* Network daemons
+* Service child processes
+* Monitoring agents
+
+---
+
+### 4.5 Packages & Software
+
+Supports:
+
+* Post-install process tuning
+* Priority adjustments after package updates
+* Controlled restart sequencing
+
+---
+
+### 4.6 Process & Service Management
+
+Primary capabilities:
+
+* Signal delivery
+* Priority control
+* Output monitoring
+* Resource limit enforcement
+
+Works alongside:
+
+* `svc://` for service-level control
+* `cron://` for scheduled execution
+
+---
+
+### 4.7 Security & Secrets
+
+Security considerations:
+
+* Only signal owned processes (unless root)
+* Avoid unnecessary SIGKILL usage
+* Validate PID before destructive operations
+* Restrict negative nice values to privileged contexts
+* Avoid exposing sensitive data via `io.peek`
+
+---
+
+### 4.8 System Information
+
+Structured reporting includes:
+
+* PID
+* Nice value
+* Priority class
+* Resource limits (soft/hard)
+* Output stream metadata
+* Backend identification
+
+---
+
+## 5. Platform Support
+
+| Platform   | Support       |
+| ---------- | ------------- |
+| Unix/Linux | Full support  |
+| Windows    | Not supported |
+
+All verbs return platform error on unsupported systems.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Use SIGTERM before SIGKILL.
+* Allow cleanup time after graceful signals.
+* Validate PID ownership.
+* Use `dry_run` when applying limits.
+* Avoid system-wide priority inflation.
+
+---
+
+### Automation Considerations
+
+* Always check `ok` field before chaining operations.
+* Monitor process state after priority change.
+* Log structured JSON responses.
+* Use priority classes for consistency.
+* Implement escalation logic in automation scripts.
+
+---
+
+### CI/CD Integration
+
+Typical pattern:
+
+1. Lower priority of background build tasks.
+2. Monitor build process via `io.peek`.
+3. Enforce file descriptor limits.
+4. Gracefully terminate orphaned processes.
+
+---
+
+### Production Recommendations
+
+* Avoid frequent use of negative nice values.
+* Use resource limits to sandbox untrusted workloads.
+* Monitor long-running processes regularly.
+* Restrict SIGKILL to emergency cases.
+* Audit limit settings for compliance.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Manage deployment processes.
+* Control background tasks.
+* Apply temporary resource limits during builds.
+
+---
+
+### SRE Engineers
+
+* Escalate signals during incident response.
+* Inspect unresponsive processes.
+* Enforce memory or file descriptor limits.
+
+---
+
+### Network Administrators
+
+* Tune daemon priority.
+* Pause/resume services for maintenance.
+* Investigate process resource consumption.
+
+---
+
+### AI / Automation Engineers
+
+* Trigger escalation workflows.
+* Detect priority drift.
+* Apply automated sandboxing.
+* Interpret structured process metadata.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+resh is implemented in Rust, providing:
+
+* Memory safety
+* Strong compile-time guarantees
+* Deterministic execution
+* Efficient system call handling
+
+---
+
+### Type Safety
+
+* Enumerated verbs
+* Strict argument parsing
+* Validated signal names
+* Controlled limit formats
+* Structured error reporting
+
+---
+
+### Performance Characteristics
+
+* Direct POSIX system call invocation
+* Minimal overhead JSON serialization
+* Efficient limit enforcement
+* Controlled output buffer handling
+
+---
+
+### Cross-Platform Architecture
+
+* POSIX-based implementation for Unix/Linux
+* Structured backend abstraction
+* Consistent JSON output across supported environments
+

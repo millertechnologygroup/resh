@@ -1080,6 +1080,376 @@ fn encode_value(value: &Value, encode_mode: &str) -> Result<Vec<u8>, CacheError>
     }
 }
 
+/// Comprehensive help text for cache handle
+const CACHE_HELP_TEXT: &str = r#"
+RESOURCE SHELL - CACHE HANDLE
+=============================
+
+USAGE:
+  cache://backend/alias.VERB(arguments)
+
+DESCRIPTION:
+  The cache handle lets you store and retrieve data from fast memory storage
+  systems like Redis and Memcached. Cache systems provide super-fast temporary
+  storage that helps programs run quicker by keeping commonly used information
+  in memory.
+
+SUPPORTED BACKENDS:
+  redis           Powerful in-memory data store with rich data types
+  memcached       Simple, high-performance memory caching system
+
+CONNECTION FORMAT:
+  cache://redis/alias_name        Connect to Redis with alias
+  cache://memcached/alias_name    Connect to Memcached with alias
+  cache://redis/default           Use "default" if no alias specified
+
+VERBS:
+  connect         Create connection to cache system
+  get             Retrieve one or more stored values
+  set             Store one or more values
+  del             Delete one or more values
+  incr            Increment numeric values (counters)
+  exists          Check if keys exist in cache
+  keys            Find keys matching a pattern
+  ttl             Check time remaining before expiration
+
+EXAMPLES:
+
+  Connect to Redis:
+    cache://redis/main.connect(url="redis://localhost:6379/0")
+
+  Connect to Memcached:
+    cache://memcached/app.connect(url="memcached://localhost:11211")
+
+  Get single value:
+    cache://redis/main.get(key="user:123", decode="utf8")
+
+  Get with default fallback:
+    cache://redis/main.get(key="session:abc", default="not_found", decode="utf8")
+
+  Get multiple values:
+    cache://redis/main.get(keys=["user:1", "user:2", "user:3"], decode="utf8")
+
+  Get with namespace:
+    cache://redis/main.get(key="session:123", namespace="prod", decode="utf8")
+
+  Set single value:
+    cache://redis/main.set(key="user:123", value="John Doe", encode="utf8")
+
+  Set with expiration (5 minutes):
+    cache://redis/main.set(key="session:abc", value="data", ttl_ms="300000", encode="utf8")
+
+  Set multiple values:
+    cache://redis/main.set(keys=["user:1", "user:2"], values=["Alice", "Bob"], encode="utf8")
+
+  Set JSON data:
+    cache://redis/main.set(key="user:profile", value="{\"name\":\"John\",\"age\":30}", encode="json")
+
+  Set only if not exists:
+    cache://redis/main.set(key="lock:resource", value="locked", only_if_not_exists="true")
+
+  Set only if exists:
+    cache://redis/main.set(key="existing:key", value="updated", only_if_exists="true")
+
+  Delete single key:
+    cache://redis/main.del(key="temp:data")
+
+  Delete multiple keys:
+    cache://redis/main.del(keys=["session:1", "session:2", "session:3"])
+
+  Delete with namespace:
+    cache://redis/main.del(key="cache:item", namespace="test")
+
+  Increment counter:
+    cache://redis/main.incr(key="page_views")
+
+  Increment by amount:
+    cache://redis/main.incr(key="score", by="10")
+
+  Increment with initial value:
+    cache://redis/main.incr(key="new_counter", initial="100", by="5")
+
+  Check if key exists:
+    cache://redis/main.exists(key="user:123")
+
+  Check multiple keys:
+    cache://redis/main.exists(keys=["user:1", "user:2", "user:3"])
+
+  Find all user keys:
+    cache://redis/main.keys(pattern="user:*")
+
+  Find with limit:
+    cache://redis/main.keys(pattern="session:*", limit="50")
+
+  Find in namespace:
+    cache://redis/main.keys(pattern="*", namespace="prod")
+
+  Check TTL for single key:
+    cache://redis/main.ttl(key="session:abc")
+
+  Check TTL for multiple keys:
+    cache://redis/main.ttl(keys=["session:1", "session:2"])
+
+CONNECT ARGUMENTS:
+  url=URL                Connection URL for cache system (required)
+                         Format: redis://host:port/db or memcached://host:port
+
+GET ARGUMENTS:
+  key=KEY                Single key to retrieve (use key OR keys, not both)
+  keys=JSON_ARRAY        Multiple keys as JSON array (e.g., ["key1", "key2"])
+  namespace=TEXT         Namespace prefix for key organization
+  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
+  decode=FORMAT          Decoding format: utf8, bytes, json (default: utf8)
+  default=VALUE          Fallback value if key doesn't exist
+
+SET ARGUMENTS:
+  key=KEY                Single key to set (use with value)
+  value=VALUE            Value to store for single key
+  keys=JSON_ARRAY        Multiple keys as JSON array (use with values)
+  values=JSON_ARRAY      Multiple values as JSON array (same length as keys)
+  namespace=TEXT         Namespace prefix for key organization
+  ttl_ms=N               Time to live in milliseconds (how long to keep data)
+  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
+  encode=FORMAT          Encoding format: utf8, bytes, json (default: utf8)
+  only_if_not_exists=BOOL Only set if key doesn't exist (default: false)
+  only_if_exists=BOOL    Only set if key exists (default: false)
+
+DEL ARGUMENTS:
+  key=KEY                Single key to delete (use key OR keys, not both)
+  keys=JSON_ARRAY        Multiple keys as JSON array
+  namespace=TEXT         Namespace prefix for key organization
+  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
+
+INCR ARGUMENTS:
+  key=KEY                Key to increment (required)
+  namespace=TEXT         Namespace prefix for key organization
+  by=N                   Amount to increment by (default: 1)
+  initial=N              Starting value if key doesn't exist
+  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
+
+EXISTS ARGUMENTS:
+  key=KEY                Single key to check (use key OR keys, not both)
+  keys=JSON_ARRAY        Multiple keys as JSON array
+  namespace=TEXT         Namespace prefix for key organization
+  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
+
+KEYS ARGUMENTS:
+  pattern=PATTERN        Search pattern, use * as wildcard (default: "*")
+  namespace=TEXT         Namespace to search within
+  cursor=TEXT            Starting position for pagination
+  limit=N                Maximum results to return (default: 100)
+  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
+
+TTL ARGUMENTS:
+  key=KEY                Single key to check (use key OR keys, not both)
+  keys=JSON_ARRAY        Multiple keys as JSON array
+  namespace=TEXT         Namespace prefix for key organization
+  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
+
+NAMESPACES:
+  Namespaces organize cached data like folders:
+  • Without namespace: "user:123" stored as "user:123"
+  • With namespace "prod": "user:123" stored as "prod:user:123"
+
+  This helps separate data for different environments (prod, dev, test).
+
+DATA ENCODING:
+  utf8 (default)         Regular text: names, messages, simple data
+  json                   Structured data: objects, arrays, complex data
+  bytes                  Binary data: images, files (base64 encoded)
+
+TIME SETTINGS:
+  All time values are in milliseconds:
+  • 1 second = 1,000 milliseconds
+  • 1 minute = 60,000 milliseconds
+  • 1 hour = 3,600,000 milliseconds
+  • 1 day = 86,400,000 milliseconds
+
+OUTPUT FORMAT:
+  All operations return JSON with operation-specific structure.
+
+  Connect success:
+  {
+    "backend": "redis",
+    "alias": "main",
+    "status": "connected"
+  }
+
+  Get success (single):
+  {
+    "key": "user:123",
+    "value": "John Doe",
+    "backend": "redis",
+    "alias": "main",
+    "hit": true
+  }
+
+  Get success (multiple):
+  {
+    "backend": "redis",
+    "alias": "main",
+    "results": [
+      {"key": "user:1", "value": "Alice", "hit": true},
+      {"key": "user:2", "value": null, "hit": false}
+    ]
+  }
+
+  Set success:
+  {
+    "backend": "redis",
+    "alias": "main",
+    "key": "user:123",
+    "stored": true
+  }
+
+  Incr success:
+  {
+    "backend": "redis",
+    "alias": "main",
+    "key": "counter",
+    "value": 42,
+    "created": false
+  }
+
+  Exists success:
+  {
+    "backend": "redis",
+    "alias": "main",
+    "key": "user:123",
+    "exists": true
+  }
+
+  Keys success:
+  {
+    "backend": "redis",
+    "alias": "main",
+    "keys": ["user:1", "user:2", "user:3"],
+    "cursor": null,
+    "has_more": false,
+    "count": 3
+  }
+
+  TTL success:
+  {
+    "backend": "redis",
+    "alias": "main",
+    "key": "session:abc",
+    "exists": true,
+    "supports_ttl": true,
+    "has_expiry": true,
+    "ttl_ms": 250000
+  }
+
+COMMON WORKFLOWS:
+
+  User session management:
+    # Store session
+    cache://redis/main.set(key="session:abc123", value="{\"user_id\":42}", encode="json", ttl_ms="1800000")
+    
+    # Get session
+    cache://redis/main.get(key="session:abc123", decode="json")
+    
+    # Delete session
+    cache://redis/main.del(key="session:abc123")
+
+  Page view counter:
+    # Initialize counter
+    cache://redis/main.set(key="page_views", value="0")
+    
+    # Increment on each view
+    cache://redis/main.incr(key="page_views")
+    
+    # Get current count
+    cache://redis/main.get(key="page_views", decode="utf8")
+
+  Cache with fallback:
+    # Try to get from cache
+    cache://redis/main.get(key="user:profile:123", default="not_cached", decode="json")
+    
+    # If not cached, fetch from DB and store
+    cache://redis/main.set(key="user:profile:123", value="<db_data>", encode="json", ttl_ms="600000")
+
+  Distributed locking:
+    # Acquire lock
+    cache://redis/main.set(key="lock:resource", value="locked", only_if_not_exists="true", ttl_ms="30000")
+    
+    # Check lock status
+    cache://redis/main.exists(key="lock:resource")
+    
+    # Release lock
+    cache://redis/main.del(key="lock:resource")
+
+  Batch operations:
+    # Store multiple users
+    cache://redis/main.set(keys=["user:1", "user:2", "user:3"], values=["Alice", "Bob", "Carol"])
+    
+    # Retrieve multiple users
+    cache://redis/main.get(keys=["user:1", "user:2", "user:3"])
+    
+    # Check which exist
+    cache://redis/main.exists(keys=["user:1", "user:2", "user:3"])
+
+  Environment separation:
+    # Production namespace
+    cache://redis/main.set(key="config", value="prod_settings", namespace="prod")
+    
+    # Development namespace
+    cache://redis/main.set(key="config", value="dev_settings", namespace="dev")
+    
+    # Get from specific environment
+    cache://redis/main.get(key="config", namespace="prod")
+
+ERROR HANDLING:
+  When operations fail, JSON includes error information:
+  {
+    "error": true,
+    "message": "Connection timeout after 1000ms",
+    "code": "TIMEOUT"
+  }
+
+  Common error codes:
+  • TIMEOUT           Operation exceeded timeout limit
+  • CONNECTION_FAILED Unable to connect to cache backend
+  • INVALID_PARAM     Invalid or missing required parameter
+  • KEY_NOT_FOUND     Requested key doesn't exist
+  • ENCODING_ERROR    Failed to encode/decode data
+  • BACKEND_ERROR     Cache backend returned an error
+
+BEST PRACTICES:
+  • Use meaningful key names with consistent patterns (e.g., "user:123:profile")
+  • Set appropriate TTL values to prevent memory bloat
+  • Use namespaces to separate environments (prod, dev, test)
+  • Use JSON encoding for complex data structures
+  • Implement fallback logic for cache misses
+  • Use batch operations (multiple keys) for better performance
+  • Set reasonable timeout values based on network conditions
+  • Use exists checks before expensive operations
+  • Implement distributed locking carefully with TTL
+  • Monitor cache hit rates and adjust TTL accordingly
+  • Use counters (incr) for rate limiting and statistics
+  • Clean up expired data regularly with TTL
+
+BACKEND-SPECIFIC NOTES:
+  Redis:
+  • Supports all verbs and features
+  • Supports multiple databases (0-15 by default)
+  • Rich data types and operations
+  • Persistent and non-persistent modes available
+
+  Memcached:
+  • Simple key-value operations
+  • May not support all advanced features
+  • Optimized for speed and simplicity
+  • No persistence (data lost on restart)
+
+MORE INFO:
+  For complete documentation of all verbs, backends, and encoding
+  options, visit:
+  https://github.com/[your-org]/resource-shell/docs/cache-handle.md
+
+  Use 'cache:// --help=VERB' for detailed help on a specific verb.
+"#;
+
 /// Cache handle implementation
 pub struct CacheHandle {
     backend: CacheBackend,
@@ -1087,6 +1457,65 @@ pub struct CacheHandle {
 }
 
 impl CacheHandle {
+    /// Check if this is a help request and display help if so
+    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
+        // Check for help verbs
+        if verb == "--help" || verb == "-h" || verb == "help" {
+            write!(io.stdout, "{}", CACHE_HELP_TEXT)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        // Check for verb-specific help
+        if verb.starts_with("--help=") {
+            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
+            Self::display_verb_help(help_verb, io)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        Ok(None)
+    }
+    
+    /// Display help for a specific verb
+    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
+        match verb {
+            "connect" => {
+                write!(io.stdout, "
+HELP: CONNECT VERB\n\nConnect to a cache backend and store connection for reuse.\n\nUSAGE:\n  cache://backend/alias.connect(url=\"connection_url\")\n\nARGUMENTS:\n  url=URL    Connection URL (required)\n             Format: redis://host:port/db or memcached://host:port\n\nEXAMPLES:\n  cache://redis/main.connect(url=\"redis://localhost:6379/0\")\n  cache://memcached/app.connect(url=\"memcached://localhost:11211\")\n")?;
+            }
+            "get" => {
+                write!(io.stdout, "
+HELP: GET VERB\n\nRetrieve one or more values from cache.\n\nUSAGE:\n  cache://backend/alias.get(key=\"single_key\", decode=\"utf8\")\n  cache://backend/alias.get(keys=[\"key1\", \"key2\"], decode=\"utf8\")\n\nARGUMENTS:\n  key=KEY         Single key (use key OR keys)\n  keys=ARRAY      Multiple keys as JSON array\n  namespace=TEXT  Namespace prefix\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n  decode=FORMAT   utf8, json, or bytes (default: utf8)\n  default=VALUE   Fallback if key not found\n")?;
+            }
+            "set" => {
+                write!(io.stdout, "
+HELP: SET VERB\n\nStore one or more values in cache.\n\nUSAGE:\n  cache://backend/alias.set(key=\"single_key\", value=\"data\", encode=\"utf8\")\n  cache://backend/alias.set(keys=[\"key1\"], values=[\"val1\"], encode=\"utf8\")\n\nARGUMENTS:\n  key=KEY             Single key (use with value)\n  value=VALUE         Value for single key\n  keys=ARRAY          Multiple keys (use with values)\n  values=ARRAY        Values for multiple keys\n  namespace=TEXT      Namespace prefix\n  ttl_ms=N            Time to live in milliseconds\n  timeout_ms=N        Timeout in milliseconds (default: 1000)\n  encode=FORMAT       utf8, json, or bytes (default: utf8)\n  only_if_not_exists  Set only if key doesn't exist\n  only_if_exists      Set only if key exists\n")?;
+            }
+            "del" => {
+                write!(io.stdout, "
+HELP: DEL VERB\n\nDelete one or more keys from cache.\n\nUSAGE:\n  cache://backend/alias.del(key=\"single_key\")\n  cache://backend/alias.del(keys=[\"key1\", \"key2\"])\n\nARGUMENTS:\n  key=KEY         Single key (use key OR keys)\n  keys=ARRAY      Multiple keys as JSON array\n  namespace=TEXT  Namespace prefix\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n")?;
+            }
+            "incr" => {
+                write!(io.stdout, "
+HELP: INCR VERB\n\nIncrement a numeric value in cache.\n\nUSAGE:\n  cache://backend/alias.incr(key=\"counter\")\n  cache://backend/alias.incr(key=\"counter\", by=\"5\", initial=\"10\")\n\nARGUMENTS:\n  key=KEY         Key to increment (required)\n  namespace=TEXT  Namespace prefix\n  by=N            Amount to increment (default: 1)\n  initial=N       Starting value if key doesn't exist\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n")?;
+            }
+            "exists" => {
+                write!(io.stdout, "
+HELP: EXISTS VERB\n\nCheck if one or more keys exist in cache.\n\nUSAGE:\n  cache://backend/alias.exists(key=\"single_key\")\n  cache://backend/alias.exists(keys=[\"key1\", \"key2\"])\n\nARGUMENTS:\n  key=KEY         Single key (use key OR keys)\n  keys=ARRAY      Multiple keys as JSON array\n  namespace=TEXT  Namespace prefix\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n")?;
+            }
+            "keys" => {
+                write!(io.stdout, "
+HELP: KEYS VERB\n\nFind keys matching a pattern.\n\nUSAGE:\n  cache://backend/alias.keys(pattern=\"user:*\")\n  cache://backend/alias.keys(pattern=\"*\", limit=\"50\")\n\nARGUMENTS:\n  pattern=PATTERN  Search pattern with * wildcards (default: \"*\")\n  namespace=TEXT   Namespace to search within\n  cursor=TEXT      Starting position for pagination\n  limit=N          Maximum results (default: 100)\n  timeout_ms=N     Timeout in milliseconds (default: 1000)\n")?;
+            }
+            "ttl" => {
+                write!(io.stdout, "
+HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache://backend/alias.ttl(key=\"single_key\")\n  cache://backend/alias.ttl(keys=[\"key1\", \"key2\"])\n\nARGUMENTS:\n  key=KEY         Single key (use key OR keys)\n  keys=ARRAY      Multiple keys as JSON array\n  namespace=TEXT  Namespace prefix\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n")?;
+            }
+            _ => {
+                write!(io.stdout, "\nUnknown verb: {}. Use --help for full list of verbs.\n", verb)?;
+            }
+        }
+        Ok(Status::ok())
+    }
     pub fn from_url(url: Url) -> Result<Self, CacheError> {
         let backend_str = url.host_str()
             .ok_or_else(|| CacheError::UnsupportedBackend {
@@ -2480,10 +2909,15 @@ impl CacheHandle {
 
 impl Handle for CacheHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["connect", "get", "set", "del", "incr", "exists", "keys", "ttl"]
+        &["connect", "get", "set", "del", "incr", "exists", "keys", "ttl", "help", "--help", "-h"]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests first
+        if let Some(status) = Self::check_and_display_help(verb, io)? {
+            return Ok(status);
+        }
+        
         // Create tokio runtime for async operations
         let rt = tokio::runtime::Runtime::new()
             .context("failed to create tokio runtime")?;
