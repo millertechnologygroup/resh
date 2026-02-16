@@ -294,7 +294,7 @@ git clone https://github.com/millertechnologygroup/resh.git
 cd resh
 
 # Checkout v1.0-beta release
-git checkout v1.0.0-beta
+git checkout v1.0.1-beta
 
 # Build in release mode
 cargo build --release
