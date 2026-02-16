@@ -1,156 +1,542 @@
-# Resource Shell (resh) - Complete Overview
+# Resource Shell (resh) – Technical Help Documentation
 
-Resource Shell is an innovative command-line tool that makes system administration and automation easier, safer, and more reliable. It was created to solve the problems that come with traditional shell scripts and command-line tools that are hard to use consistently and prone to errors.
+## 1. Overview
 
-## Why Resource Shell Exists
+Resource Shell (resh) is a command-line interface designed to provide a consistent, structured, and safe operational model for system administration and automation.
 
-Traditional command-line tools and shell scripts have several problems:
+resh addresses common architectural limitations of traditional shell environments:
 
-- **Unpredictable Output**: Different programs return results in different formats that are hard to process consistently
-- **Error-Prone**: Small typing mistakes can cause serious problems or data loss
-- **Hard to Automate**: Scripts break when system configurations change slightly
-- **Not AI-Friendly**: Modern AI tools struggle with inconsistent command-line interfaces
+* Inconsistent and unpredictable command output formats
+* Error-prone syntax leading to operational risk
+* Fragile automation dependent on text parsing
+* Lack of compatibility with structured AI-driven workflows
 
-Resource Shell solves these problems by providing:
-- **Consistent Interface**: All operations use the same URL-style syntax across different tools
-- **Safe Operations**: Built-in protections prevent accidental data loss or system damage
-- **Structured Output**: Everything returns easy-to-read JSON that both humans and computers can understand
-- **AI-Ready Design**: Perfect for automation and AI-driven system management
-
-## How Resource Shell Works
-
-Instead of remembering hundreds of different commands with different syntax, Resource Shell uses a simple, consistent pattern:
+resh standardizes system interaction through a resource-oriented URI model:
 
 ```
 handle://target.verb(options)
 ```
 
-For example:
-- `file://document.txt.read` - Read a file
-- `svc://apache.start` - Start a service
-- `system://.memory` - Check memory usage
-- `secret://local/password.get` - Retrieve a stored password
+This model replaces ad hoc command syntax with a uniform, deterministic interface across multiple operational domains.
 
-This approach makes it easy to:
-- **Remember commands** - Same pattern works everywhere
-- **Build automation** - Scripts work reliably across different systems
-- **Prevent mistakes** - Clear syntax reduces typing errors
-- **Enable AI assistance** - Consistent interface works great with AI tools
+---
 
-## Documentation Categories
+## 2. Design Philosophy and Core Principles
 
-Resource Shell organizes its capabilities into clear categories, each covering related functionality:
+resh is built on the following technical principles:
 
-### [Automation Utilities](Automation_Utilities/overview.md)
-Tools for automating common tasks in development and operations workflows. This includes protecting data with backup management, extending system capabilities through plugin management, and generating dynamic content with template processing. These utilities work together to create powerful automation solutions.
+### Structured Interface Model
 
-**Key Tools**: backup, plugin, template
+All operations follow a uniform URI-style syntax, eliminating domain-specific command inconsistencies. This reduces cognitive overhead and enables uniform automation patterns.
 
-### [Data & State Management](Data_StateManagement/overview.md)
-Tools for storing, retrieving, and managing data in your applications. This includes caches, databases, configuration files, events, logs, and message queues. Use these tools when you need to store information, track changes, or share data between different parts of your system.
+### Safety-First Execution
 
-**Key Tools**: cache, config, db, event, log, mq
+Operations are designed with safeguards to reduce the likelihood of:
 
-### [Filesystem & Storage](Filesystem_Storage/overview.md)
-Tools for working with files, folders, and storage systems. This includes basic file operations, archive management (ZIP/TAR files), filesystem operations (mounting drives, checking disk space), and snapshots for backups and versioning.
+* Accidental data loss
+* Destructive execution errors
+* System misconfiguration due to syntax mistakes
 
-**Key Tools**: file, archive, fs, snapshot
+### Deterministic Behavior
 
-### [Network & Remote Operations](Network_RemoteOperations/overview.md)
-Tools for communicating with other computers and services over networks. This includes secure remote access via SSH, web requests through HTTP, email delivery, DNS lookups, and network diagnostics.
+resh commands execute predictably:
 
-**Key Tools**: ssh, http, mail, dns, net
+* Standardized command structure
+* Consistent response schema
+* Clear operational semantics
 
-### [Packages & Software](Packages_Software/overview.md)
-Tools for managing software on your computer. This includes installing and updating programs through package managers, and working with Git repositories for code version control and collaboration.
+### JSON-Based Structured Output
 
-**Key Tools**: pkg, git
+All commands return structured JSON output, enabling:
 
-### [Process & Service Management](Process_ServiceManagement/overview.md)
-Tools for managing running programs and system services. This includes controlling processes (sending signals, changing priorities), scheduling automated tasks with cron, and managing system services (starting, stopping, configuring services).
+* Reliable machine parsing
+* CI/CD pipeline integration
+* Typed response handling
+* Reduced reliance on string parsing tools
 
-**Key Tools**: cron, proc, svc
+### AI-Readiness
 
-### [Security & Secrets](Security_Secrets/overview.md)
-Tools for protecting your system and managing sensitive information. This includes user account management, secure secret storage, digital certificate management, and firewall configuration for network protection.
+The uniform syntax and structured output model enable reliable integration with AI agents and automation systems that require deterministic command interfaces.
 
-**Key Tools**: user, secret, cert, firewall
+---
 
-### [System Information](SystemInformation/overview.md)
-Tools for gathering information about your computer system. This includes monitoring system health, checking resource usage (CPU, memory, disk), getting hardware details, and viewing system configuration settings.
+## 3. Command Syntax and Execution Model
 
-**Key Tools**: system
+### 3.1 URI Structure
 
-## Key Benefits
+resh commands use the following format:
 
-### For System Administrators
-- **Consistent Interface**: Learn one syntax that works for all system operations
-- **Safe Operations**: Built-in protections prevent common mistakes and accidents
-- **Better Automation**: Write scripts that work reliably across different systems
-- **Clear Documentation**: Every operation is well-documented with examples
+```
+handle://target.verb(options)
+```
 
-### For Developers
-- **Structured Data**: All output in JSON format that's easy to process in code
-- **Predictable Behavior**: Operations work the same way every time
-- **Error Handling**: Clear error messages and status codes
-- **Integration Ready**: Works great with existing development workflows
+#### Components
 
-### For AI and Automation
-- **Machine-Friendly**: Consistent interface perfect for AI tools and automation
-- **Type Safety**: Operations are well-defined with clear inputs and outputs
-- **Reliable Results**: Predictable behavior enables trustworthy automation
-- **Self-Documenting**: Built-in help and examples for every operation
+| Component | Description                               |
+| --------- | ----------------------------------------- |
+| `handle`  | Resource domain (e.g., file, svc, system) |
+| `target`  | The object within that domain             |
+| `verb`    | The operation to perform                  |
+| `options` | Optional typed parameters                 |
 
-## Getting Started
+#### Examples
 
-Resource Shell is designed to be approachable for users at any skill level:
+File operations:
 
-1. **Start with basics** - Try simple operations like `file://document.txt.read` or `system://.info`
-2. **Explore categories** - Pick a category that matches what you want to accomplish
-3. **Use the documentation** - Each tool has detailed guides with examples
-4. **Build gradually** - Combine simple operations to create more complex workflows
+```
+file://document.txt.read
+file://config.yaml.write(content="value")
+```
 
-## Platform Support
+Service management:
 
-Resource Shell works across different operating systems:
+```
+svc://nginx.start
+svc://apache.status
+```
 
-- **Linux**: Full support for all features and tools
-- **Unix/macOS**: Most features work (some Linux-specific features may not be available)
-- **Windows**: Basic support with some limitations
+System inspection:
 
-Each tool's documentation includes specific platform compatibility information so you know what works on your system.
+```
+system://.memory
+system://.info
+```
 
-## Project Philosophy
+Secret retrieval:
 
-Resource Shell is built on several key principles:
+```
+secret://local/password.get
+```
 
-- **Safety First**: Operations include safeguards to prevent data loss and system damage
-- **Simplicity**: Complex operations should be simple to use and understand
-- **Consistency**: The same patterns work across all different tools and categories
-- **Reliability**: Operations should work predictably every time
-- **Accessibility**: Tools should be usable by both beginners and experts
-- **AI-Ready**: Designed for the future of automation and AI-assisted system management
+These examples illustrate consistent syntax across domains.
 
-## Technical Foundation
+---
 
-Resource Shell is written in Rust, providing:
-- **Memory Safety**: Prevents crashes and security vulnerabilities
-- **Performance**: Fast execution with minimal system overhead
-- **Cross-Platform**: Works reliably across different operating systems
-- **Type Safety**: Catches errors at compile time rather than runtime
-- **Modern Architecture**: Built for today's computing environments
+### 3.2 Execution Semantics
 
-The project follows modern software development practices with comprehensive testing, clear documentation, and an open development process. It's licensed under Apache 2.0, making it free for both personal and commercial use.
+resh execution semantics include:
 
-## The Future of System Administration
+* Deterministic command parsing
+* Structured JSON output
+* Predictable status and error reporting
+* Separation of metadata and operational data
 
-Resource Shell represents a new approach to system administration and automation:
+#### Representative JSON Response
 
-- **Human and AI Collaboration**: Tools that work well for both human operators and AI assistants
-- **Structured Everything**: Moving beyond text-based interfaces to structured, typed operations
-- **Safety by Design**: Built-in protections that prevent common errors and accidents
-- **Universal Interface**: One way to interact with all system resources and services
+```json
+{
+  "status": "success",
+  "resource": "svc://nginx",
+  "verb": "start",
+  "data": {
+    "state": "running"
+  }
+}
+```
 
-As computing environments become more complex and AI assistance becomes more common, Resource Shell provides the foundation for reliable, safe, and efficient system management.
+Error responses follow the same structured format with explicit status indicators.
 
-Whether you're a system administrator managing servers, a developer building automation, or working with AI tools that need reliable system access, Resource Shell provides the consistent, safe, and powerful interface you need to get work done effectively.
+This structured response model eliminates reliance on unstructured stdout parsing.
+
+---
+
+## 4. Functional Domains
+
+resh organizes functionality into domain categories.
+
+---
+
+### 4.1 Automation Utilities
+
+**Handles:**
+
+* `backup`
+* `plugin`
+* `template`
+
+**Operational Scope:**
+
+* Backup lifecycle management
+* Plugin extensibility
+* Template-driven configuration generation
+
+**DevOps/SRE Use Cases:**
+
+* Automating backup tasks
+* Extending automation capabilities through plugins
+* Rendering environment-specific configuration templates
+
+**Example Commands:**
+
+```
+backup://daily.run
+template://nginx.conf.render
+plugin://myplugin.enable
+```
+
+**Integration Scenarios:**
+
+* Scheduled automation workflows
+* Infrastructure configuration pipelines
+* Extensible automation frameworks
+
+---
+
+### 4.2 Data & State Management
+
+**Handles:**
+
+* `cache`
+* `config`
+* `db`
+* `event`
+* `log`
+* `mq`
+
+**Operational Scope:**
+
+* Application state management
+* Configuration storage
+* Database interaction
+* Event tracking
+* Logging and messaging systems
+
+**Use Cases:**
+
+* Managing application configuration
+* Logging pipeline integration
+* Event-driven automation
+* Distributed state coordination
+
+**Example Commands:**
+
+```
+config://app.settings.get
+db://inventory.query
+log://system.tail
+```
+
+**Integration Scenarios:**
+
+* CI/CD configuration validation
+* Distributed service state inspection
+* Log aggregation workflows
+
+---
+
+### 4.3 Filesystem & Storage
+
+**Handles:**
+
+* `file`
+* `archive`
+* `fs`
+* `snapshot`
+
+**Operational Scope:**
+
+* File operations
+* Archive management (ZIP/TAR)
+* Filesystem control
+* Snapshot-based backups
+
+**Use Cases:**
+
+* Reading/writing configuration files
+* Managing compressed artifacts
+* Monitoring disk usage
+* Creating system snapshots
+
+**Example Commands:**
+
+```
+file://app.log.read
+archive://release.tar.extract
+fs:///.disk
+snapshot://volume.create
+```
+
+**Integration Scenarios:**
+
+* Deployment artifact handling
+* Backup verification workflows
+* Storage monitoring automation
+
+---
+
+### 4.4 Network & Remote Operations
+
+**Handles:**
+
+* `ssh`
+* `http`
+* `mail`
+* `dns`
+* `net`
+
+**Operational Scope:**
+
+* Secure remote access
+* HTTP requests
+* Email delivery
+* DNS lookups
+* Network diagnostics
+
+**Use Cases:**
+
+* Remote service execution
+* API health checks
+* DNS validation
+* Network troubleshooting
+
+**Example Commands:**
+
+```
+ssh://server01.exec
+http://api.example.com.get
+dns://example.com.lookup
+net://eth0.status
+```
+
+**Integration Scenarios:**
+
+* Infrastructure validation pipelines
+* Synthetic monitoring workflows
+* Remote remediation tasks
+
+---
+
+### 4.5 Packages & Software
+
+**Handles:**
+
+* `pkg`
+* `git`
+
+**Operational Scope:**
+
+* Package installation and updates
+* Git repository management
+
+**Use Cases:**
+
+* Software deployment automation
+* Version control workflows
+* Build pipeline integration
+
+**Example Commands:**
+
+```
+pkg://nginx.install
+git://repo.clone
+```
+
+**Integration Scenarios:**
+
+* Immutable infrastructure builds
+* CI/CD source management
+
+---
+
+### 4.6 Process & Service Management
+
+**Handles:**
+
+* `cron`
+* `proc`
+* `svc`
+
+**Operational Scope:**
+
+* Process management
+* Task scheduling
+* Service lifecycle management
+
+**Use Cases:**
+
+* Restarting services
+* Monitoring process state
+* Managing scheduled jobs
+
+**Example Commands:**
+
+```
+svc://nginx.restart
+proc://1234.signal
+cron://backup.schedule
+```
+
+**Integration Scenarios:**
+
+* Automated recovery systems
+* Scheduled infrastructure tasks
+* Service health monitoring
+
+---
+
+### 4.7 Security & Secrets
+
+**Handles:**
+
+* `user`
+* `secret`
+* `cert`
+* `firewall`
+
+**Operational Scope:**
+
+* User management
+* Secret storage and retrieval
+* Certificate management
+* Firewall configuration
+
+**Use Cases:**
+
+* Secure credential access
+* Identity management
+* TLS certificate operations
+* Network policy enforcement
+
+**Example Commands:**
+
+```
+user://deploy.create
+secret://vault/token.get
+cert://tls.generate
+firewall://rule.add
+```
+
+**Integration Scenarios:**
+
+* Secure CI/CD secrets handling
+* Compliance-driven automation
+* Infrastructure hardening workflows
+
+---
+
+### 4.8 System Information
+
+**Handle:**
+
+* `system`
+
+**Operational Scope:**
+
+* Resource usage inspection
+* Hardware details
+* Configuration introspection
+
+**Use Cases:**
+
+* Memory usage monitoring
+* System health checks
+* Infrastructure inventory
+
+**Example Commands:**
+
+```
+system://.memory
+system://.cpu
+system://.info
+```
+
+**Integration Scenarios:**
+
+* Observability pipelines
+* Automated capacity checks
+* Health validation during deployments
+
+---
+
+## 5. Platform Support
+
+| Platform   | Support Level                                                              |
+| ---------- | -------------------------------------------------------------------------- |
+| Linux      | Full support for all features and tools                                    |
+| Unix/macOS | Most features supported; some Linux-specific features may not be available |
+| Windows    | Basic support with some limitations                                        |
+
+Refer to individual handle documentation for platform-specific compatibility.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Validate commands in staging environments.
+* Review command structure before execution.
+* Use explicit targets to avoid unintended operations.
+
+### Automation Considerations
+
+* Rely on JSON output rather than text parsing.
+* Validate status fields programmatically.
+* Handle error responses consistently.
+
+### CI/CD Integration
+
+* Use structured output for gating logic.
+* Integrate resh commands as deterministic pipeline steps.
+* Avoid reliance on shell-based parsing utilities.
+
+### Production Environment Recommendations
+
+* Apply version control to automation scripts.
+* Log structured output for observability.
+* Enforce access controls for sensitive handles.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Automate service deployment and configuration.
+* Integrate structured system checks into CI/CD.
+* Manage artifacts and packages predictably.
+
+### SRE Engineers
+
+* Monitor system health using structured queries.
+* Perform safe service restarts.
+* Execute deterministic recovery operations.
+
+### Network Administrators
+
+* Manage firewall rules.
+* Perform DNS validation.
+* Execute structured network diagnostics.
+
+### AI/Automation Engineers
+
+* Integrate resh as a deterministic system interface.
+* Use structured JSON output for tool-based agents.
+* Avoid fragile parsing logic in automated workflows.
+
+---
+
+## 8. Technical Foundation
+
+resh is implemented in Rust.
+
+### Implementation Advantages
+
+* Memory safety guarantees
+* Strong compile-time type checking
+* Efficient execution
+* Cross-platform portability
+
+### Type Safety
+
+Rust’s type system enforces correctness at compile time, reducing runtime failures and increasing reliability in production environments.
+
+### Performance Characteristics
+
+* Low system overhead
+* Efficient execution model
+* Suitable for high-frequency automation tasks
+
+### Cross-Platform Architecture
+
+resh is designed to operate across Linux, Unix/macOS, and Windows, with platform-specific considerations documented per handle.

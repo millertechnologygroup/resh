@@ -1,421 +1,492 @@
-# Cron Handle Documentation
+# Resource Shell (resh) – Cron Handle Documentation
 
-The Resource Shell's cron handle provides a complete way to manage scheduled tasks on your system. It works with both traditional cron jobs and modern systemd timers, letting you list, add, remove, enable, and disable scheduled tasks through a simple interface.
+## 1. Overview
 
-## How Cron Works
+### Definition
 
-The cron handle manages two types of scheduled tasks:
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `cron://` handle provides structured management of scheduled tasks across supported backends.
 
-- **Cron Jobs**: Traditional Unix cron jobs stored in user crontabs, system crontab, or `/etc/cron.d/` files
-- **Systemd Timers**: Modern systemd timer units that trigger service units on a schedule
+### Purpose
 
-The handle automatically detects which backend to use or lets you specify which one you prefer.
+The cron handle enables:
 
-## URL Format
+* Listing scheduled tasks
+* Creating scheduled jobs
+* Removing jobs
+* Enabling and disabling tasks
+* Managing both traditional cron jobs and systemd timers
 
-Cron URLs follow this pattern:
+All operations return structured JSON suitable for automation workflows.
+
+### Architectural Problem Addressed
+
+Traditional scheduling mechanisms:
+
+* Use backend-specific interfaces (cron, systemd timers)
+* Produce unstructured output
+* Require manual file editing or service interaction
+* Provide inconsistent error reporting
+
+resh addresses these issues by:
+
+* Exposing scheduling operations through typed verbs
+* Standardizing parameter formats
+* Supporting multiple backends under a single interface
+* Returning structured JSON responses
+* Providing explicit exit codes and error identifiers
+
+### Resource-Oriented URI Model
+
+Cron operations follow:
+
 ```
-cron://host.verb(arguments)
+handle://target.verb(arguments)
 ```
 
-For most operations, the host part can be any name (like "local" or "system").
+For scheduling:
 
-## Available Operations
+* **handle**: `cron://`
+* **target**: Logical host identifier (e.g., `local`, `system`)
+* **verb**: `list`, `add`, `rm`, `enable`, `disable`
+* **arguments**: Structured parameters
 
-The cron handle supports five main operations:
+Examples:
 
-### list - Show Scheduled Tasks
-
-Shows all scheduled tasks on your system with their details.
-
-**Basic Usage:**
-```bash
+```
 cron://local.list
+cron://local.add(schedule="0 2 * * *",command="/usr/local/bin/backup")
+cron://local.rm(id="daily-backup")
 ```
 
-**Output:**
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+* Explicit verbs define scheduling lifecycle operations.
+* Parameters are defined per verb.
+* Scope and backend selection are explicit.
+* Structured output replaces manual crontab inspection.
+
+---
+
+### Safety-First Execution
+
+* `dry_run` supported for state-changing verbs.
+* Explicit selectors required for removal.
+* Permission-aware scope management.
+* Backend validation before execution.
+
+---
+
+### Deterministic Behavior
+
+* Identical inputs yield consistent structured responses.
+* Explicit backend selection (`cron`, `systemd`, `auto`).
+* Scope values strictly enforced.
+* Clear error codes for missing or invalid arguments.
+
+---
+
+### JSON-Based Structured Output
+
+All operations return:
+
+* `ok` boolean
+* Operation metadata
+* Backend identification
+* Matched and modified entries
+* Error and warning arrays
+
+Representative example:
+
 ```json
 {
   "ok": true,
-  "timestamp_unix_ms": 1701234567890,
-  "scope": "current",
-  "users": ["testuser"],
-  "include_system": false,
-  "truncated": false,
-  "entries_total": 0,
-  "entries_returned": 0,
-  "entries_disabled": 0,
-  "entries": [],
-  "raw": null,
-  "paths": null,
-  "human": null,
-  "error": null,
-  "warnings": []
-}
-```
-
-The `list` operation returns:
-- **ok**: Whether the operation succeeded
-- **scope**: What jobs were included ("current", "user", "system", "all")
-- **users**: List of users whose jobs were checked
-- **include_system**: Whether system-wide jobs were included
-- **entries**: Array of scheduled task details
-- **entries_returned**: Number of tasks found
-- **entries_disabled**: Number of disabled tasks found
-
-### add - Create New Scheduled Tasks
-
-Creates a new scheduled task using cron or systemd.
-
-**Basic Cron Job:**
-```bash
-cron://local.add(schedule=* * * * *,command=/usr/local/bin/backup)
-```
-
-**With Job ID and Description:**
-```bash
-cron://local.add(schedule=* * * * *,command=/usr/local/bin/backup,id=test-job,description=Test backup job)
-```
-
-**Output:**
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1701234567890,
   "backend_used": "cron",
   "dry_run": false,
-  "duplicate": false,
-  "job": {
-    "id": "test-job",
-    "backend": "cron",
-    "schedule": "* * * * *",
-    "command": "/usr/local/bin/backup",
-    "location": {
-      "scope": "current",
-      "file": "/tmp/crontab",
-      "user": "testuser",
-      "line_added": 1,
-      "unit_name": null,
-      "timer_unit": null,
-      "service_unit": null,
-      "unit_dir": null
+  "matched_count": {
+    "cron": 1,
+    "systemd": 0
+  },
+  "error": null,
+  "warnings": []
+}
+```
+
+---
+
+### AI-Readiness
+
+Structured output enables:
+
+* Scheduled task auditing
+* Automated compliance checks
+* Drift detection
+* Bulk job management
+* Backend-aware orchestration
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+cron://host.VERB(arguments)
+```
+
+| Component   | Description                        |
+| ----------- | ---------------------------------- |
+| `handle`    | `cron://`                          |
+| `host`      | Logical identifier (e.g., `local`) |
+| `VERB`      | Scheduling operation               |
+| `arguments` | Structured parameters              |
+
+---
+
+### Core Verbs
+
+| Verb      | Description           |
+| --------- | --------------------- |
+| `list`    | Show scheduled tasks  |
+| `add`     | Create scheduled task |
+| `rm`      | Remove scheduled task |
+| `enable`  | Enable disabled task  |
+| `disable` | Disable active task   |
+
+---
+
+### Production Examples
+
+#### List Current User Jobs
+
+```
+cron://local.list(scope="current")
+```
+
+#### Add Daily Backup
+
+```
+cron://local.add(
+  schedule="0 2 * * *",
+  command="/usr/local/bin/backup",
+  id="daily-backup"
+)
+```
+
+#### Remove Matching Jobs
+
+```
+cron://local.rm(match_command="backup",dry_run=true)
+```
+
+#### Disable System Job
+
+```
+cron://local.disable(id="cleanup",scope="system")
+```
+
+#### Enable All Monitoring Jobs
+
+```
+cron://local.enable(match_command="monitor",backend="both")
+```
+
+---
+
+## 3.2 Execution Semantics
+
+### Deterministic Behavior
+
+* Verbs require explicit arguments.
+* Removal requires selector criteria.
+* Backend availability validated before execution.
+* Scope controls permission boundaries.
+
+---
+
+### Structured Output Contracts
+
+Example output from `list`:
+
+```json
+{
+  "ok": true,
+  "scope": "current",
+  "entries_total": 2,
+  "entries_returned": 2,
+  "entries_disabled": 0,
+  "entries": [
+    {
+      "id": "daily-backup",
+      "schedule": "0 2 * * *",
+      "command": "/usr/local/bin/backup",
+      "backend": "cron"
     }
-  },
-  "preview": null,
-  "error": null,
-  "warnings": []
-}
-```
-
-**Arguments:**
-- `schedule`: Cron schedule expression (required, e.g., "0 2 * * *" for daily at 2am)
-- `command`: Command to run (required)
-- `backend`: Which system to use ("cron", "systemd", or "auto")
-- `id`: Unique identifier for the job
-- `description`: Human-readable description
-- `allow_duplicate`: Allow creating duplicate jobs (default: true)
-- `dry_run`: Test without actually creating (default: false)
-- `scope`: Where to create the job ("current", "user", "system")
-
-**Error Cases:**
-- Missing schedule returns error code "cron.add_error"
-- Missing command returns error code "cron.add_error"
-- Invalid schedule format returns error with validation details
-
-### rm - Remove Scheduled Tasks
-
-Removes scheduled tasks that match the given criteria.
-
-**Remove by ID:**
-```bash
-cron://local.rm(id=test-job)
-```
-
-**Remove by Schedule and Command:**
-```bash
-cron://local.rm(schedule=0 2 * * *,command=/usr/local/bin/backup --full)
-```
-
-**Remove with Pattern Matching:**
-```bash
-cron://local.rm(match_command=backup)
-```
-
-**Output:**
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1701234567890,
-  "dry_run": false,
-  "backend": "both",
-  "removed": {
-    "cron": [],
-    "systemd": []
-  },
-  "matched_count": {
-    "cron": 0,
-    "systemd": 0
-  },
-  "cron_modified_sources": [],
-  "systemd_scopes_touched": [],
-  "error": null,
-  "warnings": []
-}
-```
-
-**Arguments:**
-- `id`: Job identifier to remove
-- `schedule`: Exact schedule to match
-- `command`: Exact command to match
-- `match_command`: Pattern to match in command text
-- `match_comment`: Pattern to match in job comments
-- `backend`: Which system to check ("cron", "systemd", "both")
-- `dry_run`: Test without actually removing (default: false)
-- `scope`: Where to look for jobs ("current", "user", "system", "all")
-
-**Error Cases:**
-- No selector provided returns error code "cron.rm_no_selector"
-- Invalid backend returns error code "cron.rm_invalid_backend"
-
-### enable - Enable Disabled Tasks
-
-Enables scheduled tasks that have been disabled (commented out or stopped).
-
-**Enable by ID:**
-```bash
-cron://local.enable(id=backup-job,backend=cron)
-```
-
-**Enable by Schedule and Command:**
-```bash
-cron://local.enable(backend=cron,schedule=0 2 * * *,command=/usr/local/bin/backup --full)
-```
-
-**Enable by Command Pattern:**
-```bash
-cron://local.enable(backend=cron,match_command=backup)
-```
-
-**Output:**
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1701234567890,
-  "dry_run": false,
-  "backend": "cron",
-  "enabled": {
-    "cron": [
-      {
-        "id": "backup-job",
-        "schedule": "0 2 * * *",
-        "command": "/usr/local/bin/backup --full",
-        "backend": "cron",
-        "was_disabled": true,
-        "location": {
-          "scope": "current",
-          "file": "/tmp/crontab",
-          "user": "testuser",
-          "line_number": 1,
-          "unit_name": null,
-          "timer_unit": null,
-          "service_unit": null,
-          "unit_dir": null
-        }
-      }
-    ],
-    "systemd": []
-  },
-  "matched_count": {
-    "cron": 1,
-    "systemd": 0
-  },
-  "already_enabled_count": {
-    "cron": 0,
-    "systemd": 0
-  },
-  "cron_modified_sources": [
-    "/tmp/crontab"
   ],
-  "systemd_scopes_touched": [],
   "error": null,
   "warnings": []
 }
 ```
 
-**Arguments:**
-- `id`: Job identifier to enable
-- `schedule`: Exact schedule to match
-- `command`: Exact command to match
-- `match_command`: Pattern to match in command text
-- `backend`: Which system to use ("cron", "systemd", "both")
-- `dry_run`: Test without actually enabling (default: false)
-- `scope`: Where to look for jobs ("current", "user", "system", "all")
+---
 
-### disable - Disable Active Tasks
+### Error Handling Structure
 
-Disables scheduled tasks by commenting them out or stopping systemd timers.
-
-**Disable by ID:**
-```bash
-cron://local.disable(id=backup-job,backend=cron)
-```
-
-**Disable by Schedule and Command:**
-```bash
-cron://local.disable(backend=cron,schedule=0 2 * * *,command=/usr/local/bin/backup --full)
-```
-
-**Disable with Command Pattern:**
-```bash
-cron://local.disable(match_command=backup)
-```
-
-**Output:**
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1701234567890,
-  "dry_run": false,
-  "backend": "cron",
-  "disabled": {
-    "cron": [
-      {
-        "id": "backup-job",
-        "schedule": "0 2 * * *",
-        "command": "/usr/local/bin/backup --full",
-        "backend": "cron",
-        "was_enabled": true,
-        "location": {
-          "scope": "current",
-          "file": "/tmp/crontab",
-          "user": "testuser",
-          "line_number": 1,
-          "unit_name": null,
-          "timer_unit": null,
-          "service_unit": null,
-          "unit_dir": null
-        }
-      }
-    ],
-    "systemd": []
-  },
-  "matched_count": {
-    "cron": 1,
-    "systemd": 0
-  },
-  "already_disabled_count": {
-    "cron": 0,
-    "systemd": 0
-  },
-  "cron_modified_sources": [
-    "/tmp/crontab"
-  ],
-  "systemd_scopes_touched": [],
-  "error": null,
-  "warnings": []
-}
-```
-
-**Arguments:**
-- `id`: Job identifier to disable
-- `schedule`: Exact schedule to match
-- `command`: Exact command to match
-- `match_command`: Pattern to match in command text
-- `backend`: Which system to use ("cron", "systemd", "both")
-- `dry_run`: Test without actually disabling (default: false)
-- `stop_now`: Stop running systemd timers immediately (default: true)
-- `scope`: Where to look for jobs ("current", "user", "system", "all")
-
-## Understanding Cron Schedules
-
-Cron schedules use five fields separated by spaces:
-```
-* * * * *
-| | | | |
-| | | | +-- Day of Week (0-6, Sunday=0)
-| | | +---- Month (1-12)
-| | +------ Day of Month (1-31)
-| +-------- Hour (0-23)
-+---------- Minute (0-59)
-```
-
-**Examples:**
-- `0 2 * * *` - Daily at 2:00 AM
-- `*/5 * * * *` - Every 5 minutes
-- `0 0 * * 0` - Weekly on Sunday at midnight
-- `0 9-17 * * 1-5` - Hourly during business hours (9 AM - 5 PM, Monday - Friday)
-
-## Backends
-
-The cron handle supports two backends:
-
-### Cron Backend
-- Uses traditional Unix cron system
-- Jobs stored in user crontabs or system files
-- Good for simple scheduled tasks
-- Works on all Unix-like systems
-
-### Systemd Backend
-- Uses systemd timers and services
-- More powerful scheduling options
-- Better logging and monitoring
-- Requires systemd (most modern Linux systems)
-
-### Auto Backend
-When you use `backend=auto`, the handle will:
-1. Try systemd first if available
-2. Fall back to cron if systemd is not available
-3. Choose the best option based on the task requirements
-
-## Common Use Cases
-
-**Daily Backup:**
-```bash
-cron://local.add(schedule=0 2 * * *,command=/usr/local/bin/backup,id=daily-backup,description=Daily system backup)
-```
-
-**Check Disk Space Every Hour:**
-```bash
-cron://local.add(schedule=0 * * * *,command=/usr/local/bin/disk-check,id=disk-monitor)
-```
-
-**Remove All Backup Jobs:**
-```bash
-cron://local.rm(match_command=backup)
-```
-
-**Temporarily Disable a Job:**
-```bash
-cron://local.disable(id=daily-backup)
-```
-
-**Re-enable the Job Later:**
-```bash
-cron://local.enable(id=daily-backup)
-```
-
-**Test What Would Be Removed:**
-```bash
-cron://local.rm(match_command=backup,dry_run=true)
-```
-
-## Error Handling
-
-All operations return detailed error information when something goes wrong:
+Example error:
 
 ```json
 {
   "ok": false,
   "error": {
-    "code": "cron.add_error",
+    "code": "cron.add_missing_schedule",
     "message": "schedule parameter is required"
   }
 }
 ```
 
-Common error codes:
-- `cron.add_error`: Problem creating a scheduled task
-- `cron.rm_error`: Problem removing scheduled tasks
-- `cron.rm_no_selector`: No criteria provided for removal
-- `cron.rm_invalid_backend`: Invalid backend specified
-- `cron.list_error`: Problem listing scheduled tasks
+Defined exit codes include:
+
+| Code | Meaning             |
+| ---- | ------------------- |
+| 0    | Success             |
+| 1    | General error       |
+| 2    | Invalid arguments   |
+| 3    | Permission denied   |
+| 4    | Job not found       |
+| 5    | Duplicate job       |
+| 6    | Invalid schedule    |
+| 7    | Backend unavailable |
+
+---
+
+## 4. Functional Domains
+
+---
+
+### 4.1 Automation Utilities
+
+**Scope**
+
+Time-based job automation.
+
+**Handle**
+
+* `cron://`
+
+**Use Cases**
+
+* Scheduled backups
+* Health checks
+* Cleanup routines
+* Log rotation
+
+---
+
+### 4.2 Data & State Management
+
+**Scope**
+
+Inspection and auditing of scheduled tasks.
+
+**Use Cases**
+
+* Compliance verification
+* Duplicate detection
+* Disabled job auditing
+* Drift detection
+
+---
+
+### 4.3 Filesystem & Storage
+
+Indirectly supports:
+
+* Scheduled backup scripts
+* File cleanup tasks
+* Log maintenance automation
+
+---
+
+### 4.4 Network & Remote Operations
+
+Supports scheduling of:
+
+* Remote synchronization tasks
+* Monitoring probes
+* Periodic network checks
+
+---
+
+### 4.5 Packages & Software
+
+Supports lifecycle operations for:
+
+* Scheduled software updates
+* Dependency cleanup jobs
+* Automated package validation tasks
+
+---
+
+### 4.6 Process & Service Management
+
+Coordinates with:
+
+* `proc://` for process monitoring
+* `svc://` for service restarts triggered by schedule
+
+---
+
+### 4.7 Security & Secrets
+
+Security considerations:
+
+* Avoid embedding sensitive data in commands.
+* Use secure scripts instead of inline secrets.
+* Restrict system-scope job modification.
+* Audit scheduled tasks regularly.
+
+---
+
+### 4.8 System Information
+
+Structured reporting includes:
+
+* Job ID
+* Schedule expression
+* Backend type
+* Scope
+* Disabled state
+* Backend file or unit references
+
+---
+
+## 5. Platform Support
+
+| Platform | Support                       |
+| -------- | ----------------------------- |
+| Linux    | Full support (cron + systemd) |
+| macOS    | Cron support (no systemd)     |
+| BSD      | Cron support                  |
+| Windows  | Not supported                 |
+
+Backend behavior depends on system capabilities.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Always test with `dry_run=true`.
+* Use job IDs for manageability.
+* Validate schedules before deployment.
+* Prefer disable over remove for temporary changes.
+* Avoid overlapping execution schedules.
+
+---
+
+### Automation Considerations
+
+* Consume JSON output.
+* Validate `ok` before proceeding.
+* Use backend filtering to limit scope.
+* Avoid parsing raw crontab content.
+
+---
+
+### CI/CD Integration
+
+Typical workflow:
+
+1. Add maintenance job.
+2. Validate via `list`.
+3. Disable during deployment.
+4. Re-enable post-deployment.
+5. Audit system-wide schedules.
+
+---
+
+### Production Recommendations
+
+* Distribute heavy jobs across time windows.
+* Use systemd backend for advanced scheduling.
+* Review system-wide jobs periodically.
+* Log job output and errors.
+* Maintain backup of scheduling configuration.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Automate recurring operational tasks.
+* Manage scheduled CI-related jobs.
+* Audit deployment-time cron changes.
+
+---
+
+### SRE Engineers
+
+* Diagnose failed scheduled tasks.
+* Disable problematic jobs during incidents.
+* Audit system-wide schedules for compliance.
+
+---
+
+### Network Administrators
+
+* Schedule monitoring and maintenance.
+* Manage cleanup jobs.
+* Audit system-level scheduled tasks.
+
+---
+
+### AI / Automation Engineers
+
+* Parse structured job inventory.
+* Detect unauthorized job changes.
+* Trigger remediation workflows.
+* Validate scheduling policy compliance.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+resh is implemented in Rust, providing:
+
+* Memory safety
+* Predictable concurrency behavior
+* Structured command parsing
+* Efficient file and system interaction
+
+---
+
+### Type Safety
+
+* Enumerated verbs
+* Strict argument validation
+* Structured error codes
+* Controlled backend selection
+
+---
+
+### Performance Characteristics
+
+* Minimal overhead for listing and modification
+* Direct crontab and systemd interaction
+* Controlled file I/O operations
+
+---
+
+### Cross-Platform Architecture
+
+* Backend abstraction layer for cron and systemd
+* Scope-based permission control
+* Unified JSON output across supported platforms
+

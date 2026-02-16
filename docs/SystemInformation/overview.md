@@ -1,132 +1,513 @@
-# System Information
+# Resource Shell (resh) – System Information Overview Documentation
 
-This section covers tools for gathering information about your computer system in Resource Shell. These tools help you monitor system health, check resource usage, and understand how your system is performing.
+## 1. Overview
 
-## What This Section Covers
+### Definition
 
-System information includes:
-- **Hardware Details**: Information about your CPU, memory, and disk space
-- **System Status**: How long your system has been running and current load
-- **Resource Usage**: How much memory, CPU, and disk space are being used
-- **Environment Settings**: System variables and configuration settings
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. It provides typed handles for interacting with system resources and returns deterministic, structured JSON output suitable for automation.
 
-## Available Tools
+The **System Information** domain is exposed via the `system://` handle and provides structured access to hardware details, runtime status, and resource utilization metrics.
 
-### system - Get System Information and Monitor Performance
-The `system` handle provides comprehensive information about your computer's hardware, performance, and current status. It can tell you everything from how much memory you're using to how busy your CPU is.
+### Purpose
 
-**What it does:**
-- Show overall system information (OS, kernel, hardware)
-- Check system uptime and when it was last restarted
-- Monitor CPU load and performance
-- Display memory usage (RAM and swap space)
-- Report disk space usage across all drives
-- List environment variables and system settings
+The `system://` handle enables:
 
-**Common workflows:**
-- Check if your system is running out of memory
-- Monitor CPU usage to find performance problems
-- See how much disk space is available
-- Get basic system details for troubleshooting
-- Monitor system load to know when it's busy
-- Check environment settings for applications
+* Retrieval of operating system and kernel metadata
+* Monitoring of CPU load and performance
+* Inspection of memory usage (RAM and swap)
+* Reporting of disk usage across mounted filesystems
+* Querying uptime and boot time
+* Listing environment variables
 
-[Learn more about system monitoring →](system.md)
+All operations are read-only and return structured JSON suitable for automation, diagnostics, and monitoring workflows.
 
-## Key Features
+### Architectural Problem Addressed
 
-The system tool provides seven main types of information:
+Traditional system monitoring tools:
 
-### System Overview (`info`)
-Gets a complete picture of your system including operating system details, kernel version, CPU information, memory usage, and current load. This is like getting a health check for your entire computer.
+* Use multiple independent commands (`uptime`, `free`, `df`, `top`, `env`)
+* Produce human-oriented text output
+* Require parsing for automation
+* Lack consistent output schemas
 
-### Uptime Information (`uptime`)
-Shows how long your system has been running since the last restart and when it was booted. This helps you know if your system needs a restart or has been stable for a long time.
+resh addresses these limitations by:
 
-### Load Monitoring (`load`)
-Tells you how busy your CPU is by showing load averages and the number of running processes. This helps you understand if your system is working hard or has plenty of capacity.
+* Providing a unified `system://` handle
+* Standardizing monitoring verbs
+* Returning structured JSON output
+* Normalizing platform-specific data
+* Supporting deterministic automation contracts
 
-### Memory Usage (`memory`)
-Shows how much RAM and swap space you're using, including details about buffers and cache. This helps you know if you need more memory or if programs are using too much.
+### Resource-Oriented URI Model
 
-### CPU Performance (`cpu`)
-Reports CPU utilization, the number of cores, and processor topology. This helps you understand your computer's processing power and how it's being used.
+System monitoring operations follow:
 
-### Disk Usage (`disk`)
-Lists all mounted drives and shows how much space is used and available on each one. This helps you manage storage and avoid running out of disk space.
+```
+handle://target.verb(options)
+```
 
-### Environment Variables (`env.list`)
-Shows system environment variables that control how programs behave. This helps you check configuration settings and troubleshoot application problems.
+For system information:
 
-## How System Monitoring Works
+* **handle**: `system://`
+* **target**: `.` (system context)
+* **verb**: Information category (e.g., `info`, `memory`, `disk`)
+* **options**: Optional structured parameters
 
-The system tool gathers information from various sources on Linux systems:
-- **Filesystem Data**: Reads from `/proc` and `/sys` filesystems
-- **System Calls**: Uses standard Linux system calls for accurate data
-- **Real-time Sampling**: Takes measurements over time for accurate CPU usage
-- **Safe Collection**: Automatically handles missing data and virtual environments
+Examples:
 
-## Understanding the Output
-
-All system information is returned in JSON format that's easy to read and use in scripts. The output includes:
-- **Current Values**: Real-time measurements of system resources
-- **Human-readable Summaries**: Easy-to-understand descriptions of the data
-- **Percentage Values**: Usage shown as percentages for quick understanding
-- **Historical Data**: Load averages and trend information
-- **Warning Messages**: Alerts about potential issues or limitations
-
-## Performance and Safety
-
-The system tool is designed to be:
-- **Fast**: Quick data collection that doesn't slow down your system
-- **Safe**: Read-only operations that don't change anything
-- **Accurate**: Reliable measurements you can trust for monitoring
-- **Efficient**: Minimal impact on system performance
-- **Secure**: Automatically hides sensitive information like passwords
-
-## Common Use Cases
-
-**Check System Health:**
-```bash
+```
 system://.info
-```
-
-**Monitor Memory Usage:**
-```bash
 system://.memory
-```
-
-**See Disk Space:**
-```bash
 system://.disk
-```
-
-**Check System Load:**
-```bash
-system://.load
-```
-
-**Get Environment Variables:**
-```bash
 system://.env.list
 ```
 
-## Getting Started
+---
 
-The system tool uses a simple URL-style syntax:
-- `system://.info` - Get complete system overview
-- `system://.memory` - Check memory usage
-- `system://.disk` - See disk space usage
-- `system://.load` - Monitor system load
-- `system://.cpu` - Check CPU performance
+## 2. Design Philosophy and Core Principles
 
-All commands return detailed JSON output with both raw data and human-friendly summaries. You can use these commands in scripts to automate system monitoring or run them manually to check system status.
+### Structured Interface Model
 
-## Platform Support
+* Seven explicitly defined information verbs.
+* Each verb corresponds to a specific monitoring category.
+* Output format is consistent across commands.
+* All operations are read-only.
 
-- **Linux**: Full support for all features
-- **Unix/macOS**: Basic features work (some Linux-specific data may not be available)
-- **Windows**: Limited support - basic system information only
-- **Virtual Environments**: Works in containers and WSL with appropriate warnings
+---
 
-The tool automatically detects your environment and provides the best information available for your platform.
+### Safety-First Execution
+
+* No system state modification.
+* Sensitive values automatically protected where applicable.
+* Graceful handling of missing or unsupported metrics.
+* Safe operation in containers and virtual environments.
+
+---
+
+### Deterministic Behavior
+
+* Identical inputs yield consistent JSON structures.
+* Platform detection is automatic.
+* Unsupported metrics are reported explicitly.
+* No hidden side effects.
+
+---
+
+### JSON-Based Structured Output
+
+All responses include:
+
+* Structured metric values
+* Percentage representations where applicable
+* Timestamps and trend indicators where relevant
+* Human-readable summaries alongside raw data
+
+Representative example:
+
+```json
+{
+  "ok": true,
+  "system": {
+    "os": "Linux",
+    "kernel": "6.6.0",
+    "architecture": "x86_64"
+  },
+  "uptime": {
+    "seconds": 86400,
+    "human": "1 day"
+  },
+  "load": {
+    "1m": 0.42,
+    "5m": 0.38,
+    "15m": 0.35
+  }
+}
+```
+
+---
+
+### AI-Readiness
+
+Structured output enables:
+
+* Automated health monitoring
+* Threshold-based alerting
+* Capacity planning analysis
+* Drift detection
+* Predictive workload modeling
+* Policy enforcement
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+system://.VERB(options)
+```
+
+| Component | Description          |
+| --------- | -------------------- |
+| `handle`  | `system://`          |
+| `target`  | `.` (system context) |
+| `VERB`    | Monitoring operation |
+| `options` | Optional parameters  |
+
+---
+
+### Available Verbs
+
+| Verb       | Purpose                  |
+| ---------- | ------------------------ |
+| `info`     | System overview          |
+| `uptime`   | Uptime and boot time     |
+| `load`     | CPU load averages        |
+| `memory`   | RAM and swap usage       |
+| `cpu`      | CPU performance metrics  |
+| `disk`     | Disk usage across mounts |
+| `env.list` | Environment variables    |
+
+---
+
+### Production Examples
+
+#### Full System Overview
+
+```
+system://.info
+```
+
+#### Check Memory Usage
+
+```
+system://.memory
+```
+
+#### Inspect Disk Utilization
+
+```
+system://.disk
+```
+
+#### Monitor CPU Load
+
+```
+system://.load
+```
+
+#### View CPU Topology
+
+```
+system://.cpu
+```
+
+#### List Environment Variables
+
+```
+system://.env.list
+```
+
+---
+
+## 3.2 Execution Semantics
+
+### Deterministic Behavior
+
+* Each verb maps to a specific metric set.
+* Output structure is stable across runs.
+* Platform-specific differences are normalized.
+* Missing metrics are reported without failure.
+
+---
+
+### Structured Output Contracts
+
+Example: Memory Usage
+
+```json
+{
+  "ok": true,
+  "memory": {
+    "total_bytes": 17179869184,
+    "used_bytes": 8589934592,
+    "free_bytes": 4294967296,
+    "used_percent": 50.0,
+    "swap_total_bytes": 2147483648,
+    "swap_used_percent": 12.5
+  }
+}
+```
+
+Example: Disk Usage
+
+```json
+{
+  "ok": true,
+  "disks": [
+    {
+      "mount": "/",
+      "total_bytes": 107374182400,
+      "used_percent": 72.4
+    }
+  ]
+}
+```
+
+---
+
+### Error Handling Structure
+
+Representative error:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "system.unsupported_platform",
+    "message": "Requested metric not available on this platform"
+  }
+}
+```
+
+---
+
+## 4. Functional Domains
+
+---
+
+### 4.1 Automation Utilities
+
+**Handle**
+
+* `system://`
+
+**Scope**
+
+* Health checks
+* Resource threshold validation
+* Deployment readiness checks
+* Automated diagnostics
+
+---
+
+### 4.2 Data & State Management
+
+**Scope**
+
+* Real-time memory and CPU metrics
+* Uptime tracking
+* Environment configuration inspection
+* Disk capacity reporting
+
+---
+
+### 4.3 Filesystem & Storage
+
+**Scope**
+
+* Mounted filesystem enumeration
+* Storage capacity monitoring
+* Utilization percentage reporting
+* Disk exhaustion detection
+
+Example:
+
+```
+system://.disk
+```
+
+---
+
+### 4.4 Network & Remote Operations
+
+Indirect support through:
+
+* System load analysis for remote deployments
+* Capacity checks prior to scaling
+* Baseline host metrics for remote orchestration
+
+---
+
+### 4.5 Packages & Software
+
+Supports:
+
+* Pre-install resource validation
+* Post-install health checks
+* Memory availability verification
+* Environment variable inspection
+
+---
+
+### 4.6 Process & Service Management
+
+Integrates with:
+
+* `proc://` for process-level metrics
+* `svc://` for service lifecycle management
+* Load monitoring before service restart
+* Memory validation before deployment
+
+---
+
+### 4.7 Security & Secrets
+
+Supports:
+
+* Environment variable auditing
+* Detection of unexpected configuration variables
+* Validation of runtime environment settings
+* Safe omission of sensitive data where applicable
+
+---
+
+### 4.8 System Information
+
+Primary domain includes:
+
+| Category    | Description                        |
+| ----------- | ---------------------------------- |
+| OS Info     | Operating system and kernel        |
+| Uptime      | Runtime duration and boot time     |
+| Load        | CPU load averages                  |
+| Memory      | RAM and swap utilization           |
+| CPU         | Core count and performance metrics |
+| Disk        | Filesystem usage                   |
+| Environment | Process environment variables      |
+
+---
+
+## 5. Platform Support
+
+| Platform       | Support Level                                           |
+| -------------- | ------------------------------------------------------- |
+| Linux          | Full support                                            |
+| macOS/Unix     | Basic support (some Linux-specific metrics unavailable) |
+| Windows        | Limited support                                         |
+| Containers/WSL | Supported with environment-aware warnings               |
+
+Platform detection is automatic, and unavailable metrics are handled gracefully.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Use `memory` before large deployments.
+* Monitor `disk` prior to data-intensive tasks.
+* Check `load` before scaling operations.
+* Use `info` during troubleshooting.
+* Avoid exposing environment variables in logs.
+
+---
+
+### Automation Considerations
+
+* Validate `ok` field before processing.
+* Use percentage fields for threshold checks.
+* Log structured JSON for audit trails.
+* Use load averages for scaling decisions.
+* Monitor swap usage as early memory pressure indicator.
+
+---
+
+### CI/CD Integration
+
+Typical workflow:
+
+1. `system://.memory` – ensure sufficient RAM.
+2. `system://.disk` – verify storage capacity.
+3. `system://.load` – confirm system stability.
+4. Proceed with deployment.
+5. Validate via `system://.info`.
+
+---
+
+### Production Environment Recommendations
+
+* Establish resource thresholds.
+* Monitor disk utilization proactively.
+* Review uptime to determine patch cycles.
+* Audit environment variables regularly.
+* Integrate monitoring with alerting systems.
+* Avoid reliance on single-point health metrics.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Validate system readiness before deployments.
+* Monitor memory and disk consumption.
+* Inspect environment variables for configuration drift.
+* Integrate system checks into pipelines.
+
+---
+
+### SRE Engineers
+
+* Diagnose performance issues.
+* Track system stability via uptime.
+* Monitor load during incident response.
+* Validate resource pressure indicators.
+
+---
+
+### Network Administrators
+
+* Confirm system capacity for network services.
+* Monitor disk usage for log growth.
+* Check system load for peak periods.
+* Inspect runtime environment settings.
+
+---
+
+### AI / Automation Engineers
+
+* Parse structured resource metrics.
+* Detect anomalies in usage patterns.
+* Trigger automated remediation.
+* Implement threshold-based orchestration.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+resh is implemented in Rust, providing:
+
+* Memory safety
+* Deterministic system interaction
+* Strong compile-time guarantees
+* Efficient metric collection
+
+---
+
+### Type Safety
+
+* Enumerated verbs
+* Strict output schemas
+* Explicit error modeling
+* Structured metric representation
+
+---
+
+### Performance Characteristics
+
+* Lightweight data collection
+* Efficient `/proc` and `/sys` access on Linux
+* Minimal overhead sampling
+* Real-time metric reporting
+
+---
+
+### Cross-Platform Architecture
+
+* Platform-aware metric collection
+* Graceful degradation on unsupported systems
+* Unified JSON schema
+* Deterministic output across environments

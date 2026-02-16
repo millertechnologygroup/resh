@@ -1,58 +1,105 @@
-# User Handle Documentation
+# Resource Shell (resh) – User Handle Documentation
 
-The user handle manages user accounts, groups, and user passwords in Resource Shell. It provides simple commands to create, delete, and modify users and their settings.
+## 1. Overview
 
-## Available Actions (Verbs)
+### Definition
 
-The user handle supports these actions:
-- **add** - Create new users, groups, or group memberships
-- **delete** - Remove users, groups, or group memberships  
-- **passwd** - Change user passwords
-- **lock** - Lock user accounts to prevent login
-- **unlock** - Unlock user accounts to allow login
-- **groups** - List groups that a user belongs to
-- **exists** - Check if a user exists
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `user://` handle manages user accounts, groups, passwords, and group memberships on Linux/Unix systems.
 
-## Basic Usage
+### Purpose
 
-All user handle commands use this format:
+The user domain enables:
+
+* Creation and deletion of users and groups
+* Group membership management
+* Password management
+* Account locking and unlocking
+* Existence checks and group inspection
+* Safe automation using dry-run and protection controls
+* Support for both system and mock backends
+
+All operations return structured JSON output suitable for automation, CI/CD workflows, and infrastructure orchestration.
+
+### Architectural Problem Addressed
+
+Traditional user management tools:
+
+* Use imperative CLI flags
+* Produce unstructured text output
+* Require manual parsing for automation
+* Provide inconsistent safety controls
+* Lack structured dry-run and idempotent behavior
+
+resh addresses these limitations by:
+
+* Exposing user lifecycle operations as typed verbs
+* Using structured parameters
+* Returning deterministic JSON output
+* Enforcing safety controls for system accounts
+* Supporting idempotent scripting patterns
+
+### Resource-Oriented URI Model
+
+User operations follow:
+
 ```
-user://[target] [verb] [options]
-```
-
-Where:
-- `[target]` is the user, group, or membership to work with
-- `[verb]` is one of the actions listed above
-- `[options]` are settings that control how the action works
-
-## Target Types
-
-The user handle works with different types of targets:
-
-### User Targets
-- `user://alice` - Work with user "alice"
-- `user://bob` - Work with user "bob"
-
-### Group Targets  
-- `user://group/admins` - Work with group "admins"
-- `user://group/dev` - Work with group "dev"
-
-### Membership Targets
-- `user://membership/alice` - Work with alice's group memberships
-
-## The Add Action
-
-Use `add` to create new users, groups, or group memberships.
-
-### Creating a New User
-
-**Example from tests:**
-```bash
-# Create a basic user
-user://alice add --mode=user --backend=mock --username=alice
+handle://target.verb(options)
 ```
 
-**Expected output:**
+For user management:
+
+* **handle**: `user://`
+* **target**: user, group, or membership identifier
+* **verb**: action (`add`, `delete`, `passwd`, `lock`, `unlock`, `groups`, `exists`)
+* **options**: structured parameters
+
+Examples:
+
+```
+user://alice.add(mode=user,username=alice)
+user://group/admins.add(mode=group,group_name=admins)
+user://alice.passwd(new_password_plain=Secret123!)
+```
+
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+* Seven explicitly defined verbs.
+* Typed `mode` for add/delete operations.
+* Backend abstraction (`system`, `mock`).
+* Deterministic JSON output.
+* Explicit identity resolution via username or UID.
+
+---
+
+### Safety-First Execution
+
+* `dry_run=true` supported for all mutating verbs.
+* System user protection (UID < 1000).
+* `protect_system_users=true` by default.
+* `force=true` required to override safety checks.
+* `ignore_if_missing` and `ignore_if_exists` for idempotency.
+* Minimum UID enforcement for destructive operations.
+
+---
+
+### Deterministic Behavior
+
+* Explicit parameter validation.
+* Username and group validation rules.
+* Structured output regardless of format.
+* Consistent exit codes.
+* Backend-specific behavior abstracted.
+
+---
+
+### JSON-Based Structured Output
+
+Representative example (user creation):
+
 ```json
 {
   "ok": true,
@@ -62,11 +109,6 @@ user://alice add --mode=user --backend=mock --username=alice
   "user": {
     "username": "alice",
     "uid": 1001,
-    "primary_group": "alice", 
-    "supplementary_groups": ["dev"],
-    "home": "/home/alice",
-    "shell": "/bin/bash",
-    "gecos": "Alice Example",
     "created": true,
     "existed": false
   },
@@ -74,1097 +116,427 @@ user://alice add --mode=user --backend=mock --username=alice
 }
 ```
 
-**Text format output:**
+All operations return structured objects describing:
+
+* User existence state
+* Changes performed
+* Warnings
+* Backend used
+
+---
+
+### AI-Readiness
+
+Structured output enables:
+
+* Automated user provisioning workflows
+* Compliance validation
+* System account protection auditing
+* Idempotent infrastructure scripts
+* Drift detection in access control
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
 ```
-Mode    : user
-Backend : mock
-Dry Run : false
-
-User Details:
-Username       : alice
-UID            : 1001
-Primary Group  : alice
-Supplementary  : dev
-Home Directory : /home/alice
-Shell          : /bin/bash
-Full Name      : Alice Example
-Created        : yes
-Existed        : no
-
-Warnings:
-  (none)
+user://target.VERB(options)
 ```
 
-### Creating a New Group
+| Component | Description                    |
+| --------- | ------------------------------ |
+| `handle`  | `user://`                      |
+| `target`  | Username, group, or membership |
+| `VERB`    | Action                         |
+| `options` | Structured arguments           |
 
-**Example from tests:**
-```bash
-# Create a new group
-user://group/admins add --mode=group --backend=mock --group_name=admins
+---
+
+### Available Verbs
+
+| Verb     | Purpose                           |
+| -------- | --------------------------------- |
+| `add`    | Create user, group, or membership |
+| `delete` | Remove user, group, or membership |
+| `passwd` | Change password                   |
+| `lock`   | Lock account                      |
+| `unlock` | Unlock account                    |
+| `groups` | List group memberships            |
+| `exists` | Check existence                   |
+
+---
+
+### Production Examples
+
+#### Create User
+
+```
+user://alice.add(mode=user,username=alice,backend=system)
 ```
 
-**Expected output:**
+#### Create Group
+
+```
+user://group/dev.add(mode=group,group_name=dev)
+```
+
+#### Add Membership
+
+```
+user://membership/alice.add(mode=membership,member=alice,groups=dev,docker)
+```
+
+#### Delete User Safely
+
+```
+user://alice.delete(
+  mode=user,
+  remove_home=true,
+  remove_from_all_groups=true,
+  ignore_if_missing=true
+)
+```
+
+#### Lock Account
+
+```
+user://alice.lock
+```
+
+#### Check Existence
+
+```
+user://alice.exists
+```
+
+---
+
+## 3.2 Execution Semantics
+
+### Deterministic Behavior
+
+* Must provide `username` or `uid` for identity-based operations.
+* `mode` required for add/delete.
+* Conflicting password sources rejected.
+* UID mismatch produces explicit failure.
+* Dry-run produces structured preview without changes.
+
+---
+
+### Structured Output Contracts
+
+Example: Password Change
+
 ```json
 {
   "ok": true,
-  "mode": "group", 
-  "backend": "mock",
-  "dry_run": false,
-  "group": {
-    "name": "admins",
-    "gid": 1001,
-    "created": true,
-    "existed": false
-  },
-  "warnings": []
-}
-```
-
-### Adding User to Groups (Membership)
-
-**Example from tests:**
-```bash
-# Add alice to admins and dev groups
-user://membership/alice add --mode=membership --backend=mock --member=alice --groups=admins,dev
-```
-
-### Dry Run Mode
-
-**Example from tests:**
-```bash
-# Test what would happen without making changes
-user://alice add --mode=user --backend=mock --username=alice --dry_run=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "mode": "user",
-  "backend": "mock", 
-  "dry_run": true,
+  "backend": "system",
   "user": {
     "username": "alice",
-    "created": false
-  },
-  "warnings": []
-}
-```
-
-### Handling Existing Users
-
-**Example from tests:**
-```bash
-# Don't fail if user already exists
-user://alice add --mode=user --backend=mock --username=alice --ignore_if_exists=true
-```
-
-## The Delete Action
-
-Use `delete` to remove users, groups, or group memberships.
-
-### Deleting a User
-
-**Example from tests:**
-```bash
-# Delete user and remove home directory
-user://alice delete --mode=user --backend=mock --username=alice --remove_home=true --remove_from_all_groups=true
-```
-
-### Handling Missing Users
-
-**Example from tests:**
-```bash
-# Don't fail if user doesn't exist
-user://bob delete --mode=user --backend=mock --username=bob --ignore_if_missing=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "mode": "user",
-  "backend": "mock",
-  "user": {
-    "username": "bob",
-    "existed": false,
-    "deleted": false, 
-    "missing": true
-  },
-  "warnings": ["User bob did not exist in backend mock, skipping deletion."]
-}
-```
-
-### System User Protection
-
-**Example from tests:**
-```bash
-# Protect system users from deletion
-user://root delete --mode=user --backend=system --username=root --protect_system_users=true --min_uid_for_delete=1000 --force=false
-```
-
-This will fail with an error because root (uid=0) is below the minimum UID.
-
-**Force delete system user:**
-```bash
-# Force delete system user (with warning)
-user://root delete --mode=user --backend=system --username=root --protect_system_users=true --min_uid_for_delete=1000 --force=true
-```
-
-**Expected output includes warning:**
-```json
-{
-  "ok": true,
-  "warnings": ["Forced deletion of system user 'root' (uid=0)"]
-}
-```
-
-### Deleting Groups
-
-**Example from tests:**
-```bash
-# Delete group only if empty
-user://group/admins delete --mode=group --backend=mock --group_name=admins --only_if_empty=true --force=false
-```
-
-### Deleting Group Memberships
-
-**Example from tests:**
-```bash
-# Remove user from specific groups
-user://membership/alice delete --mode=membership --backend=mock --member=alice --groups=dev
-```
-
-**Remove user from all groups:**
-```bash
-user://membership/alice delete --mode=membership --backend=mock --member=alice --all_groups=true
-```
-
-### Dry Run Mode for Deletes
-
-**Example from tests:**
-```bash
-# Test deletion without making changes
-user://alice delete --mode=user --backend=mock --username=alice --dry_run=true --remove_home=true --ignore_if_missing=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "mode": "user",
-  "backend": "mock",
-  "dry_run": true,
-  "user": {
-    "username": "alice", 
-    "deleted": false,
-    "existed": false
-  }
-}
-```
-
-## The Passwd Action
-
-Use `passwd` to change user passwords.
-
-### Setting Password from Plain Text
-
-**Example from tests:**
-```bash
-# Set password using plain text
-user://alice passwd --backend=mock --username=alice --new_password_plain=Secret123!
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "backend": "mock",
-  "dry_run": false,
-  "user": {
-    "username": "alice",
-    "existed": true,
-    "missing": false
+    "existed": true
   },
   "password": {
     "changed": true,
     "scheme": "sha512_crypt",
-    "source": "plain",
-    "old_password_verified": false
+    "source": "plain"
   },
   "warnings": []
 }
 ```
 
-### Setting Password from Hash
+Example: Existence Check
 
-**Example from tests:**
-```bash
-# Set password using pre-computed hash
-user://alice passwd --backend=mock --username=alice --new_password_hash='$pbkdf2-sha512$100000$c2FsdA==$aGFzaA=='
-```
-
-**Expected output:**
 ```json
 {
-  "password": {
-    "changed": true,
-    "source": "hash"
+  "ok": true,
+  "query": {
+    "username": "alice",
+    "uid": null
+  },
+  "user": {
+    "exists": true,
+    "username": "alice",
+    "uid": 1001
   }
 }
 ```
 
-### Password Verification Required
+---
 
-**Example from tests:**
-```bash
-# Require old password verification
-user://alice passwd --backend=mock --username=alice --new_password_plain=NewSecret123! --require_old_password=true --old_password_plain=OldSecret123!
-```
+### Error Handling Structure
 
-### Handling Missing Users
-
-**Example from tests:**
-```bash
-# Don't fail if user doesn't exist
-user://bob passwd --backend=mock --username=bob --new_password_plain=Secret123! --ignore_if_missing=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "user": {
-    "username": "bob",
-    "existed": false,
-    "missing": true
-  },
-  "password": {
-    "changed": false
-  },
-  "warnings": ["User bob did not exist in backend mock, password not changed."]
-}
-```
-
-### Password Error Handling
-
-**Conflicting password sources (will fail):**
-```bash
-user://alice passwd --backend=mock --username=alice --new_password_plain=Secret123! --new_password_hash='$pbkdf2$123$salt$hash'
-```
-
-**Missing password (will fail):**
-```bash
-user://alice passwd --backend=mock --username=alice
-```
-
-### Dry Run Mode for Passwords
-
-**Example from tests:**
-```bash
-# Test password change without making changes
-user://alice passwd --backend=mock --username=alice --new_password_plain=Secret123! --dry_run=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "dry_run": true,
-  "password": {
-    "changed": false
-  },
-  "warnings": ["Dry run mode: password would have been changed"]
-}
-```
-
-### Password Text Output
-
-**Example text format output:**
-```
-Backend : mock
-User    : alice
-Dry Run : false
-
-User Details:
-Existed        : yes
-Missing        : no
-
-Password Details:
-Password Changed : yes
-Password Scheme  : sha512_crypt
-Password Source  : plain
-Old Password Verified : no
-
-Warnings:
-  (none)
-```
-
-## The Lock Action
-
-Use `lock` to prevent users from logging in.
-
-### Locking a User Account
-
-**Example from tests:**
-```bash
-# Lock user account
-user://alice lock --backend=mock --username=alice
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "backend": "mock",
-  "dry_run": false,
-  "user": {
-    "username": "alice",
-    "uid": 1001,
-    "existed": true,
-    "missing": false
-  },
-  "lock": {
-    "requested": true,
-    "was_locked": false,
-    "is_locked": true,
-    "changed": true
-  },
-  "warnings": []
-}
-```
-
-### Locking Already Locked User
-
-**Example from tests:**
-```bash
-# Lock user that's already locked
-user://alice lock --backend=mock --username=alice
-```
-
-The system handles this gracefully - no error occurs.
-
-### Handling Missing Users
-
-**Example from tests:**
-```bash
-# Don't fail if user doesn't exist  
-user://bob lock --backend=mock --username=bob --ignore_if_missing=true
-```
-
-### System User Protection
-
-**Example from tests:**
-```bash
-# Protect system users from being locked
-user://root lock --backend=mock --username=root --protect_system_users=true --min_uid_for_lock=1000 --force=false
-```
-
-This will fail because root (uid=0) is below the minimum UID.
-
-**Force lock system user:**
-```bash
-user://root lock --backend=mock --username=root --protect_system_users=true --min_uid_for_lock=1000 --force=true
-```
-
-### Dry Run Mode for Lock
-
-**Example from tests:**
-```bash
-# Test locking without making changes
-user://alice lock --backend=mock --username=alice --dry_run=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "dry_run": true,
-  "lock": {
-    "was_locked": false,
-    "is_locked": false,
-    "changed": false
-  },
-  "warnings": ["Dry run mode: user would have been locked"]
-}
-```
-
-### Lock Text Output
-
-**Example text format output:**
-```
-Backend : mock
-User    : alice  
-Dry Run : false
-
-User Details:
-Existed    : yes
-Missing    : no
-
-Lock Details:
-Was Locked : no
-Is Locked  : yes
-Changed    : yes
-
-Warnings:
-  (none)
-```
-
-## The Unlock Action
-
-Use `unlock` to allow locked users to log in again.
-
-### Unlocking a User Account
-
-**Example from tests:**
-```bash
-# Unlock user account
-user://alice unlock --backend=mock --username=alice
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "backend": "mock", 
-  "dry_run": false,
-  "user": {
-    "username": "alice",
-    "uid": 1001,
-    "existed": true,
-    "missing": false
-  },
-  "unlock": {
-    "requested": true,
-    "was_locked": true,
-    "is_locked": false,
-    "changed": true
-  },
-  "warnings": []
-}
-```
-
-### Unlocking Already Unlocked User
-
-**Example from tests:**
-```bash
-# Unlock user that's already unlocked
-user://alice unlock --backend=mock --username=alice --ignore_if_missing=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "user": {
-    "username": "alice",
-    "existed": false,
-    "missing": true
-  },
-  "unlock": {
-    "was_locked": null,
-    "is_locked": null,
-    "changed": false
-  },
-  "warnings": ["User alice did not exist in backend mock"]
-}
-```
-
-### Handling Missing Users
-
-**Example from tests:**
-```bash
-# Don't fail if user doesn't exist
-user://bob unlock --backend=mock --username=bob --ignore_if_missing=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "user": {
-    "username": "bob",
-    "existed": false,
-    "missing": true
-  },
-  "unlock": {
-    "was_locked": null,
-    "is_locked": null,
-    "changed": false
-  },
-  "warnings": ["User bob did not exist in backend mock"]
-}
-```
-
-### System User Protection
-
-**Example from tests:**
-```bash
-# Protect system users from being unlocked
-user://root unlock --backend=mock --username=root --protect_system_users=true --min_uid_for_unlock=1000 --force=false
-```
-
-**Force unlock system user:**
-```bash
-user://root unlock --backend=mock --username=root --protect_system_users=true --min_uid_for_unlock=1000 --force=true
-```
-
-**Expected output includes warning:**
-```json
-{
-  "ok": true,
-  "warnings": ["Forced unlock of system user 'root' (uid=0)"]
-}
-```
-
-### Dry Run Mode for Unlock
-
-**Example from tests:**
-```bash
-# Test unlocking without making changes
-user://alice unlock --backend=mock --username=alice --dry_run=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "dry_run": true,
-  "unlock": {
-    "was_locked": true,
-    "is_locked": true,
-    "changed": false
-  },
-  "warnings": ["Dry run mode: user would have been unlocked"]
-}
-```
-
-### Unlock Text Output
-
-**Example text format output:**
-```
-Backend : mock
-User    : alice
-Dry Run : false
-
-User Details:
-Existed     : yes
-Missing     : no
-
-Unlock Details:
-Was Locked  : yes
-Is Locked   : no  
-Changed     : yes
-
-Warnings:
-  (none)
-```
-
-## The Groups Action
-
-Use `groups` to list what groups a user belongs to.
-
-### Listing All User Groups
-
-**Example from tests:**
-```bash
-# List all groups for user
-user://alice groups --backend=mock --username=alice
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "backend": "mock",
-  "user": {
-    "username": "alice",
-    "uid": 1001,
-    "existed": true,
-    "missing": false
-  },
-  "groups": [
-    {
-      "name": "alice",
-      "gid": 1001,
-      "primary": true,
-      "supplementary": false,
-      "system_group": false
-    },
-    {
-      "name": "dev", 
-      "gid": 1002,
-      "primary": false,
-      "supplementary": true,
-      "system_group": false
-    },
-    {
-      "name": "adm",
-      "gid": 4,
-      "primary": false, 
-      "supplementary": true,
-      "system_group": true
-    }
-  ],
-  "warnings": []
-}
-```
-
-### Excluding System Groups
-
-**Example from tests:**
-```bash
-# Hide system groups (GID < 1000)
-user://alice groups --backend=mock --username=alice --include_system_groups=false --min_gid_for_system=1000
-```
-
-**Expected output (system groups filtered):**
-```json
-{
-  "groups": [
-    {
-      "name": "alice",
-      "gid": 1001,
-      "primary": true,
-      "supplementary": false, 
-      "system_group": false
-    },
-    {
-      "name": "dev",
-      "gid": 1002, 
-      "primary": false,
-      "supplementary": true,
-      "system_group": false
-    }
-  ]
-}
-```
-
-### Excluding Primary Group
-
-**Example from tests:**
-```bash
-# Show only supplementary groups
-user://alice groups --backend=mock --username=alice --include_primary=false
-```
-
-**Expected output:**
-```json
-{
-  "groups": [
-    {
-      "name": "dev",
-      "gid": 1002,
-      "primary": false,
-      "supplementary": true,
-      "system_group": false
-    }
-  ]
-}
-```
-
-### Excluding Supplementary Groups
-
-**Example from tests:**
-```bash
-# Show only primary group
-user://alice groups --backend=mock --username=alice --include_supplementary=false
-```
-
-**Expected output:**
-```json
-{
-  "groups": [
-    {
-      "name": "alice", 
-      "gid": 1001,
-      "primary": true,
-      "supplementary": false,
-      "system_group": false
-    }
-  ]
-}
-```
-
-### Filtering by Group Name
-
-**Example from tests:**
-```bash
-# Show only groups matching name
-user://alice groups --backend=mock --username=alice --group_name_filter=dev
-```
-
-**Expected output:**
-```json
-{
-  "groups": [
-    {
-      "name": "dev",
-      "gid": 1002,
-      "primary": false,
-      "supplementary": true,
-      "system_group": false
-    }
-  ]
-}
-```
-
-### Handling Missing Users
-
-**Example from tests:**
-```bash
-# Don't fail if user doesn't exist
-user://bob groups --backend=mock --username=bob --ignore_if_missing=true
-```
-
-**Expected output:**
-```json
-{
-  "ok": true,
-  "user": {
-    "username": "bob",
-    "uid": null,
-    "existed": false,
-    "missing": true
-  },
-  "groups": [],
-  "warnings": ["User bob did not exist in backend mock"]
-}
-```
-
-### Groups Text Output
-
-**Example text format output:**
-```
-Backend : mock
-User    : alice (uid=1001)
-
-Groups:
-- alice (gid=1001) [primary]
-- dev (gid=1002) [supplementary]  
-- adm (gid=4) [supplementary, system]
-
-Warnings:
-  (none)
-```
-
-### No Groups Warning
-
-**Example from tests:**
-```bash
-# User exists but has no groups
-user://alice groups --backend=mock --username=alice
-```
-
-When user has no groups, you get a warning:
-```json
-{
-  "groups": [],
-  "warnings": ["User alice has no groups matching the specified criteria"]
-}
-```
-
-## The Exists Action
-
-Use `exists` to check if a user exists in the system.
-
-### Check User by Username
-
-**Example from tests:**
-```bash
-# Check if user exists by username
-user://alice exists --backend=mock --username=alice
-```
-
-**Expected output (user exists):**
-```json
-{
-  "ok": true,
-  "backend": "mock",
-  "query": {
-    "username": "alice",
-    "uid": null
-  },
-  "user": {
-    "exists": true,
-    "username": "alice", 
-    "uid": 1001
-  },
-  "warnings": []
-}
-```
-
-**Expected output (user does not exist):**
-```bash
-user://bob exists --backend=mock --username=bob
-```
+Representative error:
 
 ```json
 {
-  "ok": true,
-  "backend": "mock", 
-  "query": {
-    "username": "bob",
-    "uid": null
-  },
-  "user": {
-    "exists": false,
-    "username": null,
-    "uid": null
-  },
-  "warnings": ["User bob does not exist in backend mock"]
+  "ok": false,
+  "error": {
+    "code": "user.invalid_username",
+    "message": "username cannot be empty"
+  }
 }
 ```
 
-### Check User by UID
+---
 
-**Example from tests:**
-```bash
-# Check if user exists by UID
-user:// exists --backend=mock --uid=1001
+### Exit Codes
+
+| Code | Meaning                |
+| ---- | ---------------------- |
+| 0    | Success                |
+| 1    | General error          |
+| 2    | Not found              |
+| 3    | Already exists         |
+| 4    | Validation error       |
+| 5    | Permission denied      |
+| 6    | System user protection |
+| 7    | Invalid arguments      |
+
+---
+
+## 4. Functional Domains
+
+---
+
+### 4.1 Automation Utilities
+
+**Handle**
+
+* `user://`
+
+**Scope**
+
+* Automated user provisioning
+* Idempotent infrastructure scripts
+* Access lifecycle management
+* Dev environment bootstrapping
+
+---
+
+### 4.2 Data & State Management
+
+**Scope**
+
+* Existence verification
+* Group membership inspection
+* UID/GID validation
+* User lifecycle tracking
+
+Example:
+
+```
+user://alice.groups(include_system_groups=false)
 ```
 
-**Expected output (UID exists):**
-```json
-{
-  "ok": true,
-  "backend": "mock",
-  "query": {
-    "username": null,
-    "uid": 1001
-  },
-  "user": {
-    "exists": true,
-    "username": "alice",
-    "uid": 1001
-  },
-  "warnings": []
-}
+---
+
+### 4.3 Filesystem & Storage
+
+Operations interact with:
+
+* `/etc/passwd`
+* `/etc/shadow`
+* `/etc/group`
+
+Home directory management supported via:
+
+```
+remove_home=true
 ```
 
-**Expected output (UID does not exist):**
-```bash
-user:// exists --backend=mock --uid=2000
-```
+---
 
-```json
-{
-  "ok": true,
-  "backend": "mock",
-  "query": {
-    "username": null, 
-    "uid": 2000
-  },
-  "user": {
-    "exists": false,
-    "username": null,
-    "uid": null
-  },
-  "warnings": ["UID 2000 does not exist in backend mock"]
-}
-```
+### 4.4 Network & Remote Operations
 
-### Check User by Both Username and UID
+Indirectly supports:
 
-**Example from tests:**
-```bash
-# Check that username and UID match
-user://alice exists --backend=mock --username=alice --uid=1001
-```
+* SSH access management
+* Service account provisioning
+* Identity-based access control for remote services
 
-**Expected output (consistent):**
-```json
-{
-  "ok": true,
-  "query": {
-    "username": "alice",
-    "uid": 1001
-  },
-  "user": {
-    "exists": true,
-    "username": "alice",
-    "uid": 1001
-  },
-  "warnings": []
-}
-```
+---
 
-**Username/UID mismatch (will fail):**
-```bash
-user://alice exists --backend=mock --username=alice --uid=2000
-```
+### 4.5 Packages & Software
 
-This fails with error: "User 'alice' exists with uid=1001, which does not match requested uid=2000"
+Supports:
 
-### No Identity Error
+* Service account creation during deployment
+* Post-install user/group configuration
+* Permission assignment for applications
 
-**Example from tests:**
-```bash
-# Must provide username or UID
-user:// exists --backend=mock
-```
+---
 
-This fails with error: "You must provide a username, uid, or a target that resolves to a username"
+### 4.6 Process & Service Management
 
-### Exists Text Output
+Integrates with:
 
-**Example text format output (exists):**
-```
-Backend : mock
-Query   : username=alice, uid=(none)
+* `svc://` for restarting services after account changes
+* `exec://` for command execution under specific users
+* `file://` for verifying home directory state
 
-User Exists:
-Exists   : yes
-Username : alice
-UID      : 1001
+---
 
-Warnings:
-  (none)
-```
+### 4.7 Security & Secrets
 
-**Example text format output (does not exist):**
-```
-Backend : mock  
-Query   : username=bob, uid=(none)
+Primary capabilities:
 
-User Exists:
-Exists   : no
-Username : (none)
-UID      : (none)
+* Password hashing (sha512_crypt, pbkdf2)
+* System user protection
+* UID/GID validation
+* Forced operations require explicit override
+* Lock/unlock operations for incident response
 
-Warnings:
-- User bob does not exist in backend mock
-```
+---
 
-## Common Options
+### 4.8 System Information
 
-These options work with most verbs:
+Structured reporting includes:
 
-### Backend Selection
+* UID
+* Primary group
+* Supplementary groups
+* System group flag
+* Existence state
+* Lock status
 
-- `--backend=system` - Use real system (default)
-- `--backend=mock` - Use test backend (for testing)
+---
 
-### Output Format
+## 5. Platform Support
 
-- `--format=json` - JSON output (default)
-- `--format=text` - Human-readable text output
+| Platform   | Support Level   |
+| ---------- | --------------- |
+| Linux      | Full support    |
+| Unix/macOS | Limited support |
+| Windows    | Not supported   |
 
-### Safety Options
+System backend relies on native system tools:
 
-- `--dry_run=true` - Show what would happen without making changes
-- `--ignore_if_missing=true` - Don't fail if user/group doesn't exist
-- `--force=true` - Override safety checks
+* `useradd`
+* `userdel`
+* `usermod`
+* `passwd`
 
-### System Protection
+Mock backend provides test-only functionality.
 
-- `--protect_system_users=true` - Protect system accounts (default)
-- `--min_uid_for_delete=1000` - Minimum UID for deletion
-- `--min_uid_for_lock=1000` - Minimum UID for locking
+---
 
-## Error Handling
+## 6. Operational Best Practices
 
-The user handle provides detailed error messages:
+### Safe Usage Guidelines
 
-**Username validation errors:**
-- Empty usernames
-- Invalid characters  
-- Too long usernames
+* Use `dry_run=true` before destructive operations.
+* Keep `protect_system_users=true`.
+* Avoid `force=true` in automation.
+* Use `ignore_if_missing=true` for idempotent scripts.
+* Lock accounts before deletion when appropriate.
 
-**Conflict errors:**
-- User already exists
-- UID already in use
-- Group already exists
+---
 
-**Not found errors:**
-- User doesn't exist
-- Group doesn't exist
-- Membership doesn't exist
+### Automation Considerations
 
-**Protection errors:**
-- System user protection
-- UID range violations
+* Always check `ok` field.
+* Use `exists` before `add` in idempotent workflows.
+* Validate UID ranges.
+* Use explicit backend selection in CI.
 
-**Password errors:**
-- Missing password
-- Conflicting password sources
-- Hash scheme not supported
-- Old password verification failed
+---
 
-All errors include detailed information and suggested solutions.
+### CI/CD Integration
 
-## Backend Information
+Example workflow:
 
-The user handle supports two backends:
+1. `user://alice.exists`
+2. `user://alice.add(...)` if missing
+3. `user://alice.groups`
+4. Validate membership
+5. Continue deployment
 
-### System Backend
-- Uses real system commands (useradd, userdel, etc.)
-- Modifies actual user accounts
-- Requires appropriate permissions
-- Default backend
+---
 
-### Mock Backend  
-- Simulated users and groups
-- Used for testing
-- No real system changes
-- Each operation starts with fresh state
+### Production Environment Recommendations
 
-## Username and Group Validation
+* Audit group memberships regularly.
+* Use service accounts for applications.
+* Rotate passwords periodically.
+* Remove access immediately when no longer needed.
+* Log all user management operations.
+* Avoid modifying system users unless necessary.
 
-**Valid usernames:**
-- alice
-- user_123
-- test-user
+---
 
-**Invalid usernames:**
-- Empty string
-- user@domain (contains @)
-- -badstart (starts with -)
-- Too long names (over 32 characters)
+## 7. Use Cases by Role
 
-**UID/GID Ranges:**
-- System users: UID < 1000
-- Regular users: UID >= 1000, UID <= 65533
-- Same rules apply to groups
+### DevOps Engineers
 
-## Tips and Best Practices
+* Automate developer account provisioning.
+* Manage service accounts.
+* Enforce least-privilege group memberships.
+* Integrate user lifecycle into pipelines.
 
-1. **Always test first**: Use `--dry_run=true` to see what will happen
-2. **Handle missing gracefully**: Use `--ignore_if_missing=true` for scripts  
-3. **Protect system accounts**: Keep default protection settings
-4. **Use specific UIDs**: When creating users, specify UID to avoid conflicts
-5. **Verify operations**: Use `exists` verb to confirm changes
-6. **Check groups**: Use `groups` verb to verify group memberships
-7. **Be careful with force**: Only use `--force=true` when absolutely needed
+---
 
-## Examples for Common Tasks
+### SRE Engineers
 
-**Create a developer user:**
-```bash
-user://dev1 add --mode=user --username=dev1 --groups=dev,docker
-```
+* Lock compromised accounts.
+* Audit UID/GID conflicts.
+* Validate group assignments.
+* Investigate authentication issues.
 
-**Reset a user's password:**
-```bash  
-user://alice passwd --new_password_plain=NewPassword123!
-```
+---
 
-**Lock a compromised account:**
-```bash
-user://suspicious_user lock
-```
+### Network Administrators
 
-**Check if user exists before creating:**
-```bash
-user://newuser exists && echo "User exists" || user://newuser add --mode=user
-```
+* Manage SSH-enabled users.
+* Control administrative group membership.
+* Enforce account policies.
 
-**List all non-system groups for user:**
-```bash
-user://alice groups --include_system_groups=false
-```
+---
 
-**Safely delete user with cleanup:**
-```bash
-user://olduser delete --mode=user --remove_home=true --remove_from_all_groups=true --ignore_if_missing=true
-```
+### AI / Automation Engineers
+
+* Parse structured group membership data.
+* Detect policy violations.
+* Trigger remediation workflows.
+* Enforce UID/GID standards programmatically.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+resh is implemented in Rust, providing:
+
+* Memory safety
+* Deterministic command parsing
+* Strong type validation
+* Secure system interaction
+
+---
+
+### Type Safety
+
+* Enumerated verbs
+* Strict validation rules
+* Explicit backend abstraction
+* Structured error modeling
+
+---
+
+### Performance Characteristics
+
+* Lightweight execution model
+* Fast mock backend for testing
+* Efficient group membership scanning
+* Deterministic JSON serialization
+
+---
+
+### Cross-Platform Architecture
+
+* Backend abstraction layer
+* System and mock backend support
+* Deterministic structured output
+* Explicit unsupported-platform signaling

@@ -17,8 +17,994 @@ use crate::core::{
 };
 
 // ===========================================================================
-// CronHandle - Main handle struct
+// Help text for --help command
 // ===========================================================================
+
+const CRON_HELP_TEXT: &str = "
+RESOURCE SHELL - CRON HANDLE
+============================
+
+USAGE:
+  cron://host.VERB(arguments)
+
+DESCRIPTION:
+  The cron handle provides complete management of scheduled tasks on your system.
+  Works with both traditional Unix cron jobs and modern systemd timers. List
+  existing scheduled tasks, create new jobs, remove unwanted tasks, and enable
+  or disable jobs without deleting them. Supports pattern matching, dry-run
+  mode, and automatic backend selection. Perfect for system automation, periodic
+  backups, monitoring, maintenance tasks, and scheduled operations.
+
+URL FORMAT:
+  cron://host.VERB(arguments)
+  cron://local.list
+  cron://system.add(schedule=\"0 2 * * *\",command=\"/usr/bin/backup\")
+
+  The host part can be any name (e.g., \"local\", \"system\", \"scheduler\").
+  The VERB specifies the operation to perform.
+
+VERBS (5 total):
+
+  Task Discovery:
+    list            List all scheduled tasks (cron jobs and systemd timers)
+
+  Task Creation:
+    add             Create new scheduled tasks
+
+  Task Removal:
+    rm              Remove scheduled tasks
+
+  Task Control:
+    enable          Enable disabled tasks (uncomment or start timers)
+    disable         Disable tasks without removing (comment out or stop timers)
+
+EXAMPLES:
+
+  List Scheduled Tasks (list):
+    # List all current user's jobs
+    cron://local.list
+
+    # List with specific scope
+    cron://local.list(scope=\"current\")
+
+    # List system-wide jobs
+    cron://local.list(scope=\"system\")
+
+    # List all jobs (user and system)
+    cron://local.list(scope=\"all\")
+
+    # List specific user's jobs
+    cron://local.list(scope=\"user\",users=\"alice,bob\")
+
+    # Include system jobs
+    cron://local.list(include_system=true)
+
+    # List with human-readable output
+    cron://local.list(human=true)
+
+    # Show raw crontab content
+    cron://local.list(raw=true)
+
+    # Show file paths
+    cron://local.list(paths=true)
+
+    # Limit results
+    cron://local.list(limit=10)
+
+    # List only cron jobs (no systemd)
+    cron://local.list(backend=\"cron\")
+
+    # List only systemd timers
+    cron://local.list(backend=\"systemd\")
+
+    # List from both backends
+    cron://local.list(backend=\"both\")
+
+  Add Scheduled Tasks (add):
+    # Simple daily backup at 2 AM
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\")
+
+    # With job ID and description
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",id=\"daily-backup\",description=\"Daily system backup\")
+
+    # Run every 5 minutes
+    cron://local.add(schedule=\"*/5 * * * *\",command=\"/usr/local/bin/monitor\")
+
+    # Weekly backup on Sunday
+    cron://local.add(schedule=\"0 0 * * 0\",command=\"/usr/local/bin/backup --full\",id=\"weekly-backup\")
+
+    # Hourly during business hours
+    cron://local.add(schedule=\"0 9-17 * * 1-5\",command=\"/usr/local/bin/check-status\")
+
+    # Specify backend explicitly
+    cron://local.add(schedule=\"0 3 * * *\",command=\"/usr/local/bin/cleanup\",backend=\"cron\")
+
+    # Use systemd timer
+    cron://local.add(schedule=\"0 4 * * *\",command=\"/usr/local/bin/backup\",backend=\"systemd\")
+
+    # Auto backend selection
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",backend=\"auto\")
+
+    # With specific scope
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",scope=\"current\")
+
+    # System-wide job
+    cron://local.add(schedule=\"0 3 * * *\",command=\"/usr/local/bin/cleanup\",scope=\"system\")
+
+    # User-specific job
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",scope=\"user\",user=\"alice\")
+
+    # Prevent duplicates
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",allow_duplicate=false)
+
+    # Allow duplicates
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",allow_duplicate=true)
+
+    # Dry run (test without creating)
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",dry_run=true)
+
+    # With environment variables (cron)
+    cron://local.add(schedule=\"0 2 * * *\",command=\"PATH=/usr/local/bin:/usr/bin /usr/local/bin/backup\")
+
+    # Complex command
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup --full --compress --output=/backups\")
+
+    # Command with pipe
+    cron://local.add(schedule=\"*/10 * * * *\",command=\"/usr/local/bin/check-disk | /usr/local/bin/alert\")
+
+  Remove Scheduled Tasks (rm):
+    # Remove by ID
+    cron://local.rm(id=\"daily-backup\")
+
+    # Remove by exact schedule and command
+    cron://local.rm(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\")
+
+    # Remove by command pattern
+    cron://local.rm(match_command=\"backup\")
+
+    # Remove by comment pattern
+    cron://local.rm(match_comment=\"daily\")
+
+    # Remove with specific backend
+    cron://local.rm(id=\"backup-job\",backend=\"cron\")
+
+    # Remove from both backends
+    cron://local.rm(match_command=\"backup\",backend=\"both\")
+
+    # Remove with scope
+    cron://local.rm(id=\"backup-job\",scope=\"current\")
+
+    # Remove system-wide
+    cron://local.rm(match_command=\"cleanup\",scope=\"system\")
+
+    # Remove from specific user
+    cron://local.rm(match_command=\"backup\",scope=\"user\",user=\"alice\")
+
+    # Dry run (test without removing)
+    cron://local.rm(id=\"daily-backup\",dry_run=true)
+
+    # Remove all matching backup jobs
+    cron://local.rm(match_command=\"backup\",backend=\"both\",scope=\"all\")
+
+    # Remove by exact match
+    cron://local.rm(schedule=\"*/5 * * * *\",command=\"/usr/local/bin/monitor\")
+
+    # Remove multiple patterns
+    cron://local.rm(match_command=\"backup|cleanup|monitor\")
+
+  Enable Disabled Tasks (enable):
+    # Enable by ID
+    cron://local.enable(id=\"backup-job\",backend=\"cron\")
+
+    # Enable by schedule and command
+    cron://local.enable(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",backend=\"cron\")
+
+    # Enable by command pattern
+    cron://local.enable(match_command=\"backup\",backend=\"cron\")
+
+    # Enable with specific backend
+    cron://local.enable(id=\"backup-job\",backend=\"systemd\")
+
+    # Enable from both backends
+    cron://local.enable(match_command=\"backup\",backend=\"both\")
+
+    # Enable with scope
+    cron://local.enable(id=\"backup-job\",scope=\"current\")
+
+    # Enable system-wide
+    cron://local.enable(match_command=\"cleanup\",scope=\"system\")
+
+    # Dry run (test without enabling)
+    cron://local.enable(id=\"backup-job\",dry_run=true)
+
+    # Enable all disabled backup jobs
+    cron://local.enable(match_command=\"backup\",backend=\"both\",scope=\"all\")
+
+    # Enable by comment pattern
+    cron://local.enable(match_comment=\"daily\",backend=\"cron\")
+
+  Disable Active Tasks (disable):
+    # Disable by ID
+    cron://local.disable(id=\"backup-job\",backend=\"cron\")
+
+    # Disable by schedule and command
+    cron://local.disable(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",backend=\"cron\")
+
+    # Disable by command pattern
+    cron://local.disable(match_command=\"backup\",backend=\"cron\")
+
+    # Disable with specific backend
+    cron://local.disable(id=\"backup-job\",backend=\"systemd\")
+
+    # Disable from both backends
+    cron://local.disable(match_command=\"backup\",backend=\"both\")
+
+    # Disable with scope
+    cron://local.disable(id=\"backup-job\",scope=\"current\")
+
+    # Disable system-wide
+    cron://local.disable(match_command=\"cleanup\",scope=\"system\")
+
+    # Dry run (test without disabling)
+    cron://local.disable(id=\"backup-job\",dry_run=true)
+
+    # Stop systemd timer immediately
+    cron://local.disable(id=\"backup-job\",backend=\"systemd\",stop_now=true)
+
+    # Don't stop running timer
+    cron://local.disable(id=\"backup-job\",backend=\"systemd\",stop_now=false)
+
+    # Disable all backup jobs
+    cron://local.disable(match_command=\"backup\",backend=\"both\",scope=\"all\")
+
+    # Disable by comment pattern
+    cron://local.disable(match_comment=\"hourly\",backend=\"cron\")
+
+LIST ARGUMENTS:
+  scope=SCOPE            What jobs to list (default: current)
+                         Values: current, user, system, all
+  users=USERS            Comma-separated list of users (for scope=user)
+  include_system=BOOL    Include system jobs (default: false)
+  backend=BACKEND        Which backend to check (default: both)
+                         Values: cron, systemd, both
+  human=BOOL             Human-readable output (default: false)
+  raw=BOOL               Show raw crontab content (default: false)
+  paths=BOOL             Show file paths (default: false)
+  limit=NUMBER           Maximum number of results
+
+ADD ARGUMENTS:
+  schedule=SCHEDULE      Cron schedule expression (required)
+                         Format: \"minute hour day month weekday\"
+                         Example: \"0 2 * * *\" (daily at 2 AM)
+  command=COMMAND        Command to execute (required)
+  id=ID                  Unique identifier for the job
+  description=DESC       Human-readable description
+  backend=BACKEND        Which system to use (default: auto)
+                         Values: cron, systemd, auto
+  scope=SCOPE            Where to create job (default: current)
+                         Values: current, user, system
+  user=USER              User for scope=user
+  allow_duplicate=BOOL   Allow duplicate jobs (default: true)
+  dry_run=BOOL           Test without creating (default: false)
+
+RM ARGUMENTS:
+  id=ID                  Job identifier to remove
+  schedule=SCHEDULE      Exact schedule to match
+  command=COMMAND        Exact command to match
+  match_command=PATTERN  Pattern to match in command
+  match_comment=PATTERN  Pattern to match in comments
+  backend=BACKEND        Which backend to check (default: both)
+                         Values: cron, systemd, both
+  scope=SCOPE            Where to look (default: current)
+                         Values: current, user, system, all
+  user=USER              User for scope=user
+  dry_run=BOOL           Test without removing (default: false)
+
+ENABLE ARGUMENTS:
+  id=ID                  Job identifier to enable
+  schedule=SCHEDULE      Exact schedule to match
+  command=COMMAND        Exact command to match
+  match_command=PATTERN  Pattern to match in command
+  match_comment=PATTERN  Pattern to match in comments
+  backend=BACKEND        Which backend to use (default: both)
+                         Values: cron, systemd, both
+  scope=SCOPE            Where to look (default: current)
+                         Values: current, user, system, all
+  user=USER              User for scope=user
+  dry_run=BOOL           Test without enabling (default: false)
+
+DISABLE ARGUMENTS:
+  id=ID                  Job identifier to disable
+  schedule=SCHEDULE      Exact schedule to match
+  command=COMMAND        Exact command to match
+  match_command=PATTERN  Pattern to match in command
+  match_comment=PATTERN  Pattern to match in comments
+  backend=BACKEND        Which backend to use (default: both)
+                         Values: cron, systemd, both
+  scope=SCOPE            Where to look (default: current)
+                         Values: current, user, system, all
+  user=USER              User for scope=user
+  stop_now=BOOL          Stop systemd timers immediately (default: true)
+  dry_run=BOOL           Test without disabling (default: false)
+
+CRON SCHEDULE FORMAT:
+
+  Cron schedules use 5 fields separated by spaces:
+
+    * * * * *
+    | | | | |
+    | | | | +-- Day of Week (0-6, Sunday=0 or 7)
+    | | | +---- Month (1-12)
+    | | +------ Day of Month (1-31)
+    | +-------- Hour (0-23)
+    +---------- Minute (0-59)
+
+  Special characters:
+    *           Any value (wildcard)
+    ,           List separator (e.g., \"1,3,5\")
+    -           Range (e.g., \"9-17\" for 9 AM to 5 PM)
+    /           Step values (e.g., \"*/5\" for every 5 units)
+
+  Field ranges:
+    Minute      0-59
+    Hour        0-23 (0 = midnight, 12 = noon, 23 = 11 PM)
+    Day         1-31
+    Month       1-12 (or Jan-Dec)
+    Weekday     0-7 (0 or 7 = Sunday, 1 = Monday, 6 = Saturday)
+
+  Common examples:
+    0 2 * * *               Daily at 2:00 AM
+    */5 * * * *             Every 5 minutes
+    0 */2 * * *             Every 2 hours
+    0 0 * * 0               Weekly on Sunday at midnight
+    0 0 1 * *               Monthly on the 1st at midnight
+    0 9-17 * * 1-5          Hourly 9 AM-5 PM, Monday-Friday
+    30 4 1,15 * *           1st and 15th of month at 4:30 AM
+    0 0 * * 1               Every Monday at midnight
+    0 6 * * 1-5             Weekdays at 6:00 AM
+    */10 9-18 * * 1-5       Every 10 min, 9 AM-6 PM, weekdays
+    0 22 * * *              Daily at 10:00 PM
+    15 2,14 * * *           Daily at 2:15 AM and 2:15 PM
+
+  Special strings (cron backend only):
+    @reboot                 Run at system startup
+    @yearly                 Run once a year (0 0 1 1 *)
+    @annually               Same as @yearly
+    @monthly                Run once a month (0 0 1 * *)
+    @weekly                 Run once a week (0 0 * * 0)
+    @daily                  Run once a day (0 0 * * *)
+    @midnight               Same as @daily
+    @hourly                 Run once an hour (0 * * * *)
+
+BACKENDS:
+
+  The cron handle supports two backends for managing scheduled tasks:
+
+  cron (Traditional Unix Cron):
+    • Uses traditional Unix cron system
+    • Jobs stored in user crontabs or system files
+    • Simple and widely supported
+    • Works on all Unix-like systems
+    • Good for simple scheduled tasks
+    • Limited to time-based scheduling
+    • Locations: ~/.crontab, /etc/crontab, /etc/cron.d/
+
+  systemd (Modern Systemd Timers):
+    • Uses systemd timer and service units
+    • More powerful scheduling options
+    • Better logging and monitoring via journalctl
+    • Dependency management with other services
+    • Can trigger on events, not just time
+    • Requires systemd (most modern Linux)
+    • Locations: ~/.config/systemd/user/, /etc/systemd/system/
+
+  auto (Automatic Selection):
+    • Try systemd first if available
+    • Fall back to cron if systemd unavailable
+    • Choose based on task requirements
+    • Recommended for portability
+
+  Backend comparison:
+    Feature              Cron    Systemd
+    Time-based           ✓       ✓
+    Event-based          ✗       ✓
+    Logging              Basic   Rich
+    Dependencies         ✗       ✓
+    Resource limits      ✗       ✓
+    Monitoring           Basic   Advanced
+    Portability          High    Medium
+
+SCOPE VALUES:
+
+  Scope determines where jobs are managed:
+
+  current:
+    • Current user's jobs only
+    • Safe for normal users
+    • No root privileges required
+    • Default scope
+
+  user:
+    • Specific user's jobs
+    • Requires user parameter
+    • May require privileges
+
+  system:
+    • System-wide jobs
+    • Usually requires root
+    • Affects all users
+    • /etc/crontab, /etc/cron.d/
+
+  all:
+    • All jobs (user + system)
+    • Comprehensive view
+    • Useful for auditing
+
+OUTPUT FORMATS:
+
+  list output:
+    {
+      \"ok\": true,
+      \"timestamp_unix_ms\": 1701234567890,
+      \"scope\": \"current\",
+      \"users\": [\"alice\"],
+      \"include_system\": false,
+      \"truncated\": false,
+      \"entries_total\": 2,
+      \"entries_returned\": 2,
+      \"entries_disabled\": 0,
+      \"entries\": [
+        {
+          \"id\": \"daily-backup\",
+          \"backend\": \"cron\",
+          \"schedule\": \"0 2 * * *\",
+          \"command\": \"/usr/local/bin/backup\",
+          \"description\": \"Daily system backup\",
+          \"enabled\": true,
+          \"location\": {
+            \"scope\": \"current\",
+            \"file\": \"/var/spool/cron/crontabs/alice\",
+            \"user\": \"alice\",
+            \"line_number\": 5
+          }
+        }
+      ]
+    }
+
+  add output:
+    {
+      \"ok\": true,
+      \"timestamp_unix_ms\": 1701234567890,
+      \"backend_used\": \"cron\",
+      \"dry_run\": false,
+      \"duplicate\": false,
+      \"job\": {
+        \"id\": \"daily-backup\",
+        \"backend\": \"cron\",
+        \"schedule\": \"0 2 * * *\",
+        \"command\": \"/usr/local/bin/backup\",
+        \"location\": {
+          \"scope\": \"current\",
+          \"file\": \"/var/spool/cron/crontabs/alice\",
+          \"user\": \"alice\",
+          \"line_added\": 6
+        }
+      }
+    }
+
+  rm output:
+    {
+      \"ok\": true,
+      \"timestamp_unix_ms\": 1701234567890,
+      \"dry_run\": false,
+      \"backend\": \"both\",
+      \"removed\": {
+        \"cron\": [
+          {
+            \"id\": \"daily-backup\",
+            \"schedule\": \"0 2 * * *\",
+            \"command\": \"/usr/local/bin/backup\",
+            \"location\": {
+              \"scope\": \"current\",
+              \"file\": \"/var/spool/cron/crontabs/alice\",
+              \"user\": \"alice\"
+            }
+          }
+        ],
+        \"systemd\": []
+      },
+      \"matched_count\": {
+        \"cron\": 1,
+        \"systemd\": 0
+      }
+    }
+
+  enable output:
+    {
+      \"ok\": true,
+      \"timestamp_unix_ms\": 1701234567890,
+      \"dry_run\": false,
+      \"backend\": \"cron\",
+      \"enabled\": {
+        \"cron\": [
+          {
+            \"id\": \"backup-job\",
+            \"schedule\": \"0 2 * * *\",
+            \"command\": \"/usr/local/bin/backup\",
+            \"was_disabled\": true
+          }
+        ]
+      },
+      \"matched_count\": {
+        \"cron\": 1,
+        \"systemd\": 0
+      },
+      \"already_enabled_count\": {
+        \"cron\": 0,
+        \"systemd\": 0
+      }
+    }
+
+  disable output:
+    {
+      \"ok\": true,
+      \"timestamp_unix_ms\": 1701234567890,
+      \"dry_run\": false,
+      \"backend\": \"cron\",
+      \"disabled\": {
+        \"cron\": [
+          {
+            \"id\": \"backup-job\",
+            \"schedule\": \"0 2 * * *\",
+            \"command\": \"/usr/local/bin/backup\",
+            \"was_enabled\": true
+          }
+        ]
+      },
+      \"matched_count\": {
+        \"cron\": 1,
+        \"systemd\": 0
+      },
+      \"already_disabled_count\": {
+        \"cron\": 0,
+        \"systemd\": 0
+      }
+    }
+
+EXIT CODES:
+  0                      Success
+  1                      General error
+  2                      Invalid arguments
+  3                      Permission denied
+  4                      Job not found
+  5                      Duplicate job
+  6                      Invalid schedule
+  7                      Backend unavailable
+
+ERROR CODES:
+
+  Add errors:
+    cron.add_error             General add error
+    cron.add_missing_schedule  Schedule not provided
+    cron.add_missing_command   Command not provided
+    cron.add_invalid_schedule  Invalid schedule format
+    cron.add_duplicate         Job already exists
+    cron.add_permission_denied Insufficient permissions
+
+  Remove errors:
+    cron.rm_error              General remove error
+    cron.rm_no_selector        No selection criteria provided
+    cron.rm_invalid_backend    Invalid backend specified
+    cron.rm_not_found          No matching jobs found
+    cron.rm_permission_denied  Insufficient permissions
+
+  Enable/Disable errors:
+    cron.enable_error          General enable error
+    cron.disable_error         General disable error
+    cron.modify_not_found      No matching jobs found
+    cron.modify_permission_denied  Insufficient permissions
+
+  List errors:
+    cron.list_error            General list error
+    cron.list_permission_denied    Insufficient permissions
+
+  Backend errors:
+    cron.backend_unavailable   Backend not available
+    cron.backend_error         Backend operation failed
+
+COMMON WORKFLOWS:
+
+  Daily backup at 2 AM:
+    # Add backup job
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",id=\"daily-backup\",description=\"Daily backup\")
+
+    # Verify it was added
+    cron://local.list(match_command=\"backup\")
+
+  Hourly monitoring:
+    # Add monitoring job
+    cron://local.add(schedule=\"0 * * * *\",command=\"/usr/local/bin/monitor\",id=\"hourly-monitor\")
+
+    # Check status
+    cron://local.list(id=\"hourly-monitor\")
+
+  Temporary disable for maintenance:
+    # Disable backup during maintenance
+    cron://local.disable(id=\"daily-backup\")
+
+    # Perform maintenance
+    # ...
+
+    # Re-enable backup
+    cron://local.enable(id=\"daily-backup\")
+
+  Clean up old jobs:
+    # List all jobs first
+    cron://local.list
+
+    # Remove old backup jobs
+    cron://local.rm(match_command=\"old-backup\")
+
+    # Verify removal
+    cron://local.list(match_command=\"backup\")
+
+  Test before applying:
+    # Test adding a job
+    cron://local.add(schedule=\"0 3 * * *\",command=\"/usr/local/bin/cleanup\",dry_run=true)
+
+    # Test removing jobs
+    cron://local.rm(match_command=\"backup\",dry_run=true)
+
+    # Review dry run output, then apply
+    cron://local.rm(match_command=\"backup\")
+
+  Migrate from cron to systemd:
+    # List current cron jobs
+    cron://local.list(backend=\"cron\")
+
+    # Add equivalent systemd timer
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",backend=\"systemd\",id=\"backup-timer\")
+
+    # Test systemd timer works
+    # ...
+
+    # Remove old cron job
+    cron://local.rm(id=\"backup-cron\",backend=\"cron\")
+
+  Bulk operations:
+    # Disable all backup jobs
+    cron://local.disable(match_command=\"backup\",backend=\"both\")
+
+    # Remove all test jobs
+    cron://local.rm(match_comment=\"test\",backend=\"both\")
+
+    # Enable all monitoring jobs
+    cron://local.enable(match_command=\"monitor\",backend=\"both\")
+
+  System-wide job management:
+    # List all system jobs (requires root)
+    cron://local.list(scope=\"system\")
+
+    # Add system-wide cleanup
+    cron://local.add(schedule=\"0 3 * * *\",command=\"/usr/local/sbin/cleanup\",scope=\"system\")
+
+    # Remove system job
+    cron://local.rm(id=\"cleanup\",scope=\"system\")
+
+  Multi-user management:
+    # List jobs for specific users
+    cron://local.list(scope=\"user\",users=\"alice,bob\")
+
+    # Add job for specific user
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",scope=\"user\",user=\"alice\")
+
+  Pattern-based management:
+    # Find all backup-related jobs
+    cron://local.list | grep backup
+
+    # Disable all backup jobs
+    cron://local.disable(match_command=\"backup\")
+
+    # Remove all jobs matching pattern
+    cron://local.rm(match_command=\"backup|cleanup|monitor\")
+
+BEST PRACTICES:
+  • Always use job IDs for easier management
+  • Add descriptive comments to your jobs
+  • Test with dry_run before applying changes
+  • Use meaningful schedule descriptions
+  • Keep commands simple or use scripts
+  • Use absolute paths in commands
+  • Set appropriate PATH in crontab if needed
+  • Redirect output to logs (>> /var/log/job.log 2>&1)
+  • Use backend=auto for portability
+  • Prefer systemd for complex scheduling
+  • Use cron for simple time-based tasks
+  • Document your scheduled tasks
+  • Review jobs periodically with list verb
+  • Remove unused jobs to reduce clutter
+  • Use disable instead of rm for temporary stops
+  • Test jobs manually before scheduling
+  • Monitor job execution logs
+  • Use scope=current for user jobs
+  • Require root only when necessary
+  • Use match_command for pattern-based operations
+  • Verify removal with dry_run first
+  • Keep backup of crontab before major changes
+  • Use systemd for jobs needing dependencies
+  • Set resource limits for systemd jobs
+  • Use appropriate schedule granularity
+  • Avoid overlapping job executions
+  • Handle job failures gracefully
+  • Use locking for non-concurrent jobs
+  • Consider time zones for scheduled tasks
+  • Test schedule expressions with cron tools
+
+SCHEDULE DESIGN TIPS:
+  • Start with less frequent schedules
+  • Avoid scheduling all jobs at midnight
+  • Spread load across different times
+  • Use prime numbers for intervals (*/7, */13)
+  • Consider business hours for user-facing tasks
+  • Use off-peak hours for resource-intensive jobs
+  • Account for daylight saving time changes
+  • Test schedule expressions before deploying
+  • Document why each schedule was chosen
+  • Review and optimize schedules periodically
+  • Use @reboot sparingly (system startup only)
+  • Avoid too-frequent schedules (< 1 minute)
+  • Consider job runtime when scheduling
+  • Use randomization for distributed systems
+  • Coordinate schedules across systems
+
+PATTERN MATCHING:
+
+  The cron handle supports pattern matching for flexible job selection:
+
+  Exact match:
+    id=\"backup-job\"                Match exact ID
+    schedule=\"0 2 * * *\"           Match exact schedule
+    command=\"/usr/local/bin/backup\"    Match exact command
+
+  Pattern match:
+    match_command=\"backup\"         Contains \"backup\"
+    match_command=\"backup|cleanup\" Contains \"backup\" OR \"cleanup\"
+    match_comment=\"daily\"          Comment contains \"daily\"
+
+  Combining patterns:
+    # Remove all backup jobs with \"old\" in comment
+    cron://local.rm(match_command=\"backup\",match_comment=\"old\")
+
+    # Disable all jobs matching multiple patterns
+    cron://local.disable(match_command=\"backup|cleanup|monitor\")
+
+PERMISSIONS:
+
+  Different operations require different permission levels:
+
+  Current user scope:
+    • list: No special permissions
+    • add: User can modify own crontab
+    • rm: User can remove own jobs
+    • enable/disable: User can modify own jobs
+
+  System scope:
+    • All operations typically require root
+    • System crontab: /etc/crontab
+    • System directories: /etc/cron.d/
+
+  Systemd:
+    • User timers: ~/.config/systemd/user/
+    • System timers: /etc/systemd/system/ (requires root)
+
+  Permission errors:
+    • code: cron.add_permission_denied
+    • message: \"Insufficient permissions\"
+
+SECURITY CONSIDERATIONS:
+  • Never include sensitive data in commands
+  • Use secure script files instead of inline commands
+  • Protect script files with proper permissions (chmod 700)
+  • Validate input before scheduling
+  • Avoid running jobs as root unless necessary
+  • Use sudoers file for privilege escalation
+  • Audit scheduled tasks regularly
+  • Monitor for unauthorized job additions
+  • Review system-wide jobs frequently
+  • Use job IDs for auditability
+  • Log all job executions
+  • Restrict access to crontab files
+  • Use systemd for better isolation
+  • Set resource limits on jobs
+  • Implement job execution timeouts
+  • Validate job output and errors
+  • Monitor for job failures
+  • Use secure PATH in crontabs
+  • Avoid environment variable injection
+  • Sanitize user input in commands
+
+TROUBLESHOOTING:
+
+  Job not running:
+    • Check if job is enabled
+    • Verify schedule is correct
+    • Check command path is absolute
+    • Review job logs
+    • Test command manually
+    • Check PATH and environment
+
+  Permission denied:
+    • Check file permissions
+    • Verify scope is appropriate
+    • Use sudo for system jobs
+    • Check crontab file ownership
+
+  Schedule not working:
+    • Validate cron expression
+    • Check for syntax errors
+    • Test with cron expression validators
+    • Verify timezone settings
+
+  Job runs but fails:
+    • Check command output
+    • Redirect stderr to log
+    • Test command in terminal
+    • Verify all dependencies
+    • Check environment variables
+
+  Systemd timer not triggering:
+    • Check timer status: systemctl status name.timer
+    • Check timer list: systemctl list-timers
+    • Review timer logs: journalctl -u name.timer
+    • Verify service unit exists
+    • Check timer OnCalendar expression
+
+  Cannot find job:
+    • Verify correct backend
+    • Check scope setting
+    • Use list to see all jobs
+    • Check job ID or pattern
+
+  Duplicate job error:
+    • Set allow_duplicate=true
+    • Remove existing job first
+    • Use different job ID
+
+  Common mistakes:
+    • Forgetting schedule quotes
+    • Wrong cron expression syntax
+    • Relative paths in commands
+    • Missing environment variables
+    • Incorrect scope or backend
+
+DEBUGGING:
+
+  Enable verbose output:
+    # Use raw output to see crontab content
+    cron://local.list(raw=true)
+
+    # Show file paths
+    cron://local.list(paths=true)
+
+  Test with dry run:
+    # Test add without creating
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",dry_run=true)
+
+    # Test remove without deleting
+    cron://local.rm(id=\"backup-job\",dry_run=true)
+
+  Check job status:
+    # List specific job
+    cron://local.list(id=\"backup-job\")
+
+    # List by pattern
+    cron://local.list(match_command=\"backup\")
+
+  Verify schedule:
+    # Use online cron validators
+    # https://crontab.guru/
+
+  Check logs:
+    # Cron logs (varies by system)
+    tail -f /var/log/cron
+    tail -f /var/log/syslog | grep CRON
+
+    # Systemd timer logs
+    journalctl -u name.timer -f
+    journalctl -u name.service -f
+
+PLATFORM SUPPORT:
+
+  Linux:
+    • Full support for cron and systemd
+    • Most common platform
+    • Both user and system jobs
+
+  macOS:
+    • Cron support
+    • No systemd (uses launchd instead)
+    • System and user jobs
+
+  BSD:
+    • Cron support
+    • No systemd
+    • Traditional cron only
+
+  Windows:
+    • No native cron or systemd
+    • Use Windows Task Scheduler instead
+    • Not supported by cron handle
+
+PERFORMANCE CONSIDERATIONS:
+  • List operations scan crontab files and systemd units
+  • Large numbers of jobs may slow list operations
+  • Use scope filters to limit search space
+  • Pattern matching may scan all jobs
+  • Systemd operations may require DBus calls
+  • File I/O for crontab modifications
+  • Consider job execution overhead
+  • Avoid too-frequent schedules
+  • Monitor system load from scheduled jobs
+
+LIMITATIONS:
+  • No Windows Task Scheduler support
+  • Cannot modify running job execution
+  • No job execution history (use logs)
+  • Pattern matching is substring-based
+  • No advanced cron features (CRON_TZ, etc.)
+  • Systemd calendar expressions not fully supported
+  • No job priority management
+  • Cannot set job timeouts directly (use command wrapper)
+  • No built-in job dependencies (use systemd for this)
+  • No automatic job migration between backends
+  • Cannot edit jobs in-place (must remove and re-add)
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With file handle:
+    # Create script from template
+    file:///usr/local/bin/backup.sh.create(content=\"#!/bin/bash\\nbackup command\")
+
+    # Schedule it
+    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup.sh\")
+
+  With log handle:
+    # Schedule log rotation
+    cron://local.add(schedule=\"0 0 * * *\",command=\"log://rotate\")
+
+  With backup handle:
+    # Schedule backup creation
+    cron://local.add(schedule=\"0 2 * * *\",command=\"resh backup://data.create\")
+
+  With event handle:
+    # Trigger events on schedule
+    cron://local.add(schedule=\"*/5 * * * *\",command=\"resh event://emit(topic=heartbeat)\")
+
+  With exec handle:
+    # Schedule command execution
+    cron://local.add(schedule=\"0 3 * * *\",command=\"resh exec://cleanup-temp\")
+
+MORE INFO:
+  For complete documentation of cron handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Process_ServiceManagement/cron.md
+
+  Cron format documentation:
+  https://man7.org/linux/man-pages/man5/crontab.5.html
+  https://crontab.guru/ (schedule expression tester)
+
+  Systemd timer documentation:
+  https://www.freedesktop.org/software/systemd/man/systemd.timer.html
+  https://www.freedesktop.org/software/systemd/man/systemd.time.html
+
+  Cron best practices:
+  https://crontab.guru/tips.html
+
+  Use 'cron:// --help=VERB' for detailed help on a specific verb.
+";
+
+// ===========================================================================
+// CronHandle - Main handle struct
+// ==========================================================================="
 
 #[derive(Debug)]
 pub struct CronHandle {
@@ -861,12 +1847,51 @@ impl CronHandle {
     }
 }
 
+// ===========================================================================
+// Helper functions for help display
+// ===========================================================================
+
+/// Check if help should be displayed based on various help flag patterns
+fn should_show_help(method: &str, args: &Args) -> bool {
+    // Check if method is help
+    if method == "help" || method == "h" {
+        return true;
+    }
+
+    // Check if method contains help flags
+    if method.contains("--help") || method.contains("-h") {
+        return true;
+    }
+
+    // Check args for help
+    if args.contains_key("help") || args.contains_key("h") {
+        return true;
+    }
+
+    false
+}
+
+/// Display comprehensive cron handle help
+fn display_help(io: &mut IoStreams) -> Result<Status> {
+    write!(io.stdout, "{}", CRON_HELP_TEXT)?;
+    Ok(Status::ok())
+}
+
+// ===========================================================================
+// Handle implementation
+// ===========================================================================
+
 impl Handle for CronHandle {
     fn verbs(&self) -> &'static [&'static str] {
         &["list", "add", "rm", "enable", "disable"]
     }
 
     fn call(&self, method: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help request before processing verbs
+        if should_show_help(method, args) {
+            return display_help(io);
+        }
+
         match method {
             "list" => {
                 let result = self.list_verb(args)?;

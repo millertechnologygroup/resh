@@ -11,10 +11,390 @@ use crate::core::{
     registry::{Handle, IoStreams, Args},
     status::Status,
 };
+use std::io::Write;
 
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("log", |u| Ok(Box::new(LogHandle::from_url(u)?)));
 }
+
+const LOG_HELP_TEXT: &str = r#"
+RESOURCE SHELL - LOG HANDLE
+===========================
+
+USAGE:
+  log:///path/to/logfile.log.VERB arguments
+  log://./relative/path/log.txt.VERB arguments
+  log://svc/service-name.VERB arguments
+
+DESCRIPTION:
+  The log handle provides access to log files and system services for viewing
+  and analyzing log data. It supports both file-based logs and system service
+  logs through journalctl. Efficient algorithms handle large log files without
+  loading entire files into memory.
+
+URL FORMATS:
+  File logs (absolute):  log:///path/to/logfile.log
+  File logs (relative):  log://./relative/path/log.txt
+  Service logs:          log://svc/service-name
+
+VERBS:
+  tail            Show the last lines of a log file (similar to Unix tail)
+
+SYNTAX STYLES:
+
+  Preferred (Space-Separated Arguments):
+    resh log:///var/log/syslog.tail lines=10
+    resh log:///var/log/syslog.tail pattern=ERROR mode=json
+    resh log://./app.log.tail lines=20 pattern=WARN
+
+  Alternative (Quoted URL with Parentheses):
+    resh "log:///var/log/syslog.tail(lines=10)"
+    resh "log:///var/log/syslog.tail(pattern=ERROR,mode=json)"
+    resh "log://./app.log.tail(lines=20,pattern=WARN)"
+
+  Important: When using parentheses syntax, quote the entire URL to avoid
+             shell syntax errors.
+
+EXAMPLES:
+
+  Basic tail (last 100 lines):
+    log:///tmp/test.log.tail
+
+  Tail with specific line count:
+    log:///tmp/test.log.tail lines=3
+
+  Tail with pattern filtering:
+    log:///tmp/app.log.tail lines=10 pattern=ERROR
+
+  Tail with JSON output:
+    log:///tmp/app.log.tail lines=30 pattern=ERROR mode=json
+
+  Tail absolute path:
+    log:///var/log/syslog.tail lines=50
+
+  Tail relative path:
+    log://./logs/app.log.tail lines=20 pattern=WARN
+
+  Service log (journalctl):
+    log://svc/systemd.tail lines=50
+
+  Service log with pattern:
+    log://svc/nginx.tail lines=100 pattern=error
+
+  System log analysis:
+    log:///var/log/syslog.tail pattern=error mode=json
+
+  Monitor cron jobs:
+    log:///var/log/syslog.tail pattern=CRON lines=20
+
+  Check systemd messages:
+    log:///var/log/syslog.tail pattern=systemd lines=30 mode=json
+
+  Application error monitoring:
+    log://./logs/app.log.tail pattern=ERROR lines=50 mode=json
+
+  Nginx error logs:
+    log:///var/log/nginx/error.log.tail lines=20
+
+  Debug activity:
+    log://./debug.log.tail lines=100 pattern=DEBUG
+
+  Multiple filters:
+    log:///var/log/syslog.tail lines=50 pattern=ERROR mode=json
+
+  Empty file handling:
+    log:///tmp/empty.log.tail lines=10
+
+  Empty file with JSON:
+    log:///tmp/empty.log.tail lines=10 mode=json
+
+  Alternative syntax examples:
+    resh "log:///var/log/syslog.tail(lines=10)"
+    resh "log:///var/log/syslog.tail(pattern=ERROR,mode=json)"
+    resh "log://./app.log.tail(lines=20,pattern=WARN)"
+
+TAIL ARGUMENTS:
+  lines=N                Number of lines to show (default: 100, must be > 0)
+  pattern=TEXT           Filter lines containing this text pattern
+  mode=FORMAT            Output format: raw (default), json
+
+OUTPUT MODES:
+
+  raw (default):
+    Displays log lines as plain text, one per line.
+    Suitable for human reading and Unix pipeline integration.
+
+  json:
+    Structured JSON output with metadata.
+    Suitable for programmatic parsing and automation.
+
+    Example JSON output:
+    {
+      "path": "/tmp/app.log",
+      "requested_lines": 30,
+      "returned_lines": 6,
+      "pattern": "ERROR",
+      "lines": [
+        "line-33 ERROR something happened",
+        "line-36 ERROR something happened"
+      ]
+    }
+
+OUTPUT FORMATS:
+
+  Raw mode success (with lines):
+    Line 1
+    Line 2
+    Line 3
+    Line 4
+    Line 5
+
+  Raw mode (empty file):
+    (no output)
+
+  Raw mode error:
+    Error: Log file does not exist: /tmp/nonexistent.log
+    (exit code 2)
+
+  JSON mode success:
+    {
+      "path": "/tmp/app.log",
+      "requested_lines": 30,
+      "returned_lines": 6,
+      "pattern": "ERROR",
+      "lines": [
+        "line-33 ERROR something happened",
+        "line-36 ERROR something happened"
+      ]
+    }
+
+  JSON mode (empty file):
+    {
+      "path": "/tmp/empty.log",
+      "requested_lines": 10,
+      "returned_lines": 0,
+      "pattern": null,
+      "lines": []
+    }
+
+  JSON mode error:
+    {
+      "error": "Log file does not exist: /tmp/nonexistent.log",
+      "path": "/tmp/nonexistent.log",
+      "requested_lines": 10,
+      "returned_lines": 0
+    }
+    (exit code 2)
+
+PATTERN FILTERING:
+  The pattern argument filters lines containing the specified text.
+  Pattern matching is case-sensitive and uses substring matching.
+
+  Examples:
+    pattern=ERROR          Match lines containing "ERROR"
+    pattern=CRON           Match lines containing "CRON"
+    pattern="error"        Match lines containing "error" (lowercase)
+
+  Behavior:
+  • Only lines containing the pattern are returned
+  • Pattern is applied after tail operation (to last N lines)
+  • Case-sensitive matching
+  • No regex support (simple substring match)
+
+FILE PATH FORMATS:
+
+  Absolute paths:
+    log:///var/log/syslog
+    log:///tmp/app.log
+    log:///home/user/logs/debug.log
+
+  Relative paths:
+    log://./logs/app.log           Relative to current directory
+    log://./debug.log              Current directory
+    log://./logs/subdir/app.log    Subdirectory path
+
+  Service logs:
+    log://svc/systemd              System service via journalctl
+    log://svc/nginx                Nginx service logs
+    log://svc/postgresql           PostgreSQL service logs
+
+PERFORMANCE NOTES:
+  The log handle uses efficient algorithms optimized for file size:
+
+  Small files (< 64KB):
+  • Reads entire file into memory
+  • Returns last N lines
+  • Fast for small log files
+
+  Large files (> 64KB):
+  • Uses backward scanning from end of file
+  • Reads only necessary data
+  • Avoids loading entire file
+  • Fast for large log files (GB+)
+
+  This approach ensures fast tail operations on very large log files
+  without excessive memory usage.
+
+SERVICE LOG SUPPORT:
+  Service logs use journalctl to access systemd service logs.
+
+  Requirements:
+  • journalctl must be installed and available
+  • Service must exist on the system
+  • User must have appropriate permissions
+
+  Examples:
+    log://svc/systemd.tail lines=50
+    log://svc/nginx.tail lines=100 pattern=error
+    log://svc/postgresql.tail lines=30 mode=json
+
+  Note: Service log support depends on system configuration and
+        availability of journalctl.
+
+ERROR HANDLING:
+
+  Invalid arguments:
+    Error: lines must be greater than 0
+    (exit code 2)
+
+    Error: mode must be 'raw' or 'json'
+    (exit code 2)
+
+  File access issues:
+    Error: Log file does not exist: /path/to/file.log
+    (exit code 2)
+
+    Error: Path is not a file: /path/to/directory
+    (exit code 2)
+
+    Error: Permission denied: /path/to/file.log
+    (standard file access error)
+
+EXIT CODES:
+  0                      Success
+  2                      Invalid arguments or file access error
+
+COMMON WORKFLOWS:
+
+  Real-time error monitoring:
+    # Check for recent errors
+    log:///var/log/syslog.tail pattern=error mode=json
+
+    # Monitor application errors
+    log://./logs/app.log.tail pattern=ERROR lines=50
+
+  System administration:
+    # Check cron job execution
+    log:///var/log/syslog.tail pattern=CRON lines=20
+
+    # Monitor systemd services
+    log:///var/log/syslog.tail pattern=systemd lines=30
+
+    # Check service-specific logs
+    log://svc/nginx.tail lines=100 pattern=error
+
+  Debugging and troubleshooting:
+    # Get detailed debug output
+    log://./debug.log.tail lines=100 pattern=DEBUG
+
+    # Check recent critical errors
+    log://./logs/app.log.tail pattern=CRITICAL mode=json
+
+    # Analyze large log files efficiently
+    log:///var/log/huge.log.tail lines=1000 pattern=ERROR
+
+  Automation and scripting:
+    # Count recent errors
+    ERROR_COUNT=$(log:///var/log/app.log.tail pattern=ERROR mode=json | jq '.returned_lines')
+
+    # Check if any errors occurred
+    log:///var/log/syslog.tail pattern=error lines=100 mode=json | jq '.returned_lines > 0'
+
+    # Extract critical log lines
+    log:///var/log/app.log.tail pattern=CRITICAL mode=json | jq -r '.lines[]'
+
+    # Using quoted syntax in shell scripts
+    ERROR_COUNT=$(resh "log:///var/log/app.log.tail(pattern=ERROR,mode=json)" | jq '.returned_lines')
+
+  Integration with Unix tools:
+    # Pipe to grep for additional filtering
+    log:///var/log/syslog.tail lines=100 | grep -i "failed"
+
+    # Count occurrences
+    log:///var/log/app.log.tail pattern=ERROR | wc -l
+
+    # Search for specific patterns
+    log:///var/log/syslog.tail lines=1000 | awk '/error/ {print $0}'
+
+BEST PRACTICES:
+  • Use space-separated syntax (preferred) for command-line usage
+  • Use quoted parentheses syntax when needed in scripts
+  • Specify appropriate line counts to limit output
+  • Use pattern filtering to focus on relevant entries
+  • Use JSON mode for programmatic parsing and automation
+  • Use relative paths for portability in projects
+  • Use absolute paths for system logs
+  • Set reasonable line limits for large log files
+  • Combine with Unix tools (grep, awk, jq) for complex analysis
+  • Use service logs for system service monitoring
+  • Check exit codes in scripts for error handling
+  • Use pattern filtering before JSON parsing for efficiency
+  • Keep patterns simple (substring matching only)
+  • Use lowercase patterns for case-sensitive searches
+  • Monitor empty file cases in automation scripts
+  • Handle permission errors appropriately
+  • Use efficient tail for large log rotation files
+  • Leverage JSON output for metric collection
+  • Use pattern filtering to reduce network traffic (remote logs)
+  • Consider log rotation when setting line counts
+
+FILE FORMAT SUPPORT:
+  The log handle works with any text-based log file format:
+  • Plain text logs
+  • Syslog format
+  • Apache/Nginx logs
+  • Application logs
+  • Custom log formats
+  • No structured format required
+  • Line-based text processing
+
+  Note: The handle treats all files as line-based text and does not
+        parse structured log formats like JSON logs or XML logs.
+
+LIMITATIONS:
+  • No regex pattern matching (simple substring only)
+  • No multi-line log entry support
+  • No log streaming (one-time tail operation)
+  • No follow mode (like tail -f)
+  • Service logs require journalctl availability
+  • Pattern matching is case-sensitive
+  • No time-based filtering
+  • No field-based filtering (structured logs)
+
+FUTURE ENHANCEMENTS:
+  Potential features for future versions:
+  • Follow mode (continuous monitoring)
+  • Regex pattern support
+  • Time range filtering
+  • Structured log parsing (JSON, XML)
+  • Multi-line log entry support
+  • Log level filtering (ERROR, WARN, INFO, etc.)
+  • Field-based filtering for structured logs
+  • Log aggregation from multiple files
+  • Remote log access (SSH, HTTP)
+
+MORE INFO:
+  For complete documentation of log handle operations and examples:
+  https://github.com/[your-org]/resource-shell/docs/log-handle.md
+
+  Unix tail command reference:
+  https://man7.org/linux/man-pages/man1/tail.1.html
+
+  journalctl documentation:
+  https://man7.org/linux/man-pages/man1/journalctl.1.html
+
+  Use 'log:// --help=VERB' for detailed help on a specific verb.
+"#;
 
 // Helper function to normalize path components similar to file handle
 fn normalize_path(path: PathBuf) -> PathBuf {
@@ -86,6 +466,69 @@ impl LogHandle {
                 source: LogSourceKind::File(file_path) 
             } 
         })
+    }
+
+    /// Check if this is a help request and display help if so
+    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
+        // Check for help verbs
+        if verb == "--help" || verb == "-h" || verb == "help" {
+            write!(io.stdout, "{}", LOG_HELP_TEXT)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        // Check for verb-specific help
+        if verb.starts_with("--help=") {
+            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
+            Self::display_verb_help(help_verb, io)?;
+            return Ok(Some(Status::ok()));
+        }
+        
+        Ok(None)
+    }
+    
+    /// Display help for a specific verb
+    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
+        match verb {
+            "tail" => {
+                write!(io.stdout, r#"
+TAIL VERB - LOG HANDLE
+=====================
+
+DESCRIPTION:
+  Shows the last lines of a log file, similar to the Unix 'tail' command.
+  This is the primary verb for viewing recent log entries.
+
+USAGE:
+  log:///path/to/logfile.log.tail [arguments]
+  log://./relative/path/log.txt.tail [arguments]
+  log://svc/service-name.tail [arguments]
+
+ARGUMENTS:
+  lines=N                Number of lines to show (default: 100, must be > 0)
+  pattern=TEXT           Filter lines containing this text pattern
+  mode=FORMAT            Output format: raw (default), json
+
+EXAMPLES:
+  log:///tmp/test.log.tail
+  log:///tmp/test.log.tail lines=3
+  log:///tmp/app.log.tail lines=10 pattern=ERROR
+  log:///tmp/app.log.tail lines=30 pattern=ERROR mode=json
+  log://svc/systemd.tail lines=50
+
+PERFORMANCE:
+  Uses efficient algorithms optimized for file size:
+  • Small files (< 64KB): Reads entire file and returns last N lines
+  • Large files (> 64KB): Uses backward scanning to read only necessary data
+
+For complete help, use: log:// --help
+"#)?;
+                Ok(Status::ok())
+            }
+            _ => {
+                write!(io.stdout, "\nUnknown verb: {}. Currently only 'tail' is supported.\n\nUse --help for full list of verbs.\n", verb)?;
+                Ok(Status::err(2, "unknown verb"))
+            }
+        }
     }
 
     fn tail(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -311,10 +754,15 @@ impl LogHandle {
 
 impl Handle for LogHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["tail"]
+        &["tail", "help", "--help", "-h"]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests first
+        if let Some(status) = Self::check_and_display_help(verb, io)? {
+            return Ok(status);
+        }
+        
         match verb {
             "tail"   => self.tail(args, io),
             _ => bail!("unknown verb for log://: {}", verb),

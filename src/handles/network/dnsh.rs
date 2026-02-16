@@ -2612,19 +2612,1099 @@ pub async fn perform_dns_lookup(opts: DnsLookupOptions) -> Result<DnsLookupRespo
     Ok(response)
 }
 
+// ==================== DNS Help Implementation ====================
+
+const DNS_HELP_TEXT: &str = r#"RESOURCE SHELL - DNS HANDLE
+===========================
+
+USAGE:
+  dns://.VERB(arguments)
+
+DESCRIPTION:
+  The DNS handle provides powerful DNS lookup, resolution, tracing, and zone
+  management capabilities. Supports all standard DNS record types, DNSSEC
+  validation, zone transfers (AXFR/IXFR), dynamic updates, and TSIG
+  authentication for secure operations. Operations require network connectivity.
+
+URL FORMAT:
+  dns://.VERB(arguments)
+
+VERBS (5 total):
+
+  DNS Queries:
+    lookup          Perform DNS record lookups for specific record types
+    resolve         Intelligent DNS resolution (host, mail, service, reverse)
+    trace           Trace DNS resolution from root servers
+
+  Zone Management:
+    zone.fetch      Perform DNS zone transfers (AXFR/IXFR)
+    zone.update     Perform dynamic DNS zone updates
+
+EXAMPLES:
+
+  Basic Lookups:
+    # Look up A records
+    dns://.lookup(name="example.com",rtype="A",format="json")
+
+    # Look up AAAA records (IPv6)
+    dns://.lookup(name="example.com",rtype="AAAA")
+
+    # Look up MX records
+    dns://.lookup(name="example.com",rtype="MX",servers="8.8.8.8")
+
+    # Look up TXT records
+    dns://.lookup(name="_dmarc.example.com",rtype="TXT")
+
+    # Look up CNAME records
+    dns://.lookup(name="www.example.com",rtype="CNAME")
+
+    # Look up NS records
+    dns://.lookup(name="example.com",rtype="NS")
+
+    # Look up SRV records
+    dns://.lookup(name="_http._tcp.example.com",rtype="SRV")
+
+    # Look up PTR records (reverse DNS)
+    dns://.lookup(name="34.216.184.93.in-addr.arpa",rtype="PTR")
+
+    # Look up SOA records
+    dns://.lookup(name="example.com",rtype="SOA")
+
+    # Look up CAA records
+    dns://.lookup(name="example.com",rtype="CAA")
+
+    # Look up ANY records
+    dns://.lookup(name="example.com",rtype="ANY")
+
+  Advanced Lookup Options:
+    # Use custom DNS servers
+    dns://.lookup(name="example.com",rtype="A",servers="1.1.1.1,8.8.8.8")
+
+    # Use TCP instead of UDP
+    dns://.lookup(name="example.com",rtype="A",use_tcp=true)
+
+    # Increase timeout
+    dns://.lookup(name="example.com",rtype="A",timeout_ms=5000)
+
+    # Add retries
+    dns://.lookup(name="example.com",rtype="A",retries=3)
+
+    # Request DNSSEC validation
+    dns://.lookup(name="example.com",rtype="A",dnssec=true)
+
+    # Don't follow CNAME records
+    dns://.lookup(name="www.example.com",rtype="A",follow_cname=false)
+
+    # Exclude authority section
+    dns://.lookup(name="example.com",rtype="A",include_authority=false)
+
+    # Exclude additional section
+    dns://.lookup(name="example.com",rtype="A",include_additional=false)
+
+    # Don't randomize servers
+    dns://.lookup(name="example.com",rtype="A",randomize_servers=false)
+
+    # Text format output
+    dns://.lookup(name="example.com",rtype="A",format="text")
+
+  DNS Resolution:
+    # Resolve host to IPv4
+    dns://.resolve(name="example.com",mode="host",family="ipv4")
+
+    # Resolve host to IPv6
+    dns://.resolve(name="example.com",mode="host",family="ipv6")
+
+    # Resolve host to any address family
+    dns://.resolve(name="example.com",mode="host",family="any")
+
+    # Resolve mail servers
+    dns://.resolve(name="example.com",mode="mail",family="any")
+
+    # Resolve service endpoints
+    dns://.resolve(name="_http._tcp.example.com",mode="service")
+
+    # Reverse DNS resolution
+    dns://.resolve(name="192.0.2.1",mode="reverse")
+
+    # Resolve with custom CNAME depth
+    dns://.resolve(name="example.com",mode="host",max_cname_depth=5)
+
+    # Include raw DNS responses
+    dns://.resolve(name="example.com",mode="host",want_raw=true)
+
+    # Don't follow SRV records
+    dns://.resolve(name="_http._tcp.example.com",mode="service",follow_srv=false)
+
+    # Validate reverse DNS
+    dns://.resolve(name="example.com",mode="host",validate_reverse=true)
+
+  DNS Tracing:
+    # Basic trace from root servers
+    dns://.trace(name="example.com",rtype="A")
+
+    # Trace AAAA records
+    dns://.trace(name="example.com",rtype="AAAA")
+
+    # Trace NS records
+    dns://.trace(name="test.example.com",rtype="NS")
+
+    # Trace with custom root servers
+    dns://.trace(name="example.com",root_servers="198.41.0.4,192.5.5.241")
+
+    # Trace using TCP
+    dns://.trace(name="example.com",rtype="A",use_tcp=true)
+
+    # Trace with custom timeout
+    dns://.trace(name="example.com",timeout_ms=5000)
+
+    # Trace with max depth limit
+    dns://.trace(name="example.com",max_depth=10)
+
+    # Trace with DNSSEC
+    dns://.trace(name="example.com",dnssec=true)
+
+    # Trace following CNAME
+    dns://.trace(name="www.example.com",follow_cname=true)
+
+    # Trace preferring IPv6
+    dns://.trace(name="example.com",prefer_ipv6=true)
+
+    # Trace with raw responses
+    dns://.trace(name="example.com",want_raw=true)
+
+    # Trace excluding additional section
+    dns://.trace(name="example.com",include_additional=false)
+
+  Zone Transfers:
+    # AXFR full zone transfer
+    dns://.zone.fetch(zone="example.com",transfer="AXFR",servers=["192.0.2.53"])
+
+    # IXFR incremental transfer
+    dns://.zone.fetch(zone="example.com",transfer="IXFR",serial=2025112501,servers=["192.0.2.53"])
+
+    # Zone transfer with TSIG authentication
+    dns://.zone.fetch(zone="example.com",servers=["192.0.2.53"],tsig_key_name="axfr-key.example.com.",tsig_secret="YWJjZDEyMzQ=",tsig_algorithm="hmac-sha256")
+
+    # Zone transfer using TCP
+    dns://.zone.fetch(zone="example.com",servers=["192.0.2.53"],use_tcp=true)
+
+    # Zone transfer with timeout
+    dns://.zone.fetch(zone="example.com",servers=["192.0.2.53"],timeout_ms=10000)
+
+    # Zone transfer with record limit
+    dns://.zone.fetch(zone="example.com",servers=["192.0.2.53"],max_records=500000)
+
+    # Zone transfer with raw responses
+    dns://.zone.fetch(zone="example.com",servers=["192.0.2.53"],include_raw=true)
+
+    # Zone transfer preferring IPv6
+    dns://.zone.fetch(zone="example.com",servers=["2001:db8::53"],prefer_ipv6=true)
+
+  Dynamic Zone Updates:
+    # Add new A record
+    dns://.zone.update(zone="example.com",adds="[{\"name\":\"www.example.com\",\"rtype\":\"A\",\"ttl\":300,\"data\":{\"address\":\"203.0.113.10\"}}]")
+
+    # Add AAAA record
+    dns://.zone.update(zone="example.com",adds="[{\"name\":\"www.example.com\",\"rtype\":\"AAAA\",\"ttl\":300,\"data\":{\"address\":\"2001:db8::1\"}}]")
+
+    # Add MX record
+    dns://.zone.update(zone="example.com",adds="[{\"name\":\"mail.example.com\",\"rtype\":\"MX\",\"ttl\":3600,\"data\":{\"preference\":10,\"exchange\":\"mx.example.com.\"}}]")
+
+    # Add TXT record
+    dns://.zone.update(zone="example.com",adds="[{\"name\":\"_dmarc.example.com\",\"rtype\":\"TXT\",\"ttl\":3600,\"data\":{\"text\":\"v=DMARC1; p=reject\"}}]")
+
+    # Add CNAME record
+    dns://.zone.update(zone="example.com",adds="[{\"name\":\"www.example.com\",\"rtype\":\"CNAME\",\"ttl\":3600,\"data\":{\"cname\":\"webhost.example.com.\"}}]")
+
+    # Delete specific A record
+    dns://.zone.update(zone="example.com",deletes="[{\"name\":\"www.example.com\",\"rtype\":\"A\",\"data\":{\"address\":\"203.0.113.10\"}}]")
+
+    # Delete all A records for name
+    dns://.zone.update(zone="example.com",deletes="[{\"name\":\"www.example.com\",\"rtype\":\"A\",\"delete_all\":true}]")
+
+    # Delete all records for name
+    dns://.zone.update(zone="example.com",deletes="[{\"name\":\"www.example.com\",\"delete_all\":true}]")
+
+    # Update with prerequisites
+    dns://.zone.update(zone="example.com",prerequisites="[{\"kind\":\"record_exists\",\"name\":\"www.example.com\",\"rtype\":\"A\"}]",adds="[{\"name\":\"www.example.com\",\"rtype\":\"A\",\"ttl\":300,\"data\":{\"address\":\"203.0.113.11\"}}]")
+
+    # Update with TSIG authentication
+    dns://.zone.update(zone="example.com",adds="[{\"name\":\"www.example.com\",\"rtype\":\"A\",\"ttl\":300,\"data\":{\"address\":\"203.0.113.10\"}}]",tsig_key_name="update-key.example.com.",tsig_secret="c2VjcmV0a2V5",tsig_algorithm="hmac-sha256")
+
+    # Dry run update (validate only)
+    dns://.zone.update(zone="example.com",adds="[{\"name\":\"test.example.com\",\"rtype\":\"A\",\"ttl\":300,\"data\":{\"address\":\"203.0.113.20\"}}]",dry_run=true)
+
+LOOKUP ARGUMENTS:
+  name=NAME              Domain name to look up (required)
+  rtype=TYPE             DNS record type: A, AAAA, TXT, CNAME, MX, NS, SRV,
+                         PTR, SOA, CAA, ANY (default: A)
+  servers=SERVERS        DNS servers (JSON array or comma-separated)
+                         (default: system default)
+  port=NUMBER            DNS server port (default: 53)
+  use_tcp=BOOL           Use TCP instead of UDP (default: false)
+  timeout_ms=NUMBER      Query timeout in milliseconds (default: 2000)
+  retries=NUMBER         Number of retries on failure (default: 1)
+  dnssec=BOOL            Request DNSSEC validation (default: false)
+  follow_cname=BOOL      Follow CNAME records (default: true)
+  include_authority=BOOL Include authority section (default: true)
+  include_additional=BOOL Include additional section (default: true)
+  randomize_servers=BOOL Randomize server order (default: true)
+  format=FORMAT          Output format: json, text (default: json)
+
+RESOLVE ARGUMENTS:
+  name=NAME              Name to resolve (required)
+  mode=MODE              Resolution mode: host, mail, service, reverse
+                         (default: host)
+  family=FAMILY          Address family: any, ipv4, ipv6 (default: any)
+  servers=SERVERS        DNS servers to use (default: system default)
+  port=NUMBER            DNS server port (default: 53)
+  use_tcp=BOOL           Use TCP instead of UDP (default: false)
+  timeout_ms=NUMBER      Query timeout in milliseconds (default: 2000)
+  retries=NUMBER         Number of retries (default: 1)
+  dnssec=BOOL            Request DNSSEC validation (default: false)
+  max_cname_depth=NUMBER Maximum CNAME chain depth (default: 8)
+  want_raw=BOOL          Include raw DNS responses (default: false)
+  follow_srv=BOOL        Follow SRV records for service mode (default: true)
+  validate_reverse=BOOL  Validate reverse DNS matches forward (default: false)
+  format=FORMAT          Output format: json, text (default: json)
+
+TRACE ARGUMENTS:
+  name=NAME              Domain name to trace (required)
+  rtype=TYPE             DNS record type to trace (default: A)
+  root_servers=SERVERS   Root servers to start from (default: built-in list)
+  port=NUMBER            DNS server port (default: 53)
+  use_tcp=BOOL           Use TCP instead of UDP (default: false)
+  timeout_ms=NUMBER      Query timeout in milliseconds (default: 3000)
+  retries=NUMBER         Number of retries per query (default: 1)
+  max_depth=NUMBER       Maximum trace depth (default: 15)
+  dnssec=BOOL            Request DNSSEC validation (default: false)
+  follow_cname=BOOL      Follow CNAME records (default: false)
+  prefer_ipv6=BOOL       Prefer IPv6 when contacting servers (default: false)
+  want_raw=BOOL          Include raw DNS responses (default: false)
+  include_additional=BOOL Include additional section (default: true)
+  format=FORMAT          Output format: json, text (default: json)
+
+ZONE.FETCH ARGUMENTS:
+  zone=ZONE              Zone name to transfer (required)
+  transfer=TYPE          Transfer type: AXFR, IXFR (default: AXFR)
+  serial=NUMBER          Starting serial for IXFR (required for IXFR)
+  servers=SERVERS        Authoritative servers for zone (required)
+  port=NUMBER            DNS server port (default: 53)
+  use_tcp=BOOL           Use TCP (recommended) (default: true)
+  timeout_ms=NUMBER      Query timeout in milliseconds (default: 5000)
+  retries=NUMBER         Number of retries (default: 1)
+  dnssec=BOOL            Request DNSSEC validation (default: false)
+  max_records=NUMBER     Maximum records to transfer (default: 1000000)
+  include_raw=BOOL       Include raw DNS responses (default: false)
+  prefer_ipv6=BOOL       Prefer IPv6 servers (default: false)
+  tsig_key_name=NAME     TSIG key name for authentication
+  tsig_secret=SECRET     TSIG secret (base64 encoded)
+  tsig_algorithm=ALGO    TSIG algorithm (e.g., hmac-sha256)
+  format=FORMAT          Output format: json, text (default: json)
+
+ZONE.UPDATE ARGUMENTS:
+  zone=ZONE              Zone name to update (required)
+  prerequisites=ARRAY    Prerequisites that must be met (JSON array)
+  adds=ARRAY             Records to add (JSON array)
+  deletes=ARRAY          Records or names to delete (JSON array)
+  servers=SERVERS        Authoritative servers for zone (required)
+  port=NUMBER            DNS server port (default: 53)
+  use_tcp=BOOL           Use TCP (recommended) (default: true)
+  timeout_ms=NUMBER      Query timeout in milliseconds (default: 3000)
+  retries=NUMBER         Number of retries (default: 1)
+  max_changes=NUMBER     Maximum changes in single update (default: 1000)
+  dry_run=BOOL           Validate without applying (default: false)
+  include_raw=BOOL       Include raw DNS responses (default: false)
+  tsig_key_name=NAME     TSIG key name for authentication
+  tsig_secret=SECRET     TSIG secret (base64 encoded)
+  tsig_algorithm=ALGO    TSIG algorithm (e.g., hmac-sha256)
+  format=FORMAT          Output format: json, text (default: json)
+
+DNS RECORD TYPES:
+
+  A                      IPv4 address record
+  AAAA                   IPv6 address record
+  CNAME                  Canonical name record (alias)
+  MX                     Mail exchange record
+  TXT                    Text record (SPF, DKIM, DMARC, etc.)
+  NS                     Name server record
+  SRV                    Service record (for service discovery)
+  PTR                    Pointer record (reverse DNS)
+  SOA                    Start of authority record (zone metadata)
+  CAA                    Certification authority authorization
+  ANY                    Any record type (for queries only)
+
+  Common use cases:
+    A/AAAA               Host IP addresses
+    MX                   Email routing
+    TXT                  Email authentication, domain verification
+    CNAME                Domain aliases
+    NS                   Delegation
+    SRV                  Service discovery
+    PTR                  Reverse DNS lookups
+    SOA                  Zone information
+    CAA                  TLS certificate issuance control
+
+RESOLUTION MODES:
+
+  host                   Resolve hostname to IP addresses
+                         Queries A and/or AAAA records
+                         Returns list of IP addresses
+
+  mail                   Resolve mail servers for domain
+                         Queries MX records
+                         Returns prioritized mail servers
+
+  service                Resolve service endpoints
+                         Queries SRV records
+                         Returns service hosts and ports
+
+  reverse                Reverse DNS lookup
+                         Queries PTR records
+                         Returns hostname for IP address
+
+ADDRESS FAMILIES:
+
+  any                    Return both IPv4 and IPv6 addresses
+  ipv4                   Return only IPv4 addresses (A records)
+  ipv6                   Return only IPv6 addresses (AAAA records)
+
+SERVER SPECIFICATION:
+
+  DNS servers can be specified as:
+
+  JSON array:
+    ["1.1.1.1", "8.8.8.8"]
+    ["2001:4860:4860::8888", "2001:4860:4860::8844"]
+
+  Comma-separated:
+    "1.1.1.1,8.8.8.8"
+    "2001:4860:4860::8888,2001:4860:4860::8844"
+
+  Single server:
+    "1.1.1.1"
+    "2001:4860:4860::8888"
+
+  Popular public DNS servers:
+    1.1.1.1, 1.0.0.1              Cloudflare
+    8.8.8.8, 8.8.4.4              Google
+    9.9.9.9, 149.112.112.112      Quad9
+    208.67.222.222, 208.67.220.220 OpenDNS
+
+TSIG AUTHENTICATION:
+
+  TSIG (Transaction Signature) provides cryptographic authentication for
+  DNS operations. Required for secure zone transfers and updates.
+
+  Components:
+    tsig_key_name          Key identifier (FQDN format)
+    tsig_secret            Base64-encoded shared secret
+    tsig_algorithm         Hash algorithm (hmac-md5, hmac-sha1, hmac-sha256,
+                           hmac-sha384, hmac-sha512)
+
+  All three parameters must be provided together.
+
+  Example:
+    tsig_key_name="transfer-key.example.com."
+    tsig_secret="YWJjZDEyMzQ="
+    tsig_algorithm="hmac-sha256"
+
+  Algorithms (recommended order):
+    hmac-sha256            Recommended, widely supported
+    hmac-sha512            Higher security
+    hmac-sha1              Legacy, still common
+    hmac-md5               Deprecated, avoid if possible
+
+  Generating secrets:
+    # Generate random 32-byte secret and base64 encode
+    openssl rand -base64 32
+
+UPDATE PREREQUISITES:
+
+  Prerequisites ensure zone state before applying updates:
+
+  record_exists:
+    Check that specific record exists
+    {"kind": "record_exists", "name": "www.example.com", "rtype": "A"}
+
+  record_not_exists:
+    Check that specific record does not exist
+    {"kind": "record_not_exists", "name": "test.example.com", "rtype": "A"}
+
+  name_in_use:
+    Check that name has any records
+    {"kind": "name_in_use", "name": "www.example.com"}
+
+  name_not_in_use:
+    Check that name has no records
+    {"kind": "name_not_in_use", "name": "new.example.com"}
+
+  zone_serial_at_least:
+    Check zone serial is at least specified value
+    {"kind": "zone_serial_at_least", "serial": 2025112501}
+
+  Uses:
+    • Prevent race conditions
+    • Ensure consistency
+    • Implement compare-and-swap semantics
+    • Avoid conflicting updates
+
+OUTPUT FORMATS:
+
+  lookup success (JSON):
+    {
+      "ok": true,
+      "query": {
+        "name": "example.com",
+        "rtype": "A",
+        "servers": ["1.1.1.1"],
+        "port": 53
+      },
+      "answers": [
+        {
+          "name": "example.com",
+          "rtype": "A",
+          "class": "IN",
+          "ttl": 3600,
+          "data": {
+            "address": "93.184.216.34"
+          }
+        }
+      ],
+      "response": {
+        "rcode": "NOERROR",
+        "authoritative": false,
+        "round_trip_time_ms": 10
+      }
+    }
+
+  resolve success (JSON):
+    {
+      "ok": true,
+      "query": {
+        "name": "example.com",
+        "mode": "host",
+        "family": "ipv4"
+      },
+      "resolution": {
+        "canonical_name": "example.com.",
+        "mode": "host",
+        "family": "ipv4",
+        "addresses": [
+          {
+            "ip": "93.184.216.34",
+            "family": "ipv4",
+            "ttl": 3600
+          }
+        ]
+      }
+    }
+
+  trace success (JSON):
+    {
+      "ok": true,
+      "query": {
+        "name": "example.com",
+        "rtype": "A"
+      },
+      "hops": [
+        {
+          "level": 0,
+          "server": "198.41.0.4",
+          "query": "example.com",
+          "response_code": "NOERROR",
+          "referrals": ["a.iana-servers.net"]
+        }
+      ]
+    }
+
+  zone.fetch success (JSON):
+    {
+      "ok": true,
+      "zone": "example.com",
+      "transfer": "AXFR",
+      "records_transferred": 42,
+      "records": [
+        {
+          "name": "example.com",
+          "rtype": "SOA",
+          "ttl": 3600,
+          "data": {...}
+        }
+      ]
+    }
+
+  zone.update success (JSON):
+    {
+      "ok": true,
+      "zone": "example.com",
+      "changes_applied": 1,
+      "response_code": "NOERROR"
+    }
+
+EXIT CODES:
+  0                      Success
+  1                      General error (invalid arguments, operation failed)
+  2                      Network error (timeout, connection refused)
+  3                      DNS error (NXDOMAIN, SERVFAIL, etc.)
+  4                      Authentication error (TSIG failure)
+
+ERROR HANDLING:
+
+  Lookup errors:
+    DNS_LOOKUP_INVALID_NAME       Empty or invalid domain name
+    DNS_LOOKUP_INVALID_TYPE       Unknown DNS record type
+    DNS_LOOKUP_INVALID_SERVER     Invalid server IP address
+    DNS_LOOKUP_INVALID_PORT       Port cannot be 0
+    DNS_LOOKUP_NXDOMAIN           Domain does not exist
+    DNS_LOOKUP_TIMEOUT            Query timed out
+    DNS_LOOKUP_SERVFAIL           Server failure
+
+  Resolve errors:
+    DNS_RESOLVE_INVALID_MODE      Invalid resolution mode
+    DNS_RESOLVE_INVALID_FAMILY    Invalid address family
+    DNS_RESOLVE_HOST_NOT_FOUND    No addresses found
+    DNS_RESOLVE_NO_MX             No MX records found
+    DNS_RESOLVE_NO_SRV            No SRV records found
+    DNS_RESOLVE_NO_PTR            No PTR record found
+    DNS_RESOLVE_CNAME_LOOP        CNAME loop detected
+
+  Trace errors:
+    DNS_TRACE_INVALID_TYPE        Invalid record type
+    DNS_TRACE_INVALID_ROOT_SERVER Invalid root server IP
+    DNS_TRACE_INVALID_MAX_DEPTH   max_depth must be > 0
+    DNS_TRACE_INVALID_TIMEOUT     timeout_ms must be > 0
+    DNS_TRACE_TIMEOUT             Trace operation timed out
+
+  Zone fetch errors:
+    DNS_ZONE_FETCH_INVALID_ZONE   Missing or empty zone name
+    DNS_ZONE_FETCH_INVALID_TRANSFER_TYPE Invalid transfer type
+    DNS_ZONE_FETCH_MISSING_SERIAL IXFR requires serial parameter
+    DNS_ZONE_FETCH_INVALID_TSIG_CONFIG TSIG requires key and secret
+    DNS_ZONE_FETCH_INVALID_TSIG_SECRET Invalid base64 secret
+    DNS_ZONE_FETCH_REFUSED        Zone transfer refused
+    DNS_ZONE_FETCH_NOT_AUTHORITATIVE Server not authoritative
+
+  Zone update errors:
+    DNS_ZONE_UPDATE_INVALID_ZONE  Missing or empty zone name
+    DNS_ZONE_UPDATE_INVALID_ADD_RECORD Invalid record in adds
+    DNS_ZONE_UPDATE_INVALID_DELETE_SPEC Invalid delete specification
+    DNS_ZONE_UPDATE_INVALID_PREREQUISITE Invalid prerequisite
+    DNS_ZONE_UPDATE_INVALID_TSIG_CONFIG TSIG requires key and secret
+    DNS_ZONE_UPDATE_PREREQUISITE_FAILED Prerequisite check failed
+    DNS_ZONE_UPDATE_REFUSED       Update refused by server
+
+COMMON WORKFLOWS:
+
+  Basic DNS lookup:
+    # Check A records
+    dns://.lookup(name="example.com",rtype="A")
+    
+    # Check mail servers
+    dns://.lookup(name="example.com",rtype="MX")
+    
+    # Check name servers
+    dns://.lookup(name="example.com",rtype="NS")
+
+  Email configuration validation:
+    # Check MX records
+    dns://.lookup(name="example.com",rtype="MX")
+    
+    # Check SPF record
+    dns://.lookup(name="example.com",rtype="TXT")
+    
+    # Check DMARC record
+    dns://.lookup(name="_dmarc.example.com",rtype="TXT")
+    
+    # Check DKIM record
+    dns://.lookup(name="default._domainkey.example.com",rtype="TXT")
+
+  SSL/TLS certificate validation:
+    # Check CAA records
+    dns://.lookup(name="example.com",rtype="CAA")
+
+  Service discovery:
+    # Find service endpoints
+    dns://.resolve(name="_http._tcp.example.com",mode="service")
+    
+    # Find LDAP servers
+    dns://.resolve(name="_ldap._tcp.example.com",mode="service")
+
+  Troubleshooting DNS resolution:
+    # Trace full resolution path
+    dns://.trace(name="subdomain.example.com",rtype="A")
+    
+    # Compare different servers
+    dns://.lookup(name="example.com",rtype="A",servers="8.8.8.8")
+    dns://.lookup(name="example.com",rtype="A",servers="1.1.1.1")
+
+  Zone management:
+    # Backup zone with AXFR
+    dns://.zone.fetch(zone="example.com",transfer="AXFR",servers=["192.0.2.53"],tsig_key_name="backup.example.com.",tsig_secret="...",tsig_algorithm="hmac-sha256")
+    
+    # Incremental update with IXFR
+    dns://.zone.fetch(zone="example.com",transfer="IXFR",serial=2025112500,servers=["192.0.2.53"])
+
+  Dynamic DNS updates:
+    # Add new host record
+    dns://.zone.update(zone="example.com",adds="[{\"name\":\"newhost.example.com\",\"rtype\":\"A\",\"ttl\":300,\"data\":{\"address\":\"203.0.113.50\"}}]",tsig_key_name="update.example.com.",tsig_secret="...",tsig_algorithm="hmac-sha256")
+    
+    # Update existing record (delete old, add new)
+    dns://.zone.update(zone="example.com",deletes="[{\"name\":\"www.example.com\",\"rtype\":\"A\",\"data\":{\"address\":\"203.0.113.10\"}}]",adds="[{\"name\":\"www.example.com\",\"rtype\":\"A\",\"ttl\":300,\"data\":{\"address\":\"203.0.113.11\"}}]")
+
+  DNSSEC validation:
+    # Check with DNSSEC
+    dns://.lookup(name="example.com",rtype="A",dnssec=true)
+    
+    # Verify DNSSEC chain
+    dns://.lookup(name="example.com",rtype="DNSKEY",dnssec=true)
+    dns://.lookup(name="example.com",rtype="DS",dnssec=true)
+
+  Reverse DNS verification:
+    # Forward lookup
+    dns://.lookup(name="mail.example.com",rtype="A")
+    
+    # Reverse lookup
+    dns://.lookup(name="34.216.184.93.in-addr.arpa",rtype="PTR")
+    
+    # Or use resolve for validation
+    dns://.resolve(name="mail.example.com",mode="host",validate_reverse=true)
+
+  Load balancing investigation:
+    # Check multiple A records
+    dns://.lookup(name="www.example.com",rtype="A")
+    
+    # Resolve multiple times to see rotation
+    dns://.resolve(name="www.example.com",mode="host")
+
+BEST PRACTICES:
+  • Use appropriate DNS servers for your queries
+  • Enable DNSSEC validation for security-critical lookups
+  • Use TCP for large responses (zone transfers, many records)
+  • Set appropriate timeouts for network conditions
+  • Implement retries for unreliable networks
+  • Use TSIG authentication for zone operations
+  • Respect rate limits on DNS servers
+  • Cache DNS responses to reduce query volume
+  • Use trace for debugging complex DNS issues
+  • Validate reverse DNS for mail servers
+  • Check CAA records before issuing certificates
+  • Use service discovery (SRV) for modern applications
+  • Monitor TTL values for caching strategies
+  • Use prerequisites for safe zone updates
+  • Test updates with dry_run before applying
+  • Use appropriate record types for use cases
+  • Follow CNAME records for complete resolution
+  • Include authority/additional sections for full context
+  • Randomize server order for load distribution
+  • Use specific address families when known
+  • Implement exponential backoff for retries
+  • Log DNS queries for debugging and auditing
+  • Use text format for human inspection
+  • Use JSON format for automation and parsing
+  • Handle NXDOMAIN errors gracefully
+  • Check zone serial before IXFR transfers
+  • Secure TSIG secrets properly (don't log/expose)
+  • Use strong TSIG algorithms (hmac-sha256+)
+  • Validate DNS responses in security contexts
+  • Use public DNS servers only when appropriate
+
+NETWORK REQUIREMENTS:
+  All DNS operations require network connectivity.
+
+  • Outbound UDP port 53 (or TCP for use_tcp=true)
+  • Access to specified DNS servers
+  • Firewall rules allowing DNS traffic
+  • Network routing to DNS servers
+  • May fail in isolated/offline environments
+  • Corporate networks may require internal DNS servers
+  • Some operations require access to root servers
+
+  Testing considerations:
+  • Tests may fail without network access
+  • Tests may fail behind restrictive firewalls
+  • Use reliable DNS servers for testing
+  • Consider network latency in timeouts
+  • Rate limiting may affect bulk operations
+
+SECURITY CONSIDERATIONS:
+  • DNS responses can be spoofed without DNSSEC
+  • Use DNSSEC validation for security-critical lookups
+  • TSIG secrets must be kept secure
+  • Zone transfers expose entire zone contents
+  • Dynamic updates can modify zone data
+  • Validate server authenticity for sensitive operations
+  • Use encryption (DNS-over-TLS/HTTPS) when available
+  • Be cautious with untrusted DNS servers
+  • Implement access controls for zone operations
+  • Log zone modifications for auditing
+  • Rotate TSIG keys periodically
+  • Use strong TSIG algorithms
+  • Validate prerequisites before updates
+  • Monitor for unauthorized zone transfers
+  • Rate limit dynamic updates
+
+PERFORMANCE CONSIDERATIONS:
+  • UDP is faster but limited to 512 bytes (or with EDNS)  
+  • TCP has overhead but supports larger responses
+  • Parallel queries faster than sequential
+  • Local DNS caching reduces latency
+  • Root server traces are slower (multiple queries)
+  • Zone transfers can be large and slow
+  • Retries add latency on failure
+  • DNSSEC validation adds processing time
+  • Following CNAMEs adds round trips
+  • Randomizing servers distributes load
+  • Timeouts should match network conditions
+
+TSIG KEY MANAGEMENT:
+  Generating keys:
+    # Using dnssec-keygen
+    dnssec-keygen -a HMAC-SHA256 -b 256 -n HOST example.com
+    
+    # Using openssl
+    openssl rand -base64 32
+
+  Key file format (BIND):
+    key "example.com." {
+      algorithm hmac-sha256;
+      secret "YWJjZDEyMzQ=";
+    };
+
+  Key security:
+    • Store keys securely (file permissions)
+    • Use different keys for different purposes
+    • Rotate keys periodically
+    • Use strong algorithms (SHA256+)
+    • Don't expose keys in logs or errors
+    • Restrict key distribution
+    • Monitor key usage
+
+ZONE TRANSFER NOTES:
+  AXFR (Full Zone Transfer):
+    • Transfers entire zone
+    • Always starts with SOA record
+    • Ends with final SOA record
+    • Use for initial zone copy
+    • Use for full zone backup
+    • Can be large for big zones
+
+  IXFR (Incremental Zone Transfer):
+    • Transfers only changes since serial
+    • Requires starting serial number
+    • More efficient than AXFR
+    • Use for zone synchronization
+    • Falls back to AXFR if too many changes
+    • Not all servers support IXFR
+
+  Requirements:
+    • TSIG authentication usually required
+    • Server must be authoritative for zone
+    • Server must allow transfers from client IP
+    • Adequate bandwidth for large zones
+    • Sufficient timeout for large transfers
+
+DYNAMIC UPDATE NOTES:
+  Record additions:
+    • Must include name, type, TTL, data
+    • Multiple records can be added in one update
+    • TTL in seconds
+    • Data format varies by record type
+
+  Record deletions:
+    • Can delete specific record (provide data)
+    • Can delete all records of type (delete_all + rtype)
+    • Can delete all records for name (delete_all only)
+    • Deletions processed before additions
+
+  Update processing order:
+    1. Check prerequisites
+    2. Process deletions
+    3. Process additions
+    4. Commit changes atomically
+
+  Prerequisites ensure:
+    • Zone state before update
+    • Prevent race conditions
+    • Enable conditional updates
+    • Implement optimistic locking
+
+LIMITATIONS:
+  • Requires network connectivity
+  • Subject to DNS server policies
+  • Zone operations require authorization
+  • TSIG algorithms limited to supported set
+  • Large zone transfers may timeout
+  • Rate limiting by DNS servers
+  • Some servers don't support all record types
+  • DNSSEC validation requires trust anchors
+  • Cannot query non-standard ports without parameter
+  • Text format less structured than JSON
+  • No caching between queries
+  • No DNS-over-HTTPS/TLS support (currently)
+
+DEBUGGING:
+  Enable verbose output:
+    use want_raw=true or include_raw=true
+
+  Check query parameters:
+    Review query section in JSON output
+
+  Test connectivity:
+    # Use public DNS server
+    dns://.lookup(name="example.com",servers="8.8.8.8")
+
+  Increase timeout:
+    # For slow networks
+    dns://.lookup(name="example.com",timeout_ms=10000)
+
+  Use TCP for reliability:
+    # Avoid UDP packet loss
+    dns://.lookup(name="example.com",use_tcp=true)
+
+  Trace full resolution:
+    # See complete path
+    dns://.trace(name="example.com")
+
+  Check specific servers:
+    # Compare responses
+    dns://.lookup(name="example.com",servers="8.8.8.8")
+    dns://.lookup(name="example.com",servers="1.1.1.1")
+
+  Test TSIG authentication:
+    # Verify credentials
+    dns://.zone.fetch(zone="example.com",servers=["192.0.2.53"],tsig_key_name="...",tsig_secret="...",tsig_algorithm="hmac-sha256")
+
+INTEGRATION WITH OTHER HANDLES:
+
+  With event handle:
+    # Emit DNS query events
+    dns://.lookup(name="example.com",rtype="A")
+    event://emit(topic="dns.query",data="{\"name\":\"example.com\"}")
+
+  With log handle:
+    # Log DNS results
+    dns://.lookup(name="example.com") | log://./dns-queries.log.tail
+
+  With config handle:
+    # Store DNS server config
+    config://app/dns_servers.set(value="[\"1.1.1.1\",\"8.8.8.8\"]")
+
+  With file handle:
+    # Save zone transfer
+    dns://.zone.fetch(zone="example.com") > zone-backup.json
+
+MORE INFO:
+  For complete documentation of DNS handle operations:
+  https://github.com/[your-org]/resource-shell/docs/Network_RemoteOperations/dns.md
+
+  DNS protocol specifications:
+  https://www.rfc-editor.org/rfc/rfc1035 (DNS specification)
+  https://www.rfc-editor.org/rfc/rfc4033 (DNSSEC introduction)
+  https://www.rfc-editor.org/rfc/rfc2845 (TSIG)
+  https://www.rfc-editor.org/rfc/rfc5936 (AXFR)
+  https://www.rfc-editor.org/rfc/rfc1995 (IXFR)
+  https://www.rfc-editor.org/rfc/rfc2136 (Dynamic Updates)
+
+  DNS record type references:
+  https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml
+
+  Use 'dns:// --help=VERB' for detailed help on a specific verb.
+"#;
+
+
+impl DnsHandle {
+    /// Check if help was requested based on verb or arguments
+    fn should_show_help(&self, verb: &str, args: &Args) -> bool {
+        // Check if verb is a help request
+        verb == "--help" || verb == "-h" || verb == "help" ||
+        // Check if args contain help flags
+        args.get("help").is_some() || 
+        args.get("h").is_some() ||
+        args.contains_key("--help") ||
+        args.contains_key("-h") ||
+        // Check if verb ends with --help pattern
+        verb.ends_with("--help") ||
+        verb.ends_with("-h") ||
+        // Check if verb starts with --help= (for verb-specific help)
+        verb.starts_with("--help=")
+    }
+
+    /// Display comprehensive help for the DNS handle
+    fn display_help(&self, io: &mut IoStreams, verb_specific: Option<&str>) -> Result<Status> {
+        if let Some(specific_verb) = verb_specific {
+            // Show verb-specific help if implemented
+            self.display_verb_help(specific_verb, io)?;
+        } else {
+            // Show general help
+            writeln!(io.stdout, "{}", DNS_HELP_TEXT)?;
+        }
+        Ok(Status::ok())
+    }
+
+    /// Display help for a specific verb (optional feature)
+    fn display_verb_help(&self, verb: &str, io: &mut IoStreams) -> Result<()> {
+        match verb {
+            "lookup" => {
+                writeln!(io.stdout, "LOOKUP VERB - Perform DNS record lookups for specific record types\n")?;
+                writeln!(io.stdout, "USAGE:")?;
+                writeln!(io.stdout, "  dns://.lookup(name=\"domain.com\",rtype=\"A\")\n")?;
+                writeln!(io.stdout, "ARGUMENTS:")?;
+                writeln!(io.stdout, "  name               Domain name to look up (required)")?;
+                writeln!(io.stdout, "  rtype              Record type: A, AAAA, TXT, CNAME, MX, NS, SRV, PTR, SOA, CAA, ANY")?;
+                writeln!(io.stdout, "  servers            DNS servers (JSON array or comma-separated)")?;
+                writeln!(io.stdout, "  port               DNS server port (default: 53)")?;
+                writeln!(io.stdout, "  use_tcp            Use TCP instead of UDP (default: false)")?;
+                writeln!(io.stdout, "  timeout_ms         Query timeout in milliseconds (default: 2000)")?;
+                writeln!(io.stdout, "  retries            Number of retries on failure (default: 1)")?;
+                writeln!(io.stdout, "  dnssec             Request DNSSEC validation (default: false)")?;
+                writeln!(io.stdout, "  follow_cname       Follow CNAME records (default: true)")?;
+                writeln!(io.stdout, "  include_authority  Include authority section (default: true)")?;
+                writeln!(io.stdout, "  include_additional Include additional section (default: true)")?;
+                writeln!(io.stdout, "  randomize_servers  Randomize server order (default: true)")?;
+                writeln!(io.stdout, "  format             Output format: json, text (default: json)\n")?;
+                writeln!(io.stdout, "EXAMPLES:")?;
+                writeln!(io.stdout, "  dns://.lookup(name=\"example.com\",rtype=\"A\")")?;
+                writeln!(io.stdout, "  dns://.lookup(name=\"example.com\",rtype=\"MX\",servers=\"8.8.8.8\")")?;
+                writeln!(io.stdout, "  dns://.lookup(name=\"example.com\",rtype=\"A\",dnssec=true)")?;
+            }
+            "resolve" => {
+                writeln!(io.stdout, "RESOLVE VERB - Intelligent DNS resolution for hosts, mail, and services\n")?;
+                writeln!(io.stdout, "USAGE:")?;
+                writeln!(io.stdout, "  dns://.resolve(name=\"example.com\",mode=\"host\")\n")?;
+                writeln!(io.stdout, "ARGUMENTS:")?;
+                writeln!(io.stdout, "  name               Name to resolve (required)")?;
+                writeln!(io.stdout, "  mode               Resolution mode: host, mail, service, reverse (default: host)")?;
+                writeln!(io.stdout, "  family             Address family: any, ipv4, ipv6 (default: any)")?;
+                writeln!(io.stdout, "  servers            DNS servers to use (default: system default)")?;
+                writeln!(io.stdout, "  port               DNS server port (default: 53)")?;
+                writeln!(io.stdout, "  use_tcp            Use TCP instead of UDP (default: false)")?;
+                writeln!(io.stdout, "  timeout_ms         Query timeout in milliseconds (default: 2000)")?;
+                writeln!(io.stdout, "  retries            Number of retries (default: 1)")?;
+                writeln!(io.stdout, "  dnssec             Request DNSSEC validation (default: false)")?;
+                writeln!(io.stdout, "  max_cname_depth    Maximum CNAME chain depth (default: 8)")?;
+                writeln!(io.stdout, "  want_raw           Include raw DNS responses (default: false)")?;
+                writeln!(io.stdout, "  follow_srv         Follow SRV records for service mode (default: true)")?;
+                writeln!(io.stdout, "  validate_reverse   Validate reverse DNS matches forward (default: false)")?;
+                writeln!(io.stdout, "  format             Output format: json, text (default: json)\n")?;
+                writeln!(io.stdout, "EXAMPLES:")?;
+                writeln!(io.stdout, "  dns://.resolve(name=\"example.com\",mode=\"host\",family=\"ipv4\")")?;
+                writeln!(io.stdout, "  dns://.resolve(name=\"example.com\",mode=\"mail\")")?;
+                writeln!(io.stdout, "  dns://.resolve(name=\"_http._tcp.example.com\",mode=\"service\")")?;
+                writeln!(io.stdout, "  dns://.resolve(name=\"192.0.2.1\",mode=\"reverse\")")?;
+            }
+            "trace" => {
+                writeln!(io.stdout, "TRACE VERB - Trace DNS resolution from root servers\n")?;
+                writeln!(io.stdout, "USAGE:")?;
+                writeln!(io.stdout, "  dns://.trace(name=\"example.com\",rtype=\"A\")\n")?;
+                writeln!(io.stdout, "ARGUMENTS:")?;
+                writeln!(io.stdout, "  name               Domain name to trace (required)")?;
+                writeln!(io.stdout, "  rtype              DNS record type to trace (default: A)")?;
+                writeln!(io.stdout, "  root_servers       Root servers to start from (default: built-in list)")?;
+                writeln!(io.stdout, "  port               DNS server port (default: 53)")?;
+                writeln!(io.stdout, "  use_tcp            Use TCP instead of UDP (default: false)")?;
+                writeln!(io.stdout, "  timeout_ms         Query timeout in milliseconds (default: 3000)")?;
+                writeln!(io.stdout, "  retries            Number of retries per query (default: 1)")?;
+                writeln!(io.stdout, "  max_depth          Maximum trace depth (default: 15)")?;
+                writeln!(io.stdout, "  dnssec             Request DNSSEC validation (default: false)")?;
+                writeln!(io.stdout, "  follow_cname       Follow CNAME records (default: false)")?;
+                writeln!(io.stdout, "  prefer_ipv6        Prefer IPv6 when contacting servers (default: false)")?;
+                writeln!(io.stdout, "  want_raw           Include raw DNS responses (default: false)")?;
+                writeln!(io.stdout, "  include_additional Include additional section (default: true)")?;
+                writeln!(io.stdout, "  format             Output format: json, text (default: json)\n")?;
+                writeln!(io.stdout, "EXAMPLES:")?;
+                writeln!(io.stdout, "  dns://.trace(name=\"example.com\",rtype=\"A\")")?;
+                writeln!(io.stdout, "  dns://.trace(name=\"test.example.com\",rtype=\"NS\",max_depth=10)")?;
+                writeln!(io.stdout, "  dns://.trace(name=\"example.com\",dnssec=true,use_tcp=true)")?;
+            }
+            "zone.fetch" => {
+                writeln!(io.stdout, "ZONE.FETCH VERB - Perform DNS zone transfers (AXFR/IXFR)\n")?;
+                writeln!(io.stdout, "USAGE:")?;
+                writeln!(io.stdout, "  dns://.zone.fetch(zone=\"example.com\",transfer=\"AXFR\",servers=[\"ns.example.com\"])\n")?;
+                writeln!(io.stdout, "ARGUMENTS:")?;
+                writeln!(io.stdout, "  zone               Zone name to transfer (required)")?;
+                writeln!(io.stdout, "  transfer           Transfer type: AXFR, IXFR (default: AXFR)")?;
+                writeln!(io.stdout, "  serial             Starting serial for IXFR (required for IXFR)")?;
+                writeln!(io.stdout, "  servers            Authoritative servers for zone (required)")?;
+                writeln!(io.stdout, "  port               DNS server port (default: 53)")?;
+                writeln!(io.stdout, "  use_tcp            Use TCP (recommended) (default: true)")?;
+                writeln!(io.stdout, "  timeout_ms         Query timeout in milliseconds (default: 5000)")?;
+                writeln!(io.stdout, "  retries            Number of retries (default: 1)")?;
+                writeln!(io.stdout, "  dnssec             Request DNSSEC validation (default: false)")?;
+                writeln!(io.stdout, "  max_records        Maximum records to transfer (default: 1000000)")?;
+                writeln!(io.stdout, "  include_raw        Include raw DNS responses (default: false)")?;
+                writeln!(io.stdout, "  prefer_ipv6        Prefer IPv6 servers (default: false)")?;
+                writeln!(io.stdout, "  tsig_key_name      TSIG key name for authentication")?;
+                writeln!(io.stdout, "  tsig_secret        TSIG secret (base64 encoded)")?;
+                writeln!(io.stdout, "  tsig_algorithm     TSIG algorithm (e.g., hmac-sha256)")?;
+                writeln!(io.stdout, "  format             Output format: json, text (default: json)\n")?;
+                writeln!(io.stdout, "EXAMPLES:")?;
+                writeln!(io.stdout, "  dns://.zone.fetch(zone=\"example.com\",servers=[\"192.0.2.53\"])")?;
+                writeln!(io.stdout, "  dns://.zone.fetch(zone=\"example.com\",transfer=\"IXFR\",serial=2025112501,servers=[\"192.0.2.53\"])")?;
+                writeln!(io.stdout, "  dns://.zone.fetch(zone=\"example.com\",tsig_key_name=\"key.example.com.\",tsig_secret=\"...\",tsig_algorithm=\"hmac-sha256\")")?;
+            }
+            "zone.update" => {
+                writeln!(io.stdout, "ZONE.UPDATE VERB - Perform dynamic DNS zone updates\n")?;
+                writeln!(io.stdout, "USAGE:")?;
+                writeln!(io.stdout, "  dns://.zone.update(zone=\"example.com\",adds=\"[{{...}}]\")\n")?;
+                writeln!(io.stdout, "ARGUMENTS:")?;
+                writeln!(io.stdout, "  zone               Zone name to update (required)")?;
+                writeln!(io.stdout, "  prerequisites      Prerequisites that must be met (JSON array)")?;
+                writeln!(io.stdout, "  adds               Records to add (JSON array)")?;
+                writeln!(io.stdout, "  deletes            Records or names to delete (JSON array)")?;
+                writeln!(io.stdout, "  servers            Authoritative servers for zone (required)")?;
+                writeln!(io.stdout, "  port               DNS server port (default: 53)")?;
+                writeln!(io.stdout, "  use_tcp            Use TCP (recommended) (default: true)")?;
+                writeln!(io.stdout, "  timeout_ms         Query timeout in milliseconds (default: 3000)")?;
+                writeln!(io.stdout, "  retries            Number of retries (default: 1)")?;
+                writeln!(io.stdout, "  max_changes        Maximum changes in single update (default: 1000)")?;
+                writeln!(io.stdout, "  dry_run            Validate without applying (default: false)")?;
+                writeln!(io.stdout, "  include_raw        Include raw DNS responses (default: false)")?;
+                writeln!(io.stdout, "  tsig_key_name      TSIG key name for authentication")?;
+                writeln!(io.stdout, "  tsig_secret        TSIG secret (base64 encoded)")?;
+                writeln!(io.stdout, "  tsig_algorithm     TSIG algorithm (e.g., hmac-sha256)")?;
+                writeln!(io.stdout, "  format             Output format: json, text (default: json)\n")?;
+                writeln!(io.stdout, "EXAMPLES:")?;
+                writeln!(io.stdout, "  dns://.zone.update(zone=\"example.com\",adds=\"[{{\\\"name\\\":\\\"www.example.com\\\",\\\"rtype\\\":\\\"A\\\",\\\"ttl\\\":300,\\\"data\\\":{{\\\"address\\\":\\\"203.0.113.10\\\"}}}}]\")")?;
+                writeln!(io.stdout, "  dns://.zone.update(zone=\"example.com\",deletes=\"[{{\\\"name\\\":\\\"old.example.com\\\",\\\"delete_all\\\":true}}]\")")?;
+                writeln!(io.stdout, "  dns://.zone.update(zone=\"example.com\",dry_run=true,adds=\"[{{...}}]\")")?;
+            }
+            _ => {
+                writeln!(io.stdout, "Unknown verb '{}' for dns:// handle.", verb)?;
+                writeln!(io.stdout, "Available verbs: lookup, resolve, trace, zone.fetch, zone.update")?;
+                writeln!(io.stdout, "\nUse 'dns:// --help' for complete help.")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Handle for DnsHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["lookup", "resolve", "trace", "zone.fetch", "zone.update"]
+        &["lookup", "resolve", "trace", "zone.fetch", "zone.update", "help", "--help", "-h"]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests before normal verb processing
+        if self.should_show_help(verb, args) {
+            // Extract verb name for specific help if requested (e.g., --help=lookup)
+            let verb_specific = if verb.starts_with("--help=") {
+                verb.strip_prefix("--help=")
+            } else {
+                // Check if help is requested for a specific verb via arguments
+                args.get("verb").map(|s| s.as_str())
+            };
+            
+            return self.display_help(io, verb_specific);
+        }
+
         match verb {
             "lookup" => self.verb_lookup(args, io),
             "resolve" => self.verb_resolve(args, io),
             "trace" => self.verb_trace(args, io),
             "zone.fetch" => self.verb_zone_fetch(args, io),
             "zone.update" => self.verb_zone_update(args, io),
-            _ => bail!("unknown verb for dns://: {}", verb),
+            _ => bail!("unknown verb for dns://: {} (available: lookup, resolve, trace, zone.fetch, zone.update, --help, -h, help)", verb),
         }
     }
 }

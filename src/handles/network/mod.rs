@@ -1,5 +1,5 @@
 pub mod dnsh;
-mod httph;
+pub mod httph;
 pub mod mailh;
 mod neth;
 pub mod sshh;

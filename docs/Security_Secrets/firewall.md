@@ -1,66 +1,266 @@
-# Firewall Handle
+# Resource Shell (resh) – Firewall Handle Documentation
 
-The Firewall handle in Resource Shell provides complete firewall management across multiple Linux firewall backends. This handle supports rule management, status checking, and firewall service control for iptables, nftables, UFW, and firewalld.
+## 1. Overview
 
-## URL Format
+### Definition
+
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `firewall://` handle provides unified firewall management across multiple Linux firewall backends.
+
+### Purpose
+
+The firewall domain enables:
+
+* Rule listing, filtering, and inspection
+* Rule creation and deletion
+* Firewall configuration persistence and reload
+* Backend status inspection
+* Firewall service enable/disable control
+
+Supported backends:
+
+* `iptables`
+* `nftables`
+* `ufw`
+* `firewalld`
+* `auto` (backend auto-detection)
+
+All operations return structured JSON output suitable for automation and infrastructure workflows.
+
+### Architectural Problem Addressed
+
+Traditional firewall management:
+
+* Requires backend-specific tools
+* Produces human-oriented output
+* Lacks structured API contracts
+* Requires manual parsing for automation
+* Varies significantly across distributions
+
+resh addresses these issues by:
+
+* Providing a unified `firewall://` handle
+* Standardizing verbs across backends
+* Normalizing rule representation
+* Returning deterministic JSON output
+* Defining consistent exit codes and structured error responses
+
+### Resource-Oriented URI Model
+
+Firewall operations follow:
 
 ```
-firewall://
+handle://target.verb(options)
 ```
 
-## Verbs
+For firewall management:
 
-The Firewall handle supports eight main verbs:
+* **handle**: `firewall://`
+* **target**: `.` (firewall context)
+* **verb**: Operation
+* **options**: Structured parameters
 
-- `rules.list` - List existing firewall rules
-- `rules.add` - Add new firewall rules
-- `rules.delete` - Delete existing firewall rules 
-- `rules.save` - Save firewall rules to files
-- `rules.reload` - Reload firewall rules from files
-- `status` - Check firewall status and backend availability
-- `enable` - Enable firewall service
-- `disable` - Disable firewall service
+Examples:
+
+```
+firewall://.status
+firewall://.rules.list
+firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=22)
+```
 
 ---
 
-## rules.list
+## 2. Design Philosophy and Core Principles
 
-List existing firewall rules from various firewall backends.
+### Structured Interface Model
 
-### Parameters
+* Eight explicitly defined verbs:
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `backend` | string | No | `auto` | Firewall backend (auto, iptables, nftables, ufw, firewalld, all) |
-| `family` | string | No | `any` | IP family (any, ipv4, ipv6) |
-| `table` | string | No | - | Table to list rules from |
-| `chain` | string | No | - | Chain to list rules from |
-| `direction` | string | No | - | Rule direction (input, output, forward) |
-| `action` | string | No | - | Rule action (accept, drop, reject) |
-| `proto` | string | No | - | Protocol (tcp, udp, icmp) |
-| `sport` | string | No | - | Source port filter |
-| `dport` | string | No | - | Destination port filter |
-| `saddr` | string | No | - | Source address filter |
-| `daddr` | string | No | - | Destination address filter |
-| `in_iface` | string | No | - | Input interface filter |
-| `out_iface` | string | No | - | Output interface filter |
-| `comment_contains` | string | No | - | Filter by comment content |
-| `include_backend_raw` | boolean | No | `false` | Include raw backend output |
-| `include_counters` | boolean | No | `false` | Include packet/byte counters |
-| `max_rules` | number | No | `10000` | Maximum rules to return |
-| `timeout_ms` | number | No | `5000` | Command timeout in milliseconds |
-| `format_output` | string | No | `json` | Output format (json or text) |
+  * `rules.list`
+  * `rules.add`
+  * `rules.delete`
+  * `rules.save`
+  * `rules.reload`
+  * `status`
+  * `enable`
+  * `disable`
+* Backend abstraction layer
+* Explicit parameter validation
+* Normalized rule structure across backends
+* Built-in help (`resh firewall:// --help`)
 
-### Examples
+---
 
-#### List All Rules (Auto-detect Backend)
+### Safety-First Execution
 
-```bash
-# List all rules using auto-detected backend
-resh firewall:// rules.list
+* `dry_run` supported for rule changes
+* `require_match` controls deletion behavior
+* `backup_before_apply` supported for disable/reload
+* Validation prior to reload (`validate_before_apply`)
+* Timeouts prevent indefinite execution
+
+---
+
+### Deterministic Behavior
+
+* Explicit backend selection or `auto`
+* Structured rule matching
+* Predictable JSON output
+* Standardized exit codes
+* Strict parameter validation
+
+---
+
+### JSON-Based Structured Output
+
+All verbs return JSON by default:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "operation": "rules.add",
+    "backend": "iptables",
+    "rule": {
+      "direction": "input",
+      "action": "accept",
+      "proto": "tcp",
+      "dport": "22"
+    }
+  }
+}
 ```
 
-Expected output:
+---
+
+### AI-Readiness
+
+Structured output enables:
+
+* Automated compliance validation
+* Rule drift detection
+* Policy enforcement automation
+* Change management workflows
+* Backend migration orchestration
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+firewall://.VERB(options)
+```
+
+| Component | Description            |
+| --------- | ---------------------- |
+| `handle`  | `firewall://`          |
+| `target`  | `.` (firewall context) |
+| `VERB`    | Firewall operation     |
+| `options` | Structured parameters  |
+
+---
+
+### Core Examples
+
+#### Check Status
+
+```
+firewall://.status
+```
+
+#### List Rules
+
+```
+firewall://.rules.list
+firewall://.rules.list(backend=iptables,family=ipv4)
+```
+
+#### Add Rule
+
+```
+firewall://.rules.add(
+  backend=iptables,
+  direction=input,
+  action=accept,
+  proto=tcp,
+  dport=22
+)
+```
+
+#### Delete Rule
+
+```
+firewall://.rules.delete(
+  backend=iptables,
+  direction=input,
+  proto=tcp,
+  dport=22
+)
+```
+
+#### Save Configuration
+
+```
+firewall://.rules.save(backend=iptables,path=/tmp/firewall.json)
+```
+
+#### Reload Configuration
+
+```
+firewall://.rules.reload(
+  backend=iptables,
+  source_format=backend_native,
+  path=/tmp/iptables.rules
+)
+```
+
+#### Enable Firewall
+
+```
+firewall://.enable(backend=ufw)
+```
+
+#### Disable Firewall
+
+```
+firewall://.disable(backend=iptables,backup_before_apply=true)
+```
+
+---
+
+## 3.2 Execution Semantics
+
+### Deterministic Behavior
+
+* Explicit backend validation.
+* Structured rule filtering.
+* Consistent normalized representation.
+* Timeout enforcement.
+* Predictable dry-run behavior.
+
+---
+
+### Structured Output Contracts
+
+Example: `status`
+
+```json
+{
+  "ok": true,
+  "backends": [
+    {
+      "backend": "iptables",
+      "available": true,
+      "active": true,
+      "enabled": true
+    }
+  ]
+}
+```
+
+Example: `rules.list`
+
 ```json
 {
   "ok": true,
@@ -77,730 +277,287 @@ Expected output:
         }
       ]
     }
-  ],
-  "query": {
-    "backend": "auto",
-    "include_metrics": true
-  }
+  ]
 }
-```
-
-#### List Rules from Specific Backend
-
-```bash
-# List rules from iptables specifically
-resh firewall:// rules.list backend=iptables format_output=json
 ```
 
 ---
 
-## rules.add
+### Error Handling Structure
 
-Add new firewall rules to various firewall backends.
+Example:
 
-### Parameters
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `backend` | string | Yes | - | Firewall backend (iptables, nftables, ufw, firewalld) |
-| `family` | string | No | `ipv4` | IP family (ipv4, ipv6) |
-| `direction` | string | Yes | - | Rule direction (input, output, forward) |
-| `action` | string | Yes | - | Rule action (accept, drop, reject) |
-| `proto` | string | No | - | Protocol (tcp, udp, icmp, all) |
-| `dport` | string | No | - | Destination port |
-| `sport` | string | No | - | Source port |
-| `saddr` | string | No | - | Source address/network |
-| `daddr` | string | No | - | Destination address/network |
-| `comment` | string | No | - | Rule comment |
-| `zone` | string | No | - | Zone (required for firewalld) |
-| `dry_run` | boolean | No | `false` | Generate commands without executing |
-| `format_output` | string | No | `json` | Output format (json or text) |
-
-### Examples
-
-#### Allow SSH Access (iptables)
-
-```bash
-# Allow SSH access using iptables
-resh firewall:// rules.add \
-  backend=iptables \
-  family=ipv4 \
-  direction=input \
-  action=accept \
-  proto=tcp \
-  dport=22 \
-  comment="Allow SSH" \
-  dry_run=true \
-  format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "rule": {
-    "backend": "iptables",
-    "action": "accept",
-    "proto": "tcp",
-    "dport": "22"
-  },
-  "backend_commands": [
-    "iptables -A INPUT -p tcp --dport 22 -j ACCEPT -m comment --comment 'Allow SSH'"
-  ]
-}
-```
-
-#### Block HTTP from Subnet (iptables)
-
-```bash
-# Block HTTP traffic from specific subnet
-resh firewall:// rules.add \
-  backend=iptables \
-  family=ipv4 \
-  direction=input \
-  action=drop \
-  proto=tcp \
-  dport=80 \
-  saddr=192.168.1.0/24 \
-  comment="Block HTTP from 192.168.1.0/24" \
-  dry_run=true \
-  format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "rule": {
-    "backend": "iptables",
-    "action": "drop",
-    "proto": "tcp",
-    "dport": "80",
-    "saddr": "192.168.1.0/24"
-  },
-  "backend_commands": [
-    "iptables -A INPUT -s 192.168.1.0/24 -p tcp --dport 80 -j DROP"
-  ]
-}
-```
-
-#### Drop Telnet Traffic (nftables)
-
-```bash
-# Drop telnet traffic using nftables
-resh firewall:// rules.add \
-  backend=nftables \
-  family=ipv4 \
-  direction=input \
-  action=drop \
-  proto=tcp \
-  dport=23 \
-  comment="Block telnet" \
-  dry_run=true \
-  format_output=json
-```
-
-#### Allow App Port from Corporate Network (UFW)
-
-```bash
-# Allow port 8080 from corporate subnet using UFW
-resh firewall:// rules.add \
-  backend=ufw \
-  direction=input \
-  action=accept \
-  proto=tcp \
-  dport=8080 \
-  saddr=10.0.0.0/8 \
-  comment="Allow app port from corp" \
-  dry_run=true \
-  format_output=json
-```
-
-#### Allow HTTP on Public Zone (firewalld)
-
-```bash
-# Allow HTTP on firewalld public zone
-resh firewall:// rules.add \
-  backend=firewalld \
-  family=ipv4 \
-  direction=input \
-  action=accept \
-  proto=tcp \
-  dport=80 \
-  zone=public \
-  dry_run=true \
-  format_output=json
-```
-
----
-
-## rules.delete
-
-Delete existing firewall rules from various firewall backends.
-
-### Parameters
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `backend` | string | Yes | - | Firewall backend (iptables, nftables, ufw, firewalld) |
-| `family` | string | No | `ipv4` | IP family (ipv4, ipv6) |
-| `direction` | string | No | - | Rule direction (input, output, forward) |
-| `action` | string | No | - | Rule action (accept, drop, reject) |
-| `proto` | string | No | - | Protocol (tcp, udp, icmp, all) |
-| `dport` | string | No | - | Destination port |
-| `sport` | string | No | - | Source port |
-| `saddr` | string | No | - | Source address/network |
-| `daddr` | string | No | - | Destination address/network |
-| `require_match` | boolean | No | `true` | Require rules to match for success |
-| `dry_run` | boolean | No | `false` | Show what would be deleted without executing |
-| `format_output` | string | No | `json` | Output format (json or text) |
-
-### Examples
-
-#### Delete with No Match (require_match=false)
-
-```bash
-# Delete rules with no matches allowed
-resh firewall:// rules.delete \
-  backend=iptables \
-  family=ipv4 \
-  direction=input \
-  action=accept \
-  proto=tcp \
-  dport=65535 \
-  require_match=false \
-  dry_run=true \
-  format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "result": {
-    "deleted_count": 0
-  },
-  "warnings": [
-    "No matching rules found"
-  ]
-}
-```
-
-#### Delete with Match Required (require_match=true)
-
-```bash
-# Delete rules requiring matches
-resh firewall:// rules.delete \
-  backend=iptables \
-  family=ipv4 \
-  direction=input \
-  action=accept \
-  proto=tcp \
-  dport=65535 \
-  require_match=true \
-  dry_run=true \
-  format_output=json
-```
-
-Expected output when no matches:
 ```json
 {
   "ok": false,
   "error": {
-    "code": "firewall.rules_delete_no_match",
-    "message": "No matching rules found"
+    "code": "firewall.rules_add_invalid_backend",
+    "message": "Invalid backend specified"
   }
 }
 ```
 
 ---
 
-## rules.save
+### Exit Codes
 
-Save current firewall rules to files in various formats.
+| Code | Meaning             |
+| ---- | ------------------- |
+| 0    | Success             |
+| 1    | Invalid arguments   |
+| 2    | Backend unavailable |
+| 3    | Permission denied   |
+| 4    | Operation failed    |
+| 5    | No matches          |
+| 6    | Timeout             |
+| 7    | Internal error      |
 
-### Parameters
+---
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `backend` | string | No | `auto` | Firewall backend (auto, iptables, nftables, ufw, firewalld) |
-| `family` | string | No | `any` | IP family (any, ipv4, ipv6) |
-| `format` | string | No | `normalized_json` | Save format (normalized_json, backend_native, both) |
-| `path` | string | No | auto-generated | Output file path |
-| `compress` | string | No | `none` | Compression (none, gzip, bzip2) |
-| `include_metadata` | boolean | No | `true` | Include metadata in output |
-| `include_all_backends` | boolean | No | `false` | Save all available backends |
-| `dry_run` | boolean | No | `false` | Show what would be saved without executing |
-| `overwrite` | boolean | No | `false` | Overwrite existing files |
-| `create_dirs` | boolean | No | `true` | Create directories if needed |
-| `timeout_ms` | number | No | `5000` | Command timeout in milliseconds |
-| `format_output` | string | No | `json` | Output format (json or text) |
+## 4. Functional Domains
 
-### Examples
+---
 
-#### Save Normalized JSON Snapshot (iptables)
+### 4.1 Automation Utilities
 
-```bash
-# Save iptables rules as normalized JSON
-resh firewall:// rules.save \
-  backend=iptables \
-  family=ipv4 \
-  format=normalized_json \
-  path=/tmp/firewall-backup.json \
-  format_output=json
+**Handle**
+
+* `firewall://`
+
+**Scope**
+
+* Infrastructure-as-code firewall management
+* Rule drift detection
+* Policy enforcement
+* Backend migration automation
+
+**Use Cases**
+
+* Automated server provisioning
+* CI/CD rule validation
+* Security compliance checks
+
+---
+
+### 4.2 Data & State Management
+
+**Scope**
+
+* Normalized rule export (`rules.save`)
+* Rule reload from JSON or native formats
+* Backend status inspection
+
+Example:
+
 ```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1732538560123,
-  "summary": {
-    "backends": [
-      {
-        "backend": "iptables",
-        "family": "ipv4", 
-        "rules_count": 3,
-        "has_native": false
-      }
-    ],
-    "bytes_written": 1024,
-    "compressed": false,
-    "path": "/tmp/firewall-backup.json"
-  },
-  "query": {
-    "backend": "iptables",
-    "format": "normalized_json",
-    "path": "/tmp/firewall-backup.json"
-  }
-}
+firewall://.rules.save(format=normalized_json)
 ```
 
 ---
 
-## rules.reload
+### 4.3 Filesystem & Storage
 
-Reload firewall rules from saved files.
+**Scope**
 
-### Parameters
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `backend` | string | No | `auto` | Target firewall backend |
-| `source_format` | string | No | `auto` | Source format (auto, backend_native, normalized_json) |
-| `path` | string | Yes | - | Path to rules file |
-| `family` | string | No | `any` | IP family (any, ipv4, ipv6) |
-| `backup_before_apply` | boolean | No | `true` | Create backup before applying |
-| `validate_before_apply` | boolean | No | `true` | Validate rules before applying |
-| `dry_run` | boolean | No | `false` | Show what would be reloaded without executing |
-| `timeout_ms` | number | No | `30000` | Command timeout in milliseconds |
-| `format_output` | string | No | `json` | Output format (json or text) |
-
-### Examples
-
-#### Reload from Backend Native Format
-
-```bash
-# Reload iptables rules from native format file
-resh firewall:// rules.reload \
-  backend=iptables \
-  source_format=backend_native \
-  path=/tmp/iptables.rules \
-  dry_run=true \
-  format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backend": "iptables",
-  "source_format": "backend_native",
-  "actions": [
-    "iptables-restore < /tmp/iptables.rules"
-  ],
-  "query": {
-    "backend": "iptables",
-    "source_format": "backend_native",
-    "path": "/tmp/iptables.rules"
-  }
-}
-```
+* Firewall configuration persistence
+* Backup creation prior to destructive operations
+* Rule snapshot storage
 
 ---
 
-## status
+### 4.4 Network & Remote Operations
 
-Check firewall status and backend availability across different firewall systems.
+**Scope**
 
-### Parameters
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `backend` | string | No | `auto` | Backend to check (auto, all, iptables, nftables, ufw, firewalld) |
-| `family` | string | No | `any` | IP family (any, ipv4, ipv6) |
-| `include_metrics` | boolean | No | `true` | Include performance metrics |
-| `include_rules_summary` | boolean | No | `false` | Include rules count summary |
-| `timeout_ms` | number | No | `5000` | Command timeout in milliseconds |
-| `format_output` | string | No | `json` | Output format (json or text) |
-
-### Examples
-
-#### Check Status (Auto-detect Backend)
-
-```bash
-# Check status using auto-detected backend
-resh firewall:// status format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backends": [
-    {
-      "backend": "iptables",
-      "available": true,
-      "active": true,
-      "enabled": true
-    }
-  ],
-  "query": {
-    "backend": "auto",
-    "include_metrics": true
-  }
-}
-```
-
-#### Check All Backends Status
-
-```bash
-# Check status of all backends
-resh firewall:// status backend=all format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backends": [
-    {
-      "backend": "iptables",
-      "available": true,
-      "active": true,
-      "enabled": true
-    },
-    {
-      "backend": "nftables", 
-      "available": false,
-      "active": false,
-      "enabled": false
-    },
-    {
-      "backend": "ufw",
-      "available": true,
-      "active": false,
-      "enabled": false
-    },
-    {
-      "backend": "firewalld",
-      "available": true,
-      "active": false,
-      "enabled": false
-    }
-  ]
-}
-```
-
-#### Check Specific Backend Status
-
-```bash
-# Check iptables backend specifically
-resh firewall:// status backend=iptables format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backends": [
-    {
-      "backend": "iptables",
-      "available": true,
-      "active": true,
-      "enabled": true
-    }
-  ]
-}
-```
-
-#### Check Status with Metrics
-
-```bash
-# Check status with metrics enabled
-resh firewall:// status backend=auto include_metrics=true format_output=json
-```
-
-#### Check Status without Metrics
-
-```bash
-# Check status with metrics disabled
-resh firewall:// status backend=auto include_metrics=false format_output=json
-```
-
-#### Check Status with Rules Summary
-
-```bash
-# Check status with rules summary
-resh firewall:// status backend=auto include_rules_summary=true format_output=json
-```
-
-#### Check IPv4 Family Status
-
-```bash
-# Check status for IPv4 family only
-resh firewall:// status backend=auto family=ipv4 format_output=json
-```
+* TCP/UDP rule enforcement
+* IPv4 and IPv6 family support
+* Interface-based filtering
+* CIDR-based address restrictions
 
 ---
 
-## enable
+### 4.5 Packages & Software
 
-Enable firewall service on various firewall backends.
+Supports:
 
-### Parameters
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `backend` | string | No | `auto` | Firewall backend to enable (auto, ufw, firewalld, iptables, nftables) |
-| `path` | string | No | - | Path to rules file to apply during enable |
-| `dry_run` | boolean | No | `false` | Show what would be enabled without executing |
-| `validate_only` | boolean | No | `false` | Only validate parameters without enabling |
-| `timeout_ms` | number | No | `30000` | Command timeout in milliseconds |
-| `format_output` | string | No | `json` | Output format (json or text) |
-
-### Examples
-
-#### Enable UFW Firewall
-
-```bash
-# Enable UFW firewall
-resh firewall:// enable backend=ufw format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backend": "ufw",
-  "previous_state": {
-    "available": true,
-    "active": false,
-    "enabled": false
-  },
-  "actions": [
-    "ufw --force enable"
-  ]
-}
-```
-
-#### Enable UFW with Dry Run
-
-```bash
-# Enable UFW in dry-run mode
-resh firewall:// enable backend=ufw dry_run=true format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backend": "ufw",
-  "previous_state": {
-    "available": true,
-    "active": false,
-    "enabled": false
-  },
-  "actions": [
-    "ufw --force enable"
-  ]
-}
-```
+* Enabling firewall services after installation
+* Integration with system service managers
+* Backend-specific service activation
 
 ---
 
-## disable
+### 4.6 Process & Service Management
 
-Disable firewall service on various firewall backends.
+Integrates with:
 
-### Parameters
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `backend` | string | No | `auto` | Firewall backend to disable (auto, ufw, firewalld, iptables, nftables) |
-| `path` | string | No | - | Path to rules file to apply during disable |
-| `backup_before_apply` | boolean | No | `true` | Create backup before disabling |
-| `dry_run` | boolean | No | `false` | Show what would be disabled without executing |
-| `validate_only` | boolean | No | `false` | Only validate parameters without disabling |
-| `timeout_ms` | number | No | `30000` | Command timeout in milliseconds |
-| `format_output` | string | No | `json` | Output format (json or text) |
-
-### Examples
-
-#### Disable UFW Firewall
-
-```bash
-# Disable UFW firewall
-resh firewall:// disable backend=ufw format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backend": "ufw",
-  "previous_state": {
-    "available": true,
-    "active": true,
-    "enabled": true
-  },
-  "current_state": {
-    "available": true,
-    "active": false,
-    "enabled": false
-  },
-  "actions": [
-    "ufw --force disable"
-  ]
-}
-```
-
-#### Disable with Backup (iptables)
-
-```bash
-# Disable iptables with backup
-resh firewall:// disable \
-  backend=iptables \
-  backup_before_apply=true \
-  dry_run=true \
-  format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backend": "iptables",
-  "previous_state": {
-    "available": true,
-    "active": true,
-    "enabled": true
-  },
-  "current_state": {
-    "available": true,
-    "active": false,
-    "enabled": false
-  },
-  "actions": [
-    "firewall.rules.save(...) -> /var/backups/firewall/.resh-backup-iptables-v4-1732538612.rules",
-    "iptables -P INPUT ACCEPT",
-    "iptables -P OUTPUT ACCEPT", 
-    "iptables -P FORWARD ACCEPT",
-    "iptables -F",
-    "iptables -t nat -F",
-    "iptables -t mangle -F"
-  ]
-}
-```
-
-#### Disable firewalld
-
-```bash
-# Disable firewalld service
-resh firewall:// disable backend=firewalld dry_run=true format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backend": "firewalld", 
-  "previous_state": {
-    "available": true,
-    "active": true,
-    "enabled": true
-  },
-  "current_state": {
-    "available": true,
-    "active": false,
-    "enabled": false
-  },
-  "actions": [
-    "systemctl stop firewalld"
-  ]
-}
-```
-
-#### Disable nftables
-
-```bash
-# Disable nftables with backup
-resh firewall:// disable \
-  backend=nftables \
-  backup_before_apply=true \
-  dry_run=true \
-  format_output=json
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backend": "nftables",
-  "previous_state": {
-    "available": true,
-    "active": true,
-    "enabled": true
-  },
-  "current_state": {
-    "available": true,
-    "active": false,
-    "enabled": false
-  },
-  "actions": [
-    "firewall.rules.save(...) -> /var/backups/firewall/.resh-backup-nft-1732538612.rules",
-    "nft flush ruleset"
-  ]
-}
-```
+* `svc://` for firewall daemon control
+* `cron://` for scheduled rule auditing
+* `log://` for change tracking
 
 ---
 
-## Supported Backends
+### 4.7 Security & Secrets
 
-The firewall handle supports these firewall backends:
+Primary capabilities:
 
-- **auto** - Automatically detect the best available backend
-- **iptables** - Traditional Linux netfilter iptables
-- **nftables** - Modern Linux netfilter nftables 
-- **ufw** - Uncomplicated Firewall (Ubuntu/Debian)
-- **firewalld** - Dynamic firewall manager (Red Hat/CentOS)
+* Allow-list and deny-list rule modeling
+* Default deny posture enforcement
+* Backend-agnostic rule normalization
+* Structured rule validation
+* Root-privilege enforcement
 
-## Error Handling
+---
 
-The firewall handle provides detailed error information including:
+### 4.8 System Information
 
-- Backend availability checks
-- Parameter validation 
-- Command execution failures
-- Timeout handling
-- Permission issues
+Structured reporting includes:
 
-All error responses include structured error codes like `firewall.status_invalid_backend` for consistent error handling.
+* Backend availability
+* Active/enabled state
+* Rule counts
+* Metrics (optional)
+* Raw backend output (optional)
 
-## Security Considerations
+---
 
-- Most firewall operations require root privileges
-- Dry-run mode allows testing without system changes
-- Backup options help prevent configuration loss
-- Validation ensures rules are syntactically correct before application
+## 5. Platform Support
+
+### Supported Platforms
+
+| Platform | Support       |
+| -------- | ------------- |
+| Linux    | Full support  |
+| BSD      | Not supported |
+| macOS    | Not supported |
+| Windows  | Not supported |
+
+Backend availability depends on distribution:
+
+| Backend   | Typical Usage                 |
+| --------- | ----------------------------- |
+| iptables  | Universal Linux compatibility |
+| nftables  | Modern Linux distributions    |
+| ufw       | Ubuntu/Debian                 |
+| firewalld | RHEL/CentOS/Fedora            |
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Always allow SSH before applying restrictive rules.
+* Use `dry_run=true` before applying changes.
+* Save configuration after rule changes.
+* Use `backup_before_apply` for destructive operations.
+* Validate rule filters before deletion.
+
+---
+
+### Automation Considerations
+
+* Always check `ok` field.
+* Use normalized JSON for portability.
+* Validate reload files before applying.
+* Limit `max_rules` in large environments.
+* Use timeouts in automation scripts.
+
+---
+
+### CI/CD Integration
+
+Example workflow:
+
+1. `firewall://.status`
+2. `firewall://.rules.add(...,dry_run=true)`
+3. Apply rule without dry run.
+4. `firewall://.rules.save`
+5. Validate using `rules.list`.
+
+---
+
+### Production Recommendations
+
+* Enforce least privilege.
+* Prefer allow-list model.
+* Keep rule sets minimal.
+* Document rules with comments.
+* Regularly audit rule sets.
+* Monitor firewall logs externally.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Automate firewall configuration during provisioning.
+* Manage rule consistency across environments.
+* Validate rules in CI pipelines.
+
+---
+
+### SRE Engineers
+
+* Investigate network connectivity issues.
+* Audit rule drift.
+* Restore firewall configurations.
+* Perform safe backend migrations.
+
+---
+
+### Network Administrators
+
+* Manage inbound/outbound policies.
+* Enforce subnet restrictions.
+* Segment services.
+* Monitor rule usage counters.
+
+---
+
+### AI / Automation Engineers
+
+* Interpret normalized rule JSON.
+* Detect policy violations.
+* Automate remediation.
+* Evaluate rule complexity and ordering.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+resh is implemented in Rust, providing:
+
+* Memory safety
+* Strong type guarantees
+* Efficient backend command execution
+* Deterministic argument parsing
+
+---
+
+### Type Safety
+
+* Enumerated verbs
+* Explicit backend values
+* Strict parameter validation
+* Structured error codes
+
+---
+
+### Performance Characteristics
+
+* Backend auto-detection cached
+* Efficient rule normalization
+* Controlled timeouts
+* Minimal overhead JSON serialization
+
+---
+
+### Cross-Platform Architecture
+
+* Backend abstraction layer
+* Unified rule model
+* Deterministic JSON output
+* Explicit unsupported-platform signaling

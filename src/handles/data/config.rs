@@ -63,10 +63,27 @@ pub struct ConfigHandle {
     file_path: PathBuf,
     base_path: PathBuf,
     prefix: String,
+    original_url: Url,
 }
 
 impl ConfigHandle {
     pub fn from_url(u: &Url) -> Result<Self> {
+        // Check for help request first
+        if Self::should_show_help(u) {
+            // For help requests, we create a minimal handle just to display help
+            let config_dir = dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config"));
+            let base_path = config_dir.join("resh").join("config");
+
+            return Ok(Self {
+                namespace: String::new(),
+                key: String::new(),
+                file_path: base_path.clone(),
+                base_path,
+                prefix: String::new(),
+                original_url: u.clone(),
+            });
+        }
         // Extract prefix from URL for hierarchical operations
         let prefix = if let Some(host) = u.host_str() {
             // config://namespace/path
@@ -121,6 +138,7 @@ impl ConfigHandle {
             file_path,
             base_path,
             prefix,
+            original_url: u.clone(),
         })
     }
 
@@ -781,12 +799,458 @@ impl ConfigHandle {
     }
 }
 
+/// Comprehensive help text for the config handle
+const CONFIG_HELP_TEXT: &str = r#"RESOURCE SHELL - CONFIG HANDLE
+==============================
+
+USAGE:
+  config://namespace/key.VERB(arguments)
+  config://key.VERB(arguments)              (uses "default" namespace)
+
+DESCRIPTION:
+  The config handle provides a powerful way to store, retrieve, list, and
+  watch configuration settings. It supports JSON data storage with hierarchical
+  organization through namespaces and keys. Config data is stored as JSON files
+  in ~/.config/resh/config/ by default.
+
+HIERARCHICAL STORAGE:
+  Each configuration item has:
+  • Namespace    Top-level grouping (e.g., "app", "db", "cache")
+  • Key          Specific item within namespace (e.g., "url", "timeout")
+  • Value        JSON data of any type (string, number, bool, object, array)
+
+  Example structure:
+    ~/.config/resh/config/
+      ├── app/
+      │   ├── db/
+      │   │   ├── url.json
+      │   │   └── timeout.json
+      │   └── theme.json
+      └── default/
+          └── mykey.json
+
+VERBS:
+  get             Retrieve configuration value
+  set             Store configuration value
+  ls              List configuration keys and namespaces
+  watch           Monitor configuration changes in real-time
+
+EXAMPLES:
+
+  Get configuration value:
+    config://test/theme.get
+
+  Get from default namespace:
+    config://mykey.get
+
+  Get nested configuration:
+    config://app/db/url.get
+
+  Set string value (auto-stored as JSON string):
+    config://test/plain.set(value="dark")
+
+  Set complex string:
+    config://test/message.set(value="hello world 123")
+
+  Set JSON object (raw mode):
+    config://test/settings.set(value={"theme":"dark","size":14},raw=true)
+
+  Set number (raw mode):
+    config://test/timeout.set(value=30,raw=true)
+
+  Set boolean (raw mode):
+    config://test/enabled.set(value=true,raw=true)
+
+  Set null value (raw mode):
+    config://test/optional.set(value=null,raw=true)
+
+  Set array (raw mode):
+    config://test/items.set(value=[1,2,3],raw=true)
+
+  Set without raw mode (auto-parses valid JSON):
+    config://test/config.set(value={"valid":"json"})
+
+  Set in default namespace:
+    config://mykey.set(value="test value")
+
+  Set nested path:
+    config://app/db/connection/timeout.set(value=5000,raw=true)
+
+  List all namespaces:
+    config://.ls
+
+  List namespace contents:
+    config://app.ls
+
+  List with recursion (all descendants):
+    config://app.ls(recursive=true)
+
+  List with pattern filter:
+    config://app.ls(pattern="database*")
+
+  List nested path:
+    config://app/env.ls
+
+  List with pagination:
+    config://test.ls(limit=10,offset=0)
+
+  List next page:
+    config://test.ls(limit=10,offset=10)
+
+  Watch specific key:
+    config://test.watch(key="config",timeout_ms=5000,initial=true)
+
+  Watch with prefix (all matching keys):
+    config://app.watch(prefix="db",timeout_ms=10000,initial=true)
+
+  Watch with event limit:
+    config://test.watch(key="dynamic",max_events=5,initial=true)
+
+  Watch indefinitely (until interrupted):
+    config://app.watch(prefix="settings",initial=true)
+
+GET ARGUMENTS:
+  None - simply retrieves the value at the specified key
+
+SET ARGUMENTS:
+  value=VALUE            Value to store (required)
+  raw=BOOL               Parse value as JSON directly (default: false)
+                         If false: try JSON parsing, fall back to string
+                         If true: must be valid JSON or returns error
+
+LS ARGUMENTS:
+  recursive=BOOL         Include all descendants (default: false)
+  pattern=GLOB           Glob pattern to filter keys (e.g., "db*", "*config")
+  limit=N                Maximum number of entries to return
+  offset=N               Number of entries to skip for pagination (default: 0)
+
+WATCH ARGUMENTS:
+  key=KEY                Watch a specific key (mutually exclusive with prefix)
+  prefix=PREFIX          Watch all keys with this prefix (mutually exclusive with key)
+  timeout_ms=N           Stop watching after N milliseconds (default: 0 = no timeout)
+  max_events=N           Stop after N events (default: 0 = no limit)
+  initial=BOOL           Emit snapshot events for existing values (default: false)
+
+  Note: Must specify either "key" OR "prefix", not both
+
+NAMESPACE BEHAVIOR:
+  With namespace:        config://app/setting.get
+                         Stores in: app/setting.json
+
+  Without namespace:     config://setting.get
+                         Stores in: default/setting.json
+
+  Nested paths:          config://app/db/url.get
+                         Stores in: app/db/url.json
+
+  Empty namespace:       config://.ls
+                         Lists all top-level namespaces
+
+URL SANITIZATION:
+  Namespace and key names are automatically sanitized:
+  • Allowed: letters, numbers, dots, underscores, hyphens, slashes
+  • Other characters replaced with underscores
+
+  Example:
+    config://name%space/my$key.set(value="test")
+    Becomes: name_space/my_key.json
+
+OUTPUT FORMATS:
+
+  Get success:
+  {"theme":"dark","font_size":14}
+
+  Get with string value:
+  "dark"
+
+  Get with number:
+  42
+
+  Get with boolean:
+  true
+
+  Set success (no output, exit code 0)
+
+  List output:
+  {
+    "prefix": "app",
+    "recursive": false,
+    "pattern": null,
+    "limit": null,
+    "offset": 0,
+    "entries": [
+      {
+        "key": "theme",
+        "full_key": "app/theme",
+        "kind": "leaf",
+        "has_value": true,
+        "meta": {"size": 23, "updated_at": "2024-01-01T00:00:00Z"}
+      },
+      {
+        "key": "db",
+        "full_key": "app/db",
+        "kind": "branch",
+        "has_value": true,
+        "meta": {"size": null, "updated_at": null}
+      }
+    ]
+  }
+
+  Watch snapshot event:
+  {"op":"snapshot","scope":"test","key":"foo","value":"initial","version":1,"ts":"2024-01-01T00:00:00Z","source":"config"}
+
+  Watch set event:
+  {"op":"set","scope":"test","key":"foo","value":"modified","version":2,"ts":"2024-01-01T00:00:01Z","source":"config"}
+
+  Watch remove event:
+  {"op":"rm","scope":"test","key":"foo","value":null,"version":3,"ts":"2024-01-01T00:00:02Z","source":"config"}
+
+ENTRY TYPES:
+  leaf                   Configuration value (JSON file)
+  branch                 Directory containing other config items
+
+WATCH EVENT OPERATIONS:
+  snapshot               Initial value when watching starts (if initial=true)
+  set                    Value was created or modified
+  rm                     Value was deleted
+
+JSON VALUE HANDLING:
+
+  Without raw=true (default):
+    1. Try to parse value as JSON
+    2. If valid JSON, store as-is
+    3. If invalid JSON, store as JSON string
+
+  With raw=true:
+    1. Parse value as JSON (must be valid)
+    2. Store parsed value
+    3. Return error if invalid JSON
+
+  Examples:
+    value=hello              → "hello" (string)
+    value=42                 → "42" (string, without raw)
+    value=42,raw=true        → 42 (number)
+    value={"x":1}            → {"x":1} (object, auto-parsed)
+    value={"x":1},raw=true   → {"x":1} (object, explicit)
+    value=invalid,raw=true   → Error (invalid JSON)
+
+ATOMIC OPERATIONS:
+  All set operations are atomic:
+  1. Write to temporary file first
+  2. Rename to final location
+  3. Prevents partial writes from corrupting configuration
+
+  This ensures configuration files are never in an incomplete state.
+
+COMMON WORKFLOWS:
+
+  Database configuration setup:
+    # Store connection details
+    config://app/db/host.set(value="localhost")
+    config://app/db/port.set(value=5432,raw=true)
+    config://app/db/user.set(value="admin")
+    config://app/db/password.set(value="secret")
+    config://app/db/timeout.set(value=30,raw=true)
+
+    # Read all database settings
+    config://app/db.ls(recursive=true)
+
+    # Get specific setting
+    config://app/db/host.get
+
+  Application settings:
+    # Store complex configuration
+    config://app/settings.set(value={"theme":"dark","notifications":{"email":true,"push":false},"limits":{"timeout":30,"retries":3}},raw=true)
+
+    # Retrieve configuration
+    config://app/settings.get
+
+  Feature flags:
+    # Enable feature
+    config://features/new_ui.set(value=true,raw=true)
+
+    # Check feature status
+    config://features/new_ui.get
+
+    # List all features
+    config://features.ls
+
+  Environment-specific configuration:
+    # Production settings
+    config://prod/api/url.set(value="https://api.example.com")
+    config://prod/api/timeout.set(value=5000,raw=true)
+
+    # Development settings
+    config://dev/api/url.set(value="http://localhost:8000")
+    config://dev/api/timeout.set(value=30000,raw=true)
+
+  Configuration monitoring:
+    # Watch for database config changes
+    config://app/db.watch(prefix="",initial=true)
+
+    # Watch specific setting
+    config://app/settings.watch(key="theme",initial=true)
+
+  Bulk configuration inspection:
+    # List all configuration (recursive)
+    config://.ls(recursive=true)
+
+    # Find database-related config
+    config://.ls(recursive=true,pattern="*db*")
+
+    # Page through large configuration
+    config://app.ls(limit=20,offset=0)
+    config://app.ls(limit=20,offset=20)
+
+ERROR CODES:
+  0                      Success
+  1                      Missing key, empty key, or missing required argument
+  2                      Invalid JSON, invalid pattern, invalid limit/offset
+  3                      I/O error (filesystem problems, permission denied)
+
+ERROR HANDLING:
+  Get missing key:
+    Exit code 1, no output
+
+  Set invalid JSON with raw=true:
+    Exit code 2, error message
+
+  Set missing value argument:
+    Exit code 1, error message
+
+  List with invalid pattern:
+    Exit code 2, error message
+
+  Watch with both key and prefix:
+    Error message explaining mutual exclusivity
+
+BEST PRACTICES:
+  • Use meaningful namespace names (app, db, cache, features)
+  • Organize related settings hierarchically (app/db/connection/*)
+  • Use raw=true for explicit JSON types (numbers, booleans, null)
+  • Store complex objects as single JSON values for atomic updates
+  • Use descriptive key names (timeout, not t; database_url, not db)
+  • Leverage namespaces to separate environments (prod, dev, test)
+  • Use watch for real-time configuration updates
+  • Set initial=true when watching to get current values first
+  • Use pattern filtering to find related configuration
+  • Use pagination (limit/offset) for large configuration sets
+  • Keep configuration files in version control when appropriate
+  • Document expected configuration schema in your application
+  • Validate retrieved configuration values in your application
+  • Use appropriate JSON types (numbers for numeric values, not strings)
+  • Avoid storing sensitive data (passwords) without encryption
+  • Use atomic operations benefit - no partial writes
+  • Organize by domain (app/db, app/cache, app/features)
+  • Use consistent naming conventions across your configuration
+
+STORAGE LOCATION:
+  Default: ~/.config/resh/config/
+  Structure mirrors namespace/key hierarchy
+  Each value stored as individual JSON file
+
+  Example:
+    config://app/db/url.set(value="localhost")
+    Creates: ~/.config/resh/config/app/db/url.json
+    Contents: "localhost"
+
+CONFIGURATION PATTERNS:
+
+  Layered configuration (environment-specific):
+    config://defaults.set(value={"timeout":30},raw=true)
+    config://production.set(value={"timeout":5},raw=true)
+    # Application merges defaults with environment-specific
+
+  Feature toggles:
+    config://features/beta_ui.set(value=true,raw=true)
+    config://features/new_api.set(value=false,raw=true)
+    config://features.ls  # List all features
+
+  Service discovery:
+    config://services/api.set(value="https://api.example.com")
+    config://services/cache.set(value="redis://localhost:6379")
+    config://services.ls  # List all services
+
+  Application metadata:
+    config://app/version.set(value="1.2.3")
+    config://app/deployed_at.set(value="2024-01-01T00:00:00Z")
+    config://app.ls  # View application info
+
+MORE INFO:
+  For complete documentation of all verbs, JSON handling, and
+  configuration patterns, visit:
+  https://github.com/[your-org]/resource-shell/docs/config-handle.md
+
+  Use 'config:// --help=VERB' for detailed help on a specific verb.
+"#;
+
+impl ConfigHandle {
+    /// Check if the URL indicates a help request
+    fn should_show_help(url: &Url) -> bool {
+        // Check host for --help or -h
+        if let Some(host) = url.host_str() {
+            if host == "--help" || host == "-h" {
+                return true;
+            }
+        }
+
+        // Check path for --help or -h
+        let path = url.path();
+        if path.contains("--help") || path.contains("-h") {
+            return true;
+        }
+
+        // Check query parameters for help
+        for (key, _) in url.query_pairs() {
+            if key == "help" || key == "h" {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Display comprehensive config handle help
+    fn display_help(io: &mut IoStreams) -> Result<Status> {
+        write!(io.stdout, "{}", CONFIG_HELP_TEXT)
+            .with_context(|| "Failed to write help text to stdout")?;
+        Ok(Status::ok())
+    }
+
+    /// Check for verb-specific help (optional enhancement)
+    fn extract_help_verb(url: &Url) -> Option<String> {
+        for (key, value) in url.query_pairs() {
+            if key == "help" && !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+
+        // Check for --help=verb pattern in path
+        let path = url.path();
+        if let Some(help_idx) = path.find("--help=") {
+            let verb_part = &path[help_idx + 7..];
+            if let Some(end_idx) = verb_part.find(&['/', '?', '#'][..]) {
+                return Some(verb_part[..end_idx].to_string());
+            } else {
+                return Some(verb_part.to_string());
+            }
+        }
+
+        None
+    }
+}
+
 impl Handle for ConfigHandle {
     fn verbs(&self) -> &'static [&'static str] {
         &["get", "set", "ls", "watch"]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check if this is a help request
+        if Self::should_show_help(&self.original_url) {
+            return Self::display_help(io);
+        }
+
         match verb {
             "get" => self.verb_get(args, io),
             "set" => self.verb_set(args, io),
@@ -808,12 +1272,16 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let base_path = temp_dir.path().join("resh").join("config");
         
+        // Create a mock URL for testing (won't trigger help)
+        let mock_url = Url::parse("config://test").unwrap();
+        
         let handle = ConfigHandle {
             namespace: "test".to_string(),
             key: "".to_string(),
             file_path: base_path.join("test"),
             base_path,
             prefix: prefix.to_string(),
+            original_url: mock_url,
         };
         
         (handle, temp_dir)

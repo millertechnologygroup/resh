@@ -1,576 +1,447 @@
-# System Handle
+# Resource Shell (resh) – System Handle Documentation
 
-The system handle provides access to system information including CPU, memory, disk usage, load averages, and environment variables. It collects data from Linux systems through `/proc` filesystem interfaces and other system sources.
+## 1. Overview
 
-## Overview
+### Definition
 
-The system handle supports seven verbs for gathering different types of system information:
+Resource Shell (resh) is a resource-oriented command-line interface that models infrastructure operations using structured URI-based commands. The `system://` handle provides comprehensive Linux system information through a consistent, structured execution model.
 
-- `info` - Comprehensive system information across multiple scopes
-- `uptime` - System uptime and boot time information  
-- `load` - CPU load averages and process counts
-- `memory` - RAM and swap memory usage details
-- `cpu` - CPU utilization and topology information
-- `disk` - Disk usage and mount point statistics
-- `env.list` - Environment variables listing and filtering
+### Purpose
 
-All verbs return JSON output by default, with optional text formatting available for some verbs.
+The system handle enables:
 
-## Common Features
+* Collection of CPU, memory, disk, and load metrics
+* Retrieval of operating system and kernel information
+* Inspection of environment variables with security controls
+* Monitoring of container and cgroup resource limits
+* Structured output suitable for automation and machine processing
 
-### Output Format
-Most verbs support format selection through options:
-- `json` (default) - Structured JSON response
-- `text` - Human-readable text format
+### Architectural Problem Addressed
 
-### Optional Data
-Verbs can include additional data fields:
-- `include_raw` - Include raw system data in response
-- `include_paths` - Include file paths used for data collection
-- `include_human` - Include human-readable summaries
+Traditional system monitoring tools:
 
-### Error Handling
-All verbs return structured error information when issues occur, including specific error codes and descriptive messages.
+* Produce unstructured text output
+* Require parsing for automation
+* Vary in format across distributions
+* Mix human-readable and machine-usable output
 
-## Verbs
+The system handle addresses these limitations by:
 
-### info
+* Standardizing access to Linux system metrics
+* Using explicit verbs with defined parameters
+* Returning structured JSON responses
+* Integrating directly with the Linux `/proc` and `/sys` interfaces
 
-Gathers comprehensive system information across configurable scopes including operating system details, kernel information, CPU metrics, memory usage, and load averages.
+### Resource-Oriented URI Model
 
-**Basic Usage:**
+resh commands follow the URI format:
+
+```
+handle://target.verb(options)
+```
+
+For system operations:
+
+* `handle`: `system://`
+* `target`: optional (commonly omitted)
+* `verb`: `info`, `cpu`, `memory`, `disk`, `load`, `uptime`, `env.list`
+* `options`: structured parameters
+
+Example:
+
+```bash
+resh 'system://.cpu(sample_duration_ms=500)'
+```
+
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+* Each operation is exposed as a verb.
+* Parameters are explicitly declared and validated.
+* Output schema is consistent across executions.
+* JSON is the default response format.
+
+### Safety-First Execution
+
+* Read-only access to `/proc` and `/sys`.
+* No modification of system state.
+* Environment variable masking enabled by default.
+* Explicit limits for response size (e.g., `max_mounts`, `max_variables`).
+
+### Deterministic Behavior
+
+* Identical inputs produce consistent schema and field ordering.
+* Sampling parameters explicitly control CPU measurement.
+* Scope-based collection avoids implicit data gathering.
+
+### JSON-Based Structured Output
+
+All verbs return:
+
+* `ok` status
+* `timestamp_unix_ms`
+* Structured data fields
+* `warnings` array
+* Optional raw and path metadata
+
+### AI-Readiness
+
+Structured responses allow:
+
+* Automated health validation
+* Threshold-based alerting
+* Machine reasoning over metrics
+* Integration with CI/CD and monitoring pipelines
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+handle://target.verb(options)
+```
+
+| Component | Description                               |
+| --------- | ----------------------------------------- |
+| `handle`  | `system://`                               |
+| `target`  | Typically omitted                         |
+| `verb`    | Operation such as `info`, `cpu`, `memory` |
+| `options` | Named parameters controlling behavior     |
+
+### Production Examples
+
+**Comprehensive system information**
+
 ```bash
 resh 'system://.info'
 ```
 
-**Example Output:**
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1764860354626,
-  "scopes": ["os", "kernel", "cpu", "memory", "load"],
-  "os": {
-    "available": true,
-    "name": "Linux",
-    "distribution": "Ubuntu", 
-    "distribution_version": "22.04",
-    "hostname": "ASUS-LT",
-    "architecture": "GNU/Linux"
-  },
-  "kernel": {
-    "available": true,
-    "release": "6.6.87.2-microsoft-standard-WSL2",
-    "version": "#1",
-    "machine": "GNU/Linux",
-    "uptime_seconds": 4545.68,
-    "boot_time_unix": 1764855808
-  },
-  "cpu": {
-    "available": true,
-    "count_logical": 20,
-    "count_physical": null,
-    "online_logical": 20,
-    "utilization_pct": null
-  },
-  "memory": {
-    "available": true,
-    "mem_total_bytes": 8129781760,
-    "mem_free_bytes": 592498688,
-    "mem_available_bytes": 6139670528,
-    "buffers_bytes": 129314816,
-    "cached_bytes": 5430431744,
-    "swap_total_bytes": 2147483648,
-    "swap_free_bytes": 1874522112,
-    "usage_pct": 24.479270056075897
-  },
-  "load": {
-    "available": true,
-    "load_1m": 0.47,
-    "load_5m": 5.42,
-    "load_15m": 11.88,
-    "runnable_processes": 2,
-    "total_processes": 575
-  },
-  "warnings": []
-}
-```
+**CPU sampling (1 second)**
 
-**Options:**
-```json
-{
-  "scopes": ["os", "kernel", "cpu", "memory", "load"],
-  "fields": null,
-  "sample_duration_ms": 0,
-  "sample_min_ms": 50,
-  "per_cpu": false,
-  "max_mounts": 32,
-  "max_process_classes": 5,
-  "include_raw": false,
-  "include_paths": false,
-  "format": "json"
-}
-```
-
-**Available Scopes:**
-- `os` - Operating system information
-- `kernel` - Kernel version and system details
-- `cpu` - CPU count and utilization 
-- `memory` - Memory and swap usage
-- `load` - System load averages
-- `disk` - Disk usage statistics
-- `process` - Process information
-- `pressure` - System pressure metrics
-- `cgroup` - Control group information
-- `virtualization` - Virtualization platform details
-
-### uptime
-
-Reports system uptime, boot time, and idle time information.
-
-**Basic Usage:**
 ```bash
-resh 'system://.uptime'
+resh 'system://.cpu(sample_duration_ms=1000)'
 ```
 
-**Example Output:**
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1764860357059,
-  "uptime_seconds": 4548.11,
-  "uptime_human": "1h 15m 48s",
-  "boot_time_unix": 1764855808,
-  "idle_seconds": 84183.96,
-  "idle_seconds_per_cpu": 4209.198,
-  "warnings": []
-}
-```
+**Disk usage with I/O**
 
-**Options:**
-```json
-{
-  "include_idle": true,
-  "include_boot_time": true, 
-  "include_human": true,
-  "include_raw": false,
-  "include_paths": false,
-  "format": "json"
-}
-```
-
-**Text Format Example:**
-Use `"format": "text"` for readable output showing system uptime details with timestamps and human-friendly duration formatting.
-
-### load
-
-Provides system load averages, process counts, and load analysis.
-
-**Basic Usage:**
 ```bash
-resh 'system://.load'
+resh 'system://.disk(include_io=true)'
 ```
 
-**Example Output:**
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1764860361714,
-  "load_1m": 0.43,
-  "load_5m": 5.33, 
-  "load_15m": 11.82,
-  "load_1m_per_cpu": 0.0215,
-  "load_5m_per_cpu": 0.2665,
-  "load_15m_per_cpu": 0.591,
-  "cpu_count_logical": 20,
-  "runnable_processes": 1,
-  "total_processes": 575,
-  "human": {
-    "status": "idle",
-    "status_reason": "1m load per CPU is very low (< 0.1)",
-    "load_vs_cpu_ratio": 0.0215
-  },
-  "warnings": []
-}
-```
+**Memory including cgroup limits**
 
-**Options:**
-```json
-{
-  "normalize_per_cpu": true,
-  "include_queue": true,
-  "include_human": true,
-  "include_raw": false,
-  "include_paths": false,
-  "min_cpu_count": 1,
-  "format": "json"
-}
-```
-
-**Load Status Interpretation:**
-- Load per CPU < 0.1: idle
-- Load per CPU 0.1-0.7: normal  
-- Load per CPU 0.7-1.0: busy
-- Load per CPU > 1.0: overloaded
-
-### memory
-
-Shows system memory usage including RAM, swap, buffers, cache, and cgroup information.
-
-**Basic Usage:**
 ```bash
-resh 'system://.memory'
+resh 'system://.memory(include_cgroup=true)'
 ```
 
-**Example Output:**
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1764860359389,
-  "system": {
-    "available": true,
-    "mem_total_bytes": 8129781760,
-    "mem_free_bytes": 581423104,
-    "mem_available_bytes": 6128668672,
-    "buffers_bytes": 129339392,
-    "cached_bytes": 5430489088,
-    "shmem_bytes": 2904064,
-    "sreclaimable_bytes": 191078400,
-    "swap_total_bytes": 2147483648,
-    "swap_free_bytes": 1874784256,
-    "mem_used_bytes": 2001113088,
-    "mem_used_pct": 24.61459787082895,
-    "swap_used_bytes": 272699392,
-    "swap_used_pct": 12.698554992675781
-  },
-  "hugepages": {
-    "available": true,
-    "total": 0,
-    "free": 0,
-    "reserved": 0,
-    "surplus": 0,
-    "page_bytes": 2097152
-  },
-  "cgroup": {
-    "available": false,
-    "unified": false
-  },
-  "human": {
-    "system_summary": "7.6 GiB total, 1.9 GiB used (24.6%), 0.3 GiB swap used (12.7%)"
-  },
-  "warnings": [
-    "Cgroup v2 memory metrics not available, trying v1",
-    "Cgroup memory metrics not available on this system"
-  ]
-}
-```
+**Load normalized per CPU**
 
-**Options:**
-```json
-{
-  "include_swap": true,
-  "include_cgroup": true,
-  "include_hugepages": true,
-  "include_human": true,
-  "include_raw": false,
-  "include_paths": false,
-  "format": "json"
-}
-```
-
-### cpu
-
-Reports CPU utilization, topology, frequency, and per-core statistics.
-
-**Basic Usage:**
 ```bash
-resh 'system://.cpu'
+resh 'system://.load(normalize_per_cpu=true)'
 ```
 
-**Example Output:**
+**Filtered environment variables**
+
+```bash
+resh 'system://.env.list(name_filter="^PATH$")'
+```
+
+---
+
+### 3.2 Execution Semantics
+
+#### Deterministic Behavior
+
+* All metrics derived from `/proc` or system calls.
+* CPU utilization calculated from time-differenced samples.
+* Explicit parameters define scope and duration.
+
+#### Structured Output Contract
+
+Representative JSON response:
+
 ```json
 {
   "ok": true,
   "timestamp_unix_ms": 1764860363960,
   "system": {
-    "available": true,
     "logical_count": 20,
-    "physical_count": 10,
-    "socket_count": 1,
     "utilization_pct": 0.2,
-    "user_pct": 0.2,
-    "nice_pct": 0.0,
-    "system_pct": 0.0,
-    "idle_pct": 99.8,
-    "iowait_pct": 0.0,
-    "irq_pct": 0.0,
-    "softirq_pct": 0.0,
-    "steal_pct": 0.0,
-    "guest_pct": 0.0,
-    "guest_nice_pct": 0.0
-  },
-  "per_cpu": [
-    {
-      "id": 0,
-      "utilization_pct": 3.8461538461538463,
-      "user_pct": 3.8461538461538463,
-      "nice_pct": 0.0,
-      "system_pct": 0.0,
-      "idle_pct": 96.15384615384616,
-      "iowait_pct": 0.0,
-      "irq_pct": 0.0,
-      "softirq_pct": 0.0,
-      "steal_pct": 0.0,
-      "guest_pct": 0.0,
-      "guest_nice_pct": 0.0,
-      "core_id": 0,
-      "socket_id": 0
-    }
-  ],
-  "cgroup": {
-    "available": false
-  },
-  "human": {
-    "status": "idle",
-    "status_reason": "Overall CPU utilization is 0.2%, system is idle.",
-    "per_cpu_hotspots": []
-  },
-  "warnings": [
-    "CPU frequency information not available",
-    "CPU cgroup information not available"
-  ]
-}
-```
-
-**Options:**
-```json
-{
-  "sample_duration_ms": 250,
-  "sample_min_ms": 50,
-  "per_cpu": true,
-  "include_topology": true,
-  "include_frequency": true,
-  "include_cgroup": true,
-  "include_human": true,
-  "include_raw": false,
-  "include_paths": false,
-  "format": "json"
-}
-```
-
-**Sampling:**
-- Default sample duration: 250ms
-- Minimum sample duration: 50ms
-- Per-CPU metrics available with `per_cpu: true`
-
-### disk
-
-Shows disk usage statistics for mounted filesystems including space utilization and I/O metrics.
-
-**Basic Usage:**
-```bash
-resh 'system://.disk'
-```
-
-**Example Output (abbreviated):**
-```json
-{
-  "ok": true,
-  "timestamp_unix_ms": 1764860368195,
-  "mounts_truncated": false,
-  "mounts": [
-    {
-      "mount_point": "/",
-      "device": "/dev/sdd",
-      "fs_type": "ext4",
-      "virtual_fs": false,
-      "total_bytes": 1081101176832,
-      "used_bytes": 283048882176,
-      "free_bytes": 798052294656,
-      "avail_bytes": 743059939328,
-      "used_pct": 26.18153492399583,
-      "free_pct": 73.81846507600417,
-      "inodes_total": 67108864,
-      "inodes_used": 1385458,
-      "inodes_free": 65723406,
-      "inodes_used_pct": 2.0644932985305786,
-      "io_device": "sdd",
-      "tags": ["rootfs"],
-      "human_summary": "/: 1006.9 GiB total, 263.6 GiB used (26.2%)"
-    }
-  ],
-  "io": {
-    "available": true,
-    "devices": [
-      {
-        "name": "sdd",
-        "maj_min": "8:48", 
-        "reads_completed": 4514767,
-        "writes_completed": 1693369,
-        "sectors_read": 448590746,
-        "sectors_written": 36754440,
-        "read_bytes": 229678461952,
-        "write_bytes": 18818273280,
-        "time_reading_ms": 12390378,
-        "time_writing_ms": 71411137,
-        "ios_in_progress": 0,
-        "time_in_io_ms": 366984,
-        "weighted_time_in_io_ms": 83827093
-      }
-    ]
-  },
-  "human": {
-    "summaries": [
-      "/: 1006.9 GiB total, 263.6 GiB used (26.2%)"
-    ]
+    "idle_pct": 99.8
   },
   "warnings": []
 }
 ```
 
-**Options:**
+#### Error Handling Structure
+
+Errors return structured responses:
+
 ```json
 {
-  "mount_points": [],
-  "devices": [],
-  "fs_types": [],
-  "include_virtual": false,
-  "include_io": true,
-  "include_human": true,
-  "include_raw": false,
-  "include_paths": false,
-  "max_mounts": 32,
-  "format": "json"
+  "ok": false,
+  "error": {
+    "code": "system.info_proc_unavailable",
+    "message": "/proc filesystem not accessible"
+  }
 }
 ```
 
-**Filtering:**
-- `mount_points` - Filter by specific mount points
-- `devices` - Filter by device names 
-- `fs_types` - Filter by filesystem types
-- `include_virtual` - Include virtual/pseudo filesystems
+---
 
-**Filesystem Tags:**
-- `rootfs` - Root filesystem mount
-- `home` - Home directory mount
-- `data` - Data storage mount
+## 4. Functional Domains
 
-### env.list
+### 4.1 Automation Utilities
 
-Lists and filters environment variables from the current process or a specified process ID.
+**Operational Scope**
 
-**Basic Usage:**
-The `env.list` verb can be used to examine environment variables:
+* Health checks
+* System inventory
+* Automated diagnostics
 
-**Unit Test Example:**
-From the unit tests, basic environment variable listing works with the default options:
+**Supported Handle**
 
-```rust
-let opts = SystemEnvListOptions::default();
-let response = handle.collect_env_list(&opts, &provider);
+* `system://`
+
+**Example**
+
+```bash
+system://.info(scopes=["os","kernel","cpu","memory","load"])
 ```
 
-**Test Data Example:**
-```rust
-let mock_env = vec![
-    ("PATH".to_string(), "/usr/bin".to_string()),
-    ("HOME".to_string(), "/home/user".to_string()),
-    ("USER".to_string(), "testuser".to_string()),
-    ("PASSWORD".to_string(), "secret123".to_string()),
-    ("API_KEY".to_string(), "abc123def456".to_string())
-];
+**Integration Scenario**
+
+Used in CI pipelines for host validation before deployment.
+
+---
+
+### 4.2 Data & State Management
+
+**Operational Scope**
+
+* Memory metrics
+* CPU sampling
+* Load analysis
+* Pressure stall information
+
+**Example**
+
+```bash
+system://.memory(include_swap=true)
 ```
 
-**Response Format:**
-Based on the unit tests, responses include:
-- `ok` - Success status
-- `timestamp_unix_ms` - Collection timestamp
-- `env_count_returned` - Number of variables returned
-- `env_count_total` - Total variables available
-- `variables` - Array of environment variable entries
-- `source` - Source information (current process or PID)
-- `warnings` - Any collection warnings
+Used for runtime validation in orchestration systems.
 
-**Variable Entry Format:**
-Each variable contains:
-- `name` - Variable name
-- `value` - Variable value (may be masked for sensitive data)
-- `masked` - Whether the value was masked for security
-- `byte_length` - Length in bytes
+---
 
-**Security Features:**
-- Automatic masking of sensitive variables (passwords, keys, tokens)
-- Configurable filtering by name patterns
-- Process isolation (can access environment from specific PIDs)
+### 4.3 Filesystem & Storage
 
-**Options:**
-```rust
-{
-  "pid": null,              // Process ID (null for current process)
-  "name_filter": null,      // Regex filter for variable names
-  "mask_sensitive": true,   // Mask sensitive variables
-  "max_variables": 1000,    // Limit number of variables returned
-  "max_value_bytes": 16384, // Limit variable value size
-  "include_masked": true,   // Include masked variables in output
-  "include_raw": false,     // Include raw environment data
-  "include_paths": false,   // Include file paths used
-  "format": "json"          // Output format
-}
+**Operational Scope**
+
+* Mounted filesystem space
+* Inode utilization
+* Block device I/O metrics
+
+**Example**
+
+```bash
+system://.disk(include_io=true)
 ```
 
-## Error Codes
+Used in capacity planning and disk health monitoring.
 
-The system handle returns specific error codes for different failure scenarios:
+---
 
-### Common Errors
-- `system.info_scope_invalid` - Invalid scope specified
-- `system.info_fields_invalid` - Invalid fields specification  
-- `system.info_proc_unavailable` - `/proc` filesystem unavailable
-- `system.info_timeout` - Operation timeout
-- `system.info_data_too_large` - Response data exceeds limits
+### 4.4 Network & Remote Operations
 
-### Memory Errors
-- `system.memory_unavailable` - Memory information unavailable
-- `system.memory_meminfo_unavailable` - `/proc/meminfo` unavailable
-- `system.memory_parse_error` - Error parsing memory data
+Indirectly supports diagnostics through:
 
-### CPU Errors  
-- `system.cpu_unavailable` - CPU information unavailable
-- `system.cpu_stat_unavailable` - `/proc/stat` unavailable
-- `system.cpu_parse_error` - Error parsing CPU data
+* Load interpretation
+* Pressure metrics
+* System health evaluation
 
-### Disk Errors
-- `system.disk_unavailable` - Disk information unavailable
-- `system.disk_mounts_unavailable` - Mount information unavailable
-- `system.disk_statvfs_failed` - Filesystem stats failed
+---
 
-### Environment Errors
-- `system.env_list_unavailable` - Environment listing unavailable
-- `system.env_list_pid_unavailable` - Process environment unavailable
-- `system.env_list_invalid_regex` - Invalid regex filter
+### 4.5 Packages & Software
 
-## Performance Notes
+System handle does not manage packages directly but supports:
 
-### Sampling
-- CPU utilization requires sampling over time (default 250ms)
-- Shorter sampling periods may be less accurate
-- Longer periods provide more stable measurements
+* Host environment validation before software deployment
+* Kernel and OS version inspection
 
-### Resource Usage
-- Disk verb can return large amounts of data with many mounts
-- Use `max_mounts` option to limit output size
-- Environment listing can be filtered to reduce data volume
+---
 
-### Caching
-- System information is collected fresh on each request
-- No internal caching is performed
-- For frequent monitoring, consider external caching strategies
+### 4.6 Process & Service Management
 
-## Platform Support
+**Operational Scope**
 
-The system handle is designed for Linux systems and uses:
-- `/proc` filesystem for most system information
-- `statvfs()` system call for disk statistics  
-- `/sys` filesystem for hardware topology
-- Standard Unix environment variable access
+* Process counts
+* Runnable vs total processes
+* CPU load correlation
 
-Virtual environments (containers, WSL) are supported with appropriate warnings when certain features are unavailable.
+**Example**
+
+```bash
+system://.load(include_queue=true)
+```
+
+Used to diagnose overload conditions.
+
+---
+
+### 4.7 Security & Secrets
+
+**Operational Scope**
+
+* Environment variable inspection
+* Automatic masking of sensitive data
+* Process-specific environment retrieval
+
+**Example**
+
+```bash
+system://.env.list(mask_sensitive=true)
+```
+
+Sensitive variables are masked by default.
+
+---
+
+### 4.8 System Information
+
+**Operational Scope**
+
+* OS and distribution details
+* Kernel version
+* Virtualization detection
+* Cgroup resource limits
+* PSI (pressure stall information)
+
+**Example**
+
+```bash
+system://.info(scopes=["virtualization","cgroup"])
+```
+
+Used for container-aware monitoring.
+
+---
+
+## 5. Platform Support
+
+### Linux
+
+* Full support.
+* Requires `/proc` filesystem.
+* Some metrics require elevated privileges.
+
+### Containers (Docker, Podman, LXC)
+
+* Most metrics available.
+* Cgroup metrics particularly relevant.
+* Some `/proc` entries may be restricted.
+
+### WSL
+
+* Generally supported.
+* Hardware topology may be limited.
+
+### Non-Linux Systems
+
+The system handle depends on `/proc` and is Linux-specific. Support outside Linux is not defined in the provided documentation. 
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Use read-only contexts.
+* Enable masking for environment variables.
+* Validate sampling duration for CPU accuracy.
+* Monitor warnings in responses.
+
+### Automation Considerations
+
+* Use JSON format for machine parsing.
+* Normalize load per CPU.
+* Limit response size via `max_mounts` and `max_variables`.
+* Cache results externally when polling frequently.
+
+### CI/CD Integration
+
+* Validate OS version before deployment.
+* Confirm disk capacity before artifact extraction.
+* Check CPU and memory availability pre-build.
+
+### Production Recommendations
+
+* Sample CPU for ≥ 1 second for accuracy.
+* Alert at load > 0.7 per CPU.
+* Monitor `mem_available` instead of `mem_free`.
+* Track swap usage trends.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Validate build hosts.
+* Confirm resource availability before deployments.
+* Automate host readiness checks.
+
+### SRE Engineers
+
+* Diagnose overload conditions.
+* Monitor memory pressure and swap activity.
+* Correlate load with CPU utilization.
+
+### Network Administrators
+
+* Evaluate system load impact on services.
+* Review environment configurations.
+* Inspect kernel versions for compatibility.
+
+### AI / Automation Engineers
+
+* Feed structured metrics into decision systems.
+* Trigger scaling based on load thresholds.
+* Analyze pressure stall data programmatically.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+* Memory safety without garbage collection.
+* Strong compile-time guarantees.
+* Deterministic execution behavior.
+* Efficient interaction with `/proc`.
+
+### Type Safety
+
+* Enumerated verbs.
+* Structured parameter validation.
+* Defined error codes.
+* Stable JSON schema.
+
+### Performance Characteristics
+
+* Direct `/proc` reads.
+* Low overhead system calls.
+* Configurable CPU sampling duration.
+* No internal caching.
+
+### Cross-Platform Architecture
+
+* Designed for Linux systems.
+* Compatible with containerized environments.
+* Portable across Linux distributions.
+* Uniform JSON output structure.

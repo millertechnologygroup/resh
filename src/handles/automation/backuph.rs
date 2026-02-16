@@ -1638,6 +1638,386 @@ impl BackupHandle {
     }
 }
 
+impl BackupHandle {
+    /// Check if help was requested based on verb or arguments
+    fn should_show_help(&self, verb: &str, args: &Args) -> bool {
+        // Check if verb is a help request
+        verb == "--help" || verb == "-h" || verb == "help" ||
+        // Check if args contain help flags
+        args.get("help").is_some() || 
+        args.get("h").is_some() ||
+        args.contains_key("--help") ||
+        args.contains_key("-h") ||
+        // Check if verb ends with --help pattern
+        verb.ends_with("--help") ||
+        verb.ends_with("-h")
+    }
+
+    /// Display comprehensive help for the backup handle
+    fn display_help(&self, io: &mut IoStreams, verb_specific: Option<&str>) -> Result<Status> {
+        if let Some(specific_verb) = verb_specific {
+            // Show verb-specific help if implemented
+            self.display_verb_help(specific_verb, io)?;
+        } else {
+            // Show general help
+            writeln!(io.stdout, "{}", BACKUP_HELP_TEXT)?;
+        }
+        Ok(Status::success())
+    }
+
+    /// Display help for a specific verb (optional feature)
+    fn display_verb_help(&self, verb: &str, io: &mut IoStreams) -> Result<()> {
+        match verb {
+            "create" => {
+                writeln!(io.stdout, "{}", CREATE_VERB_HELP)?;
+            }
+            "list" => {
+                writeln!(io.stdout, "{}", LIST_VERB_HELP)?;
+            }
+            "restore" => {
+                writeln!(io.stdout, "{}", RESTORE_VERB_HELP)?;
+            }
+            "verify" => {
+                writeln!(io.stdout, "{}", VERIFY_VERB_HELP)?;
+            }
+            "prune" => {
+                writeln!(io.stdout, "{}", PRUNE_VERB_HELP)?;
+            }
+            "schedule" => {
+                writeln!(io.stdout, "{}", SCHEDULE_VERB_HELP)?;
+            }
+            _ => {
+                writeln!(io.stdout, "Unknown verb '{}' for backup handle.", verb)?;
+                writeln!(io.stdout, "Available verbs: create, list, restore, verify, prune, schedule")?;
+                writeln!(io.stdout, "\nUse 'backup:// --help' for complete help.")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Help text for the backup handle
+const BACKUP_HELP_TEXT: &str = r#"RESOURCE SHELL - BACKUP HANDLE
+==============================
+
+USAGE:
+  backup://profile.VERB(arguments)
+
+DESCRIPTION:
+  The backup handle provides backup and restore operations using multiple
+  backend systems including restic, borg, rsync, and tar. It manages backup
+  creation, listing, restoration, verification, pruning, and scheduling.
+
+BACKENDS (auto-selected in order):
+  restic          Modern backup with deduplication and encryption
+  borg            Deduplicating backup program
+  rsync           File synchronization tool (basic backup)
+  tar             Archive utility (simple backup)
+
+VERBS:
+  create          Create a new backup snapshot
+  list            List existing backup snapshots
+  restore         Restore files from a backup snapshot
+  verify          Verify backup integrity
+  prune           Remove old snapshots according to retention policy
+  schedule        Set up automated backups
+
+EXAMPLES:
+
+  Create a backup:
+    backup://myapp.create(src="/data")
+
+  Create backup with specific backend and tags:
+    backup://myapp.create(src="/data", backend="restic", tag="env=prod;type=daily", label="daily-backup")
+
+  Create backup with exclusions:
+    backup://myapp.create(src="/data", exclude="*.tmp;*.log", dry_run="false")
+
+  List all snapshots:
+    backup://myapp.list()
+
+  List snapshots filtered by tag:
+    backup://myapp.list(tag="env=prod")
+
+  Restore a complete snapshot:
+    backup://myapp.restore(snapshot_id="abcd1234", dest="/restore")
+
+  Restore specific files only:
+    backup://myapp.restore(snapshot_id="abcd1234", dest="/restore", include="*.txt;*.conf")
+
+  Quick repository verification:
+    backup://myapp.verify()
+
+  Thorough verification:
+    backup://myapp.verify(mode="thorough")
+
+  Verify specific snapshot:
+    backup://myapp.verify(snapshot_id="abcd1234")
+
+  Preview what would be pruned (dry run):
+    backup://myapp.prune(keep_daily="7", keep_weekly="4", dry_run="true")
+
+  Prune old snapshots:
+    backup://myapp.prune(keep_daily="7", keep_weekly="4", keep_monthly="12")
+
+  Schedule daily backups at 2 AM:
+    backup://myapp.schedule(when="0 2 * * *", src="/data")
+
+  Schedule weekly backups on Sundays:
+    backup://myapp.schedule(when="0 3 * * 0", src="/data", backend="restic")
+
+CREATE ARGUMENTS:
+  src=PATH               Source path(s) to backup (required; semicolon-separated)
+  backend=NAME           Backend to use: restic, borg, rsync, tar (default: auto)
+  repo_url=URL           Repository URL or path
+  tag=KEY=VALUE          Tags for the snapshot (semicolon-separated)
+  label=TEXT             Human-readable label for the snapshot
+  exclude=PATTERN        Exclude patterns (semicolon-separated)
+  dry_run=BOOL           Simulate without creating backup (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 1800000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+LIST ARGUMENTS:
+  backend=NAME           Backend to use (default: auto)
+  repo_url=URL           Repository URL or path
+  tag=KEY=VALUE          Filter by tags (semicolon-separated)
+  timeout_ms=N           Operation timeout (default: 10000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+RESTORE ARGUMENTS:
+  snapshot_id=ID         ID of snapshot to restore (required)
+  dest=PATH              Destination path for restored files (required)
+  backend=NAME           Backend to use (default: auto)
+  repo_url=URL           Repository URL or path
+  include=PATTERN        Include patterns (semicolon-separated)
+  exclude=PATTERN        Exclude patterns (semicolon-separated)
+  timeout_ms=N           Operation timeout (default: 1800000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+VERIFY ARGUMENTS:
+  backend=NAME           Backend to use (default: auto)
+  repo_url=URL           Repository URL or path
+  snapshot_id=ID         Specific snapshot ID to verify
+  mode=TYPE              Verification mode: quick, thorough (default: quick)
+  timeout_ms=N           Operation timeout (default: 3600000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+PRUNE ARGUMENTS:
+  backend=NAME           Backend to use (default: auto)
+  repo_url=URL           Repository URL or path
+  keep_daily=N           Number of daily snapshots to keep
+  keep_weekly=N          Number of weekly snapshots to keep
+  keep_monthly=N         Number of monthly snapshots to keep
+  dry_run=BOOL           Simulate without removing snapshots (default: false)
+  timeout_ms=N           Operation timeout (default: 3600000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+SCHEDULE ARGUMENTS:
+  when=CRON              Schedule expression in cron format (required)
+  src=PATH               Source path(s) to backup (required)
+  backend=NAME           Backend to use (default: auto)
+  enabled=BOOL           Whether schedule is enabled (default: true)
+  timeout_ms=N           Operation timeout (default: 10000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+OUTPUT FORMAT:
+  All operations return JSON with the following structure:
+  - op: Operation name (e.g., "backup.create")
+  - status: "ok" or "error"
+  - target: Original command
+  - backend: Backend information and command
+  - result: Operation-specific results
+  - dry_run: Whether operation was simulated
+  - duration_ms: Operation duration
+  - warnings: Array of warning messages
+
+COMMON WORKFLOWS:
+
+  Daily incremental backups:
+    backup://app.create(src="/var/app", tag="type=daily", label="daily-backup")
+
+  Weekly backups with retention:
+    backup://app.create(src="/var/app", tag="type=weekly")
+    backup://app.prune(keep_weekly="4", keep_daily="7")
+
+  Restore from latest backup:
+    backup://app.list()
+    backup://app.restore(snapshot_id="latest", dest="/restore")
+
+  Automated scheduled backups:
+    backup://app.schedule(when="0 2 * * *", src="/var/app")
+
+BEST PRACTICES:
+  • Use descriptive labels and tags for better organization
+  • Set up retention policies to manage disk space
+  • Verify backups regularly with backup://profile.verify()
+  • Test restore procedures before you need them
+  • Use restic for encrypted, deduplicated backups
+  • Use dry_run=true to preview destructive operations
+
+ERROR HANDLING:
+  Failed operations return JSON with:
+  - status: "error"
+  - error.kind: Error type (e.g., "BACKEND_FAILED")
+  - error.message: Human-readable error message
+  - error.details: Additional error information
+
+MORE INFO:
+  For complete documentation of all verbs, arguments, and backend
+  capabilities, visit:
+  https://github.com/[your-org]/resource-shell/docs/backup-handle.md
+
+  Use 'backup:// --help=VERB' for detailed help on a specific verb.
+"#;
+
+/// CREATE verb help text
+const CREATE_VERB_HELP: &str = r#"BACKUP CREATE VERB
+==================
+
+Creates a new backup snapshot using the specified backend.
+
+USAGE:
+  backup://profile.create(src="PATH", [options...])
+
+REQUIRED ARGUMENTS:
+  src=PATH               Source path(s) to backup (semicolon-separated for multiple paths)
+
+OPTIONAL ARGUMENTS:
+  backend=NAME           Backend to use: restic, borg, rsync, tar (default: auto)
+  repo_url=URL           Repository URL or path
+  tag=KEY=VALUE          Tags for the snapshot (semicolon-separated key=value pairs)
+  label=TEXT             Human-readable label for the snapshot
+  exclude=PATTERN        Exclude patterns (semicolon-separated)
+  dry_run=BOOL           Simulate without creating backup (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 1800000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  backup://myapp.create(src="/data")
+  backup://myapp.create(src="/data;/config", backend="restic", tag="env=prod", label="daily")
+  backup://myapp.create(src="/data", exclude="*.tmp;*.log", dry_run="true")
+"#;
+
+/// LIST verb help text  
+const LIST_VERB_HELP: &str = r#"BACKUP LIST VERB
+================
+
+Lists existing backup snapshots in the repository.
+
+USAGE:
+  backup://profile.list([options...])
+
+OPTIONAL ARGUMENTS:
+  backend=NAME           Backend to use (default: auto)
+  repo_url=URL           Repository URL or path
+  tag=KEY=VALUE          Filter by tags (semicolon-separated)
+  timeout_ms=N           Operation timeout (default: 10000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  backup://myapp.list()
+  backup://myapp.list(tag="env=prod")
+  backup://myapp.list(backend="restic", json_pretty="true")
+"#;
+
+/// RESTORE verb help text
+const RESTORE_VERB_HELP: &str = r#"BACKUP RESTORE VERB
+===================
+
+Restores files from a backup snapshot to a destination.
+
+USAGE:
+  backup://profile.restore(snapshot_id="ID", dest="PATH", [options...])
+
+REQUIRED ARGUMENTS:
+  snapshot_id=ID         ID of snapshot to restore
+  dest=PATH              Destination path for restored files
+
+OPTIONAL ARGUMENTS:
+  backend=NAME           Backend to use (default: auto)
+  repo_url=URL           Repository URL or path
+  include=PATTERN        Include patterns (semicolon-separated)
+  exclude=PATTERN        Exclude patterns (semicolon-separated)
+  timeout_ms=N           Operation timeout (default: 1800000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  backup://myapp.restore(snapshot_id="abcd1234", dest="/restore")
+  backup://myapp.restore(snapshot_id="abcd1234", dest="/restore", include="*.txt;*.conf")
+  backup://myapp.restore(snapshot_id="abcd1234", dest="/restore", exclude="*.tmp")
+"#;
+
+/// VERIFY verb help text
+const VERIFY_VERB_HELP: &str = r#"BACKUP VERIFY VERB
+==================
+
+Verifies the integrity of backup repositories and snapshots.
+
+USAGE:
+  backup://profile.verify([options...])
+
+OPTIONAL ARGUMENTS:
+  backend=NAME           Backend to use (default: auto)
+  repo_url=URL           Repository URL or path
+  snapshot_id=ID         Specific snapshot ID to verify
+  mode=TYPE              Verification mode: quick, thorough (default: quick)
+  timeout_ms=N           Operation timeout (default: 3600000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  backup://myapp.verify()
+  backup://myapp.verify(mode="thorough")
+  backup://myapp.verify(snapshot_id="abcd1234")
+"#;
+
+/// PRUNE verb help text
+const PRUNE_VERB_HELP: &str = r#"BACKUP PRUNE VERB
+=================
+
+Removes old snapshots according to retention policy.
+
+USAGE:
+  backup://profile.prune([retention_options...])
+
+OPTIONAL ARGUMENTS:
+  backend=NAME           Backend to use (default: auto)
+  repo_url=URL           Repository URL or path
+  keep_daily=N           Number of daily snapshots to keep
+  keep_weekly=N          Number of weekly snapshots to keep
+  keep_monthly=N         Number of monthly snapshots to keep
+  dry_run=BOOL           Simulate without removing snapshots (default: false)
+  timeout_ms=N           Operation timeout (default: 3600000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  backup://myapp.prune(keep_daily="7", keep_weekly="4", dry_run="true")
+  backup://myapp.prune(keep_daily="7", keep_weekly="4", keep_monthly="12")
+"#;
+
+/// SCHEDULE verb help text
+const SCHEDULE_VERB_HELP: &str = r#"BACKUP SCHEDULE VERB
+====================
+
+Sets up automated backup schedules using cron expressions.
+
+USAGE:
+  backup://profile.schedule(when="CRON", src="PATH", [options...])
+
+REQUIRED ARGUMENTS:
+  when=CRON              Schedule expression in cron format
+  src=PATH               Source path(s) to backup
+
+OPTIONAL ARGUMENTS:
+  backend=NAME           Backend to use (default: auto)
+  enabled=BOOL           Whether schedule is enabled (default: true)
+  timeout_ms=N           Operation timeout (default: 10000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  backup://app.schedule(when="0 2 * * *", src="/data")
+  backup://app.schedule(when="0 3 * * 0", src="/data", backend="restic")
+"#;
+
 /// Register the backup handle with the registry per specification
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("backup", |u| Ok(Box::new(BackupHandle::from_url(u.clone())?)));
@@ -1649,6 +2029,19 @@ impl Handle for BackupHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests before normal verb processing
+        if self.should_show_help(verb, args) {
+            // Extract verb name for specific help if requested (e.g., --help=create)
+            let verb_specific = if verb.contains('=') {
+                verb.split('=').nth(1)
+            } else {
+                // Check if help is requested for a specific verb via arguments
+                args.get("verb").map(|s| s.as_str())
+            };
+            
+            return self.display_help(io, verb_specific);
+        }
+
         match verb {
             "create" => self.verb_create(args, io),
             "list" => self.verb_list(args, io),

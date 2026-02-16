@@ -1,708 +1,505 @@
-# Snapshot Handle Documentation
+# Resource Shell (resh) – Snapshot Handle Documentation
 
-The snapshot handle allows you to create, restore, compare, and list filesystem snapshots. Snapshots capture the current state of files and directories, allowing you to save important versions or restore data later.
+## 1. Overview
 
-## Overview
+Resource Shell (resh) is a structured command execution framework that standardizes infrastructure operations using a resource-oriented URI model.
 
-Snapshots work with both files and directories. When you create a snapshot, it saves a complete copy of your data that you can restore or compare later. All snapshots are stored locally on your system.
+The `snapshot://` handle provides filesystem snapshot management with atomic guarantees. It enables:
 
-## Verbs
+* Creation of filesystem snapshots
+* Restoration of snapshots to target paths
+* Comparison of snapshots and live filesystem state
+* Listing and filtering snapshots within logical groups
 
-### create
+Snapshots capture the complete state of files or directories at a point in time. All operations are designed to be atomic, ensuring no partial state is exposed during creation or restoration.
 
-Creates a new snapshot of a file or directory.
+Traditional snapshot and backup workflows often depend on external tools, manual directory copying, or filesystem-specific snapshot features. The `snapshot://` handle provides a uniform, portable interface independent of underlying filesystem capabilities.
 
-**Basic Usage:**
+All snapshot operations follow one of two URI formats:
+
+**Create / Diff (path-based):**
+
 ```
-snapshot://TARGET.create(name=SNAPSHOT_NAME)
-```
-
-**Arguments:**
-- `name` (required): Name for your snapshot
-- `description` (optional): Description of the snapshot
-- `ttl` (optional): Time in seconds before snapshot expires
-- `backend` (optional): Storage backend (only "local" supported, default: "local")
-- `if_exists` (optional): What to do if snapshot exists ("error", "skip", "overwrite", default: "error")
-
-**Examples:**
-
-Create a snapshot of a directory:
-```
-snapshot:///home/user/myproject.create(name=backup-v1)
+snapshot://TARGET_PATH.verb(arguments)
 ```
 
-Expected output:
+**Restore / List (snapshot-based):**
+
+```
+snapshot://SNAPSHOT_NAME.verb(arguments)
+```
+
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+All operations use consistent URI grammar:
+
+```
+snapshot://target.verb(arguments)
+```
+
+The handle provides four verbs:
+
+* `create`
+* `restore`
+* `diff`
+* `ls`
+
+The grammar separates snapshot identity from filesystem targets to reduce ambiguity.
+
+---
+
+### Safety-First Execution
+
+Safety mechanisms include:
+
+* Atomic snapshot creation
+* Atomic restore staging and swap
+* Explicit `force=true` requirement for overwrites
+* `dry_run=true` support for restore
+* Explicit name conflict handling (`if_exists`)
+* TTL-based expiration controls
+
+No partial snapshots are left behind on failure.
+
+---
+
+### Deterministic Behavior
+
+Snapshot operations:
+
+* Require explicit arguments
+* Enforce case-sensitive snapshot names
+* Use strict exit codes
+* Preserve metadata and permissions
+* Prevent live-to-live diff comparisons
+* Require at least one of `from` or `to` in diff operations
+
+Exit Codes:
+
+| Code | Meaning          |
+| ---- | ---------------- |
+| 0    | Success          |
+| 1    | General error    |
+| 2    | Not found        |
+| 3    | Already exists   |
+| 4    | Target not empty |
+
+Automation systems must rely on exit codes and structured output.
+
+---
+
+### JSON-Based Structured Output
+
+Most operations return structured JSON.
+
+Example (create):
+
 ```json
 {
   "ok": true,
   "backend": "local",
-  "id": "generated-snapshot-id",
+  "id": "generated-id",
   "name": "backup-v1",
-  "target": "/home/user/myproject",
-  "path": "/path/to/snapshot/storage",
-  "created_at": "2025-11-15T18:01:02Z",
-  "expires_at": null,
-  "skipped": false
-}
-```
-
-Create a snapshot of a single file:
-```
-snapshot:///home/user/important.txt.create(name=filebackup)
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backend": "local", 
-  "id": "generated-snapshot-id",
-  "name": "filebackup",
-  "target": "/home/user/important.txt",
-  "path": "/path/to/snapshot/storage",
-  "created_at": "2025-11-15T18:01:02Z",
-  "expires_at": null,
-  "skipped": false
-}
-```
-
-Create a snapshot with description and expiration:
-```
-snapshot:///srv/app.create(name=deploy-v2, description="Production deployment backup", ttl=604800)
-```
-
-Expected output:
-```json
-{
-  "ok": true,
-  "backend": "local",
-  "id": "generated-snapshot-id", 
-  "name": "deploy-v2",
   "target": "/srv/app",
-  "path": "/path/to/snapshot/storage",
   "created_at": "2025-11-15T18:01:02Z",
-  "expires_at": "2025-11-22T18:01:02Z",
+  "expires_at": null,
   "skipped": false
 }
 ```
 
-Skip creating if snapshot already exists:
-```
-snapshot:///home/user/data.create(name=existing-snapshot, if_exists=skip)
-```
+Example (diff summary section):
 
-Expected output:
 ```json
 {
-  "ok": true,
-  "backend": "local",
-  "id": "existing-snapshot-id",
-  "name": "existing-snapshot", 
-  "target": "/home/user/data",
-  "path": "/path/to/existing/snapshot",
-  "created_at": "2025-11-15T18:01:02Z",
-  "expires_at": null,
-  "skipped": true
-}
-```
-
-**Error Cases:**
-
-Missing name argument:
-```
-snapshot:///home/user/data.create()
-```
-
-Expected output:
-```json
-{
-  "ok": false,
-  "error": "missing required argument: name"
-}
-```
-
-Target doesn't exist:
-```
-snapshot:///nonexistent/path.create(name=test)
-```
-
-Expected output:
-```json
-{
-  "ok": false,
-  "error": "target path does not exist: \"/nonexistent/path\""
-}
-```
-
----
-
-### restore
-
-Restores a snapshot to a target location.
-
-**Basic Usage:**
-```
-snapshot://SNAPSHOT_NAME.restore(target=TARGET_PATH)
-```
-
-**Arguments:**
-- `target` (required): Where to restore the snapshot
-- `force` (optional): Overwrite existing files/directories (true/false, default: false)
-- `mode` (optional): Restore mode (only "overwrite" supported, default: "overwrite") 
-- `dry_run` (optional): Show what would be done without doing it (true/false, default: false)
-
-**Examples:**
-
-Restore a directory snapshot:
-```
-snapshot://backup-v1.restore(target=/home/user/restored-project)
-```
-
-Expected output:
-```json
-{
-  "snapshot": "backup-v1",
-  "target": "/home/user/restored-project",
-  "mode": "overwrite",
-  "status": "ok"
-}
-```
-
-Restore a file snapshot:
-```
-snapshot://filebackup.restore(target=/home/user/recovered.txt)
-```
-
-Expected output:
-```json
-{
-  "snapshot": "filebackup", 
-  "target": "/home/user/recovered.txt",
-  "mode": "overwrite",
-  "status": "ok"
-}
-```
-
-Force restore over existing data:
-```
-snapshot://backup-v1.restore(target=/home/user/existing-folder, force=true)
-```
-
-Expected output:
-```json
-{
-  "snapshot": "backup-v1",
-  "target": "/home/user/existing-folder", 
-  "mode": "overwrite",
-  "status": "ok"
-}
-```
-
-Dry run to see what would happen:
-```
-snapshot://backup-v1.restore(target=/home/user/test, force=true, dry_run=true)
-```
-
-Expected output:
-```json
-{
-  "dry_run": true,
-  "snapshot": "backup-v1",
-  "target": "/home/user/test",
-  "mode": "overwrite", 
-  "force": true,
-  "actions": [
-    "DELETE DIRECTORY \"/home/user/test\"",
-    "COPY \"/path/to/snapshot\" -> \"/home/user/test\""
-  ]
-}
-```
-
-**Error Cases:**
-
-Missing target argument:
-```
-snapshot://test-snapshot.restore()
-```
-
-Expected output:
-```json
-{
-  "error": "missing_argument",
-  "argument": "target",
-  "message": "missing required argument: target"
-}
-```
-
-Snapshot not found:
-```
-snapshot://nonexistent.restore(target=/tmp/test)
-```
-
-Expected output:
-```json
-{
-  "error": "snapshot_not_found",
-  "snapshot": "nonexistent", 
-  "message": "snapshot not found: nonexistent"
-}
-```
-
-Target exists and not empty without force:
-```
-snapshot://test-snapshot.restore(target=/existing/nonempty/dir)
-```
-
-Expected output:
-```json
-{
-  "error": "target_not_empty",
-  "target": "/existing/nonempty/dir",
-  "message": "target directory exists and is not empty (use force=true to overwrite): \"/existing/nonempty/dir\""
-}
-```
-
----
-
-### diff
-
-Compares snapshots or snapshots with live filesystem.
-
-**Basic Usage:**
-```
-snapshot://NAME.diff(from=SOURCE, to=TARGET)
-```
-
-**Arguments:**
-- `from` (optional): Source snapshot ID or "live"
-- `to` (optional): Target snapshot ID or "live" 
-- `path` (optional): Filter to specific path (default: "/")
-- `format` (optional): Output format ("json" or "summary", default: "json")
-
-Note: At least one of `from` or `to` must be provided. You cannot diff "live" against itself.
-
-**Examples:**
-
-Compare two snapshots:
-```
-snapshot:///srv/app.diff(from=snap-001, to=snap-002, format=json)
-```
-
-Expected output:
-```json
-{
-  "name": "/srv/app",
-  "from": "snap-001", 
-  "to": "snap-002",
-  "from_kind": "snapshot",
-  "to_kind": "snapshot",
-  "root": "/srv/app",
-  "path": "/",
-  "summary": {
-    "added": 2,
-    "removed": 1, 
-    "modified": 2,
-    "unchanged": 5
-  },
-  "entries": [
-    {
-      "path": "file1.txt",
-      "type": "file",
-      "status": "modified",
-      "from": {
-        "exists": true,
-        "file_type": "file",
-        "size": 9,
-        "mtime": "2025-11-15T18:01:02Z",
-        "mode": "0644",
-        "hash": "abc123"
-      },
-      "to": {
-        "exists": true, 
-        "file_type": "file",
-        "size": 17,
-        "mtime": "2025-11-15T18:02:02Z",
-        "mode": "0644",
-        "hash": "def456"
-      }
-    }
-  ]
-}
-```
-
-Compare snapshot to live filesystem:
-```
-snapshot:///home/user/project.diff(from=snap-001, to=live, format=json)
-```
-
-Expected output:
-```json
-{
-  "name": "/home/user/project",
-  "from": "snap-001",
-  "to": "live", 
-  "from_kind": "snapshot",
-  "to_kind": "live",
-  "root": "/home/user/project",
-  "path": "/",
   "summary": {
     "added": 2,
     "removed": 1,
-    "modified": 2,
-    "unchanged": 3
-  },
-  "entries": [
-    {
-      "path": "new_file.txt",
-      "type": "file", 
-      "status": "added",
-      "from": {
-        "exists": false
-      },
-      "to": {
-        "exists": true,
-        "file_type": "file",
-        "size": 11,
-        "mtime": "2025-11-15T18:03:02Z",
-        "mode": "0644",
-        "hash": "ghi789"
-      }
-    }
-  ]
+    "modified": 3,
+    "unchanged": 10
+  }
 }
 ```
 
-Get summary format output:
-```
-snapshot:///srv/app.diff(from=snap-001, to=live, format=summary)
-```
+Structured output supports:
 
-Expected output:
-```
-snapshot: /srv/app
-from: snap-001 (snapshot)
-to:   live (live)
-root: /srv/app
-path: /
-
-added: 2
-removed: 1  
-modified: 2
-unchanged: 5
-```
-
-Compare with path filter:
-```
-snapshot:///srv/app.diff(from=snap-001, to=live, path=/subdir, format=json)
-```
-
-Expected output:
-```json
-{
-  "name": "/srv/app",
-  "from": "snap-001",
-  "to": "live",
-  "from_kind": "snapshot", 
-  "to_kind": "live",
-  "root": "/srv/app",
-  "path": "/subdir",
-  "summary": {
-    "added": 1,
-    "removed": 0,
-    "modified": 0,
-    "unchanged": 1
-  },
-  "entries": [
-    {
-      "path": "new_nested.txt",
-      "type": "file",
-      "status": "added",
-      "from": {
-        "exists": false
-      },
-      "to": {
-        "exists": true,
-        "file_type": "file", 
-        "size": 10,
-        "mtime": "2025-11-15T18:04:02Z",
-        "mode": "0644",
-        "hash": "jkl012"
-      }
-    }
-  ]
-}
-```
-
-**Error Cases:**
-
-No from or to specified:
-```
-snapshot:///srv/app.diff(format=json)
-```
-
-Expected: Command fails with error message about needing at least one of 'from' or 'to'.
-
-Both from and to are live:
-```
-snapshot:///srv/app.diff(from=live, to=live, format=json) 
-```
-
-Expected: Command fails with error message about cannot diff live against itself.
+* CI/CD validation
+* Change auditing
+* Automated rollback workflows
+* Compliance checks
 
 ---
 
-### ls
+### AI-Readiness
 
-Lists snapshots in a group.
+The snapshot handle enables:
 
-**Basic Usage:**
+* Deterministic change tracking
+* Structured difference analysis
+* Automated rollback decision-making
+* Integration into orchestration agents
+
+The `diff` verb provides machine-readable delta information suitable for automated policy evaluation.
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
 ```
-snapshot://GROUP_NAME.ls
-```
-
-**Arguments:**
-- `state` (optional): Filter by state 
-- `tag` (optional): Filter by tag
-- `since` (optional): Filter by creation time (RFC3339 format)
-- `until` (optional): Filter by creation time (RFC3339 format)
-- `name_prefix` (optional): Filter by name prefix
-- `limit` (optional): Maximum number of results
-- `json_pretty` (optional): Pretty print JSON (true/false, default: false)
-
-**Examples:**
-
-List all snapshots in a group:
-```
-snapshot://myapp.ls
+snapshot://target.verb(arguments)
 ```
 
-Expected output:
+#### Components
+
+| Component   | Description                                   |
+| ----------- | --------------------------------------------- |
+| `snapshot`  | Handle identifier                             |
+| `target`    | Filesystem path or snapshot name              |
+| `verb`      | Operation (`create`, `restore`, `diff`, `ls`) |
+| `arguments` | Named parameters                              |
+
+---
+
+### Examples
+
+Create snapshot:
+
+```bash
+snapshot:///srv/app.create(name="before-deploy")
+```
+
+Restore snapshot:
+
+```bash
+snapshot://before-deploy.restore(target="/srv/app",force=true)
+```
+
+Compare snapshot to live:
+
+```bash
+snapshot:///srv/app.diff(from="before-deploy",to="live",format="summary")
+```
+
+List snapshots:
+
+```bash
+snapshot://myapp.ls(limit=10)
+```
+
+---
+
+### 3.2 Execution Semantics
+
+Operations follow atomic semantics:
+
+**Create**
+
+* Snapshot staged in temporary location
+* Moved atomically into final storage
+* Metadata written last
+
+**Restore**
+
+* Target staged
+* Final replacement atomic
+* Original data preserved until completion
+
+**Diff**
+
+* Computes file-level comparisons
+* Supports JSON and summary formats
+* Supports path filtering
+
+Representative JSON (restore):
+
+```json
+{
+  "snapshot": "backup-v1",
+  "target": "/srv/app",
+  "mode": "overwrite",
+  "status": "ok"
+}
+```
+
+Representative JSON (ls):
+
 ```json
 [
   {
     "id": "snap-003",
-    "name": "latest-backup",
-    "created_at": "2025-11-15T18:03:02Z", 
-    "backend": "local",
-    "target": "/srv/myapp",
-    "state": "ready",
-    "size_bytes": 1048576,
-    "tags": ["deploy", "prod"],
-    "description": "Production deployment backup"
-  },
-  {
-    "id": "snap-002", 
-    "name": "previous-backup",
-    "created_at": "2025-11-15T17:01:02Z",
-    "backend": "local", 
-    "target": "/srv/myapp",
-    "state": "ready",
-    "size_bytes": 1024000,
-    "tags": ["deploy"],
-    "description": "Previous backup"
-  }
-]
-```
-
-Filter by state:
-```
-snapshot://myapp.ls(state=ready)
-```
-
-Expected output:
-```json
-[
-  {
-    "id": "snap-003",
-    "name": "ready-snapshot",
+    "name": "deploy-v2",
     "created_at": "2025-11-15T18:03:02Z",
     "backend": "local",
-    "target": "/srv/app", 
-    "state": "ready",
-    "tags": ["deploy", "prod"]
-  },
-  {
-    "id": "snap-001",
-    "name": "ready-snapshot2", 
-    "created_at": "2025-11-15T18:01:02Z",
-    "backend": "local",
-    "target": "/srv/app",
-    "state": "ready",
-    "tags": ["deploy", "prod"]
-  }
-]
-```
-
-Filter by tag:
-```
-snapshot://myapp.ls(tag=prod)
-```
-
-Expected output:
-```json
-[
-  {
-    "id": "snap-003",
-    "name": "prod-snapshot2",
-    "created_at": "2025-11-15T18:03:02Z",
-    "backend": "local",
-    "target": "/srv/app",
-    "state": "ready", 
-    "tags": ["deploy", "prod", "v2"]
-  },
-  {
-    "id": "snap-001",
-    "name": "prod-snapshot",
-    "created_at": "2025-11-15T18:01:02Z",
-    "backend": "local",
-    "target": "/srv/app",
-    "state": "ready",
-    "tags": ["deploy", "prod"]  
-  }
-]
-```
-
-Limit results:
-```
-snapshot://myapp.ls(limit=2)
-```
-
-Expected output:
-```json
-[
-  {
-    "id": "snap-003",
-    "name": "newest",
-    "created_at": "2025-11-15T18:01:02Z",
-    "backend": "local",
-    "target": "/srv/app",
-    "state": "ready"
-  },
-  {
-    "id": "snap-002",
-    "name": "middle", 
-    "created_at": "2025-11-15T17:01:02Z",
-    "backend": "local",
-    "target": "/srv/app", 
-    "state": "ready"
-  }
-]
-```
-
-Filter by time range:
-```
-snapshot://myapp.ls(since=2025-11-15T10:00:00Z)
-```
-
-Expected output:
-```json
-[
-  {
-    "id": "snap-003",
-    "name": "late",
-    "created_at": "2025-11-15T22:01:02Z",
-    "backend": "local",
-    "target": "/srv/app",
-    "state": "ready"
-  },
-  {
-    "id": "snap-002",
-    "name": "middle",
-    "created_at": "2025-11-15T12:01:02Z", 
-    "backend": "local",
     "target": "/srv/app",
     "state": "ready"
   }
 ]
 ```
 
-Filter by name prefix:
-```
-snapshot://myapp.ls(name_prefix=prod-)
-```
+---
 
-Expected output:
-```json
-[
-  {
-    "id": "snap-002",
-    "name": "prod-v2",
-    "created_at": "2025-11-15T18:02:02Z",
-    "backend": "local",
-    "target": "/srv/app",
-    "state": "ready"
-  },
-  {
-    "id": "snap-001", 
-    "name": "prod-v1",
-    "created_at": "2025-11-15T18:01:02Z",
-    "backend": "local",
-    "target": "/srv/app",
-    "state": "ready"
-  }
-]
+## 4. Functional Domains
+
+### 4.1 Automation Utilities
+
+Snapshot operations enable:
+
+* Pre-deployment state capture
+* Post-change verification
+* Change detection
+* Rollback orchestration
+
+Common pattern:
+
+```bash
+snapshot:///srv/app.create(name="pre-change")
 ```
 
-Empty group (no snapshots):
+---
+
+### 4.2 Data & State Management
+
+Snapshots preserve:
+
+* Full directory trees
+* File permissions
+* Metadata
+* Timestamps
+* Optional expiration metadata
+
+Use cases:
+
+* Configuration tracking
+* Data state preservation
+* Version tracking
+* Compliance validation
+
+---
+
+### 4.3 Filesystem & Storage
+
+Snapshots operate on:
+
+* Files
+* Directories
+
+Limitations:
+
+* Local backend only
+* No compression
+* No deduplication
+* No incremental snapshots
+* No cross-filesystem snapshotting
+
+Storage structure:
+
 ```
-snapshot://empty-group.ls
+<state_dir>/resh/snapshots/<group>/<snapshot>/
 ```
 
-Expected output:
-```json
-[]
+---
+
+### 4.4 Network & Remote Operations
+
+Not applicable (local storage only).
+
+---
+
+### 4.5 Packages & Software
+
+Indirectly supports deployment workflows by enabling:
+
+* Version checkpointing
+* Safe rollbacks
+* Deployment verification
+
+---
+
+### 4.6 Process & Service Management
+
+Supports safe configuration updates when combined with service restarts.
+
+---
+
+### 4.7 Security & Secrets
+
+Preserves:
+
+* File modes
+* Special permission bits
+* Symbolic links
+
+Ownership preservation depends on execution privileges.
+
+---
+
+### 4.8 System Information
+
+`ls` supports filtering by:
+
+* State
+* Tag
+* Time range (`since`, `until`)
+* Name prefix
+* Result limit
+
+Example:
+
+```bash
+snapshot://myapp.ls(state=ready,limit=5)
 ```
 
-## Common Use Cases
+---
 
-### Backup Before Changes
+## 5. Platform Support
+
+Based strictly on documentation:
+
+* Linux supported
+* macOS supported
+* Windows supported
+
+Storage locations:
+
+* Linux: `$XDG_STATE_HOME/resh/snapshots`
+* macOS: `~/Library/Application Support/resh/snapshots`
+* Windows: `%APPDATA%/resh/snapshots`
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Always snapshot before risky operations.
+* Use `if_exists="error"` for manual operations.
+* Use `if_exists="skip"` for idempotent automation.
+* Use `dry_run=true` before restore with force.
+* Apply TTL to manage storage lifecycle.
+
+---
+
+### Automation Considerations
+
+* Use JSON output for CI pipelines.
+* Validate `ok` flag.
+* Monitor snapshot storage growth.
+* Use consistent naming conventions.
+* Filter `ls` output by prefix or tags.
+
+---
+
+### CI/CD Integration
+
+Deployment example:
+
+```bash
+snapshot:///srv/app.create(name="deploy-20250207")
+
+# deploy application
+
+snapshot:///srv/app.diff(from="deploy-20250207",to="live",format="summary")
 ```
-# Create backup before making changes
-snapshot:///home/user/project.create(name=before-update)
 
-# Make your changes...
+Rollback example:
 
-# If something goes wrong, restore the backup
-snapshot://before-update.restore(target=/home/user/project, force=true)
+```bash
+snapshot://deploy-20250207.restore(target="/srv/app",force=true)
 ```
 
-### Compare Changes
-```
-# Create snapshot before changes
-snapshot:///srv/app.create(name=before-deploy)
+---
 
-# Deploy new version...
+### Production Recommendations
 
-# Compare what changed
-snapshot:///srv/app.diff(from=before-deploy, to=live, format=summary)
-```
+* Use timestamped names for automated backups.
+* Enforce retention using TTL.
+* Avoid force restore without review.
+* Snapshot only required directories.
+* Monitor storage capacity regularly.
 
-### Regular Backups
-```
-# Create timestamped backup
-snapshot:///important/data.create(name=backup-$(date +%Y%m%d), description="Daily backup")
+---
 
-# List recent backups
-snapshot://backup.ls(name_prefix=backup-, limit=10)
-```
+## 7. Use Cases by Role
 
-## Storage Location
+### DevOps Engineers
 
-Snapshots are stored in your system's state directory:
-- Linux: `$XDG_STATE_HOME/resh/snapshots` or `$HOME/.local/state/resh/snapshots`
-- macOS: `~/Library/Application Support/resh/snapshots`
-- Windows: `%APPDATA%/resh/snapshots`
+* Create deployment checkpoints.
+* Compare release states.
+* Implement automated rollback.
+* Track configuration drift.
 
-## Important Notes
+---
 
-1. **Snapshots preserve permissions**: File and directory permissions are maintained when creating and restoring snapshots.
+### SRE Engineers
 
-2. **Atomic operations**: Restore operations are atomic - if something fails during restore, your original data remains unchanged.
+* Perform safe recovery during incidents.
+* Audit filesystem changes.
+* Validate state after outages.
+* Track system configuration evolution.
 
-3. **Local storage only**: Currently only local filesystem storage is supported.
+---
 
-4. **Case sensitive**: Snapshot names and operations are case sensitive.
+### Network Administrators
 
-5. **Time zones**: All timestamps are in UTC format (ISO 8601).
+* Preserve configuration before updates.
+* Restore device configurations.
+* Track configuration differences.
 
-6. **Relative paths**: When using relative paths, they are resolved based on your current working directory when the command runs.
+---
+
+### AI / Automation Engineers
+
+* Use diff JSON for policy evaluation.
+* Trigger rollback based on modified file count.
+* Automate change validation.
+* Integrate snapshot lifecycle management.
+
+---
+
+## 8. Technical Foundation
+
+The snapshot handle is implemented within resh’s Rust-based execution framework.
+
+### Rust Implementation Advantages
+
+* Memory safety
+* Atomic file operations
+* Deterministic error handling
+* Cross-platform compatibility
+
+---
+
+### Type Safety
+
+* Strict argument validation
+* Required parameter enforcement
+* Controlled overwrite semantics
+* Case-sensitive snapshot identity
+
+---
+
+### Performance Characteristics
+
+* Full copy snapshots
+* No deduplication
+* Snapshot time proportional to data size
+* Diff faster than full snapshot
+* Restore speed dependent on target filesystem
+
+---
+
+### Cross-Platform Architecture
+
+Supported on:
+
+* Linux
+* macOS
+* Windows
+
+Snapshots rely on local filesystem storage and operate independently of underlying filesystem snapshot capabilities.
+

@@ -835,12 +835,592 @@ impl PluginHandle {
     }
 }
 
+impl PluginHandle {
+    /// Check if help was requested based on verb or arguments
+    fn should_show_help(&self, verb: &str, args: &Args) -> bool {
+        // Check if verb is a help request
+        verb == "--help" || verb == "-h" || verb == "help" ||
+        // Check if args contain help flags
+        args.get("help").is_some() || 
+        args.get("h").is_some() ||
+        args.contains_key("--help") ||
+        args.contains_key("-h") ||
+        // Check if verb ends with --help pattern
+        verb.ends_with("--help") ||
+        verb.ends_with("-h")
+    }
+
+    /// Display comprehensive help for the plugin handle
+    fn display_help(&self, io: &mut IoStreams, verb_specific: Option<&str>) -> Result<Status> {
+        if let Some(specific_verb) = verb_specific {
+            // Show verb-specific help if implemented
+            self.display_verb_help(specific_verb, io)?;
+        } else {
+            // Show general help
+            writeln!(io.stdout, "{}", PLUGIN_HELP_TEXT)?;
+        }
+        Ok(Status::success())
+    }
+
+    /// Display help for a specific verb (optional feature)
+    fn display_verb_help(&self, verb: &str, io: &mut IoStreams) -> Result<()> {
+        match verb {
+            "install" => {
+                writeln!(io.stdout, "{}", INSTALL_VERB_HELP)?;
+            }
+            "update" => {
+                writeln!(io.stdout, "{}", UPDATE_VERB_HELP)?;
+            }
+            "remove" => {
+                writeln!(io.stdout, "{}", REMOVE_VERB_HELP)?;
+            }
+            "enable" => {
+                writeln!(io.stdout, "{}", ENABLE_VERB_HELP)?;
+            }
+            "disable" => {
+                writeln!(io.stdout, "{}", DISABLE_VERB_HELP)?;
+            }
+            "available.list" => {
+                writeln!(io.stdout, "{}", AVAILABLE_LIST_VERB_HELP)?;
+            }
+            "available.search" => {
+                writeln!(io.stdout, "{}", AVAILABLE_SEARCH_VERB_HELP)?;
+            }
+            "available.info" => {
+                writeln!(io.stdout, "{}", AVAILABLE_INFO_VERB_HELP)?;
+            }
+            "installed.list" => {
+                writeln!(io.stdout, "{}", INSTALLED_LIST_VERB_HELP)?;
+            }
+            _ => {
+                writeln!(io.stdout, "Unknown verb '{}' for plugin handle.", verb)?;
+                writeln!(io.stdout, "Available verbs: install, update, remove, enable, disable, available.list, available.search, available.info, installed.list")?;
+                writeln!(io.stdout, "\nUse 'plugin:// --help' for complete help.")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Help text for the plugin handle
+const PLUGIN_HELP_TEXT: &str = r#"RESOURCE SHELL - PLUGIN HANDLE
+==============================
+
+USAGE:
+  plugin://plugin-id.VERB(arguments)
+  plugin://special-target.VERB(arguments)
+
+DESCRIPTION:
+  The plugin handle provides comprehensive plugin management capabilities for
+  Resource Shell. It manages plugin installation, updates, removal, enablement,
+  disablement, and discovery through multiple sources including registries,
+  URLs, and local files.
+
+PLUGIN SOURCES:
+  registry        Official plugin registry (default)
+  url             Direct download from HTTP/HTTPS URL
+  file            Local file path
+
+SPECIAL TARGETS:
+  available       For catalog operations (list, search, info)
+  installed       For listing installed plugins
+
+VERBS:
+  install         Install a plugin from various sources
+  update          Update an existing plugin to latest version
+  remove          Remove an installed plugin
+  enable          Enable a disabled plugin
+  disable         Disable an active plugin
+  available.list  List available plugins from catalogs
+  available.search Search for plugins with filters
+  available.info  Get detailed information about a plugin
+  installed.list  List currently installed plugins
+
+EXAMPLES:
+
+  Install plugin from registry:
+    plugin://aws.install(source="registry")
+
+  Install from local file:
+    plugin://test-plugin.install(source="file", path="/path/to/plugin.tar.gz")
+
+  Install specific version:
+    plugin://aws.install(version="1.2.3")
+
+  Install from URL:
+    plugin://custom.install(source="url", url="https://example.com/plugin.tar.gz")
+
+  Update plugin to latest:
+    plugin://aws.update()
+
+  Update with custom registry:
+    plugin://aws.update(registry="https://custom-registry.com")
+
+  Remove plugin:
+    plugin://aws.remove()
+
+  Remove with purge:
+    plugin://aws.remove(purge="true", force="true")
+
+  Remove specific version:
+    plugin://aws@1.2.3.remove()
+
+  Enable plugin for user:
+    plugin://aws.enable()
+
+  Enable system-wide:
+    plugin://aws.enable(scope="system", reason="Required for deployment")
+
+  Disable plugin:
+    plugin://aws.disable()
+
+  Disable with reason:
+    plugin://aws.disable(reason="Security vulnerability detected")
+
+  List all available plugins:
+    plugin://available.list()
+
+  List with filters:
+    plugin://available.list(query="aws", tags="cloud;infrastructure", max_results="10")
+
+  Search for plugins:
+    plugin://available.search(q="docker")
+
+  Advanced search:
+    plugin://available.search(q="container", tags="docker;orchestration", owner="resh-community")
+
+  Get plugin information by name:
+    plugin://available.info(name="resh-aws")
+
+  Get specific version info:
+    plugin://available.info(id="aws", version="1.2.3")
+
+  Get beta channel info:
+    plugin://available.info(name="resh-aws", channel="beta")
+
+  List all installed plugins:
+    plugin://installed.list()
+
+  List enabled plugins only:
+    plugin://installed.list(enabled="true", format="summary")
+
+  List with pagination:
+    plugin://installed.list(limit="10", offset="20")
+
+INSTALL ARGUMENTS:
+  source=TYPE            Source type: registry, url, file (default: registry)
+  registry=URL           Registry URL when source=registry
+  url=URL                Download URL when source=url
+  path=PATH              File path when source=file
+  version=VERSION        Specific version to install (default: latest)
+  verify=MODE            Verification mode: none, sha256 (default: sha256)
+  force=BOOL             Force installation if already installed (default: false)
+  allow_downgrade=BOOL   Allow installing older version (default: false)
+  dry_run=BOOL           Simulate installation without changes (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 300000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+UPDATE ARGUMENTS:
+  registry=URL           Registry URL (default: https://plugins.reshshell.dev)
+  url=URL                Direct URL for update package
+  strict=BOOL            Require exact version match (default: false)
+  dry_run=BOOL           Simulate update without changes (default: false)
+  timeout_ms=N           Operation timeout (default: 300000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+REMOVE ARGUMENTS:
+  force=BOOL             Force removal without confirmation (default: false)
+  purge=BOOL             Remove configuration and data files (default: false)
+  dry_run=BOOL           Simulate removal without changes (default: false)
+  timeout_ms=N           Operation timeout (default: 30000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+ENABLE/DISABLE ARGUMENTS:
+  scope=SCOPE            Enable/disable scope: user, system (default: user)
+  force=BOOL             Force operation without validation (default: false)
+  reason=TEXT            Reason for operation (max 200 characters)
+  dry_run=BOOL           Simulate operation without changes (default: false)
+  timeout_ms=N           Operation timeout (default: 15000, clamped 1000-120000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+AVAILABLE.LIST ARGUMENTS:
+  source=URL             Catalog source URL
+  query=TEXT             Search term to filter plugins
+  tags=TAG;TAG           Tag filters (semicolon-separated)
+  max_results=N          Maximum results to return (default: 100, max: 200)
+  sort=FIELD             Sort field: name, version, updated (default: name)
+  order=ORDER            Sort order: asc, desc (default: asc)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+AVAILABLE.SEARCH ARGUMENTS:
+  q=TEXT                 Search query string
+  tags=TAG;TAG           Tag filters (semicolon-separated)
+  owner=TEXT             Plugin owner/publisher filter
+  name=TEXT              Plugin name filter
+  min_version=VERSION    Minimum version requirement
+  max_results=N          Maximum results (default: 50, max: 200)
+  source=URL             Catalog source
+  timeout_ms=N           Operation timeout (default: 15000)
+  offline=BOOL           Use cached data only (default: false)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+AVAILABLE.INFO ARGUMENTS:
+  name=TEXT              Plugin name to look up (required)
+  id=TEXT                Plugin ID to look up (alternative to name)
+  version=VERSION        Specific version to query (default: latest)
+  channel=CHANNEL        Release channel: stable, beta, alpha (default: stable)
+  source=URL             Plugin index source
+  timeout_ms=N           Operation timeout (default: 15000, clamped 100-30000)
+  offline=BOOL           Use cached data only (default: false)
+  os=OS                  Target operating system filter
+  arch=ARCH              Target architecture filter
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+INSTALLED.LIST ARGUMENTS:
+  enabled=BOOL           Filter by enabled status
+  name=TEXT              Filter by exact plugin name
+  prefix=TEXT            Filter by name prefix
+  tag=TEXT               Filter by tag
+  source=TYPE            Filter by source type
+  limit=N                Maximum results to return (default: 200)
+  offset=N               Results offset for pagination (default: 0)
+  sort=FIELD             Sort field: name, version, updated (default: name)
+  order=ORDER            Sort order: asc, desc (default: asc)
+  format=FORMAT          Output format: full, summary (default: full)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+OUTPUT FORMAT:
+  All operations return JSON with the following structure:
+  - op: Operation name (e.g., "plugin.install")
+  - ok: Boolean success indicator
+  - code: Exit code (0 for success)
+  - ts: Timestamp of operation
+  - target: Original command
+  - args: Parsed arguments
+  - result: Operation-specific results
+  - actions: Array of actions performed
+  - error: Error information (if ok=false)
+
+PLUGIN LIFECYCLE:
+  1. Discovery     Use available.search or available.list to find plugins
+  2. Information   Use available.info to get details before installation
+  3. Installation  Use install to add plugins to the system
+  4. Management    Use enable/disable to control plugin activation
+  5. Maintenance   Use update to keep plugins current
+  6. Removal       Use remove to clean up unwanted plugins
+
+COMMON WORKFLOWS:
+
+  Plugin discovery and installation:
+    plugin://available.search(q="aws")
+    plugin://available.info(name="resh-aws")
+    plugin://aws.install()
+
+  Plugin maintenance:
+    plugin://installed.list()
+    plugin://aws.update()
+    plugin://aws.enable()
+
+  Automated plugin management:
+    plugin://aws.install(version="1.2.3", dry_run="false")
+    plugin://installed.list(enabled="false")
+
+  Development and testing:
+    plugin://test-plugin.install(source="file", path="/dev/plugin.tar.gz")
+    plugin://aws.update(dry_run="true")
+
+ERROR CODES:
+  0                      Success
+  1-2                    General errors
+  3                      Not found / Invalid argument
+  ERR_INVALID_ARG        Invalid or missing arguments
+  ERR_NOT_FOUND          Plugin not found
+  ERR_IO                 File system or network I/O error
+  ERR_TIMEOUT            Operation timed out
+  PLUGIN_INVALID_TARGET  Wrong target for verb
+  PLUGIN_NETWORK_ERROR   Network connectivity issues
+  PLUGIN_CATALOG_UNAVAILABLE Plugin catalog unavailable
+
+SECURITY CONSIDERATIONS:
+  • SHA256 verification is enabled by default for integrity checking
+  • Source validation ensures plugins come from trusted locations
+  • Scope isolation separates user and system plugin installations
+  • Force flags require explicit confirmation for dangerous operations
+  • Timeout limits prevent indefinite operations
+
+BEST PRACTICES:
+  • Use registry source for official plugins when possible
+  • Keep SHA256 verification enabled for security
+  • Test with dry_run before making changes to production
+  • Use specific versions in automated deployments
+  • Monitor plugin health through regular installed.list checks
+  • Use appropriate scopes when enabling/disabling plugins
+  • Set reasonable timeouts based on network conditions
+  • Cache plugin catalogs using offline mode when appropriate
+
+MORE INFO:
+  For complete documentation of all verbs, arguments, sources, and
+  security considerations, visit:
+  https://github.com/[your-org]/resource-shell/docs/plugin-handle.md
+
+  Use 'plugin:// --help=VERB' for detailed help on a specific verb.
+"#;
+
+/// INSTALL verb help text
+const INSTALL_VERB_HELP: &str = r#"PLUGIN INSTALL VERB
+===================
+
+Installs a plugin from various sources including registries, URLs, and local files.
+
+USAGE:
+  plugin://plugin-id.install(source="TYPE", [options...])
+
+REQUIRED ARGUMENTS:
+  None (source defaults to registry, version defaults to latest)
+
+OPTIONAL ARGUMENTS:
+  source=TYPE            Source type: registry, url, file (default: registry)
+  registry=URL           Registry URL when source=registry
+  url=URL                Download URL when source=url
+  path=PATH              File path when source=file
+  version=VERSION        Specific version to install (default: latest)
+  verify=MODE            Verification mode: none, sha256 (default: sha256)
+  force=BOOL             Force installation if already installed (default: false)
+  allow_downgrade=BOOL   Allow installing older version (default: false)
+  dry_run=BOOL           Simulate installation without changes (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 300000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  plugin://aws.install()
+  plugin://aws.install(version="1.2.3")
+  plugin://custom.install(source="url", url="https://example.com/plugin.tar.gz")
+  plugin://test.install(source="file", path="/path/to/plugin.tar.gz")
+"#;
+
+/// UPDATE verb help text  
+const UPDATE_VERB_HELP: &str = r#"PLUGIN UPDATE VERB
+==================
+
+Updates an existing plugin to the latest version or a specific version.
+
+USAGE:
+  plugin://plugin-id.update([options...])
+
+OPTIONAL ARGUMENTS:
+  registry=URL           Registry URL (default: https://plugins.reshshell.dev)
+  url=URL                Direct URL for update package
+  strict=BOOL            Require exact version match (default: false)
+  dry_run=BOOL           Simulate update without changes (default: false)
+  timeout_ms=N           Operation timeout (default: 300000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  plugin://aws.update()
+  plugin://aws.update(registry="https://custom-registry.com")
+  plugin://aws.update(dry_run="true")
+"#;
+
+/// REMOVE verb help text
+const REMOVE_VERB_HELP: &str = r#"PLUGIN REMOVE VERB
+==================
+
+Removes an installed plugin from the system.
+
+USAGE:
+  plugin://plugin-id.remove([options...])
+
+OPTIONAL ARGUMENTS:
+  force=BOOL             Force removal without confirmation (default: false)
+  purge=BOOL             Remove configuration and data files (default: false)
+  dry_run=BOOL           Simulate removal without changes (default: false)
+  timeout_ms=N           Operation timeout (default: 30000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  plugin://aws.remove()
+  plugin://aws.remove(purge="true", force="true")
+  plugin://aws@1.2.3.remove()
+"#;
+
+/// ENABLE verb help text
+const ENABLE_VERB_HELP: &str = r#"PLUGIN ENABLE VERB
+==================
+
+Enables a disabled plugin for use.
+
+USAGE:
+  plugin://plugin-id.enable([options...])
+
+OPTIONAL ARGUMENTS:
+  scope=SCOPE            Enable scope: user, system (default: user)
+  force=BOOL             Force operation without validation (default: false)
+  reason=TEXT            Reason for operation (max 200 characters)
+  dry_run=BOOL           Simulate operation without changes (default: false)
+  timeout_ms=N           Operation timeout (default: 15000, clamped 1000-120000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  plugin://aws.enable()
+  plugin://aws.enable(scope="system", reason="Required for deployment")
+"#;
+
+/// DISABLE verb help text
+const DISABLE_VERB_HELP: &str = r#"PLUGIN DISABLE VERB
+===================
+
+Disables an active plugin.
+
+USAGE:
+  plugin://plugin-id.disable([options...])
+
+OPTIONAL ARGUMENTS:
+  scope=SCOPE            Disable scope: user, system (default: user)
+  force=BOOL             Force operation without validation (default: false)
+  reason=TEXT            Reason for operation (max 200 characters)
+  dry_run=BOOL           Simulate operation without changes (default: false)
+  timeout_ms=N           Operation timeout (default: 15000, clamped 1000-120000)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  plugin://aws.disable()
+  plugin://aws.disable(reason="Security vulnerability detected")
+"#;
+
+/// AVAILABLE.LIST verb help text
+const AVAILABLE_LIST_VERB_HELP: &str = r#"PLUGIN AVAILABLE.LIST VERB
+==========================
+
+Lists available plugins from catalogs.
+
+USAGE:
+  plugin://available.list([options...])
+
+OPTIONAL ARGUMENTS:
+  source=URL             Catalog source URL
+  query=TEXT             Search term to filter plugins
+  tags=TAG;TAG           Tag filters (semicolon-separated)
+  max_results=N          Maximum results to return (default: 100, max: 200)
+  sort=FIELD             Sort field: name, version, updated (default: name)
+  order=ORDER            Sort order: asc, desc (default: asc)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  plugin://available.list()
+  plugin://available.list(query="aws", tags="cloud;infrastructure", max_results="10")
+"#;
+
+/// AVAILABLE.SEARCH verb help text
+const AVAILABLE_SEARCH_VERB_HELP: &str = r#"PLUGIN AVAILABLE.SEARCH VERB
+============================
+
+Searches for plugins with advanced filtering capabilities.
+
+USAGE:
+  plugin://available.search(q="TEXT", [options...])
+
+REQUIRED ARGUMENTS:
+  q=TEXT                 Search query string
+
+OPTIONAL ARGUMENTS:
+  tags=TAG;TAG           Tag filters (semicolon-separated)
+  owner=TEXT             Plugin owner/publisher filter
+  name=TEXT              Plugin name filter
+  min_version=VERSION    Minimum version requirement
+  max_results=N          Maximum results (default: 50, max: 200)
+  source=URL             Catalog source
+  timeout_ms=N           Operation timeout (default: 15000)
+  offline=BOOL           Use cached data only (default: false)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  plugin://available.search(q="docker")
+  plugin://available.search(q="container", tags="docker;orchestration", owner="resh-community")
+"#;
+
+/// AVAILABLE.INFO verb help text
+const AVAILABLE_INFO_VERB_HELP: &str = r#"PLUGIN AVAILABLE.INFO VERB
+==========================
+
+Gets detailed information about a specific plugin.
+
+USAGE:
+  plugin://available.info(name="TEXT", [options...])
+
+REQUIRED ARGUMENTS:
+  name=TEXT              Plugin name to look up (or use id=TEXT as alternative)
+
+OPTIONAL ARGUMENTS:
+  id=TEXT                Plugin ID to look up (alternative to name)
+  version=VERSION        Specific version to query (default: latest)
+  channel=CHANNEL        Release channel: stable, beta, alpha (default: stable)
+  source=URL             Plugin index source
+  timeout_ms=N           Operation timeout (default: 15000, clamped 100-30000)
+  offline=BOOL           Use cached data only (default: false)
+  os=OS                  Target operating system filter
+  arch=ARCH              Target architecture filter
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  plugin://available.info(name="resh-aws")
+  plugin://available.info(id="aws", version="1.2.3")
+  plugin://available.info(name="resh-aws", channel="beta")
+"#;
+
+/// INSTALLED.LIST verb help text
+const INSTALLED_LIST_VERB_HELP: &str = r#"PLUGIN INSTALLED.LIST VERB
+==========================
+
+Lists currently installed plugins.
+
+USAGE:
+  plugin://installed.list([options...])
+
+OPTIONAL ARGUMENTS:
+  enabled=BOOL           Filter by enabled status
+  name=TEXT              Filter by exact plugin name
+  prefix=TEXT            Filter by name prefix
+  tag=TEXT               Filter by tag
+  source=TYPE            Filter by source type
+  limit=N                Maximum results to return (default: 200)
+  offset=N               Results offset for pagination (default: 0)
+  sort=FIELD             Sort field: name, version, updated (default: name)
+  order=ORDER            Sort order: asc, desc (default: asc)
+  format=FORMAT          Output format: full, summary (default: full)
+  json_pretty=BOOL       Pretty-print JSON output (default: false)
+
+EXAMPLES:
+  plugin://installed.list()
+  plugin://installed.list(enabled="true", format="summary")
+  plugin://installed.list(limit="10", offset="20")
+"#;
+
 impl Handle for PluginHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["install", "update", "remove", "enable", "disable", "available.list", "available.search", "available.info", "installed.list"]
+        &["install", "update", "remove", "enable", "disable", "available.list", "available.search", "available.info", "installed.list", "--help", "-h", "help"]
     }
     
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check for help requests before normal verb processing
+        if self.should_show_help(verb, args) {
+            // Extract verb name for specific help if requested
+            let verb_specific = if verb.contains('=') {
+                // Format: --help=install
+                verb.split('=').nth(1)
+            } else if verb.ends_with("--help") {
+                // Format: install--help
+                Some(&verb[..verb.len() - 6])  // Remove "--help" suffix
+            } else if verb.ends_with("-h") {
+                // Format: install-h  
+                Some(&verb[..verb.len() - 2])  // Remove "-h" suffix
+            } else {
+                // Check if help is requested for a specific verb via arguments
+                args.get("verb").map(|s| s.as_str())
+            };
+            
+            return self.display_help(io, verb_specific);
+        }
+
         match verb {
             "install" => self.install(args, io),
             "update" => self.update(args, io),
@@ -851,6 +1431,11 @@ impl Handle for PluginHandle {
             "available.search" => self.available_search(args, io),
             "available.info" => self.available_info(args, io),
             "installed.list" => self.installed_list(args, io),
+            "--help" | "-h" | "help" => {
+                // Handle help verbs - look for specific verb in arguments
+                let verb_specific = args.get("verb").map(|s| s.as_str());
+                self.display_help(io, verb_specific)
+            },
             _ => bail!("Unknown verb: {}. Supported verbs: install, update, remove, enable, disable, available.list, available.search, available.info, installed.list", verb),
         }
     }

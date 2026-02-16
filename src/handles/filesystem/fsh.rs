@@ -161,6 +161,779 @@ pub struct UnmountPlan {
     pub commands: Vec<String>,
 }
 
+/// Comprehensive help text for filesystem handle
+const FS_HELP_TEXT: &str = r#"RESOURCE SHELL - FILESYSTEM HANDLE
+==================================
+
+USAGE:
+  fs://alias.VERB(arguments)
+
+DESCRIPTION:
+  The filesystem handle helps you work with mounted filesystems and storage
+  devices. It provides tools to mount and unmount filesystems, check disk usage,
+  resize partitions, manage quotas, and create snapshots of your filesystem
+  configuration. Many operations require root privileges for safety.
+
+URL FORMAT:
+  fs://alias.VERB(arguments)
+
+  Common aliases: system, local, or custom names you define
+
+VERBS (9 total):
+
+  Mount Operations:
+    mount           Mount a filesystem to a directory
+    unmount         Unmount a mounted filesystem (alias: umount)
+    list-mounts     Show information about mounted filesystems
+
+  Storage Management:
+    usage           Show disk space usage information
+    resize          Change filesystem or storage size
+    check           Check filesystem for errors (alias: fsck)
+
+  Quota Management:
+    quota           Show disk quota information for users/groups
+    quota_summary   Show quota usage across multiple filesystems
+
+  Configuration:
+    snapshot        Create snapshot of filesystem mount configuration
+
+EXAMPLES:
+
+  Mount Operations:
+    # Mount USB drive
+    fs://system.mount(target="/mnt/usb",source="/dev/sdb1",type="ext4")
+
+    # Mount with options
+    fs://system.mount(target="/mnt/data",source="/dev/sdb1",create_target=true,options=["noatime","user_xattr"])
+
+    # Mount read-only
+    fs://system.mount(target="/mnt/backup",source="/dev/sdb1",read_only=true)
+
+    # Create bind mount
+    fs://system.mount(target="/mnt/mirror",source="/original/path",bind=true)
+
+    # Mount network filesystem
+    fs://system.mount(target="/mnt/nfs",source="server:/export",type="nfs",network=true)
+
+    # Remount with new options
+    fs://system.mount(target="/mnt/data",remount=true,options=["ro"])
+
+    # Dry run (test without executing)
+    fs://system.mount(target="/mnt/test",source="/dev/sdb1",type="ext4",dry_run=true)
+
+    # Unmount by target
+    fs://system.unmount(target="/mnt/usb")
+
+    # Force unmount if busy
+    fs://system.unmount(target="/mnt/data",force=true)
+
+    # Lazy unmount (detach immediately)
+    fs://system.unmount(target="/mnt/stuck",lazy=true)
+
+    # Unmount by source device
+    fs://system.unmount(target="/dev/sdb1",by="source")
+
+    # Unmount with children
+    fs://system.unmount(target="/mnt/parent",detach_children=true)
+
+    # Dry run unmount
+    fs://system.unmount(target="/mnt/test",dry_run=true)
+
+    # List all mounts
+    fs://system.list-mounts()
+
+    # List excluding virtual filesystems
+    fs://system.list-mounts(exclude_types=["proc","sysfs","tmpfs","devtmpfs"],include_pseudo=false)
+
+    # List with labels and features
+    fs://system.list-mounts(resolve_labels=true,resolve_fs_features=true)
+
+    # List specific filesystem types
+    fs://system.list-mounts(include_types=["ext4","xfs"])
+
+    # List only read-write mounts
+    fs://system.list-mounts(include_readonly=false)
+
+  Storage Management:
+    # Show all filesystem usage
+    fs://system.usage()
+
+    # Show usage excluding system filesystems
+    fs://system.usage(exclude_types=["proc","sysfs","tmpfs","devtmpfs"],human_readable=true)
+
+    # Show total aggregate usage
+    fs://system.usage(mode="aggregate",exclude_types=["proc","sysfs","tmpfs","devtmpfs"])
+
+    # Check specific paths
+    fs://system.usage(mode="paths",paths=["/","/home","/var"])
+
+    # Find filesystems over 80% full
+    fs://system.usage(threshold_used_percent_min=80,exclude_types=["proc","sysfs","tmpfs"])
+
+    # Show usage with inode information
+    fs://system.usage(include_inodes=true)
+
+    # Grow filesystem to 100GB
+    fs://system.resize(target="/data",size="100G")
+
+    # Add 50GB to current size
+    fs://system.resize(target="/data",delta="+50G")
+
+    # Shrink by 20GB (requires allow_shrink)
+    fs://system.resize(target="/data",delta="-20G",allow_shrink=true)
+
+    # Resize with minimum free space
+    fs://system.resize(target="/data",size="100G",min_free_space_percent=10)
+
+    # Resize LVM volume and filesystem
+    fs://system.resize(target="/data",delta="+50G",manage_underlying_volume=true)
+
+    # Dry run resize
+    fs://system.resize(target="/data",size="100G",dry_run=true)
+
+    # Check filesystem (read-only)
+    fs://system.check(target="/dev/sdb1")
+
+    # Check and repair if errors found
+    fs://system.check(target="/dev/sdb1",mode="repair",allow_repair=true)
+
+    # Aggressive check
+    fs://system.check(target="/data",aggressiveness="aggressive")
+
+    # Check with btrfs scrub
+    fs://system.check(target="/btrfs",btrfs_use_scrub=true)
+
+    # Dry run check
+    fs://system.check(target="/dev/sdb1",dry_run=true)
+
+  Quota Management:
+    # Check current user's quota
+    fs://system.quota(path="/home")
+
+    # Check specific user's quota
+    fs://system.quota(subject="alice",path="/var/mail")
+
+    # Check group quota
+    fs://system.quota(subject="developers",subject_type="group",path="/data")
+
+    # Show all user quotas
+    fs://system.quota(path="/data",all_subjects=true)
+
+    # Show quota in gigabytes
+    fs://system.quota(path="/home",units="gigabytes")
+
+    # Show quota without grace periods
+    fs://system.quota(path="/home",include_grace=false)
+
+    # Summary of current user's quotas
+    fs://system.quota_summary()
+
+    # Summary excluding system filesystems
+    fs://system.quota_summary(exclude_types=["proc","sysfs","tmpfs","devtmpfs"])
+
+    # Summary for specific user
+    fs://system.quota_summary(subject="alice")
+
+    # Summary for all users
+    fs://system.quota_summary(all_subjects=true)
+
+  Configuration:
+    # Basic snapshot
+    fs://system.snapshot()
+
+    # Snapshot excluding system filesystems
+    fs://system.snapshot(exclude_types=["proc","sysfs","tmpfs"],exclude_mountpoints=["/dev","/run"])
+
+    # Snapshot with specific filesystem types
+    fs://system.snapshot(include_types=["ext4","xfs"])
+
+    # Text format snapshot
+    fs://system.snapshot(format="text")
+
+    # YAML format snapshot
+    fs://system.snapshot(format="yaml")
+
+    # Snapshot without usage data
+    fs://system.snapshot(include_usage=false)
+
+    # Snapshot with inode information
+    fs://system.snapshot(include_inodes=true)
+
+    # Snapshot for specific mountpoints
+    fs://local.snapshot(include_mountpoints=["/","/home"])
+
+MOUNT ARGUMENTS:
+  target=PATH            Where to mount (required)
+  source=DEVICE          What to mount (optional for some operations)
+  type=FSTYPE            Filesystem type: ext4, xfs, btrfs, ntfs, vfat, etc.
+                         (auto-detected if not provided)
+  options=LIST           Mount options (default: empty list)
+  read_only=BOOL         Mount as read-only (default: false)
+  bind=BOOL              Create bind mount (default: false)
+  create_target=BOOL     Create target directory (default: true)
+  make_parents=BOOL      Create parent directories (default: true)
+  fail_if_mounted=BOOL   Fail if already mounted (default: false)
+  remount=BOOL           Remount with new options (default: false)
+  network=BOOL           Network filesystem (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 30000)
+  dry_run=BOOL           Show what would be done (default: false)
+
+UNMOUNT ARGUMENTS (alias: umount):
+  target=PATH            What to unmount (required)
+  by=METHOD              How to find: target, source, auto (default: target)
+  force=BOOL             Force unmount if busy (default: false)
+  lazy=BOOL              Detach now, clean up later (default: false)
+  detach_children=BOOL   Also unmount child mounts (default: false)
+  fail_if_not_mounted=BOOL Fail if not mounted (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
+  dry_run=BOOL           Show what would be done (default: false)
+
+SNAPSHOT ARGUMENTS:
+  include_mountpoints=LIST Only these mount points (default: all)
+  exclude_mountpoints=LIST Skip these mount points (default: empty)
+  include_types=LIST     Only these filesystem types (default: all)
+  exclude_types=LIST     Skip these filesystem types (default: empty)
+  include_sources=LIST   Only these source devices (default: all)
+  exclude_sources=LIST   Skip these source devices (default: empty)
+  include_usage=BOOL     Include disk space usage (default: true)
+  include_inodes=BOOL    Include inode usage (default: false)
+  include_fs_metadata=BOOL Include filesystem details (default: true)
+  include_os_metadata=BOOL Include system info (default: true)
+  normalize_paths=BOOL   Clean up path formatting (default: true)
+  format=FORMAT          Output: json, yaml, text (default: json)
+  inline=BOOL            Include data in response (default: true)
+  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
+
+QUOTA ARGUMENTS:
+  path=PATH              Filesystem path to check (optional)
+  subject=NAME           User or group name (optional, current user if not set)
+  subject_type=TYPE      Subject is: user, group (default: user)
+  resolve_uid_gid=BOOL   Convert IDs to names (default: true)
+  include_space=BOOL     Show disk space quotas (default: true)
+  include_inodes=BOOL    Show file count quotas (default: true)
+  include_grace=BOOL     Show grace period info (default: true)
+  all_subjects=BOOL      Show all users/groups (default: false)
+  units=UNITS            Display: auto, bytes, kilobytes, megabytes,
+                         gigabytes, blocks (default: auto)
+  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
+
+QUOTA_SUMMARY ARGUMENTS:
+  subject=NAME           User or group name (optional)
+  subject_type=TYPE      Subject is: user, group, auto (default: auto)
+  resolve_uid_gid=BOOL   Convert IDs to names (default: true)
+  include_mountpoints=LIST Only these mount points (default: all)
+  exclude_mountpoints=LIST Skip these mount points (default: empty)
+  include_types=LIST     Only these filesystem types (default: all)
+  exclude_types=LIST     Skip these filesystem types (default: empty)
+  include_sources=LIST   Only these source devices (default: all)
+  exclude_sources=LIST   Skip these source devices (default: empty)
+  include_space=BOOL     Show disk space quotas (default: true)
+  include_inodes=BOOL    Show file count quotas (default: true)
+  include_grace=BOOL     Show grace period info (default: true)
+  all_subjects=BOOL      Show all users/groups (default: false)
+  units=UNITS            Display units (default: auto)
+  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
+
+USAGE ARGUMENTS:
+  paths=LIST             Specific paths to check (default: empty, use mode)
+  mode=MODE              Report: mounts (all mount points), paths (specific),
+                         aggregate (combined totals) (default: mounts)
+  include_mountpoints=LIST Only these mount points (default: all)
+  exclude_mountpoints=LIST Skip these mount points (default: empty)
+  include_types=LIST     Only these filesystem types (default: all)
+  exclude_types=LIST     Skip these filesystem types (default: empty)
+  include_sources=LIST   Only these source devices (default: all)
+  exclude_sources=LIST   Skip these source devices (default: empty)
+  include_inodes=BOOL    Include file count info (default: true)
+  include_readonly=BOOL  Include read-only filesystems (default: true)
+  normalize_paths=BOOL   Clean up path formatting (default: true)
+  units=UNITS            Display units (default: auto)
+  human_readable=BOOL    Use sizes like "1.2G" (default: false)
+  threshold_used_percent_min=N Only show above this % (optional)
+  threshold_used_percent_max=N Only show below this % (optional)
+  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
+
+RESIZE ARGUMENTS:
+  target=PATH            Mount point or device to resize (required)
+  by=METHOD              How to find: auto, mountpoint, device (default: auto)
+  size=SIZE              New size like "100G", "500M" (use size OR delta)
+  delta=DELTA            Size change like "+50G", "-10G" (use size OR delta)
+  size_units=UNITS       Units: auto, bytes, kilobytes, megabytes, gigabytes,
+                         terabytes (default: auto)
+  mode=MODE              Direction: grow, shrink, auto (default: grow)
+  allow_shrink=BOOL      Allow making smaller (default: false)
+  min_free_space_percent=N Keep this much free (default: 5.0)
+  manage_underlying_volume=BOOL Also resize LVM/volumes (default: false)
+  volume_resize_only=BOOL Only resize volume (default: false)
+  filesystem_resize_only=BOOL Only resize filesystem (default: false)
+  require_unmounted_for_shrink=BOOL Unmount before shrink (default: true)
+  force=BOOL             Skip safety checks (default: false)
+  dry_run=BOOL           Show what would be done (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 600000)
+
+CHECK ARGUMENTS (alias: fsck):
+  target=PATH            Mount point or device to check (required)
+  by=METHOD              How to find: auto, mountpoint, device (default: auto)
+  filesystem_type=TYPE   Override type detection (optional)
+  mode=MODE              What to do: check, repair, auto (default: check)
+  aggressiveness=LEVEL   How thorough: safe, normal, aggressive (default: safe)
+  allow_repair=BOOL      Allow fixing errors (default: false)
+  allow_online_check=BOOL Check mounted if supported (default: true)
+  require_unmounted_for_repair=BOOL Unmount before repair (default: true)
+  skip_if_mounted=BOOL   Skip if mounted (default: false)
+  force=BOOL             Override safety checks (default: false)
+  max_pass=N             Maximum check passes (optional)
+  btrfs_use_scrub=BOOL   Use scrub for btrfs (default: true)
+  btrfs_allow_offline_check=BOOL Allow offline btrfs check (default: false)
+  dry_run=BOOL           Show what would be done (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 600000)
+
+LIST-MOUNTS ARGUMENTS:
+  paths=LIST             Only show mounts for these paths (default: all)
+  include_mountpoints=LIST Only these mount points (default: all)
+  exclude_mountpoints=LIST Skip these mount points (default: empty)
+  include_types=LIST     Only these filesystem types (default: all)
+  exclude_types=LIST     Skip these filesystem types (default: empty)
+  include_sources=LIST   Only these source devices (default: all)
+  exclude_sources=LIST   Skip these source devices (default: empty)
+  include_readonly=BOOL  Include read-only mounts (default: true)
+  include_readwrite=BOOL Include read-write mounts (default: true)
+  include_pseudo=BOOL    Include virtual filesystems (default: false)
+  include_loop=BOOL      Include loop device mounts (default: true)
+  include_network=BOOL   Include network filesystems (default: true)
+  normalize_paths=BOOL   Clean up path formatting (default: true)
+  resolve_labels=BOOL    Look up labels and UUIDs (default: false)
+  resolve_fs_features=BOOL Include detailed filesystem info (default: false)
+  timeout_ms=N           Operation timeout in milliseconds (default: 3000)
+
+FILESYSTEM TYPES:
+
+  Common filesystem types:
+    ext4           Fourth extended filesystem (Linux default)
+    xfs            XFS filesystem (good for large files)
+    btrfs          B-tree filesystem (copy-on-write, snapshots)
+    ntfs           Windows NTFS
+    vfat           FAT32 (USB drives, compatibility)
+    exfat          exFAT (large USB drives)
+    nfs            Network File System
+    cifs           Common Internet File System (Windows shares)
+    tmpfs          Temporary filesystem in RAM
+    iso9660        CD/DVD filesystem
+
+MOUNT OPTIONS:
+
+  Common mount options:
+    ro             Read-only
+    rw             Read-write
+    noatime        Don't update access times
+    relatime       Update access times occasionally
+    user_xattr     Allow user extended attributes
+    acl            Enable POSIX ACLs
+    noexec         Disallow executing binaries
+    nosuid         Disallow suid/sgid bits
+    nodev          Disallow device files
+    defaults       Default options (rw, suid, dev, exec, auto, nouser, async)
+
+  Performance options:
+    async          Async I/O (faster, less safe)
+    sync           Sync I/O (slower, safer)
+    barrier        Write barriers for safety
+    nobarrier      Disable write barriers
+
+  Network options (NFS):
+    soft           Return errors on timeout
+    hard           Retry indefinitely (default)
+    intr           Allow interrupting operations
+    tcp            Use TCP protocol
+    udp            Use UDP protocol
+
+SIZE FORMATS:
+
+  Size specifications for resize:
+    100G           100 gigabytes
+    500M           500 megabytes
+    1T             1 terabyte
+    +50G           Add 50 gigabytes
+    -10G           Subtract 10 gigabytes
+    100%           Use all available space
+
+  Examples:
+    size="100G"    Set to 100GB
+    size="1.5T"    Set to 1.5TB
+    delta="+50G"   Grow by 50GB
+    delta="-20G"   Shrink by 20GB
+
+OUTPUT FORMATS:
+
+  mount success:
+    (no output, exit code 0)
+
+  unmount success:
+    (no output, exit code 0)
+
+  snapshot output (JSON):
+    {
+      "timestamp": "2025-02-07T10:30:00Z",
+      "mounts": [
+        {
+          "target": "/",
+          "source": "/dev/sda1",
+          "type": "ext4",
+          "options": ["rw", "relatime"],
+          "usage": {
+            "total_bytes": 107374182400,
+            "used_bytes": 53687091200,
+            "available_bytes": 53687091200,
+            "used_percent": 50.0
+          }
+        }
+      ]
+    }
+
+  quota output:
+    {
+      "path": "/home",
+      "subject": "alice",
+      "subject_type": "user",
+      "space": {
+        "used": 5368709120,
+        "soft_limit": 10737418240,
+        "hard_limit": 11811160064,
+        "grace_period": null
+      },
+      "inodes": {
+        "used": 12450,
+        "soft_limit": 50000,
+        "hard_limit": 55000,
+        "grace_period": null
+      }
+    }
+
+  usage output:
+    [
+      {
+        "mountpoint": "/",
+        "source": "/dev/sda1",
+        "type": "ext4",
+        "total_bytes": 107374182400,
+        "used_bytes": 53687091200,
+        "available_bytes": 53687091200,
+        "used_percent": 50.0
+      }
+    ]
+
+  list-mounts output:
+    [
+      {
+        "target": "/",
+        "source": "/dev/sda1",
+        "type": "ext4",
+        "options": ["rw", "relatime"],
+        "readonly": false
+      }
+    ]
+
+EXIT CODES:
+  0                      Success
+  1                      Invalid configuration or arguments
+  2                      Target not found or profile missing
+  3                      Operation not supported on this system
+  13                     Permission denied (need root privileges)
+  16                     Resource busy (filesystem in use)
+  17                     Conflicting operation (already mounted)
+  18                     Failed to create target directory
+  19                     Not mounted when expected
+  32                     Operation failed (general failure)
+  62                     Operation timed out
+  95                     Unknown verb or unsupported option
+
+ERROR HANDLING:
+
+  Permission denied (exit code 13):
+    Most filesystem operations require root privileges.
+    Use sudo or run as root:
+      sudo resh fs://system.mount(...)
+
+  Resource busy (exit code 16):
+    Filesystem is in use and cannot be unmounted.
+    Use force=true or lazy=true for unmount:
+      fs://system.unmount(target="/mnt/data",force=true)
+
+  Already mounted (exit code 17):
+    Target is already mounted.
+    Use remount=true or unmount first:
+      fs://system.mount(target="/mnt/data",remount=true,...)
+
+  Timeout (exit code 62):
+    Operation took too long.
+    Increase timeout_ms:
+      fs://system.resize(target="/data",size="100G",timeout_ms=900000)
+
+COMMON WORKFLOWS:
+
+  USB drive workflow:
+    # Check what devices are available
+    fs://system.list-mounts(include_types=["ext4","vfat","exfat"])
+    
+    # Mount the drive
+    fs://system.mount(target="/mnt/usb",source="/dev/sdb1",create_target=true)
+    
+    # Check usage
+    fs://system.usage(paths=["/mnt/usb"])
+    
+    # Work with files...
+    
+    # Safely unmount
+    fs://system.unmount(target="/mnt/usb")
+
+  Disk space management:
+    # Check overall usage
+    fs://system.usage(exclude_types=["proc","sysfs","tmpfs"],human_readable=true)
+    
+    # Find filesystems over 80% full
+    fs://system.usage(threshold_used_percent_min=80,exclude_types=["proc","sysfs","tmpfs"])
+    
+    # Check specific user quotas
+    fs://system.quota(subject="alice",all_subjects=false)
+
+  Filesystem maintenance:
+    # Create configuration snapshot before changes
+    fs://system.snapshot(format="json",include_usage=true)
+    
+    # Check filesystem health
+    fs://system.check(target="/dev/sdb1",mode="check")
+    
+    # Test resize operation
+    fs://system.resize(target="/data",delta="+10G",dry_run=true)
+    
+    # Actually resize
+    fs://system.resize(target="/data",delta="+10G")
+
+  Safe filesystem operations:
+    # Always use dry_run first
+    fs://system.mount(target="/mnt/test",source="/dev/sdb1",dry_run=true)
+    
+    # Check result, then execute
+    fs://system.mount(target="/mnt/test",source="/dev/sdb1")
+    
+    # Create snapshot before risky operations
+    fs://system.snapshot(format="json")
+    
+    # Perform operation with safety checks
+    fs://system.resize(target="/data",size="100G",min_free_space_percent=10)
+
+  Quota monitoring:
+    # Check current user quotas on all filesystems
+    fs://system.quota_summary()
+    
+    # Check specific user across all filesystems
+    fs://system.quota_summary(subject="alice")
+    
+    # Check all users on specific filesystem
+    fs://system.quota(path="/data",all_subjects=true)
+
+  Network filesystem mounting:
+    # Mount NFS share
+    fs://system.mount(target="/mnt/nfs",source="server:/export",type="nfs",network=true,options=["soft","intr"])
+    
+    # Mount CIFS (Windows) share
+    fs://system.mount(target="/mnt/share",source="//server/share",type="cifs",network=true,options=["username=user","password=pass"])
+
+  LVM resize workflow:
+    # Check current size
+    fs://system.usage(paths=["/data"])
+    
+    # Test resize with LVM
+    fs://system.resize(target="/data",delta="+50G",manage_underlying_volume=true,dry_run=true)
+    
+    # Execute resize
+    fs://system.resize(target="/data",delta="+50G",manage_underlying_volume=true)
+    
+    # Verify new size
+    fs://system.usage(paths=["/data"])
+
+  Filesystem check and repair:
+    # Check if filesystem has errors
+    fs://system.check(target="/dev/sdb1",mode="check")
+    
+    # If errors found, repair (may require unmount)
+    fs://system.unmount(target="/mnt/backup")
+    fs://system.check(target="/dev/sdb1",mode="repair",allow_repair=true)
+    fs://system.mount(target="/mnt/backup",source="/dev/sdb1")
+
+  Bind mount setup:
+    # Create bind mount for chroot
+    fs://system.mount(target="/mnt/chroot/proc",source="/proc",bind=true,type="proc")
+    fs://system.mount(target="/mnt/chroot/sys",source="/sys",bind=true,type="sysfs")
+    fs://system.mount(target="/mnt/chroot/dev",source="/dev",bind=true)
+
+BEST PRACTICES:
+  • Always use dry_run=true to test operations before executing
+  • Create configuration snapshots before major changes
+  • Run as root or with sudo for most operations
+  • Check filesystem health regularly with check verb
+  • Monitor disk usage with usage verb
+  • Set appropriate min_free_space_percent when resizing
+  • Use force and lazy unmount options cautiously
+  • Enable quotas on multi-user systems
+  • Use read_only mounts for safety when possible
+  • Unmount filesystems before checking or repairing
+  • Use allow_shrink=true explicitly for shrink operations
+  • Test network mounts with timeout_ms limits
+  • Exclude virtual filesystems (proc, sysfs, tmpfs) from monitoring
+  • Use human_readable output for easier reading
+  • Set threshold filters to focus on problematic filesystems
+  • Use bind mounts for secure chroot environments
+  • Keep parent directories creation enabled (make_parents=true)
+  • Use normalize_paths for consistent path handling
+  • Monitor quota grace periods regularly
+  • Use aggregate mode for total usage across filesystems
+  • Enable resolve_labels for better device identification
+  • Use appropriate filesystem types for use cases
+  • Mount with noatime for better performance
+  • Use barriers for data integrity on critical filesystems
+  • Set timeouts appropriate to operation (longer for resize/check)
+  • Use btrfs scrub for btrfs filesystem checks
+  • Verify resize operations with usage checks afterward
+  • Use fail_if_mounted to prevent double-mounting
+  • Document custom mount options in configuration
+  • Use remount for changing options without unmounting
+
+SAFETY CONSIDERATIONS:
+  • Most operations require root privileges for security
+  • Resize operations can cause data loss if not careful
+  • Shrinking filesystems is dangerous (requires allow_shrink=true)
+  • Force unmount can corrupt data if filesystem is busy
+  • Lazy unmount detaches immediately but may delay cleanup
+  • Always backup data before resize or check operations
+  • Test with dry_run before executing destructive operations
+  • Filesystem repair can cause data loss in edge cases
+  • Network mounts may hang without proper timeouts
+  • Bind mounts don't create new filesystems
+  • Remount changes options on live filesystem
+  • Some filesystems don't support online resize
+  • LVM resize affects multiple layers of storage
+  • Quota enforcement requires filesystem support
+  • Check operations may find serious errors requiring repair
+
+PLATFORM SUPPORT:
+  The filesystem handle works on Unix-like systems (Linux, macOS).
+  
+  Linux features:
+    • Full support for ext4, xfs, btrfs, vfat, ntfs
+    • LVM resize support
+    • Quota management
+    • Extended filesystem checks
+    • Network filesystem mounting (NFS, CIFS)
+  
+  macOS features:
+    • Basic mount/unmount operations
+    • Limited filesystem type support
+    • Some operations may require FUSE
+  
+  Not supported:
+    • Windows native (use WSL)
+    • FreeBSD (may work with adaptation)
+
+QUOTA REQUIREMENTS:
+  Quotas require specific filesystem support:
+  
+  • Filesystem must be mounted with quota options
+  • Quota tools must be installed (quota, quotacheck)
+  • Quota files must be initialized
+  • Requires root privileges to manage quotas
+  
+  Enabling quotas (example for ext4):
+    1. Edit /etc/fstab, add usrquota,grpquota to options
+    2. Remount filesystem
+    3. Run quotacheck to initialize
+    4. Enable quotas with quotaon
+
+FILESYSTEM-SPECIFIC NOTES:
+
+  ext4:
+    • Most stable and widely supported
+    • Supports online resize (grow only)
+    • Offline resize for shrink
+    • Good fsck support
+
+  xfs:
+    • Excellent performance for large files
+    • Online resize (grow only)
+    • Cannot shrink XFS filesystems
+    • Use xfs_repair for checks
+
+  btrfs:
+    • Copy-on-write with snapshots
+    • Online resize (grow and shrink)
+    • Use scrub instead of fsck
+    • Experimental offline check
+
+  ntfs:
+    • Windows filesystem
+    • Limited write support on Linux
+    • Use ntfsresize carefully
+    • May require ntfs-3g driver
+
+PERFORMANCE CONSIDERATIONS:
+  • Mount with noatime for better performance
+  • Use async for faster writes (less safe)
+  • Network mounts are slower than local
+  • Resize operations can take hours for large filesystems
+  • Check operations are time-intensive
+  • Quota checks add overhead to filesystem operations
+  • Bind mounts have minimal overhead
+  • Virtual filesystems (tmpfs) are very fast
+
+LIMITATIONS:
+  • Requires root privileges for most operations
+  • Some filesystems don't support online operations
+  • XFS cannot be shrunk
+  • Network mounts depend on network reliability
+  • Quotas require specific filesystem support
+  • Resize requires appropriate filesystem tools
+  • Check operations may require unmounting
+  • Some operations platform-specific
+  • Timeout limits on long operations
+  • Bind mounts don't duplicate data
+
+DEBUGGING:
+  Use dry_run to test operations:
+    fs://system.mount(...,dry_run=true)
+    fs://system.resize(...,dry_run=true)
+  
+  Check current mounts:
+    fs://system.list-mounts(resolve_labels=true,resolve_fs_features=true)
+  
+  Monitor filesystem status:
+    fs://system.usage(human_readable=true)
+  
+  Create snapshots for comparison:
+    fs://system.snapshot(format="json")
+  
+  Check for errors:
+    fs://system.check(target="/dev/sdb1")
+
+MORE INFO:
+  For complete documentation of filesystem handle operations:
+  https://github.com/[your-org]/resource-shell/docs/filesystem-handle.md
+
+  Linux mount documentation:
+  https://man7.org/linux/man-pages/man8/mount.8.html
+
+  Filesystem check (fsck) documentation:
+  https://man7.org/linux/man-pages/man8/fsck.8.html
+
+  LVM resize documentation:
+  https://man7.org/linux/man-pages/man8/lvresize.8.html
+
+  Quota management:
+  https://man7.org/linux/man-pages/man8/quota.8.html
+
+  Use 'fs:// --help=VERB' for detailed help on a specific verb.
+"#;
+
 /// Filesystem-specific errors
 #[derive(Error, Debug)]
 pub enum FsError {
@@ -6507,9 +7280,53 @@ impl FsHandle {
     }
 }
 
+impl FsHandle {
+    /// Check if the URL or verb indicates a help request
+    fn should_show_help(url: &Url, verb: &str, args: &Args) -> bool {
+        // Check if verb is help
+        if verb == "help" || verb == "h" {
+            return true;
+        }
+
+        // Check host for --help or -h
+        if let Some(host) = url.host_str() {
+            if host == "--help" || host == "-h" {
+                return true;
+            }
+        }
+
+        // Check path for --help or -h
+        let path = url.path();
+        if path.contains("--help") || path.contains("-h") {
+            return true;
+        }
+
+        // Check query parameters for help
+        for (key, _) in url.query_pairs() {
+            if key == "help" || key == "h" {
+                return true;
+            }
+        }
+
+        // Check args for help
+        if args.contains_key("help") || args.contains_key("h") {
+            return true;
+        }
+
+        false
+    }
+
+    /// Display comprehensive filesystem handle help
+    fn display_help(io: &mut IoStreams) -> Result<Status> {
+        write!(io.stdout, "{}", FS_HELP_TEXT)
+            .context("Failed to write help text to stdout")?;
+        Ok(Status::ok())
+    }
+}
+
 impl Handle for FsHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["mount", "unmount", "umount", "snapshot", "quota", "quota_summary", "usage", "resize", "check", "fsck", "list-mounts"]
+        &["mount", "unmount", "umount", "snapshot", "quota", "quota_summary", "usage", "resize", "check", "fsck", "list-mounts", "help", "h"]
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -6838,6 +7655,10 @@ impl Handle for FsHandle {
                         }
                     }
                 }
+            }
+            "help" | "h" => {
+                // Display comprehensive filesystem help
+                Self::display_help(io)
             }
             _ => Ok(Status::err(95, "unknown verb")),
         }

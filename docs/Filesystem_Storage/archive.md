@@ -1,94 +1,220 @@
-# Archive Handle Documentation
+# Resource Shell (resh) – Archive Handle Documentation
 
-The Archive Handle lets you work with different types of compressed files. You can create, extract, list, test, and change archive files easily. Think of archives like boxes that hold many files together in one smaller package.
+## 1. Overview
 
-## What Archive Types Are Supported?
+Resource Shell (resh) is a structured command-line framework that standardizes infrastructure operations using a resource-oriented URI execution model.
 
-The system works with these common file types:
+The `archive://` handle provides comprehensive archive management across multiple formats, including:
 
-- **ZIP files** (.zip) - Great for Windows and general use
-- **TAR files** (.tar) - Simple archives without compression
-- **TAR.GZ files** (.tar.gz, .tgz) - TAR files compressed with gzip 
-- **TAR.XZ files** (.tar.xz, .txz) - TAR files compressed with xz
-- **TAR.ZSTD files** (.tar.zst, .tar.zstd) - TAR files compressed with zstd
-- **GZIP files** (.gz) - Single file compression
-- **7-Zip files** (.7z) - High compression archives
-- **Raw compressed files** - Direct compression without archiving
+* tar
+* tar.gz / tgz
+* tar.xz
+* tar.zst / tar.zstd
+* zip
+* 7z
+* gzip (single-file)
+* raw compressed formats
 
-## Archive Commands (Verbs)
+It supports:
 
-### Create - Making New Archives
+* Archive creation
+* Extraction
+* Listing contents
+* Integrity testing
+* Metadata inspection
+* Incremental modification (add/remove)
 
-**What it does:** Takes files and folders and puts them into a new archive file.
+Traditional archive workflows often rely on multiple utilities (`tar`, `zip`, `7z`, `gzip`) with inconsistent flags and output formats. This complicates automation and increases risk in CI/CD and production environments.
 
-**Required settings:**
-- `output` - Where to save the new archive file
-- `sources` - List of files and folders to include (as JSON array)
+The `archive://` handle addresses these issues by:
 
-**Optional settings:**
-- `format` - Type of archive to create (auto, tar, tar.gz, tar.xz, tar.zstd, zip, 7z, gzip, raw)
-- `base_dir` - Starting folder for relative paths
-- `compression_level` - How much to compress (1-9 for most types, 1-22 for zstd)
-- `include_patterns` - Only include files matching these patterns (JSON array)
-- `exclude_patterns` - Skip files matching these patterns (JSON array)
-- `include_hidden` - Include hidden files (true/false, default: true)
-- `follow_symlinks` - Follow symbolic links (true/false, default: false)
-- `password` - Password protect the archive (ZIP and 7z only)
-- `overwrite` - Replace existing archive (true/false, default: false)
-- `preserve_permissions` - Keep file permissions (true/false, default: true)
-- `preserve_timestamps` - Keep file dates (true/false, default: true)
-- `max_files` - Maximum number of files to include (default: 100,000)
-- `max_size_mb` - Maximum archive size in MB (default: 10,240 MB)
-- `progress` - Show progress while creating (true/false, default: false)
+* Providing a unified URI-based command model
+* Supporting structured JSON output
+* Enforcing security protections during extraction
+* Offering format auto-detection
+* Supporting deterministic automation
 
-**Example use:**
+All operations follow the resh URI model:
+
 ```
-archive://create output=created.tar.gz sources='["/source"]' base_dir=/tmp format=TarGz compression_level=6 overwrite=true preserve_permissions=true preserve_timestamps=true max_files=1000000 max_size_mb=1024 progress=false format_output=json
+handle://target.verb(options)
 ```
 
-**Example output:**
+For the archive domain:
+
+```
+archive://archive-file.verb(options)
+```
+
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+Archive operations use a consistent resource-oriented grammar:
+
+```
+archive://target.verb(options)
+```
+
+Examples:
+
+```bash
+archive://backup.tar.gz.create(...)
+archive://backup.tar.gz.extract(...)
+archive://backup.tar.gz.list(...)
+```
+
+This eliminates tool fragmentation and enforces consistent syntax across archive formats.
+
+---
+
+### Safety-First Execution
+
+The archive handle enforces multiple safeguards:
+
+* Path traversal protection (`..` blocked by default)
+* Absolute path rejection
+* Size and entry limits
+* Symlink handling controls
+* Decompression bomb protection
+* Optional dry-run for destructive operations
+
+Security-sensitive parameters include:
+
+* `allow_parent_traversal`
+* `allow_absolute_paths`
+* `max_entries`
+* `max_total_bytes`
+* `max_file_bytes`
+* `dry_run`
+
+Safe defaults are enforced unless explicitly overridden.
+
+---
+
+### Deterministic Behavior
+
+Operations:
+
+* Follow strict argument validation
+* Return consistent structured results
+* Use explicit format detection rules
+* Enforce entry and size limits predictably
+* Separate operational success from structured error reporting
+
+Exit codes:
+
+| Code | Meaning |
+| ---- | ------- |
+| 0    | Success |
+| 1    | Error   |
+
+Automation systems must rely on exit codes and structured JSON output.
+
+---
+
+### JSON-Based Structured Output
+
+By default, operations return structured JSON:
+
 ```json
 {
   "ok": true,
-  "result": {
-    "files_archived": 3,
-    "total_size_bytes": 2048,
+  "summary": {
     "format": "tar.gz",
-    "compression": "gzip"
+    "entries_total": 3,
+    "archive_size_bytes": 2048
   }
 }
 ```
 
-### Extract - Taking Files Out of Archives
+Structured output supports:
 
-**What it does:** Takes files out of an archive and puts them in a folder.
+* CI/CD validation
+* Integrity verification
+* Automated auditing
+* Programmatic inspection
 
-**Required settings:**
-- `archive` - Path to the archive file to extract
-- `destination` - Where to put the extracted files
+---
 
-**Optional settings:**
-- `format` - Archive type (auto-detected if not specified)
-- `compression` - Compression type (auto-detected if not specified)
-- `includes` - Only extract files matching these patterns (JSON array)
-- `excludes` - Skip files matching these patterns (JSON array)
-- `overwrite` - Replace existing files (true/false, default: false)
-- `create_destination` - Create destination folder if missing (true/false, default: true)
-- `strip_components` - Remove this many folder levels from paths (default: 0)
-- `allow_absolute_paths` - Allow absolute paths (true/false, default: false)
-- `allow_parent_traversal` - Allow paths with .. (true/false, default: false)
-- `allow_symlinks` - Allow symbolic links (true/false, default: true)
-- `follow_symlinks` - Follow symbolic links (true/false, default: false)
-- `max_entries` - Maximum files to extract (default: 1,000,000)
-- `max_total_bytes` - Maximum total size to extract in bytes
-- `max_file_bytes` - Maximum single file size in bytes
+### AI-Readiness
 
-**Example use:**
+The URI grammar and JSON output model allow archive inspection, verification, and modification to be integrated into automated agents and orchestration workflows without fragile text parsing.
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
 ```
-archive://extract archive=test.tar.gz destination=/tmp/dest format=Auto compression=Auto overwrite=false create_destination=true strip_components=0 allow_absolute_paths=false allow_parent_traversal=false allow_symlinks=true follow_symlinks=false max_entries=1000000 format_output=json
+archive://target.verb(options)
 ```
 
-**Example output:**
+#### Components
+
+| Component | Description                          |
+| --------- | ------------------------------------ |
+| `archive` | Handle identifier                    |
+| `target`  | Archive file path                    |
+| `verb`    | Archive operation                    |
+| `options` | Named arguments controlling behavior |
+
+---
+
+### Example Commands
+
+Create archive:
+
+```bash
+archive://create output=backup.tar.gz sources='["/data"]'
+```
+
+Extract archive:
+
+```bash
+archive://extract archive=backup.tar.gz destination=/restore
+```
+
+List contents:
+
+```bash
+archive://list archive=backup.tar.gz
+```
+
+Test integrity:
+
+```bash
+archive://test archive=backup.tar.gz
+```
+
+Add files:
+
+```bash
+archive://add archive=backup.tar.gz inputs='["/data/new.txt"]'
+```
+
+Remove files:
+
+```bash
+archive://remove archive=backup.tar.gz paths='["old.txt"]'
+```
+
+---
+
+### 3.2 Execution Semantics
+
+All operations validate:
+
+* Format detection
+* Size constraints
+* Entry limits
+* Security flags
+
+Representative JSON output:
+
 ```json
 {
   "ok": true,
@@ -101,287 +227,257 @@ archive://extract archive=test.tar.gz destination=/tmp/dest format=Auto compress
 }
 ```
 
-### List - Seeing What's Inside Archives
+Representative error example:
 
-**What it does:** Shows you all the files inside an archive without extracting them.
-
-**Required settings:**
-- `archive` - Path to the archive file to examine
-
-**Optional settings:**
-- `format` - Archive type (auto-detected if not specified)
-- `compression` - Compression type (auto-detected if not specified)
-- `includes` - Only show files matching these patterns (JSON array)
-- `excludes` - Skip files matching these patterns (JSON array)
-- `max_entries` - Maximum files to list (default: 1,000,000)
-- `max_total_bytes` - Maximum total size to process in bytes
-- `include_metadata` - Show file details like size and date (true/false, default: true)
-- `include_compressed_size` - Show compressed file sizes (true/false, default: true)
-
-**Example use:**
-```
-archive://list archive=test.tar.gz format=Auto compression=Auto max_entries=1000000 include_metadata=true include_compressed_size=true format_output=json
-```
-
-**Example output:**
 ```json
 {
-  "ok": true,
-  "summary": {
-    "format": "tar.gz",
-    "compression": "gzip",
-    "entries_total": 3,
-    "entries_listed": 3
-  },
-  "manifest": [
-    {
-      "path": "file1.txt",
-      "is_dir": false,
-      "size": 13,
-      "compressed_size": 25,
-      "is_symlink": false
-    },
-    {
-      "path": "dir/",
-      "is_dir": true,
-      "size": 0,
-      "compressed_size": 0,
-      "is_symlink": false
-    },
-    {
-      "path": "dir/file2.txt",
-      "is_dir": false,
-      "size": 15,
-      "compressed_size": 30,
-      "is_symlink": false
-    }
-  ]
+  "ok": false,
+  "error_code": "archive.extract_path_traversal_detected",
+  "message": "Blocked path traversal attempt"
 }
 ```
 
-### Test - Checking Archive Health
+Automation should evaluate:
 
-**What it does:** Checks if an archive file is valid and not damaged.
+* `ok` field
+* `summary`
+* Exit code
 
-**Required settings:**
-- `archive` - Path to the archive file to test
+---
 
-**Optional settings:**
-- `format` - Archive type (auto-detected if not specified)
-- `compression` - Compression type (auto-detected if not specified)
-- `stop_on_first_error` - Stop checking after first problem (true/false, default: true)
-- `report_entries` - Show each file being checked (true/false, default: true)
-- `verify_data` - Check file contents, not just structure (true/false, default: true)
-- `max_entries` - Maximum files to test (default: 1,000,000)
-- `max_total_bytes` - Maximum total size to test in bytes
-- `max_file_bytes` - Maximum single file size to test in bytes
+## 4. Functional Domain – Archive Management
 
-**Example use:**
-```
-archive://test archive=test.tar.gz format=Auto compression=Auto stop_on_first_error=true report_entries=true verify_data=true max_entries=1000000 fail_on_missing_archive=true format_output=json
-```
+### Operational Scope
 
-**Example output:**
-```json
-{
-  "ok": true,
-  "summary": {
-    "entries_tested": 3,
-    "entries_failed": 0,
-    "valid": true,
-    "stopped_early": false,
-    "format": "tar.gz",
-    "compression": "gzip"
-  },
-  "entries": [
-    {
-      "path": "file1.txt",
-      "status": "ok",
-      "error_code": null,
-      "error_message": null
-    },
-    {
-      "path": "dir/",
-      "status": "ok",
-      "error_code": null,
-      "error_message": null
-    },
-    {
-      "path": "dir/file2.txt",
-      "status": "ok",
-      "error_code": null,
-      "error_message": null
-    }
-  ]
-}
+The `archive://` handle supports:
+
+* Multi-format archive creation
+* Selective extraction
+* Integrity validation
+* Incremental modification
+* Metadata inspection
+* Security-controlled extraction
+
+---
+
+### 4.1 Supported Formats
+
+| Extension     | Format   |
+| ------------- | -------- |
+| .tar          | tar      |
+| .tar.gz, .tgz | tar.gz   |
+| .tar.xz       | tar.xz   |
+| .tar.zst      | tar.zstd |
+| .zip          | zip      |
+| .7z           | 7z       |
+| .gz           | raw/gzip |
+| .xz           | raw/xz   |
+| .zst          | raw/zstd |
+
+Format detection defaults to `auto`.
+
+Override example:
+
+```bash
+format="tar.gz"
 ```
 
-### Info - Getting Archive Details
+---
 
-**What it does:** Shows basic information about an archive file like size and format.
+### 4.2 Core Verbs
 
-**Required settings:**
-- `archive` - Path to the archive file to examine
+| Verb                   | Description                          |
+| ---------------------- | ------------------------------------ |
+| `create`               | Create new archive                   |
+| `extract`              | Extract archive contents             |
+| `list`                 | List archive contents                |
+| `test`                 | Verify archive integrity             |
+| `info`                 | Display archive metadata             |
+| `add`                  | Add entries to existing archive      |
+| `remove`               | Remove entries from existing archive |
+| `help`, `--help`, `-h` | Display documentation                |
 
-**Optional settings:**
-- `format` - Archive type (auto-detected if not specified)
-- `compression` - Compression type (auto-detected if not specified)
-- `scan_entries` - Count files inside (true/false, default: true)
-- `max_entries` - Maximum files to count (default: 1,000,000)
-- `max_total_bytes` - Maximum size to scan in bytes
+---
 
-**Example use:**
-```
-archive://info archive=test.tar.gz format=Auto compression=Auto scan_entries=true max_entries=1000000 fail_on_missing_archive=true format_output=json
-```
+### 4.3 Common DevOps Use Cases
 
-**Example output:**
-```json
-{
-  "ok": true,
-  "summary": {
-    "format": "tar.gz",
-    "compression": "gzip",
-    "archive_size_bytes": 2048,
-    "entries_total": 3,
-    "files": 2,
-    "directories": 1,
-    "uncompressed_bytes_total": 4096
-  }
-}
-```
+* Build artifact packaging
+* Backup creation
+* Secure extraction of third-party archives
+* Integrity verification in CI pipelines
+* Incremental archive updates
+* Deployment packaging
 
-### Add - Adding Files to Existing Archives
+---
 
-**What it does:** Adds new files to an archive that already exists.
+### 4.4 Security Features
 
-**Required settings:**
-- `archive` - Path to the existing archive file
-- `inputs` - List of files and folders to add (as JSON array)
+| Protection              | Default  |
+| ----------------------- | -------- |
+| Path traversal blocking | Enabled  |
+| Absolute path blocking  | Enabled  |
+| Symlink control         | Enabled  |
+| Entry limits            | Enforced |
+| Total size limits       | Enforced |
+| File size limits        | Enforced |
 
-**Optional settings:**
-- `format` - Archive type (auto-detected if not specified)
-- `compression` - Compression type (auto-detected if not specified)
-- `base_dir` - Starting folder for relative paths
-- `includes` - Only add files matching these patterns (JSON array)
-- `excludes` - Skip files matching these patterns (JSON array)
-- `follow_symlinks` - Follow symbolic links (true/false, default: false)
-- `overwrite` - Replace files that already exist in archive (true/false, default: false)
-- `preserve_permissions` - Keep file permissions (true/false, default: true)
-- `preserve_timestamps` - Keep file dates (true/false, default: true)
-- `max_entries` - Maximum files to add (default: 1,000,000)
-- `max_total_bytes` - Maximum total size to add in bytes
+Extraction example with limits:
 
-**Note:** Cannot add files to raw compressed files (.gz, .xz, .zst) or 7z archives.
-
-**Example use:**
-```
-archive://add archive=test.tar.gz inputs='["glob:**/*.rs"]' format=Auto compression=Auto follow_symlinks=false max_entries=1000000 format_output=json
+```bash
+archive://extract archive=untrusted.tar.gz destination=/safe max_total_bytes=1073741824 max_file_bytes=10485760
 ```
 
-**Example output:**
-```json
-{
-  "ok": true,
-  "summary": {
-    "entries_added": 5,
-    "entries_replaced": 0,
-    "entries_skipped": 0
-  }
-}
+---
+
+### 4.5 Compression Levels
+
+| Format | Min | Max | Default |
+| ------ | --- | --- | ------- |
+| gzip   | 1   | 9   | 6       |
+| xz     | 1   | 9   | 6       |
+| zstd   | 1   | 22  | 3       |
+| zip    | 1   | 9   | 6       |
+| 7z     | 1   | 9   | 5       |
+
+Lower level = faster compression
+Higher level = smaller archive
+
+---
+
+## 5. Platform Support
+
+| Platform | Support Level                       |
+| -------- | ----------------------------------- |
+| Linux    | Full support                        |
+| macOS    | Supported                           |
+| Windows  | Supported with metadata limitations |
+
+Metadata preservation varies by platform and format.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Test archives after creation.
+* Use size limits for untrusted archives.
+* Use `dry_run` before destructive `remove`.
+* Back up archives before modification.
+* Use `strip_components` when extracting untrusted archives.
+
+---
+
+### Automation Considerations
+
+* Always use JSON output in CI environments.
+* Validate `ok` field and exit codes.
+* Enforce maximum entry limits.
+* Use `include_patterns` and `exclude_patterns` to reduce workload.
+
+---
+
+### CI/CD Integration
+
+Common pipeline pattern:
+
+1. Create archive
+2. Test integrity
+3. Validate contents
+4. Deploy or publish
+
+Example:
+
+```bash
+archive://create output=release.tar.gz sources='["/build"]'
+archive://test archive=release.tar.gz
 ```
 
-### Remove - Deleting Files from Archives
+---
 
-**What it does:** Removes specific files or folders from an existing archive.
+### Production Recommendations
 
-**Required settings:**
-- `archive` - Path to the existing archive file
+* Prefer `tar.gz` for Unix systems.
+* Use `zip` for cross-platform distribution.
+* Use `tar.zstd` for faster compression.
+* Avoid compressing already compressed files.
+* Monitor compression ratio efficiency.
 
-**At least one of these is required:**
-- `paths` - Exact file paths to remove (JSON array)
-- `patterns` - Remove files matching these patterns (JSON array)
-- `dir_prefixes` - Remove all files starting with these folder paths (JSON array)
+---
 
-**Optional settings:**
-- `format` - Archive type (auto-detected if not specified)
-- `compression` - Compression type (auto-detected if not specified)
-- `remove_empty_dirs` - Remove empty folders after deleting files (true/false, default: false)
-- `dry_run` - Show what would be removed without actually doing it (true/false, default: false)
-- `max_entries` - Maximum files to process (default: 1,000,000)
-- `max_total_bytes` - Maximum size to process in bytes
-- `tmp_dir` - Temporary folder for processing
-- `backup_suffix` - Create backup file with this ending
+## 7. Use Cases by Role
 
-**Note:** Cannot remove files from raw compressed files (.gz, .xz, .zst) or 7z archives.
+### DevOps Engineers
 
-**Example use:**
-```
-archive://remove archive=test.tar.gz paths='["README.md"]' format=Auto compression=Auto remove_empty_dirs=true dry_run=false max_entries=1000000 format_output=json
-```
+* Package build artifacts.
+* Verify deployment archives.
+* Implement secure extraction in pipelines.
+* Create filtered backups.
 
-**Example output:**
-```json
-{
-  "ok": true,
-  "summary": {
-    "entries_removed": 1,
-    "dry_run": false
-  }
-}
-```
+### SRE Engineers
 
-## Output Formats
+* Validate archive integrity during incident response.
+* Extract production backups safely.
+* Enforce decompression size limits.
+* Audit archive metadata.
 
-All commands can return results in two ways:
-- `format_output=json` - Computer-readable format (default)
-- `format_output=text` - Human-readable format
+### Network Administrators
 
-## Safety Features
+* Package configuration backups.
+* Distribute firmware bundles.
+* Validate downloaded archives.
+* Extract vendor packages securely.
 
-The system includes several safety features:
+### AI/Automation Engineers
 
-- **File limits** - Prevents processing too many files at once
-- **Size limits** - Prevents creating or processing huge archives
-- **Path validation** - Blocks dangerous file paths by default
-- **Permission preservation** - Keeps your file permissions safe
-- **Backup options** - Can create backups before making changes
+* Inspect archive metadata programmatically.
+* Validate contents using JSON manifest.
+* Integrate structured archive validation into agents.
+* Trigger workflows based on archive summary data.
 
-## Common Examples
+---
 
-**Create a TAR.GZ file from a folder:**
-```
-archive://create output=backup.tar.gz sources='["/home/user/documents"]' format=TarGz compression_level=6 overwrite=true
-```
+## 8. Technical Foundation
 
-**Extract everything from a TAR.GZ file:**
-```
-archive://extract archive=backup.tar.gz destination=/restore format=Auto compression=Auto create_destination=true
-```
+The `archive://` handle operates within resh, implemented in Rust.
 
-**See what's in an archive:**
-```
-archive://list archive=backup.tar.gz format=Auto compression=Auto include_metadata=true include_compressed_size=true
-```
+### Rust Implementation Advantages
 
-**Check if an archive is okay:**
-```
-archive://test archive=backup.tar.gz format=Auto compression=Auto stop_on_first_error=true report_entries=true verify_data=true
-```
+* Memory safety
+* Deterministic error handling
+* Efficient streaming I/O
+* Strong type validation
 
-**Get archive information:**
-```
-archive://info archive=backup.tar.gz format=Auto compression=Auto scan_entries=true
-```
+### Type Safety
 
-**Add files to an existing archive using glob pattern:**
-```
-archive://add archive=backup.tar.gz inputs='["glob:**/*.rs"]' format=Auto compression=Auto
-```
+Arguments are validated for:
 
-**Remove specific files from an archive:**
-```
-archive://remove archive=backup.tar.gz paths='["old_file.txt"]' format=Auto compression=Auto
-```
+* Format compatibility
+* Compression level ranges
+* Size constraints
+* Required parameter presence
 
-Remember that file paths should use forward slashes (/) and be in JSON array format when listing multiple items like `["file1.txt", "file2.txt"]`.
+Invalid configurations result in structured error responses.
+
+---
+
+### Performance Characteristics
+
+* Streaming TAR processing
+* Format-specific compression performance
+* Full-archive rewrite for modification operations
+* Controlled memory usage
+* Deterministic entry limits
+
+---
+
+### Cross-Platform Architecture
+
+Supported on:
+
+* Linux
+* macOS
+* Windows
+
+Behavior varies by filesystem semantics and metadata capabilities.
+

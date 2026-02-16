@@ -120,8 +120,369 @@ pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("template", |u| Ok(Box::new(TemplateHandle::from_url(u.clone())?)));
 }
 
+// Help text constants
+const TEMPLATE_HELP_TEXT: &str = r#"RESOURCE SHELL - TEMPLATE HANDLE
+================================
+
+USAGE:
+  template://path/to/file.ext.VERB(arguments)
+  template://inline.VERB(arguments)
+
+DESCRIPTION:
+  The template handle provides template rendering, validation, and testing
+  using the Tera template engine. It supports both file-based and inline
+  templates with dynamic data injection.
+
+TEMPLATE ENGINE:
+  Tera - Powerful template engine with:
+  • Variable substitution: {{ variable }}
+  • Control structures: {% if %}, {% for %}, {% block %}
+  • Filters and functions: {{ name | upper }}
+  • Template inheritance
+  • Strict or permissive variable handling
+  • Comments: {# This is a comment #}
+
+VERBS:
+  render          Render a template with provided data
+  validate        Validate template syntax and data requirements
+  test            Run automated tests against templates
+
+EXAMPLES:
+
+  Inline template rendering:
+    template://inline.render(template="Hello {{ name }}", context="{\"name\":\"world\"}")
+
+  File template rendering:
+    template://greeting.html.render()
+
+  File template with context file:
+    template://greeting.html.render(context_file="/data/context.json")
+
+  File template with inline context:
+    template://config.yaml.render(context="{\"port\":8080,\"host\":\"localhost\"}")
+
+  JSON output format:
+    template://config.json.render(context="{\"port\":8080}", format="json")
+
+  HTML output format:
+    template://email.html.render(context_file="user-data.json", format="html")
+
+  Basic syntax validation:
+    template://welcome.html.validate()
+
+  Validate with context data:
+    template://user-profile.html.validate(context="{\"user\":{\"name\":\"alice\"}}")
+
+  Non-strict validation (warnings instead of errors):
+    template://partial.html.validate(context="{}", strict="false")
+
+  Validate inline template:
+    template://inline.validate(template="Hello {{ name }}", context="{\"name\":\"test\"}")
+
+  Run default tests (looks for template.tests.json):
+    template://hello.html.test()
+
+  Run tests with inline cases:
+    template://greeting.html.test(cases="[{\"name\":\"basic\",\"context\":{\"user\":\"alice\"},\"expected\":\"Hello alice!\"}]")
+
+  Run tests from external file:
+    template://complex.html.test(cases_file="test-cases.json")
+
+  Stop on first test failure:
+    template://complex.html.test(stop_on_first_fail="true", capture_output="full")
+
+  Configuration file generation:
+    template://config.yaml.render(context_file="/deployment/vars.json")
+
+  Email template processing:
+    template://welcome-email.html.render(context="{\"user\":{\"name\":\"John\",\"email\":\"john@example.com\"}}", format="html")
+
+RENDER ARGUMENTS:
+  template=TEXT          Inline template content (alternative to file path)
+  context=JSON           JSON string containing template variables
+  context_file=PATH      Path to JSON file containing template variables
+  format=FORMAT          Output format: text, html, json, bytes (default: text)
+
+VALIDATE ARGUMENTS:
+  template=TEXT          Inline template content (alternative to file path)
+  context=JSON           JSON string containing template variables for validation
+  strict=BOOL            Treat missing variables as errors (default: true)
+
+TEST ARGUMENTS:
+  cases=JSON             JSON array of test cases inline
+  cases_file=PATH        Path to JSON file containing test cases
+  stop_on_first_fail=BOOL Stop testing on first failure (default: false)
+  capture_output=MODE    Output capture mode: none, summary, full (default: summary)
+
+DATA SOURCES (in order of precedence):
+  1. Inline context       context parameter (highest priority)
+  2. Context file         context_file parameter
+  3. URL parameters       Individual parameters from the URL
+
+OUTPUT FORMATS:
+  text (default)         Plain text output
+  html                   HTML content (semantically labeled)
+  json                   Parses rendered output as JSON, returns structured data
+  bytes                  Returns base64-encoded binary data
+
+TEST CASE FORMAT:
+  Test cases are JSON arrays containing objects with:
+  • name              Test case name (required)
+  • context           Variables to use for rendering (required)
+  • expected          Exact expected output (optional)
+  • contains          String that must be present in output (optional)
+  • not_contains      String that must NOT be present (optional)
+
+  Example test case:
+  [
+    {
+      "name": "basic_greeting",
+      "context": {"user": "Alice"},
+      "expected": "Hello Alice!"
+    },
+    {
+      "name": "contains_username",
+      "context": {"user": "Bob"},
+      "contains": "Bob"
+    },
+    {
+      "name": "no_admin_content",
+      "context": {"user": "guest", "role": "user"},
+      "not_contains": "admin"
+    }
+  ]
+
+TEST FILE CONVENTION:
+  For template file "hello.html", default test file is "hello.tests.json"
+
+TEST ASSERTION TYPES:
+  Exact Match            expected: Output must match exactly
+  Contains               contains: Output must include specified string
+  Not Contains           not_contains: Output must NOT include specified string
+
+TERA TEMPLATE SYNTAX:
+  Variables              {{ variable_name }}
+  Conditionals           {% if condition %}...{% endif %}
+  Loops                  {% for item in items %}...{% endfor %}
+  Filters                {{ name | upper }}
+  Comments               {# This is a comment #}
+  Blocks                 {% block name %}...{% endblock %}
+
+  For complete Tera syntax: https://tera.netlify.app/
+
+CONTEXT FILE FORMAT:
+  JSON file containing template variables:
+  {
+    "user": {
+      "name": "Alice",
+      "email": "alice@example.com"
+    },
+    "environment": "production",
+    "features": ["auth", "api", "web"]
+  }
+
+COMMON WORKFLOWS:
+
+  Template development workflow:
+    # 1. Validate syntax
+    template://new-template.html.validate()
+
+    # 2. Test with sample data
+    template://new-template.html.validate(context="{\"test\":\"data\"}")
+
+    # 3. Run automated tests
+    template://new-template.html.test()
+
+    # 4. Render final output
+    template://new-template.html.render(context_file="production-data.json")
+
+  Quick inline testing:
+    template://inline.render(template="Hello {{ name }}", context="{\"name\":\"World\"}")
+
+  Configuration generation:
+    template://app-config.yaml.render(context_file="/config/prod-vars.json")
+
+OUTPUT STRUCTURE:
+  All operations return JSON with the following structure:
+
+  Render success:
+  {
+    "ok": true,
+    "engine": "tera",
+    "template": {"source": "file|inline", "name": "...", "size": N},
+    "context": {"keys": [...], "raw": {...}},
+    "body": {"type": "text|html|json|bytes", "value": "..."},
+    "errors": []
+  }
+
+  Validate success:
+  {
+    "ok": true,
+    "template": {"source": "...", "name": "...", "path": "...", "size": N},
+    "strict": true|false,
+    "errors": [],
+    "warnings": []
+  }
+
+  Test results:
+  {
+    "template": "file.html",
+    "ok": true|false,
+    "total": N,
+    "passed": N,
+    "failed": N,
+    "stop_on_first_fail": false,
+    "cases": [...]
+  }
+
+ERROR TYPES:
+  template_not_found     Template file does not exist
+  context_parse          Invalid JSON in context data
+  syntax                 Template syntax errors
+  missing_variable       Required variables not found in context
+  render                 Template rendering failures
+  json_parse             Invalid JSON in rendered output (format=json)
+
+BEST PRACTICES:
+  • Use validation during development to catch errors early
+  • Write comprehensive tests covering different data scenarios
+  • Use strict mode in production to catch missing variables
+  • Separate complex data into context files for maintainability
+  • Use meaningful test case names for easier debugging
+  • Test edge cases: empty data, missing fields, special characters
+  • Use comments in templates to document expected variables
+  • Leverage Tera filters for data transformation
+  • Keep templates simple and focused on presentation
+
+MORE INFO:
+  For complete documentation of all verbs, template syntax, and
+  testing capabilities, visit:
+  https://github.com/[your-org]/resource-shell/docs/template-handle.md
+
+  For Tera template engine documentation:
+  https://tera.netlify.app/
+
+  Use 'template:// --help=VERB' for detailed help on a specific verb.
+"#;
+
+const RENDER_VERB_HELP: &str = r#"TEMPLATE RENDER VERB
+===================
+
+DESCRIPTION:
+  Renders a template with provided data using the Tera template engine.
+  Supports both file-based and inline templates with various output formats.
+
+SYNTAX:
+  template://path/to/file.ext.render(arguments)
+  template://inline.render(template="content", arguments)
+
+ARGUMENTS:
+  template=TEXT          Inline template content (alternative to file path)
+  context=JSON           JSON string containing template variables
+  context_file=PATH      Path to JSON file containing template variables  
+  format=FORMAT          Output format: text, html, json, bytes (default: text)
+  encoding=ENCODING      Character encoding (currently only utf-8 supported)
+
+EXAMPLES:
+  template://greeting.html.render()
+  template://config.yaml.render(context="{\"port\":8080}")
+  template://inline.render(template="Hello {{ name }}", context="{\"name\":\"World\"}")
+  template://email.html.render(context_file="user-data.json", format="html")
+
+OUTPUT STRUCTURE:
+  {
+    "ok": true,
+    "engine": "tera",
+    "template": {"source": "file|inline", "name": "...", "size": N},
+    "context": {"keys": [...], "raw": {...}},
+    "body": {"type": "text|html|json|bytes", "value": "..."},
+    "errors": []
+  }
+"#;
+
+const VALIDATE_VERB_HELP: &str = r#"TEMPLATE VALIDATE VERB
+=====================
+
+DESCRIPTION:
+  Validates template syntax and checks for missing variables.
+  Can operate in strict mode (errors) or permissive mode (warnings).
+
+SYNTAX:
+  template://path/to/file.ext.validate(arguments)
+  template://inline.validate(template="content", arguments)
+
+ARGUMENTS:
+  template=TEXT          Inline template content (alternative to file path)
+  context=JSON           JSON string containing template variables for validation
+  strict=BOOL            Treat missing variables as errors (default: true)
+
+EXAMPLES:
+  template://welcome.html.validate()
+  template://user-profile.html.validate(context="{\"user\":{\"name\":\"alice\"}}")
+  template://partial.html.validate(context="{}", strict="false")
+  template://inline.validate(template="Hello {{ name }}", context="{\"name\":\"test\"}")
+
+OUTPUT STRUCTURE:
+  {
+    "ok": true,
+    "template": {"source": "...", "name": "...", "path": "...", "size": N},
+    "strict": true|false,
+    "errors": [],
+    "warnings": []
+  }
+"#;
+
+const TEST_VERB_HELP: &str = r#"TEMPLATE TEST VERB
+=================
+
+DESCRIPTION:
+  Runs automated tests against templates using defined test cases.
+  Supports exact matching, contains, and not-contains assertions.
+
+SYNTAX:
+  template://path/to/file.ext.test(arguments)
+  template://inline.test(template="content", arguments)
+
+ARGUMENTS:
+  template=TEXT              Inline template content (alternative to file path)
+  cases=JSON                 JSON array of test cases inline
+  cases_file=PATH            Path to JSON file containing test cases
+  stop_on_first_fail=BOOL    Stop testing on first failure (default: false)
+  capture_output=MODE        Output capture mode: none, summary, full (default: summary)
+
+TEST CASE FORMAT:
+  [
+    {
+      "name": "test_name",
+      "context": {"variable": "value"},
+      "expected": "exact output"           // Optional: exact match
+      "contains": "substring"              // Optional: must contain
+      "not_contains": "forbidden string"   // Optional: must not contain
+    }
+  ]
+
+EXAMPLES:
+  template://hello.html.test()
+  template://greeting.html.test(cases="[{\"name\":\"basic\",\"context\":{\"user\":\"alice\"},\"expected\":\"Hello alice!\"}]")
+  template://complex.html.test(cases_file="test-cases.json")
+  template://complex.html.test(stop_on_first_fail="true", capture_output="full")
+
+OUTPUT STRUCTURE:
+  {
+    "template": "file.html",
+    "ok": true|false,
+    "total": N,
+    "passed": N,
+    "failed": N,
+    "stop_on_first_fail": false,
+    "cases": [...]
+  }
+"#;
+
 pub struct TemplateHandle {
     template_path: Option<PathBuf>,
+    is_help_request: bool,
+    help_verb: Option<String>,
 }
 
 fn unescape_backslashes(s: &str) -> String {
@@ -175,9 +536,7 @@ fn normalize_path(p: &PathBuf) -> PathBuf {
 
 impl TemplateHandle {
     pub fn from_url(url: Url) -> Result<TemplateHandle, anyhow::Error> {
-        // For template URLs, we want to combine host and path to get the full template path
-        // e.g., template://tests/fixtures/templates/hello.html should give us 
-        // "tests/fixtures/templates/hello.html" not just "tests"
+        // Check for help flags first
         let path_str = if url.host_str().is_some() && !url.host_str().unwrap().is_empty() {
             let host = url.host_str().unwrap();
             let path = url.path();
@@ -198,10 +557,41 @@ impl TemplateHandle {
             }
         };
 
+        // Check for help flags in various positions
+        let is_help_request = path_str == "--help" || 
+                             path_str == "-h" ||
+                             path_str.ends_with(".--help") ||
+                             path_str.ends_with(".-h");
+
+        // Extract verb-specific help if provided (e.g., --help=render)
+        let help_verb = url.query_pairs()
+            .find_map(|(k, v)| {
+                if k == "help" || (k == "--help" && !v.is_empty()) {
+                    Some(v.to_string())
+                } else {
+                    None
+                }
+            });
+
+        // If this is a help request, return early
+        if is_help_request || help_verb.is_some() {
+            return Ok(TemplateHandle {
+                template_path: None,
+                is_help_request: true,
+                help_verb,
+            });
+        }
+
+        // For template URLs, we want to combine host and path to get the full template path
+        // e.g., template://tests/fixtures/templates/hello.html should give us 
+        // "tests/fixtures/templates/hello.html" not just "tests"
+
         // Check for special inline case
         if path_str.is_empty() || path_str == "/" || path_str == "/inline" || path_str == "inline" {
             return Ok(TemplateHandle {
                 template_path: None,
+                is_help_request: false,
+                help_verb: None,
             });
         }
 
@@ -213,6 +603,8 @@ impl TemplateHandle {
 
         Ok(TemplateHandle {
             template_path: Some(normalized),
+            is_help_request: false,
+            help_verb: None,
         })
     }
 
@@ -1059,6 +1451,40 @@ impl TemplateHandle {
 
         (true, None, None)
     }
+
+    /// Display general help for the template handle
+    fn display_help(&self, io: &mut IoStreams) -> Result<Status> {
+        writeln!(io.stdout, "{}", TEMPLATE_HELP_TEXT)?;
+        Ok(Status {
+            ok: true,
+            code: Some(0),
+            reason: None,
+        })
+    }
+
+    /// Display verb-specific help
+    fn display_verb_help(&self, verb: &str, io: &mut IoStreams) -> Result<Status> {
+        let help_text = match verb {
+            "render" => RENDER_VERB_HELP,
+            "validate" => VALIDATE_VERB_HELP,
+            "test" => TEST_VERB_HELP,
+            _ => {
+                writeln!(io.stderr, "Unknown verb: {}. Use --help for full list.", verb)?;
+                return Ok(Status {
+                    ok: false,
+                    code: Some(1),
+                    reason: Some("unknown_verb".to_string()),
+                });
+            }
+        };
+        
+        writeln!(io.stdout, "{}", help_text)?;
+        Ok(Status {
+            ok: true,
+            code: Some(0),
+            reason: None,
+        })
+    }
 }
 
 impl Handle for TemplateHandle {
@@ -1067,6 +1493,18 @@ impl Handle for TemplateHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Check if this is a help request
+        if self.is_help_request {
+            if let Some(ref help_verb) = self.help_verb {
+                // Verb-specific help requested
+                return self.display_verb_help(help_verb, io);
+            } else {
+                // General help requested
+                return self.display_help(io);
+            }
+        }
+
+        // Normal operation - dispatch to appropriate verb
         match verb {
             "render" => self.render_template(args, io),
             "validate" => self.validate(args, io),
@@ -1083,6 +1521,8 @@ mod tests {
     use tempfile::TempDir;
     use std::fs::File;
     use std::io::Write;
+    use anyhow::Result;
+    use url::Url;
 
     fn create_test_io() -> (Cursor<Vec<u8>>, Cursor<Vec<u8>>, Cursor<Vec<u8>>) {
         (
@@ -1096,7 +1536,7 @@ mod tests {
 
     #[test]
     fn validate_syntax_ok_without_data() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("from".to_string(), "Hello {{ name | default(value=\"world\") }}!".to_string());
         args.insert("strict".to_string(), "true".to_string());
@@ -1119,7 +1559,7 @@ mod tests {
 
     #[test]
     fn validate_syntax_error() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("from".to_string(), "Hello {{ name ".to_string()); // Missing closing braces
         args.insert("strict".to_string(), "true".to_string());
@@ -1143,7 +1583,7 @@ mod tests {
 
     #[test]
     fn validate_with_data_missing_variable_strict() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("from".to_string(), "Hello {{ name }}!".to_string());
         args.insert("context".to_string(), "{}".to_string());
@@ -1168,7 +1608,7 @@ mod tests {
 
     #[test]
     fn validate_with_data_missing_variable_non_strict() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("from".to_string(), "Hello {{ name }}!".to_string());
         args.insert("context".to_string(), "{}".to_string());
@@ -1194,7 +1634,7 @@ mod tests {
 
     #[test]
     fn validate_bad_json() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("from".to_string(), "Hello {{ name }}!".to_string());
         args.insert("context".to_string(), "{not valid json}".to_string());
@@ -1221,7 +1661,7 @@ mod tests {
 
     #[test]
     fn render_inline_basic() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}".to_string());
         args.insert("context".to_string(), r#"{"name": "Alice"}"#.to_string());
@@ -1256,6 +1696,8 @@ mod tests {
 
         let handle = TemplateHandle {
             template_path: Some(template_path),
+            is_help_request: false,
+            help_verb: None,
         };
         let mut args = HashMap::new();
         args.insert("context".to_string(), r#"{"user":"bob", "env":"prod"}"#.to_string());
@@ -1279,7 +1721,7 @@ mod tests {
 
     #[test]
     fn render_format_json() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), r#"{"value": {{ n }}}"#.to_string());
         args.insert("context".to_string(), r#"{"n": 42}"#.to_string());
@@ -1306,7 +1748,7 @@ mod tests {
 
     #[test]
     fn render_format_bytes() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}".to_string());
         args.insert("context".to_string(), r#"{"name": "world"}"#.to_string());
@@ -1342,7 +1784,7 @@ mod tests {
         let mut context_file = File::create(&context_path).unwrap();
         write!(context_file, r##"{{"greeting": "Hi", "target": "universe"}}"##).unwrap();
 
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "{{ greeting }} {{ target }}!".to_string());
         args.insert("context_file".to_string(), context_path.to_string_lossy().to_string());
@@ -1368,7 +1810,7 @@ mod tests {
 
     #[test]
     fn render_missing_variable_error() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ missing }}".to_string());
         args.insert("context".to_string(), "{}".to_string());
@@ -1393,7 +1835,7 @@ mod tests {
 
     #[test]
     fn render_missing_template_source_fails() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let args = HashMap::new(); // No 'template' or file path
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
@@ -1415,7 +1857,7 @@ mod tests {
 
     #[test]
     fn render_invalid_json_context_fails() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "{{ test }}".to_string());
         args.insert("context".to_string(), "{bad json}".to_string());
@@ -1439,7 +1881,7 @@ mod tests {
 
     #[test]
     fn render_invalid_format_fails() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello world".to_string());
         args.insert("format".to_string(), "invalid_format".to_string());
@@ -1463,7 +1905,7 @@ mod tests {
 
     #[test]
     fn render_invalid_json_output_fails() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "not valid json".to_string());
         args.insert("format".to_string(), "json".to_string());
@@ -1492,7 +1934,7 @@ mod tests {
         let mut context_file = File::create(&context_path).unwrap();
         context_file.write_all(br#"{"name": "file"}"#).unwrap();
 
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}".to_string());
         args.insert("context_file".to_string(), context_path.to_string_lossy().to_string());
@@ -1518,7 +1960,7 @@ mod tests {
 
     #[test]
     fn test_inline_cases_all_pass() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         args.insert("cases".to_string(), r#"[
@@ -1557,7 +1999,7 @@ mod tests {
 
     #[test]
     fn test_inline_cases_with_failure() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         args.insert("cases".to_string(), r#"[
@@ -1598,7 +2040,7 @@ mod tests {
 
     #[test]
     fn test_stop_on_first_fail() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         args.insert("stop_on_first_fail".to_string(), "true".to_string());
@@ -1638,7 +2080,7 @@ mod tests {
 
     #[test]
     fn test_capture_output_modes() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         args.insert("capture_output".to_string(), "full".to_string());
@@ -1668,7 +2110,7 @@ mod tests {
 
     #[test]
     fn test_contains_and_not_contains() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}! Welcome to {{ place }}.".to_string());
         args.insert("cases".to_string(), r#"[
@@ -1711,7 +2153,7 @@ mod tests {
 
     #[test]
     fn test_no_cases_provided_error() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         // No cases, cases_file, or default file
@@ -1735,7 +2177,7 @@ mod tests {
 
     #[test]
     fn test_invalid_cases_json() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         args.insert("cases".to_string(), "{invalid json}".to_string());
@@ -1760,7 +2202,7 @@ mod tests {
 
     #[test]
     fn test_template_render_error() {
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ missing_var }}!".to_string());
         args.insert("cases".to_string(), r#"[
@@ -1803,7 +2245,7 @@ mod tests {
             }
         ]"#).unwrap();
 
-        let handle = TemplateHandle { template_path: None };
+        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         args.insert("cases_file".to_string(), cases_file_path.to_string_lossy().to_string());
@@ -1825,6 +2267,374 @@ mod tests {
         assert_eq!(parsed.passed, 1);
         assert_eq!(parsed.cases[0].name, "file_test");
         assert!(parsed.cases[0].ok);
+    }
+
+    // HELP FUNCTIONALITY TESTS
+
+    #[test]
+    fn test_help_flag_long_form() -> Result<()> {
+        // Test: template://--help
+        let url = Url::parse("template://--help")?;
+        let handle = TemplateHandle::from_url(url)?;
+        
+        assert!(handle.is_help_request);
+        assert!(handle.help_verb.is_none());
+        assert!(handle.template_path.is_none());
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        let result = handle.call("dummy_verb", &args, &mut io)?;
+        assert!(result.ok);
+        assert_eq!(result.code, Some(0));
+
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+        assert!(output.contains("RESOURCE SHELL - TEMPLATE HANDLE"));
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_help_flag_short_form() -> Result<()> {
+        // Test: template://-h
+        let url = Url::parse("template://-h")?;
+        let handle = TemplateHandle::from_url(url)?;
+        
+        assert!(handle.is_help_request);
+        assert!(handle.help_verb.is_none());
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        let result = handle.call("dummy_verb", &args, &mut io)?;
+        assert!(result.ok);
+        assert_eq!(result.code, Some(0));
+
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+        assert!(output.contains("RESOURCE SHELL - TEMPLATE HANDLE"));
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_help_contains_all_verbs() -> Result<()> {
+        let url = Url::parse("template://--help")?;
+        let handle = TemplateHandle::from_url(url)?;
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        handle.call("dummy_verb", &args, &mut io)?;
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+
+        assert!(output.contains("render"));
+        assert!(output.contains("validate"));
+        assert!(output.contains("test"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_help_contains_template_syntax() -> Result<()> {
+        let url = Url::parse("template://--help")?;
+        let handle = TemplateHandle::from_url(url)?;
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        handle.call("dummy_verb", &args, &mut io)?;
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+
+        // Check for Tera syntax examples
+        assert!(output.contains("{{"));
+        assert!(output.contains("{%"));
+        assert!(output.contains("{#"));
+        assert!(output.contains("variable_name"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_help_contains_examples() -> Result<()> {
+        let url = Url::parse("template://--help")?;
+        let handle = TemplateHandle::from_url(url)?;
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        handle.call("dummy_verb", &args, &mut io)?;
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+
+        // Count occurrences of "template://" to verify we have enough examples
+        let example_count = output.matches("template://").count();
+        assert!(example_count >= 15, "Help text should contain at least 15 examples, found {}", example_count);
+
+        // Verify specific examples are present
+        assert!(output.contains("inline.render"));
+        assert!(output.contains("greeting.html.render"));
+        assert!(output.contains("validate"));
+        assert!(output.contains("test"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_help_contains_output_formats() -> Result<()> {
+        let url = Url::parse("template://--help")?;
+        let handle = TemplateHandle::from_url(url)?;
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        handle.call("dummy_verb", &args, &mut io)?;
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+
+        assert!(output.contains("text"));
+        assert!(output.contains("html"));
+        assert!(output.contains("json"));
+        assert!(output.contains("bytes"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_verb_specific_help_render() -> Result<()> {
+        // Test: template://--help?help=render
+        let url = Url::parse("template://--help?help=render")?;
+        let handle = TemplateHandle::from_url(url)?;
+        
+        assert!(handle.is_help_request);
+        assert_eq!(handle.help_verb, Some("render".to_string()));
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        let result = handle.call("dummy_verb", &args, &mut io)?;
+        assert!(result.ok);
+
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+        assert!(output.contains("TEMPLATE RENDER VERB"));
+        assert!(output.contains("Renders a template with provided data"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_verb_specific_help_validate() -> Result<()> {
+        // Test: template://--help?help=validate
+        let url = Url::parse("template://--help?help=validate")?;
+        let handle = TemplateHandle::from_url(url)?;
+        
+        assert!(handle.is_help_request);
+        assert_eq!(handle.help_verb, Some("validate".to_string()));
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        let result = handle.call("dummy_verb", &args, &mut io)?;
+        assert!(result.ok);
+
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+        assert!(output.contains("TEMPLATE VALIDATE VERB"));
+        assert!(output.contains("Validates template syntax"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_verb_specific_help_test() -> Result<()> {
+        // Test: template://--help?help=test 
+        let url = Url::parse("template://--help?help=test")?;
+        let handle = TemplateHandle::from_url(url)?;
+        
+        assert!(handle.is_help_request);
+        assert_eq!(handle.help_verb, Some("test".to_string()));
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        let result = handle.call("dummy_verb", &args, &mut io)?;
+        assert!(result.ok);
+
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+        assert!(output.contains("TEMPLATE TEST VERB"));
+        assert!(output.contains("Runs automated tests"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_verb_specific_help_unknown_verb() -> Result<()> {
+        // Test: template://--help?help=unknown
+        let url = Url::parse("template://--help?help=unknown")?;
+        let handle = TemplateHandle::from_url(url)?;
+        
+        assert!(handle.is_help_request);
+        assert_eq!(handle.help_verb, Some("unknown".to_string()));
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        let result = handle.call("dummy_verb", &args, &mut io)?;
+        assert!(!result.ok);
+        assert_eq!(result.code, Some(1));
+
+        let output = String::from_utf8(stderr.into_inner()).unwrap();
+        assert!(output.contains("Unknown verb: unknown"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_help_from_url_detection() -> Result<()> {
+        // Test various URL patterns that should trigger help
+        let test_cases = vec![
+            "template://--help",
+            "template://-h", 
+            "template://myfile.html.--help",
+            "template://inline.--help",
+            "template:///path/to/file.txt.--help",
+        ];
+
+        for test_url in test_cases {
+            let url = Url::parse(test_url)?;
+            let handle = TemplateHandle::from_url(url)?;
+            assert!(handle.is_help_request, "URL {} should trigger help", test_url);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_non_help_from_url_detection() -> Result<()> {
+        // Test URLs that should NOT trigger help
+        let test_cases = vec![
+            "template://myfile.html",
+            "template://inline",
+            "template:///path/to/file.txt",
+            "template://dir/subdir/template.html",
+        ];
+
+        for test_url in test_cases {
+            let url = Url::parse(test_url)?;
+            let handle = TemplateHandle::from_url(url)?;
+            assert!(!handle.is_help_request, "URL {} should NOT trigger help", test_url);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_help_exit_code() -> Result<()> {
+        let url = Url::parse("template://--help")?;
+        let handle = TemplateHandle::from_url(url)?;
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        let result = handle.call("dummy_verb", &args, &mut io)?;
+        assert!(result.ok);
+        assert_eq!(result.code, Some(0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_help_output_format() -> Result<()> {
+        let url = Url::parse("template://--help")?;
+        let handle = TemplateHandle::from_url(url)?;
+
+        let args = HashMap::new();
+        let (mut stdin, mut stdout, mut stderr) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
+
+        handle.call("dummy_verb", &args, &mut io)?;
+        let output = String::from_utf8(stdout.into_inner()).unwrap();
+
+        // Check for section headers (using = characters)
+        assert!(output.contains("="));
+        
+        // Check for consistent formatting
+        assert!(output.contains("USAGE:"));
+        assert!(output.contains("DESCRIPTION:"));
+        assert!(output.contains("VERBS:"));
+        assert!(output.contains("EXAMPLES:"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_normal_operation_not_affected() -> Result<()> {
+        // Test that normal operations still work when help is not requested
+        let url = Url::parse("template://inline")?;
+        let handle = TemplateHandle::from_url(url)?;
+
+        assert!(!handle.is_help_request);
+        assert!(handle.help_verb.is_none());
+
+        // This should proceed to normal verb processing
+        // (We won't test the full rendering here as that's covered by existing tests)
+
+        Ok(())
     }
 }
 

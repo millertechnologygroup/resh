@@ -1,74 +1,214 @@
-# Net Handle Documentation
+# Resource Shell (resh) – Net Handle Documentation
 
-The net handle provides network utilities including interface listing, connectivity testing, DNS lookups, port scanning, and routing table inspection.
+## 1. Overview
 
-## Verbs
+### Definition
 
-### list
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `net://` handle provides network utilities including interface inspection, connectivity testing, DNS lookup, TCP checks, port scanning, and routing table inspection.
 
-Lists network interfaces on the system.
+### Purpose
 
-**URL Format:** `net://if.list` or `net://iface.list` or `net://interfaces.list`
+The net handle enables:
 
-**Arguments:**
-- `family` (optional): Filter by address family. Valid values: `ipv4`, `ipv6`, `all`. Default: all families
-- `up` (optional): Filter by interface status. Valid values: `true`, `false`. Default: all interfaces
+* Structured network diagnostics
+* Deterministic connectivity testing
+* Programmatic port scanning
+* DNS queries
+* Routing table inspection (Linux)
 
-**Output:** JSON object containing an array of network interfaces.
+It provides consistent JSON output for automation, monitoring, and troubleshooting workflows.
 
-**Example:**
-```bash
-net://iface.list
+### Architectural Problem Addressed
+
+Traditional network tools:
+
+* Produce text-based output
+* Require parsing for automation
+* Differ in formatting across platforms
+* Mix diagnostic and informational output
+
+This introduces fragility in automated scripts and monitoring systems.
+
+resh addresses this by:
+
+* Exposing network operations as typed verbs
+* Returning structured JSON responses
+* Defining explicit argument validation
+* Standardizing error handling and exit codes
+
+### Resource-Oriented URI Model
+
+Commands follow:
+
+```
+handle://target.verb(options)
 ```
 
-**Expected Output:**
-```json
-{
-  "interfaces": [
-    {
-      "name": "lo",
-      "index": null,
-      "mac": null,
-      "flags": ["up", "loopback"],
-      "mtu": null,
-      "addresses": [
-        {
-          "family": "ipv4",
-          "addr": "127.0.0.1",
-          "scope": "host"
-        }
-      ]
-    }
-  ]
-}
+For network operations:
+
+* **handle**: `net://`
+* **target**: Host, interface, or logical host identifier
+* **verb**: `list`, `ping`, `tcp_check`, `scan`, `dns`, `route.list`
+* **options**: Explicit key-value parameters
+
+Example:
+
 ```
-
-**Example with family filter:**
-```bash
-net://iface.list(family=ipv4)
-```
-
-### ping
-
-Tests network connectivity to a host using ICMP ping or TCP fallback.
-
-**URL Format:** `net://host.ping`
-
-**Arguments:**
-- `count` (optional): Number of ping packets to send. Must be ≥ 1. Default: 3
-- `timeout_ms` (optional): Timeout per packet in milliseconds. Must be ≥ 100. Default: 3000
-- `port` (optional): Port for TCP fallback. Default: 80 or from URL
-- `family` (optional): IP family preference. Valid values: `auto`, `ipv4`, `ipv6`. Default: `auto`
-- `raw` (optional): Show raw ping output. Valid values: `true`, `false`. Default: `false`
-
-**Output:** JSON object with ping results.
-
-**Example:**
-```bash
 net://127.0.0.1.ping(count=1,timeout_ms=1000)
 ```
 
-**Expected Output:**
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+* Each network capability is a defined verb.
+* Arguments are validated before execution.
+* JSON output is standardized.
+* Help documentation is available offline.
+
+---
+
+### Safety-First Execution
+
+* Timeout values are enforced.
+* Port scan concurrency is limited (1–256).
+* Argument validation prevents invalid execution.
+* Help operations have no side effects.
+* Exit codes are defined per failure category.
+
+---
+
+### Deterministic Behavior
+
+* Identical parameters yield consistent structured output.
+* Explicit fallback behavior for `ping`.
+* Configurable retry logic for TCP checks.
+* Controlled scan concurrency.
+
+---
+
+### JSON-Based Structured Output
+
+All verbs return structured JSON including:
+
+* Operation metadata
+* Query or target
+* Result objects
+* Error details when applicable
+
+This removes dependency on text parsing.
+
+---
+
+### AI-Readiness
+
+Structured responses include:
+
+* Reachability state
+* Port state (`open`, `closed`, `timeout`)
+* Routing metadata
+* DNS record details
+
+This enables programmatic reasoning over network state.
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+handle://target.verb(options)
+```
+
+| Component | Description                          |
+| --------- | ------------------------------------ |
+| `handle`  | `net://`                             |
+| `target`  | Host, interface, or logical resource |
+| `verb`    | Network operation                    |
+| `options` | Structured arguments                 |
+
+---
+
+### Supported Verbs
+
+| Verb         | Description                     |
+| ------------ | ------------------------------- |
+| `list`       | List network interfaces         |
+| `ping`       | Test host reachability          |
+| `tcp_check`  | Test TCP connectivity           |
+| `scan`       | TCP port scan                   |
+| `dns`        | DNS lookup                      |
+| `route.list` | List routing table (Linux only) |
+
+---
+
+### Production Examples
+
+#### List Interfaces
+
+```
+net://iface.list(family=ipv4)
+```
+
+#### ICMP/TCP Reachability
+
+```
+net://192.168.1.10.ping(count=3,timeout_ms=2000)
+```
+
+#### TCP Connectivity Check
+
+```
+net://db.internal:5432.tcp_check(timeout_ms=5000,retries=2)
+```
+
+#### Port Scan
+
+```
+net://web.internal.scan(ports=80,443,timeout_ms=500)
+```
+
+#### DNS Lookup
+
+```
+net://example.com.dns(type=MX)
+```
+
+#### Route Table (Linux)
+
+```
+net://host.route.list(family=ipv4)
+```
+
+---
+
+## 3.2 Execution Semantics
+
+### Deterministic Behavior
+
+* `ping` attempts system ping, then TCP fallback if necessary.
+* `tcp_check` performs explicit retries with backoff.
+* `scan` enforces concurrency limits.
+* DNS uses system resolver by default.
+
+---
+
+### Structured Output Contracts
+
+Each verb returns:
+
+* Target metadata
+* Execution parameters
+* Result object
+* Error object (when applicable)
+
+---
+
+### Representative JSON Response (Ping)
+
 ```json
 {
   "host": "127.0.0.1",
@@ -83,67 +223,10 @@ net://127.0.0.1.ping(count=1,timeout_ms=1000)
 }
 ```
 
-**Example with unreachable host:**
-```bash
-net://192.0.2.1.ping(count=1,timeout_ms=500)
-```
+---
 
-**Expected Output:**
-```json
-{
-  "host": "192.0.2.1", 
-  "port": 80,
-  "backend": "tcp_fallback",
-  "sent": 1,
-  "received": 0,
-  "loss": 1.0,
-  "avg_rtt_ms": null,
-  "timeout_ms": 500,
-  "reachable": false
-}
-```
+### Representative JSON Response (TCP Check Failure)
 
-### tcp_check
-
-Tests TCP connectivity to a specific host and port.
-
-**URL Format:** `net://host:port.tcp_check` or `net://host.tcp_check`
-
-**Arguments:**
-- `port` (optional): Target port number. Required if not in URL
-- `timeout_ms` (optional): Connection timeout in milliseconds. Must be > 0. Default: 3000
-- `retries` (optional): Number of retry attempts. Must be > 0. Default: 1
-- `backoff_ms` (optional): Delay between retries in milliseconds. Default: 0
-- `expect_tls` (optional): Whether to expect TLS. Valid values: `true`, `false`. Default: `false`
-
-**Output:** JSON object with connection results.
-
-**Example successful connection:**
-```bash
-net://127.0.0.1:80.tcp_check(timeout_ms=5000,retries=1)
-```
-
-**Expected Output:**
-```json
-{
-  "host": "127.0.0.1",
-  "port": 80,
-  "ok": true,
-  "attempts": 1,
-  "latency_ms": 1,
-  "timeout_ms": 5000,
-  "retries": 1,
-  "backend": "tcp",
-  "tls_checked": false
-}
-```
-
-**Example failed connection:**
-```bash
-net://127.0.0.1:65534.tcp_check(timeout_ms=200,retries=1)
-```
-
-**Expected Output:**
 ```json
 {
   "host": "127.0.0.1",
@@ -158,290 +241,21 @@ net://127.0.0.1:65534.tcp_check(timeout_ms=200,retries=1)
 }
 ```
 
-### scan
+---
 
-Performs TCP port scanning on a target host.
+### Error Handling
 
-**URL Format:** `net://host.scan`
+Defined exit codes include:
 
-**Arguments:**
-- `ports` (optional): Port specification. Can be single ports, ranges, or comma-separated. Default: `80,443`
-  - Single port: `80`
-  - Multiple ports: `80,443,8080`
-  - Port range: `8000-8005`
-  - Mixed: `80,443,8000-8005`
-- `timeout_ms` (optional): Timeout per port in milliseconds. Default: 500
-- `concurrency` (optional): Maximum concurrent connections (1-256). Default: 32
-- `protocol` (optional): Protocol to scan. Only `tcp` supported. Default: `tcp`
-- `host` (optional): Override target host from URL
+| Exit Code | Meaning                     |
+| --------- | --------------------------- |
+| 1         | General failure             |
+| 2         | Invalid arguments           |
+| 3         | Missing required parameters |
+| 50        | System error                |
+| 111       | Connection failure          |
 
-**Output:** JSON object with scan results.
-
-**Example:**
-```bash
-net://127.0.0.1.scan(ports=80)
-```
-
-**Expected Output:**
-```json
-{
-  "target": "127.0.0.1",
-  "protocol": "tcp",
-  "ports": [
-    {
-      "port": 80,
-      "state": "open"
-    }
-  ],
-  "scan": {
-    "timeout_ms": 500,
-    "concurrency": 32,
-    "started_at": "2025-11-15T12:34:56Z",
-    "duration_ms": 42
-  }
-}
-```
-
-**Example with port range:**
-```bash
-net://127.0.0.1.scan(ports=80-82)
-```
-
-**Expected Output:**
-```json
-{
-  "target": "127.0.0.1",
-  "protocol": "tcp",
-  "ports": [
-    {
-      "port": 80,
-      "state": "closed",
-      "error": "connection refused"
-    },
-    {
-      "port": 81,
-      "state": "timeout"
-    },
-    {
-      "port": 82,
-      "state": "closed",
-      "error": "connection refused"
-    }
-  ],
-  "scan": {
-    "timeout_ms": 500,
-    "concurrency": 32,
-    "started_at": "2025-11-15T12:34:56Z",
-    "duration_ms": 128
-  }
-}
-```
-
-### dns
-
-Performs DNS lookups for various record types.
-
-**URL Format:** `net://domain.dns` or `net://ip.dns`
-
-**Arguments:**
-- `type` (optional): DNS record type. Valid values: `A`, `AAAA`, `CNAME`, `MX`, `TXT`, `NS`, `SRV`, `PTR`. Default: `A`
-- `server` (optional): Custom DNS server IP address
-- `port` (optional): Custom DNS server port. Default: 53
-- `timeout_ms` (optional): Query timeout in milliseconds. Must be > 0. Default: 3000
-
-**Output:** JSON object with DNS query results.
-
-**Example A record lookup:**
-```bash
-net://example.com.dns
-```
-
-**Expected Output:**
-```json
-{
-  "query": "example.com",
-  "rtype": "A",
-  "server": "system",
-  "records": [
-    {
-      "name": "example.com.",
-      "ttl": 300,
-      "data": "93.184.216.34"
-    }
-  ]
-}
-```
-
-**Example MX record lookup:**
-```bash
-net://example.com.dns(type=MX)
-```
-
-**Expected Output:**
-```json
-{
-  "query": "example.com",
-  "rtype": "MX",
-  "server": "system",
-  "records": [
-    {
-      "name": "example.com.",
-      "ttl": 3600,
-      "data": {
-        "priority": 10,
-        "exchange": "mail.example.com."
-      }
-    }
-  ]
-}
-```
-
-**Example SRV record lookup:**
-```bash
-net://_sip._tcp.example.com.dns(type=SRV)
-```
-
-**Expected Output:**
-```json
-{
-  "query": "_sip._tcp.example.com",
-  "rtype": "SRV",
-  "server": "system",
-  "records": [
-    {
-      "name": "_sip._tcp.example.com.",
-      "ttl": 300,
-      "data": {
-        "priority": 10,
-        "weight": 20,
-        "port": 5060,
-        "target": "sip.example.com."
-      }
-    }
-  ]
-}
-```
-
-**Example PTR (reverse DNS) lookup:**
-```bash
-net://8.8.8.8.dns(type=PTR)
-```
-
-**Expected Output:**
-```json
-{
-  "query": "8.8.8.8",
-  "rtype": "PTR",
-  "server": "system",
-  "records": [
-    {
-      "name": "8.8.8.8",
-      "ttl": 300,
-      "data": "dns.google."
-    }
-  ]
-}
-```
-
-**Example with custom DNS server:**
-```bash
-net://example.com.dns(server=8.8.8.8)
-```
-
-**Expected Output:**
-```json
-{
-  "query": "example.com",
-  "rtype": "A", 
-  "server": "8.8.8.8:53",
-  "records": [
-    {
-      "name": "example.com.",
-      "ttl": 300,
-      "data": "93.184.216.34"
-    }
-  ]
-}
-```
-
-### route.list
-
-Lists the system routing table. Only supported on Linux systems.
-
-**URL Format:** `net://host.route.list`
-
-**Arguments:**
-- `family` (optional): Route family filter. Valid values: `ipv4`, `ipv6`, `all`. Default: `ipv4`
-- `table` (optional): Routing table filter. Currently not implemented
-
-**Output:** JSON array of routing entries.
-
-**Example:**
-```bash
-net://host.route.list
-```
-
-**Expected Output:**
-```json
-[
-  {
-    "family": "ipv4",
-    "dst": "0.0.0.0/0",
-    "gateway": "192.168.1.1",
-    "iface": "eth0",
-    "metric": 100,
-    "table": "main",
-    "protocol": "dhcp",
-    "scope": null,
-    "flags": ["up", "gateway"]
-  },
-  {
-    "family": "ipv4", 
-    "dst": "192.168.1.0/24",
-    "gateway": null,
-    "iface": "eth0",
-    "metric": 100,
-    "table": "main",
-    "protocol": "kernel",
-    "scope": "link",
-    "flags": ["up", "link"]
-  }
-]
-```
-
-**Example with IPv6 family:**
-```bash
-net://host.route.list(family=ipv6)
-```
-
-**Expected Output:**
-```json
-[
-  {
-    "family": "ipv6",
-    "dst": "::/0",
-    "gateway": "fe80::1",
-    "iface": "eth0",
-    "metric": 1024,
-    "table": "main",
-    "protocol": "ra",
-    "scope": null,
-    "flags": ["up", "gateway"]
-  }
-]
-```
-
-## Error Handling
-
-All verbs return appropriate error codes and JSON error messages when operations fail:
-
-- **Exit Code 1**: General failure
-- **Exit Code 2**: Invalid arguments
-- **Exit Code 3**: Missing required parameters
-- **Exit Code 50**: System error (e.g., failed to get interfaces)
-- **Exit Code 111**: Connection failed (tcp_check)
-
-Error responses include structured JSON with error details:
+Structured error example:
 
 ```json
 {
@@ -452,19 +266,225 @@ Error responses include structured JSON with error details:
 }
 ```
 
-## Platform Support
+---
 
-- **list**: All platforms
-- **ping**: All platforms (with TCP fallback)
-- **tcp_check**: All platforms 
-- **scan**: All platforms
-- **dns**: All platforms
-- **route.list**: Linux only
+## 4. Functional Domains
 
-## Notes
+### 4.1 Automation Utilities
 
-1. The ping verb tries system ping first, then falls back to TCP connectivity checks if ping fails
-2. DNS lookups use the system resolver by default but can use custom DNS servers
-3. Port scanning respects concurrency limits to avoid overwhelming target systems
-4. All timeouts are configurable to accommodate different network conditions
-5. Route listing requires appropriate system permissions on some platforms
+**Scope**
+
+Programmatic network diagnostics for automation pipelines.
+
+**Use Cases**
+
+* Health validation
+* Service reachability checks
+* Infrastructure validation before deployment
+
+---
+
+### 4.2 Data & State Management
+
+**Scope**
+
+Structured reporting of:
+
+* Interface metadata
+* DNS records
+* Routing tables
+* Port states
+
+---
+
+### 4.3 Filesystem & Storage
+
+Not defined in provided documentation.
+
+---
+
+### 4.4 Network & Remote Operations
+
+**Scope**
+
+Core networking operations including:
+
+* ICMP/TCP reachability
+* TCP port validation
+* Port scanning
+* DNS lookup
+* Routing inspection
+
+**Supported Handle**
+
+* `net://`
+
+**Integration Scenarios**
+
+* CI/CD readiness checks
+* Firewall validation
+* Network diagnostics automation
+* Incident response workflows
+
+---
+
+### 4.5 Packages & Software
+
+Not defined in provided documentation.
+
+---
+
+### 4.6 Process & Service Management
+
+Used indirectly for:
+
+* Verifying service port availability
+* Confirming network readiness before service startup
+
+---
+
+### 4.7 Security & Secrets
+
+* TLS expectation validation in `tcp_check`
+* Controlled port scanning
+* Configurable timeouts and concurrency
+
+---
+
+### 4.8 System Information
+
+Provides structured system-level network metadata:
+
+* Interface list
+* Routing table entries (Linux)
+* DNS records
+* Port state information
+
+---
+
+## 5. Platform Support
+
+| Verb         | Platform Support |
+| ------------ | ---------------- |
+| `list`       | All platforms    |
+| `ping`       | All platforms    |
+| `tcp_check`  | All platforms    |
+| `scan`       | All platforms    |
+| `dns`        | All platforms    |
+| `route.list` | Linux only       |
+
+Route inspection is limited to Linux systems.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Limit port scanning scope.
+* Use conservative concurrency values.
+* Configure appropriate timeouts.
+* Validate input parameters before automation execution.
+
+---
+
+### Automation Considerations
+
+* Consume structured JSON instead of parsing text.
+* Handle exit codes explicitly.
+* Implement retry logic in automation based on `ok` or `reachable` fields.
+* Validate DNS before service cutover.
+
+---
+
+### CI/CD Integration
+
+Recommended usage pattern:
+
+1. `tcp_check` to validate service port.
+2. `ping` to verify host reachability.
+3. `dns` to confirm name resolution.
+4. `scan` to confirm open service ports.
+
+---
+
+### Production Environment Recommendations
+
+* Avoid aggressive scanning in production networks.
+* Monitor concurrency limits.
+* Use TLS expectation validation where required.
+* Ensure sufficient permissions for route inspection.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Validate service ports before deployment.
+* Confirm DNS resolution.
+* Automate health checks in pipelines.
+
+---
+
+### SRE Engineers
+
+* Diagnose connectivity failures.
+* Identify port-level issues.
+* Inspect routing table during incident response.
+
+---
+
+### Network Administrators
+
+* Audit open ports.
+* Verify routing configuration.
+* Inspect interface configuration.
+
+---
+
+### AI / Automation Engineers
+
+* Consume structured reachability metrics.
+* Automate remediation based on `reachable` and `ok` flags.
+* Integrate DNS and port state into decision models.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+resh is implemented in Rust, providing:
+
+* Memory safety
+* Strong type enforcement
+* Predictable execution behavior
+* Efficient network operations
+
+---
+
+### Type Safety
+
+* Enumerated argument validation (family, protocol, etc.)
+* Structured error types
+* Controlled parameter ranges
+
+---
+
+### Performance Characteristics
+
+* Native binary execution
+* Configurable concurrency
+* Efficient socket operations
+* Controlled timeout behavior
+
+---
+
+### Cross-Platform Architecture
+
+* CLI-based model
+* Platform-dependent routing support (Linux only for `route.list`)
+* Consistent structured output across environments
+
+

@@ -73,6 +73,49 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
     let url_regex = Regex::new(r"^plugin://([^/]+)(?:/.*)?$")?;
     if let Some(captures) = url_regex.captures(&main_part) {
         let host_part = &captures[1];
+        
+        // Check for help patterns in plugin URLs first  
+        if host_part.contains("--help") || host_part.contains("-h") {
+            let mut args: Args = HashMap::new();
+            
+            // Check for specific verb help request (e.g., plugin://--help=install)
+            if let Some(eq_pos) = host_part.find('=') {
+                let verb_name = &host_part[eq_pos + 1..];
+                args.insert("verb".to_string(), verb_name.to_string());
+            }
+            
+            // Add any arguments from parentheses
+            if let Some(args_content) = args_str {
+                if !args_content.is_empty() {
+                    for kv in parse_arguments(&args_content) {
+                        let kv = kv.trim();
+                        if kv.is_empty() {
+                            continue;
+                        }
+                        if let Some((k, v)) = kv.split_once('=') {
+                            args.insert(
+                                k.trim().to_string(),
+                                v.trim().trim_matches('"').to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+            
+            // Use the appropriate help verb
+            let help_verb = if host_part.ends_with("-h") {
+                "-h".to_string()
+            } else {
+                "--help".to_string()
+            };
+            
+            return Ok(ParsedStage { 
+                target: main_part.clone(), 
+                verb: help_verb,
+                args 
+            });
+        }
+        
         // For plugin URLs, the host is the verb and the entire URL is the target
         let mut args: Args = HashMap::new();
 
@@ -206,6 +249,48 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
                     args 
                 });
             }
+        }
+    }
+    
+    // Check for help flags in URLs (e.g., file://--help, file://-h)
+    let url_regex = Regex::new(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)(.*)$")?;
+    if let Some(captures) = url_regex.captures(&main_part) {
+        let scheme_part = &captures[1];
+        let path_part = &captures[2];
+        
+        // Check if path contains --help or -h
+        if path_part.contains("--help") || path_part.contains("-h") {
+            let mut args: Args = HashMap::new();
+            
+            // Check for specific verb help request (e.g., file://--help=read)
+            if let Some(eq_pos) = path_part.find('=') {
+                let verb_name = &path_part[eq_pos + 1..];
+                args.insert("verb".to_string(), verb_name.to_string());
+            }
+            
+            // Add any arguments from parentheses
+            if let Some(args_content) = args_str {
+                if !args_content.is_empty() {
+                    for kv in parse_arguments(&args_content) {
+                        let kv = kv.trim();
+                        if kv.is_empty() {
+                            continue;
+                        }
+                        if let Some((k, v)) = kv.split_once('=') {
+                            args.insert(
+                                k.trim().to_string(),
+                                v.trim().trim_matches('"').to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+            
+            return Ok(ParsedStage { 
+                target: format!("{}--help", scheme_part),
+                verb: "help".to_string(), 
+                args 
+            });
         }
     }
     

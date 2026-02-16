@@ -1,86 +1,445 @@
-# Data & State Management
+# Resource Shell (resh) – Data & State Management Overview Documentation
 
-This section covers tools for storing, retrieving, and managing data in your applications. These tools help you work with different types of data storage systems, from simple caches to full databases.
+## 1. Overview
 
-## What is Data & State Management?
+Resource Shell (resh) is a structured command-line framework that standardizes system and application operations through a resource-oriented URI execution model.
 
-Data and state management involves keeping track of information that your programs need. This includes:
+The **Data & State Management** domain provides tools for storing, retrieving, organizing, and analyzing application and system data. These tools support structured storage systems, event-driven communication, logging analysis, and message queuing.
 
-- **Storing information** so you can use it later
-- **Retrieving data** when you need it
-- **Keeping track of changes** to important information
-- **Sharing data** between different parts of your system
-- **Recording events** that happen in your applications
+Traditional data tooling in shell environments often involves:
 
-Think of it like organizing files in folders, but for computer programs. Just like you might keep important documents in specific folders, programs need organized ways to store and find their data.
+* Backend-specific command syntax
+* Inconsistent output formats
+* Manual parsing of logs and query results
+* Custom scripts for configuration management
+* Fragmented tooling across subsystems
 
-## Available Tools
+The Data & State Management handles provide:
 
-### [Cache](cache.md)
-Fast temporary storage for frequently used data. Cache systems like Redis and Memcached help your programs run faster by keeping commonly needed information in quick-access memory.
+* A consistent URI-based execution model
+* Structured JSON output
+* Deterministic behavior across subsystems
+* Integration-friendly interfaces for automation
 
-**Use cache when you need to:**
-- Make your programs faster
-- Store temporary data that gets used often
-- Reduce load on slower storage systems
+All operations follow the resh URI pattern:
 
-### [Configuration](config.md)
-Store and manage settings for your applications. The config system helps you organize application settings using namespaces and keys, with data stored as JSON files.
+```
+handle://target.verb(options)
+```
 
-**Use config when you need to:**
-- Store application settings
-- Organize configuration by categories
-- Change settings without restarting programs
+Where:
 
-### [Database](db.md)
-Connect to SQL databases like SQLite, PostgreSQL, and MySQL. Run queries, manage data, and work with database schemas.
+* `handle` identifies the data subsystem
+* `target` identifies the logical resource
+* `verb` defines the operation
+* `options` define execution parameters
 
-**Use databases when you need to:**
-- Store large amounts of structured data
-- Run complex queries on your data
-- Ensure data consistency and reliability
-- Share data between multiple applications
+---
 
-### [Events](event.md)
-Publish and subscribe to events in your system. Send messages between different parts of your application and track when important things happen.
+## 2. Design Philosophy and Core Principles
 
-**Use events when you need to:**
-- Notify other parts of your system when something happens
-- Build loosely connected system components
-- Track user actions or system changes
-- Create audit logs of important activities
+The Data & State Management domain adheres to resh architectural principles.
 
-### [Logs](log.md)
-Read and analyze log files from applications and system services. View recent log entries and filter for specific patterns.
+### Structured Interface Model
 
-**Use logs when you need to:**
-- Debug problems in your applications
-- Monitor system health and performance
-- Find specific error messages or events
-- Understand what happened in your system
+All data-related operations use a consistent URI-based structure:
 
-### [Message Queues](mq.md)
-Simple file-based message queuing for reliable data processing. Send messages between applications and process them in order.
+```
+handle://target.verb(options)
+```
 
-**Use message queues when you need to:**
-- Send data between different programs
-- Process work items in order
-- Handle temporary data that needs processing
-- Build reliable communication between services
+This unifies interaction with cache systems, configuration stores, databases, events, logs, and message queues.
 
-## Choosing the Right Tool
+### Safety-First Execution
 
-Here's a simple guide to help you pick the right tool:
+Operations are designed to:
 
-- **For fast, temporary storage:** Use [Cache](cache.md)
-- **For application settings:** Use [Configuration](config.md)  
-- **For large amounts of structured data:** Use [Database](db.md)
-- **For notifications between system parts:** Use [Events](event.md)
-- **For debugging and monitoring:** Use [Logs](log.md)
-- **For reliable message passing:** Use [Message Queues](mq.md)
+* Avoid implicit destructive actions
+* Provide explicit data operations
+* Return structured error information
+* Enable controlled automation
 
-## Getting Started
+### Deterministic Behavior
 
-Each tool has its own documentation with examples and usage instructions. Start with the tool that best matches what you need to accomplish. All tools are designed to work together, so you can use multiple tools in the same application.
+Each operation:
 
-Remember: choosing the right data management tool depends on your specific needs. Consider factors like how much data you have, how fast you need to access it, and whether you need to share it with other applications.
+* Follows consistent syntax
+* Returns structured JSON output
+* Provides predictable success/error fields
+* Separates metadata from data payload
+
+### JSON-Based Structured Output
+
+All commands return machine-readable JSON, enabling:
+
+* CI/CD integration
+* Automated validation
+* Deterministic orchestration
+* Monitoring pipeline ingestion
+
+### AI-Readiness
+
+The structured interface allows integration into AI-driven automation workflows without relying on text parsing.
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+handle://target.verb(options)
+```
+
+#### Components
+
+| Component | Description                                                    |
+| --------- | -------------------------------------------------------------- |
+| `handle`  | Data subsystem (`cache`, `config`, `db`, `event`, `log`, `mq`) |
+| `target`  | Logical resource identifier                                    |
+| `verb`    | Operation to perform                                           |
+| `options` | Named parameters                                               |
+
+---
+
+### Examples
+
+Cache usage:
+
+```sh
+cache://session.get(key="user:123")
+cache://session.set(key="user:123", value="{\"role\":\"admin\"}")
+```
+
+Configuration retrieval:
+
+```sh
+config://app.settings.get(key="database.host")
+```
+
+Database query:
+
+```sh
+db://main.query(sql="SELECT * FROM users")
+```
+
+Log inspection:
+
+```sh
+log://system.tail(lines="100")
+```
+
+Event publishing:
+
+```sh
+event://user.created.publish(payload="{\"id\":123}")
+```
+
+Message queue usage:
+
+```sh
+mq://jobs.enqueue(message="{\"task\":\"rebuild\"}")
+```
+
+---
+
+### 3.2 Execution Semantics
+
+All operations return structured JSON envelopes.
+
+#### Representative JSON Response
+
+```json
+{
+  "op": "db.query",
+  "status": "success",
+  "resource": "db://main",
+  "result": {
+    "rows": [
+      {"id": 1, "name": "Alice"}
+    ],
+    "row_count": 1
+  }
+}
+```
+
+#### Error Example
+
+```json
+{
+  "op": "config.get",
+  "status": "error",
+  "error": {
+    "kind": "NOT_FOUND",
+    "message": "Configuration key not found"
+  }
+}
+```
+
+Automation systems must evaluate the `status` field before processing results.
+
+---
+
+## 4. Functional Domains – Data & State Management
+
+---
+
+### 4.1 Cache
+
+**Handle:** `cache`
+
+#### Operational Scope
+
+* Fast temporary storage
+* Frequently accessed data caching
+* Performance optimization
+
+#### Common Use Cases
+
+* Session data storage
+* Reducing database load
+* Temporary computation results
+* Short-lived API responses
+
+#### Integration Scenarios
+
+* CI/CD runtime caching
+* Distributed service performance tuning
+* High-read workload optimization
+
+---
+
+### 4.2 Configuration
+
+**Handle:** `config`
+
+#### Operational Scope
+
+* Store application settings
+* Organize configuration using namespaces and keys
+* JSON-based storage model
+
+#### Common Use Cases
+
+* Environment-specific configuration
+* Feature flag management
+* Runtime parameter adjustment
+
+#### Integration Scenarios
+
+* Dynamic configuration updates
+* Centralized configuration management
+* Application initialization workflows
+
+---
+
+### 4.3 Database
+
+**Handle:** `db`
+
+#### Supported Systems
+
+* SQLite
+* PostgreSQL
+* MySQL
+
+#### Operational Scope
+
+* Execute SQL queries
+* Manage structured data
+* Perform schema-level operations
+
+#### Common Use Cases
+
+* Transactional data storage
+* Structured analytics
+* Multi-service shared data
+
+#### Integration Scenarios
+
+* Migration pipelines
+* CI database validation
+* Infrastructure state inspection
+
+---
+
+### 4.4 Events
+
+**Handle:** `event`
+
+#### Operational Scope
+
+* Publish events
+* Subscribe to events
+* Track application state changes
+
+#### Common Use Cases
+
+* Event-driven architectures
+* Audit logging
+* Cross-service notifications
+* User activity tracking
+
+#### Integration Scenarios
+
+* Microservice communication
+* Decoupled system components
+* Workflow triggers
+
+---
+
+### 4.5 Logs
+
+**Handle:** `log`
+
+#### Operational Scope
+
+* Read log files
+* Filter log entries
+* Analyze system output
+
+#### Common Use Cases
+
+* Debugging application issues
+* Monitoring system behavior
+* Incident investigation
+
+#### Integration Scenarios
+
+* Observability pipelines
+* Log aggregation tools
+* Automated error detection
+
+---
+
+### 4.6 Message Queues
+
+**Handle:** `mq`
+
+#### Operational Scope
+
+* File-based message queuing
+* Ordered message processing
+* Reliable inter-process communication
+
+#### Common Use Cases
+
+* Asynchronous task processing
+* Distributed job queues
+* Service decoupling
+
+#### Integration Scenarios
+
+* Background worker systems
+* Event-driven pipelines
+* Reliable job scheduling
+
+---
+
+## 5. Platform Support
+
+| Platform   | Support Level |
+| ---------- | ------------- |
+| Linux      | Supported     |
+| Unix/macOS | Supported     |
+| Windows    | Supported     |
+
+Support depends on availability of underlying storage engines and system capabilities.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Validate database queries before execution.
+* Use configuration namespaces consistently.
+* Avoid storing sensitive data in unsecured configuration files.
+* Rotate and monitor logs regularly.
+
+### Automation Considerations
+
+* Parse JSON responses instead of raw text.
+* Validate `status` before consuming data.
+* Use structured events for workflow triggers.
+* Apply idempotent operations when possible.
+
+### CI/CD Integration
+
+* Validate configuration before deployment.
+* Use database queries for schema validation.
+* Monitor logs for deployment anomalies.
+* Trigger event notifications for deployment milestones.
+
+### Production Environment Recommendations
+
+* Separate environments using configuration namespaces.
+* Monitor cache eviction patterns.
+* Implement log retention policies.
+* Validate message queue processing reliability.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Manage configuration across environments.
+* Validate database state during deployments.
+* Integrate structured logging into pipelines.
+* Implement event-driven automation.
+
+### SRE Engineers
+
+* Monitor logs for system anomalies.
+* Use cache for performance tuning.
+* Validate database integrity.
+* Track events for audit trails.
+
+### Network Administrators
+
+* Monitor system logs.
+* Store network configuration in structured configuration stores.
+* Use message queues for reliable inter-service communication.
+
+### AI/Automation Engineers
+
+* Consume structured JSON output for decision logic.
+* Trigger actions based on events.
+* Automate configuration updates.
+* Integrate data storage into orchestration workflows.
+
+---
+
+## 8. Technical Foundation
+
+The Data & State Management domain operates within resh, implemented in Rust.
+
+### Rust Implementation Advantages
+
+* Memory safety
+* Strong type guarantees
+* Deterministic execution behavior
+* High performance for structured operations
+
+### Type Safety
+
+Arguments and response envelopes are type-validated, ensuring predictable automation behavior.
+
+### Performance Characteristics
+
+* Efficient cache access
+* Structured database interaction
+* Controlled log processing
+* Deterministic event handling
+
+### Cross-Platform Architecture
+
+Supported across:
+
+* Linux
+* macOS/Unix
+* Windows
+
+Behavior may vary depending on underlying storage engines and system resources.
+

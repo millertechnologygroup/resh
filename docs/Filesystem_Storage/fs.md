@@ -1,397 +1,553 @@
-# Filesystem Handle Documentation
+# Resource Shell (resh) – Filesystem Handle Documentation
 
-The filesystem handle in Resource Shell helps you work with mounted filesystems and storage devices. It provides tools to mount and unmount filesystems, check disk usage, resize partitions, and create snapshots of your filesystem configuration.
+## 1. Overview
 
-## URL Format
+Resource Shell (resh) is a structured command execution framework that standardizes infrastructure operations using a resource-oriented URI model.
 
-Filesystem handle URLs use the `fs://` scheme followed by an alias:
+The `fs://` handle provides comprehensive management of mounted filesystems and storage devices. It supports:
+
+* Mounting and unmounting filesystems
+* Disk usage monitoring
+* Filesystem resizing
+* Integrity checks and repair
+* Quota inspection
+* Mount configuration snapshotting
+* Mount inventory reporting
+
+Traditional filesystem administration relies on heterogeneous tools (`mount`, `umount`, `df`, `fsck`, `quota`, `resize2fs`, etc.), each with different syntax and output formats. This fragmentation complicates automation and increases parsing complexity.
+
+The `fs://` handle addresses this by:
+
+* Providing a unified URI-based interface
+* Standardizing argument structures
+* Returning structured output where applicable
+* Defining explicit exit codes
+* Supporting dry-run and timeout controls for safety
+
+All filesystem operations follow:
+
+```
+fs://alias.VERB(arguments)
+```
+
+Where `alias` represents a logical filesystem profile (e.g., `system`, `local`, or a custom-defined alias).
+
+---
+
+## 2. Design Philosophy and Core Principles
+
+### Structured Interface Model
+
+Filesystem operations use a consistent URI structure:
+
 ```
 fs://alias.verb(arguments)
 ```
 
-Common aliases include `system`, `local`, or custom names you define.
-
-## Available Verbs
-
-### mount
-Mounts a filesystem to a directory on your system.
-
-**Arguments:**
-- `target` - Where to mount the filesystem (required)
-- `source` - What device or filesystem to mount (optional for some operations)
-- `type` - Filesystem type like "ext4", "xfs", "btrfs" (optional, auto-detected if not provided)
-- `options` - List of mount options (default: empty list)
-- `read_only` - Mount as read-only (default: false)
-- `bind` - Create a bind mount (default: false)
-- `create_target` - Create the target directory if it doesn't exist (default: true)
-- `make_parents` - Create parent directories too (default: true)
-- `fail_if_mounted` - Fail if already mounted (default: false)
-- `remount` - Remount an existing mount with new options (default: false)
-- `network` - This is a network filesystem (default: false)
-- `timeout_ms` - How long to wait before giving up (default: 30000)
-- `dry_run` - Show what would be done without doing it (default: false)
-
-**Examples:**
-```bash
-# Mount a USB drive
-fs://system.mount(target="/mnt/usb", source="/dev/sdb1", type="ext4")
-```
+Examples:
 
 ```bash
-# Create target directory and mount with specific options
-fs://system.mount(target="/mnt/data", source="/dev/sdb1", create_target=true, options=["noatime", "user_xattr"])
-```
-
-```bash
-# Dry run to see what would happen
-fs://system.mount(target="/mnt/test", source="/dev/sdb1", type="ext4", dry_run=true)
-```
-
-### unmount (or umount)
-Removes a mounted filesystem from your system.
-
-**Arguments:**
-- `target` - What to unmount (required)
-- `by` - How to find what to unmount: "target", "source", or "auto" (default: "target")
-- `force` - Force unmount even if busy (default: false)
-- `lazy` - Detach the filesystem now, clean up later (default: false)
-- `detach_children` - Also unmount child mounts (default: false)
-- `fail_if_not_mounted` - Fail if nothing is mounted there (default: false)
-- `timeout_ms` - How long to wait before giving up (default: 5000)
-- `dry_run` - Show what would be done without doing it (default: false)
-
-**Examples:**
-```bash
-# Unmount by target directory
-fs://system.unmount(target="/mnt/usb")
-```
-
-```bash
-# Force unmount if filesystem is busy
-fs://system.unmount(target="/mnt/data", force=true)
-```
-
-```bash
-# Unmount by source device
-fs://system.unmount(target="/dev/sdb1", by="source")
-```
-
-### snapshot
-Creates a snapshot of your current filesystem mount configuration.
-
-**Arguments:**
-- `include_mountpoints` - Only include these mount points (default: include all)
-- `exclude_mountpoints` - Skip these mount points (default: empty list)
-- `include_types` - Only include these filesystem types (default: include all)
-- `exclude_types` - Skip these filesystem types (default: empty list)
-- `include_sources` - Only include these source devices (default: include all)
-- `exclude_sources` - Skip these source devices (default: empty list)
-- `include_usage` - Include disk space usage information (default: true)
-- `include_inodes` - Include inode usage information (default: false)
-- `include_fs_metadata` - Include filesystem details (default: true)
-- `include_os_metadata` - Include system information (default: true)
-- `normalize_paths` - Clean up path formatting (default: true)
-- `format` - Output format: "json", "yaml", or "text" (default: "json")
-- `inline` - Include data in response vs file reference (default: true)
-- `timeout_ms` - How long to wait for information (default: 5000)
-
-**Examples:**
-```bash
-# Basic snapshot with usage information
-fs://system.snapshot(include_types=["ext4", "xfs"], exclude_mountpoints=["/proc", "/sys", "/dev", "/run"])
-```
-
-```bash
-# Text format snapshot without usage data
-fs://local.snapshot(include_mountpoints=["/"], exclude_types=["proc", "sysfs", "tmpfs"], include_usage=false, format="text")
-```
-
-### quota
-Shows disk quota information for users or groups on quota-enabled filesystems.
-
-**Arguments:**
-- `path` - Filesystem path to check quotas on (optional)
-- `subject` - User or group name to check (optional, shows current user if not specified)
-- `subject_type` - Whether subject is "user" or "group" (default: "user")
-- `resolve_uid_gid` - Convert user/group IDs to names (default: true)
-- `include_space` - Show disk space quotas (default: true)
-- `include_inodes` - Show file count quotas (default: true)
-- `include_grace` - Show grace period information (default: true)
-- `all_subjects` - Show quotas for all users/groups (default: false)
-- `units` - Display units: "auto", "bytes", "kilobytes", "megabytes", "gigabytes", or "blocks" (default: "auto")
-- `timeout_ms` - How long to wait for quota information (default: 5000)
-
-**Examples:**
-```bash
-# Check current user's quota
-fs://system.quota(path="/home")
-```
-
-```bash
-# Check quotas for specific user
-fs://system.quota(subject="alice", path="/var/mail")
-```
-
-```bash
-# Show all user quotas on a filesystem
-fs://system.quota(path="/data", all_subjects=true)
-```
-
-### quota_summary
-Shows a summary of quota usage across multiple filesystems.
-
-**Arguments:**
-- `subject` - User or group name (optional, shows current user if not specified)
-- `subject_type` - Whether subject is "user" or "group" (default: "auto")
-- `resolve_uid_gid` - Convert user/group IDs to names (default: true)
-- `include_mountpoints` - Only check these mount points (default: check all)
-- `exclude_mountpoints` - Skip these mount points (default: empty list)
-- `include_types` - Only check these filesystem types (default: check all)
-- `exclude_types` - Skip these filesystem types (default: empty list)
-- `include_sources` - Only check these source devices (default: check all)
-- `exclude_sources` - Skip these source devices (default: empty list)
-- `include_space` - Show disk space quotas (default: true)
-- `include_inodes` - Show file count quotas (default: true)
-- `include_grace` - Show grace period information (default: true)
-- `all_subjects` - Show quotas for all users/groups (default: false)
-- `units` - Display units: "auto", "bytes", "kilobytes", "megabytes", "gigabytes", or "blocks" (default: "auto")
-- `timeout_ms` - How long to wait for quota information (default: 5000)
-
-**Examples:**
-```bash
-# Summary of current user's quotas across all filesystems
-fs://system.quota_summary()
-```
-
-```bash
-# Summary excluding system filesystems
-fs://system.quota_summary(exclude_types=["proc", "sysfs", "tmpfs", "devtmpfs"])
-```
-
-### usage
-Shows disk space usage information for filesystems or specific paths.
-
-**Arguments:**
-- `paths` - Specific paths to check (default: empty list, use mode setting)
-- `mode` - How to report usage: "mounts" (all mount points), "paths" (specific paths), or "aggregate" (combined totals) (default: "mounts")
-- `include_mountpoints` - Only include these mount points (default: include all)
-- `exclude_mountpoints` - Skip these mount points (default: empty list)
-- `include_types` - Only include these filesystem types (default: include all)
-- `exclude_types` - Skip these filesystem types (default: empty list)
-- `include_sources` - Only include these source devices (default: include all)
-- `exclude_sources` - Skip these source devices (default: empty list)
-- `include_inodes` - Include file count information (default: true)
-- `include_readonly` - Include read-only filesystems (default: true)
-- `normalize_paths` - Clean up path formatting (default: true)
-- `units` - Display units: "auto", "bytes", "kilobytes", "megabytes", "gigabytes", or "blocks" (default: "auto")
-- `human_readable` - Use human-friendly sizes like "1.2G" (default: false)
-- `threshold_used_percent_min` - Only show filesystems above this usage percent (optional)
-- `threshold_used_percent_max` - Only show filesystems below this usage percent (optional)
-- `timeout_ms` - How long to wait for usage information (default: 5000)
-
-**Examples:**
-```bash
-# Show usage for all mounted filesystems
+fs://system.mount(target="/mnt/usb",source="/dev/sdb1")
 fs://system.usage()
-```
-
-```bash
-# Show usage excluding system filesystems with human-readable sizes
-fs://system.usage(exclude_types=["proc", "sysfs", "tmpfs", "devtmpfs"], human_readable=true)
-```
-
-```bash
-# Show total usage across all filesystems
-fs://system.usage(mode="aggregate", exclude_types=["proc", "sysfs", "tmpfs", "devtmpfs"])
-```
-
-```bash
-# Check specific paths
-fs://system.usage(mode="paths", paths=["/", "/home", "/var"])
-```
-
-### resize
-Changes the size of a filesystem or its underlying storage.
-
-**Arguments:**
-- `target` - Filesystem mount point or device to resize (required)
-- `by` - How to find the target: "auto", "mountpoint", or "device" (default: "auto")
-- `size` - New size (e.g., "100G", "500M") - use either this or delta
-- `delta` - Size change (e.g., "+50G", "-10G") - use either this or size
-- `size_units` - Units for sizes: "auto", "bytes", "kilobytes", "megabytes", "gigabytes", or "terabytes" (default: "auto")
-- `mode` - Resize direction: "grow", "shrink", or "auto" (default: "grow")
-- `allow_shrink` - Allow making filesystem smaller (default: false)
-- `min_free_space_percent` - Keep at least this much free space (default: 5.0)
-- `manage_underlying_volume` - Also resize LVM/storage volumes (default: false)
-- `volume_resize_only` - Only resize volume, not filesystem (default: false)
-- `filesystem_resize_only` - Only resize filesystem, not volume (default: false)
-- `require_unmounted_for_shrink` - Unmount before shrinking (default: true)
-- `force` - Skip safety checks (default: false)
-- `dry_run` - Show what would be done without doing it (default: false)
-- `timeout_ms` - How long to wait for resize operation (default: 600000)
-
-**Examples:**
-```bash
-# Grow filesystem to 100GB
-fs://system.resize(target="/data", size="100G")
-```
-
-```bash
-# Add 50GB to current size
-fs://system.resize(target="/data", delta="+50G")
-```
-
-```bash
-# Shrink filesystem by 20GB (must allow shrinking)
-fs://system.resize(target="/data", delta="-20G", allow_shrink=true)
-```
-
-```bash
-# Dry run to see what would happen
-fs://system.resize(target="/data", size="100G", dry_run=true)
-```
-
-### check (or fsck)
-Checks a filesystem for errors and optionally repairs them.
-
-**Arguments:**
-- `target` - Filesystem mount point or device to check (required)
-- `by` - How to find the target: "auto", "mountpoint", or "device" (default: "auto")
-- `filesystem_type` - Override filesystem type detection (optional)
-- `mode` - What to do: "check", "repair", or "auto" (default: "check")
-- `aggressiveness` - How thorough: "safe", "normal", or "aggressive" (default: "safe")
-- `allow_repair` - Allow fixing errors found (default: false)
-- `allow_online_check` - Check mounted filesystems if supported (default: true)
-- `require_unmounted_for_repair` - Unmount before repairing (default: true)
-- `skip_if_mounted` - Skip check if filesystem is mounted (default: false)
-- `force` - Override safety checks (default: false)
-- `max_pass` - Maximum number of check passes (optional)
-- `btrfs_use_scrub` - Use scrub for btrfs instead of fsck (default: true)
-- `btrfs_allow_offline_check` - Allow offline btrfs check (default: false)
-- `dry_run` - Show what would be done without doing it (default: false)
-- `timeout_ms` - How long to wait for check operation (default: 600000)
-
-**Examples:**
-```bash
-# Check filesystem for errors (read-only)
 fs://system.check(target="/dev/sdb1")
 ```
 
-```bash
-# Check and repair filesystem if errors found
-fs://system.check(target="/dev/sdb1", mode="repair", allow_repair=true)
+The handle provides **9 verbs** grouped into functional categories.
+
+---
+
+### Safety-First Execution
+
+Safety mechanisms include:
+
+* `dry_run=true` support for non-destructive validation
+* Explicit flags for risky operations (`allow_shrink`, `allow_repair`, `force`)
+* Timeout controls (`timeout_ms`)
+* Explicit remount and fail-if conditions
+* Automatic directory creation safeguards
+* Explicit unmount requirements before shrink or repair operations
+
+Most operations require root privileges and return exit code `13` if insufficient permissions are detected.
+
+---
+
+### Deterministic Behavior
+
+Filesystem operations:
+
+* Require explicit `target` paths or devices
+* Use structured argument validation
+* Return consistent exit codes
+* Avoid ambiguous positional arguments
+* Support explicit selection of resolution methods (`by=auto|mountpoint|device`)
+
+---
+
+### JSON-Based Structured Output
+
+Structured output is provided for:
+
+* `snapshot`
+* `quota`
+* `quota_summary`
+* `usage`
+* `list-mounts`
+
+Example snapshot output:
+
+```json
+{
+  "timestamp": "2025-02-07T10:30:00Z",
+  "mounts": [
+    {
+      "target": "/",
+      "source": "/dev/sda1",
+      "type": "ext4",
+      "options": ["rw", "relatime"],
+      "usage": {
+        "total_bytes": 107374182400,
+        "used_bytes": 53687091200,
+        "available_bytes": 53687091200,
+        "used_percent": 50.0
+      }
+    }
+  ]
+}
 ```
 
-```bash
-# Aggressive check of unmounted filesystem
-fs://system.check(target="/data", aggressiveness="aggressive", skip_if_mounted=false)
+Automation systems should rely on structured JSON and exit codes rather than parsing textual output.
+
+---
+
+### AI-Readiness
+
+The URI grammar and structured outputs enable:
+
+* Infrastructure automation
+* Policy validation workflows
+* Predictable orchestration
+* Deterministic error handling
+* Programmatic inspection of filesystem state
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
+```
+fs://alias.verb(arguments)
 ```
 
-### list-mounts
-Shows information about currently mounted filesystems.
+#### Components
 
-**Arguments:**
-- `paths` - Only show mounts for these specific paths (default: show all)
-- `include_mountpoints` - Only include these mount points (default: include all)
-- `exclude_mountpoints` - Skip these mount points (default: empty list)
-- `include_types` - Only include these filesystem types (default: include all)
-- `exclude_types` - Skip these filesystem types (default: empty list)
-- `include_sources` - Only include these source devices (default: include all)
-- `exclude_sources` - Skip these source devices (default: empty list)
-- `include_readonly` - Include read-only mounts (default: true)
-- `include_readwrite` - Include read-write mounts (default: true)
-- `include_pseudo` - Include virtual filesystems like proc, sysfs (default: false)
-- `include_loop` - Include loop device mounts (default: true)
-- `include_network` - Include network filesystems (default: true)
-- `normalize_paths` - Clean up path formatting (default: true)
-- `resolve_labels` - Look up filesystem labels and UUIDs (default: false)
-- `resolve_fs_features` - Include detailed filesystem information (default: false)
-- `timeout_ms` - How long to wait for mount information (default: 3000)
+| Component   | Description                |
+| ----------- | -------------------------- |
+| `fs`        | Filesystem handle          |
+| `alias`     | Logical filesystem profile |
+| `verb`      | Operation to perform       |
+| `arguments` | Named parameters           |
 
-**Examples:**
+**Common aliases:**
+
+* `system`
+* `local`
+* Custom-defined aliases
+
+---
+
+### Example Commands
+
+Mount USB device:
+
 ```bash
-# List all mounted filesystems
+fs://system.mount(target="/mnt/usb",source="/dev/sdb1",type="ext4")
+```
+
+List mounts:
+
+```bash
 fs://system.list-mounts()
 ```
 
-```bash
-# List only real filesystems, excluding virtual ones
-fs://system.list-mounts(exclude_types=["proc", "sysfs", "tmpfs", "devtmpfs"], include_pseudo=false)
-```
+Check disk usage:
 
 ```bash
-# Detailed listing with labels and filesystem features
-fs://system.list-mounts(resolve_labels=true, resolve_fs_features=true)
+fs://system.usage(human_readable=true)
 ```
+
+Resize filesystem:
 
 ```bash
-# Show only ext4 and xfs filesystems
-fs://system.list-mounts(include_types=["ext4", "xfs"])
+fs://system.resize(target="/data",delta="+50G")
 ```
 
-## Common Patterns
+Repair filesystem:
 
-### Mounting a USB Drive
 ```bash
-# Check what's available
-fs://system.list-mounts(include_types=["ext4", "fat32", "exfat"])
-
-# Mount the drive
-fs://system.mount(target="/mnt/usb", source="/dev/sdb1", create_target=true)
-
-# Check usage
-fs://system.usage(paths=["/mnt/usb"])
-
-# Safely unmount
-fs://system.unmount(target="/mnt/usb")
+fs://system.check(target="/dev/sdb1",mode="repair",allow_repair=true)
 ```
 
-### Managing Disk Space
+---
+
+### 3.2 Execution Semantics
+
+Operations may:
+
+* Return no output (success indicated by exit code 0)
+* Return structured JSON (snapshot, quota, usage)
+* Return error codes for safety or system conditions
+
+Common exit codes:
+
+| Code | Meaning                    |
+| ---- | -------------------------- |
+| 0    | Success                    |
+| 1    | Invalid arguments          |
+| 2    | Target not found           |
+| 3    | Unsupported                |
+| 13   | Permission denied          |
+| 16   | Resource busy              |
+| 17   | Conflicting operation      |
+| 18   | Failed to create directory |
+| 19   | Not mounted                |
+| 32   | General failure            |
+| 62   | Timeout                    |
+| 95   | Unknown verb               |
+
+Automation should always inspect exit codes.
+
+---
+
+## 4. Functional Domains
+
+### 4.1 Automation Utilities
+
+#### snapshot
+
+Creates a mount configuration snapshot.
+
+Use cases:
+
+* Change auditing
+* Pre-maintenance capture
+* Compliance tracking
+
+Example:
+
 ```bash
-# Check overall usage
-fs://system.usage(exclude_types=["proc", "sysfs", "tmpfs"], human_readable=true)
-
-# Find filesystems over 80% full
-fs://system.usage(threshold_used_percent_min=80, exclude_types=["proc", "sysfs", "tmpfs"])
-
-# Check specific user's quotas
-fs://system.quota(subject="alice", all_subjects=false)
+fs://system.snapshot(format="json",include_usage=true)
 ```
 
-### Filesystem Maintenance
+---
+
+### 4.2 Data & State Management
+
+#### usage
+
+Reports disk usage.
+
 ```bash
-# Check filesystem health
-fs://system.check(target="/dev/sdb1", mode="check")
-
-# Create a configuration snapshot before changes
-fs://system.snapshot(format="json", include_usage=true)
-
-# Grow filesystem if needed
-fs://system.resize(target="/data", delta="+10G", dry_run=true)
-fs://system.resize(target="/data", delta="+10G")
+fs://system.usage(mode="aggregate")
 ```
 
-## Error Codes
+#### quota
 
-The filesystem handle returns specific error codes for different situations:
+Reports quota information.
 
-- **1**: Invalid configuration or arguments
-- **2**: Target not found or profile missing  
-- **3**: Operation not supported on this system
-- **13**: Permission denied (need root privileges)
-- **16**: Resource busy (filesystem in use)
-- **17**: Conflicting operation (already mounted)
-- **18**: Failed to create target directory
-- **19**: Not mounted when expected to be
-- **32**: Operation failed (general failure)
-- **62**: Operation timed out
-- **95**: Unknown verb or unsupported option
+```bash
+fs://system.quota(subject="alice",path="/home")
+```
 
-## Notes
+#### quota_summary
 
-- Many operations require root privileges, especially mounting and resizing
-- Always use `dry_run=true` to test operations before running them
-- Some filesystem operations require unmounting first
-- Network filesystems may need additional configuration
-- Quota operations only work on filesystems with quotas enabled
-- Resize operations may require specific filesystem tools to be installed
+Aggregates quota data across filesystems.
+
+```bash
+fs://system.quota_summary(all_subjects=true)
+```
+
+Use cases:
+
+* Capacity planning
+* Multi-tenant system monitoring
+* Threshold-based alerting
+
+---
+
+### 4.3 Filesystem & Storage
+
+#### mount
+
+Mount filesystem to target.
+
+#### unmount (alias: umount)
+
+Unmount filesystem.
+
+#### list-mounts
+
+Inventory mounted filesystems.
+
+Example:
+
+```bash
+fs://system.mount(target="/mnt/data",source="/dev/sdb1",create_target=true)
+fs://system.unmount(target="/mnt/data")
+```
+
+Use cases:
+
+* USB drive management
+* NFS/CIFS mounting
+* Bind mounts
+* Secure chroot environments
+
+---
+
+### 4.4 Storage Management
+
+#### resize
+
+Resize filesystem and optionally underlying volumes.
+
+```bash
+fs://system.resize(target="/data",delta="+50G",manage_underlying_volume=true)
+```
+
+#### check (alias: fsck)
+
+Check and optionally repair filesystem.
+
+```bash
+fs://system.check(target="/dev/sdb1",mode="check")
+```
+
+Use cases:
+
+* Volume expansion
+* LVM workflows
+* Maintenance windows
+* Filesystem integrity verification
+
+---
+
+### 4.5 Network & Remote Operations
+
+Network mounts supported via:
+
+* NFS
+* CIFS
+
+Example:
+
+```bash
+fs://system.mount(target="/mnt/nfs",source="server:/export",type="nfs",network=true)
+```
+
+Use cases:
+
+* Centralized storage
+* Backup targets
+* Shared enterprise filesystems
+
+---
+
+### 4.6 Packages & Software
+
+Not applicable to `fs://`.
+
+---
+
+### 4.7 Process & Service Management
+
+Not applicable to `fs://`.
+
+---
+
+### 4.8 Security & Secrets
+
+Security-related operations include:
+
+* Read-only mounts (`read_only=true`)
+* Security mount options (`noexec`, `nosuid`, `nodev`)
+* Quota enforcement
+* Permission enforcement via root-only execution
+
+Example:
+
+```bash
+fs://system.mount(target="/secure",source="/dev/sdb1",options=["noexec","nosuid","nodev"])
+```
+
+---
+
+### 4.9 System Information
+
+#### list-mounts
+
+Enumerates mount table.
+
+#### usage
+
+Reports usage metrics.
+
+Supports:
+
+* Type filtering
+* Source filtering
+* Threshold filtering
+* Label resolution
+
+Example:
+
+```bash
+fs://system.list-mounts(include_types=["ext4","xfs"])
+```
+
+---
+
+## 5. Platform Support
+
+Based on provided documentation:
+
+* Designed for Unix-like systems.
+* Requires root privileges for most operations.
+* Supports Linux filesystem types including ext4, xfs, btrfs, ntfs, vfat, exfat, NFS, CIFS.
+* Virtual filesystem filtering supported (`proc`, `sysfs`, `tmpfs`, `devtmpfs`).
+
+No Windows-native support details provided in the source documentation.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Always test with `dry_run=true`.
+* Create `snapshot` before major changes.
+* Use explicit flags for shrink or repair.
+* Avoid `force=true` unless required.
+* Exclude pseudo filesystems during monitoring.
+* Use read-only mounts where applicable.
+
+---
+
+### Automation Considerations
+
+* Use threshold filters in monitoring workflows.
+* Use `aggregate` mode for capacity dashboards.
+* Always verify resize operations with `usage`.
+* Set explicit `timeout_ms` for long-running operations.
+
+---
+
+### CI/CD Integration
+
+Typical patterns:
+
+```bash
+# Snapshot before deployment
+fs://system.snapshot(format="json")
+
+# Verify mount state
+fs://system.list-mounts()
+
+# Validate capacity
+fs://system.usage(threshold_used_percent_min=80)
+```
+
+---
+
+### Production Recommendations
+
+* Use read-only mounts for backups.
+* Enable quotas in multi-user environments.
+* Monitor grace periods.
+* Exclude pseudo filesystems in monitoring.
+* Use bind mounts for isolation patterns.
+* Verify health with `check` before resizing.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Automate mount management during deployment.
+* Monitor storage thresholds.
+* Resize volumes in CI/CD.
+* Snapshot configuration before infrastructure changes.
+
+---
+
+### SRE Engineers
+
+* Diagnose resource exhaustion.
+* Perform safe filesystem repair.
+* Monitor quota enforcement.
+* Track mount drift via snapshots.
+
+---
+
+### Network Administrators
+
+* Mount and manage NFS/CIFS shares.
+* Secure mounts with restrictive options.
+* Monitor remote storage availability.
+* Enforce quota policies.
+
+---
+
+### AI / Automation Engineers
+
+* Use structured JSON outputs for monitoring systems.
+* Integrate `usage` thresholds into alerting engines.
+* Automate capacity expansion workflows.
+* Orchestrate deterministic maintenance procedures.
+
+---
+
+## 8. Technical Foundation
+
+The filesystem handle is implemented within resh’s Rust-based execution framework.
+
+### Rust Implementation Advantages
+
+* Memory safety guarantees
+* Strong type enforcement
+* Deterministic error handling
+* Controlled privilege operations
+
+---
+
+### Type Safety
+
+* Strict argument parsing
+* Explicit mode flags
+* Enumerated option validation
+* Explicit exit code mapping
+
+---
+
+### Performance Characteristics
+
+* Timeout-controlled long-running operations
+* Structured mount filtering
+* Targeted filesystem resolution methods
+* Efficient mount inventory reporting
+
+---
+
+### Cross-Platform Architecture
+
+The documentation describes integration with Unix-style filesystem management tools and filesystem types.
+
+Operations assume:
+
+* Standard mount interfaces
+* Unix-style permission model
+* Root privilege model
+
+No non-Unix implementation details are provided in the source documentation.
+

@@ -1,7 +1,7 @@
-mod certh;
+pub mod certh;
 pub mod firewallh;
-mod secreth;
-mod userh;
+pub mod secreth;
+pub mod userh;
 
 use crate::core::Registry;
 

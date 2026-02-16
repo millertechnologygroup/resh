@@ -1376,11 +1376,200 @@ type GitConnectionRegistry = std::sync::LazyLock<dashmap::DashMap<String, GitCon
 
 static GIT_CONNECTIONS: GitConnectionRegistry = std::sync::LazyLock::new(|| dashmap::DashMap::new());
 
+/// Comprehensive git handle help text
+pub const GIT_HELP_TEXT: &str = r#"RESOURCE SHELL - GIT HANDLE
+===========================
+
+USAGE:
+  git://alias.VERB(arguments)
+
+DESCRIPTION:
+  The git handle provides comprehensive Git repository management for Resource
+  Shell. Clone repositories, manage branches, create commits, handle merges and
+  rebases, synchronize with remotes, view diffs, manage tags, and check repository
+  status. Supports authentication via SSH keys, HTTPS credentials, and tokens.
+  Essential for version control, source code management, development workflows,
+  CI/CD integration, and team collaboration. Works with local and remote Git
+  repositories across GitHub, GitLab, Bitbucket, and self-hosted Git servers.
+
+URL FORMAT:
+  git://alias.VERB(arguments)
+  git://default.clone(url=https://github.com/user/repo.git,path=/tmp/repo)
+  git://main.branch(path=/tmp/repo,action=list)
+  git://deploy.push(path=/tmp/repo,remote=origin)
+
+  alias: Connection identifier (e.g., default, main, deploy)
+  VERB: Git operation to perform
+
+VERBS (13 total):
+
+  Repository Operations:
+    clone             Clone a remote repository
+    status            Get detailed repository status
+    status_summary    Get summary with recommendations
+    status_short      Get compact status for shell prompts
+
+  Branch Management:
+    branch            Manage branches (list, create, delete, rename, checkout)
+
+  Change Management:
+    commit            Create commits with staged changes
+    diff              Show differences between commits/branches/working tree
+
+  Synchronization:
+    pull              Pull changes from remote
+    push              Push changes to remote
+    sync              Synchronize with remote (fetch + merge/rebase + push)
+
+  Branch Integration:
+    merge             Merge branches
+    rebase            Rebase branches
+
+  Tagging:
+    tag               Manage tags (list, create, delete)
+
+AUTHENTICATION METHODS:
+
+SSH Key Authentication:
+  • Most secure for automated operations
+  • No password prompts
+  • Path to private key file
+  • Example: ssh_key=/home/user/.ssh/id_rsa
+  • Supports: GitHub, GitLab, Bitbucket, custom servers
+
+HTTPS Token Authentication:
+  • Personal access tokens
+  • Fine-grained permissions
+  • Recommended for HTTPS
+  • Example: token=ghp_xxxxxxxxxxxx
+  • GitHub: Personal Access Tokens
+  • GitLab: Personal Access Tokens
+  • Bitbucket: App Passwords
+
+HTTPS Username/Password:
+  • Basic authentication
+  • Less secure than tokens
+  • May not work with 2FA
+  • Example: username=user,password=pass
+  • Not recommended for production
+
+Authentication Priority:
+  1. SSH key (if provided)
+  2. Token (if provided)
+  3. Username/Password (if provided)
+  4. System credentials (git credential helper)
+
+BEST PRACTICES:
+• Always check status before operations
+• Pull before starting new work
+• Use feature branches for development
+• Keep commits atomic and focused
+• Write descriptive commit messages
+• Use conventional commit format
+• Pull before pushing
+• Resolve conflicts promptly
+• Use rebase for cleaner history
+• Use merge for feature integration
+• Tag releases with semantic versioning
+• Use SSH keys for authentication
+• Never commit secrets or credentials
+• Use .gitignore properly
+• Review diffs before committing
+• Test before committing
+• Commit frequently with small changes
+• Use descriptive branch names
+• Delete merged branches
+• Keep main/master stable
+• Use protected branches
+• Require code reviews
+• Use branch naming conventions
+• Document repository structure
+• Use issue tracking integration
+• Automate with CI/CD
+• Use signed commits for security
+• Back up repositories regularly
+• Use shallow clones for CI
+• Limit repository size
+• Use Git LFS for large files
+
+TROUBLESHOOTING:
+
+Repository not found:
+  • Verify path is correct
+  • Check repository is initialized
+  • Ensure .git directory exists
+  • Verify permissions
+
+Authentication failed:
+  • Check credentials are correct
+  • Verify token hasn't expired
+  • Check SSH key permissions (600)
+  • Verify SSH key is added to agent
+  • Check 2FA requirements
+  • Try different authentication method
+
+Merge conflicts:
+  • Use git://default.status to see conflicts
+  • Resolve conflicts manually
+  • Stage resolved files
+  • Complete merge with commit
+  • Use abort_on_conflict=true to prevent
+
+Cannot push:
+  • Pull latest changes first
+  • Check branch protection rules
+  • Verify push permissions
+  • Check network connectivity
+  • Use force=true if intentional
+
+Network timeout:
+  • Check internet connection
+  • Increase timeout_ms
+  • Try different network
+  • Check firewall settings
+
+EXIT CODES:
+  0                      Success
+  1                      General error
+  2                      Repository not found
+  3                      Authentication failed
+  4                      Network timeout
+  5                      Merge conflict
+  6                      Invalid configuration
+  7                      Permission denied
+  8                      Detached HEAD state
+  9                      Uncommitted changes blocking operation
+
+MORE INFO:
+  Use 'git:// --help=VERB' for detailed help on a specific verb.
+
+"#;
+
+/// Help text constants for individual verbs
+pub const CLONE_HELP: &str = "CLONE VERB (git://alias.clone)\n\nClones a repository from a remote location.\n\nRequires: url, path\n\nExample: git://default.clone(url=https://github.com/user/repo.git,path=/local/path)\n";
+pub const BRANCH_HELP: &str = "BRANCH VERB (git://alias.branch)\n\nManages branches - list, create, delete, rename, checkout.\n\nRequires: path, action\n\nExample: git://default.branch(path=/repo,action=list)\n";
+pub const PULL_HELP: &str = "PULL VERB (git://alias.pull)\n\nPulls changes from remote repository.\n\nRequires: path\n\nExample: git://default.pull(path=/repo,remote=origin)\n";
+pub const PUSH_HELP: &str = "PUSH VERB (git://alias.push)\n\nPushes changes to remote repository.\n\nRequires: path\n\nExample: git://default.push(path=/repo,branch=main)\n";
+pub const STATUS_HELP: &str = "STATUS VERB (git://alias.status)\n\nShows detailed repository status.\n\nRequires: path\n\nExample: git://default.status(path=/repo)\n";
+pub const STATUS_SUMMARY_HELP: &str = "STATUS_SUMMARY VERB (git://alias.status_summary)\n\nShows repository status summary with recommendations.\n\nRequires: path\n\nExample: git://default.status_summary(path=/repo)\n";
+pub const STATUS_SHORT_HELP: &str = "STATUS_SHORT VERB (git://alias.status_short)\n\nShows compact status for shell prompts.\n\nRequires: path\n\nExample: git://default.status_short(path=/repo)\n";
+pub const COMMIT_HELP: &str = "COMMIT VERB (git://alias.commit)\n\nCreates commits with staged changes.\n\nRequires: path, message\n\nExample: git://default.commit(path=/repo,message=\"Fix bug\")\n";
+pub const DIFF_HELP: &str = "DIFF VERB (git://alias.diff)\n\nShows differences between commits, branches, working tree.\n\nRequires: path\n\nExample: git://default.diff(path=/repo,mode=workdir_vs_index)\n";
+pub const TAG_HELP: &str = "TAG VERB (git://alias.tag)\n\nManages tags - list, create, delete.\n\nRequires: path, action\n\nExample: git://default.tag(path=/repo,action=list)\n";
+pub const MERGE_HELP: &str = "MERGE VERB (git://alias.merge)\n\nMerges branches together.\n\nRequires: path, branch\n\nExample: git://default.merge(path=/repo,branch=feature)\n";
+pub const REBASE_HELP: &str = "REBASE VERB (git://alias.rebase)\n\nRebases current branch onto another.\n\nRequires: path, onto\n\nExample: git://default.rebase(path=/repo,onto=main)\n";
+pub const SYNC_HELP: &str = "SYNC VERB (git://alias.sync)\n\nSynchronizes with remote (fetch + merge/rebase + push).\n\nRequires: path\n\nExample: git://default.sync(path=/repo,pull_strategy=rebase)\n";
+
 impl GitHandle {
     /// Create new GitHandle from URL
     pub fn from_url(url: Url) -> Result<Self> {
         // For git:// URLs, the alias can be in the host or path
         let alias = if let Some(host) = url.host_str() {
+            // Check if host is a help request
+            if host == "--help" || host == "-h" || host == "help" {
+                print!("{}", GIT_HELP_TEXT);
+                std::process::exit(0);
+            }
             // If we have a host, that's our alias (git://main)
             host.to_string()
         } else if url.path() == "/" || url.path().is_empty() {
@@ -1388,7 +1577,12 @@ impl GitHandle {
             "default".to_string()
         } else {
             // Path-based alias (git:///main)
-            url.path().trim_start_matches('/').to_string()
+            let path_alias = url.path().trim_start_matches('/').to_string();
+            if path_alias == "--help" || path_alias == "-h" || path_alias == "help" {
+                print!("{}", GIT_HELP_TEXT);
+                std::process::exit(0);
+            }
+            path_alias
         };
 
         if alias.is_empty() {
@@ -1396,6 +1590,30 @@ impl GitHandle {
         }
 
         Ok(GitHandle { alias })
+    }
+
+    /// Show verb-specific help
+    fn show_verb_help(&self, verb: &str) -> Result<Status> {
+        match verb {
+            "clone" => print!("{}", CLONE_HELP),
+            "branch" => print!("{}", BRANCH_HELP),
+            "pull" => print!("{}", PULL_HELP),
+            "push" => print!("{}", PUSH_HELP),
+            "status" => print!("{}", STATUS_HELP),
+            "status_summary" => print!("{}", STATUS_SUMMARY_HELP),
+            "status_short" => print!("{}", STATUS_SHORT_HELP),
+            "commit" => print!("{}", COMMIT_HELP),
+            "diff" => print!("{}", DIFF_HELP),
+            "tag" => print!("{}", TAG_HELP),
+            "merge" => print!("{}", MERGE_HELP),
+            "rebase" => print!("{}", REBASE_HELP),
+            "sync" => print!("{}", SYNC_HELP),
+            _ => {
+                eprintln!("Unknown verb: {}. Use --help for full list.", verb);
+                return Ok(Status::err(1, format!("Unknown verb: {}", verb)));
+            },
+        }
+        Ok(Status::success())
     }
 
     /// Clone verb implementation
@@ -7850,6 +8068,18 @@ impl Handle for GitHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, _io: &mut IoStreams) -> Result<Status> {
+        // Handle verb-specific help first
+        if let Some(help_verb) = args.get("help") {
+            return self.show_verb_help(help_verb);
+        }
+
+        // Handle general help requests 
+        if verb == "help" || verb == "--help" || verb == "-h" ||
+           args.get("--help").is_some() || args.get("-h").is_some() {
+            print!("{}", GIT_HELP_TEXT);
+            return Ok(Status::success());
+        }
+
         match verb {
             "clone" => {
                 // Convert Args to Value for async processing

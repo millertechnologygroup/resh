@@ -1,412 +1,116 @@
-# HTTP Handle Documentation
+# Resource Shell (resh) – HTTP Handle Documentation
 
-The HTTP handle in Resource Shell allows you to make HTTP requests to web servers and APIs. You can use it with both `http://` and `https://` URLs to perform various operations like retrieving data, sending information, or checking server capabilities.
+## 1. Overview
 
-## Available Verbs
+### Definition
 
-The HTTP handle supports 10 different verbs, each designed for specific HTTP operations:
+Resource Shell (resh) is a resource-oriented command-line environment that expresses infrastructure operations using structured URI-based commands. The HTTP handle enables HTTP and HTTPS interactions through typed verbs and structured responses.
 
-- `get` - Retrieve data from a server
-- `head` - Get only response headers (no body)
-- `post` - Send data to create new resources
-- `put` - Send data to create or update resources
-- `patch` - Send data to partially update resources
-- `delete` - Remove resources from a server
-- `options` - Check what HTTP methods are allowed
-- `preflight` - Perform CORS preflight requests
-- `json` - Make requests with JSON response envelope
-- `headers` - Get only response headers as JSON
+### Purpose
 
-## Common Parameters
+resh provides deterministic HTTP interactions by:
 
-Most HTTP verbs support these common parameters:
+* Exposing HTTP methods as explicit verbs
+* Enforcing structured parameter definitions
+* Supporting structured JSON response envelopes
+* Returning predictable status behavior
 
-- `headers` - Custom HTTP headers (format: "Header:value;Another:value")
-- `query` - Query parameters (format: "param=value&other=param")
-- `accept` - Response format: "json", "text", or "bytes"
-- `timeout_ms` - Request timeout in milliseconds (default: 30000)
-- `allow_insecure` - For HTTPS, allow invalid certificates (format: "true")
+It replaces ad-hoc `curl`-style string invocation with a structured execution model.
 
-## GET Verb
+### Architectural Problem Addressed
 
-The `get` verb retrieves data from a server.
+Traditional HTTP command-line tools:
 
-### Basic GET Request
+* Rely on textual output
+* Mix headers, body, and metadata
+* Require manual parsing
+* Depend on implicit behavior and flags
 
-**Example:**
-```
-http://{server_addr}/text.get
-```
-
-**Expected Response:**
-```
-hello world
-```
-
-### GET with JSON Response
-
-**Example:**
-```
-http://{server_addr}/foo.get(query="x=1",accept="json")
-```
-
-**Expected Response:**
-```json
-{"ok":true,"value":42}
-```
-
-### GET with Custom Headers
-
-**Example:**
-```
-http://{server_addr}/test.get(headers="X-Foo:bar;X-Bar:baz")
-```
-
-**Expected Response:**
-```
-success
-```
-
-### GET with Query Parameters
-
-**Example:**
-```
-http://{server_addr}/search.get(query="q=rust&lang=en")
-```
-
-**Expected Response:**
-```
-search results
-```
-
-### GET with Bytes Mode
-
-**Example:**
-```
-http://{server_addr}/binary.get(accept="bytes")
-```
-
-**Expected Response:**
-Binary data (raw bytes)
-
-### GET with Timeout
-
-**Example:**
-```
-http://{server_addr}/slow.get(timeout_ms="1")
-```
-
-**Expected Behavior:**
-Request times out and fails due to very short timeout
-
-## HEAD Verb
-
-The `head` verb gets only response headers without the body. It always returns JSON with status and header information.
-
-### Basic HEAD Request
-
-**Example:**
-```
-http://{server_addr}/ok.head
-```
-
-**Expected Response:**
-```json
-{
-  "status": 200,
-  "ok": true,
-  "headers": {
-    "x-test": "head-basic",
-    "content-type": "text/plain"
-  }
-}
-```
-
-### HEAD with Custom Headers
-
-**Example:**
-```
-http://{server_addr}/ok.head(headers="X-Foo:bar;X-Bar:baz")
-```
-
-**Expected Response:**
-```json
-{
-  "status": 200,
-  "ok": true,
-  "headers": {
-    "x-server-received": "yes",
-    "content-type": "application/json"
-  }
-}
-```
-
-## POST Verb
-
-The `post` verb sends data to create new resources.
-
-### POST with Body Text
-
-**Example:**
-```
-http://{server_addr}/echo.post(body="hello")
-```
-
-**Expected Response:**
-```
-hello
-```
-
-### POST with Body File
-
-**Example:**
-```
-http://{server_addr}/echo.post(body="ignored",body_file="{temp_file_path}")
-```
-
-**Expected Response:**
-```
-from file
-```
-
-**Note:** When both `body` and `body_file` are provided, `body_file` takes priority.
+This introduces automation fragility when:
 
-### POST with Headers and Content Type
+* Response formats change
+* Headers must be parsed manually
+* Error handling depends on text inspection
 
-**Example:**
-```
-http://{server_addr}/test.post(body="{}",headers="X-Foo:bar;X-Bar:baz",content_type="application/json")
-```
-
-**Expected Response:**
-```
-success
-```
-
-## PUT Verb
-
-The `put` verb sends data to create or update resources completely.
-
-### PUT with Body Text
-
-**Example:**
-```
-http://127.0.0.1:{port}/resource.put(body="hello", content_type="text/plain", accept="json")
-```
-
-**Expected Response:**
-Response contains `"status":200` and `"ok":true`
-
-### PUT with Body File
-
-**Example:**
-```
-http://127.0.0.1:{port}/upload.put(body_file="{file_path}", accept="text")
-```
-
-**Expected Response:**
-```
-File uploaded successfully
-```
-
-## PATCH Verb
-
-The `patch` verb sends data to partially update resources.
-
-### PATCH with JSON Body
-
-**Example:**
-```
-http://{server_addr}/resource.patch(body="{\"name\":\"test\"}", content_type="application/json", accept="json")
-```
-
-**Expected Response:**
-```json
-{"ok":true,"method":"PATCH"}
-```
-
-### PATCH with Headers and Query
-
-**Example:**
-```
-http://{server_addr}/resource.patch(query="a=1&b=2", headers="X-Foo:bar", body="hello", content_type="text/plain", accept="text")
-```
-
-**Expected Response:**
-```
-updated
-```
-
-### PATCH with Body File
-
-**Example:**
-```
-http://{server_addr}/resource.patch(body_file="{temp_file_path}", content_type="text/plain")
-```
-
-**Expected Response:**
-Varies based on server implementation
-
-## DELETE Verb
-
-The `delete` verb removes resources from a server.
+resh addresses this by:
 
-### Simple DELETE Request
+* Defining HTTP verbs explicitly
+* Structuring responses (especially via `json`, `headers`, `head`, `options`)
+* Providing consistent parameter handling
+* Returning structured JSON when required
 
-**Example:**
-```
-http://{server_host_with_port}/resource.delete(accept="json")
-```
-
-**Expected Response:**
-```json
-{"deleted": true}
-```
+### Resource-Oriented URI Model
 
-### DELETE with Headers and Query
+resh HTTP commands follow:
 
-**Example:**
 ```
-http://{server_host_with_port}/item.delete(query="force=true",headers="X-Test:Yes",accept="text")
+handle://target.verb(options)
 ```
 
-**Expected Response:**
-```
-success
-```
+For HTTP:
 
-### DELETE with 404 Error
-
-**Example:**
-```
-http://{server_host_with_port}/notfound.delete(accept="text")
-```
+* **handle**: `http://` or `https://`
+* **target**: Host, port, and path
+* **verb**: HTTP method abstraction (`get`, `post`, `json`, etc.)
+* **options**: Structured parameters (headers, body, timeout, etc.)
 
-**Expected Behavior:**
-Command fails with non-zero exit code
+Example:
 
-**Expected Response:**
 ```
-not found
+https://api.example.com/users.get(query="active=true",accept="json")
 ```
 
-## OPTIONS Verb
+---
 
-The `options` verb checks what HTTP methods are allowed for a resource.
+## 2. Design Philosophy and Core Principles
 
-### Basic OPTIONS Request
+### Structured Interface Model
 
-**Example:**
-```
-http://{server_url}/resource.options
-```
-
-**Expected Response:**
-```json
-{
-  "status": 204,
-  "reason": "No Content",
-  "backend": "reqwest",
-  "has_body": false,
-  "allowed_methods": ["GET", "POST", "OPTIONS"],
-  "headers": {
-    "allow": "GET, POST, OPTIONS",
-    "x-test": "options-basic"
-  },
-  "url": "{server_url}/resource"
-}
-```
-
-### OPTIONS with Body Included
-
-**Example:**
-```
-http://{server_url}/resource.options(include_body="true")
-```
+* Each HTTP method is exposed as a verb.
+* Parameters are defined and validated.
+* Responses are controlled via `accept` modes.
+* Structured envelope verbs (`json`, `headers`, `head`) provide machine-readable metadata.
 
-**Expected Response:**
-```json
-{
-  "status": 200,
-  "has_body": true,
-  "body": "OPTIONS response body",
-  "allowed_methods": ["GET", "HEAD", "OPTIONS"]
-}
-```
+This models HTTP operations as typed resource interactions.
 
-## PREFLIGHT Verb
+---
 
-The `preflight` verb performs CORS preflight requests for cross-origin resource sharing.
+### Safety-First Execution
 
-### Basic CORS Preflight
+* Non-2xx responses (for most verbs) exit with non-zero status.
+* Timeout behavior is explicitly configurable.
+* JSON parsing failures produce command failure.
+* HTTPS validation is enabled by default.
 
-**Example:**
-```
-http://{server_url}/api/resource.preflight
-```
+This prevents silent failure in automation pipelines.
 
-**Expected Response:**
-```json
-{
-  "method": "OPTIONS",
-  "status": 204,
-  "ok": true,
-  "url": "{server_url}/api/resource",
-  "cors": {
-    "allowed_origins": ["*"],
-    "allowed_methods": ["GET", "POST", "PUT", "DELETE"],
-    "allowed_headers": ["X-Auth-Token", "Content-Type"],
-    "exposed_headers": ["X-RateLimit-Remaining"],
-    "allow_credentials": true,
-    "max_age_seconds": 600
-  },
-  "raw_headers": {
-    "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET, POST, PUT, DELETE",
-    "access-control-allow-headers": "X-Auth-Token, Content-Type",
-    "access-control-expose-headers": "X-RateLimit-Remaining",
-    "access-control-allow-credentials": "true",
-    "access-control-max-age": "600"
-  }
-}
-```
+---
 
-### PREFLIGHT with CORS Request Headers
+### Deterministic Behavior
 
-**Example:**
-```
-http://{server_url}/api/resource.preflight(origin="https://app.example.com", method="POST", request_headers="X-Auth-Token,X-Trace-Id")
-```
+* Identical inputs produce consistent structured outputs.
+* Headers are normalized.
+* Binary and text modes are explicitly selectable.
+* Parameter precedence rules are defined (e.g., `body_file` overrides `body`).
 
-**Expected Response:**
-```json
-{
-  "status": 200,
-  "cors": {
-    "allowed_origins": ["https://app.example.com"],
-    "allowed_methods": ["GET", "POST"],
-    "allowed_headers": ["X-Auth-Token", "X-Trace-Id"]
-  }
-}
-```
+---
 
-## JSON Verb
+### JSON-Based Structured Output
 
-The `json` verb makes requests and returns responses in a structured JSON envelope format.
+resh supports:
 
-### JSON GET Request
+* `accept="json"` for parsed JSON responses
+* `json` verb for structured response envelopes
+* `headers` verb for header-only structured output
+* `head` and `options` structured metadata output
 
-**Example:**
-```
-http://{server_host}:{server_port}/test.json(method="GET", accept="json")
-```
+Structured envelope example:
 
-**Expected Response:**
 ```json
 {
   "status": 200,
   "status_text": "OK",
-  "url": "http://{server_host}:{server_port}/test",
+  "url": "https://api.example.com/test",
   "body": {
     "type": "json",
     "value": {
@@ -417,173 +121,413 @@ http://{server_host}:{server_port}/test.json(method="GET", accept="json")
 }
 ```
 
-### JSON with Text Fallback
+---
 
-**Example:**
+### AI-Readiness
+
+Structured response envelopes:
+
+* Expose HTTP metadata
+* Preserve header arrays
+* Provide explicit status codes
+* Eliminate natural-language parsing
+
+This enables automated reasoning over HTTP responses.
+
+---
+
+## 3. Command Syntax and Execution Model
+
+### 3.1 URI Structure
+
 ```
-http://{server_host}:{server_port}/text.json(method="GET", accept="json")
+handle://target.verb(options)
 ```
 
-**Expected Response:**
+| Component | Description                |
+| --------- | -------------------------- |
+| `handle`  | `http://` or `https://`    |
+| `target`  | Host, port, and path       |
+| `verb`    | HTTP operation abstraction |
+| `options` | Structured parameters      |
+
+---
+
+### Supported HTTP Verbs
+
+| Verb        | Description                         |
+| ----------- | ----------------------------------- |
+| `get`       | Retrieve resource                   |
+| `head`      | Retrieve headers only               |
+| `post`      | Create resource                     |
+| `put`       | Create or replace resource          |
+| `patch`     | Partial update                      |
+| `delete`    | Remove resource                     |
+| `options`   | Discover allowed methods            |
+| `preflight` | CORS preflight request              |
+| `json`      | Structured JSON envelope request    |
+| `headers`   | Retrieve headers as structured JSON |
+
+---
+
+### Production Examples
+
+#### Basic GET
+
+```
+http://api.internal.local/health.get
+```
+
+#### GET with JSON Mode
+
+```
+http://api.internal.local/metrics.get(accept="json")
+```
+
+#### POST with JSON Body
+
+```
+http://api.internal.local/users.post(
+  body="{\"name\":\"alice\"}",
+  content_type="application/json",
+  accept="json"
+)
+```
+
+#### PUT with File Upload
+
+```
+http://127.0.0.1:8080/upload.put(
+  body_file="/tmp/data.bin",
+  accept="text"
+)
+```
+
+#### DELETE with JSON Response
+
+```
+http://api.internal.local/item.delete(query="force=true",accept="json")
+```
+
+#### HEAD Request
+
+```
+http://api.internal.local/status.head
+```
+
+#### OPTIONS Request
+
+```
+http://api.internal.local/resource.options
+```
+
+#### CORS Preflight
+
+```
+http://api.internal.local/resource.preflight(
+  origin="https://app.example.com",
+  method="POST",
+  request_headers="X-Auth-Token"
+)
+```
+
+#### Structured JSON Envelope
+
+```
+http://api.internal.local/data.json(method="GET",accept="json")
+```
+
+---
+
+### Common Parameters
+
+| Parameter        | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `headers`        | Custom headers (`Header:value;Header2:value`) |
+| `query`          | Query string parameters                       |
+| `accept`         | `json`, `text`, `bytes`                       |
+| `timeout_ms`     | Request timeout                               |
+| `allow_insecure` | Allow invalid HTTPS certificates              |
+| `body`           | Inline body content                           |
+| `body_file`      | File body (overrides `body`)                  |
+| `content_type`   | Content-Type header                           |
+
+---
+
+### 3.2 Execution Semantics
+
+#### Deterministic Behavior
+
+* Explicit parameter precedence (`body_file` > `body`)
+* Explicit accept mode
+* Explicit timeout handling
+
+---
+
+#### Structured Output Contracts
+
+Structured verbs (`head`, `options`, `json`, `headers`, `preflight`) return JSON envelopes with:
+
+* `status`
+* `ok`
+* `headers`
+* `url`
+* `body` (when applicable)
+
+---
+
+#### Error Handling Structure
+
+* Most verbs exit non-zero for non-2xx responses.
+* Response body is still emitted.
+* Timeout produces failure.
+* Invalid JSON (when `accept="json"`) produces failure.
+
+---
+
+### Representative Structured Response
+
 ```json
 {
-  "status": 200,
-  "body": {
-    "type": "text",
-    "value": "Hello World"
-  }
-}
-```
-
-### JSON with Text Mode
-
-**Example:**
-```
-http://{server_host}:{server_port}/text.json(method="GET", accept="text")
-```
-
-**Expected Response:**
-```json
-{
-  "status": 200,
-  "body": {
-    "type": "text",
-    "value": "Hello World"
-  }
-}
-```
-
-## HEADERS Verb
-
-The `headers` verb gets only response headers as a structured JSON response.
-
-### Basic Headers Request
-
-**Example:**
-```
-http://{server_addr}/test.headers(method="GET", headers="X-Client:reshell")
-```
-
-**Expected Response:**
-```json
-{
-  "status": 200,
-  "status_text": "OK",
-  "url": "http://{server_addr}/test",
+  "status": 204,
+  "reason": "No Content",
+  "allowed_methods": ["GET", "POST", "OPTIONS"],
   "headers": {
-    "content-type": ["application/json"],
-    "x-foo": ["bar"],
-    "set-cookie": ["a=1", "b=2"]
+    "allow": "GET, POST, OPTIONS"
   },
-  "body": null
+  "url": "http://api.internal.local/resource"
 }
 ```
 
-### Headers with Different Methods
+---
 
-**Example:**
-```
-http://{server_addr}/head.headers(method="HEAD")
-```
+## 4. Functional Domains
 
-**Expected Response:**
-```json
-{
-  "status": 200,
-  "headers": {
-    "x-method": ["HEAD"]
-  }
-}
-```
+### 4.1 Automation Utilities
 
-**Example:**
-```
-http://{server_addr}/post.headers(method="POST")
-```
+**Scope**
 
-**Expected Response:**
-```json
-{
-  "status": 201,
-  "headers": {
-    "x-method": ["POST"]
-  }
-}
+HTTP-based automation for service orchestration and integration.
+
+**Use Cases**
+
+* Deployment validation
+* Health checks
+* Service integration testing
+
+---
+
+### 4.2 Data & State Management
+
+**Scope**
+
+Retrieving and modifying API-backed state via REST endpoints.
+
+**Example**
+
+```
+http://api.internal.local/config.get(accept="json")
 ```
 
-## Error Handling
+---
 
-### Non-2xx Status Codes
+### 4.3 Filesystem & Storage
 
-Most verbs (except `head`, `options`, `preflight`, `json`, and `headers`) will exit with a non-zero status code when the HTTP response is not in the 2xx range, but they will still output the response body.
+**Scope**
 
-**Example:**
+Uploading and retrieving binary data via HTTP.
+
+**Example**
+
 ```
-http://{server_addr}/error.get(accept="json")
-```
-
-**Expected Behavior:**
-Command exits with failure status
-
-**Expected Response:**
-```json
-{"error":"unavailable"}
+http://storage.internal/upload.put(body_file="/tmp/archive.tar",accept="text")
 ```
 
-### Timeout Errors
+---
 
-When a request times out, the command will fail.
+### 4.4 Network & Remote Operations
 
-**Example:**
-```
-http://{server_addr}/slow.get(timeout_ms="1")
-```
+**Scope**
 
-**Expected Behavior:**
-Command exits with failure status due to timeout
+HTTP and HTTPS communication with remote services.
 
-### Invalid JSON
+**Supported Handles**
 
-When `accept="json"` is specified but the response is not valid JSON, the command will fail.
+* `http://`
+* `https://`
 
-**Example:**
-```
-http://{server_addr}/invalid.get(accept="json")
-```
+**Use Cases**
 
-**Expected Behavior:**
-Command exits with failure status due to invalid JSON
+* API validation
+* Service status checks
+* CORS diagnostics
+* Header inspection
+* REST automation
 
-## Response Formats
+---
 
-### Text Mode (Default)
+### 4.5 Packages & Software
 
-Returns the response body as plain text. If the response contains invalid UTF-8, it falls back to binary mode.
+HTTP can be used for:
 
-### JSON Mode
+* Artifact retrieval
+* Repository access
+* Package metadata inspection
 
-Attempts to parse the response body as JSON. If parsing fails, the command will fail.
+---
 
-### Bytes Mode
+### 4.6 Process & Service Management
 
-Returns the raw response bytes without any text conversion. Useful for binary data.
+HTTP health endpoints allow:
 
-## HTTPS Support
+* Service readiness checks
+* Liveness validation
+* Operational diagnostics
 
-The HTTP handle supports HTTPS URLs. For development or testing with self-signed certificates, use the `allow_insecure="true"` parameter.
+---
 
-**Example:**
-```
-https://example.com/api.get(allow_insecure="true")
-```
+### 4.7 Security & Secrets
 
-## Tips
+* HTTPS enabled
+* Certificate validation by default
+* Optional `allow_insecure="true"` for development
+* Support for authentication via headers
 
-1. Use `head` verb when you only need to check if a resource exists or get metadata
-2. Use `options` verb to discover what HTTP methods a server supports
-3. Use `preflight` verb when working with CORS-enabled APIs
-4. Use `json` verb when you need both response data and metadata in a single envelope
-5. Use `headers` verb when you only need header information in a structured format
-6. The `body_file` parameter always takes priority over the `body` parameter
-7. Headers are automatically converted to lowercase in responses
-8. Multiple headers with the same name (like `Set-Cookie`) are preserved as arrays
+---
+
+### 4.8 System Information
+
+Structured access to:
+
+* Response headers
+* Allowed HTTP methods
+* CORS policies
+* Status metadata
+
+---
+
+## 5. Platform Support
+
+The documentation does not define OS-specific limitations.
+
+HTTP operations depend on:
+
+* Network connectivity
+* TLS support for HTTPS
+* Valid DNS resolution
+
+No platform-specific restrictions are specified.
+
+---
+
+## 6. Operational Best Practices
+
+### Safe Usage Guidelines
+
+* Avoid `allow_insecure="true"` in production.
+* Use explicit `timeout_ms` in automation.
+* Validate response status via structured output.
+* Handle non-2xx exits in CI pipelines.
+
+---
+
+### Automation Considerations
+
+* Prefer `accept="json"` when consuming APIs.
+* Use `json` verb for structured envelope with metadata.
+* Use `headers` verb when only header metadata is required.
+* Use `head` for lightweight availability checks.
+
+---
+
+### CI/CD Integration
+
+Recommended pattern:
+
+1. `head` for quick readiness.
+2. `get(accept="json")` for health endpoint validation.
+3. `post` or `put` for deployment triggers.
+4. `delete` for cleanup.
+
+---
+
+### Production Recommendations
+
+* Enforce HTTPS.
+* Set appropriate timeout values.
+* Avoid parsing raw text responses.
+* Use structured envelope verbs for decision logic.
+
+---
+
+## 7. Use Cases by Role
+
+### DevOps Engineers
+
+* Automate deployment validation.
+* Validate REST APIs in pipelines.
+* Inspect CORS configuration.
+
+---
+
+### SRE Engineers
+
+* Monitor service health endpoints.
+* Validate allowed methods via `options`.
+* Inspect response headers programmatically.
+
+---
+
+### Network Administrators
+
+* Test endpoint availability.
+* Validate CORS headers.
+* Inspect TLS behavior.
+
+---
+
+### AI / Automation Engineers
+
+* Consume structured JSON envelopes.
+* Implement conditional logic based on `status`.
+* Analyze header metadata.
+* Integrate HTTP automation with orchestration systems.
+
+---
+
+## 8. Technical Foundation
+
+### Rust Implementation Advantages
+
+resh is implemented in Rust, providing:
+
+* Memory safety
+* Strong type guarantees
+* Predictable binary execution behavior
+
+---
+
+### Type Safety
+
+* Parameter validation
+* Enumerated verb definitions
+* Explicit accept modes
+* Controlled output formats
+
+---
+
+### Performance Characteristics
+
+* Native binary execution
+* Efficient request handling
+* Configurable timeouts
+
+---
+
+### Cross-Platform Architecture
+
+* CLI-based execution
+* Network-dependent behavior
+* Structured output consistent across environments
+
+
