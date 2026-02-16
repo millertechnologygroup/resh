@@ -137,7 +137,7 @@ What actually happened. Include full error output.
 
 **Environment:**
 - Alpine Linux 3.18
-- resh v1.0.0-beta
+- resh v1.0.1-beta
 - Built from source
 
 **Command:**
