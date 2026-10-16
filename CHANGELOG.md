@@ -25,6 +25,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.2-beta] - 2026-10-16
+
+### Added
+- Contextual help for every handle and verb: `resh <handle> --help` and
+  `resh <handle> <verb> --help`, with definition, usage, example and example
+  output for all 28 handles and 239 verbs
+- In-URL help forms (for example `svc://--help`, `--help=<verb>`) show the
+  same help
+- CLI string arguments now fill typed options (booleans, numbers, lists) in
+  fs, git, db and system
+- `db transaction action=run` runs a whole transaction in one invocation
+- cache and db verbs connect on demand with `url=` / `dsn=`
+- Events persist across invocations under the resh state directory
+- `log://svc/<service>` reads journalctl logs
+
+### Fixed
+- backup: removed hard-coded restic/borg passwords; corrected backend
+  commands; successful restic/borg/rsync backups are no longer reported as
+  failures
+- firewall: `rules.*` verbs are reachable; `rules.delete` removes exactly the
+  matched rule; `family=any` adds both IPv4 and IPv6 rules
+- secret: local store is created with 0600 permissions atomically, with no
+  `/tmp` fallback
+- cert: `verify` performs real chain, hostname, purpose and keypair checks;
+  `renew` and CSR signing issue real certificates
+- ssh: `download` and `upload` perform real transfers instead of simulating
+- mail: `mail://test` and `mail://config` are no longer rewritten into `send`
+- user: changes are executed (dry runs list planned commands); `user://alice`
+  targets alice
+- plugin: `install`/`update` no longer panic; `plugin://<id>.enable` and
+  `plugin://available.list` work
+- cron: `enable`/`disable` match jobs by id
+- Targets containing `-h` (for example `my-hosts`) are no longer treated as
+  help requests
+- `file://dir/x` relative paths, pkg text-lockfile restore, `.tgz` archives
+
+### Changed
+- restic and borg backups require a password (`password=`, `password_file=`
+  or the tools' environment variables)
+- `firewall rules.delete` defaults to `match_mode=exact` and refuses a delete
+  with no criteria
+- Invalid typed option values are errors instead of silently using defaults
+- `archive create` uses `format_output=` for the report format
+
+### Removed
+- Stale built-in help texts, replaced by the new help metadata
+- Unused `src/backends` module
+
+See `docs/known_issues.md` for details and remaining open issues.
+
+---
+
 ## [1.0.0-beta] - 2026-01-29
 
 ### Added

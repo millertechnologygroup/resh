@@ -3,7 +3,7 @@
 **AI-Native Automation Platform for Modern Infrastructure**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.0.0--beta-blue.svg)](https://github.com/millertechnologygroup/resh/releases)
+[![Version](https://img.shields.io/badge/version-v1.0.2--beta-blue.svg)](https://github.com/millertechnologygroup/resh/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)]()
 
 ---
@@ -292,8 +292,8 @@ See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 git clone https://github.com/millertechnologygroup/resh.git
 cd resh
 
-# Checkout v1.0-beta release
-git checkout v1.0.1-beta
+# Checkout the v1.0.2-beta release
+git checkout v1.0.2-beta
 
 # Build in release mode
 cargo build --release
@@ -477,4 +477,4 @@ A: Functional but not yet optimized. Performance improvements coming in v1.1. Cu
 
 **v1.0 Beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
 
-[Download v1.0-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.1-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
+[Download v1.0.2-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.2-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
