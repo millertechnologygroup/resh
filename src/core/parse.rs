@@ -11,6 +11,16 @@ pub struct ParsedStage {
     pub args: Args,
 }
 
+/// True for an in-URL help request: `--help`, `-h`, or `--help=<verb>`,
+/// either alone or as the last segment of a target (`sqlite/x.--help=query`,
+/// `sqlite/--help`). Whole segments only, so targets like `my-hosts` or
+/// `plugin://my-helper` are not help requests.
+fn is_help_request(s: &str) -> bool {
+    let head = s.split('=').next().unwrap_or(s);
+    let last = head.rsplit(['/', '.']).next().unwrap_or(head);
+    super::help::is_help_flag(head) || super::help::is_help_flag(last)
+}
+
 pub fn parse_stage(s: &str) -> Result<ParsedStage> {
     // First, check if we have parentheses for args
     let (main_part, args_str) = if let Some(open_paren) = s.rfind('(') {
@@ -30,10 +40,30 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
         (s.to_string(), None)
     };
 
+    if !main_part.starts_with("plugin://") {
+        if let Some(stage) = help_stage(&main_part, args_str.as_deref())? {
+            return Ok(stage);
+        }
+    }
+
     // Parse known verbs with dots first (this should include plugin operations)
     let known_dotted_verbs = ["ea.get", "ea.set", "tag.add", "tag.rm", "nice.get", "nice.set", "nice.inc", "nice.dec", "io.peek", "limits.set", "route.list", "csr.create", "chain.info", "config.get", "keys.list", "key.add", "list-topics", "zone.fetch", "zone.update", "test", "install", "update", "remove", "available.list", "available.search", "available.info", "installed.list", "env.list", "send", "send_template", "config"];
     
-    for &dotted_verb in &known_dotted_verbs {
+    // Dotted verbs recognized only for one scheme, so that other handles'
+    // targets ending in e.g. ".rules" keep splitting at the last dot.
+    let scheme_dotted_verbs: &[&str] = if main_part.starts_with("event://") {
+        &["hooks.list", "hooks.enable", "hooks.disable"]
+    } else if main_part.starts_with("firewall://") {
+        &["rules.list", "rules.add", "rules.delete", "rules.save", "rules.reload"]
+    } else if main_part.starts_with("plugin://") {
+        // plugin://<id>.enable; without this the plugin branch below would
+        // take the whole host "<id>.enable" as the verb.
+        &["enable", "disable"]
+    } else {
+        &[]
+    };
+
+    for &dotted_verb in known_dotted_verbs.iter().chain(scheme_dotted_verbs) {
         if main_part.ends_with(&format!(".{}", dotted_verb)) {
             let target_end = main_part.len() - dotted_verb.len() - 1;
             let target = &main_part[..target_end];
@@ -75,7 +105,7 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
         let host_part = &captures[1];
         
         // Check for help patterns in plugin URLs first  
-        if host_part.contains("--help") || host_part.contains("-h") {
+        if is_help_request(host_part) {
             let mut args: Args = HashMap::new();
             
             // Check for specific verb help request (e.g., plugin://--help=install)
@@ -252,14 +282,25 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
         }
     }
     
+    if let Some(stage) = help_stage(&main_part, args_str.as_deref())? {
+        return Ok(stage);
+    }
+
+    Err(anyhow!("Cannot parse stage: {}", s))
+}
+
+/// In-URL help request such as `file://--help` or `firewall://--help=rules.delete`.
+/// Checked before verb splitting so a dotted verb name after `--help=` stays
+/// intact. (plugin:// has its own help handling in `parse_stage`.)
+fn help_stage(main_part: &str, args_str: Option<&str>) -> Result<Option<ParsedStage>> {
     // Check for help flags in URLs (e.g., file://--help, file://-h)
     let url_regex = Regex::new(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)(.*)$")?;
-    if let Some(captures) = url_regex.captures(&main_part) {
+    if let Some(captures) = url_regex.captures(main_part) {
         let scheme_part = &captures[1];
         let path_part = &captures[2];
         
         // Check if path contains --help or -h
-        if path_part.contains("--help") || path_part.contains("-h") {
+        if is_help_request(path_part) {
             let mut args: Args = HashMap::new();
             
             // Check for specific verb help request (e.g., file://--help=read)
@@ -286,15 +327,14 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
                 }
             }
             
-            return Ok(ParsedStage { 
+            return Ok(Some(ParsedStage {
                 target: format!("{}--help", scheme_part),
-                verb: "help".to_string(), 
-                args 
-            });
+                verb: "help".to_string(),
+                args,
+            }));
         }
     }
-    
-    Err(anyhow!("Cannot parse stage: {}", s))
+    Ok(None)
 }
 
 /// Parse argument string, handling quoted values that may contain commas
@@ -337,4 +377,75 @@ fn parse_arguments(args_str: &str) -> Vec<String> {
     }
     
     result
+}
+
+#[cfg(test)]
+mod scheme_dotted_verb_tests {
+    use super::parse_stage;
+
+    #[test]
+    fn event_and_firewall_dotted_verbs() {
+        for (stage, target, verb) in [
+            ("event://.hooks.list", "event://", "hooks.list"),
+            ("event://.hooks.enable", "event://", "hooks.enable"),
+            ("firewall://.rules.list", "firewall://", "rules.list"),
+            ("firewall://.rules.reload", "firewall://", "rules.reload"),
+        ] {
+            let p = parse_stage(stage).unwrap();
+            assert_eq!((p.target.as_str(), p.verb.as_str()), (target, verb), "{stage}");
+        }
+    }
+
+    #[test]
+    fn scheme_dotted_verbs_do_not_apply_to_other_schemes() {
+        let p = parse_stage("file:///etc/iptables.rules.delete").unwrap();
+        assert_eq!((p.target.as_str(), p.verb.as_str()), ("file:///etc/iptables.rules", "delete"));
+        let p = parse_stage("file:///srv/git.hooks.list").unwrap();
+        assert_eq!(p.verb, "list");
+        let p = parse_stage("cert://req.csr.sign").unwrap();
+        assert_eq!((p.target.as_str(), p.verb.as_str()), ("cert://req.csr", "sign"));
+        let p = parse_stage("file:///srv/feature.enable").unwrap();
+        assert_eq!((p.target.as_str(), p.verb.as_str()), ("file:///srv/feature", "enable"));
+    }
+
+    #[test]
+    fn help_requests_are_exact() {
+        assert_eq!(parse_stage("plugin://--help").unwrap().verb, "--help");
+        assert_eq!(parse_stage("plugin://-h").unwrap().verb, "-h");
+        let p = parse_stage("plugin://--help=install").unwrap();
+        assert_eq!((p.verb.as_str(), p.args.get("verb").map(String::as_str)), ("--help", Some("install")));
+        let p = parse_stage("plugin://my-helper.install").unwrap();
+        assert_eq!((p.target.as_str(), p.verb.as_str()), ("plugin://my-helper", "install"));
+    }
+
+    #[test]
+    fn help_with_dotted_verb_name() {
+        let p = parse_stage("firewall://--help=rules.delete").unwrap();
+        assert_eq!(p.verb, "help");
+        assert_eq!(p.args.get("verb").map(String::as_str), Some("rules.delete"));
+        let p = parse_stage("file://--help").unwrap();
+        assert_eq!((p.target.as_str(), p.verb.as_str()), ("file://--help", "help"));
+        for stage in ["db://sqlite/x.--help=query", "db://sqlite/--help", "cache://redis/main.-h"] {
+            assert_eq!(parse_stage(stage).unwrap().verb, "help", "{stage}");
+        }
+        assert_eq!(
+            parse_stage("db://sqlite/x.--help=query").unwrap().args.get("verb").map(String::as_str),
+            Some("query")
+        );
+        // Not a help request: an ordinary target and verb.
+        let p = parse_stage("svc://my-httpd.status").unwrap();
+        assert_eq!((p.target.as_str(), p.verb.as_str()), ("svc://my-httpd", "status"));
+        let p = parse_stage("file:///etc/my-hosts.read").unwrap();
+        assert_eq!((p.target.as_str(), p.verb.as_str()), ("file:///etc/my-hosts", "read"));
+    }
+
+    #[test]
+    fn plugin_enable_disable_take_plugin_id() {
+        for verb in ["enable", "disable"] {
+            let p = parse_stage(&format!("plugin://aws.{verb}")).unwrap();
+            assert_eq!((p.target.as_str(), p.verb.as_str()), ("plugin://aws", verb));
+        }
+        let p = parse_stage("plugin://aws.install").unwrap();
+        assert_eq!((p.target.as_str(), p.verb.as_str()), ("plugin://aws", "install"));
+    }
 }

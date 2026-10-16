@@ -11,1472 +11,14 @@ use tokio::time::timeout;
 use url::Url;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
 
 // ===========================================================================
-// Help Text Constants
+// Error Code Constants
 // ===========================================================================
-
-const FIREWALL_HELP_TEXT: &str = "RESOURCE SHELL - FIREWALL HANDLE
-================================
-
-USAGE:
-  firewall://.VERB(arguments)
-
-DESCRIPTION:
-  The firewall handle provides complete firewall management across multiple
-  Linux firewall backends. Manage firewall rules, check status, control
-  firewall services, save and reload configurations. Supports iptables,
-  nftables, UFW (Uncomplicated Firewall), and firewalld with automatic
-  backend detection. Add, delete, and list rules with filtering by protocol,
-  port, address, interface, and direction. Essential for network security,
-  access control, traffic filtering, and security hardening on Linux systems.
-
-URL FORMAT:
-  firewall://.VERB(arguments)
-  firewall://.rules.list
-  firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=22)
-  firewall://.status
-
-  No path component required
-  VERB specifies the operation to perform
-
-VERBS (8 total):
-
-  Rule Management:
-    rules.list      List existing firewall rules with filtering
-    rules.add       Add new firewall rules
-    rules.delete    Delete existing firewall rules
-    rules.save      Save current rules to files
-    rules.reload    Reload rules from saved files
-
-  Service Control:
-    status          Check firewall status and backend availability
-    enable          Enable firewall service
-    disable         Disable firewall service
-
-EXAMPLES:
-
-  List Rules (rules.list):
-    # List all rules (auto-detect backend)
-    firewall://.rules.list
-
-    # List rules from specific backend
-    firewall://.rules.list(backend=iptables)
-    firewall://.rules.list(backend=nftables)
-    firewall://.rules.list(backend=ufw)
-    firewall://.rules.list(backend=firewalld)
-
-    # List all available backends
-    firewall://.rules.list(backend=all)
-
-    # List IPv4 rules only
-    firewall://.rules.list(family=ipv4)
-
-    # List IPv6 rules only
-    firewall://.rules.list(family=ipv6)
-
-    # Filter by table
-    firewall://.rules.list(backend=iptables,table=filter)
-    firewall://.rules.list(backend=iptables,table=nat)
-    firewall://.rules.list(backend=iptables,table=mangle)
-
-    # Filter by chain
-    firewall://.rules.list(backend=iptables,chain=INPUT)
-    firewall://.rules.list(backend=iptables,chain=OUTPUT)
-    firewall://.rules.list(backend=iptables,chain=FORWARD)
-
-    # Filter by direction
-    firewall://.rules.list(direction=input)
-    firewall://.rules.list(direction=output)
-    firewall://.rules.list(direction=forward)
-
-    # Filter by action
-    firewall://.rules.list(action=accept)
-    firewall://.rules.list(action=drop)
-    firewall://.rules.list(action=reject)
-
-    # Filter by protocol
-    firewall://.rules.list(proto=tcp)
-    firewall://.rules.list(proto=udp)
-    firewall://.rules.list(proto=icmp)
-
-    # Filter by destination port
-    firewall://.rules.list(dport=22)
-    firewall://.rules.list(dport=80)
-    firewall://.rules.list(dport=443)
-
-    # Filter by source port
-    firewall://.rules.list(sport=1024)
-
-    # Filter by source address
-    firewall://.rules.list(saddr=192.168.1.0/24)
-    firewall://.rules.list(saddr=10.0.0.0/8)
-
-    # Filter by destination address
-    firewall://.rules.list(daddr=203.0.113.0/24)
-
-    # Filter by input interface
-    firewall://.rules.list(in_iface=eth0)
-    firewall://.rules.list(in_iface=wlan0)
-
-    # Filter by output interface
-    firewall://.rules.list(out_iface=eth1)
-
-    # Filter by comment content
-    firewall://.rules.list(comment_contains=\"SSH\")
-    firewall://.rules.list(comment_contains=\"Allow HTTP\")
-
-    # Include backend raw output
-    firewall://.rules.list(include_backend_raw=true)
-
-    # Include packet/byte counters
-    firewall://.rules.list(include_counters=true)
-
-    # Limit maximum rules returned
-    firewall://.rules.list(max_rules=100)
-
-    # Set timeout
-    firewall://.rules.list(timeout_ms=10000)
-
-    # Text output format
-    firewall://.rules.list(format_output=text)
-
-    # Complex filter
-    firewall://.rules.list(backend=iptables,family=ipv4,direction=input,proto=tcp,dport=22,action=accept)
-
-  Add Rules (rules.add):
-    # Allow SSH (iptables)
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=22,comment=\"Allow SSH\")
-
-    # Allow HTTPS (iptables)
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=443,comment=\"Allow HTTPS\")
-
-    # Allow HTTP (iptables)
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=80,comment=\"Allow HTTP\")
-
-    # Block telnet (iptables)
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=drop,proto=tcp,dport=23,comment=\"Block telnet\")
-
-    # Allow from specific subnet
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=8080,saddr=10.0.0.0/8,comment=\"Allow from corporate\")
-
-    # Block from specific IP
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=drop,saddr=192.0.2.100,comment=\"Block malicious IP\")
-
-    # Allow to specific destination
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=output,action=accept,proto=tcp,daddr=203.0.113.0/24,dport=443)
-
-    # Allow source port range
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=output,action=accept,proto=tcp,sport=1024:65535)
-
-    # IPv6 rule
-    firewall://.rules.add(backend=iptables,family=ipv6,direction=input,action=accept,proto=tcp,dport=22)
-
-    # ICMP rule
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=icmp)
-
-    # Allow all protocols
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=all,saddr=192.168.1.0/24)
-
-    # Dry run mode
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=3306,dry_run=true)
-
-    # nftables rule
-    firewall://.rules.add(backend=nftables,family=ipv4,direction=input,action=drop,proto=tcp,dport=23,comment=\"Block telnet\")
-
-    # UFW rule
-    firewall://.rules.add(backend=ufw,direction=input,action=accept,proto=tcp,dport=8080,saddr=10.0.0.0/8,comment=\"Allow app\")
-
-    # firewalld rule (requires zone)
-    firewall://.rules.add(backend=firewalld,family=ipv4,direction=input,action=accept,proto=tcp,dport=80,zone=public)
-
-    # firewalld with zone
-    firewall://.rules.add(backend=firewalld,family=ipv4,direction=input,action=accept,proto=tcp,dport=443,zone=external)
-
-  Delete Rules (rules.delete):
-    # Delete SSH rule
-    firewall://.rules.delete(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=22)
-
-    # Delete by protocol and port
-    firewall://.rules.delete(backend=iptables,family=ipv4,proto=tcp,dport=8080)
-
-    # Delete by source address
-    firewall://.rules.delete(backend=iptables,family=ipv4,saddr=192.0.2.100)
-
-    # Delete with no match allowed
-    firewall://.rules.delete(backend=iptables,family=ipv4,direction=input,proto=tcp,dport=65535,require_match=false)
-
-    # Delete requiring match
-    firewall://.rules.delete(backend=iptables,family=ipv4,direction=input,proto=tcp,dport=22,require_match=true)
-
-    # Dry run delete
-    firewall://.rules.delete(backend=iptables,family=ipv4,direction=input,proto=tcp,dport=3306,dry_run=true)
-
-    # Delete IPv6 rule
-    firewall://.rules.delete(backend=iptables,family=ipv6,direction=input,proto=tcp,dport=22)
-
-    # Delete ICMP rule
-    firewall://.rules.delete(backend=iptables,family=ipv4,proto=icmp)
-
-    # Delete nftables rule
-    firewall://.rules.delete(backend=nftables,family=ipv4,direction=input,proto=tcp,dport=23)
-
-    # Delete UFW rule
-    firewall://.rules.delete(backend=ufw,direction=input,proto=tcp,dport=8080)
-
-    # Delete firewalld rule
-    firewall://.rules.delete(backend=firewalld,family=ipv4,direction=input,proto=tcp,dport=80)
-
-  Save Rules (rules.save):
-    # Save as normalized JSON
-    firewall://.rules.save(backend=iptables,family=ipv4,format=normalized_json,path=/tmp/firewall.json)
-
-    # Save in backend native format
-    firewall://.rules.save(backend=iptables,family=ipv4,format=backend_native,path=/tmp/iptables.rules)
-
-    # Save both formats
-    firewall://.rules.save(backend=iptables,family=ipv4,format=both,path=/tmp/firewall)
-
-    # Auto-generate path
-    firewall://.rules.save(backend=iptables,family=ipv4,format=normalized_json)
-
-    # Save IPv6 rules
-    firewall://.rules.save(backend=iptables,family=ipv6,format=normalized_json,path=/tmp/ip6tables.json)
-
-    # Save all families
-    firewall://.rules.save(backend=iptables,family=any,format=normalized_json,path=/tmp/all-rules.json)
-
-    # Compress with gzip
-    firewall://.rules.save(backend=iptables,family=ipv4,format=normalized_json,path=/tmp/firewall.json,compress=gzip)
-
-    # Compress with bzip2
-    firewall://.rules.save(backend=iptables,family=ipv4,format=normalized_json,path=/tmp/firewall.json,compress=bzip2)
-
-    # Include metadata
-    firewall://.rules.save(backend=iptables,format=normalized_json,path=/tmp/firewall.json,include_metadata=true)
-
-    # Save all backends
-    firewall://.rules.save(backend=auto,format=normalized_json,path=/tmp/all-backends.json,include_all_backends=true)
-
-    # Dry run save
-    firewall://.rules.save(backend=iptables,format=normalized_json,path=/tmp/test.json,dry_run=true)
-
-    # Overwrite existing file
-    firewall://.rules.save(backend=iptables,format=normalized_json,path=/tmp/firewall.json,overwrite=true)
-
-    # Create directories if needed
-    firewall://.rules.save(backend=iptables,format=normalized_json,path=/backup/firewall/rules.json,create_dirs=true)
-
-    # Save nftables
-    firewall://.rules.save(backend=nftables,format=backend_native,path=/tmp/nft.rules)
-
-    # Save UFW
-    firewall://.rules.save(backend=ufw,format=normalized_json,path=/tmp/ufw.json)
-
-  Reload Rules (rules.reload):
-    # Reload from native format
-    firewall://.rules.reload(backend=iptables,source_format=backend_native,path=/tmp/iptables.rules)
-
-    # Reload from normalized JSON
-    firewall://.rules.reload(backend=iptables,source_format=normalized_json,path=/tmp/firewall.json)
-
-    # Auto-detect format
-    firewall://.rules.reload(backend=iptables,source_format=auto,path=/tmp/firewall.json)
-
-    # Reload IPv6 rules
-    firewall://.rules.reload(backend=iptables,source_format=backend_native,path=/tmp/ip6tables.rules,family=ipv6)
-
-    # Reload with backup
-    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,backup_before_apply=true)
-
-    # Reload without backup
-    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,backup_before_apply=false)
-
-    # Reload with validation
-    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,validate_before_apply=true)
-
-    # Reload without validation (risky)
-    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,validate_before_apply=false)
-
-    # Dry run reload
-    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,dry_run=true)
-
-    # Reload with timeout
-    firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,timeout_ms=60000)
-
-    # Reload nftables
-    firewall://.rules.reload(backend=nftables,path=/tmp/nft.rules)
-
-  Check Status (status):
-    # Check status (auto-detect)
-    firewall://.status
-
-    # Check specific backend
-    firewall://.status(backend=iptables)
-    firewall://.status(backend=nftables)
-    firewall://.status(backend=ufw)
-    firewall://.status(backend=firewalld)
-
-    # Check all backends
-    firewall://.status(backend=all)
-
-    # Check IPv4 status
-    firewall://.status(family=ipv4)
-
-    # Check IPv6 status
-    firewall://.status(family=ipv6)
-
-    # Include metrics
-    firewall://.status(include_metrics=true)
-
-    # Exclude metrics
-    firewall://.status(include_metrics=false)
-
-    # Include rules summary
-    firewall://.status(include_rules_summary=true)
-
-    # Set timeout
-    firewall://.status(timeout_ms=10000)
-
-    # Text format
-    firewall://.status(format_output=text)
-
-  Enable Firewall (enable):
-    # Enable auto-detected backend
-    firewall://.enable
-
-    # Enable specific backend
-    firewall://.enable(backend=ufw)
-    firewall://.enable(backend=firewalld)
-    firewall://.enable(backend=iptables)
-    firewall://.enable(backend=nftables)
-
-    # Enable with rules file
-    firewall://.enable(backend=iptables,path=/etc/iptables/rules.v4)
-
-    # Dry run enable
-    firewall://.enable(backend=ufw,dry_run=true)
-
-    # Validate only
-    firewall://.enable(backend=ufw,validate_only=true)
-
-    # Enable with timeout
-    firewall://.enable(backend=firewalld,timeout_ms=60000)
-
-  Disable Firewall (disable):
-    # Disable auto-detected backend
-    firewall://.disable
-
-    # Disable specific backend
-    firewall://.disable(backend=ufw)
-    firewall://.disable(backend=firewalld)
-    firewall://.disable(backend=iptables)
-    firewall://.disable(backend=nftables)
-
-    # Disable with backup
-    firewall://.disable(backend=iptables,backup_before_apply=true)
-
-    # Disable without backup (risky)
-    firewall://.disable(backend=iptables,backup_before_apply=false)
-
-    # Dry run disable
-    firewall://.disable(backend=ufw,dry_run=true)
-
-    # Validate only
-    firewall://.disable(backend=ufw,validate_only=true)
-
-    # Disable with timeout
-    firewall://.disable(backend=firewalld,timeout_ms=60000)
-
-RULES.LIST ARGUMENTS:
-  backend=BACKEND        Firewall backend (default: auto)
-                         Values: auto, iptables, nftables, ufw, firewalld, all
-  family=FAMILY          IP family (default: any)
-                         Values: any, ipv4, ipv6
-  table=TABLE            Table to list rules from
-                         Values: filter, nat, mangle, raw, security
-  chain=CHAIN            Chain to list rules from
-                         Values: INPUT, OUTPUT, FORWARD, PREROUTING, POSTROUTING
-  direction=DIRECTION    Rule direction
-                         Values: input, output, forward
-  action=ACTION          Rule action
-                         Values: accept, drop, reject
-  proto=PROTOCOL         Protocol filter
-                         Values: tcp, udp, icmp, all
-  sport=PORT             Source port filter
-  dport=PORT             Destination port filter
-  saddr=ADDRESS          Source address filter (IP or CIDR)
-  daddr=ADDRESS          Destination address filter (IP or CIDR)
-  in_iface=INTERFACE     Input interface filter
-  out_iface=INTERFACE    Output interface filter
-  comment_contains=TEXT  Filter by comment content
-  include_backend_raw=BOOL    Include raw backend output (default: false)
-  include_counters=BOOL  Include packet/byte counters (default: false)
-  max_rules=NUMBER       Maximum rules to return (default: 10000)
-  timeout_ms=NUMBER      Command timeout (default: 5000)
-  format_output=FORMAT   Output format (default: json)
-                         Values: json, text
-
-RULES.ADD ARGUMENTS:
-  backend=BACKEND        Firewall backend (required)
-                         Values: iptables, nftables, ufw, firewalld
-  family=FAMILY          IP family (default: ipv4)
-                         Values: ipv4, ipv6
-  direction=DIRECTION    Rule direction (required)
-                         Values: input, output, forward
-  action=ACTION          Rule action (required)
-                         Values: accept, drop, reject
-  proto=PROTOCOL         Protocol
-                         Values: tcp, udp, icmp, all
-  dport=PORT             Destination port
-  sport=PORT             Source port
-  saddr=ADDRESS          Source address/network (IP or CIDR)
-  daddr=ADDRESS          Destination address/network (IP or CIDR)
-  comment=TEXT           Rule comment
-  zone=ZONE              Zone (required for firewalld)
-                         Values: public, external, internal, dmz, work, home, trusted, block, drop
-  dry_run=BOOL           Generate commands without executing (default: false)
-  format_output=FORMAT   Output format (default: json)
-
-RULES.DELETE ARGUMENTS:
-  backend=BACKEND        Firewall backend (required)
-                         Values: iptables, nftables, ufw, firewalld
-  family=FAMILY          IP family (default: ipv4)
-                         Values: ipv4, ipv6
-  direction=DIRECTION    Rule direction
-                         Values: input, output, forward
-  action=ACTION          Rule action
-                         Values: accept, drop, reject
-  proto=PROTOCOL         Protocol
-                         Values: tcp, udp, icmp, all
-  dport=PORT             Destination port
-  sport=PORT             Source port
-  saddr=ADDRESS          Source address/network
-  daddr=ADDRESS          Destination address/network
-  require_match=BOOL     Require rules to match for success (default: true)
-  dry_run=BOOL           Show what would be deleted (default: false)
-  format_output=FORMAT   Output format (default: json)
-
-RULES.SAVE ARGUMENTS:
-  backend=BACKEND        Firewall backend (default: auto)
-                         Values: auto, iptables, nftables, ufw, firewalld
-  family=FAMILY          IP family (default: any)
-                         Values: any, ipv4, ipv6
-  format=FORMAT          Save format (default: normalized_json)
-                         Values: normalized_json, backend_native, both
-  path=PATH              Output file path (auto-generated if not specified)
-  compress=COMPRESSION   Compression method (default: none)
-                         Values: none, gzip, bzip2
-  include_metadata=BOOL  Include metadata (default: true)
-  include_all_backends=BOOL  Save all backends (default: false)
-  dry_run=BOOL           Show what would be saved (default: false)
-  overwrite=BOOL         Overwrite existing files (default: false)
-  create_dirs=BOOL       Create directories (default: true)
-  timeout_ms=NUMBER      Command timeout (default: 5000)
-  format_output=FORMAT   Output format (default: json)
-
-RULES.RELOAD ARGUMENTS:
-  backend=BACKEND        Target firewall backend (default: auto)
-                         Values: auto, iptables, nftables, ufw, firewalld
-  source_format=FORMAT   Source format (default: auto)
-                         Values: auto, backend_native, normalized_json
-  path=PATH              Path to rules file (required)
-  family=FAMILY          IP family (default: any)
-                         Values: any, ipv4, ipv6
-  backup_before_apply=BOOL    Create backup before applying (default: true)
-  validate_before_apply=BOOL  Validate rules first (default: true)
-  dry_run=BOOL           Show what would be reloaded (default: false)
-  timeout_ms=NUMBER      Command timeout (default: 30000)
-  format_output=FORMAT   Output format (default: json)
-
-STATUS ARGUMENTS:
-  backend=BACKEND        Backend to check (default: auto)
-                         Values: auto, all, iptables, nftables, ufw, firewalld
-  family=FAMILY          IP family (default: any)
-                         Values: any, ipv4, ipv6
-  include_metrics=BOOL   Include performance metrics (default: true)
-  include_rules_summary=BOOL  Include rules count (default: false)
-  timeout_ms=NUMBER      Command timeout (default: 5000)
-  format_output=FORMAT   Output format (default: json)
-
-ENABLE ARGUMENTS:
-  backend=BACKEND        Firewall backend (default: auto)
-                         Values: auto, ufw, firewalld, iptables, nftables
-  path=PATH              Path to rules file to apply during enable
-  dry_run=BOOL           Show what would be enabled (default: false)
-  validate_only=BOOL     Only validate parameters (default: false)
-  timeout_ms=NUMBER      Command timeout (default: 30000)
-  format_output=FORMAT   Output format (default: json)
-
-DISABLE ARGUMENTS:
-  backend=BACKEND        Firewall backend (default: auto)
-                         Values: auto, ufw, firewalld, iptables, nftables
-  path=PATH              Path to rules file to apply during disable
-  backup_before_apply=BOOL    Create backup before disabling (default: true)
-  dry_run=BOOL           Show what would be disabled (default: false)
-  validate_only=BOOL     Only validate parameters (default: false)
-  timeout_ms=NUMBER      Command timeout (default: 30000)
-  format_output=FORMAT   Output format (default: json)
-
-FIREWALL BACKENDS:
-
-  The firewall handle supports multiple Linux firewall backends with
-  automatic detection and unified interface:
-
-  auto:
-    • Automatically detects best available backend
-    • Tries backends in order: firewalld, ufw, nftables, iptables
-    • Recommended for most use cases
-    • Simplifies cross-distribution compatibility
-
-  iptables:
-    • Traditional Linux netfilter firewall
-    • Widely supported across all distributions
-    • IPv4: iptables, IPv6: ip6tables
-    • Tables: filter, nat, mangle, raw, security
-    • Chains: INPUT, OUTPUT, FORWARD, PREROUTING, POSTROUTING
-    • Mature, well-documented, extensive tooling
-    • Lower-level, more complex syntax
-
-  nftables:
-    • Modern replacement for iptables
-    • Unified syntax for IPv4/IPv6
-    • Better performance than iptables
-    • More flexible rule syntax
-    • Fewer kernel modules needed
-    • Default in newer distributions
-    • Backward compatible with iptables
-
-  ufw (Uncomplicated Firewall):
-    • Simplified firewall interface
-    • Default on Ubuntu/Debian
-    • Easy to use, good for desktops
-    • Frontend for iptables/nftables
-    • Profile-based rule management
-    • Less granular control than iptables
-
-  firewalld:
-    • Dynamic firewall manager
-    • Default on RHEL/CentOS/Fedora
-    • Zone-based configuration
-    • Runtime vs permanent rules
-    • D-Bus interface
-    • Rich rule syntax
-    • Service-based rules
-
-  Backend comparison:
-    Feature          iptables  nftables  ufw     firewalld
-    Complexity       High      Medium    Low     Medium
-    Performance      Good      Better    Good    Good
-    IPv4/IPv6        Separate  Unified   Unified Unified
-    Distribution     Universal Newer     Ubuntu  RHEL
-    Ease of use      Hard      Medium    Easy    Medium
-    Flexibility      High      Highest   Low     High
-
-IP FAMILIES:
-
-  ipv4:
-    • IPv4 addresses (192.168.1.0/24, 10.0.0.0/8)
-    • Most common configuration
-    • iptables command for iptables backend
-    • Default family for most operations
-
-  ipv6:
-    • IPv6 addresses (2001:db8::/32, fe80::/10)
-    • Growing adoption
-    • ip6tables command for iptables backend
-    • Separate rules from IPv4 in iptables
-
-  any:
-    • Both IPv4 and IPv6
-    • nftables, ufw, firewalld handle both
-    • iptables requires separate rules
-
-RULE COMPONENTS:
-
-  Direction:
-    input              Incoming traffic to system
-    output             Outgoing traffic from system
-    forward            Traffic being routed through system
-
-  Action:
-    accept             Allow traffic through
-    drop               Silently discard traffic
-    reject             Discard and send error response
-
-  Protocol:
-    tcp                Transmission Control Protocol
-    udp                User Datagram Protocol
-    icmp               Internet Control Message Protocol
-    all                All protocols
-
-  Ports:
-    Single port        22, 80, 443
-    Port range         1024:65535
-    Service names      ssh, http, https (backend-dependent)
-
-  Addresses:
-    Single IP          192.168.1.100
-    CIDR notation      192.168.1.0/24
-    Network ranges     10.0.0.0/8, 172.16.0.0/12
-
-  Interfaces:
-    eth0, eth1         Ethernet interfaces
-    wlan0              Wireless interface
-    tun0, tap0         VPN interfaces
-    docker0            Docker bridge
-    br0                Bridge interface
-
-OUTPUT FORMATS:
-
-  rules.list output:
-    {
-      \"ok\": true,
-      \"backends\": [
-        {
-          \"backend\": \"iptables\",
-          \"family\": \"ipv4\",
-          \"rules\": [
-            {
-              \"chain\": \"INPUT\",
-              \"action\": \"ACCEPT\",
-              \"proto\": \"tcp\",
-              \"dport\": \"22\"
-            }
-          ]
-        }
-      ]
-    }
-
-  rules.add output:
-    {
-      \"ok\": true,
-      \"rule\": {
-        \"backend\": \"iptables\",
-        \"action\": \"accept\",
-        \"proto\": \"tcp\",
-        \"dport\": \"22\"
-      },
-      \"backend_commands\": [
-        \"iptables -A INPUT -p tcp --dport 22 -j ACCEPT\"
-      ]
-    }
-
-  rules.delete output:
-    {
-      \"ok\": true,
-      \"result\": {
-        \"deleted_count\": 1
-      }
-    }
-
-  rules.save output:
-    {
-      \"ok\": true,
-      \"timestamp_unix_ms\": 1732538560123,
-      \"summary\": {
-        \"backends\": [
-          {
-            \"backend\": \"iptables\",
-            \"family\": \"ipv4\",
-            \"rules_count\": 15
-          }
-        ],
-        \"path\": \"/tmp/firewall.json\"
-      }
-    }
-
-  rules.reload output:
-    {
-      \"ok\": true,
-      \"backend\": \"iptables\",
-      \"source_format\": \"backend_native\",
-      \"actions\": [
-        \"iptables-restore < /tmp/iptables.rules\"
-      ]
-    }
-
-  status output:
-    {
-      \"ok\": true,
-      \"backends\": [
-        {
-          \"backend\": \"iptables\",
-          \"available\": true,
-          \"active\": true,
-          \"enabled\": true
-        }
-      ]
-    }
-
-  enable output:
-    {
-      \"ok\": true,
-      \"backend\": \"ufw\",
-      \"previous_state\": {
-        \"active\": false,
-        \"enabled\": false
-      },
-      \"actions\": [
-        \"ufw --force enable\"
-      ]
-    }
-
-  disable output:
-    {
-      \"ok\": true,
-      \"backend\": \"ufw\",
-      \"previous_state\": {
-        \"active\": true,
-        \"enabled\": true
-      },
-      \"current_state\": {
-        \"active\": false,
-        \"enabled\": false
-      }
-    }
-
-EXIT CODES:
-  0                      Success
-  1                      General error
-  2                      Backend not available
-  3                      Invalid arguments/parameters
-  4                      Permission denied (need root)
-  5                      Timeout
-  6                      No rules match (when require_match=true)
-  7                      File operation error
-
-ERROR MESSAGES:
-
-  Backend errors:
-    \"firewall.status_invalid_backend\"     Unknown backend specified
-    \"firewall.backend_not_available\"      Backend not installed
-    \"firewall.backend_detection_failed\"   Cannot detect backend
-
-  Rule errors:
-    \"firewall.rules_add_failed\"           Rule addition failed
-    \"firewall.rules_delete_no_match\"      No matching rules found
-    \"firewall.rules_invalid_port\"         Invalid port number
-    \"firewall.rules_invalid_address\"      Invalid IP address/CIDR
-
-  File errors:
-    \"firewall.save_failed\"                Save operation failed
-    \"firewall.reload_failed\"              Reload operation failed
-    \"firewall.file_not_found\"             Rules file not found
-    \"firewall.file_exists\"                File exists, overwrite=false
-
-  Permission errors:
-    \"firewall.permission_denied\"          Root privileges required
-    \"firewall.operation_not_permitted\"    Operation not allowed
-
-  Validation errors:
-    \"firewall.invalid_family\"             Invalid IP family
-    \"firewall.invalid_direction\"          Invalid rule direction
-    \"firewall.invalid_action\"             Invalid rule action
-    \"firewall.missing_required_param\"     Required parameter missing
-
-  Timeout errors:
-    \"firewall.operation_timeout\"          Operation exceeded timeout
-
-COMMON WORKFLOWS:
-
-  Allow SSH access:
-    # Add SSH rule
-    firewall://.rules.add(backend=iptables,family=ipv4,direction=input,action=accept,proto=tcp,dport=22,comment=\"Allow SSH\")
-
-    # Verify rule was added
-    firewall://.rules.list(proto=tcp,dport=22)
-
-    # Save configuration
-    firewall://.rules.save(backend=iptables,format=backend_native,path=/etc/iptables/rules.v4)
-
-  Set up web server firewall:
-    # Allow HTTP
-    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=80,comment=\"Allow HTTP\")
-
-    # Allow HTTPS
-    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=443,comment=\"Allow HTTPS\")
-
-    # Allow SSH from management network
-    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=22,saddr=10.0.0.0/8,comment=\"Allow SSH from mgmt\")
-
-    # Save rules
-    firewall://.rules.save(backend=iptables,path=/etc/iptables/rules.v4)
-
-  Backup and restore firewall:
-    # Save current configuration
-    firewall://.rules.save(backend=iptables,family=any,format=both,path=/backup/firewall,compress=gzip)
-
-    # Later, restore from backup
-    firewall://.rules.reload(backend=iptables,path=/backup/firewall-iptables-v4.rules,backup_before_apply=true)
-
-  Block malicious IP:
-    # Add drop rule
-    firewall://.rules.add(backend=iptables,direction=input,action=drop,saddr=192.0.2.100,comment=\"Block malicious IP\")
-
-    # Verify blocking
-    firewall://.rules.list(saddr=192.0.2.100)
-
-  Migrate from iptables to nftables:
-    # Save iptables rules as JSON
-    firewall://.rules.save(backend=iptables,format=normalized_json,path=/tmp/iptables.json)
-
-    # Disable iptables
-    firewall://.disable(backend=iptables,backup_before_apply=true)
-
-    # Reload into nftables
-    firewall://.rules.reload(backend=nftables,source_format=normalized_json,path=/tmp/iptables.json)
-
-    # Enable nftables
-    firewall://.enable(backend=nftables)
-
-  Allow service from specific network:
-    # Allow database from app servers
-    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=3306,saddr=192.168.10.0/24,comment=\"MySQL from app servers\")
-
-    # Allow Redis from cache network
-    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=6379,saddr=192.168.20.0/24,comment=\"Redis from cache network\")
-
-  Test firewall configuration:
-    # Test adding rule (dry run)
-    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=8080,dry_run=true)
-
-    # Add rule for real
-    firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=8080)
-
-    # Test if rule works
-    # ... external testing ...
-
-    # Remove if not needed
-    firewall://.rules.delete(backend=iptables,direction=input,proto=tcp,dport=8080)
-
-  Check firewall status across systems:
-    # Check all backends
-    firewall://.status(backend=all)
-
-    # Check specific backend
-    firewall://.status(backend=iptables,include_rules_summary=true)
-
-  Emergency firewall disable:
-    # Check current state
-    firewall://.status
-
-    # Disable with backup
-    firewall://.disable(backend=iptables,backup_before_apply=true)
-
-    # Later, re-enable
-    firewall://.enable(backend=iptables)
-
-  Set up DMZ zone (firewalld):
-    # Add HTTP to DMZ
-    firewall://.rules.add(backend=firewalld,direction=input,action=accept,proto=tcp,dport=80,zone=dmz)
-
-    # Add HTTPS to DMZ
-    firewall://.rules.add(backend=firewalld,direction=input,action=accept,proto=tcp,dport=443,zone=dmz)
-
-    # List DMZ rules
-    firewall://.rules.list(backend=firewalld)
-
-BEST PRACTICES:
-  • Always use dry_run=true to test changes first
-  • Save firewall configuration after changes
-  • Keep backups of working configurations
-  • Test firewall changes before applying to production
-  • Use specific source addresses when possible
-  • Limit SSH access to management networks
-  • Document rules with meaningful comments
-  • Review firewall rules regularly
-  • Use allow-list (default deny) approach
-  • Block unused services by default
-  • Enable firewall on boot
-  • Monitor firewall logs
-  • Use CIDR notation for network ranges
-  • Apply least privilege principle
-  • Test connectivity after rule changes
-  • Use stateful connection tracking
-  • Separate rules by function/service
-  • Keep rules organized and maintainable
-  • Avoid overly complex rule sets
-  • Use zones (firewalld) or chains for organization
-  • Implement defense in depth
-  • Use rate limiting for public services
-  • Block known malicious networks
-  • Allow ICMP for diagnostics (carefully)
-  • Protect management interfaces
-  • Use separate rules for IPv4 and IPv6
-  • Validate IP addresses before adding rules
-  • Use timeouts to prevent hanging operations
-  • Monitor for unauthorized rule changes
-  • Implement change management for firewall rules
-
-RULE MANAGEMENT GUIDELINES:
-  • Start with minimal rules (SSH only)
-  • Add rules incrementally
-  • Test each rule after adding
-  • Use descriptive comments for all rules
-  • Group related rules together
-  • Order rules from specific to general
-  • Place frequently matched rules first
-  • Use default deny policies
-  • Explicitly allow required traffic
-  • Review and prune unused rules
-  • Document rule purposes
-  • Use consistent naming conventions
-  • Track rule changes in version control
-  • Audit rules periodically
-  • Remove temporary rules promptly
-
-BACKEND SELECTION GUIDELINES:
-  • Use auto for simplicity
-  • Use iptables for universal compatibility
-  • Use nftables for modern systems
-  • Use ufw for Ubuntu/Debian desktops
-  • Use firewalld for RHEL/CentOS
-  • Consider distribution defaults
-  • Match backend to system service manager
-  • Avoid mixing backends on one system
-  • Use native backend tools when available
-  • Understand backend-specific features
-
-SECURITY CONSIDERATIONS:
-  • Firewall operations require root privileges
-  • Test changes in non-production first
-  • Always maintain SSH access
-  • Use backup_before_apply for safety
-  • Validate rules before applying
-  • Monitor firewall for bypass attempts
-  • Keep firewall software updated
-  • Implement logging for security events
-  • Review logs regularly
-  • Use fail-safe configurations
-  • Document security requirements
-  • Implement change approval process
-  • Avoid overly permissive rules
-  • Use source address restrictions
-  • Limit exposure of sensitive services
-  • Implement network segmentation
-  • Use encrypted protocols when possible
-  • Monitor for configuration drift
-  • Implement automated compliance checking
-  • Use intrusion detection systems
-  • Coordinate with other security controls
-  • Test disaster recovery procedures
-  • Maintain firewall documentation
-  • Train staff on firewall operations
-  • Implement least privilege access
-
-TROUBLESHOOTING:
-
-  Permission denied:
-    • Use sudo or run as root
-    • Check user permissions: sudo -l
-    • Verify group membership
-    • Check SELinux/AppArmor policies
-
-  Backend not available:
-    • Install required package
-    • Check service status: systemctl status
-    • Verify binary exists: which iptables
-    • Check PATH environment variable
-
-  Rule not added:
-    • Check syntax: dry_run=true
-    • Verify port numbers are valid
-    • Check IP address format
-    • Ensure required parameters present
-    • Check backend-specific requirements
-
-  Rules not persisting:
-    • Save rules after changes
-    • Check persistence mechanism
-    • Verify service is enabled
-    • Check for conflicting tools
-    • Ensure systemd service loads rules
-
-  No matching rules found:
-    • Use rules.list to see current rules
-    • Check filter criteria
-    • Verify family (ipv4 vs ipv6)
-    • Use require_match=false if acceptable
-
-  Timeout errors:
-    • Increase timeout_ms value
-    • Check system load
-    • Verify no hanging processes
-    • Check for large rule sets
-
-  Cannot reload rules:
-    • Verify file path exists
-    • Check file format
-    • Validate file syntax
-    • Use validate_before_apply=true
-    • Check file permissions
-
-DEBUGGING:
-
-  Check backend availability:
-    firewall://.status(backend=all)
-
-  List all rules:
-    firewall://.rules.list(include_backend_raw=true,include_counters=true)
-
-  Test rule syntax:
-    firewall://.rules.add(...,dry_run=true)
-
-  View backend commands:
-    firewall://.rules.add(...,dry_run=true)
-
-  Check specific rule:
-    firewall://.rules.list(proto=tcp,dport=22)
-
-  Verify firewall is active:
-    firewall://.status(include_rules_summary=true)
-
-  Check rule counters:
-    firewall://.rules.list(include_counters=true)
-
-  Test backend commands manually:
-    iptables -L -n -v           # List iptables rules
-    nft list ruleset            # List nftables rules
-    ufw status verbose          # UFW status
-    firewall-cmd --list-all     # firewalld status
-
-  Check logs:
-    journalctl -u iptables      # iptables service logs
-    journalctl -u ufw           # UFW logs
-    journalctl -u firewalld     # firewalld logs
-
-PLATFORM SUPPORT:
-
-  Linux (all distributions):
-    • Full support for all backends
-    • iptables: Universal support
-    • nftables: Kernel 3.13+
-    • ufw: Ubuntu, Debian, derivatives
-    • firewalld: RHEL, CentOS, Fedora
-
-  Distribution-specific:
-    Ubuntu/Debian    ufw (default), iptables, nftables
-    RHEL/CentOS      firewalld (default), iptables, nftables
-    Fedora           firewalld (default), nftables
-    Arch Linux       iptables, nftables
-    Alpine Linux     iptables, nftables
-
-  BSD:
-    • Not supported (different firewall: pf, ipfw)
-    • Use BSD-native firewall tools
-
-  macOS:
-    • Not supported (uses pf firewall)
-    • Use macOS-native pf configuration
-
-  Windows:
-    • Not supported (uses Windows Firewall)
-    • Use Windows-specific firewall tools
-
-PERFORMANCE CONSIDERATIONS:
-  • Rule evaluation is sequential (order matters)
-  • More rules = slower packet processing
-  • Place common rules earlier
-  • Use specific matches to reduce checks
-  • Avoid excessive rule sets (>1000 rules)
-  • Use connection tracking efficiently
-  • nftables generally faster than iptables
-  • Stateful rules add processing overhead
-  • Rule counters add minimal overhead
-  • Backend detection is fast (cached)
-  • rules.list can be slow with many rules
-  • Use max_rules to limit output
-  • Timeout settings prevent hanging
-  • Dry run is fast (no execution)
-
-LIMITATIONS:
-  • Requires root privileges for most operations
-  • Cannot create custom chains/tables (use backend tools)
-  • Limited advanced features per backend
-  • Cannot manage all backend-specific features
-  • No IPv6 NAT in iptables (use nftables)
-  • Cannot manage firewall logging directly
-  • No connection tracking management
-  • Cannot configure advanced NAT scenarios
-  • Limited QoS/traffic shaping support
-  • Cannot manage all firewalld rich rules
-  • No direct eBPF/XDP integration
-  • Cannot manage SELinux/AppArmor integration
-  • Limited support for complex rule sets
-  • Cannot manage failover configurations
-  • No built-in rule conflict detection
-
-INTEGRATION WITH OTHER HANDLES:
-
-  With service handle:
-    # Start firewall service
-    svc://iptables.start
-    
-    # Add firewall rule
-    firewall://.rules.add(backend=iptables,...)
-
-  With config handle:
-    # Store firewall backend preference
-    config://firewall/backend.set(value=\"iptables\")
-
-  With file handle:
-    # Read firewall rules
-    file:///etc/iptables/rules.v4.read
-
-  With backup handle:
-    # Backup firewall configuration
-    backup://firewall-config.create(target=\"/etc/iptables\")
-
-  With log handle:
-    # Log firewall changes
-    firewall://.rules.add(...) | log://firewall-changes.log.append
-
-  With monitor handle:
-    # Monitor firewall status
-    while true; do
-      firewall://.status
-      sleep 60
-    done
-
-MORE INFO:
-  For complete documentation of firewall handle operations:
-  https://github.com/[your-org]/resource-shell/docs/Security_Secrets/firewall.md
-
-  iptables documentation:
-  https://netfilter.org/documentation/
-  https://linux.die.net/man/8/iptables
-
-  nftables documentation:
-  https://wiki.nftables.org/
-  https://netfilter.org/projects/nftables/
-
-  UFW documentation:
-  https://help.ubuntu.com/community/UFW
-  https://manpages.ubuntu.com/manpages/focal/man8/ufw.8.html
-
-  firewalld documentation:
-  https://firewalld.org/documentation/
-  https://firewalld.org/documentation/man-pages/
-
-  Linux netfilter:
-  https://netfilter.org/
-
-  Use 'firewall:// --help=VERB' for detailed help on a specific verb.
-";
-
-const RULES_LIST_HELP: &str = "RULES.LIST VERB - FIREWALL HANDLE
-================================
-
-DESCRIPTION:
-  List existing firewall rules with comprehensive filtering options.
-  Supports multiple backends and can filter by protocol, port, address,
-  interface, direction, and more. Includes rule counting, backend raw
-  output, and packet/byte counters when requested.
-
-SYNTAX:
-  firewall://.rules.list(arguments)
-
-ARGUMENTS:
-  backend=BACKEND        Firewall backend (default: auto)
-                         Values: auto, iptables, nftables, ufw, firewalld, all
-  family=FAMILY          IP family (default: any)
-                         Values: any, ipv4, ipv6
-  table=TABLE            Table to list rules from
-                         Values: filter, nat, mangle, raw, security
-  chain=CHAIN            Chain to list rules from
-                         Values: INPUT, OUTPUT, FORWARD, PREROUTING, POSTROUTING
-  direction=DIRECTION    Rule direction
-                         Values: input, output, forward
-  action=ACTION          Rule action
-                         Values: accept, drop, reject
-  proto=PROTOCOL         Protocol filter
-                         Values: tcp, udp, icmp, all
-  sport=PORT             Source port filter
-  dport=PORT             Destination port filter
-  saddr=ADDRESS          Source address filter (IP or CIDR)
-  daddr=ADDRESS          Destination address filter (IP or CIDR)
-  in_iface=INTERFACE     Input interface filter
-  out_iface=INTERFACE    Output interface filter
-  comment_contains=TEXT  Filter by comment content
-  include_backend_raw=BOOL    Include raw backend output (default: false)
-  include_counters=BOOL  Include packet/byte counters (default: false)
-  max_rules=NUMBER       Maximum rules to return (default: 10000)
-  timeout_ms=NUMBER      Command timeout (default: 5000)
-  format_output=FORMAT   Output format (default: json)
-                         Values: json, text
-
-EXAMPLES:
-  # List all rules
-  firewall://.rules.list
-
-  # List SSH rules
-  firewall://.rules.list(proto=tcp,dport=22)
-
-  # List INPUT chain rules
-  firewall://.rules.list(backend=iptables,chain=INPUT)
-
-  # Include packet counters
-  firewall://.rules.list(include_counters=true)
-";
-
-const RULES_ADD_HELP: &str = "RULES.ADD VERB - FIREWALL HANDLE
-===============================
-
-DESCRIPTION:
-  Add new firewall rules with comprehensive parameter support.
-  Supports multiple backends with unified parameter interface.
-  Includes dry run mode for testing rule syntax before applying.
-
-SYNTAX:
-  firewall://.rules.add(arguments)
-
-ARGUMENTS:
-  backend=BACKEND        Firewall backend (required)
-                         Values: iptables, nftables, ufw, firewalld
-  family=FAMILY          IP family (default: ipv4)
-                         Values: ipv4, ipv6
-  direction=DIRECTION    Rule direction (required)
-                         Values: input, output, forward
-  action=ACTION          Rule action (required)
-                         Values: accept, drop, reject
-  proto=PROTOCOL         Protocol
-                         Values: tcp, udp, icmp, all
-  dport=PORT             Destination port
-  sport=PORT             Source port
-  saddr=ADDRESS          Source address/network (IP or CIDR)
-  daddr=ADDRESS          Destination address/network (IP or CIDR)
-  comment=TEXT           Rule comment
-  zone=ZONE              Zone (required for firewalld)
-                         Values: public, external, internal, dmz, work, home, trusted, block, drop
-  dry_run=BOOL           Generate commands without executing (default: false)
-  format_output=FORMAT   Output format (default: json)
-
-EXAMPLES:
-  # Allow SSH
-  firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=22)
-
-  # Block telnet
-  firewall://.rules.add(backend=iptables,direction=input,action=drop,proto=tcp,dport=23)
-
-  # Test rule (dry run)
-  firewall://.rules.add(backend=iptables,direction=input,action=accept,proto=tcp,dport=80,dry_run=true)
-";
-
-const RULES_DELETE_HELP: &str = "RULES.DELETE VERB - FIREWALL HANDLE
-===================================
-
-DESCRIPTION:
-  Delete existing firewall rules using pattern matching.
-  Can delete multiple matching rules or require exact matches.
-  Includes dry run mode for testing what would be deleted.
-
-SYNTAX:
-  firewall://.rules.delete(arguments)
-
-ARGUMENTS:
-  backend=BACKEND        Firewall backend (required)
-                         Values: iptables, nftables, ufw, firewalld
-  family=FAMILY          IP family (default: ipv4)
-                         Values: ipv4, ipv6
-  direction=DIRECTION    Rule direction
-                         Values: input, output, forward
-  action=ACTION          Rule action
-                         Values: accept, drop, reject
-  proto=PROTOCOL         Protocol
-                         Values: tcp, udp, icmp, all
-  dport=PORT             Destination port
-  sport=PORT             Source port
-  saddr=ADDRESS          Source address/network
-  daddr=ADDRESS          Destination address/network
-  require_match=BOOL     Require rules to match for success (default: true)
-  dry_run=BOOL           Show what would be deleted (default: false)
-  format_output=FORMAT   Output format (default: json)
-
-EXAMPLES:
-  # Delete SSH rule
-  firewall://.rules.delete(backend=iptables,direction=input,proto=tcp,dport=22)
-
-  # Delete by address
-  firewall://.rules.delete(backend=iptables,saddr=192.0.2.100)
-
-  # Test delete (dry run)
-  firewall://.rules.delete(backend=iptables,direction=input,proto=tcp,dport=80,dry_run=true)
-";
-
-const RULES_SAVE_HELP: &str = "RULES.SAVE VERB - FIREWALL HANDLE
-=================================
-
-DESCRIPTION:
-  Save current firewall rules to files in various formats.
-  Supports compression, metadata inclusion, and multiple output formats.
-  Can save from specific backends or all available backends.
-
-SYNTAX:
-  firewall://.rules.save(arguments)
-
-ARGUMENTS:
-  backend=BACKEND        Firewall backend (default: auto)
-                         Values: auto, iptables, nftables, ufw, firewalld
-  family=FAMILY          IP family (default: any)
-                         Values: any, ipv4, ipv6
-  format=FORMAT          Save format (default: normalized_json)
-                         Values: normalized_json, backend_native, both
-  path=PATH              Output file path (auto-generated if not specified)
-  compress=COMPRESSION   Compression method (default: none)
-                         Values: none, gzip, bzip2
-  include_metadata=BOOL  Include metadata (default: true)
-  include_all_backends=BOOL  Save all backends (default: false)
-  dry_run=BOOL           Show what would be saved (default: false)
-  overwrite=BOOL         Overwrite existing files (default: false)
-  create_dirs=BOOL       Create directories (default: true)
-  timeout_ms=NUMBER      Command timeout (default: 5000)
-  format_output=FORMAT   Output format (default: json)
-
-EXAMPLES:
-  # Save as JSON
-  firewall://.rules.save(backend=iptables,path=/tmp/firewall.json)
-
-  # Save in native format
-  firewall://.rules.save(backend=iptables,format=backend_native,path=/tmp/iptables.rules)
-
-  # Save compressed
-  firewall://.rules.save(backend=iptables,path=/tmp/firewall.json,compress=gzip)
-";
-
-const RULES_RELOAD_HELP: &str = "RULES.RELOAD VERB - FIREWALL HANDLE
-===================================
-
-DESCRIPTION:
-  Reload firewall rules from previously saved files.
-  Supports auto-detection of file format and includes backup/validation options.
-  Can reload into same or different backend than original.
-
-SYNTAX:
-  firewall://.rules.reload(arguments)
-
-ARGUMENTS:
-  backend=BACKEND        Target firewall backend (default: auto)
-                         Values: auto, iptables, nftables, ufw, firewalld
-  source_format=FORMAT   Source format (default: auto)
-                         Values: auto, backend_native, normalized_json
-  path=PATH              Path to rules file (required)
-  family=FAMILY          IP family (default: any)
-                         Values: any, ipv4, ipv6
-  backup_before_apply=BOOL    Create backup before applying (default: true)
-  validate_before_apply=BOOL  Validate rules first (default: true)
-  dry_run=BOOL           Show what would be reloaded (default: false)
-  timeout_ms=NUMBER      Command timeout (default: 30000)
-  format_output=FORMAT   Output format (default: json)
-
-EXAMPLES:
-  # Reload from file
-  firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules)
-
-  # Reload JSON format
-  firewall://.rules.reload(backend=iptables,source_format=normalized_json,path=/tmp/firewall.json)
-
-  # Test reload (dry run)
-  firewall://.rules.reload(backend=iptables,path=/tmp/iptables.rules,dry_run=true)
-";
-
-const STATUS_HELP: &str = "STATUS VERB - FIREWALL HANDLE
-=============================
-
-DESCRIPTION:
-  Check firewall status and backend availability.
-  Reports which backends are available, active, and enabled.
-  Can include performance metrics and rule counts.
-
-SYNTAX:
-  firewall://.status(arguments)
-
-ARGUMENTS:
-  backend=BACKEND        Backend to check (default: auto)
-                         Values: auto, all, iptables, nftables, ufw, firewalld
-  family=FAMILY          IP family (default: any)
-                         Values: any, ipv4, ipv6
-  include_metrics=BOOL   Include performance metrics (default: true)
-  include_rules_summary=BOOL  Include rules count (default: false)
-  timeout_ms=NUMBER      Command timeout (default: 5000)
-  format_output=FORMAT   Output format (default: json)
-
-EXAMPLES:
-  # Check status
-  firewall://.status
-
-  # Check all backends
-  firewall://.status(backend=all)
-
-  # Include rule counts
-  firewall://.status(include_rules_summary=true)
-";
-
-const ENABLE_HELP: &str = "ENABLE VERB - FIREWALL HANDLE
-=============================
-
-DESCRIPTION:
-  Enable firewall service on the system.
-  Can load rules from file during enable process.
-  Supports dry run and validation modes.
-
-SYNTAX:
-  firewall://.enable(arguments)
-
-ARGUMENTS:
-  backend=BACKEND        Firewall backend (default: auto)
-                         Values: auto, ufw, firewalld, iptables, nftables
-  path=PATH              Path to rules file to apply during enable
-  dry_run=BOOL           Show what would be enabled (default: false)
-  validate_only=BOOL     Only validate parameters (default: false)
-  timeout_ms=NUMBER      Command timeout (default: 30000)
-  format_output=FORMAT   Output format (default: json)
-
-EXAMPLES:
-  # Enable firewall
-  firewall://.enable
-
-  # Enable with rules
-  firewall://.enable(backend=iptables,path=/etc/iptables/rules.v4)
-
-  # Test enable (dry run)
-  firewall://.enable(backend=ufw,dry_run=true)
-";
-
-const DISABLE_HELP: &str = "DISABLE VERB - FIREWALL HANDLE
-==============================
-
-DESCRIPTION:
-  Disable firewall service on the system.
-  Includes backup options to preserve current configuration.
-  Supports dry run and validation modes.
-
-SYNTAX:
-  firewall://.disable(arguments)
-
-ARGUMENTS:
-  backend=BACKEND        Firewall backend (default: auto)
-                         Values: auto, ufw, firewalld, iptables, nftables
-  path=PATH              Path to rules file to apply during disable
-  backup_before_apply=BOOL    Create backup before disabling (default: true)
-  dry_run=BOOL           Show what would be disabled (default: false)
-  validate_only=BOOL     Only validate parameters (default: false)
-  timeout_ms=NUMBER      Command timeout (default: 30000)
-  format_output=FORMAT   Output format (default: json)
-
-EXAMPLES:
-  # Disable firewall
-  firewall://.disable
-
-  # Disable with backup
-  firewall://.disable(backend=iptables,backup_before_apply=true)
-
-  # Test disable (dry run)
-  firewall://.disable(backend=ufw,dry_run=true)
-";
 
 // Status operation error codes
 const FIREWALL_STATUS_INVALID_BACKEND: &str = "firewall.status_invalid_backend";
@@ -1531,6 +73,558 @@ pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("firewall", |u| Ok(Box::new(FirewallHandle::from_url(u)?)));
 }
 
+/// Metadata for `resh firewall --help` and `resh firewall <verb> --help`.
+static FIREWALL_HELP: HandleHelp = HandleHelp {
+    description: "The firewall handle lists, adds, and deletes firewall rules, saves and \
+        reloads rule sets, and reports, enables, or disables the host firewall. It drives \
+        the iptables, nftables, ufw, and firewalld command-line tools, detecting an \
+        available backend automatically unless backend is given. The URL has no target, \
+        so every stage takes the form firewall://.<verb> followed by key=value arguments.",
+    usage: "resh firewall://.<verb>[(key=value,...)]",
+    verbs: &[
+        VerbHelp {
+            name: "status",
+            definition: "Reports whether firewall backends are available, active, and \
+                enabled, with their default policy and rule counts, as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh firewall://.status\n  \
+                    [backend=auto|all|iptables|nftables|ufw|firewalld]\n  \
+                    [family=any|ipv4|ipv6] [include_metrics=true|false]\n  \
+                    [include_rules_summary=true|false] [timeout_ms=<ms>]\n  \
+                    [format_output=json|text]",
+                example: "resh --json-pretty firewall://.status backend=nftables \
+                    include_metrics=false",
+                example_output: Some(
+                    r#"{
+  "backends": [
+    {
+      "active": true,
+      "available": true,
+      "backend": "nftables",
+      "default_policy": "DROP",
+      "details": null,
+      "enabled": true,
+      "rule_count_ipv4": 4,
+      "rule_count_ipv6": 2,
+      "warnings": []
+    }
+  ],
+  "error": null,
+  "ok": true,
+  "query": {
+    "backend": "nftables",
+    "family": "any",
+    "include_metrics": false,
+    "include_rules_summary": false,
+    "timeout_ms": 5000
+  },
+  "timestamp_unix_ms": 1792166145850,
+  "warnings": []
+}
+
+Shown for an nftables host with --json-pretty. With include_metrics=true,
+details holds a one-line summary of the ruleset."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "rules.list",
+            definition: "Lists the rules of one backend as JSON, optionally filtered by \
+                table, chain, direction, action, protocol, port, address, interface, or \
+                comment text.",
+            detail: Some(VerbDetail {
+                usage: "resh firewall://.rules.list\n  \
+                    [backend=auto|iptables|nftables|ufw|firewalld]\n  \
+                    [family=any|ipv4|ipv6] [table=<table>] [chain=<chain>]\n  \
+                    [direction=<direction>] [action=<action>] [proto=<proto>]\n  \
+                    [sport=<port>] [dport=<port>] [saddr=<cidr>] [daddr=<cidr>]\n  \
+                    [in_iface=<iface>] [out_iface=<iface>] [comment_contains=<text>]\n  \
+                    [include_backend_raw=true|false] [include_counters=true|false]\n  \
+                    [max_rules=<n>] [timeout_ms=<ms>] [format_output=json|text]",
+                example: "resh --json-pretty firewall://.rules.list family=ipv4 dport=22",
+                example_output: Some(
+                    r#"{
+  "error": null,
+  "ok": true,
+  "query": {
+    "action": null,
+    "backend": "auto",
+    "chain": null,
+    "comment_contains": null,
+    "daddr": null,
+    "direction": null,
+    "dport": "22",
+    "family": "ipv4",
+    "format_output": "json",
+    "in_iface": null,
+    "include_backend_raw": false,
+    "include_counters": false,
+    "max_rules": 10000,
+    "out_iface": null,
+    "proto": null,
+    "saddr": null,
+    "sport": null,
+    "table": null,
+    "timeout_ms": 5000
+  },
+  "rules": [
+    {
+      "action": "accept",
+      "backend": "iptables",
+      "bytes": null,
+      "chain": "INPUT",
+      "comment": null,
+      "daddr": null,
+      "direction": "input",
+      "dport": "22",
+      "family": "ipv4",
+      "in_iface": null,
+      "out_iface": null,
+      "packets": null,
+      "priority": 3,
+      "proto": "tcp",
+      "raw": null,
+      "saddr": "203.0.113.0/24",
+      "sport": null,
+      "table": "filter"
+    }
+  ],
+  "summary": {
+    "backend": "iptables",
+    "family": "ipv4",
+    "filtered_rules": 1,
+    "total_rules": 6
+  },
+  "timestamp_unix_ms": 1792166145850,
+  "warnings": []
+}
+
+Shown for a host where iptables is detected, with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "rules.add",
+            definition: "Adds a rule to the selected backend, for IPv4 and IPv6 alike when \
+                family=any is given without an address, skipping any rule that already \
+                exists unless idempotent=false is given.",
+            detail: Some(VerbDetail {
+                usage: "resh firewall://.rules.add\n  \
+                    [backend=auto|iptables|nftables|ufw|firewalld]\n  \
+                    [family=ipv4|ipv6|any]\n  \
+                    [direction=input|output|forward|prerouting|postrouting]\n  \
+                    [action=accept|drop|reject|log|masquerade|dnat|snat|redirect]\n  \
+                    [table=<table>] [chain=<chain>] [proto=<proto>] [sport=<port>]\n  \
+                    [dport=<port>] [saddr=<cidr>] [daddr=<cidr>] [in_iface=<iface>]\n  \
+                    [out_iface=<iface>] [zone=<zone>] [log_prefix=<text>]\n  \
+                    [rate_limit=<rate>] [comment=<text>] [position=append|insert]\n  \
+                    [dry_run=true|false] [idempotent=true|false] [timeout_ms=<ms>]\n  \
+                    [format_output=json|text]",
+                example: "resh --json-pretty firewall://.rules.add proto=tcp dport=22 \
+                    dry_run=true",
+                example_output: Some(
+                    r#"{
+  "backend_commands": [
+    "iptables -t filter -A INPUT -p tcp --dport 22 -j ACCEPT"
+  ],
+  "error": null,
+  "ok": true,
+  "query": {
+    "action": "accept",
+    "backend": "auto",
+    "chain": null,
+    "comment": null,
+    "daddr": null,
+    "direction": "input",
+    "dport": "22",
+    "dry_run": true,
+    "family": "ipv4",
+    "format_output": "json",
+    "idempotent": true,
+    "in_iface": null,
+    "log_prefix": null,
+    "out_iface": null,
+    "position": "append",
+    "proto": "tcp",
+    "rate_limit": null,
+    "saddr": null,
+    "sport": null,
+    "table": null,
+    "timeout_ms": 5000,
+    "zone": null
+  },
+  "result": {
+    "already_exists": false,
+    "changed": false
+  },
+  "rule": {
+    "action": "accept",
+    "backend": "iptables",
+    "chain": "INPUT",
+    "comment": null,
+    "daddr": "0.0.0.0/0",
+    "direction": "input",
+    "dport": "22",
+    "family": "ipv4",
+    "in_iface": null,
+    "log_prefix": null,
+    "out_iface": null,
+    "proto": "tcp",
+    "rate_limit": null,
+    "saddr": "0.0.0.0/0",
+    "sport": null,
+    "table": "filter",
+    "zone": null
+  },
+  "rules": [
+    {
+      "action": "accept",
+      "backend": "iptables",
+      "chain": "INPUT",
+      "comment": null,
+      "daddr": "0.0.0.0/0",
+      "direction": "input",
+      "dport": "22",
+      "family": "ipv4",
+      "in_iface": null,
+      "log_prefix": null,
+      "out_iface": null,
+      "proto": "tcp",
+      "rate_limit": null,
+      "saddr": "0.0.0.0/0",
+      "sport": null,
+      "table": "filter",
+      "zone": null
+    }
+  ],
+  "timestamp_unix_ms": 1792166145850,
+  "warnings": [
+    "Dry run: no firewall changes applied."
+  ]
+}
+
+Shown for a host where iptables is detected, with --json-pretty. family
+defaults to ipv4. With family=any and no address, iptables and nftables get
+one rule per family: rules lists both and rule is null. A saddr or daddr sets
+the family; an explicit family that differs is rejected
+(firewall.rules_add_family_mismatch). sport and dport need proto=tcp or
+proto=udp, and zone applies only to firewalld (firewall.unsupported_option)."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "rules.delete",
+            definition: "Deletes the rule given by rule_id or every rule that matches the \
+                given filters, or only reports them and the backend commands when \
+                dry_run=true is given.",
+            detail: Some(VerbDetail {
+                usage: "resh firewall://.rules.delete\n  \
+                    [backend=auto|iptables|nftables|ufw|firewalld]\n  \
+                    [family=any|ipv4|ipv6] [rule_id=<id>] [match_mode=exact|subset]\n  \
+                    [zone=<zone>] [table=<table>] [chain=<chain>]\n  \
+                    [direction=<direction>] [action=<action>] [proto=<proto>]\n  \
+                    [sport=<port>] [dport=<port>] [saddr=<cidr>] [daddr=<cidr>]\n  \
+                    [in_iface=<iface>] [out_iface=<iface>] [comment_contains=<text>]\n  \
+                    [limit=<n>] [dry_run=true|false] [require_match=true|false]\n  \
+                    [timeout_ms=<ms>] [format_output=json|text]",
+                example: "resh --json-pretty firewall://.rules.delete rule_id=INPUT:3 \
+                    dry_run=true",
+                example_output: Some(
+                    r#"{
+  "backend_commands": [
+    "iptables -t filter -D INPUT -p tcp -m tcp --dport 22 -j ACCEPT"
+  ],
+  "error": null,
+  "matched_rules": [
+    {
+      "action": "accept",
+      "backend": "iptables",
+      "chain": "INPUT",
+      "comment": null,
+      "daddr": null,
+      "direction": "input",
+      "dport": "22",
+      "family": "ipv4",
+      "in_iface": null,
+      "out_iface": null,
+      "proto": "tcp",
+      "rule_id": "INPUT:3",
+      "saddr": null,
+      "sport": null,
+      "table": "filter"
+    }
+  ],
+  "ok": true,
+  "query": {
+    "action": null,
+    "backend": "auto",
+    "chain": null,
+    "comment_contains": null,
+    "daddr": null,
+    "direction": null,
+    "dport": null,
+    "dry_run": true,
+    "family": "any",
+    "format_output": "json",
+    "in_iface": null,
+    "limit": null,
+    "match_mode": "exact",
+    "out_iface": null,
+    "proto": null,
+    "require_match": true,
+    "rule_id": "INPUT:3",
+    "saddr": null,
+    "sport": null,
+    "table": null,
+    "timeout_ms": 5000,
+    "zone": null
+  },
+  "result": {
+    "deleted_count": 0,
+    "skipped_count": 0
+  },
+  "timestamp_unix_ms": 1792166145850,
+  "warnings": [
+    "Dry run: no firewall changes applied."
+  ]
+}
+
+Shown for a host where iptables is detected, with --json-pretty. rule_id is
+the id rules.delete reports: CHAIN:LINE for iptables (the line within its
+table and chain), the handle for nftables, the rule number for ufw, and
+ZONE:KIND:VALUE for firewalld. iptables rules are deleted by their full rule
+specification. Without rule_id, match_mode=exact (the default) selects rules
+whose proto, ports, addresses and interfaces equal the given ones and that
+have no other match conditions; subset selects every rule the filters fit.
+zone limits a firewalld delete to one zone and is rejected for other
+backends. At least one filter or rule_id is required. A rule_id found in
+more than one family or table is rejected; add family= or table=."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "rules.save",
+            definition: "Saves a snapshot of the current rules to the file given by path, as \
+                normalized JSON, backend-native data, or both.",
+            detail: Some(VerbDetail {
+                usage: "resh firewall://.rules.save path=<file>\n  \
+                    [backend=auto|iptables|nftables|ufw|firewalld]\n  \
+                    [family=any|ipv4|ipv6] [include_all_backends=true|false]\n  \
+                    [format=normalized_json|backend_native|both] [compress=none|gzip]\n  \
+                    [include_metadata=true|false] [dry_run=true|false]\n  \
+                    [overwrite=true|false] [create_dirs=true|false] [timeout_ms=<ms>]\n  \
+                    [format_output=json|text]",
+                example: "resh --json-pretty firewall://.rules.save \
+                    path=/var/backups/firewall.json",
+                example_output: Some(
+                    r#"{
+  "error": null,
+  "ok": true,
+  "query": {
+    "backend": "auto",
+    "compress": "none",
+    "create_dirs": true,
+    "dry_run": false,
+    "family": "any",
+    "format": "normalized_json",
+    "format_output": "json",
+    "include_all_backends": false,
+    "include_metadata": true,
+    "overwrite": false,
+    "path": "/var/backups/firewall.json",
+    "timeout_ms": 5000
+  },
+  "summary": {
+    "backends": [
+      {
+        "backend": "iptables",
+        "family": "any",
+        "has_native": false,
+        "rules_count": 12
+      }
+    ],
+    "bytes_written": 4821,
+    "compressed": false,
+    "path": "/var/backups/firewall.json"
+  },
+  "timestamp_unix_ms": 1792166145850,
+  "warnings": []
+}
+
+Shown for a host where iptables is detected, with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "rules.reload",
+            definition: "Reloads rules through the backend's own reload command for ufw or \
+                firewalld, or applies the saved rules file given by path.",
+            detail: Some(VerbDetail {
+                usage: "resh firewall://.rules.reload [path=<file>]\n  \
+                    [backend=auto|iptables|nftables|ufw|firewalld]\n  \
+                    [family=any|ipv4|ipv6]\n  \
+                    [source_format=auto|backend_native|normalized_json]\n  \
+                    [dry_run=true|false] [validate_only=true|false]\n  \
+                    [backup_before_apply=true|false] [timeout_ms=<ms>]\n  \
+                    [format_output=json|text]",
+                example: "resh --json-pretty firewall://.rules.reload backend=ufw \
+                    dry_run=true",
+                example_output: Some(
+                    r#"{
+  "actions": [
+    "ufw reload"
+  ],
+  "backend": "ufw",
+  "error": null,
+  "family": "any",
+  "mode": "backend_reload",
+  "ok": true,
+  "query": {
+    "backend": "ufw",
+    "backup_before_apply": true,
+    "dry_run": true,
+    "family": "any",
+    "format_output": "json",
+    "path": null,
+    "source_format": "auto",
+    "timeout_ms": 10000,
+    "validate_only": false
+  },
+  "result": {
+    "backup_path": null,
+    "changed": false
+  },
+  "source": {
+    "path": null,
+    "source_format": null
+  },
+  "timestamp_unix_ms": 1792166145850,
+  "warnings": [
+    "Dry run: ufw reload not executed."
+  ]
+}
+
+Shown for a ufw host with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "enable",
+            definition: "Enables the firewall backend, starting ufw or firewalld or loading \
+                the rules file given by path for iptables or nftables.",
+            detail: Some(VerbDetail {
+                usage: "resh firewall://.enable [path=<file>]\n  \
+                    [backend=auto|iptables|nftables|ufw|firewalld]\n  \
+                    [family=any|ipv4|ipv6]\n  \
+                    [source_format=auto|backend_native|normalized_json]\n  \
+                    [dry_run=true|false] [validate_only=true|false]\n  \
+                    [backup_before_apply=true|false]\n  \
+                    [fail_if_already_enabled=true|false] [timeout_ms=<ms>]\n  \
+                    [format_output=json|text]",
+                example: "resh --json-pretty firewall://.enable backend=ufw dry_run=true",
+                example_output: Some(
+                    r#"{
+  "actions": [
+    "backup ufw configuration",
+    "ufw --force enable"
+  ],
+  "backend": "ufw",
+  "current_state": {
+    "active": false,
+    "available": true,
+    "enabled": false
+  },
+  "error": null,
+  "ok": true,
+  "previous_state": {
+    "active": false,
+    "available": true,
+    "enabled": false
+  },
+  "query": {
+    "backend": "ufw",
+    "backup_before_apply": true,
+    "dry_run": true,
+    "fail_if_already_enabled": false,
+    "family": "any",
+    "path": null,
+    "source_format": "auto",
+    "timeout_ms": 10000,
+    "validate_only": false
+  },
+  "result": {
+    "already_enabled": false,
+    "backup_path": null,
+    "changed": false
+  },
+  "timestamp_unix_ms": 1792166145850,
+  "warnings": []
+}
+
+Shown with --json-pretty. In a dry run the states are assumed, not queried."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "disable",
+            definition: "Disables the firewall backend, stopping ufw or firewalld or \
+                flushing iptables or nftables rules unless a rules file is given by path.",
+            detail: Some(VerbDetail {
+                usage: "resh firewall://.disable [path=<file>]\n  \
+                    [backend=auto|iptables|nftables|ufw|firewalld]\n  \
+                    [family=any|ipv4|ipv6]\n  \
+                    [source_format=auto|backend_native|normalized_json]\n  \
+                    [dry_run=true|false] [validate_only=true|false]\n  \
+                    [backup_before_apply=true|false]\n  \
+                    [fail_if_already_disabled=true|false] [timeout_ms=<ms>]\n  \
+                    [format_output=json|text]",
+                example: "resh --json-pretty firewall://.disable backend=ufw dry_run=true",
+                example_output: Some(
+                    r#"{
+  "actions": [
+    "ufw --force disable"
+  ],
+  "backend": "ufw",
+  "current_state": {
+    "active": true,
+    "available": true,
+    "enabled": true
+  },
+  "error": null,
+  "ok": true,
+  "previous_state": {
+    "active": true,
+    "available": true,
+    "enabled": true
+  },
+  "query": {
+    "backend": "ufw",
+    "backup_before_apply": true,
+    "dry_run": true,
+    "fail_if_already_disabled": false,
+    "family": "any",
+    "format_output": "json",
+    "path": null,
+    "source_format": "auto",
+    "timeout_ms": 10000,
+    "validate_only": false
+  },
+  "result": {
+    "already_disabled": false,
+    "backup_path": null,
+    "changed": false
+  },
+  "timestamp_unix_ms": 1792166145850,
+  "warnings": []
+}
+
+Shown for a host with ufw active, with --json-pretty."#,
+                ),
+            }),
+        },
+    ],
+};
+
 // ===========================================================================
 // Core Handle Structure
 // ===========================================================================
@@ -1546,56 +640,22 @@ impl FirewallHandle {
         })
     }
 
-    /// Check if this is a help request and display help if so
-    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
-        // Check for help verbs
-        if verb == "--help" || verb == "-h" || verb == "help" {
-            write!(io.stdout, "{}", FIREWALL_HELP_TEXT)?;
-            return Ok(Some(Status::ok()));
-        }
-        
-        // Check for verb-specific help
-        if verb.starts_with("--help=") {
-            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
-            Self::display_verb_help(help_verb, io)?;
-            return Ok(Some(Status::ok()));
-        }
-        
-        Ok(None)
-    }
-    
-    /// Display help for a specific verb
-    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
-        match verb {
-            "rules.list" => {
-                write!(io.stdout, "{}", RULES_LIST_HELP)?;
-            }
-            "rules.add" => {
-                write!(io.stdout, "{}", RULES_ADD_HELP)?;
-            }
-            "rules.delete" => {
-                write!(io.stdout, "{}", RULES_DELETE_HELP)?;
-            }
-            "rules.save" => {
-                write!(io.stdout, "{}", RULES_SAVE_HELP)?;
-            }
-            "rules.reload" => {
-                write!(io.stdout, "{}", RULES_RELOAD_HELP)?;
-            }
-            "status" => {
-                write!(io.stdout, "{}", STATUS_HELP)?;
-            }
-            "enable" => {
-                write!(io.stdout, "{}", ENABLE_HELP)?;
-            }
-            "disable" => {
-                write!(io.stdout, "{}", DISABLE_HELP)?;
-            }
-            _ => {
-                write!(io.stdout, "Unknown verb: {}. Use --help for full list of available verbs.", verb)?;
-            }
-        }
-        Ok(Status::ok())
+    /// Handles the in-URL help forms (`firewall://--help`, `firewall://-h`,
+    /// `firewall://--help=VERB`, and a `help` verb with optional `verb=`),
+    /// rendering the same text as `resh firewall [<verb>] --help`.
+    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+        let requested: Option<String> = if verb == "help" || crate::core::help::is_help_flag(verb) {
+            Some(args.get("verb").cloned().unwrap_or_default())
+        } else {
+            verb.strip_prefix("--help=").map(|v| v.to_string())
+        };
+        let Some(requested) = requested else {
+            return Ok(None);
+        };
+        let verb_opt = if requested.is_empty() { None } else { Some(requested.as_str()) };
+        let text = crate::core::help::render_legacy("firewall", &FIREWALL_HELP, self.verbs(), verb_opt);
+        write!(io.stdout, "{}", text)?;
+        Ok(Some(Status::ok()))
     }
 }
 
@@ -1604,9 +664,13 @@ impl Handle for FirewallHandle {
         &["rules.list", "rules.add", "rules.delete", "rules.save", "rules.reload", "status", "enable", "disable"]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&FIREWALL_HELP)
+    }
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Check for help requests first
-        if let Some(status) = Self::check_and_display_help(verb, io)? {
+        if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
 
@@ -2087,6 +1151,21 @@ pub enum FirewallError {
     #[error("Failed to list rules for deletion: {message}")]
     ListFailedForDelete { message: String },
 
+    #[error("rule_id {rule_id} matches {count} rules; add family= or table= to select one")]
+    AmbiguousRuleId { rule_id: String, count: usize },
+
+    #[error("rules.delete needs rule_id or at least one match criterion")]
+    MissingDeleteCriteria,
+
+    #[error("Cannot build a delete command for a matched rule: {message}")]
+    RuleIdUnavailable { message: String },
+
+    #[error("Option '{option}' is not supported for backend '{backend}': {message}")]
+    UnsupportedOption { option: String, backend: String, message: String },
+
+    #[error("Address {address} does not belong to family {family}")]
+    FamilyMismatch { family: String, address: String },
+
     // Rules save specific errors
     #[error("Invalid save format: {format}")]
     InvalidSaveFormat { format: String },
@@ -2223,6 +1302,11 @@ impl FirewallError {
             Self::InvalidZone { .. } => "firewall.rules_delete_invalid_zone",
             Self::NoRulesMatched => "firewall.rules_delete_no_match",
             Self::ListFailedForDelete { .. } => "firewall.rules_delete_list_failed",
+            Self::AmbiguousRuleId { .. } => "firewall.rules_delete_ambiguous_rule_id",
+            Self::MissingDeleteCriteria => "firewall.rules_delete_missing_criteria",
+            Self::RuleIdUnavailable { .. } => "firewall.rules_delete_rule_id_unavailable",
+            Self::UnsupportedOption { .. } => "firewall.unsupported_option",
+            Self::FamilyMismatch { .. } => "firewall.rules_add_family_mismatch",
             Self::InvalidSaveFormat { .. } => "firewall.rules_save_invalid_format",
             Self::InvalidCompress { .. } => "firewall.rules_save_invalid_compress", 
             Self::MissingPath => "firewall.rules_save_missing_path",
@@ -2311,6 +1395,15 @@ impl FirewallError {
                     Self::InvalidZone { zone } => json!({ "zone": zone }),
                     Self::NoRulesMatched => json!({}),
                     Self::ListFailedForDelete { message } => json!({ "message": message }),
+                    Self::AmbiguousRuleId { rule_id, count } => json!({ "rule_id": rule_id, "count": count }),
+                    Self::MissingDeleteCriteria => json!({}),
+                    Self::RuleIdUnavailable { message } => json!({ "message": message }),
+                    Self::UnsupportedOption { option, backend, message } => json!({
+                        "option": option,
+                        "backend": backend,
+                        "message": message
+                    }),
+                    Self::FamilyMismatch { family, address } => json!({ "family": family, "address": address }),
                     Self::InvalidSaveFormat { format } => json!({ "format": format }),
                     Self::InvalidCompress { compress } => json!({ "compress": compress }),
                     Self::MissingPath => json!({}),
@@ -2991,6 +2084,8 @@ impl DisableResponse {
 pub struct RulesAddOptions {
     pub backend: FirewallBackend,
     pub family: IpFamily,
+    /// True when family= was given (not the ipv4 default).
+    pub family_explicit: bool,
 
     // High-level rule fields
     pub table: Option<String>,
@@ -3028,6 +2123,7 @@ impl Default for RulesAddOptions {
         Self {
             backend: FirewallBackend::Auto,
             family: IpFamily::Ipv4,
+            family_explicit: false,
             table: None,
             chain: None,
             direction: "input".to_string(),
@@ -3090,7 +2186,11 @@ pub struct RulesAddResponse {
     pub timestamp_unix_ms: i64,
 
     pub query: Value,
+    /// The added rule when exactly one rule is involved.
     pub rule: Option<FirewallRuleSpec>,
+    /// Every rule involved, one per IP family (two for iptables and
+    /// nftables with family=any and no address).
+    pub rules: Vec<FirewallRuleSpec>,
     pub backend_commands: Vec<String>,
     pub result: Option<RulesAddResult>,
 
@@ -3113,6 +2213,7 @@ impl RulesAddResponse {
             timestamp_unix_ms: timestamp,
             query: json!({}),
             rule: None,
+            rules: Vec::new(),
             backend_commands: Vec::new(),
             result: None,
             error: None,
@@ -3130,6 +2231,7 @@ impl RulesAddResponse {
     pub fn success(rule: FirewallRuleSpec, backend_commands: Vec<String>, result: RulesAddResult) -> Self {
         let mut response = Self::new();
         response.ok = true;
+        response.rules = vec![rule.clone()];
         response.rule = Some(rule);
         response.backend_commands = backend_commands;
         response.result = Some(result);
@@ -3142,6 +2244,7 @@ impl RulesAddResponse {
             "timestamp_unix_ms": self.timestamp_unix_ms,
             "query": self.query,
             "rule": self.rule,
+            "rules": self.rules,
             "backend_commands": self.backend_commands,
             "result": self.result,
             "error": self.error,
@@ -3156,7 +2259,7 @@ impl RulesAddResponse {
         output.push_str("==================\n\n");
 
         if self.ok {
-            if let Some(rule) = &self.rule {
+            for rule in &self.rules {
                 output.push_str(&format!("Backend   : {}\n", rule.backend));
                 output.push_str(&format!("Family    : {}\n", rule.family));
                 output.push_str(&format!("Direction : {}\n", rule.direction));
@@ -3501,6 +2604,12 @@ pub struct MatchedFirewallRule {
     pub out_iface: Option<String>,
     pub comment: Option<String>,
     pub rule_id: Option<String>,
+    /// iptables: 1-based line number within the rule's table and chain.
+    #[serde(skip)]
+    pub line_number: Option<i64>,
+    /// Backend rule text as listed (iptables-save line, nft rule, ...).
+    #[serde(skip)]
+    pub raw: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -4172,9 +3281,16 @@ impl FirewallHandle {
             }.into());
         }
 
+        Ok(self.parse_iptables_save_output(&stdout, family, opts))
+    }
+
+    /// Parses `iptables-save` / `ip6tables-save` output. Each rule's
+    /// `priority` is its 1-based line number within its own table and chain,
+    /// the number `iptables -t <table> -L <chain> --line-numbers` shows.
+    fn parse_iptables_save_output(&self, stdout: &str, family: &str, opts: &RulesListOptions) -> Vec<FirewallRule> {
         let mut rules = Vec::new();
         let mut current_table = String::new();
-        let mut rule_priority = 0i64;
+        let mut chain_lines: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
 
         for line in stdout.lines() {
             let line = line.trim();
@@ -4185,36 +3301,35 @@ impl FirewallHandle {
             }
 
             // Parse table definitions
-            if line.starts_with('*') {
-                current_table = line[1..].to_string();
-                rule_priority = 0;
+            if let Some(table) = line.strip_prefix('*') {
+                current_table = table.to_string();
+                chain_lines.clear();
                 continue;
             }
 
-            // Skip COMMIT lines
-            if line == "COMMIT" {
-                continue;
-            }
-
-            // Parse chain policy lines (starting with :)
-            if line.starts_with(':') {
+            // Skip COMMIT lines and chain policy lines (starting with :)
+            if line == "COMMIT" || line.starts_with(':') {
                 continue;
             }
 
             // Parse rule lines (starting with -A)
             if line.starts_with("-A ") {
-                rule_priority += 1;
-                if let Some(rule) = self.parse_iptables_rule(line, &current_table, family, rule_priority, opts) {
+                let tokens = tokenize_rule_line(line);
+                let Some(chain) = tokens.get(1) else { continue };
+                let counter = chain_lines.entry(chain.clone()).or_insert(0);
+                *counter += 1;
+                let line_number = *counter;
+                if let Some(rule) = self.parse_iptables_rule(line, &current_table, family, line_number, opts) {
                     rules.push(rule);
                 }
             }
         }
 
-        Ok(rules)
+        rules
     }
 
     fn parse_iptables_rule(&self, line: &str, table: &str, family: &str, priority: i64, opts: &RulesListOptions) -> Option<FirewallRule> {
-        let parts: Vec<&str> = line.split_whitespace().collect();
+        let parts = tokenize_rule_line(line);
         if parts.len() < 2 {
             return None;
         }
@@ -4241,33 +3356,42 @@ impl FirewallHandle {
         };
 
         // Parse chain name (after -A)
-        if parts.len() > 1 {
-            rule.chain = Some(parts[1].to_string());
-            rule.direction = self.chain_to_direction(parts[1]);
-        }
+        rule.chain = Some(parts[1].to_string());
+        rule.direction = self.chain_to_direction(&parts[1]);
 
-        // Parse rule components
+        // Parse rule components. A preceding "!" negates the next match;
+        // the value is then reported with a leading "!" so filters for the
+        // plain value do not select the negated rule.
         let mut i = 2;
+        let mut negate = false;
         while i < parts.len() {
-            match parts[i] {
+            let value = |idx: usize| -> String {
+                if negate { format!("!{}", parts[idx]) } else { parts[idx].clone() }
+            };
+            match parts[i].as_str() {
+                "!" => {
+                    negate = true;
+                    i += 1;
+                    continue;
+                }
                 "-p" if i + 1 < parts.len() => {
-                    rule.proto = Some(parts[i + 1].to_string());
+                    rule.proto = Some(value(i + 1));
                     i += 2;
                 }
                 "-s" if i + 1 < parts.len() => {
-                    rule.saddr = Some(parts[i + 1].to_string());
+                    rule.saddr = Some(value(i + 1));
                     i += 2;
                 }
                 "-d" if i + 1 < parts.len() => {
-                    rule.daddr = Some(parts[i + 1].to_string());
+                    rule.daddr = Some(value(i + 1));
                     i += 2;
                 }
                 "-i" if i + 1 < parts.len() => {
-                    rule.in_iface = Some(parts[i + 1].to_string());
+                    rule.in_iface = Some(value(i + 1));
                     i += 2;
                 }
                 "-o" if i + 1 < parts.len() => {
-                    rule.out_iface = Some(parts[i + 1].to_string());
+                    rule.out_iface = Some(value(i + 1));
                     i += 2;
                 }
                 "-j" if i + 1 < parts.len() => {
@@ -4275,15 +3399,15 @@ impl FirewallHandle {
                     i += 2;
                 }
                 "--dport" if i + 1 < parts.len() => {
-                    rule.dport = Some(parts[i + 1].to_string());
+                    rule.dport = Some(value(i + 1));
                     i += 2;
                 }
                 "--sport" if i + 1 < parts.len() => {
-                    rule.sport = Some(parts[i + 1].to_string());
+                    rule.sport = Some(value(i + 1));
                     i += 2;
                 }
                 "--comment" if i + 1 < parts.len() => {
-                    rule.comment = Some(parts[i + 1].trim_matches('"').to_string());
+                    rule.comment = Some(parts[i + 1].clone());
                     i += 2;
                 }
                 "-c" if i + 2 < parts.len() => {
@@ -4298,6 +3422,7 @@ impl FirewallHandle {
                 }
                 _ => i += 1,
             }
+            negate = false;
         }
 
         Some(rule)
@@ -4315,11 +3440,12 @@ impl FirewallHandle {
     }
 
     async fn get_nftables_rules(&self, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
-        let (exit_code, stdout, stderr) = run_command_with_timeout("nft", &["list", "ruleset"], opts.timeout_ms).await?;
+        // -a adds "# handle N" to each rule, the id rules.delete deletes by.
+        let (exit_code, stdout, stderr) = run_command_with_timeout("nft", &["-a", "list", "ruleset"], opts.timeout_ms).await?;
         
         if exit_code != 0 {
             return Err(FirewallError::CommandFailed {
-                command: "nft list ruleset".to_string(),
+                command: "nft -a list ruleset".to_string(),
                 code: exit_code,
                 stderr,
             }.into());
@@ -4361,6 +3487,12 @@ impl FirewallHandle {
                 if line.matches('}').count() == 1 {
                     current_chain_info = None;
                 }
+                continue;
+            }
+
+            // Chain header statements such as "type filter hook input
+            // priority 0; policy accept;" are not rules.
+            if line.starts_with("type ") || line.starts_with("policy ") {
                 continue;
             }
 
@@ -4710,7 +3842,8 @@ impl FirewallHandle {
             return None;
         }
 
-        // Skip the rule number (first part)
+        // The rule number (first part) is what `ufw delete` takes.
+        let priority = parts[0].parse::<i64>().unwrap_or(priority);
         let parts = &parts[1..];
         
         let mut rule = FirewallRule {
@@ -5882,50 +5015,69 @@ impl FirewallHandle {
             opts.backend.clone()
         };
 
-        // Normalize the rule specification
-        let rule_spec = self.normalize_rule_spec(&opts, &backend_to_use)?;
+        // Normalize the rule specification: one rule per IP family.
+        let rule_specs = self.normalize_rule_specs(&opts, &backend_to_use)?;
 
-        // Check for idempotency if requested
-        if opts.idempotent {
-            match self.check_rule_exists(&rule_spec, &opts).await {
-                Ok(true) => {
-                    // Rule already exists
-                    response.ok = true;
-                    response.rule = Some(rule_spec);
-                    response.result = Some(RulesAddResult {
-                        changed: false,
-                        already_exists: true,
-                    });
-                    response.warnings.push("Matching rule already exists; no changes applied (idempotent=true).".to_string());
-                    return Ok(response);
-                }
-                Ok(false) => {
-                    // Rule doesn't exist, proceed
-                }
-                Err(e) => {
-                    return Ok(RulesAddResponse::with_error(
-                        FirewallError::IdempotencyCheckFailed {
-                            message: e.to_string()
-                        }
-                    ));
-                }
-            }
+        // Build commands first so invalid combinations fail before any
+        // existence check or change.
+        let mut planned: Vec<(FirewallRuleSpec, Vec<Vec<String>>)> = Vec::new();
+        for spec in &rule_specs {
+            let commands = self.generate_add_commands(spec, &opts)?;
+            planned.push((spec.clone(), commands));
         }
 
-        // Generate backend commands
-        let commands = self.generate_add_commands(&rule_spec, &opts)?;
+        // Skip rules that already exist if idempotent
+        let mut existing = 0usize;
+        if opts.idempotent {
+            let mut to_add = Vec::new();
+            for (spec, commands) in planned {
+                match self.check_rule_exists(&spec, &opts).await {
+                    Ok(true) => existing += 1,
+                    Ok(false) => to_add.push((spec, commands)),
+                    Err(e) => {
+                        return Ok(RulesAddResponse::with_error(
+                            FirewallError::IdempotencyCheckFailed {
+                                message: e.to_string()
+                            }
+                        ));
+                    }
+                }
+            }
+            planned = to_add;
+        }
+
+        response.rule = if rule_specs.len() == 1 { rule_specs.first().cloned() } else { None };
+        response.rules = rule_specs;
+
+        if planned.is_empty() {
+            response.ok = true;
+            response.result = Some(RulesAddResult {
+                changed: false,
+                already_exists: true,
+            });
+            response.warnings.push("Matching rule already exists; no changes applied (idempotent=true).".to_string());
+            return Ok(response);
+        }
+        if existing > 0 {
+            response.warnings.push(format!(
+                "{} of {} rules already exist and were skipped (idempotent=true).",
+                existing,
+                response.rules.len()
+            ));
+        }
+
+        let commands: Vec<Vec<String>> = planned.into_iter().flat_map(|(_, c)| c).collect();
+        let command_lines: Vec<String> = commands.iter().map(|c| display_command(c)).collect();
 
         // Execute commands if not dry run
         if !opts.dry_run {
-            for cmd_args in &commands {
-                let (command, args) = self.parse_command_args(cmd_args)?;
-                let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                let (exit_code, _stdout, stderr) = run_command_with_timeout(&command, &args_refs, opts.timeout_ms).await?;
+            for (argv, line) in commands.iter().zip(&command_lines) {
+                let (exit_code, _stdout, stderr) = run_argv(argv, opts.timeout_ms).await?;
 
                 if exit_code != 0 {
                     return Ok(RulesAddResponse::with_error(
                         FirewallError::CommandFailed {
-                            command: cmd_args.clone(),
+                            command: line.clone(),
                             code: exit_code,
                             stderr,
                         }
@@ -5946,8 +5098,7 @@ impl FirewallHandle {
         }
 
         response.ok = true;
-        response.rule = Some(rule_spec);
-        response.backend_commands = commands;
+        response.backend_commands = command_lines;
 
         Ok(response)
     }
@@ -5963,6 +5114,7 @@ impl FirewallHandle {
         // Parse family
         if let Some(family_str) = args.get("family") {
             opts.family = IpFamily::from_str(family_str)?;
+            opts.family_explicit = true;
         }
 
         // Parse rule fields
@@ -6107,44 +5259,73 @@ impl FirewallHandle {
         }
     }
 
-    fn normalize_rule_spec(&self, opts: &RulesAddOptions, backend: &FirewallBackend) -> Result<FirewallRuleSpec> {
-        let family_str = opts.family.as_str().to_string();
+    /// Builds one normalized rule per IP family the rule must exist in.
+    ///
+    /// iptables and nftables need one rule per family, so family=any with no
+    /// address yields an IPv4 and an IPv6 rule. ufw and firewalld cover both
+    /// families with a single rule, reported with family "any". When an
+    /// address is given, the family follows the address.
+    fn normalize_rule_specs(&self, opts: &RulesAddOptions, backend: &FirewallBackend) -> Result<Vec<FirewallRuleSpec>> {
+        if opts.zone.is_some() && *backend != FirewallBackend::Firewalld {
+            return Err(FirewallError::UnsupportedOption {
+                option: "zone".to_string(),
+                backend: backend.as_str().to_string(),
+                message: "zone applies only to firewalld".to_string(),
+            }.into());
+        }
+
+        let families = resolve_add_families(
+            &opts.family,
+            opts.family_explicit,
+            opts.saddr.as_ref(),
+            opts.daddr.as_ref(),
+        )?;
+
+        let single_rule_backend = matches!(backend, FirewallBackend::Ufw | FirewallBackend::Firewalld);
+        let families: Vec<&str> = if single_rule_backend && families.len() > 1 {
+            vec!["any"]
+        } else {
+            families
+        };
 
         // Determine default table and chain based on direction
         let (default_table, default_chain) = self.get_default_table_chain(&opts.direction, backend);
-
         let table = opts.table.clone().or(default_table);
         let chain = opts.chain.clone().or(default_chain);
 
-        // Set default addresses based on family
-        let default_any_addr = match opts.family {
-            IpFamily::Ipv4 => "0.0.0.0/0",
-            IpFamily::Ipv6 => "::/0",
-            IpFamily::Any => "0.0.0.0/0", // Default to IPv4 for "any"
-        };
+        let specs = families
+            .into_iter()
+            .map(|family| {
+                let addr = |given: &Option<String>| -> Option<String> {
+                    match given {
+                        Some(a) if normalize_address(Some(a)).is_some() => Some(a.clone()),
+                        _ if family == "any" => None,
+                        _ => Some(any_address(family).to_string()),
+                    }
+                };
+                FirewallRuleSpec {
+                    backend: backend.as_str().to_string(),
+                    family: family.to_string(),
+                    table: table.clone(),
+                    chain: chain.clone(),
+                    direction: opts.direction.clone(),
+                    action: opts.action.clone(),
+                    proto: opts.proto.clone(),
+                    sport: opts.sport.clone(),
+                    dport: opts.dport.clone(),
+                    saddr: addr(&opts.saddr),
+                    daddr: addr(&opts.daddr),
+                    in_iface: opts.in_iface.clone(),
+                    out_iface: opts.out_iface.clone(),
+                    zone: opts.zone.clone(),
+                    log_prefix: opts.log_prefix.clone(),
+                    rate_limit: opts.rate_limit.clone(),
+                    comment: opts.comment.clone(),
+                }
+            })
+            .collect();
 
-        let saddr = opts.saddr.clone().or_else(|| Some(default_any_addr.to_string()));
-        let daddr = opts.daddr.clone().or_else(|| Some(default_any_addr.to_string()));
-
-        Ok(FirewallRuleSpec {
-            backend: backend.as_str().to_string(),
-            family: family_str,
-            table,
-            chain,
-            direction: opts.direction.clone(),
-            action: opts.action.clone(),
-            proto: opts.proto.clone(),
-            sport: opts.sport.clone(),
-            dport: opts.dport.clone(),
-            saddr,
-            daddr,
-            in_iface: opts.in_iface.clone(),
-            out_iface: opts.out_iface.clone(),
-            zone: opts.zone.clone(),
-            log_prefix: opts.log_prefix.clone(),
-            rate_limit: opts.rate_limit.clone(),
-            comment: opts.comment.clone(),
-        })
+        Ok(specs)
     }
 
     fn get_default_table_chain(&self, direction: &str, backend: &FirewallBackend) -> (Option<String>, Option<String>) {
@@ -6164,62 +5345,52 @@ impl FirewallHandle {
     }
 
     async fn check_rule_exists(&self, rule_spec: &FirewallRuleSpec, opts: &RulesAddOptions) -> Result<bool> {
-        // Use rules.list to get existing rules
+        let backend = FirewallBackend::from_str(&rule_spec.backend)?;
         let list_opts = RulesListOptions {
-            backend: FirewallBackend::from_str(&rule_spec.backend)?,
+            backend: backend.clone(),
             family: IpFamily::from_str(&rule_spec.family)?,
-            table: rule_spec.table.clone(),
-            chain: rule_spec.chain.clone(),
-            direction: Some(rule_spec.direction.clone()),
-            action: Some(rule_spec.action.clone()),
-            proto: rule_spec.proto.clone(),
-            sport: rule_spec.sport.clone(),
-            dport: rule_spec.dport.clone(),
-            saddr: rule_spec.saddr.clone(),
-            daddr: rule_spec.daddr.clone(),
-            in_iface: rule_spec.in_iface.clone(),
-            out_iface: rule_spec.out_iface.clone(),
-            comment_contains: rule_spec.comment.clone(),
             include_backend_raw: false,
             include_counters: false,
             max_rules: 10000,
             timeout_ms: opts.timeout_ms,
             format_output: OutputFormat::Json,
+            ..RulesListOptions::default()
         };
 
-        let existing_rules = self.get_rules_from_backend(
-            &FirewallBackend::from_str(&rule_spec.backend)?,
-            &list_opts
-        ).await?;
-
-        // Check if any existing rule matches our spec
-        for rule in existing_rules {
-            if self.rules_match(rule_spec, &rule) {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
+        let existing_rules = self.get_rules_from_backend(&backend, &list_opts).await?;
+        Ok(existing_rules.iter().any(|rule| self.rules_match(rule_spec, rule)))
     }
 
     fn rules_match(&self, spec: &FirewallRuleSpec, rule: &FirewallRule) -> bool {
-        // Compare all relevant fields
-        spec.backend == rule.backend &&
-        spec.family == rule.family &&
-        spec.table == rule.table &&
-        spec.chain == rule.chain &&
-        spec.direction == rule.direction.clone().unwrap_or_default() &&
-        spec.action == rule.action.clone().unwrap_or_default() &&
-        spec.proto == rule.proto &&
-        spec.sport == rule.sport &&
-        spec.dport == rule.dport &&
-        spec.saddr == rule.saddr &&
-        spec.daddr == rule.daddr &&
-        spec.in_iface == rule.in_iface &&
-        spec.out_iface == rule.out_iface
+        let eq_ci = |a: Option<&str>, b: Option<&str>| match (a, b) {
+            (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+            (None, None) => true,
+            _ => false,
+        };
+        let canon_action = |a: &str| match a.to_lowercase().as_str() {
+            "allow" => "accept".to_string(),
+            "deny" => "drop".to_string(),
+            other => other.to_string(),
+        };
+        let proto = |p: Option<&String>| p.filter(|p| !matches!(p.as_str(), "any" | "all")).cloned();
+
+        spec.backend == rule.backend
+            && (spec.family == rule.family || spec.family == "any" || rule.family == "any")
+            && eq_ci(spec.table.as_deref(), rule.table.as_deref())
+            && eq_ci(spec.chain.as_deref(), rule.chain.as_deref())
+            && eq_ci(Some(spec.direction.as_str()), rule.direction.as_deref())
+            && canon_action(&spec.action) == canon_action(rule.action.as_deref().unwrap_or_default())
+            && proto(spec.proto.as_ref()) == proto(rule.proto.as_ref())
+            && spec.sport == rule.sport
+            && spec.dport == rule.dport
+            && normalize_address(spec.saddr.as_ref()) == normalize_address(rule.saddr.as_ref())
+            && normalize_address(spec.daddr.as_ref()) == normalize_address(rule.daddr.as_ref())
+            && spec.in_iface == rule.in_iface
+            && spec.out_iface == rule.out_iface
     }
 
-    fn generate_add_commands(&self, rule_spec: &FirewallRuleSpec, opts: &RulesAddOptions) -> Result<Vec<String>> {
+    /// Builds the commands (as argument vectors) that add `rule_spec`.
+    fn generate_add_commands(&self, rule_spec: &FirewallRuleSpec, opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
         match FirewallBackend::from_str(&rule_spec.backend)? {
             FirewallBackend::Iptables => self.generate_iptables_add_command(rule_spec, opts),
             FirewallBackend::Nftables => self.generate_nftables_add_command(rule_spec, opts),
@@ -6229,258 +5400,208 @@ impl FirewallHandle {
         }
     }
 
-    fn generate_iptables_add_command(&self, rule_spec: &FirewallRuleSpec, opts: &RulesAddOptions) -> Result<Vec<String>> {
-        let binary = if rule_spec.family == "ipv4" { "iptables" } else { "ip6tables" };
-        let mut cmd = String::new();
-
-        cmd.push_str(binary);
-
-        // Table
-        if let Some(table) = &rule_spec.table {
-            cmd.push_str(&format!(" -t {}", table));
+    /// Rejects ports without a port-carrying protocol, which iptables and
+    /// nftables cannot express (the port would otherwise be dropped and the
+    /// rule would match every port).
+    fn require_port_proto(&self, rule_spec: &FirewallRuleSpec) -> Result<()> {
+        let has_port = rule_spec.sport.is_some() || rule_spec.dport.is_some();
+        let port_proto = matches!(
+            rule_spec.proto.as_deref().map(|p| p.to_lowercase()).as_deref(),
+            Some("tcp") | Some("udp")
+        );
+        if has_port && !port_proto {
+            return Err(FirewallError::UnsupportedOption {
+                option: if rule_spec.dport.is_some() { "dport" } else { "sport" }.to_string(),
+                backend: rule_spec.backend.clone(),
+                message: "ports require proto=tcp or proto=udp".to_string(),
+            }.into());
         }
-
-        // Position (append or insert)
-        let chain = rule_spec.chain.as_ref().unwrap_or(&"INPUT".to_string()).clone();
-        match opts.position.to_lowercase().as_str() {
-            "insert" => cmd.push_str(&format!(" -I {} 1", chain)),
-            "append" | _ => cmd.push_str(&format!(" -A {}", chain)),
-        }
-
-        // Protocol
-        if let Some(proto) = &rule_spec.proto {
-            if proto != "any" && proto != "all" {
-                cmd.push_str(&format!(" -p {}", proto));
-            }
-        }
-
-        // Source address
-        if let Some(saddr) = &rule_spec.saddr {
-            if saddr != "0.0.0.0/0" && saddr != "::/0" {
-                cmd.push_str(&format!(" -s {}", saddr));
-            }
-        }
-
-        // Destination address
-        if let Some(daddr) = &rule_spec.daddr {
-            if daddr != "0.0.0.0/0" && daddr != "::/0" {
-                cmd.push_str(&format!(" -d {}", daddr));
-            }
-        }
-
-        // Interfaces
-        if let Some(in_iface) = &rule_spec.in_iface {
-            cmd.push_str(&format!(" -i {}", in_iface));
-        }
-        if let Some(out_iface) = &rule_spec.out_iface {
-            cmd.push_str(&format!(" -o {}", out_iface));
-        }
-
-        // Ports (require protocol to be tcp or udp)
-        if let Some(proto) = &rule_spec.proto {
-            if proto == "tcp" || proto == "udp" {
-                if let Some(sport) = &rule_spec.sport {
-                    cmd.push_str(&format!(" --sport {}", sport));
-                }
-                if let Some(dport) = &rule_spec.dport {
-                    cmd.push_str(&format!(" --dport {}", dport));
-                }
-            }
-        }
-
-        // Rate limit
-        if let Some(rate_limit) = &rule_spec.rate_limit {
-            cmd.push_str(&format!(" -m limit --limit {}", rate_limit));
-        }
-
-        // Comment
-        if let Some(comment) = &rule_spec.comment {
-            let escaped_comment = comment.replace('"', "\\\"");
-            cmd.push_str(&format!(" -m comment --comment \"{}\"", escaped_comment));
-        }
-
-        // Action
-        cmd.push_str(&format!(" -j {}", rule_spec.action.to_uppercase()));
-
-        Ok(vec![cmd])
+        Ok(())
     }
 
-    fn generate_nftables_add_command(&self, rule_spec: &FirewallRuleSpec, _opts: &RulesAddOptions) -> Result<Vec<String>> {
-        let family = if rule_spec.family == "ipv4" { "ip" } else { "ip6" };
-        let default_table = "filter".to_string();
-        let default_chain = "input".to_string();
-        let table = rule_spec.table.as_ref().unwrap_or(&default_table);
-        let chain = rule_spec.chain.as_ref().unwrap_or(&default_chain).to_lowercase();
-
-        let mut rule_expr = String::new();
-
-        // Protocol
-        if let Some(proto) = &rule_spec.proto {
-            if proto != "any" && proto != "all" {
-                rule_expr.push_str(&format!("{} ", proto));
+    fn generate_iptables_add_command(&self, rule_spec: &FirewallRuleSpec, opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
+        self.require_port_proto(rule_spec)?;
+        let binary = match rule_spec.family.as_str() {
+            "ipv4" => "iptables",
+            "ipv6" => "ip6tables",
+            other => {
+                return Err(FirewallError::InternalError {
+                    message: format!("iptables rule needs a single family, got '{}'", other),
+                }.into())
             }
+        };
+        let mut cmd: Vec<String> = vec![binary.to_string()];
+        let mut push = |args: &[&str]| cmd.extend(args.iter().map(|s| s.to_string()));
+
+        if let Some(table) = &rule_spec.table {
+            push(&["-t", table]);
         }
 
-        // Ports
-        if let Some(dport) = &rule_spec.dport {
-            rule_expr.push_str(&format!("dport {} ", dport));
+        let chain = rule_spec.chain.clone().unwrap_or_else(|| "INPUT".to_string());
+        match opts.position.to_lowercase().as_str() {
+            "insert" => push(&["-I", &chain, "1"]),
+            _ => push(&["-A", &chain]),
+        }
+
+        if let Some(proto) = &rule_spec.proto {
+            if proto != "any" && proto != "all" {
+                push(&["-p", proto]);
+            }
+        }
+        if let Some(saddr) = normalize_address(rule_spec.saddr.as_ref()) {
+            push(&["-s", &saddr]);
+        }
+        if let Some(daddr) = normalize_address(rule_spec.daddr.as_ref()) {
+            push(&["-d", &daddr]);
+        }
+        if let Some(in_iface) = &rule_spec.in_iface {
+            push(&["-i", in_iface]);
+        }
+        if let Some(out_iface) = &rule_spec.out_iface {
+            push(&["-o", out_iface]);
         }
         if let Some(sport) = &rule_spec.sport {
-            rule_expr.push_str(&format!("sport {} ", sport));
+            push(&["--sport", sport]);
         }
-
-        // Addresses
-        if let Some(saddr) = &rule_spec.saddr {
-            if saddr != "0.0.0.0/0" && saddr != "::/0" {
-                rule_expr.push_str(&format!("{} saddr {} ", family, saddr));
-            }
+        if let Some(dport) = &rule_spec.dport {
+            push(&["--dport", dport]);
         }
-        if let Some(daddr) = &rule_spec.daddr {
-            if daddr != "0.0.0.0/0" && daddr != "::/0" {
-                rule_expr.push_str(&format!("{} daddr {} ", family, daddr));
-            }
-        }
-
-        // Interfaces
-        if let Some(in_iface) = &rule_spec.in_iface {
-            rule_expr.push_str(&format!("iifname \"{}\" ", in_iface));
-        }
-        if let Some(out_iface) = &rule_spec.out_iface {
-            rule_expr.push_str(&format!("oifname \"{}\" ", out_iface));
-        }
-
-        // Rate limit
         if let Some(rate_limit) = &rule_spec.rate_limit {
-            rule_expr.push_str(&format!("limit rate {} ", rate_limit));
+            push(&["-m", "limit", "--limit", rate_limit]);
         }
-
-        // Comment
         if let Some(comment) = &rule_spec.comment {
-            let escaped_comment = comment.replace('"', "\\\"");
-            rule_expr.push_str(&format!("comment \"{}\" ", escaped_comment));
+            push(&["-m", "comment", "--comment", comment]);
         }
-
-        // Action
-        rule_expr.push_str(&rule_spec.action);
-
-        let cmd = format!("nft add rule {} {} {} {}", family, table, chain, rule_expr);
+        let action = rule_spec.action.to_uppercase();
+        push(&["-j", &action]);
 
         Ok(vec![cmd])
     }
 
-    fn generate_ufw_add_command(&self, rule_spec: &FirewallRuleSpec, _opts: &RulesAddOptions) -> Result<Vec<String>> {
-        let mut cmd = String::from("ufw");
-
-        // Action mapping
-        let ufw_action = match rule_spec.action.to_lowercase().as_str() {
-            "accept" => "allow",
-            "drop" | "reject" => "deny",
-            _ => "allow",
+    fn generate_nftables_add_command(&self, rule_spec: &FirewallRuleSpec, _opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
+        self.require_port_proto(rule_spec)?;
+        let family = match rule_spec.family.as_str() {
+            "ipv4" => "ip",
+            "ipv6" => "ip6",
+            other => {
+                return Err(FirewallError::InternalError {
+                    message: format!("nftables rule needs a single family, got '{}'", other),
+                }.into())
+            }
         };
+        let table = rule_spec.table.clone().unwrap_or_else(|| "filter".to_string());
+        let chain = rule_spec.chain.clone().unwrap_or_else(|| "input".to_string()).to_lowercase();
 
-        cmd.push_str(&format!(" {}", ufw_action));
+        let mut cmd: Vec<String> = ["nft", "add", "rule", family, &table, &chain]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut push = |args: &[&str]| cmd.extend(args.iter().map(|s| s.to_string()));
 
-        // Direction
-        if rule_spec.direction == "output" {
-            cmd.push_str(" out");
-        }
-
-        // Protocol
+        let has_port = rule_spec.sport.is_some() || rule_spec.dport.is_some();
         if let Some(proto) = &rule_spec.proto {
             if proto != "any" && proto != "all" {
-                cmd.push_str(&format!(" proto {}", proto));
+                if has_port {
+                    push(&[proto]);
+                } else {
+                    push(&["meta", "l4proto", proto]);
+                }
             }
         }
-
-        // Source
-        if let Some(saddr) = &rule_spec.saddr {
-            if saddr != "0.0.0.0/0" && saddr != "::/0" {
-                cmd.push_str(&format!(" from {}", saddr));
-            } else {
-                cmd.push_str(" from any");
-            }
-        } else {
-            cmd.push_str(" from any");
-        }
-
-        // Destination and port
-        if let Some(daddr) = &rule_spec.daddr {
-            if daddr != "0.0.0.0/0" && daddr != "::/0" {
-                cmd.push_str(&format!(" to {}", daddr));
-            } else {
-                cmd.push_str(" to any");
-            }
-        } else {
-            cmd.push_str(" to any");
-        }
-
         if let Some(dport) = &rule_spec.dport {
-            cmd.push_str(&format!(" port {}", dport));
+            push(&["dport", dport]);
         }
-
-        // Comment
+        if let Some(sport) = &rule_spec.sport {
+            if rule_spec.dport.is_some() {
+                // A second port match needs its own protocol prefix.
+                push(&[rule_spec.proto.as_deref().unwrap_or("tcp")]);
+            }
+            push(&["sport", sport]);
+        }
+        if let Some(saddr) = normalize_address(rule_spec.saddr.as_ref()) {
+            push(&[family, "saddr", &saddr]);
+        }
+        if let Some(daddr) = normalize_address(rule_spec.daddr.as_ref()) {
+            push(&[family, "daddr", &daddr]);
+        }
+        if let Some(in_iface) = &rule_spec.in_iface {
+            push(&["iifname", &format!("\"{}\"", in_iface)]);
+        }
+        if let Some(out_iface) = &rule_spec.out_iface {
+            push(&["oifname", &format!("\"{}\"", out_iface)]);
+        }
+        if let Some(rate_limit) = &rule_spec.rate_limit {
+            push(&["limit", "rate", rate_limit]);
+        }
         if let Some(comment) = &rule_spec.comment {
-            let escaped_comment = comment.replace('\'', "\\'");
-            cmd.push_str(&format!(" comment '{}'", escaped_comment));
+            push(&["comment", &format!("\"{}\"", comment.replace('"', "\\\""))]);
+        }
+        push(&[&rule_spec.action.to_lowercase()]);
+
+        Ok(vec![cmd])
+    }
+
+    fn generate_ufw_add_command(&self, rule_spec: &FirewallRuleSpec, _opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
+        let ufw_action = match rule_spec.action.to_lowercase().as_str() {
+            "accept" => "allow",
+            "drop" => "deny",
+            "reject" => "reject",
+            _ => "allow",
+        };
+        let mut cmd: Vec<String> = vec!["ufw".to_string(), ufw_action.to_string()];
+        let mut push = |args: &[&str]| cmd.extend(args.iter().map(|s| s.to_string()));
+
+        if rule_spec.direction == "output" {
+            push(&["out"]);
+        }
+        if let Some(proto) = &rule_spec.proto {
+            if proto != "any" && proto != "all" {
+                push(&["proto", proto]);
+            }
+        }
+        // For a single-family rule without an address, the family's "any"
+        // CIDR restricts ufw to that family; "any" covers both.
+        let endpoint = |addr: &Option<String>| -> String {
+            match addr {
+                Some(a) => a.clone(),
+                None => "any".to_string(),
+            }
+        };
+        push(&["from", &endpoint(&rule_spec.saddr)]);
+        push(&["to", &endpoint(&rule_spec.daddr)]);
+        if let Some(dport) = &rule_spec.dport {
+            push(&["port", dport]);
+        }
+        if let Some(comment) = &rule_spec.comment {
+            push(&["comment", comment]);
         }
 
         Ok(vec![cmd])
     }
 
-    fn generate_firewalld_add_command(&self, rule_spec: &FirewallRuleSpec, _opts: &RulesAddOptions) -> Result<Vec<String>> {
+    fn generate_firewalld_add_command(&self, rule_spec: &FirewallRuleSpec, _opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
         let zone = rule_spec.zone.as_ref().ok_or(FirewallError::ZoneRequired)?;
 
-        // For simple port rules
-        if rule_spec.proto.is_some() && rule_spec.dport.is_some() && rule_spec.saddr.is_none() {
-            let proto = rule_spec.proto.as_ref().unwrap();
-            let dport = rule_spec.dport.as_ref().unwrap();
-            let cmd = format!("firewall-cmd --zone={} --add-port={}/{}", zone, dport, proto);
-            return Ok(vec![cmd]);
+        let mut rich_rule = String::from("rule");
+        if rule_spec.family == "ipv4" || rule_spec.family == "ipv6" {
+            rich_rule.push_str(&format!(" family=\"{}\"", rule_spec.family));
         }
-
-        // For rich rules
-        let family = if rule_spec.family == "ipv6" { "ipv6" } else { "ipv4" };
-        let mut rich_rule = format!("rule family=\"{}\"", family);
-
-        // Source
-        if let Some(saddr) = &rule_spec.saddr {
-            if saddr != "0.0.0.0/0" && saddr != "::/0" {
-                rich_rule.push_str(&format!(" source address=\"{}\"", saddr));
-            }
+        if let Some(saddr) = normalize_address(rule_spec.saddr.as_ref()) {
+            rich_rule.push_str(&format!(" source address=\"{}\"", saddr));
         }
-
-        // Destination
-        if let Some(daddr) = &rule_spec.daddr {
-            if daddr != "0.0.0.0/0" && daddr != "::/0" {
-                rich_rule.push_str(&format!(" destination address=\"{}\"", daddr));
-            }
+        if let Some(daddr) = normalize_address(rule_spec.daddr.as_ref()) {
+            rich_rule.push_str(&format!(" destination address=\"{}\"", daddr));
         }
-
-        // Protocol and port
-        if let Some(proto) = &rule_spec.proto {
-            if let Some(dport) = &rule_spec.dport {
-                rich_rule.push_str(&format!(" port protocol=\"{}\" port=\"{}\"", proto, dport));
-            }
+        if let (Some(proto), Some(dport)) = (&rule_spec.proto, &rule_spec.dport) {
+            rich_rule.push_str(&format!(" port protocol=\"{}\" port=\"{}\"", proto, dport));
         }
+        rich_rule.push_str(&format!(" {}", rule_spec.action.to_lowercase()));
 
-        // Action
-        rich_rule.push_str(&format!(" {}", rule_spec.action));
-
-        let cmd = format!("firewall-cmd --zone={} --add-rich-rule='{}'", zone, rich_rule);
-
-        Ok(vec![cmd])
-    }
-
-    fn parse_command_args(&self, cmd_str: &str) -> Result<(String, Vec<String>)> {
-        let parts: Vec<&str> = cmd_str.split_whitespace().collect();
-        if parts.is_empty() {
-            return Err(anyhow::anyhow!("Empty command string"));
-        }
-
-        let command = parts[0].to_string();
-        let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
-
-        Ok((command, args))
+        Ok(vec![vec![
+            "firewall-cmd".to_string(),
+            format!("--zone={}", zone),
+            format!("--add-rich-rule={}", rich_rule),
+        ]])
     }
 
     fn build_add_query(&self, opts: &RulesAddOptions) -> Value {
@@ -6574,6 +5695,9 @@ impl FirewallHandle {
             opts.backend.clone()
         };
 
+        // Reject options the backend cannot honor before listing anything.
+        self.validate_delete_options_for_backend(&backend_to_use, &opts)?;
+
         // Get matching rules using rules.list
         let matched_rules = self.find_matching_rules(&backend_to_use, &opts).await?;
 
@@ -6602,27 +5726,35 @@ impl FirewallHandle {
             matched_rules
         };
 
-        // Generate delete commands
-        let commands = self.generate_delete_commands(&backend_to_use, &rules_to_delete, &opts)?;
+        // Generate delete commands (fails if any matched rule cannot be
+        // addressed exactly, so nothing is deleted in that case)
+        let commands = self.generate_delete_commands(&backend_to_use, &rules_to_delete)?;
+        let command_lines: Vec<String> = commands.iter().map(|c| display_command(c)).collect();
 
         // Execute commands if not dry run
         let deleted_count = if !opts.dry_run {
-            for cmd_args in &commands {
-                let (command, args) = self.parse_command_args(cmd_args)?;
-                let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                let (exit_code, _stdout, stderr) = run_command_with_timeout(&command, &args_refs, opts.timeout_ms).await?;
+            for (done, (argv, line)) in commands.iter().zip(&command_lines).enumerate() {
+                let (exit_code, _stdout, stderr) = run_argv(argv, opts.timeout_ms).await?;
 
                 if exit_code != 0 {
-                    return Ok(RulesDeleteResponse::with_error(
+                    let mut failed = RulesDeleteResponse::with_error(
                         FirewallError::CommandFailed {
-                            command: cmd_args.clone(),
+                            command: line.clone(),
                             code: exit_code,
                             stderr,
                         }
-                    ));
+                    );
+                    failed.query = response.query.clone();
+                    failed.format_output = response.format_output.clone();
+                    failed.backend_commands = command_lines.clone();
+                    failed.result = Some(RulesDeleteResult {
+                        deleted_count: done as u64,
+                        skipped_count: (commands.len() - done) as u64,
+                    });
+                    return Ok(failed);
                 }
             }
-            rules_to_delete.len() as u64
+            commands.len() as u64
         } else {
             response.warnings.push("Dry run: no firewall changes applied.".to_string());
             0
@@ -6630,7 +5762,7 @@ impl FirewallHandle {
 
         response.ok = true;
         response.matched_rules = rules_to_delete;
-        response.backend_commands = commands;
+        response.backend_commands = command_lines;
         response.result = Some(RulesDeleteResult {
             deleted_count,
             skipped_count: 0,
@@ -6653,7 +5785,7 @@ impl FirewallHandle {
         }
 
         // Parse rule identifier
-        opts.rule_id = args.get("rule_id").cloned();
+        opts.rule_id = args.get("rule_id").filter(|s| !s.is_empty()).cloned();
 
         // Parse match criteria
         opts.table = args.get("table").cloned();
@@ -6740,7 +5872,37 @@ impl FirewallHandle {
             opts.format_output = OutputFormat::from_str(format_str)?;
         }
 
+        // Refuse a delete that names no rule at all, which would otherwise
+        // select every rule (subset) or an arbitrary set (exact).
+        let has_criteria = [
+            &opts.table, &opts.chain, &opts.direction, &opts.action, &opts.proto,
+            &opts.sport, &opts.dport, &opts.saddr, &opts.daddr, &opts.in_iface,
+            &opts.out_iface, &opts.comment_contains, &opts.zone,
+        ]
+        .iter()
+        .any(|v| v.is_some());
+        if opts.rule_id.is_none() && !has_criteria {
+            return Err(FirewallError::MissingDeleteCriteria.into());
+        }
+
         Ok(opts)
+    }
+
+    /// Rejects delete options the resolved backend cannot honor.
+    fn validate_delete_options_for_backend(&self, backend: &FirewallBackend, opts: &RulesDeleteOptions) -> Result<()> {
+        if opts.zone.is_some() && *backend != FirewallBackend::Firewalld {
+            return Err(FirewallError::UnsupportedOption {
+                option: "zone".to_string(),
+                backend: backend.as_str().to_string(),
+                message: "zone applies only to firewalld".to_string(),
+            }.into());
+        }
+        if let Some(rule_id) = &opts.rule_id {
+            if !rule_id_is_valid(backend, rule_id) {
+                return Err(FirewallError::InvalidRuleId { rule_id: rule_id.clone() }.into());
+            }
+        }
+        Ok(())
     }
 
     fn build_delete_query(&self, opts: &RulesDeleteOptions) -> Value {
@@ -6774,8 +5936,49 @@ impl FirewallHandle {
     }
 
     async fn find_matching_rules(&self, backend: &FirewallBackend, opts: &RulesDeleteOptions) -> Result<Vec<MatchedFirewallRule>> {
-        // Build list options from delete options
+        // List every rule of the requested family with raw backend data, so
+        // rule ids reflect the backend's own numbering, not the filtered list.
         let list_opts = RulesListOptions {
+            backend: backend.clone(),
+            family: opts.family.clone(),
+            include_backend_raw: true,
+            include_counters: false,
+            max_rules: 10000,
+            timeout_ms: opts.timeout_ms,
+            format_output: OutputFormat::Json,
+            ..RulesListOptions::default()
+        };
+
+        let all_rules = match self.get_rules_from_backend(backend, &list_opts).await {
+            Ok(rules) => rules,
+            Err(e) => {
+                return Err(FirewallError::ListFailedForDelete {
+                    message: e.to_string()
+                }.into());
+            }
+        };
+
+        self.select_rules_for_delete(backend, all_rules, opts)
+    }
+
+    /// Selects the rules `rules.delete` acts on from a full backend listing.
+    ///
+    /// - `rule_id` selects the rule with that backend id; any other filters
+    ///   given must also hold for it (checked as a subset). An id that
+    ///   matches more than one rule (for example the same iptables chain
+    ///   line in IPv4 and IPv6) is rejected.
+    /// - Otherwise `match_mode=subset` selects every rule for which each
+    ///   given filter holds, and `match_mode=exact` additionally requires the
+    ///   rule's match fields (proto, ports, addresses, interfaces) to equal
+    ///   the given ones, with no other match conditions.
+    /// - `zone` (firewalld) limits selection to that zone.
+    fn select_rules_for_delete(
+        &self,
+        backend: &FirewallBackend,
+        all_rules: Vec<FirewallRule>,
+        opts: &RulesDeleteOptions,
+    ) -> Result<Vec<MatchedFirewallRule>> {
+        let filter_opts = RulesListOptions {
             backend: backend.clone(),
             family: opts.family.clone(),
             table: opts.table.clone(),
@@ -6790,99 +5993,68 @@ impl FirewallHandle {
             in_iface: opts.in_iface.clone(),
             out_iface: opts.out_iface.clone(),
             comment_contains: opts.comment_contains.clone(),
-            include_backend_raw: true, // Include raw data for rule_id extraction
-            include_counters: false,
-            max_rules: 10000,
-            timeout_ms: opts.timeout_ms,
-            format_output: OutputFormat::Json,
+            ..RulesListOptions::default()
         };
 
-        // Get rules from backend
-        let all_rules = match self.get_rules_from_backend(backend, &list_opts).await {
-            Ok(rules) => rules,
-            Err(e) => {
-                return Err(FirewallError::ListFailedForDelete {
-                    message: e.to_string()
+        let zone_chain = opts.zone.as_ref().map(|z| format!("zone:{}", z));
+        let candidates: Vec<FirewallRule> = all_rules
+            .into_iter()
+            .filter(|r| zone_chain.is_none() || r.chain == zone_chain)
+            .collect();
+
+        let selected: Vec<FirewallRule> = if let Some(wanted) = &opts.rule_id {
+            let by_id: Vec<FirewallRule> = candidates
+                .into_iter()
+                .filter(|r| rule_id_for(backend, r).as_deref() == Some(wanted.as_str()))
+                .collect();
+            let by_id = self.apply_filters(by_id, &filter_opts)?;
+            if by_id.len() > 1 {
+                return Err(FirewallError::AmbiguousRuleId {
+                    rule_id: wanted.clone(),
+                    count: by_id.len(),
                 }.into());
             }
+            by_id
+        } else {
+            let subset = self.apply_filters(candidates, &filter_opts)?;
+            if opts.match_mode == "exact" {
+                subset.into_iter().filter(|r| rule_matches_exactly(r, opts)).collect()
+            } else {
+                subset
+            }
         };
 
-        // Apply filters
-        let filtered_rules = self.apply_filters(all_rules, &list_opts)?;
-
-        // Convert FirewallRule to MatchedFirewallRule and extract rule_id
-        let mut matched_rules = Vec::new();
-        for (index, rule) in filtered_rules.iter().enumerate() {
-            let rule_id = self.extract_rule_id(backend, &rule, index);
-
-            matched_rules.push(MatchedFirewallRule {
-                backend: rule.backend.clone(),
-                family: rule.family.clone(),
-                table: rule.table.clone(),
-                chain: rule.chain.clone(),
-                direction: rule.direction.clone(),
-                action: rule.action.clone(),
-                proto: rule.proto.clone(),
-                sport: rule.sport.clone(),
-                dport: rule.dport.clone(),
-                saddr: rule.saddr.clone(),
-                daddr: rule.daddr.clone(),
-                in_iface: rule.in_iface.clone(),
-                out_iface: rule.out_iface.clone(),
-                comment: rule.comment.clone(),
-                rule_id,
-            });
-        }
-
-        Ok(matched_rules)
+        Ok(selected
+            .into_iter()
+            .map(|rule| MatchedFirewallRule {
+                rule_id: rule_id_for(backend, &rule),
+                backend: rule.backend,
+                family: rule.family,
+                table: rule.table,
+                chain: rule.chain,
+                direction: rule.direction,
+                action: rule.action,
+                proto: rule.proto,
+                sport: rule.sport,
+                dport: rule.dport,
+                saddr: rule.saddr,
+                daddr: rule.daddr,
+                in_iface: rule.in_iface,
+                out_iface: rule.out_iface,
+                comment: rule.comment,
+                line_number: rule.priority,
+                raw: rule.raw,
+            })
+            .collect())
     }
 
-    fn extract_rule_id(&self, backend: &FirewallBackend, rule: &FirewallRule, index: usize) -> Option<String> {
+    /// Builds the commands (argument vectors) that delete exactly `rules`.
+    fn generate_delete_commands(&self, backend: &FirewallBackend, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
         match backend {
-            FirewallBackend::Iptables => {
-                // For iptables, use CHAIN:line_number format
-                if let (Some(chain), Some(priority)) = (&rule.chain, rule.priority) {
-                    Some(format!("{}:{}", chain, priority))
-                } else if let Some(chain) = &rule.chain {
-                    // Fallback to index-based (1-indexed)
-                    Some(format!("{}:{}", chain, index + 1))
-                } else {
-                    None
-                }
-            }
-            FirewallBackend::Nftables => {
-                // For nftables, extract handle from raw if available
-                // This would require parsing the raw output, simplified for now
-                if let Some(raw) = &rule.raw {
-                    if let Some(handle_pos) = raw.find("handle ") {
-                        let handle_str = &raw[handle_pos + 7..];
-                        if let Some(end) = handle_str.find(|c: char| !c.is_numeric()) {
-                            return Some(handle_str[..end].to_string());
-                        } else {
-                            return Some(handle_str.trim().to_string());
-                        }
-                    }
-                }
-                None
-            }
-            FirewallBackend::Ufw => {
-                // For ufw, use 1-indexed rule number
-                Some((index + 1).to_string())
-            }
-            FirewallBackend::Firewalld => {
-                // For firewalld, use the raw rich rule text if available
-                rule.raw.clone()
-            }
-            FirewallBackend::Auto => None,
-        }
-    }
-
-    fn generate_delete_commands(&self, backend: &FirewallBackend, rules: &[MatchedFirewallRule], opts: &RulesDeleteOptions) -> Result<Vec<String>> {
-        match backend {
-            FirewallBackend::Iptables => self.generate_iptables_delete_commands(rules, opts),
-            FirewallBackend::Nftables => self.generate_nftables_delete_commands(rules, opts),
-            FirewallBackend::Ufw => self.generate_ufw_delete_commands(rules, opts),
-            FirewallBackend::Firewalld => self.generate_firewalld_delete_commands(rules, opts),
+            FirewallBackend::Iptables => self.generate_iptables_delete_commands(rules),
+            FirewallBackend::Nftables => self.generate_nftables_delete_commands(rules),
+            FirewallBackend::Ufw => self.generate_ufw_delete_commands(rules),
+            FirewallBackend::Firewalld => self.generate_firewalld_delete_commands(rules),
             FirewallBackend::Auto => {
                 Err(FirewallError::InternalError {
                     message: "Backend should have been resolved before command generation".to_string()
@@ -6891,102 +6063,108 @@ impl FirewallHandle {
         }
     }
 
-    fn generate_iptables_delete_commands(&self, rules: &[MatchedFirewallRule], _opts: &RulesDeleteOptions) -> Result<Vec<String>> {
-        let mut commands = Vec::new();
-
-        // Sort rules by line number in descending order to avoid index shifting
-        let mut indexed_rules: Vec<(usize, &MatchedFirewallRule)> = rules.iter().enumerate().collect();
-        indexed_rules.sort_by(|(_, a), (_, b)| {
-            let a_line = self.extract_line_number_from_rule_id(a);
-            let b_line = self.extract_line_number_from_rule_id(b);
-            b_line.cmp(&a_line) // Descending order
+    /// iptables rules are deleted by full rule specification
+    /// (`iptables -t <table> -D <chain> <spec>`), which does not depend on
+    /// line numbers. Without the listed spec, the rule's line number in its
+    /// own chain is used, highest first so earlier deletions do not shift
+    /// later ones.
+    fn generate_iptables_delete_commands(&self, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
+        let mut ordered: Vec<&MatchedFirewallRule> = rules.iter().collect();
+        ordered.sort_by(|a, b| {
+            (&a.family, &a.table, &a.chain)
+                .cmp(&(&b.family, &b.table, &b.chain))
+                .then(b.line_number.cmp(&a.line_number))
         });
 
-        for (_, rule) in indexed_rules {
-            let iptables_cmd = if rule.family == "ipv6" { "ip6tables" } else { "iptables" };
+        let mut commands = Vec::new();
+        for rule in ordered {
+            let binary = if rule.family == "ipv6" { "ip6tables" } else { "iptables" };
             let table = rule.table.as_deref().unwrap_or("filter");
-            let chain = rule.chain.as_ref().ok_or_else(|| {
-                FirewallError::InternalError {
-                    message: "Chain is required for iptables delete".to_string()
-                }
+            let chain = rule.chain.as_deref().ok_or_else(|| FirewallError::RuleIdUnavailable {
+                message: "iptables rule has no chain".to_string(),
             })?;
+            let mut argv: Vec<String> = [binary, "-t", table, "-D", chain]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
 
-            if let Some(rule_id) = &rule.rule_id {
-                // Extract line number from rule_id (format: "CHAIN:line")
-                if let Some(line_num_str) = rule_id.split(':').nth(1) {
-                    commands.push(format!("{} -t {} -D {} {}", iptables_cmd, table, chain, line_num_str));
+            let spec = rule.raw.as_deref().map(tokenize_rule_line).filter(|t| {
+                t.len() > 2 && t[0] == "-A" && t[1] == chain
+            });
+            match (spec, rule.line_number) {
+                (Some(tokens), _) => argv.extend(tokens.into_iter().skip(2)),
+                (None, Some(line)) if line > 0 => argv.push(line.to_string()),
+                _ => {
+                    return Err(FirewallError::RuleIdUnavailable {
+                        message: format!("no rule specification or line number for a rule in chain {}", chain),
+                    }.into())
                 }
             }
+            commands.push(argv);
         }
-
         Ok(commands)
     }
 
-    fn extract_line_number_from_rule_id(&self, rule: &MatchedFirewallRule) -> usize {
-        if let Some(rule_id) = &rule.rule_id {
-            if let Some(line_str) = rule_id.split(':').nth(1) {
-                return line_str.parse::<usize>().unwrap_or(0);
-            }
-        }
-        0
-    }
-
-    fn generate_nftables_delete_commands(&self, rules: &[MatchedFirewallRule], _opts: &RulesDeleteOptions) -> Result<Vec<String>> {
+    fn generate_nftables_delete_commands(&self, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
         let mut commands = Vec::new();
-
         for rule in rules {
-            let family = if rule.family == "ipv6" { "ip6" } else { "ip" };
+            let family = match rule.family.as_str() {
+                "ipv4" => "ip",
+                "ipv6" => "ip6",
+                other => other,
+            };
             let table = rule.table.as_deref().unwrap_or("filter");
-            let chain = rule.chain.as_ref().ok_or_else(|| {
-                FirewallError::InternalError {
-                    message: "Chain is required for nftables delete".to_string()
-                }
+            let chain = rule.chain.as_deref().ok_or_else(|| FirewallError::RuleIdUnavailable {
+                message: "nftables rule has no chain".to_string(),
             })?;
-
-            if let Some(handle) = &rule.rule_id {
-                commands.push(format!("nft delete rule {} {} {} handle {}", family, table, chain, handle));
-            }
+            let handle = rule.rule_id.as_deref().ok_or_else(|| FirewallError::RuleIdUnavailable {
+                message: format!("nftables rule in chain {} has no handle", chain),
+            })?;
+            commands.push(
+                ["nft", "delete", "rule", family, table, chain, "handle", handle]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            );
         }
-
         Ok(commands)
     }
 
-    fn generate_ufw_delete_commands(&self, rules: &[MatchedFirewallRule], _opts: &RulesDeleteOptions) -> Result<Vec<String>> {
-        let mut commands = Vec::new();
-
-        // Sort rules by rule number in descending order to avoid index shifting
-        let mut indexed_rules: Vec<&MatchedFirewallRule> = rules.iter().collect();
-        indexed_rules.sort_by(|a, b| {
-            let a_num = a.rule_id.as_ref().and_then(|id| id.parse::<usize>().ok()).unwrap_or(0);
-            let b_num = b.rule_id.as_ref().and_then(|id| id.parse::<usize>().ok()).unwrap_or(0);
-            b_num.cmp(&a_num) // Descending order
-        });
-
-        for rule in indexed_rules {
-            if let Some(rule_number) = &rule.rule_id {
-                commands.push(format!("ufw delete {}", rule_number));
-            }
-        }
-
-        Ok(commands)
-    }
-
-    fn generate_firewalld_delete_commands(&self, rules: &[MatchedFirewallRule], opts: &RulesDeleteOptions) -> Result<Vec<String>> {
-        let mut commands = Vec::new();
-        let zone = opts.zone.as_deref().unwrap_or("public");
-
+    /// ufw renumbers after each delete, so rules go highest number first.
+    fn generate_ufw_delete_commands(&self, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
+        let mut numbers = Vec::new();
         for rule in rules {
-            // For simple port rules
-            if rule.rule_id.is_none() {
-                if let (Some(proto), Some(dport)) = (&rule.proto, &rule.dport) {
-                    commands.push(format!("firewall-cmd --zone={} --remove-port={}/{}", zone, dport, proto));
-                }
-            } else if let Some(rich_rule) = &rule.rule_id {
-                // For rich rules, use the rich rule text
-                commands.push(format!("firewall-cmd --zone={} --remove-rich-rule='{}'", zone, rich_rule));
-            }
+            let n = rule.rule_id.as_deref().and_then(|id| id.parse::<u64>().ok()).ok_or_else(|| {
+                FirewallError::RuleIdUnavailable { message: "ufw rule has no rule number".to_string() }
+            })?;
+            numbers.push(n);
         }
+        numbers.sort_unstable_by(|a, b| b.cmp(a));
+        numbers.dedup();
+        Ok(numbers
+            .into_iter()
+            .map(|n| vec!["ufw".to_string(), "--force".to_string(), "delete".to_string(), n.to_string()])
+            .collect())
+    }
 
+    /// firewalld rules are removed from their own zone by kind and value,
+    /// taken from the rule id `<zone>:<kind>:<value>`.
+    fn generate_firewalld_delete_commands(&self, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
+        let mut commands = Vec::new();
+        for rule in rules {
+            let id = rule.rule_id.as_deref().ok_or_else(|| FirewallError::RuleIdUnavailable {
+                message: "firewalld rule has no zone, kind, and value".to_string(),
+            })?;
+            let mut parts = id.splitn(3, ':');
+            let (Some(zone), Some(kind), Some(value)) = (parts.next(), parts.next(), parts.next()) else {
+                return Err(FirewallError::RuleIdUnavailable { message: format!("bad firewalld rule id {}", id) }.into());
+            };
+            commands.push(vec![
+                "firewall-cmd".to_string(),
+                format!("--zone={}", zone),
+                format!("--remove-{}={}", kind, value),
+            ]);
+        }
         Ok(commands)
     }
 
@@ -7791,7 +6969,7 @@ impl FirewallHandle {
         let details = if opts.include_metrics {
             Some(format!(
                 "iptables available {}active rules; default INPUT/OUTPUT/FORWARD policy {}",
-                if active { "but no " } else { "with " },
+                if active { "with " } else { "but no " },
                 default_policy.as_ref().unwrap_or(&"ACCEPT".to_string())
             ))
         } else {
@@ -9575,6 +8753,247 @@ fn is_command_available(command: &str) -> bool {
         .unwrap_or(false)
 }
 
+// ===========================================================================
+// Rule and command helpers (pure, unit-tested)
+// ===========================================================================
+
+/// Runs a command given as an argument vector (program first).
+async fn run_argv(argv: &[String], timeout_ms: u64) -> Result<(i32, String, String)> {
+    let (program, rest) = argv
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("Empty command"))?;
+    let args: Vec<&str> = rest.iter().map(|s| s.as_str()).collect();
+    run_command_with_timeout(program, &args, timeout_ms).await
+}
+
+/// Renders an argument vector as a shell-safe command line for display.
+fn display_command(argv: &[String]) -> String {
+    argv.iter()
+        .map(|arg| {
+            let safe = !arg.is_empty()
+                && arg.chars().all(|c| c.is_ascii_alphanumeric() || "_./:,=@%+-".contains(c));
+            if safe {
+                arg.clone()
+            } else {
+                format!("'{}'", arg.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Splits one `iptables-save` rule line into arguments, honoring double
+/// quotes and backslash escapes the way iptables-save writes them (for
+/// example `--comment "allow ssh"`).
+fn tokenize_rule_line(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_token = false;
+    let mut in_quotes = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+                in_token = true;
+            }
+            '"' => {
+                in_quotes = !in_quotes;
+                in_token = true;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if in_token {
+                    tokens.push(std::mem::take(&mut current));
+                    in_token = false;
+                }
+            }
+            c => {
+                current.push(c);
+                in_token = true;
+            }
+        }
+    }
+    if in_token {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// The address family ("ipv4" or "ipv6") an address or CIDR belongs to.
+fn address_family(addr: &str) -> &'static str {
+    if addr.contains(':') { "ipv6" } else { "ipv4" }
+}
+
+/// The "any address" CIDR for a family.
+fn any_address(family: &str) -> &'static str {
+    if family == "ipv6" { "::/0" } else { "0.0.0.0/0" }
+}
+
+/// Normalizes an address for comparison: unset and "any" addresses
+/// (0.0.0.0/0, ::/0, any, Anywhere) compare equal to None.
+fn normalize_address(addr: Option<&String>) -> Option<String> {
+    let a = addr?;
+    match a.to_lowercase().as_str() {
+        "" | "0.0.0.0/0" | "::/0" | "any" | "anywhere" => None,
+        _ => Some(a.clone()),
+    }
+}
+
+/// Resolves which IP families `rules.add` must create rules for.
+///
+/// When saddr or daddr is given, the family follows the address, and an
+/// explicitly requested family that disagrees is rejected. Without an
+/// address, `any` means both IPv4 and IPv6.
+fn resolve_add_families(
+    family: &IpFamily,
+    family_explicit: bool,
+    saddr: Option<&String>,
+    daddr: Option<&String>,
+) -> Result<Vec<&'static str>, FirewallError> {
+    let addrs: Vec<&String> = [saddr, daddr]
+        .into_iter()
+        .flatten()
+        .filter(|a| normalize_address(Some(a)).is_some())
+        .collect();
+    let mut addr_family: Option<&'static str> = None;
+    for addr in &addrs {
+        let f = address_family(addr);
+        match addr_family {
+            Some(prev) if prev != f => {
+                return Err(FirewallError::FamilyMismatch {
+                    family: prev.to_string(),
+                    address: (*addr).clone(),
+                });
+            }
+            _ => addr_family = Some(f),
+        }
+    }
+    if let Some(f) = addr_family {
+        let requested = family.as_str();
+        if family_explicit && requested != "any" && requested != f {
+            let addr = addrs.iter().find(|a| address_family(a) == f).map(|a| (*a).clone()).unwrap_or_default();
+            return Err(FirewallError::FamilyMismatch {
+                family: requested.to_string(),
+                address: addr,
+            });
+        }
+        return Ok(vec![f]);
+    }
+    Ok(match family {
+        IpFamily::Ipv4 => vec!["ipv4"],
+        IpFamily::Ipv6 => vec!["ipv6"],
+        IpFamily::Any => vec!["ipv4", "ipv6"],
+    })
+}
+
+/// True if an iptables-save rule has match conditions that the normalized
+/// rule fields do not represent (for example `-m conntrack --ctstate` or
+/// `-m limit`). Such a rule never matches `match_mode=exact`. Target
+/// options after `-j` are not match conditions and are ignored.
+fn iptables_has_unmodeled_match(raw: &str) -> bool {
+    let tokens = tokenize_rule_line(raw);
+    let mut i = 2; // skip "-A CHAIN"
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "-j" | "-g" => return false,
+            "-p" | "-s" | "-d" | "-i" | "-o" | "--dport" | "--sport" | "--comment" => i += 2,
+            "-m" if i + 1 < tokens.len()
+                && matches!(tokens[i + 1].as_str(), "tcp" | "udp" | "comment") =>
+            {
+                i += 2
+            }
+            _ => return true,
+        }
+    }
+    false
+}
+
+/// The backend's own identifier for a listed rule, as `rules.delete`
+/// reports it and accepts in `rule_id=`:
+///
+/// - iptables: `<CHAIN>:<line>`, the 1-based line within its table and chain
+/// - nftables: the rule handle
+/// - ufw: the rule number from `ufw status numbered`
+/// - firewalld: `<zone>:<kind>:<value>`, kind being service, port, source,
+///   or rich-rule
+fn rule_id_for(backend: &FirewallBackend, rule: &FirewallRule) -> Option<String> {
+    match backend {
+        FirewallBackend::Iptables => {
+            let chain = rule.chain.as_ref()?;
+            let line = rule.priority.filter(|n| *n > 0)?;
+            Some(format!("{}:{}", chain, line))
+        }
+        FirewallBackend::Nftables => {
+            let raw = rule.raw.as_ref()?;
+            let pos = raw.rfind("# handle ")?;
+            let handle: String = raw[pos + 9..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            if handle.is_empty() { None } else { Some(handle) }
+        }
+        FirewallBackend::Ufw => rule.priority.filter(|n| *n > 0).map(|n| n.to_string()),
+        FirewallBackend::Firewalld => {
+            let zone = rule.chain.as_ref()?.strip_prefix("zone:")?;
+            let raw = rule.raw.as_ref()?;
+            let rest = raw.strip_prefix(&format!("--zone {} --add-", zone))?;
+            let (kind, value) = rest.split_once(' ')?;
+            let value = value.trim();
+            let value = value
+                .strip_prefix('\'')
+                .and_then(|v| v.strip_suffix('\''))
+                .unwrap_or(value);
+            Some(format!("{}:{}:{}", zone, kind, value))
+        }
+        FirewallBackend::Auto => None,
+    }
+}
+
+/// True if `rule_id` has the form `rule_id_for` produces for `backend`.
+fn rule_id_is_valid(backend: &FirewallBackend, rule_id: &str) -> bool {
+    let positive = |s: &str| s.parse::<u64>().map(|n| n > 0).unwrap_or(false);
+    match backend {
+        FirewallBackend::Iptables => match rule_id.rsplit_once(':') {
+            Some((chain, line)) => !chain.is_empty() && positive(line),
+            None => false,
+        },
+        FirewallBackend::Nftables | FirewallBackend::Ufw => positive(rule_id),
+        FirewallBackend::Firewalld => {
+            let mut parts = rule_id.splitn(3, ':');
+            matches!(
+                (parts.next(), parts.next(), parts.next()),
+                (Some(z), Some("service" | "port" | "source" | "rich-rule"), Some(v))
+                    if !z.is_empty() && !v.is_empty()
+            )
+        }
+        FirewallBackend::Auto => false,
+    }
+}
+
+/// `match_mode=exact`: the rule's match fields equal the requested ones
+/// (unset and "any" addresses are equal), and an iptables rule has no
+/// other match conditions.
+fn rule_matches_exactly(rule: &FirewallRule, opts: &RulesDeleteOptions) -> bool {
+    let proto = |p: Option<&String>| {
+        p.map(|p| p.to_lowercase()).filter(|p| !matches!(p.as_str(), "any" | "all"))
+    };
+    if proto(rule.proto.as_ref()) != proto(opts.proto.as_ref())
+        || rule.sport != opts.sport
+        || rule.dport != opts.dport
+        || normalize_address(rule.saddr.as_ref()) != normalize_address(opts.saddr.as_ref())
+        || normalize_address(rule.daddr.as_ref()) != normalize_address(opts.daddr.as_ref())
+        || rule.in_iface != opts.in_iface
+        || rule.out_iface != opts.out_iface
+    {
+        return false;
+    }
+    if rule.backend == "iptables" {
+        if let Some(raw) = &rule.raw {
+            return !iptables_has_unmodeled_match(raw);
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9640,4 +9059,590 @@ mod tests {
         assert!(error_response.error.is_some());
     }
 
+    // -----------------------------------------------------------------------
+    // Fixtures and helpers for rule selection and command construction.
+    // None of these tests run a firewall command.
+    // -----------------------------------------------------------------------
+
+    fn handle() -> FirewallHandle {
+        FirewallHandle::from_url(&Url::parse("firewall://").unwrap()).unwrap()
+    }
+
+    fn args(pairs: &[(&str, &str)]) -> Args {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    const IPTABLES_V4: &str = "\
+# Generated by iptables-save v1.8.9
+*nat
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING -p tcp -m tcp --dport 8080 -j REDIRECT --to-ports 80
+COMMIT
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A INPUT -s 203.0.113.0/24 -p tcp -m tcp --dport 22 -j ACCEPT
+-A FORWARD -p tcp -m tcp --dport 22 -j DROP
+-A OUTPUT -p udp -m udp --dport 53 -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport 22 -m comment --comment \"allow ssh out\" -j ACCEPT
+-A OUTPUT ! -s 10.0.0.0/8 -p tcp -m tcp --dport 25 -j REJECT --reject-with icmp-port-unreachable
+COMMIT
+";
+
+    const IPTABLES_V6: &str = "\
+*filter
+:INPUT DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -i lo -j ACCEPT
+-A OUTPUT -p udp -m udp --dport 53 -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport 22 -j ACCEPT
+COMMIT
+";
+
+    fn raw_list_opts() -> RulesListOptions {
+        RulesListOptions { include_backend_raw: true, ..RulesListOptions::default() }
+    }
+
+    fn iptables_rules() -> Vec<FirewallRule> {
+        let h = handle();
+        let mut rules = h.parse_iptables_save_output(IPTABLES_V4, "ipv4", &raw_list_opts());
+        rules.extend(h.parse_iptables_save_output(IPTABLES_V6, "ipv6", &raw_list_opts()));
+        rules
+    }
+
+    fn delete_opts(pairs: &[(&str, &str)]) -> RulesDeleteOptions {
+        handle().parse_rules_delete_options(&args(pairs)).unwrap()
+    }
+
+    fn select(backend: &FirewallBackend, rules: Vec<FirewallRule>, pairs: &[(&str, &str)]) -> Result<Vec<MatchedFirewallRule>> {
+        handle().select_rules_for_delete(backend, rules, &delete_opts(pairs))
+    }
+
+    fn lines(cmds: &[Vec<String>]) -> Vec<String> {
+        cmds.iter().map(|c| display_command(c)).collect()
+    }
+
+    fn fw_err(e: anyhow::Error) -> FirewallError {
+        e.downcast::<FirewallError>().expect("FirewallError")
+    }
+
+    // -----------------------------------------------------------------------
+    // C2: iptables line numbers and rule ids are per table and chain
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn iptables_line_numbers_are_per_chain() {
+        let rules = iptables_rules();
+        let ids: Vec<(String, String, Option<String>)> = rules
+            .iter()
+            .map(|r| (r.family.clone(), r.table.clone().unwrap(), rule_id_for(&FirewallBackend::Iptables, r)))
+            .collect();
+        let expect = |f: &str, t: &str, id: &str| (f.to_string(), t.to_string(), Some(id.to_string()));
+        assert_eq!(
+            ids,
+            vec![
+                expect("ipv4", "nat", "PREROUTING:1"),
+                expect("ipv4", "filter", "INPUT:1"),
+                expect("ipv4", "filter", "INPUT:2"),
+                expect("ipv4", "filter", "INPUT:3"),
+                expect("ipv4", "filter", "FORWARD:1"),
+                expect("ipv4", "filter", "OUTPUT:1"),
+                expect("ipv4", "filter", "OUTPUT:2"),
+                expect("ipv4", "filter", "OUTPUT:3"),
+                expect("ipv6", "filter", "INPUT:1"),
+                expect("ipv6", "filter", "OUTPUT:1"),
+                expect("ipv6", "filter", "OUTPUT:2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn iptables_parse_quoted_comment_and_negation() {
+        let rules = iptables_rules();
+        let ssh_out = &rules[6];
+        assert_eq!(ssh_out.comment.as_deref(), Some("allow ssh out"));
+        assert_eq!(ssh_out.action.as_deref(), Some("accept"));
+        let smtp = &rules[7];
+        assert_eq!(smtp.saddr.as_deref(), Some("!10.0.0.0/8"));
+        assert_eq!(smtp.dport.as_deref(), Some("25"));
+    }
+
+    #[test]
+    fn iptables_delete_in_later_chain_targets_that_rule_by_spec() {
+        // The FORWARD rule is the 4th rule in the filter table but line 1
+        // of its chain; the delete must name that exact rule.
+        let matched = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("chain", "FORWARD"), ("proto", "tcp"), ("dport", "22")],
+        )
+        .unwrap();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].rule_id.as_deref(), Some("FORWARD:1"));
+        let cmds = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap();
+        assert_eq!(
+            lines(&cmds),
+            vec!["iptables -t filter -D FORWARD -p tcp -m tcp --dport 22 -j DROP"]
+        );
+    }
+
+    #[test]
+    fn iptables_delete_keeps_quoted_comment_as_one_argument() {
+        let matched = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("family", "ipv4"), ("rule_id", "OUTPUT:2")],
+        )
+        .unwrap();
+        assert_eq!(matched.len(), 1);
+        let cmds = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap();
+        assert_eq!(
+            cmds[0],
+            ["iptables", "-t", "filter", "-D", "OUTPUT", "-p", "tcp", "-m", "tcp", "--dport", "22",
+             "-m", "comment", "--comment", "allow ssh out", "-j", "ACCEPT"]
+                .iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            display_command(&cmds[0]),
+            "iptables -t filter -D OUTPUT -p tcp -m tcp --dport 22 -m comment --comment 'allow ssh out' -j ACCEPT"
+        );
+    }
+
+    #[test]
+    fn iptables_delete_by_line_number_goes_highest_first() {
+        // Without the listed spec, delete by line number in each chain,
+        // highest first so earlier deletions do not renumber later ones.
+        let mut matched = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("family", "ipv4"), ("table", "filter"), ("chain", "INPUT"), ("match_mode", "subset")],
+        )
+        .unwrap();
+        assert_eq!(matched.len(), 3);
+        for m in &mut matched {
+            m.raw = None;
+        }
+        let cmds = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap();
+        assert_eq!(
+            lines(&cmds),
+            vec![
+                "iptables -t filter -D INPUT 3",
+                "iptables -t filter -D INPUT 2",
+                "iptables -t filter -D INPUT 1",
+            ]
+        );
+    }
+
+    #[test]
+    fn iptables_delete_spans_families_with_right_binary() {
+        let matched = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("chain", "OUTPUT"), ("proto", "udp"), ("dport", "53")],
+        )
+        .unwrap();
+        let cmds = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap();
+        assert_eq!(
+            lines(&cmds),
+            vec![
+                "iptables -t filter -D OUTPUT -p udp -m udp --dport 53 -j ACCEPT",
+                "ip6tables -t filter -D OUTPUT -p udp -m udp --dport 53 -j ACCEPT",
+            ]
+        );
+    }
+
+    #[test]
+    fn rule_id_selects_one_rule_and_rejects_ambiguity() {
+        // INPUT:1 exists in IPv4 and IPv6.
+        let err = select(&FirewallBackend::Iptables, iptables_rules(), &[("rule_id", "INPUT:1")]).unwrap_err();
+        assert!(matches!(fw_err(err), FirewallError::AmbiguousRuleId { count: 2, .. }));
+
+        let one = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("rule_id", "INPUT:1"), ("family", "ipv6")],
+        )
+        .unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].family, "ipv6");
+
+        // Extra filters must also hold for the selected rule.
+        let none = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("rule_id", "INPUT:3"), ("family", "ipv4"), ("dport", "80")],
+        )
+        .unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn rule_id_format_is_validated_per_backend() {
+        assert!(rule_id_is_valid(&FirewallBackend::Iptables, "INPUT:3"));
+        assert!(!rule_id_is_valid(&FirewallBackend::Iptables, "INPUT"));
+        assert!(!rule_id_is_valid(&FirewallBackend::Iptables, "INPUT:0"));
+        assert!(rule_id_is_valid(&FirewallBackend::Nftables, "12"));
+        assert!(!rule_id_is_valid(&FirewallBackend::Ufw, "x"));
+        assert!(rule_id_is_valid(&FirewallBackend::Firewalld, "public:port:80/tcp"));
+        assert!(!rule_id_is_valid(&FirewallBackend::Firewalld, "public:bogus:80/tcp"));
+
+        let h = handle();
+        let opts = delete_opts(&[("rule_id", "INPUT")]);
+        let err = h.validate_delete_options_for_backend(&FirewallBackend::Iptables, &opts).unwrap_err();
+        assert!(matches!(fw_err(err), FirewallError::InvalidRuleId { .. }));
+    }
+
+    #[test]
+    fn match_mode_exact_and_subset_differ() {
+        // exact: dport=22 alone does not match the rule that also has saddr,
+        // nor rules with other match conditions.
+        let exact = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("family", "ipv4"), ("chain", "INPUT"), ("proto", "tcp"), ("dport", "22")],
+        )
+        .unwrap();
+        assert!(exact.is_empty());
+
+        let subset = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("family", "ipv4"), ("chain", "INPUT"), ("dport", "22"), ("match_mode", "subset")],
+        )
+        .unwrap();
+        assert_eq!(subset.len(), 1);
+        assert_eq!(subset[0].rule_id.as_deref(), Some("INPUT:3"));
+
+        // A rule with an unmodeled match (conntrack) only matches subset.
+        let exact_lo = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("family", "ipv4"), ("table", "filter"), ("chain", "INPUT"), ("action", "accept")],
+        )
+        .unwrap();
+        assert!(exact_lo.is_empty(), "INPUT:1 has -i lo, INPUT:2 has conntrack");
+        assert!(iptables_has_unmodeled_match("-A INPUT -m conntrack --ctstate NEW -j ACCEPT"));
+        assert!(!iptables_has_unmodeled_match("-A INPUT -p tcp -m tcp --dport 22 -j REJECT --reject-with tcp-reset"));
+
+        // Negated address does not match a plain saddr filter.
+        let negated = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("saddr", "10.0.0.0/8"), ("match_mode", "subset")],
+        )
+        .unwrap();
+        assert!(negated.is_empty());
+    }
+
+    #[test]
+    fn delete_requires_rule_id_or_criteria() {
+        let err = handle().parse_rules_delete_options(&args(&[("dry_run", "true")])).unwrap_err();
+        assert!(matches!(fw_err(err), FirewallError::MissingDeleteCriteria));
+    }
+
+    #[test]
+    fn zone_is_rejected_outside_firewalld() {
+        let h = handle();
+        let opts = delete_opts(&[("zone", "public")]);
+        let err = h.validate_delete_options_for_backend(&FirewallBackend::Iptables, &opts).unwrap_err();
+        assert!(matches!(fw_err(err), FirewallError::UnsupportedOption { .. }));
+        assert!(h.validate_delete_options_for_backend(&FirewallBackend::Firewalld, &opts).is_ok());
+    }
+
+    fn firewalld_rule(zone: &str, raw: &str, dport: Option<&str>) -> FirewallRule {
+        FirewallRule {
+            backend: "firewalld".to_string(),
+            family: "any".to_string(),
+            table: None,
+            chain: Some(format!("zone:{}", zone)),
+            direction: Some("input".to_string()),
+            priority: Some(1),
+            action: Some("accept".to_string()),
+            proto: dport.map(|_| "tcp".to_string()),
+            sport: None,
+            dport: dport.map(|d| d.to_string()),
+            saddr: None,
+            daddr: None,
+            in_iface: None,
+            out_iface: None,
+            comment: None,
+            packets: None,
+            bytes: None,
+            raw: Some(raw.to_string()),
+        }
+    }
+
+    #[test]
+    fn firewalld_zone_selects_and_delete_uses_rule_zone() {
+        let rules = vec![
+            firewalld_rule("public", "--zone public --add-port 80/tcp", Some("80")),
+            firewalld_rule("internal", "--zone internal --add-port 80/tcp", Some("80")),
+            firewalld_rule(
+                "internal",
+                "--zone internal --add-rich-rule 'rule family=\"ipv4\" source address=\"10.0.0.0/8\" accept'",
+                None,
+            ),
+        ];
+        let matched = select(
+            &FirewallBackend::Firewalld,
+            rules.clone(),
+            &[("zone", "internal"), ("proto", "tcp"), ("dport", "80")],
+        )
+        .unwrap();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].rule_id.as_deref(), Some("internal:port:80/tcp"));
+        let cmds = handle().generate_delete_commands(&FirewallBackend::Firewalld, &matched).unwrap();
+        assert_eq!(lines(&cmds), vec!["firewall-cmd --zone=internal --remove-port=80/tcp"]);
+
+        let rich = select(
+            &FirewallBackend::Firewalld,
+            rules,
+            &[("rule_id", "internal:rich-rule:rule family=\"ipv4\" source address=\"10.0.0.0/8\" accept")],
+        )
+        .unwrap();
+        assert_eq!(rich.len(), 1);
+        let cmds = handle().generate_delete_commands(&FirewallBackend::Firewalld, &rich).unwrap();
+        assert_eq!(
+            cmds[0][2],
+            "--remove-rich-rule=rule family=\"ipv4\" source address=\"10.0.0.0/8\" accept"
+        );
+    }
+
+    #[test]
+    fn nftables_delete_uses_listed_handle() {
+        let h = handle();
+        let rule = h
+            .parse_nftables_rule(
+                "tcp dport 22 accept # handle 7",
+                &Some(("inet".to_string(), "filter".to_string())),
+                &Some(("input".to_string(), "input".to_string())),
+                1,
+                &raw_list_opts(),
+            )
+            .unwrap();
+        assert_eq!(rule_id_for(&FirewallBackend::Nftables, &rule).as_deref(), Some("7"));
+        let matched = select(&FirewallBackend::Nftables, vec![rule], &[("rule_id", "7")]).unwrap();
+        let cmds = h.generate_delete_commands(&FirewallBackend::Nftables, &matched).unwrap();
+        assert_eq!(lines(&cmds), vec!["nft delete rule inet filter input handle 7"]);
+    }
+
+    #[test]
+    fn ufw_delete_uses_rule_numbers_highest_first() {
+        let h = handle();
+        let opts = raw_list_opts();
+        let rules: Vec<FirewallRule> = [
+            "[ 1] 22/tcp                     ALLOW IN    Anywhere",
+            "[ 2] 80/tcp                     ALLOW IN    Anywhere",
+            "[ 3] 22/tcp (v6)                ALLOW IN    Anywhere (v6)",
+        ]
+        .iter()
+        .filter_map(|l| h.parse_ufw_rule(l, 99, &opts))
+        .collect();
+        assert_eq!(rules.iter().map(|r| r.priority).collect::<Vec<_>>(), vec![Some(1), Some(2), Some(3)]);
+        let matched = select(&FirewallBackend::Ufw, rules, &[("dport", "22"), ("match_mode", "subset")]).unwrap();
+        let cmds = h.generate_delete_commands(&FirewallBackend::Ufw, &matched).unwrap();
+        assert_eq!(lines(&cmds), vec!["ufw --force delete 3", "ufw --force delete 1"]);
+    }
+
+    #[test]
+    fn delete_fails_when_a_rule_cannot_be_addressed() {
+        let mut matched = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("family", "ipv4"), ("rule_id", "FORWARD:1")],
+        )
+        .unwrap();
+        matched[0].raw = None;
+        matched[0].line_number = None;
+        let err = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap_err();
+        assert!(matches!(fw_err(err), FirewallError::RuleIdUnavailable { .. }));
+    }
+
+    #[test]
+    fn tokenizer_and_display_round_trip() {
+        assert_eq!(
+            tokenize_rule_line(r#"-A INPUT -m comment --comment "say \"hi\" now" -j ACCEPT"#),
+            vec!["-A", "INPUT", "-m", "comment", "--comment", "say \"hi\" now", "-j", "ACCEPT"]
+        );
+        assert_eq!(
+            display_command(&["a".to_string(), "it's here".to_string(), "".to_string()]),
+            "a 'it'\\''s here' ''"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // C3: rules.add family handling
+    // -----------------------------------------------------------------------
+
+    fn add_plan(backend: FirewallBackend, pairs: &[(&str, &str)]) -> Result<(Vec<FirewallRuleSpec>, Vec<String>)> {
+        let h = handle();
+        let opts = h.parse_rules_add_options(&args(pairs))?;
+        let specs = h.normalize_rule_specs(&opts, &backend)?;
+        let mut cmds = Vec::new();
+        for spec in &specs {
+            cmds.extend(h.generate_add_commands(spec, &opts)?);
+        }
+        Ok((specs, lines(&cmds)))
+    }
+
+    #[test]
+    fn add_family_any_creates_ipv4_and_ipv6_rules() {
+        let (specs, cmds) = add_plan(
+            FirewallBackend::Iptables,
+            &[("family", "any"), ("proto", "tcp"), ("dport", "22")],
+        )
+        .unwrap();
+        assert_eq!(
+            cmds,
+            vec![
+                "iptables -t filter -A INPUT -p tcp --dport 22 -j ACCEPT",
+                "ip6tables -t filter -A INPUT -p tcp --dport 22 -j ACCEPT",
+            ]
+        );
+        assert_eq!(specs.len(), 2);
+        assert_eq!((specs[0].family.as_str(), specs[0].saddr.as_deref()), ("ipv4", Some("0.0.0.0/0")));
+        assert_eq!((specs[1].family.as_str(), specs[1].saddr.as_deref()), ("ipv6", Some("::/0")));
+        assert_eq!(specs[1].daddr.as_deref(), Some("::/0"));
+
+        let (_, nft) = add_plan(
+            FirewallBackend::Nftables,
+            &[("family", "any"), ("proto", "tcp"), ("dport", "22")],
+        )
+        .unwrap();
+        assert_eq!(
+            nft,
+            vec![
+                "nft add rule ip filter input tcp dport 22 accept",
+                "nft add rule ip6 filter input tcp dport 22 accept",
+            ]
+        );
+    }
+
+    #[test]
+    fn add_family_follows_address() {
+        let (specs, cmds) = add_plan(
+            FirewallBackend::Iptables,
+            &[("family", "any"), ("saddr", "2001:db8::/32"), ("proto", "tcp"), ("dport", "443")],
+        )
+        .unwrap();
+        assert_eq!(cmds, vec!["ip6tables -t filter -A INPUT -p tcp -s 2001:db8::/32 --dport 443 -j ACCEPT"]);
+        assert_eq!(specs[0].family, "ipv6");
+        assert_eq!(specs[0].daddr.as_deref(), Some("::/0"));
+
+        // Without family=, an IPv6 address also selects IPv6.
+        let (_, cmds) = add_plan(FirewallBackend::Iptables, &[("saddr", "2001:db8::1")]).unwrap();
+        assert_eq!(cmds, vec!["ip6tables -t filter -A INPUT -s 2001:db8::1 -j ACCEPT"]);
+
+        // An IPv4 address with family=any goes to iptables, never ip6tables.
+        let (_, cmds) = add_plan(FirewallBackend::Iptables, &[("family", "any"), ("saddr", "198.51.100.7")]).unwrap();
+        assert_eq!(cmds, vec!["iptables -t filter -A INPUT -s 198.51.100.7 -j ACCEPT"]);
+    }
+
+    #[test]
+    fn add_rejects_family_address_mismatch() {
+        let err = add_plan(FirewallBackend::Iptables, &[("family", "ipv4"), ("saddr", "2001:db8::/32")]).unwrap_err();
+        assert!(matches!(fw_err(err), FirewallError::FamilyMismatch { .. }));
+        let err = add_plan(
+            FirewallBackend::Iptables,
+            &[("saddr", "10.0.0.0/8"), ("daddr", "2001:db8::1")],
+        )
+        .unwrap_err();
+        assert!(matches!(fw_err(err), FirewallError::FamilyMismatch { .. }));
+    }
+
+    #[test]
+    fn add_single_rule_backends_cover_both_families() {
+        let (specs, cmds) = add_plan(
+            FirewallBackend::Ufw,
+            &[("family", "any"), ("proto", "tcp"), ("dport", "22")],
+        )
+        .unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].family, "any");
+        assert_eq!(specs[0].saddr, None);
+        assert_eq!(cmds, vec!["ufw allow proto tcp from any to any port 22"]);
+
+        let (_, cmds) = add_plan(FirewallBackend::Ufw, &[("proto", "tcp"), ("dport", "22")]).unwrap();
+        assert_eq!(cmds, vec!["ufw allow proto tcp from 0.0.0.0/0 to 0.0.0.0/0 port 22"]);
+
+        let (_, cmds) = add_plan(
+            FirewallBackend::Firewalld,
+            &[("family", "any"), ("zone", "public"), ("proto", "tcp"), ("dport", "22")],
+        )
+        .unwrap();
+        assert_eq!(
+            cmds,
+            vec!["firewall-cmd --zone=public '--add-rich-rule=rule port protocol=\"tcp\" port=\"22\" accept'"]
+        );
+    }
+
+    #[test]
+    fn add_rejects_port_without_protocol_and_zone_outside_firewalld() {
+        let err = add_plan(FirewallBackend::Iptables, &[("dport", "22")]).unwrap_err();
+        assert!(matches!(fw_err(err), FirewallError::UnsupportedOption { .. }));
+        let err = add_plan(FirewallBackend::Iptables, &[("zone", "public"), ("proto", "tcp")]).unwrap_err();
+        assert!(matches!(fw_err(err), FirewallError::UnsupportedOption { .. }));
+    }
+
+    #[test]
+    fn add_comment_is_one_argument() {
+        let (_, cmds) = add_plan(
+            FirewallBackend::Iptables,
+            &[("proto", "tcp"), ("dport", "22"), ("comment", "allow ssh")],
+        )
+        .unwrap();
+        assert_eq!(
+            cmds,
+            vec!["iptables -t filter -A INPUT -p tcp --dport 22 -m comment --comment 'allow ssh' -j ACCEPT"]
+        );
+    }
+
+    #[test]
+    fn idempotency_match_ignores_any_address() {
+        let h = handle();
+        let opts = h.parse_rules_add_options(&args(&[("proto", "udp"), ("dport", "53"), ("direction", "output")])).unwrap();
+        let spec = h.normalize_rule_specs(&opts, &FirewallBackend::Iptables).unwrap().remove(0);
+        let rules = iptables_rules();
+        assert!(h.rules_match(&spec, &rules[5]), "OUTPUT udp 53 ACCEPT exists");
+        assert!(!h.rules_match(&spec, &rules[9]), "the IPv6 rule is a different family");
+    }
+
+    // -----------------------------------------------------------------------
+    // L1 / H2: in-URL help
+    // -----------------------------------------------------------------------
+
+    fn run_call(verb: &str, pairs: &[(&str, &str)]) -> (Status, String) {
+        let h = handle();
+        let mut i: &[u8] = &[];
+        let mut o: Vec<u8> = Vec::new();
+        let mut e: Vec<u8> = Vec::new();
+        let status = {
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            h.call(verb, &args(pairs), &mut io).unwrap()
+        };
+        (status, String::from_utf8(o).unwrap())
+    }
+
+    #[test]
+    fn in_url_help_renders_approved_help() {
+        for verb in ["--help", "-h", "help"] {
+            let (status, out) = run_call(verb, &[]);
+            assert!(status.ok);
+            assert!(out.starts_with("Handle: firewall"), "{}", out);
+        }
+        let (_, out) = run_call("help", &[("verb", "rules.delete")]);
+        assert!(out.contains("Verb: rules.delete"), "{}", out);
+        let (_, out) = run_call("--help=rules.add", &[]);
+        assert!(out.contains("Verb: rules.add"), "{}", out);
+    }
+
+    #[test]
+    fn non_help_verbs_are_not_help() {
+        let (status, out) = run_call("my-help", &[]);
+        assert!(!status.ok);
+        assert!(out.is_empty());
+    }
 }

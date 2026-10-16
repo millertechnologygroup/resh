@@ -180,8 +180,8 @@ impl PluginStore {
             return Err(anyhow!("Version directory does not exist: {:?}", version_dir));
         }
 
-        // Remove existing current link if it exists
-        if current_link.exists() {
+        // Remove existing current link if it exists (including a dangling one)
+        if fs::symlink_metadata(&current_link).is_ok() {
             fs::remove_file(&current_link)
                 .with_context(|| format!("Failed to remove current link: {:?}", current_link))?;
         }

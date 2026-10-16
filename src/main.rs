@@ -1,10 +1,21 @@
 mod core;
 mod handles;
-mod backends;
 
 use anyhow::Result;
 use clap::Parser;
 use core::{Registry, dispatch_stage};
+
+/// Argument keys that make a mail:// stage a message to send.
+const MAIL_MESSAGE_KEYS: &[&str] = &["to", "subject", "text_body", "html_body", "from", "cc", "bcc"];
+
+/// The verb named in a mail:// stage (`mail://send`, `mail://smtp.test`,
+/// `mail://send(...)`), if it is one of the mail verbs.
+fn mail_stage_verb(stage: &str) -> Option<&str> {
+    let rest = stage.strip_prefix("mail://")?;
+    let head = rest.split('(').next().unwrap_or(rest);
+    let last = head.rsplit(['/', '.']).next().unwrap_or(head);
+    ["send", "send_template", "test", "config"].into_iter().find(|v| *v == last)
+}
 
 /// Reconstructs mail:// commands that were broken by shell parsing
 /// Reconstruct mail commands from shell-broken arguments
@@ -12,6 +23,13 @@ use core::{Registry, dispatch_stage};
 fn reconstruct_mail_command(stage: &str, args: &[String]) -> (String, Vec<String>) {
     // Only process mail:// URLs
     if !stage.starts_with("mail://") {
+        return (stage.to_string(), args.to_vec());
+    }
+
+    // Only send and send_template take message fields. Other verbs (test,
+    // config) receive their key=value arguments unchanged.
+    let verb = mail_stage_verb(stage);
+    if !matches!(verb, None | Some("send") | Some("send_template")) {
         return (stage.to_string(), args.to_vec());
     }
     
@@ -22,9 +40,7 @@ fn reconstruct_mail_command(stage: &str, args: &[String]) -> (String, Vec<String
     
     // Check if arguments look like key=value pairs for mail commands
     let has_mail_args = args.iter().any(|arg| {
-        arg.starts_with("to=") || arg.starts_with("subject=") || 
-        arg.starts_with("text_body=") || arg.starts_with("html_body=") ||
-        arg.starts_with("from=") || arg.starts_with("cc=") || arg.starts_with("bcc=")
+        arg.split_once('=').is_some_and(|(key, _)| MAIL_MESSAGE_KEYS.contains(&key.trim()))
     });
     
     if has_mail_args {
@@ -81,34 +97,19 @@ fn reconstruct_mail_command(stage: &str, args: &[String]) -> (String, Vec<String
         return (reconstructed, Vec::new());
     }
     
-    // Handle other potential shell-broken patterns
-    if !args.is_empty() {
+    // Rejoin a function-call stage that the shell split at spaces, for
+    // example `mail://send(to=a@b.com, subject=Hi)` passed unquoted.
+    if !args.is_empty() && stage.contains('(') {
         let full_text = format!("{} {}", stage, args.join(" "));
-        
-        // Check if this looks like a broken mail URL with parentheses
-        if full_text.contains("=") && (
-            full_text.contains("@") || 
-            full_text.contains("to") ||
-            full_text.contains("subject")
-        ) {
-            // Try to reconstruct as a function call
-            let reconstructed = if full_text.contains("(") {
-                // Already has opening paren, just clean it up
-                full_text
-                    .replace(" =", "=")
-                    .replace("= ", "=")
-                    .replace(", ", ",")
-                    .replace(" ,", ",")
-                    .replace("  ", " ")
-                    .trim()
-                    .to_string()
-            } else {
-                // Need to add function call syntax
-                full_text.replace("mail://", "mail://send(") + ")"
-            };
-            
-            return (reconstructed, Vec::new());
-        }
+        let reconstructed = full_text
+            .replace(" =", "=")
+            .replace("= ", "=")
+            .replace(", ", ",")
+            .replace(" ,", ",")
+            .replace("  ", " ")
+            .trim()
+            .to_string();
+        return (reconstructed, Vec::new());
     }
     
     // Return as-is if no processing needed
@@ -137,10 +138,22 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
     let mut reg = Registry::default();
     // register schemes
     handles::register_all(&mut reg);
+
+    // `resh <handle> --help` and `resh <handle> <verb> --help`: answered from
+    // handle metadata without dispatching. Anything not covered falls through
+    // to clap unchanged.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(req) = core::help::parse_help_request(&raw_args) {
+        if let Some(text) = core::help::render(&reg, &req) {
+            print!("{}", text);
+            return Ok(());
+        }
+    }
+
+    let cli = Cli::parse();
 
     if cli.list_schemas {
         for s in reg.list_schemes() {
@@ -187,4 +200,52 @@ fn main() -> Result<()> {
         std::process::exit(status.code.unwrap_or(1));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_and_config_are_never_rewritten_to_send() {
+        for (stage, a) in [
+            ("mail://test", vec!["smtp_username=alice@example.com"]),
+            ("mail://test", vec!["smtp_host=mail.example.com", "connection_only=true"]),
+            ("mail://config", vec!["action=set", "from_address=ops@example.com"]),
+            ("mail://test", vec!["note=goto"]),
+        ] {
+            let a = args(&a);
+            assert_eq!(reconstruct_mail_command(stage, &a), (stage.to_string(), a.clone()));
+        }
+    }
+
+    #[test]
+    fn send_args_become_function_call() {
+        let (stage, rest) =
+            reconstruct_mail_command("mail://send", &args(&["to=a@example.com", "subject=Hi"]));
+        assert_eq!(stage, r#"mail://send(to=["a@example.com"],subject="Hi")"#);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn substrings_do_not_trigger_send() {
+        // "to" inside a value or key is not the `to` key.
+        let a = args(&["template=onboarding_tour"]);
+        assert_eq!(
+            reconstruct_mail_command("mail://send_template", &a),
+            ("mail://send_template".to_string(), a.clone())
+        );
+    }
+
+    #[test]
+    fn mail_stage_verb_detection() {
+        assert_eq!(mail_stage_verb("mail://test"), Some("test"));
+        assert_eq!(mail_stage_verb("mail://smtp.send"), Some("send"));
+        assert_eq!(mail_stage_verb("mail://send_template(x=1)"), Some("send_template"));
+        assert_eq!(mail_stage_verb("mail://"), None);
+    }
 }

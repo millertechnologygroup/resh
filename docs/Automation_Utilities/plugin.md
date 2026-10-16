@@ -101,7 +101,7 @@ plugin://target.verb(arguments)
 | Component   | Description                                            |
 | ----------- | ------------------------------------------------------ |
 | `plugin`    | Handle identifier                                      |
-| `target`    | Plugin ID or special target (`available`, `installed`) |
+| `target`    | Plugin ID; omitted for `available.*` and `installed.list` |
 | `verb`      | Lifecycle or catalog operation                         |
 | `arguments` | Named parameters controlling execution                 |
 
@@ -145,6 +145,15 @@ Remove plugin:
 plugin://aws.remove(purge="true")
 ```
 
+Preview an install without changing anything:
+
+```sh
+plugin://aws.install(dry_run="true")
+```
+
+The older doubled forms, such as `plugin://available.available.list` and
+`plugin://installed.installed.list`, are still accepted.
+
 ---
 
 ### 3.2 Execution Semantics
@@ -155,7 +164,8 @@ All plugin operations return structured JSON with the following envelope:
 * `ok` – Boolean success indicator
 * `code` – Exit code
 * `ts` – Timestamp
-* `target` – Original URI invocation
+* `target` – The plugin addressed (an object with `name`, `requested_name`,
+  and `install_root` for lifecycle verbs; the stage URL for catalog verbs)
 * `args` – Parsed arguments
 * `result` – Operation-specific data
 * `actions` – Performed actions
@@ -168,29 +178,38 @@ All plugin operations return structured JSON with the following envelope:
   "op": "plugin.install",
   "ok": true,
   "code": 0,
-  "ts": "2024-01-01T12:00:00Z",
-  "target": "plugin://aws.install()",
-  "args": {
-    "plugin_id": "aws",
-    "source": "registry",
-    "version": "latest"
-  },
-  "result": {
-    "plugin_id": "aws",
+  "target": {
+    "name": "aws",
+    "requested_name": "aws",
     "version": "1.2.3",
-    "changed": true,
-    "deterministic": true
+    "install_root": "/home/alice/.local/share/resh/plugins",
+    "bin_path": "/home/alice/.local/share/resh/plugins/aws/versions/1.2.3/plugin"
+  },
+  "args": {
+    "dry_run": false,
+    "timeout_ms": 300000
   },
   "actions": [
-    {
-      "type": "fetch",
-      "id": "download",
-      "ok": true
-    }
+    {"id": "resolve-0", "type": "resolve", "name": "Resolved plugin version: 1.2.3", "ok": true},
+    {"id": "check-1", "type": "check_installed", "name": "Plugin not installed", "ok": true},
+    {"id": "download-2", "type": "download", "name": "Downloaded artifact (1048576 bytes)", "ok": true},
+    {"id": "verify-3", "type": "verify", "name": "Checksum verified successfully", "ok": true},
+    {"id": "extract-4", "type": "extract", "name": "Extracted artifact to: ...", "ok": true},
+    {"id": "install-5", "type": "install", "name": "Plugin installed successfully", "ok": true},
+    {"id": "activate-6", "type": "activate", "name": "Plugin activated successfully", "ok": true},
+    {"id": "cleanup-7", "type": "cleanup", "name": "Staging cleanup completed", "ok": true}
   ],
-  "error": null
+  "result": {
+    "installed": true,
+    "version": "1.2.3"
+  },
+  "ts": "2026-10-16T12:00:00Z"
 }
 ```
+
+With `dry_run="true"`, nothing is downloaded or written: the envelope
+reports the resolved version and a `plan` action, and `result.installed`
+is `false`.
 
 #### Error Example
 
@@ -198,11 +217,15 @@ All plugin operations return structured JSON with the following envelope:
 {
   "op": "plugin.install",
   "ok": false,
-  "code": 3,
-  "target": "plugin://nonexistent.install()",
+  "code": 2,
+  "target": {
+    "name": "nonexistent",
+    "requested_name": "nonexistent",
+    "install_root": "/home/alice/.local/share/resh/plugins"
+  },
   "error": {
-    "code": "ERR_NOT_FOUND",
-    "message": "Plugin 'nonexistent' not found in registry"
+    "kind": "PLUGIN_NOT_FOUND",
+    "message": "Plugin not found in registry: nonexistent (status: 404 Not Found)"
   }
 }
 ```

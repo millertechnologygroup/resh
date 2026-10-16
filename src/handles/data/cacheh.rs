@@ -8,8 +8,201 @@ use std::time::Duration;
 use url::Url;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
+};
+
+/// Metadata for `resh cache --help` and `resh cache <verb> --help`.
+static CACHE_HELP: HandleHelp = HandleHelp {
+    description: "The cache handle reads and writes keys in Redis or Memcached, with optional \
+        key namespaces, TTLs, and value encoding. The target names a backend and a \
+        connection alias, such as cache://redis/main. Connections last only for one \
+        resh process, so every verb takes url=<connection-url> and connects on demand \
+        when the alias is not already connected.",
+    usage: "resh cache://<backend>/<alias>.<verb> url=<connection-url> [key=value ...]",
+    verbs: &[
+        VerbHelp {
+            name: "connect",
+            definition: "Opens and verifies a connection to the server at url and registers \
+                it under the alias for later stages of the same resh process.",
+            detail: Some(VerbDetail {
+                usage: "resh cache://<backend>/<alias>.connect url=<connection-url>\n  \
+                    [connect_timeout_ms=<ms>]",
+                example: "resh --json-pretty cache://redis/main.connect \
+                    url=redis://localhost:6379/0",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "redis",
+  "endpoint": "localhost:6379",
+  "status": "connected"
+}
+
+Shown with --json-pretty. Redis takes redis://host:port/db URLs and
+Memcached takes memcache://host:port. connect_timeout_ms defaults to 5000."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "get",
+            definition: "Reads one key or a list of keys and decodes each value, returning \
+                the default value on a miss.",
+            detail: Some(VerbDetail {
+                usage: "resh cache://<backend>/<alias>.get key=<key>|keys=<json-array>\n  \
+                    url=<connection-url> [namespace=<ns>] [decode=utf8|bytes|json]\n  \
+                    [default=<value>] [timeout_ms=<ms>]",
+                example: "resh --json-pretty cache://redis/main.get key=user:42 url=redis://cache",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "redis",
+  "hit": true,
+  "key": "user:42",
+  "value": "alice"
+}
+
+Shown with --json-pretty. With keys= the output has alias, backend,
+and a results array of key, value, hit."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "exists",
+            definition: "Reports whether one key, or each key in a list, exists in the cache.",
+            detail: Some(VerbDetail {
+                usage: "resh cache://<backend>/<alias>.exists key=<key>|keys=<json-array>\n  \
+                    url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]",
+                example: "resh --json-pretty cache://redis/main.exists key=user:42 url=redis://cache",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "redis",
+  "exists": true,
+  "key": "user:42"
+}
+
+Shown with --json-pretty. With keys= the output has a results array
+and a total_exists count."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "ttl",
+            definition: "Reports whether keys exist and how many milliseconds remain before \
+                they expire, which only Redis can report.",
+            detail: Some(VerbDetail {
+                usage: "resh cache://<backend>/<alias>.ttl key=<key>|keys=<json-array>\n  \
+                    url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]",
+                example: "resh --json-pretty cache://redis/main.ttl key=session:1 url=redis://cache",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "redis",
+  "exists": true,
+  "has_expiry": true,
+  "key": "session:1",
+  "supports_ttl": true,
+  "ttl_ms": 59000
+}
+
+Shown for Redis with --json-pretty.
+Memcached reports supports_ttl false and ttl_ms null."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "keys",
+            definition: "Lists keys matching a glob pattern one page at a time using Redis \
+                SCAN, and returns an unsupported error on Memcached.",
+            detail: Some(VerbDetail {
+                usage: "resh cache://<backend>/<alias>.keys url=<connection-url> [pattern=<glob>]\n  \
+                    [namespace=<ns>] [cursor=<cursor>] [limit=<n>] [timeout_ms=<ms>]",
+                example: "resh --json-pretty cache://redis/main.keys 'pattern=user:*' url=redis://cache",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "redis",
+  "count": 2,
+  "cursor": null,
+  "has_more": false,
+  "keys": [
+    "user:42",
+    "user:43"
+  ]
+}
+
+Shown with --json-pretty. When has_more is true, pass the returned
+cursor string to fetch the next page."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "set",
+            definition: "Stores a value under one key, or values under a list of keys, with \
+                an optional TTL and optional only-if-exists or only-if-missing conditions.",
+            detail: Some(VerbDetail {
+                usage: "resh cache://<backend>/<alias>.set key=<key>|keys=<json-array>\n  \
+                    value=<value>|values=<json-array> url=<connection-url>\n  \
+                    [namespace=<ns>] [ttl_ms=<ms>] [encode=utf8|bytes|json] [timeout_ms=<ms>]\n  \
+                    [only_if_not_exists=true|false] [only_if_exists=true|false]",
+                example: "resh cache://redis/main.set key=u1 value=alice ttl_ms=60000 url=redis://cache",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "redis",
+  "key": "u1",
+  "stored": true,
+  "ttl_ms": 60000
+}
+
+Shown as --json-pretty output. A write skipped by a condition reports
+stored false and reason condition_not_met."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "incr",
+            definition: "Increments an integer counter, creating it from the initial value \
+                when the key is missing.",
+            detail: Some(VerbDetail {
+                usage: "resh cache://<backend>/<alias>.incr key=<key> url=<connection-url>\n  \
+                    [by=<n>] [initial=<n>] [ttl_ms=<ms>] [namespace=<ns>] [timeout_ms=<ms>]",
+                example: "resh --json-pretty cache://redis/main.incr key=views by=5 url=redis://cache",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "redis",
+  "created": false,
+  "key": "views",
+  "value": 47
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "del",
+            definition: "Deletes one key or a list of keys and reports which keys were removed.",
+            detail: Some(VerbDetail {
+                usage: "resh cache://<backend>/<alias>.del key=<key>|keys=<json-array>\n  \
+                    url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]",
+                example: "resh --json-pretty cache://redis/main.del key=user:42 url=redis://cache",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "redis",
+  "deleted": true,
+  "key": "user:42"
+}
+
+Shown with --json-pretty. With keys= the output has a results array
+and a total_deleted count."#,
+                ),
+            }),
+        },
+    ],
 };
 
 /// Cache backend enumeration
@@ -66,6 +259,99 @@ type ConnectionRegistry = DashMap<(CacheBackend, String), Arc<CacheConnectionHan
 
 /// Global connection registry
 static CONNECTION_REGISTRY: LazyLock<ConnectionRegistry> = LazyLock::new(|| DashMap::new());
+
+/// Process-wide runtime for cache operations. Redis `ConnectionManager`
+/// drives its socket from a task on the runtime that created it, so a
+/// registered connection is only usable while that runtime is alive.
+fn cache_runtime() -> Result<&'static tokio::runtime::Runtime> {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    if let Some(rt) = RUNTIME.get() {
+        return Ok(rt);
+    }
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+    Ok(RUNTIME.get_or_init(|| rt))
+}
+
+/// Default time allowed to open and verify a connection.
+const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5000;
+
+/// Connection settings taken from `url=` (and optional `connect_timeout_ms=`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectConfig {
+    /// URL passed to the client library.
+    pub url: String,
+    /// `host:port` (or socket path) without credentials, for output.
+    pub endpoint: String,
+    pub timeout_ms: u64,
+}
+
+impl ConnectConfig {
+    /// Returns `Ok(None)` when no `url` argument is present.
+    fn from_args(backend: &CacheBackend, args: &Value) -> Result<Option<Self>, CacheError> {
+        let raw = match args.get("url") {
+            None | Some(Value::Null) => return Ok(None),
+            Some(Value::String(s)) => s.trim().to_string(),
+            Some(other) => other.to_string(),
+        };
+        if raw.is_empty() {
+            return Err(CacheError::InvalidConnectConfig { message: "url cannot be empty".to_string() });
+        }
+        let timeout_ms = match args.get("connect_timeout_ms") {
+            None | Some(Value::Null) => DEFAULT_CONNECT_TIMEOUT_MS,
+            Some(v) => v
+                .as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+                .filter(|n| *n > 0)
+                .ok_or_else(|| CacheError::InvalidConnectConfig {
+                    message: format!("connect_timeout_ms must be a positive integer, got {}", v),
+                })?,
+        };
+        let mut parsed = Url::parse(&raw).map_err(|e| CacheError::InvalidConnectConfig {
+            message: format!("invalid url '{}': {}", raw, e),
+        })?;
+        let scheme = parsed.scheme().to_ascii_lowercase();
+        match backend {
+            CacheBackend::Redis => {
+                if !matches!(scheme.as_str(), "redis" | "rediss" | "redis+unix" | "unix") {
+                    return Err(CacheError::InvalidConnectConfig {
+                        message: format!("url scheme '{}' is not valid for redis; use redis://host:port/db", scheme),
+                    });
+                }
+            }
+            CacheBackend::Memcached => {
+                if !matches!(scheme.as_str(), "memcache" | "memcached") {
+                    return Err(CacheError::InvalidConnectConfig {
+                        message: format!("url scheme '{}' is not valid for memcached; use memcache://host:port", scheme),
+                    });
+                }
+                if parsed.host_str().map_or(true, |h| h.is_empty()) {
+                    return Err(CacheError::InvalidConnectConfig {
+                        message: "memcached url must include a host".to_string(),
+                    });
+                }
+                // The memcache crate only understands memcache://, and bounds
+                // its connect with the connect_timeout query parameter (seconds).
+                if scheme == "memcached" {
+                    let rest = &raw[raw.find("://").unwrap_or(0)..];
+                    parsed = Url::parse(&format!("memcache{}", rest)).map_err(|e| {
+                        CacheError::InvalidConnectConfig { message: format!("invalid url '{}': {}", raw, e) }
+                    })?;
+                }
+                if !parsed.query_pairs().any(|(k, _)| k == "connect_timeout") {
+                    let secs = format!("{}", timeout_ms as f64 / 1000.0);
+                    parsed.query_pairs_mut().append_pair("connect_timeout", &secs);
+                }
+            }
+        }
+        let endpoint = match (parsed.host_str(), parsed.port()) {
+            (Some(h), Some(p)) if !h.is_empty() => format!("{}:{}", h, p),
+            (Some(h), None) if !h.is_empty() => h.to_string(),
+            _ => parsed.path().to_string(),
+        };
+        let url = if matches!(backend, CacheBackend::Memcached) { parsed.to_string() } else { raw };
+        Ok(Some(Self { url, endpoint, timeout_ms }))
+    }
+}
 
 /// Get configuration for cache operations
 #[derive(Debug, Clone)]
@@ -781,7 +1067,7 @@ pub enum CacheError {
     #[error("unsupported backend: {backend}")]
     UnsupportedBackend { backend: String },
 
-    #[error("connection not found for backend '{backend}' alias '{alias}'. Use connect verb first")]
+    #[error("connection not found for backend '{backend}' alias '{alias}'. Pass url=<connection-url> (or run connect earlier in the same pipeline)")]
     ConnectionNotFound { backend: String, alias: String },
 
     #[error("invalid get configuration: {message}")]
@@ -864,6 +1150,9 @@ pub enum CacheError {
 
     #[error("connection failed: {message}")]
     ConnectFailed { message: String },
+
+    #[error("invalid connect configuration: {message}")]
+    InvalidConnectConfig { message: String },
 }
 
 impl CacheError {
@@ -986,6 +1275,10 @@ impl CacheError {
                 "cache.connect_failed",
                 json!({ "message": message })
             ),
+            CacheError::InvalidConnectConfig { message } => (
+                "cache.invalid_connect_config",
+                json!({ "message": message })
+            ),
         };
 
         json!({
@@ -1081,374 +1374,6 @@ fn encode_value(value: &Value, encode_mode: &str) -> Result<Vec<u8>, CacheError>
 }
 
 /// Comprehensive help text for cache handle
-const CACHE_HELP_TEXT: &str = r#"
-RESOURCE SHELL - CACHE HANDLE
-=============================
-
-USAGE:
-  cache://backend/alias.VERB(arguments)
-
-DESCRIPTION:
-  The cache handle lets you store and retrieve data from fast memory storage
-  systems like Redis and Memcached. Cache systems provide super-fast temporary
-  storage that helps programs run quicker by keeping commonly used information
-  in memory.
-
-SUPPORTED BACKENDS:
-  redis           Powerful in-memory data store with rich data types
-  memcached       Simple, high-performance memory caching system
-
-CONNECTION FORMAT:
-  cache://redis/alias_name        Connect to Redis with alias
-  cache://memcached/alias_name    Connect to Memcached with alias
-  cache://redis/default           Use "default" if no alias specified
-
-VERBS:
-  connect         Create connection to cache system
-  get             Retrieve one or more stored values
-  set             Store one or more values
-  del             Delete one or more values
-  incr            Increment numeric values (counters)
-  exists          Check if keys exist in cache
-  keys            Find keys matching a pattern
-  ttl             Check time remaining before expiration
-
-EXAMPLES:
-
-  Connect to Redis:
-    cache://redis/main.connect(url="redis://localhost:6379/0")
-
-  Connect to Memcached:
-    cache://memcached/app.connect(url="memcached://localhost:11211")
-
-  Get single value:
-    cache://redis/main.get(key="user:123", decode="utf8")
-
-  Get with default fallback:
-    cache://redis/main.get(key="session:abc", default="not_found", decode="utf8")
-
-  Get multiple values:
-    cache://redis/main.get(keys=["user:1", "user:2", "user:3"], decode="utf8")
-
-  Get with namespace:
-    cache://redis/main.get(key="session:123", namespace="prod", decode="utf8")
-
-  Set single value:
-    cache://redis/main.set(key="user:123", value="John Doe", encode="utf8")
-
-  Set with expiration (5 minutes):
-    cache://redis/main.set(key="session:abc", value="data", ttl_ms="300000", encode="utf8")
-
-  Set multiple values:
-    cache://redis/main.set(keys=["user:1", "user:2"], values=["Alice", "Bob"], encode="utf8")
-
-  Set JSON data:
-    cache://redis/main.set(key="user:profile", value="{\"name\":\"John\",\"age\":30}", encode="json")
-
-  Set only if not exists:
-    cache://redis/main.set(key="lock:resource", value="locked", only_if_not_exists="true")
-
-  Set only if exists:
-    cache://redis/main.set(key="existing:key", value="updated", only_if_exists="true")
-
-  Delete single key:
-    cache://redis/main.del(key="temp:data")
-
-  Delete multiple keys:
-    cache://redis/main.del(keys=["session:1", "session:2", "session:3"])
-
-  Delete with namespace:
-    cache://redis/main.del(key="cache:item", namespace="test")
-
-  Increment counter:
-    cache://redis/main.incr(key="page_views")
-
-  Increment by amount:
-    cache://redis/main.incr(key="score", by="10")
-
-  Increment with initial value:
-    cache://redis/main.incr(key="new_counter", initial="100", by="5")
-
-  Check if key exists:
-    cache://redis/main.exists(key="user:123")
-
-  Check multiple keys:
-    cache://redis/main.exists(keys=["user:1", "user:2", "user:3"])
-
-  Find all user keys:
-    cache://redis/main.keys(pattern="user:*")
-
-  Find with limit:
-    cache://redis/main.keys(pattern="session:*", limit="50")
-
-  Find in namespace:
-    cache://redis/main.keys(pattern="*", namespace="prod")
-
-  Check TTL for single key:
-    cache://redis/main.ttl(key="session:abc")
-
-  Check TTL for multiple keys:
-    cache://redis/main.ttl(keys=["session:1", "session:2"])
-
-CONNECT ARGUMENTS:
-  url=URL                Connection URL for cache system (required)
-                         Format: redis://host:port/db or memcached://host:port
-
-GET ARGUMENTS:
-  key=KEY                Single key to retrieve (use key OR keys, not both)
-  keys=JSON_ARRAY        Multiple keys as JSON array (e.g., ["key1", "key2"])
-  namespace=TEXT         Namespace prefix for key organization
-  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
-  decode=FORMAT          Decoding format: utf8, bytes, json (default: utf8)
-  default=VALUE          Fallback value if key doesn't exist
-
-SET ARGUMENTS:
-  key=KEY                Single key to set (use with value)
-  value=VALUE            Value to store for single key
-  keys=JSON_ARRAY        Multiple keys as JSON array (use with values)
-  values=JSON_ARRAY      Multiple values as JSON array (same length as keys)
-  namespace=TEXT         Namespace prefix for key organization
-  ttl_ms=N               Time to live in milliseconds (how long to keep data)
-  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
-  encode=FORMAT          Encoding format: utf8, bytes, json (default: utf8)
-  only_if_not_exists=BOOL Only set if key doesn't exist (default: false)
-  only_if_exists=BOOL    Only set if key exists (default: false)
-
-DEL ARGUMENTS:
-  key=KEY                Single key to delete (use key OR keys, not both)
-  keys=JSON_ARRAY        Multiple keys as JSON array
-  namespace=TEXT         Namespace prefix for key organization
-  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
-
-INCR ARGUMENTS:
-  key=KEY                Key to increment (required)
-  namespace=TEXT         Namespace prefix for key organization
-  by=N                   Amount to increment by (default: 1)
-  initial=N              Starting value if key doesn't exist
-  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
-
-EXISTS ARGUMENTS:
-  key=KEY                Single key to check (use key OR keys, not both)
-  keys=JSON_ARRAY        Multiple keys as JSON array
-  namespace=TEXT         Namespace prefix for key organization
-  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
-
-KEYS ARGUMENTS:
-  pattern=PATTERN        Search pattern, use * as wildcard (default: "*")
-  namespace=TEXT         Namespace to search within
-  cursor=TEXT            Starting position for pagination
-  limit=N                Maximum results to return (default: 100)
-  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
-
-TTL ARGUMENTS:
-  key=KEY                Single key to check (use key OR keys, not both)
-  keys=JSON_ARRAY        Multiple keys as JSON array
-  namespace=TEXT         Namespace prefix for key organization
-  timeout_ms=N           Operation timeout in milliseconds (default: 1000)
-
-NAMESPACES:
-  Namespaces organize cached data like folders:
-  • Without namespace: "user:123" stored as "user:123"
-  • With namespace "prod": "user:123" stored as "prod:user:123"
-
-  This helps separate data for different environments (prod, dev, test).
-
-DATA ENCODING:
-  utf8 (default)         Regular text: names, messages, simple data
-  json                   Structured data: objects, arrays, complex data
-  bytes                  Binary data: images, files (base64 encoded)
-
-TIME SETTINGS:
-  All time values are in milliseconds:
-  • 1 second = 1,000 milliseconds
-  • 1 minute = 60,000 milliseconds
-  • 1 hour = 3,600,000 milliseconds
-  • 1 day = 86,400,000 milliseconds
-
-OUTPUT FORMAT:
-  All operations return JSON with operation-specific structure.
-
-  Connect success:
-  {
-    "backend": "redis",
-    "alias": "main",
-    "status": "connected"
-  }
-
-  Get success (single):
-  {
-    "key": "user:123",
-    "value": "John Doe",
-    "backend": "redis",
-    "alias": "main",
-    "hit": true
-  }
-
-  Get success (multiple):
-  {
-    "backend": "redis",
-    "alias": "main",
-    "results": [
-      {"key": "user:1", "value": "Alice", "hit": true},
-      {"key": "user:2", "value": null, "hit": false}
-    ]
-  }
-
-  Set success:
-  {
-    "backend": "redis",
-    "alias": "main",
-    "key": "user:123",
-    "stored": true
-  }
-
-  Incr success:
-  {
-    "backend": "redis",
-    "alias": "main",
-    "key": "counter",
-    "value": 42,
-    "created": false
-  }
-
-  Exists success:
-  {
-    "backend": "redis",
-    "alias": "main",
-    "key": "user:123",
-    "exists": true
-  }
-
-  Keys success:
-  {
-    "backend": "redis",
-    "alias": "main",
-    "keys": ["user:1", "user:2", "user:3"],
-    "cursor": null,
-    "has_more": false,
-    "count": 3
-  }
-
-  TTL success:
-  {
-    "backend": "redis",
-    "alias": "main",
-    "key": "session:abc",
-    "exists": true,
-    "supports_ttl": true,
-    "has_expiry": true,
-    "ttl_ms": 250000
-  }
-
-COMMON WORKFLOWS:
-
-  User session management:
-    # Store session
-    cache://redis/main.set(key="session:abc123", value="{\"user_id\":42}", encode="json", ttl_ms="1800000")
-    
-    # Get session
-    cache://redis/main.get(key="session:abc123", decode="json")
-    
-    # Delete session
-    cache://redis/main.del(key="session:abc123")
-
-  Page view counter:
-    # Initialize counter
-    cache://redis/main.set(key="page_views", value="0")
-    
-    # Increment on each view
-    cache://redis/main.incr(key="page_views")
-    
-    # Get current count
-    cache://redis/main.get(key="page_views", decode="utf8")
-
-  Cache with fallback:
-    # Try to get from cache
-    cache://redis/main.get(key="user:profile:123", default="not_cached", decode="json")
-    
-    # If not cached, fetch from DB and store
-    cache://redis/main.set(key="user:profile:123", value="<db_data>", encode="json", ttl_ms="600000")
-
-  Distributed locking:
-    # Acquire lock
-    cache://redis/main.set(key="lock:resource", value="locked", only_if_not_exists="true", ttl_ms="30000")
-    
-    # Check lock status
-    cache://redis/main.exists(key="lock:resource")
-    
-    # Release lock
-    cache://redis/main.del(key="lock:resource")
-
-  Batch operations:
-    # Store multiple users
-    cache://redis/main.set(keys=["user:1", "user:2", "user:3"], values=["Alice", "Bob", "Carol"])
-    
-    # Retrieve multiple users
-    cache://redis/main.get(keys=["user:1", "user:2", "user:3"])
-    
-    # Check which exist
-    cache://redis/main.exists(keys=["user:1", "user:2", "user:3"])
-
-  Environment separation:
-    # Production namespace
-    cache://redis/main.set(key="config", value="prod_settings", namespace="prod")
-    
-    # Development namespace
-    cache://redis/main.set(key="config", value="dev_settings", namespace="dev")
-    
-    # Get from specific environment
-    cache://redis/main.get(key="config", namespace="prod")
-
-ERROR HANDLING:
-  When operations fail, JSON includes error information:
-  {
-    "error": true,
-    "message": "Connection timeout after 1000ms",
-    "code": "TIMEOUT"
-  }
-
-  Common error codes:
-  • TIMEOUT           Operation exceeded timeout limit
-  • CONNECTION_FAILED Unable to connect to cache backend
-  • INVALID_PARAM     Invalid or missing required parameter
-  • KEY_NOT_FOUND     Requested key doesn't exist
-  • ENCODING_ERROR    Failed to encode/decode data
-  • BACKEND_ERROR     Cache backend returned an error
-
-BEST PRACTICES:
-  • Use meaningful key names with consistent patterns (e.g., "user:123:profile")
-  • Set appropriate TTL values to prevent memory bloat
-  • Use namespaces to separate environments (prod, dev, test)
-  • Use JSON encoding for complex data structures
-  • Implement fallback logic for cache misses
-  • Use batch operations (multiple keys) for better performance
-  • Set reasonable timeout values based on network conditions
-  • Use exists checks before expensive operations
-  • Implement distributed locking carefully with TTL
-  • Monitor cache hit rates and adjust TTL accordingly
-  • Use counters (incr) for rate limiting and statistics
-  • Clean up expired data regularly with TTL
-
-BACKEND-SPECIFIC NOTES:
-  Redis:
-  • Supports all verbs and features
-  • Supports multiple databases (0-15 by default)
-  • Rich data types and operations
-  • Persistent and non-persistent modes available
-
-  Memcached:
-  • Simple key-value operations
-  • May not support all advanced features
-  • Optimized for speed and simplicity
-  • No persistence (data lost on restart)
-
-MORE INFO:
-  For complete documentation of all verbs, backends, and encoding
-  options, visit:
-  https://github.com/[your-org]/resource-shell/docs/cache-handle.md
-
-  Use 'cache:// --help=VERB' for detailed help on a specific verb.
-"#;
 
 /// Cache handle implementation
 pub struct CacheHandle {
@@ -1457,70 +1382,41 @@ pub struct CacheHandle {
 }
 
 impl CacheHandle {
-    /// Check if this is a help request and display help if so
-    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
-        // Check for help verbs
-        if verb == "--help" || verb == "-h" || verb == "help" {
-            write!(io.stdout, "{}", CACHE_HELP_TEXT)?;
-            return Ok(Some(Status::ok()));
+    /// Handles the in-URL help forms (`help`, `--help`, `-h`, `--help=<verb>`,
+    /// `help(verb=<verb>)`) by rendering the approved `CACHE_HELP` metadata.
+    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+        let topic: Option<&str> = if verb == "help"
+            || crate::core::help::is_help_flag(verb)
+            || crate::core::help::is_help_flag(&self.alias)
+        {
+            Some(args.get("verb").map(|s| s.as_str()).unwrap_or(""))
+        } else if let Some(v) = verb.strip_prefix("--help=") {
+            Some(v)
+        } else {
+            None
+        };
+        match topic {
+            Some(t) => {
+                let v = if t.is_empty() { None } else { Some(t) };
+                let text = crate::core::help::render_legacy("cache", &CACHE_HELP, self.verbs(), v);
+                write!(io.stdout, "{}", text)?;
+                Ok(Some(Status::ok()))
+            }
+            None => Ok(None),
         }
-        
-        // Check for verb-specific help
-        if verb.starts_with("--help=") {
-            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
-            Self::display_verb_help(help_verb, io)?;
-            return Ok(Some(Status::ok()));
-        }
-        
-        Ok(None)
     }
-    
-    /// Display help for a specific verb
-    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
-        match verb {
-            "connect" => {
-                write!(io.stdout, "
-HELP: CONNECT VERB\n\nConnect to a cache backend and store connection for reuse.\n\nUSAGE:\n  cache://backend/alias.connect(url=\"connection_url\")\n\nARGUMENTS:\n  url=URL    Connection URL (required)\n             Format: redis://host:port/db or memcached://host:port\n\nEXAMPLES:\n  cache://redis/main.connect(url=\"redis://localhost:6379/0\")\n  cache://memcached/app.connect(url=\"memcached://localhost:11211\")\n")?;
-            }
-            "get" => {
-                write!(io.stdout, "
-HELP: GET VERB\n\nRetrieve one or more values from cache.\n\nUSAGE:\n  cache://backend/alias.get(key=\"single_key\", decode=\"utf8\")\n  cache://backend/alias.get(keys=[\"key1\", \"key2\"], decode=\"utf8\")\n\nARGUMENTS:\n  key=KEY         Single key (use key OR keys)\n  keys=ARRAY      Multiple keys as JSON array\n  namespace=TEXT  Namespace prefix\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n  decode=FORMAT   utf8, json, or bytes (default: utf8)\n  default=VALUE   Fallback if key not found\n")?;
-            }
-            "set" => {
-                write!(io.stdout, "
-HELP: SET VERB\n\nStore one or more values in cache.\n\nUSAGE:\n  cache://backend/alias.set(key=\"single_key\", value=\"data\", encode=\"utf8\")\n  cache://backend/alias.set(keys=[\"key1\"], values=[\"val1\"], encode=\"utf8\")\n\nARGUMENTS:\n  key=KEY             Single key (use with value)\n  value=VALUE         Value for single key\n  keys=ARRAY          Multiple keys (use with values)\n  values=ARRAY        Values for multiple keys\n  namespace=TEXT      Namespace prefix\n  ttl_ms=N            Time to live in milliseconds\n  timeout_ms=N        Timeout in milliseconds (default: 1000)\n  encode=FORMAT       utf8, json, or bytes (default: utf8)\n  only_if_not_exists  Set only if key doesn't exist\n  only_if_exists      Set only if key exists\n")?;
-            }
-            "del" => {
-                write!(io.stdout, "
-HELP: DEL VERB\n\nDelete one or more keys from cache.\n\nUSAGE:\n  cache://backend/alias.del(key=\"single_key\")\n  cache://backend/alias.del(keys=[\"key1\", \"key2\"])\n\nARGUMENTS:\n  key=KEY         Single key (use key OR keys)\n  keys=ARRAY      Multiple keys as JSON array\n  namespace=TEXT  Namespace prefix\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n")?;
-            }
-            "incr" => {
-                write!(io.stdout, "
-HELP: INCR VERB\n\nIncrement a numeric value in cache.\n\nUSAGE:\n  cache://backend/alias.incr(key=\"counter\")\n  cache://backend/alias.incr(key=\"counter\", by=\"5\", initial=\"10\")\n\nARGUMENTS:\n  key=KEY         Key to increment (required)\n  namespace=TEXT  Namespace prefix\n  by=N            Amount to increment (default: 1)\n  initial=N       Starting value if key doesn't exist\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n")?;
-            }
-            "exists" => {
-                write!(io.stdout, "
-HELP: EXISTS VERB\n\nCheck if one or more keys exist in cache.\n\nUSAGE:\n  cache://backend/alias.exists(key=\"single_key\")\n  cache://backend/alias.exists(keys=[\"key1\", \"key2\"])\n\nARGUMENTS:\n  key=KEY         Single key (use key OR keys)\n  keys=ARRAY      Multiple keys as JSON array\n  namespace=TEXT  Namespace prefix\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n")?;
-            }
-            "keys" => {
-                write!(io.stdout, "
-HELP: KEYS VERB\n\nFind keys matching a pattern.\n\nUSAGE:\n  cache://backend/alias.keys(pattern=\"user:*\")\n  cache://backend/alias.keys(pattern=\"*\", limit=\"50\")\n\nARGUMENTS:\n  pattern=PATTERN  Search pattern with * wildcards (default: \"*\")\n  namespace=TEXT   Namespace to search within\n  cursor=TEXT      Starting position for pagination\n  limit=N          Maximum results (default: 100)\n  timeout_ms=N     Timeout in milliseconds (default: 1000)\n")?;
-            }
-            "ttl" => {
-                write!(io.stdout, "
-HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache://backend/alias.ttl(key=\"single_key\")\n  cache://backend/alias.ttl(keys=[\"key1\", \"key2\"])\n\nARGUMENTS:\n  key=KEY         Single key (use key OR keys)\n  keys=ARRAY      Multiple keys as JSON array\n  namespace=TEXT  Namespace prefix\n  timeout_ms=N    Timeout in milliseconds (default: 1000)\n")?;
-            }
-            _ => {
-                write!(io.stdout, "\nUnknown verb: {}. Use --help for full list of verbs.\n", verb)?;
-            }
-        }
-        Ok(Status::ok())
-    }
+
     pub fn from_url(url: Url) -> Result<Self, CacheError> {
         let backend_str = url.host_str()
             .ok_or_else(|| CacheError::UnsupportedBackend {
                 backend: "missing host".to_string()
             })?;
+
+        // cache://--help (exact match): a placeholder handle whose every call
+        // prints help.
+        if crate::core::help::is_help_flag(backend_str) {
+            return Ok(Self { backend: CacheBackend::Redis, alias: "--help".to_string() });
+        }
         
         let backend = CacheBackend::from_str(backend_str)?;
         
@@ -1534,21 +1430,107 @@ HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache
         Ok(Self { backend, alias })
     }
 
-    /// Connect to cache backend and store in registry
-    pub async fn connect(&self, _args: Value) -> Result<Value, CacheError> {
-        // This is a placeholder for connect implementation
-        // In a real implementation, this would:
-        // 1. Parse connection string or individual parameters
-        // 2. Create appropriate client (Redis ConnectionManager or Memcache Client)
-        // 3. Test the connection
-        // 4. Store in CONNECTION_REGISTRY
-        // For now, return a placeholder success response
-        
+    /// Connects to the backend named by `url=`, verifies the server answers
+    /// (Redis PING, Memcached VERSION), and stores the client in
+    /// `CONNECTION_REGISTRY` under this handle's backend and alias, replacing
+    /// any previous connection for that alias.
+    ///
+    /// The registry lives in process memory, so a connection made here is
+    /// reused only by later stages of the same resh invocation. Every other
+    /// verb accepts the same `url=` argument and connects on demand.
+    pub async fn connect(&self, args: Value) -> Result<Value, CacheError> {
+        let config = ConnectConfig::from_args(&self.backend, &args)?.ok_or_else(|| {
+            CacheError::InvalidConnectConfig {
+                message: "url is required, for example url=redis://localhost:6379/0".to_string(),
+            }
+        })?;
+        let handle = self.open_connection(&config).await?;
+        CONNECTION_REGISTRY.insert(
+            (self.backend.clone(), self.alias.clone()),
+            Arc::clone(&handle),
+        );
         Ok(json!({
-            "backend": self.backend.as_str(),
             "alias": self.alias,
+            "backend": self.backend.as_str(),
+            "endpoint": config.endpoint,
             "status": "connected"
         }))
+    }
+
+    /// Returns the registered connection for this backend and alias. When
+    /// none is registered and `url=` is present, connects on demand and
+    /// registers the new client; otherwise returns `ConnectionNotFound`.
+    async fn resolve_connection(&self, args: &Value) -> Result<Arc<CacheConnectionHandle>, CacheError> {
+        let conn_key = (self.backend.clone(), self.alias.clone());
+        if let Some(existing) = CONNECTION_REGISTRY.get(&conn_key) {
+            return Ok(Arc::clone(existing.value()));
+        }
+        match ConnectConfig::from_args(&self.backend, args)? {
+            Some(config) => {
+                let handle = self.open_connection(&config).await?;
+                CONNECTION_REGISTRY.insert(conn_key, Arc::clone(&handle));
+                Ok(handle)
+            }
+            None => Err(CacheError::ConnectionNotFound {
+                backend: self.backend.as_str().to_string(),
+                alias: self.alias.clone(),
+            }),
+        }
+    }
+
+    /// Opens and verifies a client for `config`, bounded by its timeout.
+    async fn open_connection(&self, config: &ConnectConfig) -> Result<Arc<CacheConnectionHandle>, CacheError> {
+        let timeout = Duration::from_millis(config.timeout_ms);
+        let client = match self.backend {
+            CacheBackend::Redis => {
+                let client = redis::Client::open(config.url.as_str()).map_err(|e| {
+                    CacheError::InvalidConnectConfig { message: format!("invalid Redis url: {}", e) }
+                })?;
+                let fut = async {
+                    let mut manager = redis::aio::ConnectionManager::new_with_backoff_and_timeouts(
+                        client, 2, 100, 1, timeout, timeout,
+                    )
+                    .await?;
+                    redis::cmd("PING").query_async::<_, String>(&mut manager).await?;
+                    Ok::<_, redis::RedisError>(manager)
+                };
+                let manager = tokio::time::timeout(timeout, fut)
+                    .await
+                    .map_err(|_| CacheError::ConnectFailed {
+                        message: format!("timed out after {}ms connecting to {}", config.timeout_ms, config.endpoint),
+                    })?
+                    .map_err(|e| CacheError::ConnectFailed {
+                        message: format!("Redis connection to {} failed: {}", config.endpoint, e),
+                    })?;
+                CacheClient::Redis(manager)
+            }
+            CacheBackend::Memcached => {
+                let url = config.url.clone();
+                let endpoint = config.endpoint.clone();
+                let task = tokio::task::spawn_blocking(move || {
+                    let client = memcache::Client::connect(url.as_str())?;
+                    client.version()?;
+                    Ok::<_, memcache::MemcacheError>(client)
+                });
+                let client = tokio::time::timeout(timeout, task)
+                    .await
+                    .map_err(|_| CacheError::ConnectFailed {
+                        message: format!("timed out after {}ms connecting to {}", config.timeout_ms, endpoint),
+                    })?
+                    .map_err(|e| CacheError::ConnectFailed {
+                        message: format!("Memcached connect task failed: {}", e),
+                    })?
+                    .map_err(|e| CacheError::ConnectFailed {
+                        message: format!("Memcached connection to {} failed: {}", endpoint, e),
+                    })?;
+                CacheClient::Memcached(client)
+            }
+        };
+        Ok(Arc::new(CacheConnectionHandle::new(
+            self.backend.clone(),
+            self.alias.clone(),
+            client,
+        )))
     }
 
     /// Get operation for cache
@@ -1557,12 +1539,7 @@ HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache
         let config = GetConfig::from_args(&args)?;
 
         // Look up connection
-        let conn_key = (self.backend.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&conn_key)
-            .ok_or_else(|| CacheError::ConnectionNotFound {
-                backend: self.backend.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        let handle = self.resolve_connection(&args).await?;
 
         // Execute get operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
@@ -1762,12 +1739,7 @@ HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache
         let config = SetConfig::from_args(&args)?;
 
         // Look up connection
-        let conn_key = (self.backend.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&conn_key)
-            .ok_or_else(|| CacheError::ConnectionNotFound {
-                backend: self.backend.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        let handle = self.resolve_connection(&args).await?;
 
         // Execute set operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
@@ -1786,12 +1758,7 @@ HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache
         let config = DeleteConfig::from_args(&args)?;
 
         // Look up connection
-        let conn_key = (self.backend.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&conn_key)
-            .ok_or_else(|| CacheError::ConnectionNotFound {
-                backend: self.backend.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        let handle = self.resolve_connection(&args).await?;
 
         // Execute delete operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
@@ -2182,12 +2149,7 @@ HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache
         }
 
         // Look up connection
-        let conn_key = (self.backend.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&conn_key)
-            .ok_or_else(|| CacheError::ConnectionNotFound {
-                backend: self.backend.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        let handle = self.resolve_connection(&args).await?;
 
         // Execute incr operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
@@ -2345,12 +2307,7 @@ HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache
         let config = ExistsConfig::from_args(&args)?;
 
         // Look up connection
-        let conn_key = (self.backend.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&conn_key)
-            .ok_or_else(|| CacheError::ConnectionNotFound {
-                backend: self.backend.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        let handle = self.resolve_connection(&args).await?;
 
         // Execute exists operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
@@ -2384,12 +2341,7 @@ HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache
         let config = KeysConfig::from_args(&args)?;
 
         // Look up connection
-        let conn_key = (self.backend.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&conn_key)
-            .ok_or_else(|| CacheError::ConnectionNotFound {
-                backend: self.backend.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        let handle = self.resolve_connection(&args).await?;
 
         // Execute keys operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
@@ -2704,12 +2656,7 @@ HELP: TTL VERB\n\nCheck time remaining before key expiration.\n\nUSAGE:\n  cache
         let config = TtlConfig::from_args(&args)?;
 
         // Look up connection
-        let conn_key = (self.backend.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&conn_key)
-            .ok_or_else(|| CacheError::ConnectionNotFound {
-                backend: self.backend.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        let handle = self.resolve_connection(&args).await?;
 
         // Execute TTL operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
@@ -2912,15 +2859,19 @@ impl Handle for CacheHandle {
         &["connect", "get", "set", "del", "incr", "exists", "keys", "ttl", "help", "--help", "-h"]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&CACHE_HELP)
+    }
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Check for help requests first
-        if let Some(status) = Self::check_and_display_help(verb, io)? {
+        if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
         
-        // Create tokio runtime for async operations
-        let rt = tokio::runtime::Runtime::new()
-            .context("failed to create tokio runtime")?;
+        // Use the process-wide runtime so registered connections (whose
+        // background tasks live on this runtime) stay usable across calls.
+        let rt = cache_runtime()?;
 
         // Convert Args to JSON Value
         let json_args = {
@@ -3049,6 +3000,7 @@ impl Handle for CacheHandle {
 /// Register cache:// scheme with the registry
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("cache", |u| Ok(Box::new(CacheHandle::from_url(u.clone())?)));
+    reg.set_probe_url("cache", "cache://redis/resh-help-probe");
 }
 
 #[cfg(test)]
@@ -5633,6 +5585,119 @@ mod tests {
             // Error message should be clear about why it's not supported
             assert!(message.contains("unsupported"));
             assert!(message.contains("backend"));
+        }
+    }
+
+    mod connect_tests {
+        use super::*;
+        use std::io::Cursor;
+
+        fn call_out(handle: &CacheHandle, verb: &str, args: &[(&str, &str)]) -> (Status, String) {
+            let args: Args = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let (mut i, mut o, mut e) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()), Cursor::new(Vec::new()));
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let st = handle.call(verb, &args, &mut io).unwrap();
+            (st, String::from_utf8(o.into_inner()).unwrap())
+        }
+
+        fn handle(url: &str) -> CacheHandle {
+            CacheHandle::from_url(Url::parse(url).unwrap()).unwrap()
+        }
+
+        #[test]
+        fn connect_config_absent_without_url() {
+            assert_eq!(ConnectConfig::from_args(&CacheBackend::Redis, &json!({"key": "a"})).unwrap(), None);
+        }
+
+        #[test]
+        fn connect_config_redis_url() {
+            let c = ConnectConfig::from_args(
+                &CacheBackend::Redis,
+                &json!({"url": "redis://:secret@cache.example:6380/2"}),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(c.url, "redis://:secret@cache.example:6380/2");
+            assert_eq!(c.endpoint, "cache.example:6380");
+            assert_eq!(c.timeout_ms, DEFAULT_CONNECT_TIMEOUT_MS);
+        }
+
+        #[test]
+        fn connect_config_memcached_rewrites_scheme_and_timeout() {
+            let c = ConnectConfig::from_args(
+                &CacheBackend::Memcached,
+                &json!({"url": "memcached://mc.example:11211", "connect_timeout_ms": "2500"}),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(c.url.starts_with("memcache://mc.example:11211"), "{}", c.url);
+            assert!(c.url.contains("connect_timeout=2.5"), "{}", c.url);
+            assert_eq!(c.endpoint, "mc.example:11211");
+            assert_eq!(c.timeout_ms, 2500);
+        }
+
+        #[test]
+        fn connect_config_rejects_wrong_scheme_and_bad_timeout() {
+            let e = ConnectConfig::from_args(&CacheBackend::Redis, &json!({"url": "memcache://h:1"})).unwrap_err();
+            assert!(matches!(e, CacheError::InvalidConnectConfig { .. }));
+            let e = ConnectConfig::from_args(&CacheBackend::Memcached, &json!({"url": "redis://h:1"})).unwrap_err();
+            assert!(matches!(e, CacheError::InvalidConnectConfig { .. }));
+            let e = ConnectConfig::from_args(
+                &CacheBackend::Redis,
+                &json!({"url": "redis://h:1", "connect_timeout_ms": "soon"}),
+            )
+            .unwrap_err();
+            assert!(matches!(e, CacheError::InvalidConnectConfig { .. }));
+            let e = ConnectConfig::from_args(&CacheBackend::Redis, &json!({"url": ""})).unwrap_err();
+            assert!(matches!(e, CacheError::InvalidConnectConfig { .. }));
+        }
+
+        #[test]
+        fn connect_requires_url() {
+            let h = handle("cache://redis/resh-test-connect-requires-url");
+            let (st, out) = call_out(&h, "connect", &[]);
+            assert!(!st.ok);
+            assert!(out.contains("cache.invalid_connect_config"), "{}", out);
+            assert!(CONNECTION_REGISTRY
+                .get(&(CacheBackend::Redis, "resh-test-connect-requires-url".to_string()))
+                .is_none());
+        }
+
+        #[test]
+        fn verb_without_url_or_connection_reports_not_found() {
+            let h = handle("cache://redis/resh-test-no-conn");
+            let (st, out) = call_out(&h, "get", &[("key", "a")]);
+            assert!(!st.ok);
+            assert!(out.contains("cache.connection_not_found"), "{}", out);
+            assert!(out.contains("url="), "{}", out);
+        }
+
+        #[test]
+        fn verb_with_invalid_url_fails_before_connecting() {
+            let h = handle("cache://memcached/resh-test-bad-url");
+            let (st, out) = call_out(&h, "get", &[("key", "a"), ("url", "redis://h:1")]);
+            assert!(!st.ok);
+            assert!(out.contains("cache.invalid_connect_config"), "{}", out);
+        }
+
+        #[test]
+        fn in_url_help_forms_render_approved_help() {
+            let h = handle("cache://redis/main");
+            for verb in ["help", "--help", "-h"] {
+                let (st, out) = call_out(&h, verb, &[]);
+                assert!(st.ok);
+                assert!(out.starts_with("Handle: cache"), "{}", out);
+            }
+            let (_, out) = call_out(&h, "--help=get", &[]);
+            assert!(out.starts_with("Handle: cache\nVerb: get"), "{}", out);
+            let (_, out) = call_out(&h, "help", &[("verb", "connect")]);
+            assert!(out.contains("Verb: connect"), "{}", out);
+            let (st, out) = call_out(&handle("cache://--help"), "get", &[]);
+            assert!(st.ok);
+            assert!(out.starts_with("Handle: cache"), "{}", out);
+            // a hyphenated alias is a normal target, not a help request
+            let (st, _) = call_out(&handle("cache://redis/my-hosts"), "get", &[("key", "a")]);
+            assert!(!st.ok);
         }
     }
 }

@@ -220,7 +220,6 @@ _book/
 # Custom resh-specific
 
 ## Handle test fixtures
-/tests/*
 /tests/fixtures/temp/
 /tests/fixtures/*.tmp
 
@@ -233,7 +232,10 @@ _book/
 /examples/*
 /releases
 /releases/*
-test*
+# Scratch files at the repository root (test.csr, test_output.json, ...),
+# but not the tests/ directory.
+/test*
+!/tests/
 debug_*
 build_*
 build-release.sh

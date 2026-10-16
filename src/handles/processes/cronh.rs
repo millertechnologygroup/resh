@@ -12,995 +12,274 @@ use std::str::FromStr;
 use url::Url;
 
 use crate::core::{
+    help::{self, HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
 
-// ===========================================================================
-// Help text for --help command
-// ===========================================================================
-
-const CRON_HELP_TEXT: &str = "
-RESOURCE SHELL - CRON HANDLE
-============================
-
-USAGE:
-  cron://host.VERB(arguments)
-
-DESCRIPTION:
-  The cron handle provides complete management of scheduled tasks on your system.
-  Works with both traditional Unix cron jobs and modern systemd timers. List
-  existing scheduled tasks, create new jobs, remove unwanted tasks, and enable
-  or disable jobs without deleting them. Supports pattern matching, dry-run
-  mode, and automatic backend selection. Perfect for system automation, periodic
-  backups, monitoring, maintenance tasks, and scheduled operations.
-
-URL FORMAT:
-  cron://host.VERB(arguments)
-  cron://local.list
-  cron://system.add(schedule=\"0 2 * * *\",command=\"/usr/bin/backup\")
-
-  The host part can be any name (e.g., \"local\", \"system\", \"scheduler\").
-  The VERB specifies the operation to perform.
-
-VERBS (5 total):
-
-  Task Discovery:
-    list            List all scheduled tasks (cron jobs and systemd timers)
-
-  Task Creation:
-    add             Create new scheduled tasks
-
-  Task Removal:
-    rm              Remove scheduled tasks
-
-  Task Control:
-    enable          Enable disabled tasks (uncomment or start timers)
-    disable         Disable tasks without removing (comment out or stop timers)
-
-EXAMPLES:
-
-  List Scheduled Tasks (list):
-    # List all current user's jobs
-    cron://local.list
-
-    # List with specific scope
-    cron://local.list(scope=\"current\")
-
-    # List system-wide jobs
-    cron://local.list(scope=\"system\")
-
-    # List all jobs (user and system)
-    cron://local.list(scope=\"all\")
-
-    # List specific user's jobs
-    cron://local.list(scope=\"user\",users=\"alice,bob\")
-
-    # Include system jobs
-    cron://local.list(include_system=true)
-
-    # List with human-readable output
-    cron://local.list(human=true)
-
-    # Show raw crontab content
-    cron://local.list(raw=true)
-
-    # Show file paths
-    cron://local.list(paths=true)
-
-    # Limit results
-    cron://local.list(limit=10)
-
-    # List only cron jobs (no systemd)
-    cron://local.list(backend=\"cron\")
-
-    # List only systemd timers
-    cron://local.list(backend=\"systemd\")
-
-    # List from both backends
-    cron://local.list(backend=\"both\")
-
-  Add Scheduled Tasks (add):
-    # Simple daily backup at 2 AM
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\")
-
-    # With job ID and description
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",id=\"daily-backup\",description=\"Daily system backup\")
-
-    # Run every 5 minutes
-    cron://local.add(schedule=\"*/5 * * * *\",command=\"/usr/local/bin/monitor\")
-
-    # Weekly backup on Sunday
-    cron://local.add(schedule=\"0 0 * * 0\",command=\"/usr/local/bin/backup --full\",id=\"weekly-backup\")
-
-    # Hourly during business hours
-    cron://local.add(schedule=\"0 9-17 * * 1-5\",command=\"/usr/local/bin/check-status\")
-
-    # Specify backend explicitly
-    cron://local.add(schedule=\"0 3 * * *\",command=\"/usr/local/bin/cleanup\",backend=\"cron\")
-
-    # Use systemd timer
-    cron://local.add(schedule=\"0 4 * * *\",command=\"/usr/local/bin/backup\",backend=\"systemd\")
-
-    # Auto backend selection
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",backend=\"auto\")
-
-    # With specific scope
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",scope=\"current\")
-
-    # System-wide job
-    cron://local.add(schedule=\"0 3 * * *\",command=\"/usr/local/bin/cleanup\",scope=\"system\")
-
-    # User-specific job
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",scope=\"user\",user=\"alice\")
-
-    # Prevent duplicates
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",allow_duplicate=false)
-
-    # Allow duplicates
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",allow_duplicate=true)
-
-    # Dry run (test without creating)
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",dry_run=true)
-
-    # With environment variables (cron)
-    cron://local.add(schedule=\"0 2 * * *\",command=\"PATH=/usr/local/bin:/usr/bin /usr/local/bin/backup\")
-
-    # Complex command
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup --full --compress --output=/backups\")
-
-    # Command with pipe
-    cron://local.add(schedule=\"*/10 * * * *\",command=\"/usr/local/bin/check-disk | /usr/local/bin/alert\")
-
-  Remove Scheduled Tasks (rm):
-    # Remove by ID
-    cron://local.rm(id=\"daily-backup\")
-
-    # Remove by exact schedule and command
-    cron://local.rm(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\")
-
-    # Remove by command pattern
-    cron://local.rm(match_command=\"backup\")
-
-    # Remove by comment pattern
-    cron://local.rm(match_comment=\"daily\")
-
-    # Remove with specific backend
-    cron://local.rm(id=\"backup-job\",backend=\"cron\")
-
-    # Remove from both backends
-    cron://local.rm(match_command=\"backup\",backend=\"both\")
-
-    # Remove with scope
-    cron://local.rm(id=\"backup-job\",scope=\"current\")
-
-    # Remove system-wide
-    cron://local.rm(match_command=\"cleanup\",scope=\"system\")
-
-    # Remove from specific user
-    cron://local.rm(match_command=\"backup\",scope=\"user\",user=\"alice\")
-
-    # Dry run (test without removing)
-    cron://local.rm(id=\"daily-backup\",dry_run=true)
-
-    # Remove all matching backup jobs
-    cron://local.rm(match_command=\"backup\",backend=\"both\",scope=\"all\")
-
-    # Remove by exact match
-    cron://local.rm(schedule=\"*/5 * * * *\",command=\"/usr/local/bin/monitor\")
-
-    # Remove multiple patterns
-    cron://local.rm(match_command=\"backup|cleanup|monitor\")
-
-  Enable Disabled Tasks (enable):
-    # Enable by ID
-    cron://local.enable(id=\"backup-job\",backend=\"cron\")
-
-    # Enable by schedule and command
-    cron://local.enable(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",backend=\"cron\")
-
-    # Enable by command pattern
-    cron://local.enable(match_command=\"backup\",backend=\"cron\")
-
-    # Enable with specific backend
-    cron://local.enable(id=\"backup-job\",backend=\"systemd\")
-
-    # Enable from both backends
-    cron://local.enable(match_command=\"backup\",backend=\"both\")
-
-    # Enable with scope
-    cron://local.enable(id=\"backup-job\",scope=\"current\")
-
-    # Enable system-wide
-    cron://local.enable(match_command=\"cleanup\",scope=\"system\")
-
-    # Dry run (test without enabling)
-    cron://local.enable(id=\"backup-job\",dry_run=true)
-
-    # Enable all disabled backup jobs
-    cron://local.enable(match_command=\"backup\",backend=\"both\",scope=\"all\")
-
-    # Enable by comment pattern
-    cron://local.enable(match_comment=\"daily\",backend=\"cron\")
-
-  Disable Active Tasks (disable):
-    # Disable by ID
-    cron://local.disable(id=\"backup-job\",backend=\"cron\")
-
-    # Disable by schedule and command
-    cron://local.disable(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",backend=\"cron\")
-
-    # Disable by command pattern
-    cron://local.disable(match_command=\"backup\",backend=\"cron\")
-
-    # Disable with specific backend
-    cron://local.disable(id=\"backup-job\",backend=\"systemd\")
-
-    # Disable from both backends
-    cron://local.disable(match_command=\"backup\",backend=\"both\")
-
-    # Disable with scope
-    cron://local.disable(id=\"backup-job\",scope=\"current\")
-
-    # Disable system-wide
-    cron://local.disable(match_command=\"cleanup\",scope=\"system\")
-
-    # Dry run (test without disabling)
-    cron://local.disable(id=\"backup-job\",dry_run=true)
-
-    # Stop systemd timer immediately
-    cron://local.disable(id=\"backup-job\",backend=\"systemd\",stop_now=true)
-
-    # Don't stop running timer
-    cron://local.disable(id=\"backup-job\",backend=\"systemd\",stop_now=false)
-
-    # Disable all backup jobs
-    cron://local.disable(match_command=\"backup\",backend=\"both\",scope=\"all\")
-
-    # Disable by comment pattern
-    cron://local.disable(match_comment=\"hourly\",backend=\"cron\")
-
-LIST ARGUMENTS:
-  scope=SCOPE            What jobs to list (default: current)
-                         Values: current, user, system, all
-  users=USERS            Comma-separated list of users (for scope=user)
-  include_system=BOOL    Include system jobs (default: false)
-  backend=BACKEND        Which backend to check (default: both)
-                         Values: cron, systemd, both
-  human=BOOL             Human-readable output (default: false)
-  raw=BOOL               Show raw crontab content (default: false)
-  paths=BOOL             Show file paths (default: false)
-  limit=NUMBER           Maximum number of results
-
-ADD ARGUMENTS:
-  schedule=SCHEDULE      Cron schedule expression (required)
-                         Format: \"minute hour day month weekday\"
-                         Example: \"0 2 * * *\" (daily at 2 AM)
-  command=COMMAND        Command to execute (required)
-  id=ID                  Unique identifier for the job
-  description=DESC       Human-readable description
-  backend=BACKEND        Which system to use (default: auto)
-                         Values: cron, systemd, auto
-  scope=SCOPE            Where to create job (default: current)
-                         Values: current, user, system
-  user=USER              User for scope=user
-  allow_duplicate=BOOL   Allow duplicate jobs (default: true)
-  dry_run=BOOL           Test without creating (default: false)
-
-RM ARGUMENTS:
-  id=ID                  Job identifier to remove
-  schedule=SCHEDULE      Exact schedule to match
-  command=COMMAND        Exact command to match
-  match_command=PATTERN  Pattern to match in command
-  match_comment=PATTERN  Pattern to match in comments
-  backend=BACKEND        Which backend to check (default: both)
-                         Values: cron, systemd, both
-  scope=SCOPE            Where to look (default: current)
-                         Values: current, user, system, all
-  user=USER              User for scope=user
-  dry_run=BOOL           Test without removing (default: false)
-
-ENABLE ARGUMENTS:
-  id=ID                  Job identifier to enable
-  schedule=SCHEDULE      Exact schedule to match
-  command=COMMAND        Exact command to match
-  match_command=PATTERN  Pattern to match in command
-  match_comment=PATTERN  Pattern to match in comments
-  backend=BACKEND        Which backend to use (default: both)
-                         Values: cron, systemd, both
-  scope=SCOPE            Where to look (default: current)
-                         Values: current, user, system, all
-  user=USER              User for scope=user
-  dry_run=BOOL           Test without enabling (default: false)
-
-DISABLE ARGUMENTS:
-  id=ID                  Job identifier to disable
-  schedule=SCHEDULE      Exact schedule to match
-  command=COMMAND        Exact command to match
-  match_command=PATTERN  Pattern to match in command
-  match_comment=PATTERN  Pattern to match in comments
-  backend=BACKEND        Which backend to use (default: both)
-                         Values: cron, systemd, both
-  scope=SCOPE            Where to look (default: current)
-                         Values: current, user, system, all
-  user=USER              User for scope=user
-  stop_now=BOOL          Stop systemd timers immediately (default: true)
-  dry_run=BOOL           Test without disabling (default: false)
-
-CRON SCHEDULE FORMAT:
-
-  Cron schedules use 5 fields separated by spaces:
-
-    * * * * *
-    | | | | |
-    | | | | +-- Day of Week (0-6, Sunday=0 or 7)
-    | | | +---- Month (1-12)
-    | | +------ Day of Month (1-31)
-    | +-------- Hour (0-23)
-    +---------- Minute (0-59)
-
-  Special characters:
-    *           Any value (wildcard)
-    ,           List separator (e.g., \"1,3,5\")
-    -           Range (e.g., \"9-17\" for 9 AM to 5 PM)
-    /           Step values (e.g., \"*/5\" for every 5 units)
-
-  Field ranges:
-    Minute      0-59
-    Hour        0-23 (0 = midnight, 12 = noon, 23 = 11 PM)
-    Day         1-31
-    Month       1-12 (or Jan-Dec)
-    Weekday     0-7 (0 or 7 = Sunday, 1 = Monday, 6 = Saturday)
-
-  Common examples:
-    0 2 * * *               Daily at 2:00 AM
-    */5 * * * *             Every 5 minutes
-    0 */2 * * *             Every 2 hours
-    0 0 * * 0               Weekly on Sunday at midnight
-    0 0 1 * *               Monthly on the 1st at midnight
-    0 9-17 * * 1-5          Hourly 9 AM-5 PM, Monday-Friday
-    30 4 1,15 * *           1st and 15th of month at 4:30 AM
-    0 0 * * 1               Every Monday at midnight
-    0 6 * * 1-5             Weekdays at 6:00 AM
-    */10 9-18 * * 1-5       Every 10 min, 9 AM-6 PM, weekdays
-    0 22 * * *              Daily at 10:00 PM
-    15 2,14 * * *           Daily at 2:15 AM and 2:15 PM
-
-  Special strings (cron backend only):
-    @reboot                 Run at system startup
-    @yearly                 Run once a year (0 0 1 1 *)
-    @annually               Same as @yearly
-    @monthly                Run once a month (0 0 1 * *)
-    @weekly                 Run once a week (0 0 * * 0)
-    @daily                  Run once a day (0 0 * * *)
-    @midnight               Same as @daily
-    @hourly                 Run once an hour (0 * * * *)
-
-BACKENDS:
-
-  The cron handle supports two backends for managing scheduled tasks:
-
-  cron (Traditional Unix Cron):
-    • Uses traditional Unix cron system
-    • Jobs stored in user crontabs or system files
-    • Simple and widely supported
-    • Works on all Unix-like systems
-    • Good for simple scheduled tasks
-    • Limited to time-based scheduling
-    • Locations: ~/.crontab, /etc/crontab, /etc/cron.d/
-
-  systemd (Modern Systemd Timers):
-    • Uses systemd timer and service units
-    • More powerful scheduling options
-    • Better logging and monitoring via journalctl
-    • Dependency management with other services
-    • Can trigger on events, not just time
-    • Requires systemd (most modern Linux)
-    • Locations: ~/.config/systemd/user/, /etc/systemd/system/
-
-  auto (Automatic Selection):
-    • Try systemd first if available
-    • Fall back to cron if systemd unavailable
-    • Choose based on task requirements
-    • Recommended for portability
-
-  Backend comparison:
-    Feature              Cron    Systemd
-    Time-based           ✓       ✓
-    Event-based          ✗       ✓
-    Logging              Basic   Rich
-    Dependencies         ✗       ✓
-    Resource limits      ✗       ✓
-    Monitoring           Basic   Advanced
-    Portability          High    Medium
-
-SCOPE VALUES:
-
-  Scope determines where jobs are managed:
-
-  current:
-    • Current user's jobs only
-    • Safe for normal users
-    • No root privileges required
-    • Default scope
-
-  user:
-    • Specific user's jobs
-    • Requires user parameter
-    • May require privileges
-
-  system:
-    • System-wide jobs
-    • Usually requires root
-    • Affects all users
-    • /etc/crontab, /etc/cron.d/
-
-  all:
-    • All jobs (user + system)
-    • Comprehensive view
-    • Useful for auditing
-
-OUTPUT FORMATS:
-
-  list output:
+/// Metadata for `resh cron --help` and `resh cron <verb> --help`.
+static CRON_HELP: HandleHelp = HandleHelp {
+    description: "The cron handle manages scheduled jobs as crontab entries, through the \
+        crontab command, or as systemd service and timer units, through systemctl. It can \
+        list, add, remove, enable, and disable jobs on the local host. The host part of the \
+        URL is only a label and is ignored, such as cron://local.",
+    usage: "resh cron://<label>.<verb>[(key=value,...)]",
+    verbs: &[
+        VerbHelp {
+            name: "list",
+            definition: "Lists crontab entries for the chosen scope as JSON or text, with \
+                optional filters, sorting, and next-run times (systemd timers are not listed).",
+            detail: Some(VerbDetail {
+                usage: "resh cron://<label>.list [scope=current|user|system|all]\n  \
+                    [users=<user,...>] [include_system=true|false]\n  \
+                    [include_files=<path,...>] [state=all|enabled|disabled]\n  \
+                    [match_command=<text>] [match_comment=<text>] [match_user=<text>]\n  \
+                    [match_source=<text>] [include_next_run=true|false]\n  \
+                    [now_unix=<seconds>] [max_entries=<n>]\n  \
+                    [sort_by=none|user|schedule|command|source] [sort_order=asc|desc]\n  \
+                    [include_raw=true|false] [include_paths=true|false]\n  \
+                    [format=json|text]",
+                example: "resh cron://local.list",
+                example_output: Some(
+                    r#"{
+  "entries": [
     {
-      \"ok\": true,
-      \"timestamp_unix_ms\": 1701234567890,
-      \"scope\": \"current\",
-      \"users\": [\"alice\"],
-      \"include_system\": false,
-      \"truncated\": false,
-      \"entries_total\": 2,
-      \"entries_returned\": 2,
-      \"entries_disabled\": 0,
-      \"entries\": [
-        {
-          \"id\": \"daily-backup\",
-          \"backend\": \"cron\",
-          \"schedule\": \"0 2 * * *\",
-          \"command\": \"/usr/local/bin/backup\",
-          \"description\": \"Daily system backup\",
-          \"enabled\": true,
-          \"location\": {
-            \"scope\": \"current\",
-            \"file\": \"/var/spool/cron/crontabs/alice\",
-            \"user\": \"alice\",
-            \"line_number\": 5
-          }
-        }
-      ]
+      "command": "/opt/backup.sh",
+      "comment_only": false,
+      "enabled": true,
+      "id": "user:alice:crontab:1",
+      "raw_line": "0 2 * * * /opt/backup.sh",
+      "schedule": "0 2 * * *",
+      "schedule_fields": {
+        "day_of_month": "*",
+        "day_of_week": "*",
+        "hour": "2",
+        "minute": "0",
+        "month": "*"
+      },
+      "source": "user",
+      "source_file": null,
+      "source_line": 1,
+      "user": "alice"
     }
+  ],
+  "entries_disabled": 0,
+  "entries_returned": 1,
+  "entries_total": 1,
+  "human": {
+    "summary": "1 cron entries (1 enabled, 0 disabled) from scope 'current'."
+  },
+  "include_system": false,
+  "ok": true,
+  "scope": "current",
+  "timestamp_unix_ms": 1792161012345,
+  "truncated": false,
+  "users": [
+    "alice"
+  ],
+  "warnings": []
+}
 
-  add output:
-    {
-      \"ok\": true,
-      \"timestamp_unix_ms\": 1701234567890,
-      \"backend_used\": \"cron\",
-      \"dry_run\": false,
-      \"duplicate\": false,
-      \"job\": {
-        \"id\": \"daily-backup\",
-        \"backend\": \"cron\",
-        \"schedule\": \"0 2 * * *\",
-        \"command\": \"/usr/local/bin/backup\",
-        \"location\": {
-          \"scope\": \"current\",
-          \"file\": \"/var/spool/cron/crontabs/alice\",
-          \"user\": \"alice\",
-          \"line_added\": 6
-        }
+Shown with --json-pretty. Commented-out jobs appear with enabled false,
+and comment lines appear with comment_only true. scope=user requires
+users, and the match_* filters are case-insensitive substring matches."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "add",
+            definition: "Adds a scheduled job as a crontab line or as a systemd service and \
+                timer pair, preferring systemd when backend is auto.",
+            detail: Some(VerbDetail {
+                usage: "resh cron://<label>.add schedule=<expr> command=<cmd>\n  \
+                    [backend=auto|cron|systemd] [id=<id>] [description=<text>]\n  \
+                    [scope=current|user|system] [user=<name>] [cron_file=<path>]\n  \
+                    [unit_name=<name>] [unit_scope=auto|user|system]\n  \
+                    [allow_duplicate=true|false] [dry_run=true|false]\n  \
+                    [format=json|text] [<option>=<value> ...]",
+                example: "resh cron://local.add schedule=@daily command=/opt/backup.sh backend=cron",
+                example_output: Some(
+                    r#"{
+  "backend_used": "cron",
+  "dry_run": false,
+  "duplicate": false,
+  "job": {
+    "backend": "cron",
+    "command": "/opt/backup.sh",
+    "location": {
+      "file": "/var/spool/cron/alice",
+      "line_added": 3,
+      "scope": "current",
+      "user": "alice"
+    },
+    "next_run_iso8601": "2026-10-17T00:00:00+00:00",
+    "next_run_unix": 1792195200,
+    "schedule": "@daily"
+  },
+  "ok": true,
+  "timestamp_unix_ms": 1792161012345,
+  "warnings": []
+}
+
+Shown for the cron backend with --json-pretty. With dry_run=true nothing
+is written and a preview object holds the line or units to be added."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "enable",
+            definition: "Re-enables matching jobs by uncommenting crontab lines or by \
+                enabling (and by default starting) systemd timers.",
+            detail: Some(VerbDetail {
+                usage: "resh cron://<label>.enable [id=<id>] [schedule=<expr>]\n  \
+                    [command=<cmd>] [match_command=<text>] [match_comment=<text>]\n  \
+                    [unit_name=<name>] [match_unit=<text>] [backend=both|cron|systemd]\n  \
+                    [scope=all|current|user|system] [users=<user,...>]\n  \
+                    [unit_scope=auto|user|system|both] [start_now=true|false]\n  \
+                    [require_match=true|false] [dry_run=true|false] [format=json|text]",
+                example: "resh cron://local.enable match_command=backup backend=cron scope=current",
+                example_output: Some(
+                    r#"{
+  "already_enabled_count": {
+    "cron": 0,
+    "systemd": 0
+  },
+  "backend": "cron",
+  "cron_modified_sources": [
+    "/var/spool/cron/alice"
+  ],
+  "dry_run": false,
+  "enabled": {
+    "cron": [
+      {
+        "command": "/opt/backup.sh",
+        "line_number": 1,
+        "schedule": "0 2 * * *",
+        "source": "/var/spool/cron/alice",
+        "user": "alice",
+        "was_disabled": true
       }
-    }
+    ],
+    "systemd": []
+  },
+  "matched_count": {
+    "cron": 1,
+    "systemd": 0
+  },
+  "ok": true,
+  "systemd_scopes_touched": [],
+  "timestamp_unix_ms": 1792161012345,
+  "warnings": []
+}
 
-  rm output:
-    {
-      \"ok\": true,
-      \"timestamp_unix_ms\": 1701234567890,
-      \"dry_run\": false,
-      \"backend\": \"both\",
-      \"removed\": {
-        \"cron\": [
-          {
-            \"id\": \"daily-backup\",
-            \"schedule\": \"0 2 * * *\",
-            \"command\": \"/usr/local/bin/backup\",
-            \"location\": {
-              \"scope\": \"current\",
-              \"file\": \"/var/spool/cron/crontabs/alice\",
-              \"user\": \"alice\"
-            }
-          }
-        ],
-        \"systemd\": []
-      },
-      \"matched_count\": {
-        \"cron\": 1,
-        \"systemd\": 0
+Shown with --json-pretty. At least one selector (id, schedule, command,
+match_command, match_comment, unit_name, or match_unit) is required.
+match_comment matches the comment line above a job or its inline comment."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "disable",
+            definition: "Disables matching jobs without deleting them by commenting out \
+                crontab lines or by disabling (and by default stopping) systemd timers.",
+            detail: Some(VerbDetail {
+                usage: "resh cron://<label>.disable [id=<id>] [schedule=<expr>]\n  \
+                    [command=<cmd>] [match_command=<text>] [match_comment=<text>]\n  \
+                    [unit_name=<name>] [match_unit=<text>] [backend=both|cron|systemd]\n  \
+                    [scope=all|current|user|system] [users=<user,...>]\n  \
+                    [cron_file=<path>] [unit_scope=auto|user|system|both]\n  \
+                    [stop_now=true|false] [require_match=true|false]\n  \
+                    [dry_run=true|false] [format=json|text]",
+                example: "resh cron://local.disable match_command=backup backend=cron scope=current",
+                example_output: Some(
+                    r#"{
+  "already_disabled_count": {
+    "cron": 0,
+    "systemd": 0
+  },
+  "backend": "cron",
+  "cron_modified_sources": [
+    "/var/spool/cron/alice"
+  ],
+  "disabled": {
+    "cron": [
+      {
+        "command": "/opt/backup.sh",
+        "line_number": 1,
+        "schedule": "0 2 * * *",
+        "source": "/var/spool/cron/alice",
+        "user": "alice",
+        "was_enabled": true
       }
-    }
+    ],
+    "systemd": []
+  },
+  "dry_run": false,
+  "matched_count": {
+    "cron": 1,
+    "systemd": 0
+  },
+  "ok": true,
+  "systemd_scopes_touched": [],
+  "timestamp_unix_ms": 1792161012345,
+  "warnings": []
+}
 
-  enable output:
-    {
-      \"ok\": true,
-      \"timestamp_unix_ms\": 1701234567890,
-      \"dry_run\": false,
-      \"backend\": \"cron\",
-      \"enabled\": {
-        \"cron\": [
-          {
-            \"id\": \"backup-job\",
-            \"schedule\": \"0 2 * * *\",
-            \"command\": \"/usr/local/bin/backup\",
-            \"was_disabled\": true
-          }
-        ]
-      },
-      \"matched_count\": {
-        \"cron\": 1,
-        \"systemd\": 0
-      },
-      \"already_enabled_count\": {
-        \"cron\": 0,
-        \"systemd\": 0
+Shown with --json-pretty. At least one selector (id, schedule, command,
+match_command, match_comment, unit_name, or match_unit) is required.
+match_comment matches the comment line above a job or its inline comment."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "rm",
+            definition: "Removes matching jobs from crontabs and deletes matching systemd \
+                timers, by default along with their unit files.",
+            detail: Some(VerbDetail {
+                usage: "resh cron://<label>.rm [id=<id>] [schedule=<expr>] [command=<cmd>]\n  \
+                    [match_command=<text>] [match_comment=<text>] [unit_name=<name>]\n  \
+                    [match_unit=<text>] [backend=both|cron|systemd]\n  \
+                    [scope=all|current|user|system] [users=<user,...>]\n  \
+                    [unit_scope=auto|user|system|both] [remove_units=true|false]\n  \
+                    [require_match=true|false] [dry_run=true|false] [format=json|text]",
+                example: "resh cron://local.rm id=backup backend=cron scope=current dry_run=true",
+                example_output: Some(
+                    r#"{
+  "backend": "cron",
+  "cron_modified_sources": [
+    "/var/spool/cron/alice"
+  ],
+  "dry_run": true,
+  "matched_count": {
+    "cron": 1,
+    "systemd": 0
+  },
+  "ok": true,
+  "removed": {
+    "cron": [
+      {
+        "command": "/opt/backup.sh",
+        "id": "backup",
+        "line_number": 2,
+        "schedule": "0 2 * * *",
+        "source": "/var/spool/cron/alice",
+        "user": "alice"
       }
-    }
-
-  disable output:
-    {
-      \"ok\": true,
-      \"timestamp_unix_ms\": 1701234567890,
-      \"dry_run\": false,
-      \"backend\": \"cron\",
-      \"disabled\": {
-        \"cron\": [
-          {
-            \"id\": \"backup-job\",
-            \"schedule\": \"0 2 * * *\",
-            \"command\": \"/usr/local/bin/backup\",
-            \"was_enabled\": true
-          }
-        ]
-      },
-      \"matched_count\": {
-        \"cron\": 1,
-        \"systemd\": 0
-      },
-      \"already_disabled_count\": {
-        \"cron\": 0,
-        \"systemd\": 0
-      }
-    }
-
-EXIT CODES:
-  0                      Success
-  1                      General error
-  2                      Invalid arguments
-  3                      Permission denied
-  4                      Job not found
-  5                      Duplicate job
-  6                      Invalid schedule
-  7                      Backend unavailable
-
-ERROR CODES:
-
-  Add errors:
-    cron.add_error             General add error
-    cron.add_missing_schedule  Schedule not provided
-    cron.add_missing_command   Command not provided
-    cron.add_invalid_schedule  Invalid schedule format
-    cron.add_duplicate         Job already exists
-    cron.add_permission_denied Insufficient permissions
-
-  Remove errors:
-    cron.rm_error              General remove error
-    cron.rm_no_selector        No selection criteria provided
-    cron.rm_invalid_backend    Invalid backend specified
-    cron.rm_not_found          No matching jobs found
-    cron.rm_permission_denied  Insufficient permissions
-
-  Enable/Disable errors:
-    cron.enable_error          General enable error
-    cron.disable_error         General disable error
-    cron.modify_not_found      No matching jobs found
-    cron.modify_permission_denied  Insufficient permissions
-
-  List errors:
-    cron.list_error            General list error
-    cron.list_permission_denied    Insufficient permissions
-
-  Backend errors:
-    cron.backend_unavailable   Backend not available
-    cron.backend_error         Backend operation failed
-
-COMMON WORKFLOWS:
-
-  Daily backup at 2 AM:
-    # Add backup job
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",id=\"daily-backup\",description=\"Daily backup\")
-
-    # Verify it was added
-    cron://local.list(match_command=\"backup\")
-
-  Hourly monitoring:
-    # Add monitoring job
-    cron://local.add(schedule=\"0 * * * *\",command=\"/usr/local/bin/monitor\",id=\"hourly-monitor\")
-
-    # Check status
-    cron://local.list(id=\"hourly-monitor\")
-
-  Temporary disable for maintenance:
-    # Disable backup during maintenance
-    cron://local.disable(id=\"daily-backup\")
-
-    # Perform maintenance
-    # ...
-
-    # Re-enable backup
-    cron://local.enable(id=\"daily-backup\")
-
-  Clean up old jobs:
-    # List all jobs first
-    cron://local.list
-
-    # Remove old backup jobs
-    cron://local.rm(match_command=\"old-backup\")
-
-    # Verify removal
-    cron://local.list(match_command=\"backup\")
-
-  Test before applying:
-    # Test adding a job
-    cron://local.add(schedule=\"0 3 * * *\",command=\"/usr/local/bin/cleanup\",dry_run=true)
-
-    # Test removing jobs
-    cron://local.rm(match_command=\"backup\",dry_run=true)
-
-    # Review dry run output, then apply
-    cron://local.rm(match_command=\"backup\")
-
-  Migrate from cron to systemd:
-    # List current cron jobs
-    cron://local.list(backend=\"cron\")
-
-    # Add equivalent systemd timer
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",backend=\"systemd\",id=\"backup-timer\")
-
-    # Test systemd timer works
-    # ...
-
-    # Remove old cron job
-    cron://local.rm(id=\"backup-cron\",backend=\"cron\")
-
-  Bulk operations:
-    # Disable all backup jobs
-    cron://local.disable(match_command=\"backup\",backend=\"both\")
-
-    # Remove all test jobs
-    cron://local.rm(match_comment=\"test\",backend=\"both\")
-
-    # Enable all monitoring jobs
-    cron://local.enable(match_command=\"monitor\",backend=\"both\")
-
-  System-wide job management:
-    # List all system jobs (requires root)
-    cron://local.list(scope=\"system\")
-
-    # Add system-wide cleanup
-    cron://local.add(schedule=\"0 3 * * *\",command=\"/usr/local/sbin/cleanup\",scope=\"system\")
-
-    # Remove system job
-    cron://local.rm(id=\"cleanup\",scope=\"system\")
-
-  Multi-user management:
-    # List jobs for specific users
-    cron://local.list(scope=\"user\",users=\"alice,bob\")
-
-    # Add job for specific user
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",scope=\"user\",user=\"alice\")
-
-  Pattern-based management:
-    # Find all backup-related jobs
-    cron://local.list | grep backup
-
-    # Disable all backup jobs
-    cron://local.disable(match_command=\"backup\")
-
-    # Remove all jobs matching pattern
-    cron://local.rm(match_command=\"backup|cleanup|monitor\")
-
-BEST PRACTICES:
-  • Always use job IDs for easier management
-  • Add descriptive comments to your jobs
-  • Test with dry_run before applying changes
-  • Use meaningful schedule descriptions
-  • Keep commands simple or use scripts
-  • Use absolute paths in commands
-  • Set appropriate PATH in crontab if needed
-  • Redirect output to logs (>> /var/log/job.log 2>&1)
-  • Use backend=auto for portability
-  • Prefer systemd for complex scheduling
-  • Use cron for simple time-based tasks
-  • Document your scheduled tasks
-  • Review jobs periodically with list verb
-  • Remove unused jobs to reduce clutter
-  • Use disable instead of rm for temporary stops
-  • Test jobs manually before scheduling
-  • Monitor job execution logs
-  • Use scope=current for user jobs
-  • Require root only when necessary
-  • Use match_command for pattern-based operations
-  • Verify removal with dry_run first
-  • Keep backup of crontab before major changes
-  • Use systemd for jobs needing dependencies
-  • Set resource limits for systemd jobs
-  • Use appropriate schedule granularity
-  • Avoid overlapping job executions
-  • Handle job failures gracefully
-  • Use locking for non-concurrent jobs
-  • Consider time zones for scheduled tasks
-  • Test schedule expressions with cron tools
-
-SCHEDULE DESIGN TIPS:
-  • Start with less frequent schedules
-  • Avoid scheduling all jobs at midnight
-  • Spread load across different times
-  • Use prime numbers for intervals (*/7, */13)
-  • Consider business hours for user-facing tasks
-  • Use off-peak hours for resource-intensive jobs
-  • Account for daylight saving time changes
-  • Test schedule expressions before deploying
-  • Document why each schedule was chosen
-  • Review and optimize schedules periodically
-  • Use @reboot sparingly (system startup only)
-  • Avoid too-frequent schedules (< 1 minute)
-  • Consider job runtime when scheduling
-  • Use randomization for distributed systems
-  • Coordinate schedules across systems
-
-PATTERN MATCHING:
-
-  The cron handle supports pattern matching for flexible job selection:
-
-  Exact match:
-    id=\"backup-job\"                Match exact ID
-    schedule=\"0 2 * * *\"           Match exact schedule
-    command=\"/usr/local/bin/backup\"    Match exact command
-
-  Pattern match:
-    match_command=\"backup\"         Contains \"backup\"
-    match_command=\"backup|cleanup\" Contains \"backup\" OR \"cleanup\"
-    match_comment=\"daily\"          Comment contains \"daily\"
-
-  Combining patterns:
-    # Remove all backup jobs with \"old\" in comment
-    cron://local.rm(match_command=\"backup\",match_comment=\"old\")
-
-    # Disable all jobs matching multiple patterns
-    cron://local.disable(match_command=\"backup|cleanup|monitor\")
-
-PERMISSIONS:
-
-  Different operations require different permission levels:
-
-  Current user scope:
-    • list: No special permissions
-    • add: User can modify own crontab
-    • rm: User can remove own jobs
-    • enable/disable: User can modify own jobs
-
-  System scope:
-    • All operations typically require root
-    • System crontab: /etc/crontab
-    • System directories: /etc/cron.d/
-
-  Systemd:
-    • User timers: ~/.config/systemd/user/
-    • System timers: /etc/systemd/system/ (requires root)
-
-  Permission errors:
-    • code: cron.add_permission_denied
-    • message: \"Insufficient permissions\"
-
-SECURITY CONSIDERATIONS:
-  • Never include sensitive data in commands
-  • Use secure script files instead of inline commands
-  • Protect script files with proper permissions (chmod 700)
-  • Validate input before scheduling
-  • Avoid running jobs as root unless necessary
-  • Use sudoers file for privilege escalation
-  • Audit scheduled tasks regularly
-  • Monitor for unauthorized job additions
-  • Review system-wide jobs frequently
-  • Use job IDs for auditability
-  • Log all job executions
-  • Restrict access to crontab files
-  • Use systemd for better isolation
-  • Set resource limits on jobs
-  • Implement job execution timeouts
-  • Validate job output and errors
-  • Monitor for job failures
-  • Use secure PATH in crontabs
-  • Avoid environment variable injection
-  • Sanitize user input in commands
-
-TROUBLESHOOTING:
-
-  Job not running:
-    • Check if job is enabled
-    • Verify schedule is correct
-    • Check command path is absolute
-    • Review job logs
-    • Test command manually
-    • Check PATH and environment
-
-  Permission denied:
-    • Check file permissions
-    • Verify scope is appropriate
-    • Use sudo for system jobs
-    • Check crontab file ownership
-
-  Schedule not working:
-    • Validate cron expression
-    • Check for syntax errors
-    • Test with cron expression validators
-    • Verify timezone settings
-
-  Job runs but fails:
-    • Check command output
-    • Redirect stderr to log
-    • Test command in terminal
-    • Verify all dependencies
-    • Check environment variables
-
-  Systemd timer not triggering:
-    • Check timer status: systemctl status name.timer
-    • Check timer list: systemctl list-timers
-    • Review timer logs: journalctl -u name.timer
-    • Verify service unit exists
-    • Check timer OnCalendar expression
-
-  Cannot find job:
-    • Verify correct backend
-    • Check scope setting
-    • Use list to see all jobs
-    • Check job ID or pattern
-
-  Duplicate job error:
-    • Set allow_duplicate=true
-    • Remove existing job first
-    • Use different job ID
-
-  Common mistakes:
-    • Forgetting schedule quotes
-    • Wrong cron expression syntax
-    • Relative paths in commands
-    • Missing environment variables
-    • Incorrect scope or backend
-
-DEBUGGING:
-
-  Enable verbose output:
-    # Use raw output to see crontab content
-    cron://local.list(raw=true)
-
-    # Show file paths
-    cron://local.list(paths=true)
-
-  Test with dry run:
-    # Test add without creating
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup\",dry_run=true)
-
-    # Test remove without deleting
-    cron://local.rm(id=\"backup-job\",dry_run=true)
-
-  Check job status:
-    # List specific job
-    cron://local.list(id=\"backup-job\")
-
-    # List by pattern
-    cron://local.list(match_command=\"backup\")
-
-  Verify schedule:
-    # Use online cron validators
-    # https://crontab.guru/
-
-  Check logs:
-    # Cron logs (varies by system)
-    tail -f /var/log/cron
-    tail -f /var/log/syslog | grep CRON
-
-    # Systemd timer logs
-    journalctl -u name.timer -f
-    journalctl -u name.service -f
-
-PLATFORM SUPPORT:
-
-  Linux:
-    • Full support for cron and systemd
-    • Most common platform
-    • Both user and system jobs
-
-  macOS:
-    • Cron support
-    • No systemd (uses launchd instead)
-    • System and user jobs
-
-  BSD:
-    • Cron support
-    • No systemd
-    • Traditional cron only
-
-  Windows:
-    • No native cron or systemd
-    • Use Windows Task Scheduler instead
-    • Not supported by cron handle
-
-PERFORMANCE CONSIDERATIONS:
-  • List operations scan crontab files and systemd units
-  • Large numbers of jobs may slow list operations
-  • Use scope filters to limit search space
-  • Pattern matching may scan all jobs
-  • Systemd operations may require DBus calls
-  • File I/O for crontab modifications
-  • Consider job execution overhead
-  • Avoid too-frequent schedules
-  • Monitor system load from scheduled jobs
-
-LIMITATIONS:
-  • No Windows Task Scheduler support
-  • Cannot modify running job execution
-  • No job execution history (use logs)
-  • Pattern matching is substring-based
-  • No advanced cron features (CRON_TZ, etc.)
-  • Systemd calendar expressions not fully supported
-  • No job priority management
-  • Cannot set job timeouts directly (use command wrapper)
-  • No built-in job dependencies (use systemd for this)
-  • No automatic job migration between backends
-  • Cannot edit jobs in-place (must remove and re-add)
-
-INTEGRATION WITH OTHER HANDLES:
-
-  With file handle:
-    # Create script from template
-    file:///usr/local/bin/backup.sh.create(content=\"#!/bin/bash\\nbackup command\")
-
-    # Schedule it
-    cron://local.add(schedule=\"0 2 * * *\",command=\"/usr/local/bin/backup.sh\")
-
-  With log handle:
-    # Schedule log rotation
-    cron://local.add(schedule=\"0 0 * * *\",command=\"log://rotate\")
-
-  With backup handle:
-    # Schedule backup creation
-    cron://local.add(schedule=\"0 2 * * *\",command=\"resh backup://data.create\")
-
-  With event handle:
-    # Trigger events on schedule
-    cron://local.add(schedule=\"*/5 * * * *\",command=\"resh event://emit(topic=heartbeat)\")
-
-  With exec handle:
-    # Schedule command execution
-    cron://local.add(schedule=\"0 3 * * *\",command=\"resh exec://cleanup-temp\")
-
-MORE INFO:
-  For complete documentation of cron handle operations:
-  https://github.com/[your-org]/resource-shell/docs/Process_ServiceManagement/cron.md
-
-  Cron format documentation:
-  https://man7.org/linux/man-pages/man5/crontab.5.html
-  https://crontab.guru/ (schedule expression tester)
-
-  Systemd timer documentation:
-  https://www.freedesktop.org/software/systemd/man/systemd.timer.html
-  https://www.freedesktop.org/software/systemd/man/systemd.time.html
-
-  Cron best practices:
-  https://crontab.guru/tips.html
-
-  Use 'cron:// --help=VERB' for detailed help on a specific verb.
-";
+    ],
+    "systemd": []
+  },
+  "systemd_scopes_touched": [],
+  "timestamp_unix_ms": 1792161012345,
+  "warnings": []
+}
+
+Shown with --json-pretty. With dry_run=true the matches are reported but
+nothing is changed; at least one selector is required."#,
+                ),
+            }),
+        },
+    ],
+};
 
 // ===========================================================================
 // CronHandle - Main handle struct
@@ -1023,30 +302,17 @@ impl CronHandle {
         Ok(Self::new(alias, provider))
     }
 
-    fn list_verb(&self, _args: &Args) -> Result<String> {
-        let options = CronListOptions {
-            scope: "current".to_string(),
-            users: Vec::new(),
-            include_system: false,
-            include_files: Vec::new(),
-            state: "all".to_string(),
-            match_command: None,
-            match_comment: None,
-            match_user: None,
-            match_source: None,
-            include_next_run: false,
-            now_unix: None,
-            timezone: None,
-            max_entries: 1024,
-            sort_by: "none".to_string(),
-            sort_order: "asc".to_string(),
-            include_raw: false,
-            include_paths: false,
-            format: OutputFormat::Json,
-        };
+    fn list_verb(&self, args: &Args) -> Result<String> {
+        let options = list_options_from_args(args)?;
         
         match self.provider.list_cron_entries(&options) {
-            Ok(response) => Ok(serde_json::to_string_pretty(&response)?),
+            Ok(response) => {
+                if matches!(options.format, OutputFormat::Text) {
+                    Ok(self.format_as_text(&response))
+                } else {
+                    Ok(serde_json::to_string_pretty(&response)?)
+                }
+            }
             Err(e) => {
                 let error_response = CronListResponse {
                     ok: false,
@@ -1851,30 +1117,29 @@ impl CronHandle {
 // Helper functions for help display
 // ===========================================================================
 
-/// Check if help should be displayed based on various help flag patterns
-fn should_show_help(method: &str, args: &Args) -> bool {
-    // Check if method is help
-    if method == "help" || method == "h" {
-        return true;
+/// Returns `Some(verb)` if this call is a help request, where `verb` is the
+/// verb help was asked for (`help(verb=rm)`, `--help=rm`, `help=rm`), if any.
+/// Matching is exact, so ordinary verbs and arguments are never mistaken
+/// for help.
+fn help_request(method: &str, args: &Args) -> Option<Option<String>> {
+    let named = |v: Option<&String>| {
+        v.map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "true")
+    };
+    if let Some(v) = method.strip_prefix("--help=") {
+        return Some(Some(v.to_string()).filter(|v| !v.is_empty()));
     }
-
-    // Check if method contains help flags
-    if method.contains("--help") || method.contains("-h") {
-        return true;
+    if method == "help" || method == "h" || help::is_help_flag(method) {
+        return Some(named(args.get("verb")).or_else(|| named(args.get("help"))));
     }
-
-    // Check args for help
-    if args.contains_key("help") || args.contains_key("h") {
-        return true;
+    if args.contains_key("help") || args.contains_key("--help") {
+        return Some(
+            named(args.get("help"))
+                .or_else(|| named(args.get("--help")))
+                .or_else(|| Some(method.to_string()).filter(|m| !m.is_empty())),
+        );
     }
-
-    false
-}
-
-/// Display comprehensive cron handle help
-fn display_help(io: &mut IoStreams) -> Result<Status> {
-    write!(io.stdout, "{}", CRON_HELP_TEXT)?;
-    Ok(Status::ok())
+    None
 }
 
 // ===========================================================================
@@ -1886,10 +1151,19 @@ impl Handle for CronHandle {
         &["list", "add", "rm", "enable", "disable"]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&CRON_HELP)
+    }
+
     fn call(&self, method: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Check for help request before processing verbs
-        if should_show_help(method, args) {
-            return display_help(io);
+        if let Some(verb) = help_request(method, args) {
+            write!(
+                io.stdout,
+                "{}",
+                help::render_legacy("cron", &CRON_HELP, self.verbs(), verb.as_deref())
+            )?;
+            return Ok(Status::ok());
         }
 
         match method {
@@ -1986,7 +1260,7 @@ impl CronProvider for SystemCronProvider {
                 if let Ok(content) = self.read_user_crontab(&self.current_user) {
                     let user_entries = parse_user_crontab(&content, &self.current_user, None)?;
                     entries.extend(user_entries);
-                    paths.insert(format!("user_{}", self.current_user), format!("/var/spool/cron/{}", self.current_user));
+                    paths.insert(format!("user_{}", self.current_user), user_crontab_path(&self.current_user));
                 } else {
                     warnings.push(format!("Could not read crontab for user: {}", self.current_user));
                 }
@@ -1996,7 +1270,7 @@ impl CronProvider for SystemCronProvider {
                     if let Ok(content) = self.read_user_crontab(user) {
                         let user_entries = parse_user_crontab(&content, user, None)?;
                         entries.extend(user_entries);
-                        paths.insert(format!("user_{}", user), format!("/var/spool/cron/{}", user));
+                        paths.insert(format!("user_{}", user), user_crontab_path(user));
                     } else {
                         warnings.push(format!("Could not read crontab for user: {}", user));
                     }
@@ -2030,7 +1304,7 @@ impl CronProvider for SystemCronProvider {
                 if let Ok(content) = self.read_user_crontab(&self.current_user) {
                     let user_entries = parse_user_crontab(&content, &self.current_user, None)?;
                     entries.extend(user_entries);
-                    paths.insert(format!("user_{}", self.current_user), format!("/var/spool/cron/{}", self.current_user));
+                    paths.insert(format!("user_{}", self.current_user), user_crontab_path(&self.current_user));
                 }
 
                 // Other users if specified
@@ -2039,7 +1313,7 @@ impl CronProvider for SystemCronProvider {
                         if let Ok(content) = self.read_user_crontab(user) {
                             let user_entries = parse_user_crontab(&content, user, None)?;
                             entries.extend(user_entries);
-                            paths.insert(format!("user_{}", user), format!("/var/spool/cron/{}", user));
+                            paths.insert(format!("user_{}", user), user_crontab_path(user));
                         } else {
                             warnings.push(format!("Could not read crontab for user: {}", user));
                         }
@@ -3730,8 +3004,8 @@ impl SystemCronProvider {
         let user = options.user.clone().unwrap_or_else(|| self.current_user.clone());
         
         let file_path = match scope.as_str() {
-            "current" => format!("/var/spool/cron/crontabs/{}", self.current_user),
-            "user" => format!("/var/spool/cron/crontabs/{}", user),
+            "current" => user_crontab_path(&self.current_user),
+            "user" => user_crontab_path(&user),
             "system" => {
                 if let Some(ref file) = options.cron_file {
                     file.clone()
@@ -4100,7 +3374,7 @@ impl SystemCronProvider {
                 // Add cron.d files
                 if let Ok(cron_d_files) = self.read_cron_d_files() {
                     for (filename, _) in cron_d_files {
-                        sources_to_check.push(("system".to_string(), "root".to_string(), Some(filename)));
+                        sources_to_check.push(("system".to_string(), "root".to_string(), Some(format!("/etc/cron.d/{}", filename))));
                     }
                 }
             }
@@ -4114,7 +3388,7 @@ impl SystemCronProvider {
                 // Add cron.d files
                 if let Ok(cron_d_files) = self.read_cron_d_files() {
                     for (filename, _) in cron_d_files {
-                        sources_to_check.push(("system".to_string(), "root".to_string(), Some(filename)));
+                        sources_to_check.push(("system".to_string(), "root".to_string(), Some(format!("/etc/cron.d/{}", filename))));
                     }
                 }
             }
@@ -4277,7 +3551,7 @@ impl SystemCronProvider {
                 // Add cron.d files
                 if let Ok(cron_d_files) = self.read_cron_d_files() {
                     for (filename, _) in cron_d_files {
-                        sources_to_check.push(("system".to_string(), "root".to_string(), Some(filename)));
+                        sources_to_check.push(("system".to_string(), "root".to_string(), Some(format!("/etc/cron.d/{}", filename))));
                     }
                 }
             }
@@ -4291,7 +3565,7 @@ impl SystemCronProvider {
                 // Add cron.d files
                 if let Ok(cron_d_files) = self.read_cron_d_files() {
                     for (filename, _) in cron_d_files {
-                        sources_to_check.push(("system".to_string(), "root".to_string(), Some(filename)));
+                        sources_to_check.push(("system".to_string(), "root".to_string(), Some(format!("/etc/cron.d/{}", filename))));
                     }
                 }
             }
@@ -4478,17 +3752,10 @@ impl SystemCronProvider {
             }
 
             // Check for job-id comment followed by cron line
-            let mut job_id = None;
             if line.starts_with('#') && line.contains("job-id=") {
                 // Extract job ID from comment
-                if let Some(start) = line.find("job-id=") {
-                    let id_part = &line[start + 8..];
-                    if let Some(end) = id_part.find(' ') {
-                        job_id = Some(id_part[..end].to_string());
-                    } else {
-                        job_id = Some(id_part.to_string());
-                    }
-                }
+                let job_id = extract_job_id(line);
+                let prev_comment = Some(line);
                 new_lines.push(lines[i].to_string());
                 i += 1;
                 
@@ -4496,7 +3763,8 @@ impl SystemCronProvider {
                 if i < lines.len() {
                     let next_line = lines[i].trim();
                     if let Some((schedule, command, was_disabled)) = self.parse_potentially_disabled_cron_line(next_line) {
-                        if self.cron_entry_matches_enable(&schedule, &command, &job_id, options) {
+                        let comment = entry_comment(prev_comment, next_line);
+                        if self.cron_entry_matches_enable(&schedule, &command, &job_id, comment.as_deref(), options) {
                             if was_disabled {
                                 // Enable by uncommenting
                                 let enabled_line = self.enable_cron_line(next_line);
@@ -4532,7 +3800,8 @@ impl SystemCronProvider {
 
             // Check if this is a standalone cron line (not preceded by job-id comment)
             if let Some((schedule, command, was_disabled)) = self.parse_potentially_disabled_cron_line(line) {
-                if self.cron_entry_matches_enable(&schedule, &command, &None, options) {
+                let comment = entry_comment(preceding_comment(&lines, i), line);
+                if self.cron_entry_matches_enable(&schedule, &command, &None, comment.as_deref(), options) {
                     if was_disabled {
                         // Enable by uncommenting
                         let enabled_line = self.enable_cron_line(line);
@@ -4678,10 +3947,17 @@ impl SystemCronProvider {
         None
     }
 
-    fn cron_entry_matches_enable(&self, schedule: &str, command: &str, job_id: &Option<String>, options: &CronEnableOptions) -> bool {
+    fn cron_entry_matches_enable(&self, schedule: &str, command: &str, job_id: &Option<String>, comment: Option<&str>, options: &CronEnableOptions) -> bool {
         // Match by ID
         if let (Some(target_id), Some(entry_id)) = (&options.id, job_id) {
             return target_id == entry_id;
+        }
+
+        // Match by comment substring (job comment line or inline comment)
+        if let Some(pattern) = &options.match_comment {
+            if comment_matches(comment, pattern) {
+                return true;
+            }
         }
 
         // Match by schedule + command (exact match)
@@ -4994,17 +4270,10 @@ impl SystemCronProvider {
             }
 
             // Check for job-id comment followed by cron line
-            let mut job_id = None;
             if line.starts_with('#') && line.contains("job-id=") {
                 // Extract job ID from comment
-                if let Some(start) = line.find("job-id=") {
-                    let id_part = &line[start + 8..];
-                    if let Some(end) = id_part.find(' ') {
-                        job_id = Some(id_part[..end].to_string());
-                    } else {
-                        job_id = Some(id_part.to_string());
-                    }
-                }
+                let job_id = extract_job_id(line);
+                let prev_comment = Some(line);
                 new_lines.push(lines[i].to_string());
                 i += 1;
                 
@@ -5012,7 +4281,8 @@ impl SystemCronProvider {
                 if i < lines.len() {
                     let next_line = lines[i].trim();
                     if let Some((schedule, command, was_disabled)) = self.parse_potentially_disabled_cron_line(next_line) {
-                        if self.cron_entry_matches_disable(&schedule, &command, &job_id, options) {
+                        let comment = entry_comment(prev_comment, next_line);
+                        if self.cron_entry_matches_disable(&schedule, &command, &job_id, comment.as_deref(), options) {
                             if !was_disabled {
                                 // Disable by commenting out
                                 let disabled_line = self.disable_cron_line(next_line);
@@ -5048,7 +4318,8 @@ impl SystemCronProvider {
 
             // Check if this is a standalone cron line (not preceded by job-id comment)
             if let Some((schedule, command, was_disabled)) = self.parse_potentially_disabled_cron_line(line) {
-                if self.cron_entry_matches_disable(&schedule, &command, &None, options) {
+                let comment = entry_comment(preceding_comment(&lines, i), line);
+                if self.cron_entry_matches_disable(&schedule, &command, &None, comment.as_deref(), options) {
                     if !was_disabled {
                         // Disable by commenting out
                         let disabled_line = self.disable_cron_line(line);
@@ -5135,10 +4406,17 @@ impl SystemCronProvider {
         Ok(false)
     }
 
-    fn cron_entry_matches_disable(&self, schedule: &str, command: &str, job_id: &Option<String>, options: &CronDisableOptions) -> bool {
+    fn cron_entry_matches_disable(&self, schedule: &str, command: &str, job_id: &Option<String>, comment: Option<&str>, options: &CronDisableOptions) -> bool {
         // Match by ID
         if let (Some(target_id), Some(entry_id)) = (&options.id, job_id) {
             return target_id == entry_id;
+        }
+
+        // Match by comment substring (job comment line or inline comment)
+        if let Some(pattern) = &options.match_comment {
+            if comment_matches(comment, pattern) {
+                return true;
+            }
         }
 
         // Match by schedule + command (exact match)
@@ -5222,7 +4500,7 @@ impl SystemCronProvider {
 
     fn get_source_name(&self, scope_type: &str, user: &str, file_path: Option<&str>) -> String {
         match scope_type {
-            "user" => format!("/var/spool/cron/{}", user),
+            "user" => user_crontab_path(user),
             "system" => file_path.unwrap_or("/etc/crontab").to_string(),
             _ => "unknown".to_string()
         }
@@ -5257,14 +4535,7 @@ impl SystemCronProvider {
             
             if line.starts_with('#') && line.contains("job-id=") {
                 // Extract job-id from comment
-                if let Some(start) = line.find("job-id=") {
-                    let start = start + "job-id=".len();
-                    if let Some(end) = line[start..].find(|c: char| c.is_whitespace()) {
-                        job_id = Some(line[start..start + end].to_string());
-                    } else {
-                        job_id = Some(line[start..].to_string());
-                    }
-                }
+                job_id = extract_job_id(line);
                 
                 // Check if next line is a cron job
                 if i + 1 < lines.len() {
@@ -5277,10 +4548,12 @@ impl SystemCronProvider {
             }
 
             let cron_line = lines[cron_line_idx].trim();
+            let prev_comment = if cron_line_idx > i { Some(line) } else { preceding_comment(&lines, i) };
+            let comment = entry_comment(prev_comment, cron_line);
             
             // Parse the cron line
-            if let Some((schedule, command)) = self.parse_cron_line(cron_line, scope_type == "system") {
-                let matches = self.cron_entry_matches(&schedule, &command, &job_id, options);
+            if let Some((schedule, command)) = self.parse_cron_line(strip_inline_comment(cron_line), scope_type == "system") {
+                let matches = self.cron_entry_matches(&schedule, &command, &job_id, comment.as_deref(), options);
                 
                 if matches {
                     // This entry should be removed
@@ -5344,7 +4617,18 @@ impl SystemCronProvider {
         }
     }
 
-    fn cron_entry_matches(&self, schedule: &str, command: &str, job_id: &Option<String>, options: &CronRmOptions) -> bool {
+    fn cron_entry_matches(&self, schedule: &str, command: &str, job_id: &Option<String>, comment: Option<&str>, options: &CronRmOptions) -> bool {
+        // Without a selector that applies to crontab lines (for example only
+        // unit_name or match_unit), no crontab line matches.
+        if options.id.is_none()
+            && options.schedule.is_none()
+            && options.command.is_none()
+            && options.match_command.is_none()
+            && options.match_comment.is_none()
+        {
+            return false;
+        }
+
         // Check id match
         if let Some(target_id) = &options.id {
             if let Some(entry_id) = job_id {
@@ -5375,8 +4659,7 @@ impl SystemCronProvider {
         }
 
         if let Some(match_comment) = &options.match_comment {
-            // For cron entries, we'd need to check any inline comments
-            matches = matches && command.to_lowercase().contains(&match_comment.to_lowercase());
+            matches = matches && comment_matches(comment, match_comment);
         }
 
         matches
@@ -5712,14 +4995,192 @@ fn split_command_comment(input: &str) -> (String, Option<String>) {
 // Filtering and sorting functions
 // ===========================================================================
 
+/// Builds list options from CLI arguments, using the documented defaults.
+fn list_options_from_args(args: &Args) -> Result<CronListOptions> {
+    let get = |k: &str| args.get(k).map(|s| s.trim()).filter(|s| !s.is_empty());
+    let flag = |k: &str, default: bool| -> Result<bool> {
+        match get(k) {
+            None => Ok(default),
+            Some("true") | Some("1") | Some("yes") => Ok(true),
+            Some("false") | Some("0") | Some("no") => Ok(false),
+            Some(other) => Err(anyhow::anyhow!("cron.list_invalid_argument: {}={} is not a boolean", k, other)),
+        }
+    };
+    let list = |k: &str| -> Vec<String> {
+        get(k)
+            .map(|s| {
+                s.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .split(',')
+                    .map(|u| u.trim().trim_matches('"').to_string())
+                    .filter(|u| !u.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let one_of = |k: &str, default: &str, allowed: &[&str]| -> Result<String> {
+        let v = get(k).unwrap_or(default);
+        if allowed.contains(&v) {
+            Ok(v.to_string())
+        } else {
+            Err(anyhow::anyhow!(
+                "cron.list_invalid_argument: {}={} must be one of: {}",
+                k,
+                v,
+                allowed.join(", ")
+            ))
+        }
+    };
+    Ok(CronListOptions {
+        scope: one_of("scope", "current", &["current", "user", "system", "all"])?,
+        users: list("users"),
+        include_system: flag("include_system", false)?,
+        include_files: list("include_files"),
+        state: one_of("state", "all", &["all", "enabled", "disabled"])?,
+        match_command: get("match_command").map(String::from),
+        match_comment: get("match_comment").map(String::from),
+        match_user: get("match_user").map(String::from),
+        match_source: get("match_source").map(String::from),
+        include_next_run: flag("include_next_run", false)?,
+        now_unix: match get("now_unix") {
+            Some(v) => Some(v.parse::<i64>().map_err(|_| {
+                anyhow::anyhow!("cron.list_invalid_argument: now_unix={} is not an integer", v)
+            })?),
+            None => None,
+        },
+        timezone: get("timezone").map(String::from),
+        max_entries: match get("max_entries") {
+            Some(v) => v.parse::<u32>().map_err(|_| {
+                anyhow::anyhow!("cron.list_invalid_argument: max_entries={} is not a number", v)
+            })?,
+            None => 1024,
+        },
+        sort_by: one_of("sort_by", "none", &["none", "user", "schedule", "command", "source"])?,
+        sort_order: one_of("sort_order", "asc", &["asc", "desc"])?,
+        include_raw: flag("include_raw", false)?,
+        include_paths: flag("include_paths", false)?,
+        format: if one_of("format", "json", &["json", "text"])? == "text" {
+            OutputFormat::Text
+        } else {
+            OutputFormat::Json
+        },
+    })
+}
+
+/// Path reported for a user's crontab spool file. Debian-style systems use
+/// /var/spool/cron/crontabs/<user>; others (cronie) use /var/spool/cron/<user>.
+fn user_crontab_path(user: &str) -> String {
+    if Path::new("/var/spool/cron/crontabs").is_dir() {
+        format!("/var/spool/cron/crontabs/{}", user)
+    } else {
+        format!("/var/spool/cron/{}", user)
+    }
+}
+
+/// Extracts the id from a `# job-id=<id> ...` comment line written by add.
+/// Returns None when there is no `job-id=` or the id is empty.
+fn extract_job_id(line: &str) -> Option<String> {
+    let start = line.find("job-id=")? + "job-id=".len();
+    let rest = &line[start..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let id = &rest[..end];
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// True if the first word of `content` looks like a cron schedule field.
+fn looks_like_schedule_start(content: &str) -> bool {
+    match content.split_whitespace().next() {
+        Some(first) => {
+            first.starts_with('@')
+                || first.chars().all(|c| c.is_ascii_digit() || matches!(c, '*' | '/' | ',' | '-'))
+        }
+        None => false,
+    }
+}
+
+/// The comment line directly above `lines[idx]`, if that line is a plain
+/// comment rather than a commented-out job.
+fn preceding_comment<'a>(lines: &[&'a str], idx: usize) -> Option<&'a str> {
+    if idx == 0 {
+        return None;
+    }
+    let prev = lines[idx - 1].trim();
+    if !prev.starts_with('#') {
+        return None;
+    }
+    let content = prev.trim_start_matches('#').trim();
+    if prev.contains("job-id=") || !looks_like_schedule_start(content) {
+        Some(prev)
+    } else {
+        None
+    }
+}
+
+/// Removes an inline ` #...` comment from a crontab line (keeping a leading
+/// `#` that marks a disabled line).
+fn strip_inline_comment(line: &str) -> &str {
+    let lead = line.len() - line.trim_start_matches('#').len();
+    match line[lead..].find(" #") {
+        Some(pos) => line[..lead + pos].trim_end(),
+        None => line,
+    }
+}
+
+/// Comment text for a crontab entry: the comment line above it (if any)
+/// plus any inline ` #` comment on the line itself.
+fn entry_comment(prev_comment: Option<&str>, raw_line: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(prev) = prev_comment {
+        let text = prev.trim().trim_start_matches('#').trim();
+        if !text.is_empty() {
+            parts.push(text.to_string());
+        }
+    }
+    let content = raw_line.trim().trim_start_matches('#');
+    if let Some(pos) = content.find(" #") {
+        let text = content[pos + 2..].trim_start_matches('#').trim();
+        if !text.is_empty() {
+            parts.push(text.to_string());
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+/// Case-insensitive substring match of `pattern` against an entry comment.
+fn comment_matches(comment: Option<&str>, pattern: &str) -> bool {
+    comment
+        .map(|c| c.to_lowercase().contains(&pattern.to_lowercase()))
+        .unwrap_or(false)
+}
+
 fn apply_filters(mut entries: Vec<CronEntry>, options: &CronListOptions) -> Vec<CronEntry> {
-    // Simple state filtering only for now
+    let contains = |field: Option<&str>, pattern: &Option<String>| match pattern {
+        Some(p) => field
+            .map(|f| f.to_lowercase().contains(&p.to_lowercase()))
+            .unwrap_or(false),
+        None => true,
+    };
     entries.retain(|entry| {
-        match options.state.as_str() {
+        let state_ok = match options.state.as_str() {
             "enabled" => entry.enabled,
             "disabled" => !entry.enabled,
             _ => true, // "all" - no filtering
-        }
+        };
+        let source = entry.source_file.as_deref().unwrap_or(entry.source.as_str());
+        state_ok
+            && contains(entry.command.as_deref(), &options.match_command)
+            && contains(entry.comment.as_deref(), &options.match_comment)
+            && contains(entry.user.as_deref(), &options.match_user)
+            && (contains(Some(source), &options.match_source)
+                || contains(Some(entry.source.as_str()), &options.match_source))
     });
     
     entries
@@ -5813,4 +5274,339 @@ pub fn register(registry: &mut crate::core::Registry) {
     registry.register_scheme("cron", |url| {
         Ok(Box::new(CronHandle::from_url(url)?))
     });
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn provider() -> SystemCronProvider {
+        SystemCronProvider { current_user: "alice".to_string() }
+    }
+
+    fn add_options(id: &str, description: Option<&str>) -> CronAddOptions {
+        CronAddOptions {
+            schedule: "0 2 * * *".to_string(),
+            command: "/opt/backup.sh".to_string(),
+            backend: "cron".to_string(),
+            id: Some(id.to_string()),
+            description: description.map(String::from),
+            allow_duplicate: false,
+            dry_run: true,
+            scope: "current".to_string(),
+            user: None,
+            cron_file: None,
+            unit_name: None,
+            unit_scope: "auto".to_string(),
+            persistent: false,
+            accuracy_sec: None,
+            random_delay_sec: None,
+            service_working_dir: None,
+            service_user: None,
+            env: None,
+            include_next_run: false,
+            now_unix: None,
+            timezone: None,
+            format: OutputFormat::Json,
+        }
+    }
+
+    /// A crontab as `add` writes it: an unrelated job, then a job with id.
+    fn crontab_with_added_job(id: &str, description: Option<&str>) -> String {
+        let (line, comment) = provider()
+            .build_cron_lines(&add_options(id, description), "current")
+            .unwrap();
+        format!("*/5 * * * * /usr/bin/other\n{}\n{}\n", comment.unwrap(), line)
+    }
+
+    fn enable_options() -> CronEnableOptions {
+        CronEnableOptions {
+            id: None,
+            backend: "cron".to_string(),
+            scope: "current".to_string(),
+            users: Vec::new(),
+            schedule: None,
+            command: None,
+            match_command: None,
+            match_comment: None,
+            cron_file: None,
+            unit_name: None,
+            unit_scope: "auto".to_string(),
+            match_unit: None,
+            require_match: true,
+            start_now: false,
+            dry_run: true,
+            format: OutputFormat::Json,
+        }
+    }
+
+    fn disable_options() -> CronDisableOptions {
+        CronDisableOptions {
+            id: None,
+            backend: "cron".to_string(),
+            scope: "current".to_string(),
+            users: Vec::new(),
+            schedule: None,
+            command: None,
+            match_command: None,
+            match_comment: None,
+            cron_file: None,
+            unit_name: None,
+            unit_scope: "auto".to_string(),
+            match_unit: None,
+            require_match: true,
+            stop_now: false,
+            dry_run: true,
+            format: OutputFormat::Json,
+        }
+    }
+
+    fn rm_options() -> CronRmOptions {
+        CronRmOptions {
+            id: None,
+            backend: "cron".to_string(),
+            scope: "current".to_string(),
+            users: Vec::new(),
+            schedule: None,
+            command: None,
+            match_command: None,
+            match_comment: None,
+            cron_file: None,
+            unit_name: None,
+            unit_scope: "auto".to_string(),
+            match_unit: None,
+            require_match: true,
+            remove_units: true,
+            dry_run: true,
+            format: OutputFormat::Json,
+        }
+    }
+
+    #[test]
+    fn extract_job_id_handles_full_empty_and_missing_ids() {
+        assert_eq!(extract_job_id("# job-id=backup description=x"), Some("backup".to_string()));
+        assert_eq!(extract_job_id("# job-id=backup"), Some("backup".to_string()));
+        assert_eq!(extract_job_id("# job-id="), None);
+        assert_eq!(extract_job_id("# job-id= description=x"), None);
+        assert_eq!(extract_job_id("# nothing here"), None);
+    }
+
+    #[test]
+    fn disable_then_enable_by_id_matches_line_written_by_add() {
+        let p = provider();
+        let content = crontab_with_added_job("backup", None);
+
+        let mut dopts = disable_options();
+        dopts.id = Some("backup".to_string());
+        let (disabled, entries, already) = p
+            .disable_matching_cron_entries(&content, &dopts, "user", "alice", None)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(already, 0);
+        assert_eq!(entries[0].id.as_deref(), Some("backup"));
+        assert!(disabled.contains("# 0 2 * * * /opt/backup.sh"));
+        assert!(disabled.starts_with("*/5 * * * * /usr/bin/other\n"), "other job untouched");
+
+        let mut eopts = enable_options();
+        eopts.id = Some("backup".to_string());
+        let (enabled, entries, _) = p
+            .enable_matching_cron_entries(&disabled, &eopts, "user", "alice", None)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id.as_deref(), Some("backup"));
+        assert_eq!(enabled, content);
+    }
+
+    #[test]
+    fn enable_and_disable_by_other_id_match_nothing() {
+        let p = provider();
+        let content = crontab_with_added_job("backup", None);
+        let mut dopts = disable_options();
+        dopts.id = Some("ackup".to_string());
+        let (out, entries, _) = p
+            .disable_matching_cron_entries(&content, &dopts, "user", "alice", None)
+            .unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(out, content);
+    }
+
+    #[test]
+    fn empty_job_id_comment_does_not_panic() {
+        let p = provider();
+        let content = "# job-id=\n0 2 * * * /opt/backup.sh\n# job-id=";
+        let mut eopts = enable_options();
+        eopts.id = Some("backup".to_string());
+        assert!(p.enable_matching_cron_entries(content, &eopts, "user", "alice", None).is_ok());
+        let mut dopts = disable_options();
+        dopts.id = Some("backup".to_string());
+        assert!(p.disable_matching_cron_entries(content, &dopts, "user", "alice", None).is_ok());
+    }
+
+    #[test]
+    fn match_comment_uses_job_comment_not_command() {
+        let p = provider();
+        let content = crontab_with_added_job("backup", Some("nightly"));
+
+        let mut dopts = disable_options();
+        dopts.match_comment = Some("NIGHTLY".to_string());
+        let (_, entries, _) = p
+            .disable_matching_cron_entries(&content, &dopts, "user", "alice", None)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].command.as_deref(), Some("/opt/backup.sh"));
+
+        let mut ropts = rm_options();
+        ropts.match_comment = Some("nightly".to_string());
+        let (out, removed) = p
+            .remove_matching_cron_entries(&content, &ropts, "user", "alice", None)
+            .unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(out, "*/5 * * * * /usr/bin/other\n");
+
+        // A word that appears only in the command is not a comment match.
+        ropts.match_comment = Some("backup.sh".to_string());
+        let (_, removed) = p
+            .remove_matching_cron_entries(&content, &ropts, "user", "alice", None)
+            .unwrap();
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn rm_by_id_removes_comment_and_job_lines() {
+        let p = provider();
+        let content = crontab_with_added_job("backup", Some("nightly"));
+        let mut ropts = rm_options();
+        ropts.id = Some("backup".to_string());
+        let (out, removed) = p
+            .remove_matching_cron_entries(&content, &ropts, "user", "alice", None)
+            .unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(out, "*/5 * * * * /usr/bin/other\n");
+    }
+
+    #[test]
+    fn rm_with_only_systemd_selector_matches_no_crontab_lines() {
+        let p = provider();
+        let content = crontab_with_added_job("backup", None);
+        let mut ropts = rm_options();
+        ropts.unit_name = Some("backup".to_string());
+        let (out, removed) = p
+            .remove_matching_cron_entries(&content, &ropts, "user", "alice", None)
+            .unwrap();
+        assert!(removed.is_empty());
+        assert_eq!(out, content);
+    }
+
+    #[test]
+    fn entry_comment_combines_comment_line_and_inline_comment() {
+        assert_eq!(
+            entry_comment(Some("# job-id=a description=x"), "0 2 * * * cmd # inline"),
+            Some("job-id=a description=x inline".to_string())
+        );
+        assert_eq!(entry_comment(None, "0 2 * * * cmd"), None);
+        let lines = vec!["# 0 1 * * * disabled", "0 2 * * * cmd"];
+        assert_eq!(preceding_comment(&lines, 1), None);
+        let lines = vec!["# weekly cleanup", "0 2 * * * cmd"];
+        assert_eq!(preceding_comment(&lines, 1), Some("# weekly cleanup"));
+    }
+
+    #[test]
+    fn list_options_parse_documented_arguments() {
+        let mut args = Args::new();
+        args.insert("scope".to_string(), "all".to_string());
+        args.insert("users".to_string(), "bob, carol".to_string());
+        args.insert("include_system".to_string(), "true".to_string());
+        args.insert("state".to_string(), "disabled".to_string());
+        args.insert("match_command".to_string(), "backup".to_string());
+        args.insert("max_entries".to_string(), "5".to_string());
+        args.insert("sort_by".to_string(), "command".to_string());
+        args.insert("format".to_string(), "text".to_string());
+        let o = list_options_from_args(&args).unwrap();
+        assert_eq!(o.scope, "all");
+        assert_eq!(o.users, vec!["bob", "carol"]);
+        assert!(o.include_system);
+        assert_eq!(o.state, "disabled");
+        assert_eq!(o.match_command.as_deref(), Some("backup"));
+        assert_eq!(o.max_entries, 5);
+        assert_eq!(o.sort_by, "command");
+        assert!(matches!(o.format, OutputFormat::Text));
+
+        let o = list_options_from_args(&Args::new()).unwrap();
+        assert_eq!(o.scope, "current");
+        assert_eq!(o.max_entries, 1024);
+
+        let mut bad = Args::new();
+        bad.insert("state".to_string(), "sometimes".to_string());
+        assert!(list_options_from_args(&bad).is_err());
+    }
+
+    #[test]
+    fn apply_filters_honors_match_filters() {
+        let entry = |cmd: &str, comment: Option<&str>| CronEntry {
+            id: cmd.to_string(),
+            user: Some("alice".to_string()),
+            source: "user".to_string(),
+            source_file: None,
+            source_line: None,
+            enabled: true,
+            comment_only: false,
+            schedule: Some("0 2 * * *".to_string()),
+            schedule_fields: None,
+            special: None,
+            command: Some(cmd.to_string()),
+            comment: comment.map(String::from),
+            next_run_unix: None,
+            next_run_iso8601: None,
+            raw_line: None,
+        };
+        let mut o = list_options_from_args(&Args::new()).unwrap();
+        o.match_command = Some("BACKUP".to_string());
+        let out = apply_filters(vec![entry("/opt/backup.sh", None), entry("/bin/true", None)], &o);
+        assert_eq!(out.len(), 1);
+        o.match_command = None;
+        o.match_comment = Some("nightly".to_string());
+        let out = apply_filters(vec![entry("/a", Some("nightly job")), entry("/b", None)], &o);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].command.as_deref(), Some("/a"));
+    }
+
+    #[test]
+    fn help_detection_is_exact() {
+        let empty = Args::new();
+        assert_eq!(help_request("--help", &empty), Some(None));
+        assert_eq!(help_request("-h", &empty), Some(None));
+        assert_eq!(help_request("help", &empty), Some(None));
+        assert_eq!(help_request("--help=rm", &empty), Some(Some("rm".to_string())));
+        assert_eq!(help_request("list", &empty), None);
+        assert_eq!(help_request("my-helper", &empty), None);
+        assert_eq!(help_request("pre-hotfix", &empty), None);
+        let mut args = Args::new();
+        args.insert("match_command".to_string(), "run -h now".to_string());
+        assert_eq!(help_request("list", &args), None);
+    }
+
+    #[test]
+    fn help_output_uses_approved_metadata() {
+        let handle = CronHandle::new("local".to_string(), Box::new(provider()));
+        let (mut stdin, mut stdout, mut stderr) = (
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+        );
+        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        let status = handle.call("--help", &Args::new(), &mut io).unwrap();
+        assert!(status.ok);
+        let out = String::from_utf8(stdout.into_inner()).unwrap();
+        assert!(out.starts_with("Handle: cron"), "{}", out);
+
+        let (mut stdin, mut stdout, mut stderr) = (
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+        );
+        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        handle.call("--help=rm", &Args::new(), &mut io).unwrap();
+        let out = String::from_utf8(stdout.into_inner()).unwrap();
+        assert!(out.contains("Verb: rm"), "{}", out);
+    }
 }

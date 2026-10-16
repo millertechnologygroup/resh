@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use base64::prelude::*;
-use chrono::{DateTime, Utc, Datelike, Timelike};
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
@@ -18,1032 +18,368 @@ use rcgen::KeyPair;
 use rsa::{RsaPrivateKey, pkcs8::EncodePrivateKey, pkcs1::EncodeRsaPrivateKey};
 use rsa::traits::PublicKeyParts;
 use rsa::pkcs1::DecodeRsaPrivateKey;  // Add this import for from_pkcs1_der
-use pkcs8::{DecodePrivateKey, PrivateKeyInfo as Pkcs8PrivateKeyInfo, EncryptedPrivateKeyInfo};
+use pkcs8::{DecodePrivateKey, PrivateKeyInfo as Pkcs8PrivateKeyInfo};
 use p256::ecdsa::SigningKey as P256SigningKey;
 use p384::ecdsa::SigningKey as P384SigningKey; 
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
-use sec1::{EncodeEcPrivateKey, DecodeEcPrivateKey}; // Add DecodeEcPrivateKey trait
+use sec1::DecodeEcPrivateKey; // Add DecodeEcPrivateKey trait
 use ::pem::Pem;
-use argon2::{Argon2, PasswordHasher};
-use argon2::password_hash::SaltString;
-use pbkdf2::pbkdf2_hmac;
-use sha2::Sha256;
 
 // Additional imports for signing functionality
-use rsa::{Pkcs1v15Sign, Pss};
-use rsa::signature::{RandomizedSigner, Signer, SignatureEncoding as RsaSignatureEncoding};
-use p256::ecdsa::{Signature as P256Signature, signature::Signer as P256Signer};
-use p384::ecdsa::{Signature as P384Signature, signature::Signer as P384Signer};
-use ed25519_dalek::{Signature as Ed25519Signature, Signer as Ed25519Signer};
-use sha2::{Sha384, Sha512, Digest};
+use rsa::Pss;
+use rsa::signature::Signer;
+use p256::ecdsa::Signature as P256Signature;
+use p384::ecdsa::Signature as P384Signature;
+use ed25519_dalek::Signature as Ed25519Signature;
+use sha2::Digest;
 use ring::digest;
-use x509_parser::nom::AsBytes;
 use hex;
 
 use crate::core::{
+    help::{self, HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
 
-const CERT_HELP_TEXT: &str = r#"
-RESOURCE SHELL - CERT HANDLE
-============================
-
-USAGE:
-  cert://path/to/file.VERB(arguments)
-
-DESCRIPTION:
-  The cert handle provides complete management of digital certificates and
-  cryptographic keys. View certificate information, generate new certificates
-  and keys, create Certificate Signing Requests (CSRs), sign certificates,
-  verify certificate chains, and manage PKI infrastructure. Supports X.509
-  certificates, RSA/ECDSA/Ed25519 keys, PEM/DER formats, self-signed and
-  CA-signed certificates, password-protected keys, and complete certificate
-  lifecycle management. Essential for TLS/SSL setup, PKI operations, security
-  infrastructure, and cryptographic key management.
-
-URL FORMAT:
-  cert://path/to/certificate.pem.VERB(arguments)
-  cert://path/to/key.pem.VERB(arguments)
-  cert://path/to/request.csr.VERB(arguments)
-
-  Path can be absolute or relative
-  VERB specifies the operation to perform
-
-VERBS (8 total):
-
-  Certificate Information:
-    info            View detailed certificate/key/CSR information
-    chain.info      Analyze certificate chains and trust paths
-
-  Certificate Generation:
-    generate        Create keys, self-signed certificates, CSRs, leaf certs
-    csr.create      Generate Certificate Signing Requests
-
-  Certificate Signing:
-    sign            Sign data or CSRs to create certificates
-    csr.sign        Sign CSRs with CA to create certificates
-
-  Certificate Management:
-    verify          Validate certificates and check signatures
-    renew           Renew existing certificates with updated dates
-
-EXAMPLES:
-
-  View Certificate Information (info):
-    # View certificate details
-    cert:///tmp/certificate.pem.info
-
-    # View in human-readable text format
-    cert:///tmp/certificate.pem.info(format=text)
-
-    # View private key information
-    cert:///tmp/private-key.pem.info
-
-    # View CSR information
-    cert:///tmp/request.csr.info
-
-    # Include PEM data in output
-    cert:///tmp/certificate.pem.info(include_pem=true)
-
-    # Include raw DER data
-    cert:///tmp/certificate.pem.info(include_raw=true)
-
-    # Specify encoding
-    cert:///tmp/certificate.der.info(encoding=der)
-    cert:///tmp/certificate.pem.info(encoding=pem)
-
-    # Auto-detect encoding
-    cert:///tmp/certificate.pem.info(encoding=auto)
-
-    # Multiple fingerprint algorithms
-    cert:///tmp/certificate.pem.info(fingerprint_algs=["sha1","sha256","sha512"])
-
-    # View certificate chain file
-    cert:///tmp/chain.pem.info
-
-  Generate Keys (generate - mode=key):
-    # Generate RSA 2048-bit key
-    cert:///tmp/key.generate(mode=key,algorithm=rsa,rsa_bits=2048)
-
-    # Generate RSA 4096-bit key
-    cert:///tmp/key.generate(mode=key,algorithm=rsa,rsa_bits=4096)
-
-    # Generate ECDSA P-256 key
-    cert:///tmp/key.generate(mode=key,algorithm=ecdsa,ecdsa_curve=P-256)
-
-    # Generate ECDSA P-384 key
-    cert:///tmp/key.generate(mode=key,algorithm=ecdsa,ecdsa_curve=P-384)
-
-    # Generate Ed25519 key
-    cert:///tmp/key.generate(mode=key,algorithm=ed25519)
-
-    # Generate key with custom path
-    cert:///tmp/cert.generate(mode=key,algorithm=rsa,key_path=/keys/custom.pem)
-
-    # Generate key in PKCS1 format
-    cert:///tmp/key.generate(mode=key,algorithm=rsa,key_format=pkcs1)
-
-    # Generate key in PKCS8 format (default)
-    cert:///tmp/key.generate(mode=key,algorithm=rsa,key_format=pkcs8)
-
-    # Generate key in DER encoding
-    cert:///tmp/key.generate(mode=key,algorithm=rsa,key_encoding=der)
-
-    # Generate password-protected key
-    cert:///tmp/key.generate(mode=key,algorithm=rsa,password="secret123")
-
-    # Generate key with Argon2 KDF
-    cert:///tmp/key.generate(mode=key,algorithm=rsa,password="secret",kdf=argon2id)
-
-    # Generate key with PBKDF2
-    cert:///tmp/key.generate(mode=key,algorithm=rsa,password="secret",kdf=pbkdf2,kdf_iterations=200000)
-
-  Generate Self-Signed Certificates (generate - mode=self_signed):
-    # Basic self-signed certificate
-    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}')
-
-    # Self-signed with organization
-    cert:///tmp/cert.generate(mode=self_signed,subject='{{{"common_name":"example.com","organization":"Test Corp","country":"US"}}')
-
-    # Self-signed CA certificate
-    cert:///tmp/ca.generate(mode=self_signed,subject='{{"common_name":"My CA"}',is_ca=true)
-
-    # Self-signed with RSA 4096
-    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',algorithm=rsa,rsa_bits=4096)
-
-    # Self-signed with ECDSA
-    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',algorithm=ecdsa,ecdsa_curve=P-256)
-
-    # Self-signed with Ed25519
-    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',algorithm=ed25519)
-
-    # Self-signed with SANs
-    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',sans='["DNS:example.com","DNS:www.example.com","IP:192.0.2.1"]')
-
-    # Self-signed with custom validity
-    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',validity_days=730)
-
-    # Self-signed 10-year CA
-    cert:///tmp/ca.generate(mode=self_signed,subject='{{"common_name":"Root CA"}',is_ca=true,validity_days=3650)
-
-    # Overwrite existing certificate
-    cert:///tmp/cert.generate(mode=self_signed,subject='{{"common_name":"example.com"}',overwrite=true)
-
-  Generate CSRs (generate - mode=csr):
-    # Basic CSR
-    cert:///tmp/request.generate(mode=csr,subject='{{"common_name":"server.example.com"}')
-
-    # CSR with SANs
-    cert:///tmp/request.generate(mode=csr,subject='{{"common_name":"server.example.com"}',sans='["DNS:server.example.com","DNS:www.server.example.com"]')
-
-    # CSR with organization details
-    cert:///tmp/request.generate(mode=csr,subject='{{"common_name":"example.com","organization":"Test Corp","organizational_unit":"IT","locality":"San Francisco","state":"CA","country":"US"}')
-
-  Generate Leaf Certificates (generate - mode=leaf_cert):
-    # Generate leaf certificate signed by CA
-    cert:///tmp/server.generate(mode=leaf_cert,subject='{{"common_name":"server.example.com"}',signer_cert=/ca/ca.pem,signer_key=/ca/ca-key.pem)
-
-    # Leaf certificate with SANs
-    cert:///tmp/server.generate(mode=leaf_cert,subject='{{"common_name":"server.example.com"}',signer_cert=/ca/ca.pem,signer_key=/ca/ca-key.pem,sans='["DNS:server.example.com","IP:192.0.2.1"]')
-
-    # Leaf certificate with custom validity
-    cert:///tmp/server.generate(mode=leaf_cert,subject='{{"common_name":"server.example.com"}',signer_cert=/ca/ca.pem,signer_key=/ca/ca-key.pem,validity_days=90)
-
-  Create CSRs (csr.create):
-    # Generate new key and CSR
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/server.pem,subject='{{"common_name":"example.com"}')
-
-    # CSR with existing key
-    cert:///tmp/request.csr.create(key_strategy=reuse,existing_key_path=/keys/existing.pem,subject='{{"common_name":"example.com"}')
-
-    # CSR with RSA 4096
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,rsa_bits=4096,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}')
-
-    # CSR with ECDSA P-256
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=ecdsa,ecdsa_curve=P-256,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}')
-
-    # CSR with ECDSA P-384
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=ecdsa,ecdsa_curve=P-384,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}')
-
-    # CSR with Ed25519
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=ed25519,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}')
-
-    # CSR with SANs
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',sans='["DNS:example.com","DNS:www.example.com","IP:192.0.2.1","EMAIL:admin@example.com"]')
-
-    # CSR with key usage
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',key_usage='["digitalSignature","keyEncipherment"]')
-
-    # CSR with extended key usage
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',extended_key_usage='["serverAuth","clientAuth"]')
-
-    # CSR in DER format
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',csr_encoding=der)
-
-    # CSR with key in PKCS1 format
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',key_format=pkcs1)
-
-    # Include CSR PEM in response
-    cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/key.pem,subject='{{"common_name":"example.com"}',include_csr_pem=true)
-
-  Sign CSRs (csr.sign):
-    # Sign CSR with CA
-    cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem)
-
-    # Sign with password-protected CA key
-    cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,signer_key_password="secret",cert_output_path=/certs/server.pem)
-
-    # Sign with custom validity
-    cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem,validity_days=90)
-
-    # Sign and copy all attributes
-    cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem,copy_subject=true,copy_sans=true,copy_key_usage=true)
-
-  Sign Data (sign - mode=data):
-    # Sign data with RSA-PSS
-    cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/private.pem,algorithm=rsa_pss_sha256)
-
-    # Sign data with ECDSA
-    cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/ecdsa.pem,algorithm=ecdsa_sha256)
-
-    # Sign data with Ed25519
-    cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/ed25519.pem,algorithm=ed25519)
-
-    # Sign with password-protected key
-    cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/private.pem,signer_key_password="secret",algorithm=rsa_pss_sha256)
-
-  Verify Certificates (verify):
-    # Basic verification
-    cert:///tmp/certificate.pem.verify
-
-    # Verify with CA bundle
-    cert:///tmp/certificate.pem.verify(ca_bundle=/ca/bundle.pem)
-
-    # Allow self-signed certificates
-    cert:///tmp/certificate.pem.verify(allow_self_signed=true)
-
-    # Check revocation status
-    cert:///tmp/certificate.pem.verify(check_revocation=true)
-
-    # Full verification with all options
-    cert:///tmp/certificate.pem.verify(ca_bundle=/ca/bundle.pem,check_revocation=true,allow_self_signed=false)
-
-  Renew Certificates (renew):
-    # Renew self-signed certificate
-    cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=reuse)
-
-    # Renew and rekey
-    cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=rekey,algorithm=rsa,rsa_bits=4096)
-
-    # Renew with custom validity
-    cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=reuse,validity_days=730)
-
-    # Renew CA-signed certificate
-    cert:///tmp/certificate.pem.renew(mode=ca_signed,signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem)
-
-  Analyze Certificate Chains (chain.info):
-    # View chain information
-    cert:///tmp/chain.pem.chain.info
-
-    # Include detailed certificate info
-    cert:///tmp/chain.pem.chain.info(include_details=true)
-
-    # Verify against trust store
-    cert:///tmp/chain.pem.chain.info(trust_store=/etc/ssl/certs/ca-certificates.crt)
-
-INFO ARGUMENTS:
-  format=FORMAT          Output format (default: json)
-                         Values: json, text
-  encoding=ENCODING      File encoding (default: auto)
-                         Values: auto, pem, der
-  include_pem=BOOL       Include PEM data in output (default: false)
-  include_raw=BOOL       Include raw DER as base64 (default: false)
-  fingerprint_algs=ARRAY Fingerprint algorithms (default: ["sha256"])
-                         Values: sha1, sha256, sha512
-
-GENERATE ARGUMENTS:
-  mode=MODE              What to generate (required)
-                         Values: key, self_signed, csr, leaf_cert
-
-  Key generation (mode=key):
-    algorithm=ALG        Key algorithm (default: rsa)
-                         Values: rsa, ecdsa, ed25519
-    rsa_bits=NUMBER      RSA key size (default: 2048)
-                         Values: 2048, 3072, 4096
-    ecdsa_curve=CURVE    ECDSA curve (default: P-256)
-                         Values: P-256, P-384
-    key_format=FORMAT    Key format (default: pkcs8)
-                         Values: pkcs8, pkcs1 (RSA), sec1 (ECDSA)
-    key_encoding=ENC     Encoding (default: pem)
-                         Values: pem, der
-    key_path=PATH        Custom output path for key
-    password=PASSWORD    Encrypt key with password
-    kdf=KDF              Key derivation function (default: pbkdf2)
-                         Values: pbkdf2, argon2id
-    kdf_iterations=NUM   KDF iterations (default: 100000)
-
-  Certificate generation (mode=self_signed, leaf_cert):
-    subject=JSON         Certificate subject (required)
-                         Format: {{"common_name":"...", "organization":"...",
-                                 "organizational_unit":"...", "locality":"...",
-                                 "state":"...", "country":"..."}
-    sans=JSON_ARRAY      Subject Alternative Names
-                         Format: ["DNS:example.com", "IP:192.0.2.1",
-                                 "EMAIL:user@example.com"]
-    validity_days=NUM    Certificate validity (default: 365)
-    is_ca=BOOL           CA certificate (default: false)
-    overwrite=BOOL       Overwrite existing (default: false)
-
-  Leaf certificate (mode=leaf_cert):
-    signer_cert=PATH     CA certificate path (required)
-    signer_key=PATH      CA private key path (required)
-
-CSR.CREATE ARGUMENTS:
-  key_strategy=STRATEGY  Key handling (required)
-                         Values: generate, reuse
-  subject=JSON           Certificate subject (required)
-                         Format: {{"common_name":"..."}
-
-  Generate strategy:
-    new_key_output_path=PATH  Where to save new key (required)
-    algorithm=ALG        Key algorithm (default: rsa)
-                         Values: rsa, ecdsa, ed25519
-    rsa_bits=NUMBER      RSA key size (default: 2048)
-    ecdsa_curve=CURVE    ECDSA curve (default: P-256)
-    key_format=FORMAT    Key format (default: pkcs8)
-    key_encoding=ENC     Key encoding (default: pem)
-
-  Reuse strategy:
-    existing_key_path=PATH    Existing key path (required)
-
-  Optional:
-    sans=JSON_ARRAY      Subject Alternative Names
-    key_usage=JSON_ARRAY Key usage extensions
-                         Values: digitalSignature, keyEncipherment,
-                                dataEncipherment, keyAgreement, etc.
-    extended_key_usage=ARRAY  Extended key usage
-                         Values: serverAuth, clientAuth, codeSigning,
-                                emailProtection, timeStamping, etc.
-    csr_encoding=ENC     CSR encoding (default: pem)
-    overwrite=BOOL       Overwrite existing (default: false)
-    include_csr_pem=BOOL Include CSR PEM in response (default: false)
-    include_new_key_pem=BOOL  Include key PEM in response (default: false)
-
-CSR.SIGN ARGUMENTS:
-  signer_ca=PATH         CA certificate path (required)
-  signer_key=PATH        CA private key path (required)
-  cert_output_path=PATH  Certificate output path (required)
-  signer_key_password=PASS  CA key password (optional)
-  validity_days=NUM      Certificate validity (default: 365)
-  copy_subject=BOOL      Copy subject from CSR (default: true)
-  copy_sans=BOOL         Copy SANs from CSR (default: true)
-  copy_key_usage=BOOL    Copy key usage from CSR (default: true)
-
-SIGN ARGUMENTS:
-  mode=MODE              What to sign (required)
-                         Values: data, csr
-
-  Data signing (mode=data):
-    data=STRING          Data to sign (required)
-    signer_key=PATH      Private key path (required)
-    algorithm=ALG        Signature algorithm (required)
-                         Values: rsa_pss_sha256, rsa_pss_sha384,
-                                rsa_pss_sha512, ecdsa_sha256, ecdsa_sha384,
-                                ecdsa_sha512, ed25519
-    signer_key_password=PASS  Key password (optional)
-
-  CSR signing (mode=csr):
-    signer_cert=PATH     CA certificate path (required)
-    signer_key=PATH      CA private key path (required)
-    cert_output_path=PATH  Certificate output path (required)
-    validity_days=NUM    Certificate validity (default: 365)
-    copy_extensions=BOOL Copy extensions from CSR (default: false)
-
-VERIFY ARGUMENTS:
-  ca_bundle=PATH         CA certificates bundle
-  check_revocation=BOOL  Check revocation status (default: false)
-  allow_self_signed=BOOL Allow self-signed (default: false)
-
-RENEW ARGUMENTS:
-  mode=MODE              Renewal mode (required)
-                         Values: self_signed, ca_signed
-  key_strategy=STRATEGY  Key handling (default: reuse)
-                         Values: reuse, rekey
-  validity_days=NUM      New validity period (default: 365)
-  algorithm=ALG          Algorithm for new key (if rekeying)
-  rsa_bits=NUMBER        RSA key size (if rekeying, default: 2048)
-
-CHAIN.INFO ARGUMENTS:
-  trust_store=PATH       Trust store path for validation
-  include_details=BOOL   Include detailed info (default: false)
-
-CERTIFICATE FORMATS:
-
-  Supported file types:
-    .pem                 PEM-encoded (Base64 with headers)
-    .crt, .cer           Certificate files (usually PEM)
-    .key                 Private key files (usually PEM)
-    .csr                 Certificate Signing Request
-    .der                 DER-encoded (binary)
-
-  Encoding types:
-    PEM                  ASCII armor format with BEGIN/END markers
-                         Human-readable, Base64 encoded
-                         Default for most operations
-
-    DER                  Binary format, more compact
-                         Used in some legacy systems
-                         Can be converted to/from PEM
-
-KEY ALGORITHMS:
-
-  RSA (Rivest-Shamir-Adleman):
-    • Most widely supported
-    • Key sizes: 2048, 3072, 4096 bits
-    • 2048 bits minimum recommended
-    • 4096 bits for high security
-    • Slower than ECDSA/Ed25519
-    • Larger keys and signatures
-
-  ECDSA (Elliptic Curve Digital Signature Algorithm):
-    • Modern algorithm
-    • Curves: P-256 (256-bit), P-384 (384-bit)
-    • Smaller keys than RSA
-    • Faster operations
-    • P-256 roughly equivalent to RSA 3072
-    • P-384 roughly equivalent to RSA 7680
-    • Growing adoption
-
-  Ed25519 (Edwards-curve Digital Signature Algorithm):
-    • Modern, high-performance algorithm
-    • Fixed 256-bit key size
-    • Fastest signature generation
-    • Smaller signatures
-    • Strong security guarantees
-    • Best choice for new systems
-    • Not universally supported yet
-
-  Algorithm comparison:
-    Feature          RSA       ECDSA     Ed25519
-    Key size         Large     Small     Small
-    Speed            Slow      Fast      Fastest
-    Signature size   Large     Small     Small
-    Security         Proven    Strong    Strong
-    Compatibility    Universal Good      Limited
-
-CERTIFICATE TYPES:
-
-  Self-signed certificates:
-    • Issuer = Subject
-    • Used for: testing, development, private CAs
-    • Not trusted by browsers by default
-    • Fast to create, no external CA needed
-
-  CA certificates:
-    • is_ca=true flag
-    • Can sign other certificates
-    • Forms trust hierarchy
-    • Long validity period (10+ years typical)
-
-  Leaf/End-entity certificates:
-    • is_ca=false (default)
-    • Used by servers, clients, devices
-    • Cannot sign other certificates
-    • Shorter validity (90-365 days typical)
-
-  Intermediate certificates:
-    • is_ca=true
-    • Signed by root or another intermediate
-    • Signs leaf certificates
-    • Allows root CA to stay offline
-
-SUBJECT FIELDS:
-
-  Common Name (CN):
-    • Primary identifier
-    • Domain name for TLS certificates
-    • Required for most certificates
-
-  Organization (O):
-    • Company or entity name
-    • Displayed in certificate details
-
-  Organizational Unit (OU):
-    • Department or division
-    • Optional, informational
-
-  Locality (L):
-    • City name
-    • Optional
-
-  State/Province (ST):
-    • State or province
-    • Optional
-
-  Country (C):
-    • Two-letter country code (US, GB, etc.)
-    • Optional
-
-  Example subject:
+/// Metadata for `resh cert --help` and `resh cert <verb> --help`.
+static CERT_HELP: HandleHelp = HandleHelp {
+    description: "The cert handle inspects and manages X.509 certificates, private keys, and \
+        certificate signing requests stored as PEM or DER files, using pure Rust crypto \
+        libraries (x509-parser, rcgen, ring, rsa, p256, p384, ed25519-dalek) with no OpenSSL \
+        dependency. It covers inspection, verification, chain analysis, key and certificate \
+        generation, CSR creation, signing, and renewal. The target is a file path, written as \
+        cert:///etc/ssl/certs/server.pem for an absolute path or cert://./server.pem for a \
+        relative one.",
+    usage: "resh cert://<file-path>.<verb>[(key=value,...)]",
+    verbs: &[
+        VerbHelp {
+            name: "info",
+            definition: "Reads a PEM or DER file holding certificates, a CSR, or a private key \
+                and reports, for each object, its type, serial number, subject, issuer, \
+                validity, public key, extensions, and fingerprints.",
+            detail: Some(VerbDetail {
+                usage: "resh cert://<path>.info [format=json|text] [encoding=auto|pem|der]\n  \
+                    [fingerprint_algs=sha1,sha256,sha384,sha512] [include_pem=true|false]\n  \
+                    [include_raw=true|false]",
+                example: "resh --json-pretty cert:///etc/ssl/certs/server.pem.info",
+                example_output: Some(
+                    r#"{
+  "encoding": "pem",
+  "objects": [
     {
-      "common_name": "example.com",
-      "organization": "Example Corp",
-      "organizational_unit": "IT Department",
-      "locality": "San Francisco",
-      "state": "California",
-      "country": "US"
+      "extensions": {
+        "authority_key_id": "FC:DF:22:8C:...:91:99:8E",
+        "basic_constraints": {
+          "ca": false,
+          "critical": true,
+          "path_len": null
+        },
+        "extended_key_usage": [
+          "serverAuth"
+        ],
+        "key_usage": [
+          "digitalSignature"
+        ],
+        "subject_alt_names": [
+          "DNS:example.com",
+          "DNS:www.example.com"
+        ],
+        "subject_key_id": "17:D4:12:56:...:47:47:FE:AA"
+      },
+      "fingerprints": {
+        "sha256": "C2:76:3C:C0:...:6C:B1:F2:3C"
+      },
+      "is_ca": false,
+      "issuer": {
+        "common_name": "Example CA",
+        "raw_dn": "CN=Example CA"
+      },
+      "kind": "certificate",
+      "public_key": {
+        "algorithm": "ECDSA",
+        "curve": "P-256",
+        "key_size": 256
+      },
+      "serial_number": "2ABD84C90EF26CA158F83AB47F04EC47",
+      "subject": {
+        "common_name": "example.com",
+        "raw_dn": "CN=example.com"
+      },
+      "validity": {
+        "is_currently_valid": true,
+        "not_after": "2027-10-16T19:10:00+00:00",
+        "not_before": "2026-10-16T19:10:00+00:00"
+      },
+      "version": 2
     }
-
-SUBJECT ALTERNATIVE NAMES (SANS):
-
-  DNS names:
-    Format: "DNS:example.com"
-    Use for: Domain names, subdomains
-    Example: "DNS:www.example.com"
-
-  IP addresses:
-    Format: "IP:192.0.2.1"
-    Use for: Server IP addresses
-    Example: "IP:10.0.1.50"
-
-  Email addresses:
-    Format: "EMAIL:user@example.com"
-    Use for: Email certificates
-    Example: "EMAIL:admin@example.com"
-
-  URI:
-    Format: "URI:https://example.com"
-    Use for: Service endpoints
-
-  Multiple SANs:
-    ["DNS:example.com", "DNS:www.example.com", "IP:192.0.2.1"]
-
-KEY FORMATS:
-
-  PKCS#8:
-    • Standard format for private keys
-    • Algorithm-agnostic
-    • Supports encryption
-    • Recommended for new keys
-    • BEGIN PRIVATE KEY (unencrypted)
-    • BEGIN ENCRYPTED PRIVATE KEY (encrypted)
-
-  PKCS#1:
-    • Legacy RSA-specific format
-    • Only for RSA keys
-    • BEGIN RSA PRIVATE KEY
-
-  SEC1:
-    • ECDSA-specific format
-    • Only for ECDSA keys
-    • BEGIN EC PRIVATE KEY
-
-OUTPUT FORMATS:
-
-  info output (JSON):
-    {
-      "type": "certificate",
-      "encoding": "pem",
-      "objects": [
-        {
-          "kind": "certificate",
-          "version": 2,
-          "serial_number": "123456789",
-          "subject": {...},
-          "issuer": {...},
-          "validity": {...},
-          "public_key": {...},
-          "fingerprints": {...}
-        }
-      ]
-    }
-
-  info output (text):
-    Type: Certificate
-    Encoding: pem
-    Valid From: 2023-01-01 00:00:00 UTC
-    Valid To: 2024-01-01 00:00:00 UTC
-    Subject: CN=example.com
-    SHA256: AB:CD:EF:...
-
-  generate output:
-    {
-      "ok": true,
-      "mode": "self_signed",
-      "certificate": {...},
-      "key": {...},
-      "validity": {...}
-    }
-
-  verify output:
-    {
-      "valid": true,
-      "errors": [],
-      "warnings": [],
-      "is_self_signed": true,
-      "expires_in_days": 364
-    }
-
-  csr.create output:
-    {
-      "ok": true,
-      "key_strategy": "generate",
-      "csr": {...},
-      "key": {...}
-    }
-
-  chain.info output:
-    {
-      "chain_length": 3,
-      "certificates": [...],
-      "trust_path_valid": true
-    }
-
-EXIT CODES:
-  0                      Success
-  1                      General error
-  2                      Certificate not found
-  3                      Parse error (invalid format)
-  4                      Invalid options/arguments
-  5                      Target file exists (overwrite=false)
-  6                      Verification failed
-  7                      Permission denied
-
-ERROR MESSAGES:
-
-  File errors:
-    "cert.not_found"             Certificate file doesn't exist
-    "cert.target_exists"         Output file exists, overwrite=false
-    "cert.read_error"            Cannot read certificate file
-
-  Parse errors:
-    "cert.parse_failed"          Invalid certificate format
-    "cert.invalid_pem"           Malformed PEM format
-    "cert.invalid_der"           Malformed DER format
-    "cert.unsupported_format"    Unknown file format
-
-  Validation errors:
-    "cert.invalid_options"       Invalid command options
-    "cert.missing_required"      Required parameter missing
-    "cert.invalid_subject"       Invalid subject format
-    "cert.invalid_sans"          Invalid SAN format
-
-  Generation errors:
-    "cert.generation_failed"     Certificate generation failed
-    "cert.key_generation_failed" Key generation failed
-    "cert.invalid_algorithm"     Unknown algorithm
-
-  Signing errors:
-    "cert.signing_failed"        Certificate signing failed
-    "cert.invalid_signer"        Invalid CA certificate
-    "cert.signer_not_ca"         Signer is not a CA certificate
-
-  Verification errors:
-    "cert.verification_failed"   Certificate verification failed
-    "cert.expired"               Certificate has expired
-    "cert.not_yet_valid"         Certificate not yet valid
-    "cert.untrusted"             Certificate not trusted
-
-COMMON WORKFLOWS:
-
-  Create self-signed certificate for testing:
-    # Generate certificate and key
-    cert:///tmp/test.generate(mode=self_signed,subject='{{"common_name":"test.local"}',algorithm=rsa,rsa_bits=2048)
-
-    # Verify it works
-    cert:///tmp/test.pem.verify(allow_self_signed=true)
-
-    # View details
-    cert:///tmp/test.pem.info(format=text)
-
-  Set up Certificate Authority:
-    # Create CA certificate
-    cert:///ca/root-ca.generate(mode=self_signed,subject='{{"common_name":"My Root CA","organization":"My Org"}',is_ca=true,validity_days=3650,algorithm=rsa,rsa_bits=4096)
-
-    # View CA info
-    cert:///ca/root-ca.pem.info
-
-  Issue server certificate:
-    # Create CSR
-    cert:///server/server.csr.create(key_strategy=generate,algorithm=ecdsa,ecdsa_curve=P-256,new_key_output_path=/server/server-key.pem,subject='{{"common_name":"server.example.com"}',sans='["DNS:server.example.com","DNS:www.server.example.com"]')
-
-    # Sign with CA
-    cert:///server/server.csr.sign(signer_ca=/ca/root-ca.pem,signer_key=/ca/root-ca-key.pem,cert_output_path=/server/server.pem,validity_days=90)
-
-    # Verify certificate
-    cert:///server/server.pem.verify(ca_bundle=/ca/root-ca.pem)
-
-  Renew expiring certificate:
-    # Check current certificate
-    cert:///certs/old.pem.info
-
-    # Renew with same key
-    cert:///certs/old.pem.renew(mode=self_signed,key_strategy=reuse,validity_days=365)
-
-    # Verify renewed certificate
-    cert:///certs/old.pem.verify
-
-  Create intermediate CA:
-    # Create intermediate CA CSR
-    cert:///ca/intermediate.csr.create(key_strategy=generate,algorithm=rsa,rsa_bits=4096,new_key_output_path=/ca/intermediate-key.pem,subject='{{"common_name":"Intermediate CA"}')
-
-    # Sign with root CA
-    cert:///ca/intermediate.csr.sign(signer_ca=/ca/root-ca.pem,signer_key=/ca/root-ca-key.pem,cert_output_path=/ca/intermediate.pem,validity_days=1825)
-
-    # Create certificate chain
-    cat /ca/intermediate.pem /ca/root-ca.pem > /ca/chain.pem
-
-    # Verify chain
-    cert:///ca/chain.pem.chain.info
-
-  Set up TLS for web server:
-    # Generate CSR for server
-    cert:///etc/ssl/server.csr.create(key_strategy=generate,algorithm=ecdsa,ecdsa_curve=P-384,new_key_output_path=/etc/ssl/private/server-key.pem,subject='{{"common_name":"www.example.com"}',sans='["DNS:www.example.com","DNS:example.com"]')
-
-    # Send CSR to CA (or sign with internal CA)
-    cert:///etc/ssl/server.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/etc/ssl/certs/server.pem)
-
-    # Verify certificate
-    cert:///etc/ssl/certs/server.pem.verify(ca_bundle=/ca/ca.pem)
-
-    # Configure web server with:
-    # Certificate: /etc/ssl/certs/server.pem
-    # Private key: /etc/ssl/private/server-key.pem
-
-  Client certificate authentication:
-    # Create client CSR
-    cert:///client/client.csr.create(key_strategy=generate,algorithm=rsa,rsa_bits=2048,new_key_output_path=/client/client-key.pem,subject='{{"common_name":"client01"}',extended_key_usage='["clientAuth"]')
-
-    # Sign with CA
-    cert:///client/client.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/client/client.pem,validity_days=365)
-
-    # Verify client certificate
-    cert:///client/client.pem.verify(ca_bundle=/ca/ca.pem)
-
-  Password-protected keys:
-    # Generate encrypted key
-    cert:///secure/key.generate(mode=key,algorithm=rsa,rsa_bits=4096,password="strong-password",kdf=argon2id)
-
-    # Use in certificate generation
-    cert:///secure/cert.generate(mode=self_signed,subject='{{"common_name":"secure.example.com"}',key_path=/secure/key.pem)
-
-BEST PRACTICES:
-  • Use RSA 2048-bit minimum, 4096-bit for CAs
-  • Use ECDSA P-256 or Ed25519 for modern systems
-  • Use Ed25519 when compatibility allows (fastest, smallest)
-  • Never use RSA 1024-bit (insecure)
-  • Set appropriate validity periods (90 days for leaf, longer for CA)
-  • Use SANs instead of CN for domain names
-  • Include all required SANs (www and apex domain)
-  • Use is_ca=true only for CA certificates
-  • Protect private keys with file permissions (chmod 600)
-  • Use password encryption for highly sensitive keys
-  • Use Argon2id KDF for password protection
-  • Store CA keys offline or in HSM
-  • Use intermediate CAs to protect root CA
-  • Keep root CA offline after initial setup
-  • Verify certificates after generation
-  • Test certificates before deployment
-  • Monitor certificate expiration dates
-  • Automate certificate renewal
-  • Use certificate chains properly
-  • Include intermediate certificates in server config
-  • Keep backups of private keys (securely)
-  • Document your PKI structure
-  • Use consistent subject field formats
-  • Follow naming conventions
-  • Implement certificate rotation
-  • Use short validity for leaf certificates (90 days)
-  • Use long validity for CA certificates (10+ years)
-  • Implement proper key storage
-  • Audit certificate usage
-  • Revoke compromised certificates immediately
-
-CERTIFICATE LIFECYCLE MANAGEMENT:
-  • Plan certificate validity periods
-  • Set up expiration monitoring
-  • Automate renewal 30 days before expiry
-  • Test renewal process regularly
-  • Keep certificate inventory
-  • Track certificate purposes
-  • Document renewal procedures
-  • Implement automated deployment
-  • Use consistent file naming
-  • Maintain certificate history
-  • Monitor for unauthorized certificates
-  • Implement certificate pinning where appropriate
-  • Use OCSP or CRL for revocation checking
-  • Plan for emergency revocation
-  • Keep audit logs of certificate operations
-
-KEY MANAGEMENT GUIDELINES:
-  • Generate keys on secure systems
-  • Never reuse keys across certificates
-  • Use key_strategy=rekey when security required
-  • Use key_strategy=reuse for continuity
-  • Store keys separate from certificates
-  • Encrypt keys at rest
-  • Use HSM for production CA keys
-  • Implement key rotation schedule
-  • Backup keys securely
-  • Destroy old keys properly
-  • Never email or transmit keys unencrypted
-  • Use secure key generation (not weak RNGs)
-  • Monitor key access
-  • Limit key access to authorized personnel
-
-SECURITY CONSIDERATIONS:
-  • Protect private keys (chmod 600 or 400)
-  • Never commit keys to version control
-  • Use password protection for sensitive keys
-  • Use strong passwords (12+ characters)
-  • Use Argon2id for password-based encryption
-  • Verify certificate chains before trusting
-  • Check certificate revocation status
-  • Validate certificate purposes
-  • Use appropriate key sizes
-  • Don't use deprecated algorithms
-  • Monitor for certificate vulnerabilities
-  • Implement certificate pinning for high-security
-  • Use separate keys for different purposes
-  • Audit certificate operations
-  • Implement proper access control
-  • Secure certificate storage
-  • Use secure random number generation
-  • Validate all inputs
-  • Check certificate extensions
-  • Verify signature algorithms
-  • Don't trust self-signed certs in production
-  • Implement defense in depth
-  • Monitor certificate transparency logs
-  • Implement incident response for key compromise
-
-TROUBLESHOOTING:
-
-  Certificate not found:
-    • Check file path
-    • Verify file exists: ls -la /path/to/cert.pem
-    • Check file permissions
-    • Use absolute paths
-
-  Parse failed:
-    • Check file encoding (PEM vs DER)
-    • Verify file is not corrupted
-    • Check for correct BEGIN/END markers
-    • Try specifying encoding explicitly
-
-  Verification failed:
-    • Check certificate validity dates
-    • Verify CA chain
-    • Check if self-signed (use allow_self_signed=true)
-    • Verify CA bundle path
-    • Check certificate purposes
-
-  Generation failed:
-    • Check subject format (valid JSON)
-    • Verify algorithm support
-    • Check key size validity
-    • Ensure output path is writable
-    • Check for existing files (use overwrite=true)
-
-  Key format issues:
-    • Use correct key_format for algorithm
-    • PKCS1 only for RSA
-    • SEC1 only for ECDSA
-    • PKCS8 for all algorithms
-    • Check PEM headers match format
-
-  Password issues:
-    • Verify password is correct
-    • Check KDF settings
-    • Use kdf_iterations=100000 minimum
-    • Try different KDF (pbkdf2 vs argon2id)
-
-  Permission denied:
-    • Check file permissions: ls -la
-    • Ensure write access to output directory
-    • Check parent directory permissions
-    • May need sudo for system paths
-
-DEBUGGING:
-
-  View certificate details:
-    cert:///path/cert.pem.info(format=text)
-
-  Check certificate chain:
-    cert:///path/chain.pem.chain.info(include_details=true)
-
-  Verify certificate:
-    cert:///path/cert.pem.verify(ca_bundle=/ca/bundle.pem)
-
-  Check key format:
-    openssl rsa -in key.pem -text -noout    # RSA
-    openssl ec -in key.pem -text -noout     # ECDSA
-    openssl pkey -in key.pem -text -noout   # Any
-
-  Verify key matches certificate:
-    openssl x509 -in cert.pem -pubkey -noout | md5sum
-    openssl rsa -in key.pem -pubout | md5sum
-
-  Check certificate dates:
-    openssl x509 -in cert.pem -dates -noout
-
-  View CSR:
-    openssl req -in request.csr -text -noout
-
-PLATFORM SUPPORT:
-
-  All platforms:
-    • Certificate generation
-    • Key generation
-    • Certificate verification
-    • CSR creation and signing
-    • Certificate parsing
-    • Chain validation
-
-  RSA support:
-    • All platforms
-    • All key sizes (2048, 3072, 4096)
-
-  ECDSA support:
-    • All platforms with modern crypto libraries
-    • P-256 and P-384 curves
-
-  Ed25519 support:
-    • Most platforms
-    • Requires recent crypto library
-    • Check compatibility if targeting older systems
-
-PERFORMANCE CONSIDERATIONS:
-  • RSA key generation is slow (especially 4096-bit)
-  • ECDSA key generation is fast
-  • Ed25519 key generation is fastest
-  • RSA signing is slower than ECDSA/Ed25519
-  • Certificate parsing is fast
-  • Chain validation depends on chain length
-  • Password-based encryption adds overhead
-  • Argon2id is slower but more secure than PBKDF2
-  • DER encoding is more compact than PEM
-  • Large key sizes increase computation time
-
-LIMITATIONS:
-  • Cannot interact with external CAs directly
-  • No ACME protocol support (Let's Encrypt)
-  • No automatic certificate renewal
-  • No built-in revocation (CRL/OCSP)
-  • No hardware security module (HSM) support
-  • No PKCS#11 interface
-  • No smart card support
-  • Cannot create CRLs
-  • No OCSP responder
-  • No certificate transparency log submission
-  • No automatic chain building
-  • Limited extension support
-  • No custom OIDs
-  • No name constraints
-  • No policy mappings
-
-INTEGRATION WITH OTHER HANDLES:
-
-  With file handle:
-    # Read certificate for verification
-    cert://$(file:///path/cert.pem.path).verify
-
-  With config handle:
-    # Store certificate paths
-    config://certs/server/path.set(value="/etc/ssl/server.pem")
-
-  With secret handle:
-    # Store private key passwords
-    secret://cert-passwords/ca-key.set(value="password")
-
-  With log handle:
-    # Log certificate operations
-    cert:///tmp/cert.generate(...) | log://cert-operations.log.append
-
-  With backup handle:
-    # Backup certificates and keys
-    backup://certs.create(target="/etc/ssl")
-
-MORE INFO:
-  For complete documentation of cert handle operations:
-  https://github.com/[your-org]/resource-shell/docs/Security_Secrets/cert.md
-
-  X.509 certificate standards:
-  https://tools.ietf.org/html/rfc5280
-
-  Key management best practices:
-  https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-57pt1r5.pdf
-
-  TLS/SSL configuration:
-  https://ssl-config.mozilla.org/
-
-  Certificate transparency:
-  https://certificate.transparency.dev/
-
-  Use 'cert:// --help=VERB' for detailed help on a specific verb.
-"#;
+  ],
+  "type": "certificate"
+}
+
+Shown for a CA-signed PEM certificate with --json-pretty. version is
+zero-based (2 means X.509 v3). A bundle reports type certificatechain with
+one object per certificate; a CSR or private key reports kind csr or
+private_key."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "verify",
+            definition: "Checks a certificate's structure, signature chain to a trust anchor, \
+                validity period, hostname, purpose, and private key against a policy, and \
+                reports each check as passed, failed, skipped, not_checked, or unsupported.",
+            detail: Some(VerbDetail {
+                usage: "resh cert://<path>.verify [hostname=<name>] [format=json|text]\n  \
+                    [trust=system|mount|inline] [trust_paths=<path>,...]\n  \
+                    [trust_pem=<pem>] [max_chain_depth=<n>] [min_rsa_bits=<n>]\n  \
+                    [purpose=server_auth|client_auth|code_signing|email_protection|any]\n  \
+                    [allow_self_signed=true|false] [allow_expired=true|false]\n  \
+                    [allow_not_yet_valid=true|false] [check_revocation=none|soft|hard]\n  \
+                    [keypair_target=<key-path>] [disallow_weak_signatures=true|false]",
+                example: "resh cert://./web.pem.verify trust_paths=ca.pem hostname=web.test \
+                    format=text",
+                example_output: Some(
+                    r#"Target: cert://./web.pem
+Type: certificate (pem)
+Overall: OK
+
+[STRUCTURE]
+  OK: Certificate parsed (X.509 v3, ecdsa-with-SHA256, ecdsa 256-bit key)
+
+[CHAIN]
+  OK: Chain of 2 certificate(s) verified to trust anchor CN=Example CA
+
+[TIME]
+  OK: Certificate is currently valid
+
+[HOSTNAME]
+  OK: Hostname web.test matches DNS SAN web.test
+
+[USAGE]
+  SKIPPED: No purpose requested (purpose=any)
+
+[KEYPAIR]
+  SKIPPED: No keypair_target specified
+
+[REVOCATION]
+  SKIPPED: Revocation checking disabled (check_revocation=none)
+
+[Chain Report]
+  0: CN=web.test
+  1: CN=Example CA (TRUSTED)
+
+Warnings:
+  Revocation not checked (check_revocation=none)
+
+Shown for a leaf issued by the CA in ca.pem. The first certificate in the
+file is verified and any others are used as intermediates. Every
+signature in the chain is checked (RSA PKCS#1 v1.5 SHA-256/384/512, ECDSA
+P-256/P-384, Ed25519; other algorithms report unsupported). The default
+trust=system uses the system CA bundle; trust_paths and trust_pem add
+anchors. Revocation is not implemented: soft reports not_checked and hard
+fails. The default format=json adds a status field to each check."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "chain.info",
+            definition: "Parses a certificate bundle, identifies leaf candidates, and reports \
+                each possible chain with its hops, root, and trust status.",
+            detail: Some(VerbDetail {
+                usage: "resh cert://<bundle-path>.chain.info [format=json|text]\n  \
+                    [encoding=auto|pem|der]\n  \
+                    [trust=none|system|mount|inline|system+mount|system+inline|mount+inline]\n  \
+                    [trust_paths=<path>,...] [trust_pem=<pem>] [max_depth=<n>]\n  \
+                    [max_paths=<n>] [include_raw_subjects=true|false]\n  \
+                    [include_raw_issuers=true|false] [include_cert_refs=true|false]",
+                example: "resh cert:///etc/ssl/certs/bundle.pem.chain.info format=text",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "generate",
+            definition: "Generates a private key, a self-signed certificate, a CA-signed leaf \
+                certificate, or a CSR and writes it beside the target path as \
+                <target>-key.pem, <target>.pem, or <target>.csr.",
+            detail: Some(VerbDetail {
+                usage: "resh cert://<base-path>.generate [mode=key|self_signed|csr|leaf_cert]\n  \
+                    [algorithm=rsa|ecdsa|ed25519] [rsa_bits=<n>] [ecdsa_curve=P-256|P-384]\n  \
+                    [subject=<json>] [sans=<json-array>] [is_ca=true|false]\n  \
+                    [path_len=<n>] [not_after_offset_days=<n>]\n  \
+                    [signer_ca=<path> signer_key=<path>] [output=<json>]\n  \
+                    [overwrite=true|false] [format=json|text] [<option>=<value> ...]",
+                example: "resh --json-pretty cert://./server.generate mode=key algorithm=ecdsa",
+                example_output: Some(
+                    r#"{
+  "algorithm": "ecdsa",
+  "certificate": null,
+  "csr": null,
+  "ecdsa_curve": "P256",
+  "encodings": {
+    "cert": "pem",
+    "csr": "pem",
+    "key": "pem"
+  },
+  "is_ca": false,
+  "key": {
+    "encrypted": false,
+    "key_format": "pkcs8",
+    "stored_at": "./server-key.pem"
+  },
+  "mode": "key",
+  "ok": true,
+  "path_len": null,
+  "returned": {
+    "cert_der_base64": null,
+    "cert_pem": null,
+    "csr_der_base64": null,
+    "csr_pem": null,
+    "key_der_base64": null,
+    "key_pem": null
+  },
+  "rsa_bits": null,
+  "sans": [],
+  "subject": null,
+  "target": "./server",
+  "validity": null,
+  "warnings": []
+}
+
+Shown with --json-pretty. mode=leaf_cert needs signer_ca and signer_key
+and signs the new certificate with that CA. For certificate modes the
+serial number and fingerprints are read from the issued certificate.
+key_passphrase is rejected because key encryption is not available in
+this build."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "csr.create",
+            definition: "Creates a certificate signing request at the target path, signed with \
+                an existing key or with a newly generated key that it also saves.",
+            detail: Some(VerbDetail {
+                usage: "resh cert://<csr-path>.csr.create subject=<json>\n  \
+                    [key_strategy=reuse|generate] [existing_key_path=<path>]\n  \
+                    [new_key_output_path=<path>] [algorithm=rsa|ecdsa|ed25519]\n  \
+                    [sans=<json-array>] [key_usage=<json-array>]\n  \
+                    [extended_key_usage=<json-array>] [overwrite=true|false]\n  \
+                    [format=json|text] [<option>=<value> ...]",
+                example: "resh cert://web.csr.create existing_key_path=k \
+                    subject='{\"common_name\":\"web\"}'",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "sign",
+            definition: "Signs a file or base64 data with a private key, or with mode=csr \
+                issues a certificate for a CSR signed by the CA in signer_cert and signer_key, \
+                using the target only as the signer label in the output.",
+            detail: Some(VerbDetail {
+                usage: "resh cert://<label>.sign signer_key=<path> data_source=<path>\n  \
+                    [signature_output_path=<path>] [signature_algorithm=<alg>]\n  \
+                    [signature_encoding=base64|pem|der]\n  \
+                    [include_signature_bytes=true|false] [signer_key_passphrase=<pass>]\n  \
+                    [mode=csr csr_source=<path> signer_cert=<path> cert_output_path=<path>]\n  \
+                    [format=json|text] [<option>=<value> ...]",
+                example: "resh --json-pretty cert://./ca.sign signer_key=ca-key.pem \
+                    data_source=app.tar",
+                example_output: Some(
+                    r#"{
+  "algorithm": "EcdsaSha256",
+  "cert": null,
+  "cert_pem": null,
+  "csr_source": null,
+  "csr_subject": null,
+  "data": {
+    "length_bytes": 20480,
+    "source": "app.tar"
+  },
+  "error": null,
+  "mode": "data",
+  "ok": true,
+  "signature": {
+    "bytes_base64": null,
+    "stored_at": null
+  },
+  "signature_encoding": "Base64",
+  "signature_format": "Raw",
+  "signer": "./ca",
+  "signer_cert": null,
+  "signer_key": "ca-key.pem",
+  "warnings": []
+}
+
+Shown for a P-256 signer key with --json-pretty. Pass
+signature_output_path or include_signature_bytes=true to keep the
+signature. With mode=csr the CSR signature is verified, the certificate
+keeps the CSR subject, SANs, and public key, and cert reports its real
+serial number, validity, and fingerprints."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "csr.sign",
+            definition: "Cannot be run from the command line, because cert://<target>.csr.sign \
+                is parsed as the sign verb; programmatic callers get the same certificate \
+                issuing as sign with mode=csr, which is the command to use instead.",
+            detail: Some(VerbDetail {
+                usage: "resh cert://<target>.csr.sign\n  \
+                    (runs the sign verb with target <target>.csr; see the example)",
+                example: "resh cert sign --help",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "renew",
+            definition: "Issues a replacement for an existing certificate with the same subject, \
+                SANs, and extensions, signed by signer_ca and signer_key or self-signed, \
+                reusing the existing key or generating a new one, and reports the new \
+                certificate's real details.",
+            detail: Some(VerbDetail {
+                usage: "resh cert://<cert-path>.renew [renewal_mode=auto|self_signed|explicit_signer]\n  \
+                    [signer_ca=<path>] [signer_key=<path>] [key_strategy=reuse|rekey]\n  \
+                    [existing_key_path=<path>] [algorithm=rsa|ecdsa|ed25519]\n  \
+                    [new_cert_output_path=<path>] [new_key_output_path=<path>]\n  \
+                    [not_before=now|carry_over_start|<rfc3339>] [not_after=<rfc3339>]\n  \
+                    [not_after_offset_days=<n>] [overwrite=true|false]\n  \
+                    [format=json|text] [<option>=<value> ...]",
+                example: "resh cert:///etc/ssl/certs/server.pem.renew format=text",
+                example_output: Some(
+                    r#"Old certificate: /etc/ssl/certs/server.pem
+New certificate: /etc/ssl/certs/server-renewed.pem
+Renewal mode: auto
+Key strategy: reuse (reused existing)
+
+Old Subject: CN=example.com
+New Subject: CN=example.com
+New Issuer: CN=example.com
+New Serial: 1415E59C33691CC71DBAF4B0D2AD0064
+New SHA256: B8:0E:10:05:53:1D:BE:35:...:34:C0:39:7C:08:B9:C5:DA
+
+Old Validity:
+  Not Before: 2025-10-16T00:00:00+00:00
+  Not After : 2026-10-16T00:00:00+00:00
+
+New Validity:
+  Not Before: 2026-10-16T09:12:44+00:00
+  Not After : 2027-10-16T09:12:44+00:00
+
+Signer:
+  self-signed
+
+Warnings:
+  (none)
+
+Shown for a self-signed certificate with the default key_strategy=reuse,
+which signs with the key in existing_key_path (default
+<name>-key.pem). A CA-signed certificate needs signer_ca and signer_key;
+with reuse and no key file, its public key is reused. key_strategy=rekey
+saves the new key as <name>-renewed-key.pem."#,
+                ),
+            }),
+        },
+    ],
+};
 
 // Certificate generation types
 #[derive(Debug, Clone)]
@@ -1062,11 +398,11 @@ pub enum CertAlgorithm {
 }
 
 #[derive(Debug, Clone)]
+/// Supported ECDSA curves. P-521 and secp256k1 are rejected when options
+/// are parsed.
 pub enum EcdsaCurve {
     P256,
     P384,
-    P521,
-    Secp256k1,
 }
 
 #[derive(Debug, Clone)]
@@ -1249,7 +585,7 @@ impl Default for CertGenerateOutputOptions {
         Self {
             write_key: true,
             write_cert: true,
-            write_csr: false,
+            write_csr: true,
             return_key: false,
             return_cert: true,
             return_csr: false,
@@ -1470,6 +806,8 @@ pub struct CertRenewOptions {
     pub signer_key_passphrase: Option<String>,
 
     pub key_strategy: KeyStrategy,
+    /// Private key of the certificate being renewed (key_strategy=reuse).
+    pub existing_key_path: Option<String>,
     pub algorithm: Option<CertAlgorithm>,
     pub rsa_bits: u16,
     pub ecdsa_curve: Option<EcdsaCurve>,
@@ -1494,6 +832,8 @@ pub struct CertRenewOptions {
     pub path_len: Option<u8>,
 
     pub not_before: NotBeforeSetting,
+    /// not_before=carry_over_start: keep the old certificate's start time.
+    pub carry_over_start: bool,
     pub not_after: Option<DateTime<Utc>>,
     pub not_after_offset_days: i64,
 
@@ -1512,6 +852,7 @@ impl Default for CertRenewOptions {
             signer_key_passphrase: None,
 
             key_strategy: KeyStrategy::Reuse,
+            existing_key_path: None,
             algorithm: None,
             rsa_bits: 2048,
             ecdsa_curve: None,
@@ -1536,6 +877,7 @@ impl Default for CertRenewOptions {
             path_len: None,
 
             not_before: NotBeforeSetting::Now,
+            carry_over_start: false,
             not_after: None,
             not_after_offset_days: 365,
 
@@ -1877,28 +1219,79 @@ impl Default for CertVerifyOptions {
     }
 }
 
+/// Outcome of one verify check. Only `Passed` means the check was performed
+/// and succeeded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CheckStatus {
+    Passed,
+    Failed,
+    /// Not requested by the policy (for example no hostname given).
+    Skipped,
+    /// Requested in a mode that tolerates not checking (soft revocation).
+    NotChecked,
+    /// Requested but not implemented for this input.
+    Unsupported,
+}
+
+impl CheckStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CheckStatus::Passed => "passed",
+            CheckStatus::Failed => "failed",
+            CheckStatus::Skipped => "skipped",
+            CheckStatus::NotChecked => "not_checked",
+            CheckStatus::Unsupported => "unsupported",
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            CheckStatus::Passed => "OK",
+            CheckStatus::Failed => "FAILED",
+            CheckStatus::Skipped => "SKIPPED",
+            CheckStatus::NotChecked => "NOT CHECKED",
+            CheckStatus::Unsupported => "UNSUPPORTED",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CheckResult {
+    /// False when this check makes the overall result invalid.
     pub ok: bool,
+    pub status: CheckStatus,
     pub message: String,
     pub error_code: Option<String>,
 }
 
 impl CheckResult {
-    pub fn ok(message: &str) -> Self {
+    fn with(status: CheckStatus, ok: bool, message: &str, error_code: Option<&str>) -> Self {
         Self {
-            ok: true,
+            ok,
+            status,
             message: message.to_string(),
-            error_code: None,
+            error_code: error_code.map(|c| c.to_string()),
         }
     }
-    
+
+    pub fn ok(message: &str) -> Self {
+        Self::with(CheckStatus::Passed, true, message, None)
+    }
+
     pub fn fail(message: &str, error_code: &str) -> Self {
-        Self {
-            ok: false,
-            message: message.to_string(),
-            error_code: Some(error_code.to_string()),
-        }
+        Self::with(CheckStatus::Failed, false, message, Some(error_code))
+    }
+
+    pub fn skipped(message: &str) -> Self {
+        Self::with(CheckStatus::Skipped, true, message, None)
+    }
+
+    pub fn not_checked(message: &str) -> Self {
+        Self::with(CheckStatus::NotChecked, true, message, None)
+    }
+
+    pub fn unsupported(message: &str, error_code: &str) -> Self {
+        Self::with(CheckStatus::Unsupported, false, message, Some(error_code))
     }
 }
 
@@ -1951,6 +1344,7 @@ pub struct PublicKeyInfo {
 pub struct CsrInfo {
     pub kind: CertObjectKind,
     pub subject: HashMap<String, Value>,
+    pub fingerprints: HashMap<String, String>,
     pub public_key: HashMap<String, Value>,
     pub extensions: HashMap<String, Value>,
     pub pem: Option<String>,
@@ -2025,6 +1419,8 @@ pub struct NewCertInfo {
     pub validity: HashMap<String, String>,
     pub is_ca: bool,
     pub path_len: Option<u8>,
+    pub serial_number: String,
+    pub sans: Vec<String>,
     pub fingerprints: HashMap<String, String>,
 }
 
@@ -2183,13 +1579,14 @@ pub struct ChainInfoError {
 
 impl CertHandle {
     pub fn from_url(url: Url) -> Result<Self> {
-        // Check for help flags in URL path or host early
+        // In-URL help forms (cert://--help, cert://-h, cert://--help=<verb>).
+        // Exact matches only, so targets such as /home/x/my-hosts.pem are not help.
         let path = url.path();
         let host = url.host_str().unwrap_or("");
-        
-        // Special handling for help requests at URL level
-        if host == "--help" || host == "-h" || 
-           path.contains("--help") || path.contains("-h") {
+        let is_help = |s: &str| {
+            help::is_help_flag(s) || s.trim_start_matches(['/', '.']).starts_with("--help=")
+        };
+        if is_help(host) || (host.is_empty() && is_help(path)) {
             // Return a dummy handle - help will be detected in call()
             return Ok(Self {
                 target_path: "help".to_string(),
@@ -2197,12 +1594,11 @@ impl CertHandle {
         }
         
         // Extract the target path from the URL
-        let target_path = if let Some(host) = url.host_str() {
-            // cert://hostname/path
-            format!("{}{}", host, url.path())
-        } else {
-            // cert:///path or cert://path
-            url.path().strip_prefix('/').unwrap_or(url.path()).to_string()
+        let target_path = match url.host_str() {
+            // cert://./relative/path or cert://name/path
+            Some(host) if !host.is_empty() => format!("{}{}", host, url.path()),
+            // cert:///absolute/path keeps its leading slash
+            _ => url.path().to_string(),
         };
 
         if target_path.is_empty() {
@@ -2256,13 +1652,7 @@ impl CertHandle {
                 opts.fingerprint_algs = algs_str.split(',').map(|s| s.trim().to_string()).collect();
             }
             
-            // Validate algorithms
-            for alg in &opts.fingerprint_algs {
-                match alg.as_str() {
-                    "sha1" | "sha256" => {},
-                    _ => bail!("Unsupported fingerprint algorithm: {}. Supported: sha1, sha256", alg),
-                }
-            }
+            validate_fingerprint_algs(&opts.fingerprint_algs)?;
         }
 
         Ok(opts)
@@ -2413,9 +1803,8 @@ impl CertHandle {
             opts.ecdsa_curve = match curve_str.as_str() {
                 "P-256" => EcdsaCurve::P256,
                 "P-384" => EcdsaCurve::P384,
-                "P-521" => EcdsaCurve::P521,
-                "secp256k1" => EcdsaCurve::Secp256k1,
-                _ => bail!("Invalid ECDSA curve '{}'. Supported: P-256, P-384, P-521, secp256k1", curve_str),
+                "P-521" | "secp256k1" => bail!("ECDSA curve '{}' is not supported. Supported: P-256, P-384", curve_str),
+                _ => bail!("Invalid ECDSA curve '{}'. Supported: P-256, P-384", curve_str),
             };
         }
 
@@ -2592,23 +1981,23 @@ impl CertHandle {
                 .with_context(|| format!("Invalid output JSON: {}", output_str))?;
             
             if let Value::Object(output_obj) = output_value {
-                if let Some(Value::Bool(write_key)) = output_obj.get("write_key") {
-                    opts.output.write_key = *write_key;
+                if let Some(write_key) = output_obj.get("write_key").and_then(json_bool) {
+                    opts.output.write_key = write_key;
                 }
-                if let Some(Value::Bool(write_cert)) = output_obj.get("write_cert") {
-                    opts.output.write_cert = *write_cert;
+                if let Some(write_cert) = output_obj.get("write_cert").and_then(json_bool) {
+                    opts.output.write_cert = write_cert;
                 }
-                if let Some(Value::Bool(write_csr)) = output_obj.get("write_csr") {
-                    opts.output.write_csr = *write_csr;
+                if let Some(write_csr) = output_obj.get("write_csr").and_then(json_bool) {
+                    opts.output.write_csr = write_csr;
                 }
-                if let Some(Value::Bool(return_key)) = output_obj.get("return_key") {
-                    opts.output.return_key = *return_key;
+                if let Some(return_key) = output_obj.get("return_key").and_then(json_bool) {
+                    opts.output.return_key = return_key;
                 }
-                if let Some(Value::Bool(return_cert)) = output_obj.get("return_cert") {
-                    opts.output.return_cert = *return_cert;
+                if let Some(return_cert) = output_obj.get("return_cert").and_then(json_bool) {
+                    opts.output.return_cert = return_cert;
                 }
-                if let Some(Value::Bool(return_csr)) = output_obj.get("return_csr") {
-                    opts.output.return_csr = *return_csr;
+                if let Some(return_csr) = output_obj.get("return_csr").and_then(json_bool) {
+                    opts.output.return_csr = return_csr;
                 }
             }
         }
@@ -2666,12 +2055,6 @@ impl CertHandle {
                 let key = P384SigningKey::random(&mut rand::thread_rng());
                 Ok(key.to_bytes().to_vec())
             }
-            EcdsaCurve::P521 => {
-                bail!("P-521 curve not yet supported");
-            }
-            EcdsaCurve::Secp256k1 => {
-                bail!("secp256k1 curve not yet supported");
-            }
         }
     }
 
@@ -2689,13 +2072,13 @@ impl CertHandle {
                 let pkcs8_der = key.to_pkcs8_der()
                     .with_context(|| "Failed to encode RSA key as PKCS8")?;
                 let pem = Pem::new("PRIVATE KEY", pkcs8_der.as_bytes());
-                Ok(pem.to_string().into_bytes())
+                Ok(pem_encode_lf(&pem).into_bytes())
             }
             (KeyFormat::Pkcs1, Encoding::Pem) => {
                 let pkcs1_der = key.to_pkcs1_der()
                     .with_context(|| "Failed to encode RSA key as PKCS1")?;
                 let pem = Pem::new("RSA PRIVATE KEY", pkcs1_der.as_bytes());
-                Ok(pem.to_string().into_bytes())
+                Ok(pem_encode_lf(&pem).into_bytes())
             }
             (KeyFormat::Pkcs8, Encoding::Der) => {
                 let pkcs8_der = key.to_pkcs8_der()
@@ -2711,195 +2094,32 @@ impl CertHandle {
         }
     }
 
-    fn encode_ecdsa_private_key(&self, key_data: &[u8], curve: &EcdsaCurve, format: &KeyFormat, encoding: &Encoding) -> Result<Vec<u8>> {
-        match (curve, format, encoding) {
-            (EcdsaCurve::P256, KeyFormat::Sec1, Encoding::Pem) => {
-                let key = P256SigningKey::from_bytes(key_data.try_into()
-                    .with_context(|| "Invalid P256 key length")?)?;
-                let sec1_der = key.to_sec1_der()
-                    .with_context(|| "Failed to encode P256 key as SEC1")?;
-                let pem = Pem::new("EC PRIVATE KEY", sec1_der.as_bytes());
-                Ok(pem.to_string().into_bytes())
-            }
-            (EcdsaCurve::P256, KeyFormat::Pkcs8, Encoding::Pem) => {
-                let key = P256SigningKey::from_bytes(key_data.try_into()
-                    .with_context(|| "Invalid P256 key length")?)?;
-                let pkcs8_der = key.to_pkcs8_der()
-                    .with_context(|| "Failed to encode P256 key as PKCS8")?;
-                let pem = Pem::new("PRIVATE KEY", pkcs8_der.as_bytes());
-                Ok(pem.to_string().into_bytes())
-            }
-            (EcdsaCurve::P384, KeyFormat::Sec1, Encoding::Pem) => {
-                let key = P384SigningKey::from_bytes(key_data.try_into()
-                    .with_context(|| "Invalid P384 key length")?)?;
-                let sec1_der = key.to_sec1_der()
-                    .with_context(|| "Failed to encode P384 key as SEC1")?;
-                let pem = Pem::new("EC PRIVATE KEY", sec1_der.as_bytes());
-                Ok(pem.to_string().into_bytes())
-            }
-            (EcdsaCurve::P384, KeyFormat::Pkcs8, Encoding::Pem) => {
-                let key = P384SigningKey::from_bytes(key_data.try_into()
-                    .with_context(|| "Invalid P384 key length")?)?;
-                let pkcs8_der = key.to_pkcs8_der()
-                    .with_context(|| "Failed to encode P384 key as PKCS8")?;
-                let pem = Pem::new("PRIVATE KEY", pkcs8_der.as_bytes());
-                Ok(pem.to_string().into_bytes())
-            }
-            _ => bail!("Unsupported ECDSA key encoding combination: {:?} {:?} {:?}", curve, format, encoding),
-        }
-    }
-
-    fn encode_ed25519_private_key(&self, key_data: &[u8; 32], format: &KeyFormat, encoding: &Encoding) -> Result<Vec<u8>> {
-        match (format, encoding) {
-            (KeyFormat::Pkcs8, Encoding::Pem) => {
-                let key = Ed25519SigningKey::from_bytes(key_data);
-                // Convert to pkcs8 bytes using the key bytes directly for now
-                // This is a simplified implementation - in production, proper PKCS#8 encoding should be used
-                let key_bytes = key.to_bytes();
-                let pem = Pem::new("PRIVATE KEY", key_bytes.to_vec());
-                Ok(pem.to_string().into_bytes())
-            }
-            (KeyFormat::Pkcs8, Encoding::Der) => {
-                let key = Ed25519SigningKey::from_bytes(key_data);
-                let key_bytes = key.to_bytes();
-                Ok(key_bytes.to_vec())
-            }
-            _ => bail!("Unsupported Ed25519 key encoding combination: {:?} {:?}", format, encoding),
-        }
-    }
-
-    fn encrypt_private_key(&self, key_pem: &[u8], passphrase: &str, kdf: &KeyKdf, iterations: u32) -> Result<Vec<u8>> {
-        match kdf {
-            KeyKdf::Argon2id => {
-                let salt = SaltString::generate(&mut OsRng);
-                let argon2 = Argon2::default();
-                let _hash = argon2.hash_password(passphrase.as_bytes(), &salt)
-                    .map_err(|e| anyhow::anyhow!("Argon2 hash failed: {}", e))?;
-                
-                // For now, return the original key with a comment indicating it should be encrypted
-                // In a real implementation, you'd use the derived key for actual encryption
-                let mut encrypted = b"# Encrypted with Argon2id\n".to_vec();
-                encrypted.extend_from_slice(key_pem);
-                Ok(encrypted)
-            }
-            KeyKdf::Pbkdf2 => {
-                let salt = [0u8; 16]; // In real implementation, use random salt
-                let mut key = [0u8; 32];
-                pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), &salt, iterations, &mut key);
-                
-                // For now, return the original key with a comment indicating it should be encrypted
-                // In a real implementation, you'd use the derived key for actual encryption
-                let mut encrypted = b"# Encrypted with PBKDF2\n".to_vec();
-                encrypted.extend_from_slice(key_pem);
-                Ok(encrypted)
-            }
-        }
+    /// Private key encryption is not available: the pkcs8 crate is built
+    /// without its "encryption" feature. Fail rather than write a plaintext
+    /// key that is reported as encrypted.
+    fn encrypt_private_key(&self, _key_pem: &[u8], _passphrase: &str, _kdf: &KeyKdf, _iterations: u32) -> Result<Vec<u8>> {
+        bail!("key_passphrase is not supported: private key encryption is not available in this build; omit key_passphrase to write an unencrypted key")
     }
 
     // Certificate generation functions
     fn create_distinguished_name(&self, subject: &CertSubject) -> Result<DistinguishedName> {
-        let mut dn = DistinguishedName::new();
-
-        if let Some(ref cn) = subject.common_name {
-            dn.push(rcgen::DnType::CommonName, cn.clone());
-        }
-        
-        for org in &subject.organization {
-            dn.push(rcgen::DnType::OrganizationName, org.clone());
-        }
-        
-        for ou in &subject.organizational_unit {
-            dn.push(rcgen::DnType::OrganizationalUnitName, ou.clone());
-        }
-        
-        for country in &subject.country {
-            dn.push(rcgen::DnType::CountryName, country.clone());
-        }
-        
-        for state in &subject.state_or_province {
-            dn.push(rcgen::DnType::StateOrProvinceName, state.clone());
-        }
-        
-        for locality in &subject.locality {
-            dn.push(rcgen::DnType::LocalityName, locality.clone());
-        }
-
-        Ok(dn)
+        build_distinguished_name(subject)
     }
 
     fn parse_sans(&self, sans: &[String]) -> Result<Vec<SanType>> {
-        let mut san_vec = Vec::new();
-        
-        for san_str in sans {
-            if let Some(dns_name) = san_str.strip_prefix("DNS:") {
-                san_vec.push(SanType::DnsName(dns_name.to_string()));
-            } else if let Some(ip_str) = san_str.strip_prefix("IP:") {
-                let ip = ip_str.parse()
-                    .with_context(|| format!("Invalid IP address: {}", ip_str))?;
-                san_vec.push(SanType::IpAddress(ip));
-            } else if let Some(email) = san_str.strip_prefix("EMAIL:") {
-                san_vec.push(SanType::Rfc822Name(email.to_string()));
-            } else if let Some(uri) = san_str.strip_prefix("URI:") {
-                san_vec.push(SanType::URI(uri.to_string()));
-            } else {
-                bail!("Invalid SAN format: {}. Must be DNS:, IP:, EMAIL:, or URI:", san_str);
-            }
-        }
-        
-        Ok(san_vec)
+        parse_san_list(sans)
     }
 
     fn generate_rcgen_keypair(&self, algorithm: &CertAlgorithm, rsa_bits: u16, curve: &EcdsaCurve) -> Result<KeyPair> {
-        eprintln!("DEBUG: generate_rcgen_keypair called with algorithm: {:?}", algorithm);
         match algorithm {
             CertAlgorithm::Rsa => {
-                eprintln!("DEBUG: Using rcgen's built-in RSA key generation");
-                // Try different signature algorithm constants for RSA
-                let algorithms_to_try = [
-                    ("PKCS_RSA_SHA256", None as Option<&'static rcgen::SignatureAlgorithm>),
-                    ("RSA_PKCS1_SHA256", None),
-                    ("RSA_PSS_SHA256", None),
-                ];
-                
-                for (name, _) in &algorithms_to_try {
-                    eprintln!("DEBUG: Trying algorithm: {}", name);
-                    // Since we don't know the exact names, let's try a simple approach
-                    break;
-                }
-                
-                // Try using a basic approach - check what constants are available
-                // For now, let's skip rcgen key generation and use our manual approach
+                // rcgen cannot generate RSA keys, so generate with the rsa crate
+                // and import the PKCS#8 encoding.
                 let rsa_key = self.generate_rsa_key(rsa_bits)?;
                 let pkcs8_der = rsa_key.to_pkcs8_der()
                     .with_context(|| "Failed to serialize RSA key for rcgen")?;
-                eprintln!("DEBUG: Manual RSA key PKCS#8 DER length: {}", pkcs8_der.as_bytes().len());
-                
-                // Test what KeyPair::from_der expects
-                eprintln!("DEBUG: Trying KeyPair::from_der with RSA PKCS#8");
-                match KeyPair::from_der(pkcs8_der.as_bytes()) {
-                    Ok(keypair) => {
-                        eprintln!("DEBUG: Successfully created rcgen KeyPair from PKCS#8");
-                        Ok(keypair)
-                    },
-                    Err(e) => {
-                        eprintln!("DEBUG: KeyPair::from_der failed with PKCS#8: {:?}", e);
-                        
-                        // Try PKCS#1 format
-                        eprintln!("DEBUG: Trying PKCS#1 format");
-                        let key_pkcs1 = rsa_key.to_pkcs1_der().with_context(|| "Failed to serialize RSA key to PKCS#1 DER")?;
-                        eprintln!("DEBUG: Manual RSA key PKCS#1 DER length: {}", key_pkcs1.as_bytes().len());
-                        match KeyPair::from_der(key_pkcs1.as_bytes()) {
-                            Ok(keypair) => {
-                                eprintln!("DEBUG: Successfully created rcgen KeyPair from PKCS#1");
-                                Ok(keypair)
-                            },
-                            Err(e2) => {
-                                eprintln!("DEBUG: KeyPair::from_der failed with PKCS#1: {:?}", e2);
-                                Err(anyhow::anyhow!("Failed to convert RSA key to rcgen format (tried PKCS#8: {}, PKCS#1: {})", e, e2))
-                            }
-                        }
-                    }
-                }
+                KeyPair::from_der(pkcs8_der.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("Failed to convert RSA key to rcgen format: {}", e))
             }
             CertAlgorithm::Ecdsa => {
                 let ec_key_data = self.generate_ecdsa_key(curve)?;
@@ -2920,30 +2140,11 @@ impl CertHandle {
                         KeyPair::from_der(pkcs8_der.as_bytes())
                             .with_context(|| "Failed to create rcgen KeyPair from P384 key")
                     }
-                    _ => bail!("Unsupported ECDSA curve for certificate generation: {:?}", curve),
                 }
             }
             CertAlgorithm::Ed25519 => {
-                let ed_key_data = self.generate_ed25519_key()?;
-                let key = Ed25519SigningKey::from_bytes(&ed_key_data);
-                // Create PKCS#8 DER manually for Ed25519 keys
-                let pkcs8_der = {
-                    use pkcs8::{PrivateKeyInfo};
-                    use spki::AlgorithmIdentifier;
-                    use const_oid::db::rfc8410::ID_ED_25519;
-                    use der::Encode;
-                    
-                    let algorithm = AlgorithmIdentifier {
-                        oid: ID_ED_25519,
-                        parameters: None,
-                    };
-                    
-                    let private_key_info = PrivateKeyInfo::new(algorithm, &ed_key_data);
-                    private_key_info.to_der()
-                        .with_context(|| "Failed to encode Ed25519 key as PKCS#8 DER")?
-                };
-                
-                KeyPair::from_der(&pkcs8_der)
+                let seed = self.generate_ed25519_key()?;
+                KeyPair::from_der(&ed25519_pkcs8_from_seed(&seed)?)
                     .with_context(|| "Failed to create rcgen KeyPair from Ed25519 key")
             }
         }
@@ -2955,7 +2156,6 @@ impl CertHandle {
             CertAlgorithm::Ecdsa => match curve {
                 EcdsaCurve::P256 => Ok(&rcgen::PKCS_ECDSA_P256_SHA256),
                 EcdsaCurve::P384 => Ok(&rcgen::PKCS_ECDSA_P384_SHA384),
-                _ => bail!("Unsupported ECDSA curve for signatures: {:?}", curve),
             },
             CertAlgorithm::Ed25519 => Ok(&rcgen::PKCS_ED25519),
         }
@@ -2993,30 +2193,32 @@ impl CertHandle {
             .map_err(|e| anyhow::anyhow!("Invalid not_after timestamp: {}", e))?;
 
         // Set CA settings
-        if opts.is_ca {
-            params.is_ca = IsCa::Ca(BasicConstraints::Constrained(opts.path_len.unwrap_or(0)));
+        params.is_ca = if opts.is_ca {
+            IsCa::Ca(match opts.path_len {
+                Some(n) => BasicConstraints::Constrained(n),
+                None => BasicConstraints::Unconstrained,
+            })
         } else {
-            params.is_ca = IsCa::NoCa;
-        }
+            IsCa::NoCa
+        };
+        params.serial_number = Some(random_serial());
 
         // Generate keypair and set algorithm
         let key_pair = self.generate_rcgen_keypair(&opts.algorithm, opts.rsa_bits, &opts.ecdsa_curve)?;
         let signature_alg = self.get_signature_algorithm(&opts.algorithm, &opts.ecdsa_curve)?;
-        eprintln!("DEBUG: Setting signature algorithm for certificate generation: {:?}", signature_alg);
         params.alg = signature_alg;
         
         // Set the key pair in params so rcgen doesn't try to generate its own
         params.key_pair = Some(rcgen::KeyPair::from_der(&key_pair.serialize_der())?);
 
         // Generate certificate
-        eprintln!("DEBUG: Calling Certificate::from_params");
         let cert = Certificate::from_params(params)
             .with_context(|| "Failed to generate self-signed certificate")?;
 
         Ok((cert, key_pair))
     }
 
-    fn generate_csr(&self, opts: &CertGenerateOptions) -> Result<(String, KeyPair)> {
+    fn generate_csr(&self, opts: &CertGenerateOptions) -> Result<(Vec<u8>, KeyPair)> {
         let subject = opts.subject.as_ref()
             .ok_or_else(|| anyhow::anyhow!("Subject is required for CSR generation"))?;
 
@@ -3035,10 +2237,11 @@ impl CertHandle {
         let key_pair = self.generate_rcgen_keypair(&opts.algorithm, opts.rsa_bits, &opts.ecdsa_curve)?;
         params.alg = self.get_signature_algorithm(&opts.algorithm, &opts.ecdsa_curve)?;
 
-        // Generate CSR
+        // Sign the CSR with the generated key itself.
+        params.key_pair = Some(KeyPair::from_der(&key_pair.serialize_der())?);
         let csr = Certificate::from_params(params)
             .map_err(|e| anyhow::anyhow!("Failed to create CSR: {}", e))?
-            .serialize_request_pem()
+            .serialize_request_der()
             .with_context(|| "Failed to generate CSR")?;
 
         Ok((csr, key_pair))
@@ -3099,13 +2302,6 @@ impl CertHandle {
     fn write_csr_to_file(&self, csr_data: &[u8], path: &str) -> Result<()> {
         std::fs::write(path, csr_data)
             .with_context(|| format!("Failed to write CSR to {}", path))
-    }
-
-    fn generate_serial_number(&self) -> String {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let serial: u64 = rng.gen_range(1..u64::MAX);
-        format!("{:X}", serial)
     }
 
     fn calculate_fingerprints(&self, cert_der: &[u8]) -> HashMap<String, String> {
@@ -3172,95 +2368,33 @@ impl CertHandle {
             }
         }
 
-        // Generate based on mode
-        let (generated_key, generated_cert_pem, generated_csr_pem) = match &opts.mode {
+        // Generate based on mode. Certificates and CSRs are kept as DER and
+        // encoded for output afterwards.
+        let (generated_key, generated_cert_der, generated_csr_der) = match &opts.mode {
             CertGenerateMode::Key => {
                 let keypair = self.generate_rcgen_keypair(&opts.algorithm, opts.rsa_bits, &opts.ecdsa_curve)?;
                 (Some(keypair), None, None)
             }
             CertGenerateMode::SelfSigned => {
                 let (cert, keypair) = self.generate_self_signed_certificate(&opts)?;
-                let cert_pem = cert.serialize_pem()
+                let cert_der = cert.serialize_der()
                     .with_context(|| "Failed to serialize self-signed certificate")?;
-                (Some(keypair), Some(cert_pem), None)
-            }
-            CertGenerateMode::Csr => {
-                let (csr_pem, keypair) = self.generate_csr(&opts)?;
-                (Some(keypair), None, Some(csr_pem))
+                (Some(keypair), Some(cert_der), None)
             }
             CertGenerateMode::LeafCert => {
-                return Ok(CertGenerateResponse {
-                    ok: false,
-                    target: self.target_path.clone(),
-                    mode: format!("{:?}", opts.mode),
-                    algorithm: format!("{:?}", opts.algorithm),
-                    rsa_bits: if matches!(opts.algorithm, CertAlgorithm::Rsa) { Some(opts.rsa_bits) } else { None },
-                    ecdsa_curve: if matches!(opts.algorithm, CertAlgorithm::Ecdsa) { Some(format!("{:?}", opts.ecdsa_curve)) } else { None },
-                    encodings: HashMap::new(),
-                    subject: None,
-                    sans: opts.sans.clone(),
-                    is_ca: opts.is_ca,
-                    path_len: opts.path_len,
-                    validity: None,
-                    key: None,
-                    certificate: None,
-                    csr: None,
-                    returned: GeneratedReturnedData {
-                        key_pem: None,
-                        cert_pem: None,
-                        csr_pem: None,
-                        key_der_base64: None,
-                        cert_der_base64: None,
-                        csr_der_base64: None,
-                    },
-                    warnings,
-                    error: Some(GenerateErrorInfo {
-                        code: "cert.not_implemented".to_string(),
-                        message: "Leaf certificate generation not yet implemented".to_string(),
-                        details: HashMap::new(),
-                    }),
-                });
+                let (cert_der, keypair) = self.generate_leaf_certificate(&opts)?;
+                (Some(keypair), Some(cert_der), None)
+            }
+            CertGenerateMode::Csr => {
+                let (csr_der, keypair) = self.generate_csr(&opts)?;
+                (Some(keypair), None, Some(csr_der))
             }
         };
 
         // Encode the key
-        let encoded_key = if let Some(ref keypair) = generated_key {
-            match &opts.algorithm {
-                CertAlgorithm::Rsa => {
-                    let rsa_key = RsaPrivateKey::from_pkcs8_der(&keypair.serialize_der())
-                        .with_context(|| "Failed to parse generated RSA key")?;
-                    self.encode_rsa_private_key(&rsa_key, &opts.key_format, &opts.key_encoding)?
-                }
-                CertAlgorithm::Ecdsa => {
-                    // For now, use a simplified approach - get the DER and convert
-                    let key_der = keypair.serialize_der();
-                    match (&opts.key_format, &opts.key_encoding) {
-                        (KeyFormat::Pkcs8, Encoding::Pem) => {
-                            let pem = Pem::new("PRIVATE KEY", key_der.clone());
-                            pem.to_string().into_bytes()
-                        }
-                        (KeyFormat::Pkcs8, Encoding::Der) => {
-                            key_der
-                        }
-                        _ => bail!("Unsupported ECDSA key format/encoding combination"),
-                    }
-                }
-                CertAlgorithm::Ed25519 => {
-                    let key_der = keypair.serialize_der();
-                    match (&opts.key_format, &opts.key_encoding) {
-                        (KeyFormat::Pkcs8, Encoding::Pem) => {
-                            let pem = Pem::new("PRIVATE KEY", key_der.clone());
-                            pem.to_string().into_bytes()
-                        }
-                        (KeyFormat::Pkcs8, Encoding::Der) => {
-                            key_der
-                        }
-                        _ => bail!("Unsupported Ed25519 key format/encoding combination"),
-                    }
-                }
-            }
-        } else {
-            Vec::new()
+        let encoded_key = match generated_key {
+            Some(ref keypair) => self.encode_generated_key(keypair, &opts.algorithm, &opts.key_format, &opts.key_encoding)?,
+            None => Vec::new(),
         };
 
         // Encrypt key if passphrase is provided
@@ -3269,6 +2403,12 @@ impl CertHandle {
         } else {
             encoded_key
         };
+
+        let cert_bytes = generated_cert_der.as_ref().map(|der| encode_cert_der(der, &opts.cert_encoding));
+        let csr_bytes = generated_csr_der.as_ref().map(|der| match opts.csr_encoding {
+            Encoding::Pem => pem_encode_lf(&Pem::new("CERTIFICATE REQUEST", der.clone())).into_bytes(),
+            Encoding::Der => der.clone(),
+        });
 
         // Write files
         let mut key_stored_at = None;
@@ -3281,16 +2421,23 @@ impl CertHandle {
             key_stored_at = Some(key_path);
         }
 
-        if opts.output.write_cert && generated_cert_pem.is_some() {
+        if let (true, Some(bytes)) = (opts.output.write_cert, &cert_bytes) {
             let cert_path = format!("{}.pem", self.target_path);
-            self.write_cert_to_file(generated_cert_pem.as_ref().unwrap().as_bytes(), &cert_path)?;
+            self.write_cert_to_file(bytes, &cert_path)?;
             cert_stored_at = Some(cert_path);
         }
 
-        if opts.output.write_csr && generated_csr_pem.is_some() {
+        if let (true, Some(bytes)) = (opts.output.write_csr, &csr_bytes) {
             let csr_path = format!("{}.csr", self.target_path);
-            self.write_csr_to_file(generated_csr_pem.as_ref().unwrap().as_bytes(), &csr_path)?;
+            self.write_csr_to_file(bytes, &csr_path)?;
             csr_stored_at = Some(csr_path);
+        }
+
+        if generated_cert_der.is_some() && cert_stored_at.is_none() && !opts.output.return_cert {
+            warnings.push("Certificate was neither written nor returned (output.write_cert and output.return_cert are false)".to_string());
+        }
+        if generated_csr_der.is_some() && csr_stored_at.is_none() && !opts.output.return_csr {
+            warnings.push("CSR was neither written nor returned (output.write_csr and output.return_csr are false)".to_string());
         }
 
         // Prepare response
@@ -3299,42 +2446,49 @@ impl CertHandle {
         encodings.insert("cert".to_string(), format!("{:?}", opts.cert_encoding).to_lowercase());
         encodings.insert("csr".to_string(), format!("{:?}", opts.csr_encoding).to_lowercase());
 
-        let subject_map = if let Some(ref subject) = opts.subject {
+        let cert_summary = match &generated_cert_der {
+            Some(der) => Some(summarize_cert_der(der)?),
+            None => None,
+        };
+
+        let subject_map = if let Some(summary) = &cert_summary {
+            Some(summary.subject.clone())
+        } else if let Some(ref subject) = opts.subject {
             let mut map = HashMap::new();
             if let Some(ref cn) = subject.common_name {
-                map.insert("common_name".to_string(), serde_json::Value::String(cn.clone()));
+                map.insert("common_name".to_string(), json!(cn));
             }
-            if !subject.organization.is_empty() {
-                map.insert("organization".to_string(), serde_json::Value::Array(
-                    subject.organization.iter().map(|s| serde_json::Value::String(s.clone())).collect()
-                ));
-            }
-            if !subject.organizational_unit.is_empty() {
-                map.insert("organizational_unit".to_string(), serde_json::Value::Array(
-                    subject.organizational_unit.iter().map(|s| serde_json::Value::String(s.clone())).collect()
-                ));
-            }
-            if !subject.country.is_empty() {
-                map.insert("country".to_string(), serde_json::Value::Array(
-                    subject.country.iter().map(|s| serde_json::Value::String(s.clone())).collect()
-                ));
-            }
-            if !subject.state_or_province.is_empty() {
-                map.insert("state_or_province".to_string(), serde_json::Value::Array(
-                    subject.state_or_province.iter().map(|s| serde_json::Value::String(s.clone())).collect()
-                ));
-            }
-            if !subject.locality.is_empty() {
-                map.insert("locality".to_string(), serde_json::Value::Array(
-                    subject.locality.iter().map(|s| serde_json::Value::String(s.clone())).collect()
-                ));
+            let lists = [
+                ("organization", &subject.organization),
+                ("organizational_unit", &subject.organizational_unit),
+                ("country", &subject.country),
+                ("state_or_province", &subject.state_or_province),
+                ("locality", &subject.locality),
+            ];
+            for (key, vals) in lists {
+                if !vals.is_empty() {
+                    map.insert(key.to_string(), json!(vals));
+                }
             }
             Some(map)
         } else {
             None
         };
 
-        // Generate response
+        let returned_cert_pem = generated_cert_der.as_ref()
+            .filter(|_| opts.output.return_cert && matches!(opts.cert_encoding, Encoding::Pem))
+            .map(|der| pem_encode_lf(&Pem::new("CERTIFICATE", der.clone())));
+        let returned_cert_der = generated_cert_der.as_ref()
+            .filter(|_| opts.output.return_cert && matches!(opts.cert_encoding, Encoding::Der))
+            .map(|der| BASE64_STANDARD.encode(der));
+        let returned_csr_pem = generated_csr_der.as_ref()
+            .filter(|_| opts.output.return_csr && matches!(opts.csr_encoding, Encoding::Pem))
+            .map(|der| pem_encode_lf(&Pem::new("CERTIFICATE REQUEST", der.clone())));
+        let returned_csr_der = generated_csr_der.as_ref()
+            .filter(|_| opts.output.return_csr && matches!(opts.csr_encoding, Encoding::Der))
+            .map(|der| BASE64_STANDARD.encode(der));
+        let return_key = opts.output.return_key && !final_key_data.is_empty();
+
         Ok(CertGenerateResponse {
             ok: true,
             target: self.target_path.clone(),
@@ -3345,24 +2499,14 @@ impl CertHandle {
             encodings,
             subject: subject_map,
             sans: opts.sans.clone(),
-            is_ca: opts.is_ca,
-            path_len: opts.path_len,
-            validity: if matches!(opts.mode, CertGenerateMode::SelfSigned | CertGenerateMode::LeafCert) {
-                let not_before = match &opts.not_before {
-                    NotBeforeSetting::Now => Utc::now(),
-                    NotBeforeSetting::Explicit(dt) => *dt,
-                };
-                let not_after = match opts.not_after {
-                    Some(dt) => dt,
-                    None => not_before + chrono::Duration::days(opts.not_after_offset_days),
-                };
+            is_ca: cert_summary.as_ref().map(|s| s.is_ca).unwrap_or(opts.is_ca),
+            path_len: cert_summary.as_ref().map(|s| s.path_len).unwrap_or(opts.path_len),
+            validity: cert_summary.as_ref().map(|s| {
                 let mut validity = HashMap::new();
-                validity.insert("not_before".to_string(), not_before.to_rfc3339());
-                validity.insert("not_after".to_string(), not_after.to_rfc3339());
-                Some(validity)
-            } else {
-                None
-            },
+                validity.insert("not_before".to_string(), s.not_before.clone());
+                validity.insert("not_after".to_string(), s.not_after.clone());
+                validity
+            }),
             key: if !final_key_data.is_empty() {
                 Some(GeneratedKeyInfo {
                     stored_at: key_stored_at,
@@ -3372,64 +2516,136 @@ impl CertHandle {
             } else {
                 None
             },
-            certificate: if let Some(ref cert_pem) = generated_cert_pem {
-                // Calculate fingerprints - for now we'll use a dummy implementation
-                let fingerprints = HashMap::new(); // Would calculate from DER in real implementation
-                Some(GeneratedCertInfo {
-                    stored_at: cert_stored_at,
-                    serial_number: self.generate_serial_number(),
-                    fingerprints,
-                })
-            } else {
-                None
-            },
-            csr: if generated_csr_pem.is_some() {
-                Some(GeneratedCsrInfo {
-                    stored_at: csr_stored_at,
-                    fingerprints: HashMap::new(),
-                })
-            } else {
-                None
-            },
+            certificate: cert_summary.as_ref().map(|s| GeneratedCertInfo {
+                stored_at: cert_stored_at,
+                serial_number: s.serial_hex.clone(),
+                fingerprints: s.fingerprints.clone(),
+            }),
+            csr: generated_csr_der.as_ref().map(|der| GeneratedCsrInfo {
+                stored_at: csr_stored_at,
+                fingerprints: ["sha256"]
+                    .iter()
+                    .filter_map(|a| fingerprint(a, der).map(|f| (a.to_string(), f)))
+                    .collect(),
+            }),
             returned: GeneratedReturnedData {
-                key_pem: if opts.output.return_key && matches!(opts.key_encoding, Encoding::Pem) && !final_key_data.is_empty() {
-                    Some(String::from_utf8(final_key_data).ok().unwrap_or_default())
+                key_pem: if return_key && matches!(opts.key_encoding, Encoding::Pem) {
+                    String::from_utf8(final_key_data.clone()).ok()
                 } else {
                     None
                 },
-                cert_pem: if opts.output.return_cert && matches!(opts.cert_encoding, Encoding::Pem) {
-                    generated_cert_pem
+                cert_pem: returned_cert_pem,
+                csr_pem: returned_csr_pem,
+                key_der_base64: if return_key && matches!(opts.key_encoding, Encoding::Der) {
+                    Some(BASE64_STANDARD.encode(&final_key_data))
                 } else {
                     None
                 },
-                csr_pem: if opts.output.return_csr && matches!(opts.csr_encoding, Encoding::Pem) {
-                    generated_csr_pem
-                } else {
-                    None
-                },
-                key_der_base64: None, // Would implement DER encoding if needed
-                cert_der_base64: None,
-                csr_der_base64: None,
+                cert_der_base64: returned_cert_der,
+                csr_der_base64: returned_csr_der,
             },
             warnings,
             error: None,
         })
     }
 
+    /// Encodes a generated key pair in the requested format and encoding.
+    fn encode_generated_key(&self, keypair: &KeyPair, algorithm: &CertAlgorithm, format: &KeyFormat, encoding: &Encoding) -> Result<Vec<u8>> {
+        match algorithm {
+            CertAlgorithm::Rsa => {
+                let rsa_key = RsaPrivateKey::from_pkcs8_der(&keypair.serialize_der())
+                    .with_context(|| "Failed to parse generated RSA key")?;
+                self.encode_rsa_private_key(&rsa_key, format, encoding)
+            }
+            CertAlgorithm::Ecdsa | CertAlgorithm::Ed25519 => {
+                let key_der = keypair.serialize_der();
+                match (format, encoding) {
+                    (KeyFormat::Pkcs8, Encoding::Pem) => Ok(pem_encode_lf(&Pem::new("PRIVATE KEY", key_der)).into_bytes()),
+                    (KeyFormat::Pkcs8, Encoding::Der) => Ok(key_der),
+                    (KeyFormat::Sec1, enc) if matches!(algorithm, CertAlgorithm::Ecdsa) => {
+                        let sec1 = if let Ok(k) = P256SigningKey::from_pkcs8_der(&key_der) {
+                            p256::SecretKey::from(k).to_sec1_der()
+                                .map_err(|e| anyhow::anyhow!("Failed to encode SEC1 key: {}", e))?
+                                .to_vec()
+                        } else {
+                            let k = P384SigningKey::from_pkcs8_der(&key_der)
+                                .map_err(|e| anyhow::anyhow!("Failed to parse generated ECDSA key: {}", e))?;
+                            p384::SecretKey::from(k).to_sec1_der()
+                                .map_err(|e| anyhow::anyhow!("Failed to encode SEC1 key: {}", e))?
+                                .to_vec()
+                        };
+                        Ok(match enc {
+                            Encoding::Pem => pem_encode_lf(&Pem::new("EC PRIVATE KEY", sec1)).into_bytes(),
+                            Encoding::Der => sec1,
+                        })
+                    }
+                    _ => bail!("Unsupported {:?} key format/encoding combination: {:?} {:?}", algorithm, format, encoding),
+                }
+            }
+        }
+    }
+
+    /// Generates a key and a certificate for it signed by signer_ca and
+    /// signer_key (mode=leaf_cert).
+    fn generate_leaf_certificate(&self, opts: &CertGenerateOptions) -> Result<(Vec<u8>, KeyPair)> {
+        let subject = opts.subject.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Subject is required for leaf certificate generation"))?;
+        let ca_path = opts.signer_ca.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("signer_ca is required for leaf_cert mode"))?;
+        let key_path = opts.signer_key.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("signer_key is required for leaf_cert mode"))?;
+        if opts.signer_key_passphrase.is_some() {
+            bail!("Encrypted signer keys are not supported; decrypt signer_key first");
+        }
+        let ca = load_ca_signer(
+            &self.load_data_from_source(ca_path).with_context(|| format!("Failed to read signer_ca {}", ca_path))?,
+            ca_path,
+            &self.load_data_from_source(key_path).with_context(|| format!("Failed to read signer_key {}", key_path))?,
+            key_path,
+        )?;
+
+        let mut params = CertificateParams::new(vec![]);
+        params.distinguished_name = self.create_distinguished_name(subject)?;
+        params.subject_alt_names = self.parse_sans(&opts.sans)?;
+        let (start, end) = validity_window(&opts.not_before, opts.not_after, opts.not_after_offset_days)?;
+        params.not_before = to_offset_datetime(start)?;
+        params.not_after = to_offset_datetime(end)?;
+        params.serial_number = Some(random_serial());
+        params.is_ca = if opts.is_ca {
+            IsCa::Ca(match opts.path_len {
+                Some(n) => BasicConstraints::Constrained(n),
+                None => BasicConstraints::Unconstrained,
+            })
+        } else {
+            IsCa::ExplicitNoCa
+        };
+        params.use_authority_key_identifier_extension = true;
+
+        let key_pair = self.generate_rcgen_keypair(&opts.algorithm, opts.rsa_bits, &opts.ecdsa_curve)?;
+        params.alg = key_pair.algorithm();
+        params.key_pair = Some(KeyPair::from_der(&key_pair.serialize_der())?);
+        let cert = Certificate::from_params(params)
+            .with_context(|| "Failed to prepare leaf certificate")?;
+        let der = cert.serialize_der_with_signer(&ca.cert)
+            .map_err(|e| anyhow::anyhow!("Failed to sign leaf certificate with {}: {}", ca.subject, e))?;
+        Ok((der, key_pair))
+    }
+
     fn renew(&self, opts: CertRenewOptions) -> Result<CertRenewResponse> {
-        // Load and parse the old certificate
+        // Load and parse the old certificate (the first one in the file)
         let old_cert_data = self.load_bytes()
             .with_context(|| format!("Failed to load old certificate from {}", self.target_path))?;
-        
-        let old_cert = self.parse_certificate_for_renewal(&old_cert_data)
+        let old_der = certificate_ders(&old_cert_data).into_iter().next()
+            .ok_or_else(|| anyhow::anyhow!("No certificate found in {}", self.target_path))?;
+        let old_cert = self.parse_der_certificate_for_renewal(&old_der)
             .with_context(|| "Failed to parse old certificate")?;
 
         let mut warnings = Vec::new();
+        let key_strategy = format!("{:?}", opts.key_strategy).to_lowercase();
 
-        // Create old cert info
         let old_cert_info = OldCertInfo {
             path: self.target_path.clone(),
-            encoding: "pem".to_string(), // Simplified for now
+            encoding: if looks_like_pem(&old_cert_data) { "pem" } else { "der" }.to_string(),
             subject: old_cert.subject.clone(),
             issuer: old_cert.issuer.clone(),
             validity: old_cert.validity.clone(),
@@ -3437,66 +2653,107 @@ impl CertHandle {
             fingerprints: old_cert.fingerprints.clone(),
         };
 
+        let fail = |old_cert: OldCertInfo, signer: Option<SignerInfo>, key: Option<RenewedKeyInfo>, warnings: Vec<String>, code: &str, message: String| -> Result<CertRenewResponse> {
+            Ok(CertRenewResponse {
+                ok: false,
+                old_cert,
+                new_cert: None,
+                key_strategy: key_strategy.clone(),
+                key,
+                signer,
+                warnings,
+                error: Some(RenewErrorInfo {
+                    code: code.to_string(),
+                    message,
+                    details: HashMap::new(),
+                }),
+            })
+        };
+
         // Determine signer strategy
         let signer_info = match self.determine_signer_strategy(&opts, &old_cert, &mut warnings)? {
             Some(signer) => signer,
-            None => return Ok(CertRenewResponse {
-                ok: false,
-                old_cert: old_cert_info,
-                new_cert: None,
-                key_strategy: format!("{:?}", opts.key_strategy).to_lowercase(),
-                key: None,
-                signer: None,
-                warnings,
-                error: Some(RenewErrorInfo {
-                    code: "cert.signer_required".to_string(),
-                    message: "Unable to determine signing strategy".to_string(),
-                    details: HashMap::new(),
-                }),
-            }),
+            None => {
+                let message = warnings.last().cloned().unwrap_or_else(|| "Unable to determine signing strategy".to_string());
+                return fail(old_cert_info, None, None, warnings, "cert.signer_required", message);
+            }
         };
 
-        // Handle key strategy
-        let (renewed_key, key_info) = match self.handle_key_strategy(&opts, &old_cert)? {
-            Some((key, info)) => (key, info),
-            None => return Ok(CertRenewResponse {
-                ok: false,
-                old_cert: old_cert_info,
-                new_cert: None,
-                key_strategy: format!("{:?}", opts.key_strategy).to_lowercase(),
-                key: None,
-                signer: Some(signer_info),
-                warnings,
-                error: Some(RenewErrorInfo {
-                    code: "cert.key_strategy_failed".to_string(),
-                    message: "Failed to handle key strategy".to_string(),
-                    details: HashMap::new(),
-                }),
-            }),
+        // Load the CA when the renewal is signed by one
+        let ca = match (&signer_info.signer_ca, &signer_info.signer_key) {
+            (Some(ca_path), Some(key_path)) => {
+                if opts.signer_key_passphrase.is_some() {
+                    return fail(old_cert_info, Some(signer_info), None, warnings, "cert.signer_load_failed",
+                        "Encrypted signer keys are not supported; decrypt signer_key first".to_string());
+                }
+                let loaded = self.load_data_from_source(ca_path)
+                    .with_context(|| format!("Failed to read signer_ca {}", ca_path))
+                    .and_then(|ca_data| {
+                        let key_data = self.load_data_from_source(key_path)
+                            .with_context(|| format!("Failed to read signer_key {}", key_path))?;
+                        load_ca_signer(&ca_data, ca_path, &key_data, key_path)
+                    });
+                match loaded {
+                    Ok(ca) => Some(ca),
+                    Err(e) => {
+                        return fail(old_cert_info, Some(signer_info), None, warnings, "cert.signer_load_failed", format!("{:#}", e));
+                    }
+                }
+            }
+            _ => None,
         };
 
-        // Create the new certificate
-        let new_cert_params = self.build_renewed_cert_params(&opts, &old_cert, &renewed_key)?;
-        let new_cert = self.issue_renewed_certificate(&new_cert_params, &signer_info)?;
+        // Key for the new certificate
+        let (subject_key, mut key_info, new_key) = match self.renewal_key(&opts, &old_der, ca.is_some(), &mut warnings) {
+            Ok(k) => k,
+            Err(e) => {
+                return fail(old_cert_info, Some(signer_info), None, warnings, "cert.key_strategy_failed", format!("{:#}", e));
+            }
+        };
+
+        // Encode the new key before anything is written, so a bad key option
+        // leaves no partial output behind.
+        let new_key_bytes = match &new_key {
+            Some((kp, algorithm)) => {
+                let encoded = self.encode_generated_key(kp, algorithm, &opts.key_format, &opts.key_encoding);
+                let encoded = encoded.and_then(|k| match &opts.key_passphrase {
+                    Some(p) => self.encrypt_private_key(&k, p, &opts.key_kdf, opts.key_kdf_iterations),
+                    None => Ok(k),
+                });
+                match encoded {
+                    Ok(bytes) => Some(bytes),
+                    Err(e) => {
+                        return fail(old_cert_info, Some(signer_info), Some(key_info), warnings, "cert.key_strategy_failed", format!("{:#}", e));
+                    }
+                }
+            }
+            None => None,
+        };
+
+        // Build the new certificate from the old one plus overrides
+        let mut params = match self.build_renewal_params(&opts, &old_der, subject_key, new_key.is_some()) {
+            Ok(p) => p,
+            Err(e) => {
+                return fail(old_cert_info, Some(signer_info), Some(key_info), warnings, "cert.renew_params_invalid", format!("{:#}", e));
+            }
+        };
 
         // Determine output paths
         let new_cert_path = opts.new_cert_output_path.clone()
             .unwrap_or_else(|| self.derive_renewed_cert_path());
-        let new_key_path = if matches!(opts.key_strategy, KeyStrategy::Rekey) {
-            Some(opts.new_key_output_path.clone()
-                .unwrap_or_else(|| self.derive_renewed_key_path(&new_cert_path)))
-        } else {
-            None
-        };
+        let new_key_path = new_key.as_ref().map(|_| {
+            opts.new_key_output_path.clone()
+                .unwrap_or_else(|| self.derive_renewed_key_path(&new_cert_path))
+        });
 
         // Check for existing files if overwrite is false
         if !opts.overwrite {
             let mut existing_paths = Vec::new();
-            if std::path::Path::new(&new_cert_path).exists() {
+            if self.target_file_exists(&new_cert_path)? {
                 existing_paths.push(new_cert_path.clone());
             }
             if let Some(ref key_path) = new_key_path {
-                if std::path::Path::new(key_path.as_str()).exists() {
+                if self.target_file_exists(key_path)? {
                     existing_paths.push(key_path.clone());
                 }
             }
@@ -3505,7 +2762,7 @@ impl CertHandle {
                     ok: false,
                     old_cert: old_cert_info,
                     new_cert: None,
-                    key_strategy: format!("{:?}", opts.key_strategy).to_lowercase(),
+                    key_strategy,
                     key: Some(key_info),
                     signer: Some(signer_info),
                     warnings,
@@ -3524,22 +2781,63 @@ impl CertHandle {
             }
         }
 
-        // Write the new certificate
-        self.write_certificate(&new_cert, &new_cert_path, &opts.cert_encoding)?;
+        // Issue: signed by the CA, or self-signed with the subject key
+        let issued = match &ca {
+            Some(ca) => {
+                params.use_authority_key_identifier_extension = true;
+                Certificate::from_params(params)
+                    .and_then(|c| c.serialize_der_with_signer(&ca.cert))
+            }
+            None => Certificate::from_params(params).and_then(|c| c.serialize_der()),
+        };
+        let new_der = match issued {
+            Ok(der) => der,
+            Err(e) => {
+                return fail(old_cert_info, Some(signer_info), Some(key_info), warnings, "cert.sign_failed", format!("Failed to issue certificate: {}", e));
+            }
+        };
 
-        // Write the new key if rekeyed
-        if let (KeyStrategy::Rekey, Some(key_path)) = (&opts.key_strategy, &new_key_path) {
-            self.write_renewed_key(&renewed_key, key_path.as_str(), &opts)?;
+        // Write the new certificate, then the new key if rekeyed
+        self.write_file(&new_cert_path, &encode_cert_der(&new_der, &opts.cert_encoding))
+            .with_context(|| format!("Failed to write certificate to {}", new_cert_path))?;
+        if let (Some(bytes), Some(key_path)) = (&new_key_bytes, &new_key_path) {
+            self.write_file(key_path, bytes)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let fs_path = key_path.strip_prefix("cert://").or_else(|| key_path.strip_prefix("file://")).unwrap_or(key_path);
+                fs::set_permissions(fs_path, fs::Permissions::from_mode(0o600))
+                    .with_context(|| format!("Failed to set permissions on {}", key_path))?;
+            }
+            key_info.stored_at = Some(key_path.clone());
         }
 
-        // Parse the new certificate for response
-        let new_cert_info = self.build_new_cert_info(&new_cert, &new_cert_path, &opts.cert_encoding)?;
+        // Report what was actually issued
+        let summary = summarize_cert_der(&new_der)?;
+        let new_cert_info = NewCertInfo {
+            path: new_cert_path,
+            encoding: match opts.cert_encoding {
+                Encoding::Pem => "pem".to_string(),
+                Encoding::Der => "der".to_string(),
+            },
+            subject: summary.subject,
+            issuer: summary.issuer,
+            validity: [
+                ("not_before".to_string(), summary.not_before),
+                ("not_after".to_string(), summary.not_after),
+            ].into_iter().collect(),
+            is_ca: summary.is_ca,
+            path_len: summary.path_len,
+            serial_number: summary.serial_hex,
+            sans: summary.sans,
+            fingerprints: summary.fingerprints,
+        };
 
         Ok(CertRenewResponse {
             ok: true,
             old_cert: old_cert_info,
             new_cert: Some(new_cert_info),
-            key_strategy: format!("{:?}", opts.key_strategy).to_lowercase(),
+            key_strategy,
             key: Some(key_info),
             signer: Some(signer_info),
             warnings,
@@ -3547,6 +2845,222 @@ impl CertHandle {
         })
     }
 
+    /// Default path of the existing private key for a certificate:
+    /// `<stem>-key.pem`, matching what generate writes.
+    fn derive_existing_key_path(&self) -> String {
+        let t = &self.target_path;
+        match t.strip_suffix(".pem").or_else(|| t.strip_suffix(".crt")) {
+            Some(stem) => format!("{}-key.pem", stem),
+            None => format!("{}-key.pem", t),
+        }
+    }
+
+    fn derive_renewed_cert_path(&self) -> String {
+        let t = &self.target_path;
+        if let Some(stem) = t.strip_suffix(".pem") {
+            format!("{}-renewed.pem", stem)
+        } else if let Some(stem) = t.strip_suffix(".crt") {
+            format!("{}-renewed.crt", stem)
+        } else {
+            format!("{}-renewed.pem", t)
+        }
+    }
+
+    fn derive_renewed_key_path(&self, cert_path: &str) -> String {
+        match cert_path.strip_suffix(".pem").or_else(|| cert_path.strip_suffix(".crt")) {
+            Some(stem) => format!("{}-key.pem", stem),
+            None => format!("{}-key.pem", cert_path),
+        }
+    }
+
+    /// Chooses the key for a renewed certificate. Returns the key pair used
+    /// as the subject key, its description, and for rekey the new key pair to
+    /// save (the same key that is placed in the certificate).
+    fn renewal_key(
+        &self,
+        opts: &CertRenewOptions,
+        old_der: &[u8],
+        ca_signed: bool,
+        warnings: &mut Vec<String>,
+    ) -> Result<(KeyPair, RenewedKeyInfo, Option<(KeyPair, CertAlgorithm)>)> {
+        let (_, old) = X509Certificate::from_der(old_der)
+            .map_err(|e| anyhow::anyhow!("Failed to parse old certificate: {}", e))?;
+        let old_key = describe_spki(old.public_key());
+
+        match opts.key_strategy {
+            KeyStrategy::Reuse => {
+                let explicit = opts.existing_key_path.is_some();
+                let key_path = opts.existing_key_path.clone().unwrap_or_else(|| self.derive_existing_key_path());
+                let info = |path: Option<String>| RenewedKeyInfo {
+                    reused: true,
+                    algorithm: old_key.algorithm.clone(),
+                    rsa_bits: old_key.bits.filter(|_| old_key.algorithm == "rsa").and_then(|b| u16::try_from(b).ok()),
+                    ecdsa_curve: old_key.curve.clone(),
+                    stored_at: path,
+                    encrypted: false,
+                };
+
+                if self.target_file_exists(&key_path)? {
+                    let data = self.load_data_from_source(&key_path)
+                        .with_context(|| format!("Failed to read existing key {}", key_path))?;
+                    let key_pair = rcgen_keypair_from_bytes(&data, &key_path)?;
+                    if key_pair.public_key_raw() != spki_key_bytes(old.public_key()) {
+                        bail!("Existing key {} does not match the certificate's public key", key_path);
+                    }
+                    return Ok((key_pair, info(Some(key_path)), None));
+                }
+                if explicit {
+                    bail!("existing_key_path {} not found", key_path);
+                }
+                if !ca_signed {
+                    bail!(
+                        "key_strategy=reuse for a self-signed renewal needs the certificate's private key, \
+                         which was not found at {}; pass existing_key_path=<path>",
+                        key_path
+                    );
+                }
+                // CA-signed: the subject's public key is enough.
+                warnings.push(format!(
+                    "Private key not found at {}; the new certificate reuses the old public key",
+                    key_path
+                ));
+                let alg = rcgen_alg_for_key(&old_key)?;
+                let remote = PublicKeyOnly { raw: spki_key_bytes(old.public_key()).to_vec(), alg };
+                let key_pair = KeyPair::from_remote(Box::new(remote))
+                    .map_err(|e| anyhow::anyhow!("Failed to use the existing public key: {}", e))?;
+                Ok((key_pair, info(None), None))
+            }
+            KeyStrategy::Rekey => {
+                let algorithm = match &opts.algorithm {
+                    Some(a) => a.clone(),
+                    None => match old_key.algorithm.as_str() {
+                        "rsa" => CertAlgorithm::Rsa,
+                        "ecdsa" => CertAlgorithm::Ecdsa,
+                        "ed25519" => CertAlgorithm::Ed25519,
+                        other => bail!("Cannot rekey a {} key; pass algorithm=rsa|ecdsa|ed25519", other),
+                    },
+                };
+                let curve = match &opts.ecdsa_curve {
+                    Some(c) => c.clone(),
+                    None => match old_key.curve.as_deref() {
+                        Some("P-384") => EcdsaCurve::P384,
+                        _ => EcdsaCurve::P256,
+                    },
+                };
+                let new_key = self.generate_rcgen_keypair(&algorithm, opts.rsa_bits, &curve)?;
+                let subject_key = KeyPair::from_der(&new_key.serialize_der())?;
+                let info = RenewedKeyInfo {
+                    reused: false,
+                    algorithm: format!("{:?}", algorithm).to_lowercase(),
+                    rsa_bits: matches!(algorithm, CertAlgorithm::Rsa).then_some(opts.rsa_bits),
+                    ecdsa_curve: matches!(algorithm, CertAlgorithm::Ecdsa).then(|| match curve {
+                        EcdsaCurve::P384 => "P-384".to_string(),
+                        _ => "P-256".to_string(),
+                    }),
+                    stored_at: None,
+                    encrypted: opts.key_passphrase.is_some(),
+                };
+                Ok((subject_key, info, Some((new_key, algorithm))))
+            }
+        }
+    }
+
+    /// Parameters for a renewed certificate: the old certificate's subject
+    /// DN, SANs, key usage, extended key usage, and basic constraints, then
+    /// the overrides and validity settings from `opts`.
+    fn build_renewal_params(&self, opts: &CertRenewOptions, old_der: &[u8], key_pair: KeyPair, rekeyed: bool) -> Result<CertificateParams> {
+        let (_, old) = X509Certificate::from_der(old_der)
+            .map_err(|e| anyhow::anyhow!("Failed to parse old certificate: {}", e))?;
+        let alg = key_pair.algorithm();
+        let mut params = CertificateParams::from_ca_cert_der(old_der, key_pair)
+            .map_err(|e| anyhow::anyhow!("Failed to copy fields from the old certificate: {}", e))?;
+        params.alg = alg;
+        params.serial_number = Some(random_serial());
+        if rekeyed {
+            // The old subject key identifier belongs to the old key.
+            params.key_identifier_method = rcgen::KeyIdMethod::Sha256;
+        }
+
+        // Subject
+        match (&opts.subject_override, opts.copy_subject) {
+            (Some(sub), true) => {
+                let fields: [(rcgen::DnType, Vec<String>); 6] = [
+                    (rcgen::DnType::CommonName, sub.common_name.iter().cloned().collect()),
+                    (rcgen::DnType::OrganizationName, sub.organization.clone()),
+                    (rcgen::DnType::OrganizationalUnitName, sub.organizational_unit.clone()),
+                    (rcgen::DnType::CountryName, sub.country.clone()),
+                    (rcgen::DnType::StateOrProvinceName, sub.state_or_province.clone()),
+                    (rcgen::DnType::LocalityName, sub.locality.clone()),
+                ];
+                for (ty, values) in fields {
+                    if values.is_empty() {
+                        continue;
+                    }
+                    params.distinguished_name.remove(ty.clone());
+                    for v in values {
+                        params.distinguished_name.push(ty.clone(), v);
+                    }
+                }
+            }
+            (Some(sub), false) => params.distinguished_name = build_distinguished_name(sub)?,
+            (None, true) => {}
+            (None, false) => params.distinguished_name = DistinguishedName::new(),
+        }
+
+        // SANs
+        if let Some(sans) = &opts.sans_override {
+            params.subject_alt_names = parse_san_list(sans)?;
+        } else if !opts.copy_sans {
+            params.subject_alt_names.clear();
+        }
+
+        // Key usage and extended key usage
+        if let Some(ku) = &opts.key_usage_override {
+            params.key_usages = ku.iter().map(rcgen_key_usage).collect();
+        } else if !opts.copy_key_usage {
+            params.key_usages.clear();
+        }
+        if let Some(eku) = &opts.extended_key_usage_override {
+            params.extended_key_usages = eku.iter().map(rcgen_extended_key_usage).collect();
+        } else if !opts.copy_extended_key_usage {
+            params.extended_key_usages.clear();
+        }
+
+        // Basic constraints
+        let constraint = |n: Option<u8>| match n {
+            Some(n) => BasicConstraints::Constrained(n),
+            None => BasicConstraints::Unconstrained,
+        };
+        match opts.is_ca {
+            Some(true) => {
+                let old_len = match &params.is_ca {
+                    IsCa::Ca(BasicConstraints::Constrained(n)) => Some(*n),
+                    _ => None,
+                };
+                params.is_ca = IsCa::Ca(constraint(opts.path_len.or(old_len)));
+            }
+            Some(false) => params.is_ca = IsCa::ExplicitNoCa,
+            None => {
+                if let (Some(n), IsCa::Ca(_)) = (opts.path_len, &params.is_ca) {
+                    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(n));
+                }
+            }
+        }
+
+        // Validity
+        let not_before = if opts.carry_over_start {
+            NotBeforeSetting::Explicit(
+                DateTime::from_timestamp(old.validity().not_before.timestamp(), 0).unwrap_or_else(Utc::now),
+            )
+        } else {
+            opts.not_before.clone()
+        };
+        let (start, end) = validity_window(&not_before, opts.not_after, opts.not_after_offset_days)?;
+        params.not_before = to_offset_datetime(start)?;
+        params.not_after = to_offset_datetime(end)?;
+
+        Ok(params)
+    }
     fn load_bytes(&self) -> Result<Vec<u8>> {
         // For now, treat target_path as a filesystem path
         // In a full implementation, this would resolve through cert mount abstraction
@@ -3595,8 +3109,11 @@ impl CertHandle {
                 // Try to parse as different DER types
                 if X509Certificate::from_der(data).is_ok() {
                     Ok(CertObjectKind::Certificate)
+                } else if x509_parser::certification_request::X509CertificationRequest::from_der(data).is_ok() {
+                    Ok(CertObjectKind::Csr)
+                } else if rcgen_keypair_from_bytes(data, "key").is_ok() {
+                    Ok(CertObjectKind::PrivateKey)
                 } else {
-                    // Could try other DER parsers here
                     Ok(CertObjectKind::Unknown)
                 }
             }
@@ -3605,83 +3122,108 @@ impl CertHandle {
     }
 
     fn compute_fingerprints(&self, der_bytes: &[u8], algorithms: &[String]) -> HashMap<String, String> {
-        let mut fingerprints = HashMap::new();
-        
-        for alg in algorithms {
-            let fingerprint = match alg.as_str() {
-                "sha1" => {
-                    let hash = digest(&SHA1_FOR_LEGACY_USE_ONLY, der_bytes);
-                    hex::encode_upper(hash.as_ref())
-                        .as_bytes()
-                        .chunks(2)
-                        .map(|chunk| std::str::from_utf8(chunk).unwrap())
-                        .collect::<Vec<_>>()
-                        .join(":")
-                }
-                "sha256" => {
-                    let hash = digest(&SHA256, der_bytes);
-                    hex::encode_upper(hash.as_ref())
-                        .as_bytes()
-                        .chunks(2)
-                        .map(|chunk| std::str::from_utf8(chunk).unwrap())
-                        .collect::<Vec<_>>()
-                        .join(":")
-                }
-                _ => continue,
-            };
-            fingerprints.insert(alg.clone(), fingerprint);
-        }
-        
-        fingerprints
+        algorithms
+            .iter()
+            .filter_map(|alg| fingerprint(alg, der_bytes).map(|fp| (alg.clone(), fp)))
+            .collect()
     }
 
     fn parse_name(&self, name: &X509Name) -> HashMap<String, Value> {
-        let mut name_map = HashMap::new();
-        
-        // For now, just use the raw DN string representation
-        name_map.insert("raw_dn".to_string(), json!(name.to_string()));
-        
-        name_map
+        name_to_map(name)
     }
 
-    fn parse_public_key(&self, _public_key: &SubjectPublicKeyInfo) -> HashMap<String, Value> {
+    fn parse_public_key(&self, public_key: &SubjectPublicKeyInfo) -> HashMap<String, Value> {
+        let key = describe_spki(public_key);
         let mut key_info = HashMap::new();
-        
-        // Simple algorithm detection - just return basic info
-        key_info.insert("algorithm".to_string(), json!("Unknown"));
-        
+        let name = match key.algorithm.as_str() {
+            "rsa" => "RSA".to_string(),
+            "ecdsa" => "ECDSA".to_string(),
+            "ed25519" => "Ed25519".to_string(),
+            other => other.to_string(),
+        };
+        key_info.insert("algorithm".to_string(), json!(name));
+        if let Some(bits) = key.bits {
+            key_info.insert("key_size".to_string(), json!(bits));
+        }
+        if let Some(curve) = key.curve {
+            key_info.insert("curve".to_string(), json!(curve));
+        }
         key_info
     }
 
-    fn parse_extensions(&self, _extensions: &[X509Extension]) -> HashMap<String, Value> {
+    fn parse_extensions(&self, extensions: &[X509Extension]) -> HashMap<String, Value> {
+        let mut key_usage = Vec::new();
+        let mut eku = Vec::new();
+        let mut sans = Vec::new();
         let mut ext_map = HashMap::new();
-        
-        // For now, just return basic extension info without detailed parsing
-        ext_map.insert("key_usage".to_string(), json!(Vec::<String>::new()));
-        ext_map.insert("extended_key_usage".to_string(), json!(Vec::<String>::new()));
-        ext_map.insert("subject_alt_names".to_string(), json!(Vec::<String>::new()));
-        
+        for ext in extensions {
+            match ext.parsed_extension() {
+                ParsedExtension::KeyUsage(ku) => {
+                    let flags = [
+                        (ku.digital_signature(), "digitalSignature"),
+                        (ku.non_repudiation(), "contentCommitment"),
+                        (ku.key_encipherment(), "keyEncipherment"),
+                        (ku.data_encipherment(), "dataEncipherment"),
+                        (ku.key_agreement(), "keyAgreement"),
+                        (ku.key_cert_sign(), "keyCertSign"),
+                        (ku.crl_sign(), "cRLSign"),
+                        (ku.encipher_only(), "encipherOnly"),
+                        (ku.decipher_only(), "decipherOnly"),
+                    ];
+                    key_usage.extend(flags.iter().filter(|(set, _)| *set).map(|(_, n)| n.to_string()));
+                }
+                ParsedExtension::ExtendedKeyUsage(e) => {
+                    let flags = [
+                        (e.any, "anyExtendedKeyUsage"),
+                        (e.server_auth, "serverAuth"),
+                        (e.client_auth, "clientAuth"),
+                        (e.code_signing, "codeSigning"),
+                        (e.email_protection, "emailProtection"),
+                        (e.time_stamping, "timeStamping"),
+                        (e.ocsp_signing, "ocspSigning"),
+                    ];
+                    eku.extend(flags.iter().filter(|(set, _)| *set).map(|(_, n)| n.to_string()));
+                    eku.extend(e.other.iter().map(|o| o.to_id_string()));
+                }
+                ParsedExtension::SubjectAlternativeName(san) => {
+                    sans.extend(san.general_names.iter().map(general_name_string));
+                }
+                ParsedExtension::BasicConstraints(bc) => {
+                    ext_map.insert(
+                        "basic_constraints".to_string(),
+                        json!({ "ca": bc.ca, "path_len": bc.path_len_constraint, "critical": ext.critical }),
+                    );
+                }
+                ParsedExtension::SubjectKeyIdentifier(id) => {
+                    ext_map.insert("subject_key_id".to_string(), json!(colon_hex(id.0)));
+                }
+                ParsedExtension::AuthorityKeyIdentifier(aki) => {
+                    if let Some(id) = &aki.key_identifier {
+                        ext_map.insert("authority_key_id".to_string(), json!(colon_hex(id.0)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        ext_map.insert("key_usage".to_string(), json!(key_usage));
+        ext_map.insert("extended_key_usage".to_string(), json!(eku));
+        ext_map.insert("subject_alt_names".to_string(), json!(sans));
         ext_map
     }
 
-    fn is_ca_certificate(&self, _extensions: &[X509Extension]) -> bool {
-        // Simplified - would need proper extension parsing
-        false
+    fn is_ca_certificate(&self, extensions: &[X509Extension]) -> bool {
+        extensions.iter().any(|ext| matches!(ext.parsed_extension(), ParsedExtension::BasicConstraints(bc) if bc.ca))
     }
 
     fn parse_certificate(&self, cert: &X509Certificate, opts: &CertInfoOptions) -> Result<CertificateInfo> {
-        let serial_hex = hex::encode_upper(cert.tbs_certificate.serial.to_bytes_be());
-        
+        let serial_hex = hex::encode_upper(cert.tbs_certificate.raw_serial());
+
         let subject = self.parse_name(&cert.tbs_certificate.subject);
         let issuer = self.parse_name(&cert.tbs_certificate.issuer);
-        
-        let not_before = DateTime::from_timestamp(cert.tbs_certificate.validity.not_before.timestamp(), 0)
-            .unwrap_or_default()
-            .to_rfc3339();
-        let not_after = DateTime::from_timestamp(cert.tbs_certificate.validity.not_after.timestamp(), 0)
-            .unwrap_or_default()
-            .to_rfc3339();
-        
+
+        let not_before = asn1_time_rfc3339(&cert.tbs_certificate.validity.not_before);
+        let not_after = asn1_time_rfc3339(&cert.tbs_certificate.validity.not_after);
+
         let now = Utc::now().timestamp();
         let is_currently_valid = cert.tbs_certificate.validity.not_before.timestamp() <= now &&
                                 now <= cert.tbs_certificate.validity.not_after.timestamp();
@@ -3695,7 +3237,7 @@ impl CertHandle {
         let public_key = self.parse_public_key(&cert.tbs_certificate.subject_pki);
         let extensions = self.parse_extensions(cert.tbs_certificate.extensions());
         let is_ca = self.is_ca_certificate(cert.tbs_certificate.extensions());
-        
+
         let der_bytes = cert.as_ref();
         let fingerprints = self.compute_fingerprints(der_bytes, &opts.fingerprint_algs);
 
@@ -3710,9 +3252,8 @@ impl CertHandle {
             fingerprints,
             extensions,
             is_ca,
-            pem: if opts.include_pem { 
-                Some(format!("-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----", 
-                    BASE64_STANDARD.encode(der_bytes)))
+            pem: if opts.include_pem {
+                Some(pem_encode_lf(&Pem::new("CERTIFICATE", der_bytes.to_vec())))
             } else { None },
             raw_der_base64: if opts.include_raw {
                 Some(BASE64_STANDARD.encode(der_bytes))
@@ -3720,70 +3261,175 @@ impl CertHandle {
         })
     }
 
-    fn parse_pem_content(&self, data: &[u8], opts: &CertInfoOptions) -> Result<CertInfoResponse> {
-        let content_str = String::from_utf8_lossy(data);
-        
-        // Simple PEM parsing - look for certificate blocks
-        if content_str.contains("-----BEGIN CERTIFICATE-----") {
-            // Try to parse as a certificate using DER parsing
-            let mut cert_objects = Vec::new();
-            
-            if let Some(start) = content_str.find("-----BEGIN CERTIFICATE-----") {
-                if let Some(end) = content_str.find("-----END CERTIFICATE-----") {
-                    let base64_content = content_str[start + 27..end]
-                        .lines()
-                        .filter(|line| !line.trim().is_empty())
-                        .collect::<Vec<_>>()
-                        .join("");
-                    if let Ok(der_bytes) = BASE64_STANDARD.decode(&base64_content) {
-                        if let Ok((_, cert)) = X509Certificate::from_der(&der_bytes) {
-                            let cert_info = self.parse_certificate(&cert, opts)?;
-                            cert_objects.push(CertObject::Certificate(cert_info));
-                        }
+    fn parse_csr_info(&self, der: &[u8], opts: &CertInfoOptions) -> Result<CsrInfo> {
+        use x509_parser::certification_request::X509CertificationRequest;
+        let (_, csr) = X509CertificationRequest::from_der(der)
+            .map_err(|e| anyhow::anyhow!("Failed to parse CSR: {}", e))?;
+        let info = &csr.certification_request_info;
+        let mut extensions = HashMap::new();
+        let mut sans = Vec::new();
+        let mut other = 0usize;
+        if let Some(exts) = csr.requested_extensions() {
+            for ext in exts {
+                match ext {
+                    ParsedExtension::SubjectAlternativeName(san) => {
+                        sans.extend(san.general_names.iter().map(general_name_string))
                     }
+                    _ => other += 1,
                 }
             }
-            
-            if cert_objects.is_empty() {
-                bail!("Failed to parse certificate from PEM data");
+        }
+        extensions.insert("subject_alt_names".to_string(), json!(sans));
+        if other > 0 {
+            extensions.insert("other_requested_extensions".to_string(), json!(other));
+        }
+        let mut public_key = self.parse_public_key(&info.subject_pki);
+        public_key.insert(
+            "signature_valid".to_string(),
+            match verify_signature_with_key(
+                &csr.signature_algorithm.algorithm.to_id_string(),
+                &info.subject_pki,
+                info.raw,
+                &csr.signature_value.data,
+            ) {
+                SignatureCheck::Valid => json!(true),
+                SignatureCheck::Invalid => json!(false),
+                SignatureCheck::Unsupported(_) => Value::Null,
+            },
+        );
+        Ok(CsrInfo {
+            kind: CertObjectKind::Csr,
+            subject: self.parse_name(&info.subject),
+            fingerprints: self.compute_fingerprints(der, &opts.fingerprint_algs),
+            public_key,
+            extensions,
+            pem: if opts.include_pem {
+                Some(pem_encode_lf(&Pem::new("CERTIFICATE REQUEST", der.to_vec())))
+            } else { None },
+        })
+    }
+
+    fn private_key_info(&self, block: &::pem::Pem, encoding: &str, opts: &CertInfoOptions) -> PrivateKeyInfo {
+        let tag = block.tag();
+        let is_encrypted = tag == "ENCRYPTED PRIVATE KEY"
+            || block.headers().get("Proc-Type").map(|v| v.contains("ENCRYPTED")).unwrap_or(false);
+        let (algorithm, key_format) = match tag {
+            "RSA PRIVATE KEY" => ("RSA".to_string(), "pkcs1"),
+            "EC PRIVATE KEY" => ("ECDSA".to_string(), "sec1"),
+            "ENCRYPTED PRIVATE KEY" => ("unknown (encrypted)".to_string(), "pkcs8"),
+            _ => {
+                let alg = match rcgen_keypair_from_bytes(&pem_encode_lf(block).into_bytes(), "key") {
+                    Ok(kp) => match signature_algorithm_label(kp.algorithm()) {
+                        "rsa" => "RSA".to_string(),
+                        "ed25519" => "Ed25519".to_string(),
+                        other => other.replace("ecdsa", "ECDSA"),
+                    },
+                    Err(_) => "Unknown".to_string(),
+                };
+                (alg, "pkcs8")
             }
-            
-            Ok(CertInfoResponse {
-                cert_type: CertObjectKind::Certificate,
-                encoding: "pem".to_string(),
-                objects: cert_objects,
-            })
-        } else if content_str.contains("PRIVATE KEY") {
-            // Handle private keys
-            let key_info = PrivateKeyInfo {
-                kind: CertObjectKind::PrivateKey,
-                algorithm: "Unknown".to_string(),
-                encoding: "unknown".to_string(),
-                is_encrypted: content_str.contains("ENCRYPTED"),
-                key_info: HashMap::new(),
-                associated_cert_subject: None,
-                pem: if opts.include_pem { Some(content_str.to_string()) } else { None },
-            };
-            
-            Ok(CertInfoResponse {
-                cert_type: CertObjectKind::PrivateKey,
-                encoding: "pem".to_string(),
-                objects: vec![CertObject::PrivateKey(key_info)],
-            })
-        } else {
+        };
+        let mut key_info = HashMap::new();
+        key_info.insert("key_format".to_string(), json!(key_format));
+        PrivateKeyInfo {
+            kind: CertObjectKind::PrivateKey,
+            algorithm,
+            encoding: encoding.to_string(),
+            is_encrypted,
+            key_info,
+            associated_cert_subject: None,
+            pem: if opts.include_pem { Some(pem_encode_lf(block)) } else { None },
+        }
+    }
+
+    fn parse_pem_content(&self, data: &[u8], opts: &CertInfoOptions) -> Result<CertInfoResponse> {
+        let mut objects = Vec::new();
+        let mut cert_count = 0;
+        for block in pem_blocks(data) {
+            match block.tag() {
+                "CERTIFICATE" => {
+                    let (_, cert) = X509Certificate::from_der(block.contents())
+                        .map_err(|e| anyhow::anyhow!("Failed to parse certificate from PEM data: {}", e))?;
+                    objects.push(CertObject::Certificate(self.parse_certificate(&cert, opts)?));
+                    cert_count += 1;
+                }
+                "CERTIFICATE REQUEST" | "NEW CERTIFICATE REQUEST" => {
+                    objects.push(CertObject::Csr(self.parse_csr_info(block.contents(), opts)?));
+                }
+                tag if tag.ends_with("PRIVATE KEY") => {
+                    objects.push(CertObject::PrivateKey(self.private_key_info(&block, "pem", opts)));
+                }
+                "PUBLIC KEY" => {
+                    let info = match SubjectPublicKeyInfo::from_der(block.contents()) {
+                        Ok((_, spki)) => self.parse_public_key(&spki),
+                        Err(_) => HashMap::new(),
+                    };
+                    let algorithm = info.get("algorithm").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                    objects.push(CertObject::PublicKey(PublicKeyInfo {
+                        kind: CertObjectKind::PublicKey,
+                        algorithm,
+                        key_info: info,
+                        pem: if opts.include_pem { Some(pem_encode_lf(&block)) } else { None },
+                    }));
+                }
+                _ => {}
+            }
+        }
+
+        if objects.is_empty() {
             bail!("Unrecognized PEM content");
         }
+
+        let cert_type = if cert_count > 1 {
+            CertObjectKind::CertificateChain
+        } else {
+            match &objects[0] {
+                CertObject::Certificate(_) => CertObjectKind::Certificate,
+                CertObject::PrivateKey(_) => CertObjectKind::PrivateKey,
+                CertObject::PublicKey(_) => CertObjectKind::PublicKey,
+                CertObject::Csr(_) => CertObjectKind::Csr,
+                CertObject::Unknown(_) => CertObjectKind::Unknown,
+            }
+        };
+
+        Ok(CertInfoResponse {
+            cert_type,
+            encoding: "pem".to_string(),
+            objects,
+        })
     }
 
     fn parse_der_content(&self, data: &[u8], opts: &CertInfoOptions) -> Result<CertInfoResponse> {
         // Try to parse as X.509 certificate first
         if let Ok((_, cert)) = X509Certificate::from_der(data) {
             let cert_info = self.parse_certificate(&cert, opts)?;
-            
+
             return Ok(CertInfoResponse {
                 cert_type: CertObjectKind::Certificate,
                 encoding: "der".to_string(),
                 objects: vec![CertObject::Certificate(cert_info)],
+            });
+        }
+
+        if let Ok(csr) = self.parse_csr_info(data, opts) {
+            return Ok(CertInfoResponse {
+                cert_type: CertObjectKind::Csr,
+                encoding: "der".to_string(),
+                objects: vec![CertObject::Csr(csr)],
+            });
+        }
+
+        if rcgen_keypair_from_bytes(data, "key").is_ok() {
+            let block = Pem::new("PRIVATE KEY", data.to_vec());
+            let mut info = self.private_key_info(&block, "der", opts);
+            if RsaPrivateKey::from_pkcs1_der(data).is_ok() {
+                info.algorithm = "RSA".to_string();
+                info.key_info.insert("key_format".to_string(), json!("pkcs1"));
+            }
+            return Ok(CertInfoResponse {
+                cert_type: CertObjectKind::PrivateKey,
+                encoding: "der".to_string(),
+                objects: vec![CertObject::PrivateKey(info)],
             });
         }
 
@@ -3794,60 +3440,379 @@ impl CertHandle {
             objects: vec![CertObject::Unknown("Unable to parse DER content".to_string())],
         })
     }
-
     // Verification methods for the verify verb
     fn verify_certificate_structure(&self, cert: &X509Certificate, opts: &CertVerifyOptions) -> CheckResult {
-        // Basic structure validation
-        if cert.tbs_certificate.version.0 > 3 {
+        // X509Version is zero-based: 0 = v1, 1 = v2, 2 = v3.
+        if cert.tbs_certificate.version.0 > 2 {
             return CheckResult::fail(
-                &format!("Unsupported certificate version: {}", cert.tbs_certificate.version.0),
+                &format!("Unsupported certificate version: {}", cert.tbs_certificate.version.0 + 1),
                 "cert.unsupported_version"
             );
         }
 
-        // Check for weak algorithms if policy requires it
-        if opts.disallow_weak_signatures {
-            let sig_alg = &cert.signature_algorithm.algorithm;
-            
-            if sig_alg.to_string().contains("md2") || 
-               sig_alg.to_string().contains("md4") || 
-               sig_alg.to_string().contains("md5") {
+        let sig_oid = cert.signature_algorithm.algorithm.to_id_string();
+        if sig_oid != cert.tbs_certificate.signature.algorithm.to_id_string() {
+            return CheckResult::fail(
+                "Outer signature algorithm does not match the algorithm in the signed certificate body",
+                "cert.signature_algorithm_mismatch",
+            );
+        }
+
+        if opts.disallow_weak_signatures && is_weak_signature_algorithm(&sig_oid) {
+            return CheckResult::fail(
+                &format!("Certificate uses weak signature algorithm {}", signature_algorithm_name(&sig_oid)),
+                "cert.weak_signature"
+            );
+        }
+
+        let key = describe_spki(cert.public_key());
+        if key.algorithm == "rsa" {
+            let bits = key.bits.unwrap_or(0);
+            if bits < opts.min_rsa_bits as usize {
                 return CheckResult::fail(
-                    "Certificate uses weak signature algorithm (MD2/MD4/MD5)",
-                    "cert.weak_signature"
+                    &format!("RSA key is {} bits; policy requires at least {}", bits, opts.min_rsa_bits),
+                    "cert.weak_key",
                 );
             }
         }
 
-        CheckResult::ok("Certificate structure is valid")
+        CheckResult::ok(&format!(
+            "Certificate parsed (X.509 v{}, {}, {}{} key)",
+            cert.tbs_certificate.version.0 + 1,
+            signature_algorithm_name(&sig_oid),
+            key.algorithm,
+            key.bits.map(|b| format!(" {}-bit", b)).unwrap_or_default()
+        ))
     }
 
-    fn verify_certificate_chain(&self, cert: &X509Certificate, opts: &CertVerifyOptions) -> (CheckResult, Vec<ChainLink>) {
-        let mut chain_links = Vec::new();
-        
-        let subject_dn = cert.tbs_certificate.subject.to_string();
-        let issuer_dn = cert.tbs_certificate.issuer.to_string();
-        
-        let is_self_signed = subject_dn == issuer_dn;
-        
-        chain_links.push(ChainLink {
-            index: 0,
-            subject: subject_dn.clone(),
-            issuer: issuer_dn.clone(),
-            is_ca: self.is_ca_certificate(cert.tbs_certificate.extensions()),
-            is_trust_anchor: is_self_signed && opts.allow_self_signed,
-        });
+    /// Loads trust anchors for verify: the system bundle when trust=system,
+    /// plus every certificate in trust_paths (files or directories) and
+    /// trust_pem.
+    fn load_verify_anchors(&self, opts: &CertVerifyOptions, warnings: &mut Vec<String>) -> Result<Vec<Vec<u8>>> {
+        let mut anchors = Vec::new();
 
-        if is_self_signed {
-            if opts.allow_self_signed {
-                return (CheckResult::ok("Self-signed certificate is allowed"), chain_links);
-            } else {
-                return (CheckResult::fail("Self-signed certificate not allowed", "cert.self_signed_not_allowed"), chain_links);
+        match opts.trust {
+            TrustMode::System => {
+                let env_bundle = std::env::var("SSL_CERT_FILE").ok();
+                let candidates = env_bundle.iter().map(String::as_str).chain(SYSTEM_TRUST_BUNDLES.iter().copied());
+                let mut found = false;
+                for path in candidates {
+                    if let Ok(data) = fs::read(path) {
+                        anchors.extend(certificate_ders(&data));
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    warnings.push("No system CA bundle found; only trust_paths and trust_pem anchors are used".to_string());
+                }
+            }
+            TrustMode::Mount => {
+                if opts.trust_paths.is_empty() {
+                    bail!("trust=mount requires trust_paths");
+                }
+            }
+            TrustMode::Inline => {
+                if opts.trust_pem.is_none() {
+                    bail!("trust=inline requires trust_pem");
+                }
             }
         }
 
-        // Simplified chain validation
-        (CheckResult::ok("Chain validation passed (simplified)"), chain_links)
+        for path in &opts.trust_paths {
+            let p = std::path::Path::new(path);
+            let files: Vec<PathBuf> = if p.is_dir() {
+                let mut v: Vec<PathBuf> = fs::read_dir(p)
+                    .with_context(|| format!("Failed to read trust directory {}", path))?
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|f| f.is_file())
+                    .collect();
+                v.sort();
+                v
+            } else {
+                vec![p.to_path_buf()]
+            };
+            let mut count = 0;
+            for f in files {
+                let data = fs::read(&f).with_context(|| format!("Failed to read trust file {}", f.display()))?;
+                let ders = certificate_ders(&data);
+                count += ders.len();
+                anchors.extend(ders);
+            }
+            if count == 0 {
+                warnings.push(format!("No certificates found in trust path {}", path));
+            }
+        }
+
+        if let Some(trust_pem) = &opts.trust_pem {
+            // Allow "\n" escapes, since a PEM block is hard to pass on one line.
+            let text = trust_pem.replace("\\n", "\n");
+            let ders = certificate_ders(text.as_bytes());
+            if ders.is_empty() {
+                bail!("trust_pem does not contain a PEM certificate");
+            }
+            anchors.extend(ders);
+        }
+
+        Ok(anchors)
+    }
+
+    fn chain_cert_time_ok(&self, cert: &X509Certificate, opts: &CertVerifyOptions) -> Option<CheckResult> {
+        let now = Utc::now().timestamp();
+        let v = cert.validity();
+        if now < v.not_before.timestamp() && !opts.allow_not_yet_valid {
+            return Some(CheckResult::fail(
+                &format!("Chain certificate {} is not yet valid (not before {})", cert.subject(), asn1_time_rfc3339(&v.not_before)),
+                "cert.chain_not_yet_valid",
+            ));
+        }
+        if now > v.not_after.timestamp() && !opts.allow_expired {
+            return Some(CheckResult::fail(
+                &format!("Chain certificate {} expired on {}", cert.subject(), asn1_time_rfc3339(&v.not_after)),
+                "cert.chain_expired",
+            ));
+        }
+        None
+    }
+
+    /// Builds and validates a path from the leaf (`bundle[0]`) through the
+    /// other certificates in the bundle to a trust anchor. Each signature is
+    /// verified with the issuer's public key; issuer and subject names must
+    /// chain; issuers must be CAs allowed to sign certificates, within their
+    /// path length and validity period.
+    fn verify_certificate_chain(
+        &self,
+        bundle: &[Vec<u8>],
+        anchors: &[Vec<u8>],
+        opts: &CertVerifyOptions,
+    ) -> (CheckResult, Vec<ChainLink>) {
+        fn parse(der: &[u8]) -> Option<X509Certificate<'_>> {
+            X509Certificate::from_der(der).ok().map(|(_, c)| c)
+        }
+        let certs: Vec<X509Certificate> = bundle.iter().filter_map(|d| parse(d)).collect();
+        let anchor_certs: Vec<(usize, X509Certificate)> =
+            anchors.iter().enumerate().filter_map(|(i, d)| parse(d).map(|c| (i, c))).collect();
+
+        let Some(leaf) = certs.first() else {
+            return (CheckResult::fail("No certificate to verify", "cert.parse_failed"), Vec::new());
+        };
+
+        let link = |index: usize, c: &X509Certificate, anchor: bool| ChainLink {
+            index,
+            subject: c.subject().to_string(),
+            issuer: c.issuer().to_string(),
+            is_ca: is_ca_cert(c),
+            is_trust_anchor: anchor,
+        };
+
+        let mut links = Vec::new();
+
+        // The leaf itself is a trust anchor.
+        if anchors.iter().any(|a| a.as_slice() == bundle[0].as_slice()) {
+            links.push(link(0, leaf, true));
+            return (CheckResult::ok("Certificate is itself a trust anchor"), links);
+        }
+
+        if is_self_issued(leaf) {
+            links.push(link(0, leaf, opts.allow_self_signed));
+            return match verify_cert_signed_by(leaf, leaf.public_key()) {
+                SignatureCheck::Unsupported(msg) => (
+                    CheckResult::unsupported(&format!("Self-signature not verified: {}", msg), "cert.unsupported_signature_algorithm"),
+                    links,
+                ),
+                SignatureCheck::Invalid => (
+                    CheckResult::fail("Self-signed certificate has an invalid signature", "cert.bad_signature"),
+                    links,
+                ),
+                SignatureCheck::Valid if opts.allow_self_signed => (
+                    CheckResult::ok("Self-signed certificate allowed by policy; self-signature verified"),
+                    links,
+                ),
+                SignatureCheck::Valid => (
+                    CheckResult::fail(
+                        "Self-signed certificate is not in the trust store and allow_self_signed is false",
+                        "cert.self_signed_not_allowed",
+                    ),
+                    links,
+                ),
+            };
+        }
+
+        links.push(link(0, leaf, false));
+        // Indices into `certs` already on the path, to stop loops.
+        let mut used = vec![0usize];
+        let mut current: &X509Certificate = leaf;
+        let max_depth = opts.max_chain_depth.max(1) as usize;
+
+        loop {
+            if links.len() > max_depth {
+                return (
+                    CheckResult::fail(
+                        &format!("Chain exceeds max_chain_depth={} without reaching a trust anchor", opts.max_chain_depth),
+                        "cert.chain_too_long",
+                    ),
+                    links,
+                );
+            }
+
+            let issuer_raw = current.issuer().as_raw();
+            let mut unsupported: Option<String> = None;
+            let mut name_matched = false;
+
+            // Trust anchors first, so the shortest trusted path wins.
+            let mut chosen_anchor: Option<&X509Certificate> = None;
+            for (_, a) in &anchor_certs {
+                if a.subject().as_raw() != issuer_raw {
+                    continue;
+                }
+                name_matched = true;
+                match verify_cert_signed_by(current, a.public_key()) {
+                    SignatureCheck::Valid => {
+                        chosen_anchor = Some(a);
+                        break;
+                    }
+                    SignatureCheck::Unsupported(m) => unsupported = Some(m),
+                    SignatureCheck::Invalid => {}
+                }
+            }
+
+            let mut chosen_intermediate: Option<usize> = None;
+            if chosen_anchor.is_none() {
+                for (i, c) in certs.iter().enumerate() {
+                    if used.contains(&i) || c.subject().as_raw() != issuer_raw {
+                        continue;
+                    }
+                    name_matched = true;
+                    match verify_cert_signed_by(current, c.public_key()) {
+                        SignatureCheck::Valid => {
+                            chosen_intermediate = Some(i);
+                            break;
+                        }
+                        SignatureCheck::Unsupported(m) => unsupported = Some(m),
+                        SignatureCheck::Invalid => {}
+                    }
+                }
+            }
+
+            let (issuer, is_anchor) = match (chosen_anchor, chosen_intermediate) {
+                (Some(a), _) => (a, true),
+                (None, Some(i)) => (&certs[i], false),
+                (None, None) => {
+                    let result = if let Some(msg) = unsupported {
+                        CheckResult::unsupported(
+                            &format!("Signature of {} could not be verified: {}", current.subject(), msg),
+                            "cert.unsupported_signature_algorithm",
+                        )
+                    } else if name_matched {
+                        CheckResult::fail(
+                            &format!("Signature of {} does not verify with any certificate named {}", current.subject(), current.issuer()),
+                            "cert.bad_signature",
+                        )
+                    } else {
+                        CheckResult::fail(
+                            &format!(
+                                "Issuer {} of {} was not found in the bundle or trust store ({} anchors loaded)",
+                                current.issuer(),
+                                current.subject(),
+                                anchor_certs.len()
+                            ),
+                            "cert.issuer_not_found",
+                        )
+                    };
+                    return (result, links);
+                }
+            };
+
+            // The issuer must be allowed to sign certificates.
+            let (issuer_is_ca, path_len) = basic_constraints_of(issuer);
+            let has_bc = matches!(issuer.basic_constraints(), Ok(Some(_)));
+            if !issuer_is_ca && (!is_anchor || has_bc) {
+                links.push(link(links.len(), issuer, is_anchor));
+                return (
+                    CheckResult::fail(&format!("Issuer {} is not a CA", issuer.subject()), "cert.issuer_not_ca"),
+                    links,
+                );
+            }
+            if let Ok(Some(ku)) = issuer.key_usage() {
+                if !ku.value.key_cert_sign() {
+                    links.push(link(links.len(), issuer, is_anchor));
+                    return (
+                        CheckResult::fail(
+                            &format!("Issuer {} key usage does not include keyCertSign", issuer.subject()),
+                            "cert.issuer_key_usage",
+                        ),
+                        links,
+                    );
+                }
+            }
+            // Intermediates between this issuer and the leaf.
+            let below = links.len() - 1;
+            if let Some(max) = path_len {
+                if below as u32 > max {
+                    links.push(link(links.len(), issuer, is_anchor));
+                    return (
+                        CheckResult::fail(
+                            &format!("Issuer {} allows path length {}, but {} intermediates follow it", issuer.subject(), max, below),
+                            "cert.path_len_exceeded",
+                        ),
+                        links,
+                    );
+                }
+            }
+            if let Some(fail) = self.chain_cert_time_ok(issuer, opts) {
+                links.push(link(links.len(), issuer, is_anchor));
+                return (fail, links);
+            }
+            let key = describe_spki(issuer.public_key());
+            if key.algorithm == "rsa" && key.bits.unwrap_or(0) < opts.min_rsa_bits as usize {
+                links.push(link(links.len(), issuer, is_anchor));
+                return (
+                    CheckResult::fail(
+                        &format!("Issuer {} has a {}-bit RSA key; policy requires {}", issuer.subject(), key.bits.unwrap_or(0), opts.min_rsa_bits),
+                        "cert.weak_key",
+                    ),
+                    links,
+                );
+            }
+            if !is_anchor && opts.disallow_weak_signatures {
+                let oid = issuer.signature_algorithm.algorithm.to_id_string();
+                if is_weak_signature_algorithm(&oid) {
+                    links.push(link(links.len(), issuer, is_anchor));
+                    return (
+                        CheckResult::fail(
+                            &format!("Intermediate {} uses weak signature algorithm {}", issuer.subject(), signature_algorithm_name(&oid)),
+                            "cert.weak_signature",
+                        ),
+                        links,
+                    );
+                }
+            }
+
+            links.push(link(links.len(), issuer, is_anchor));
+            if is_anchor {
+                return (
+                    CheckResult::ok(&format!(
+                        "Chain of {} certificate(s) verified to trust anchor {}",
+                        links.len(),
+                        issuer.subject()
+                    )),
+                    links,
+                );
+            }
+
+            let idx = chosen_intermediate.expect("intermediate chosen");
+            if is_self_issued(issuer) {
+                return (
+                    CheckResult::fail(
+                        &format!("Chain ends at self-signed root {} that is not in the trust store", issuer.subject()),
+                        "cert.untrusted_root",
+                    ),
+                    links,
+                );
+            }
+            used.push(idx);
+            current = issuer;
+        }
     }
 
     fn verify_certificate_time(&self, cert: &X509Certificate, opts: &CertVerifyOptions) -> CheckResult {
@@ -3875,53 +3840,56 @@ impl CertHandle {
     }
 
     fn verify_hostname(&self, cert: &X509Certificate, opts: &CertVerifyOptions) -> CheckResult {
-        let Some(hostname) = &opts.hostname else {
-            return CheckResult::ok("No hostname specified for validation");
+        match &opts.hostname {
+            None => CheckResult::skipped("No hostname specified"),
+            Some(hostname) => check_hostname(cert, hostname),
+        }
+    }
+
+    fn verify_key_usage(&self, cert: &X509Certificate, opts: &CertVerifyOptions) -> CheckResult {
+        check_purpose(cert, &opts.purpose)
+    }
+
+    fn verify_keypair_matching(&self, cert: &X509Certificate, opts: &CertVerifyOptions) -> CheckResult {
+        let Some(keypair_target) = &opts.keypair_target else {
+            return CheckResult::skipped("No keypair_target specified");
         };
 
-        // Check SAN extension first
-        for ext in cert.tbs_certificate.extensions() {
-            if ext.oid == x509_parser::oid_registry::OID_X509_EXT_SUBJECT_ALT_NAME {
-                // Simplified - would parse SAN extension in full implementation
-                return CheckResult::ok(&format!("Hostname {} validated against SAN", hostname));
+        let data = match self.load_data_from_source(keypair_target) {
+            Ok(d) => d,
+            Err(e) => {
+                return CheckResult::fail(
+                    &format!("Failed to read private key {}: {}", keypair_target, e),
+                    "cert.keypair_load_failed",
+                )
             }
-        }
-
-        // Fallback to CN in subject
-        let subject_dn = cert.tbs_certificate.subject.to_string();
-        if subject_dn.contains(&format!("CN={}", hostname)) {
-            return CheckResult::ok(&format!("Hostname {} matches CN in subject", hostname));
-        }
-
-        CheckResult::fail(&format!("Hostname {} does not match certificate", hostname), "cert.hostname_mismatch")
-    }
-
-    fn verify_key_usage(&self, _cert: &X509Certificate, opts: &CertVerifyOptions) -> CheckResult {
-        if matches!(opts.purpose, Purpose::Any) {
-            return CheckResult::ok("Any purpose allowed");
-        }
-
-        // Simplified - would parse EKU extension in full implementation
-        CheckResult::ok(&format!("Purpose {:?} validation passed (simplified)", opts.purpose))
-    }
-
-    fn verify_keypair_matching(&self, _cert: &X509Certificate, opts: &CertVerifyOptions) -> CheckResult {
-        let Some(_keypair_target) = &opts.keypair_target else {
-            return CheckResult::ok("No keypair target specified");
         };
-
-        // Simplified - would load and compare keys in full implementation
-        CheckResult::ok("Keypair matching validated (simplified)")
+        let key_pair = match rcgen_keypair_from_bytes(&data, keypair_target) {
+            Ok(k) => k,
+            Err(e) => return CheckResult::fail(&e.to_string(), "cert.keypair_load_failed"),
+        };
+        if key_pair.public_key_raw() == spki_key_bytes(cert.public_key()) {
+            CheckResult::ok(&format!("Private key {} matches the certificate public key", keypair_target))
+        } else {
+            CheckResult::fail(
+                &format!("Private key {} does not match the certificate public key", keypair_target),
+                "cert.keypair_mismatch",
+            )
+        }
     }
 
     fn verify_revocation(&self, _cert: &X509Certificate, opts: &CertVerifyOptions) -> CheckResult {
         match opts.check_revocation {
-            RevocationMode::None => CheckResult::ok("Revocation checking disabled"),
-            RevocationMode::Soft => CheckResult::ok("Revocation checking passed (soft mode - not implemented)"),
-            RevocationMode::Hard => CheckResult::fail("Revocation checking not implemented", "cert.revocation_not_implemented"),
+            RevocationMode::None => CheckResult::skipped("Revocation checking disabled (check_revocation=none)"),
+            RevocationMode::Soft => CheckResult::not_checked(
+                "Revocation was not checked: CRL and OCSP lookups are not implemented (soft mode does not fail)",
+            ),
+            RevocationMode::Hard => CheckResult::unsupported(
+                "Revocation checking (CRL and OCSP) is not implemented, so check_revocation=hard cannot pass",
+                "cert.revocation_not_implemented",
+            ),
         }
     }
-
     fn create_policy_json(&self, opts: &CertVerifyOptions) -> serde_json::Value {
         json!({
             "purpose": match opts.purpose {
@@ -4124,82 +4092,20 @@ impl CertHandle {
         };
 
         // Perform verification based on object type
+        let encoding_name = match detected_encoding {
+            CertEncoding::Pem => "pem".to_string(),
+            CertEncoding::Der => "der".to_string(),
+            CertEncoding::Auto => "auto".to_string(),
+        };
         let verify_response = match object_type {
             CertObjectKind::Certificate => {
-                // Parse certificate and perform full verification
-                let cert_data = match detected_encoding {
-                    CertEncoding::Pem => {
-                        let content_str = String::from_utf8_lossy(&data);
-                        if let Some(start) = content_str.find("-----BEGIN CERTIFICATE-----") {
-                            if let Some(end) = content_str.find("-----END CERTIFICATE-----") {
-                                let base64_content = content_str[start + 27..end]
-                                    .lines()
-                                    .filter(|line| !line.trim().is_empty())
-                                    .collect::<Vec<_>>()
-                                    .join("");
-                                match BASE64_STANDARD.decode(&base64_content) {
-                                    Ok(der_bytes) => der_bytes,
-                                    Err(_) => {
-                                        let error_response = json!({
-                                            "error": {
-                                                "code": "cert.parse_failed",
-                                                "message": "Failed to decode base64 in PEM certificate",
-                                                "details": {
-                                                    "path": &self.target_path
-                                                }
-                                            }
-                                        });
-                                        write!(io.stdout, "{}", error_response)?;
-                                        return Ok(Status::err(5, "Certificate parse failed"));
-                                    }
-                                }
-                            } else {
-                                let error_response = json!({
-                                    "error": {
-                                        "code": "cert.parse_failed",
-                                        "message": "PEM certificate end marker not found",
-                                        "details": {
-                                            "path": &self.target_path
-                                        }
-                                    }
-                                });
-                                write!(io.stdout, "{}", error_response)?;
-                                return Ok(Status::err(5, "Certificate parse failed"));
-                            }
-                        } else {
-                            let error_response = json!({
-                                "error": {
-                                    "code": "cert.parse_failed",
-                                    "message": "PEM certificate begin marker not found",
-                                    "details": {
-                                        "path": &self.target_path
-                                    }
-                                }
-                            });
-                            write!(io.stdout, "{}", error_response)?;
-                            return Ok(Status::err(5, "Certificate parse failed"));
-                        }
-                    },
-                    CertEncoding::Der => data.clone(),
-                    CertEncoding::Auto => {
-                        // This should never happen as Auto is resolved by detect_encoding
-                        let error_response = json!({
-                            "error": {
-                                "code": "cert.internal_error",
-                                "message": "Internal error: Auto encoding not resolved",
-                                "details": {
-                                    "path": &self.target_path
-                                }
-                            }
-                        });
-                        write!(io.stdout, "{}", error_response)?;
-                        return Ok(Status::err(5, "Internal error"));
-                    }
-                };
-
-                let cert = match X509Certificate::from_der(&cert_data) {
-                    Ok((_, cert)) => cert,
-                    Err(_) => {
+                // The first certificate is the one verified; any others in the
+                // file are candidate intermediates for the chain.
+                let bundle = certificate_ders(&data);
+                let parsed = bundle.first().and_then(|der| X509Certificate::from_der(der).ok());
+                let cert = match parsed {
+                    Some((_, cert)) => cert,
+                    None => {
                         let error_response = json!({
                             "error": {
                                 "code": "cert.parse_failed",
@@ -4214,55 +4120,38 @@ impl CertHandle {
                     }
                 };
 
-                // Perform all certificate verification checks
                 let mut checks = HashMap::new();
                 let mut warnings = Vec::new();
 
-                // Structure check
-                let structure_check = self.verify_certificate_structure(&cert, &opts);
-                checks.insert("structure".to_string(), structure_check.clone());
+                checks.insert("structure".to_string(), self.verify_certificate_structure(&cert, &opts));
 
-                // Chain check
-                let (chain_check, chain_report) = self.verify_certificate_chain(&cert, &opts);
-                checks.insert("chain".to_string(), chain_check.clone());
+                let (chain_check, chain_report) = match self.load_verify_anchors(&opts, &mut warnings) {
+                    Ok(anchors) => self.verify_certificate_chain(&bundle, &anchors, &opts),
+                    Err(e) => (
+                        CheckResult::fail(&format!("Failed to load trust anchors: {}", e), "cert.trust_load_failed"),
+                        Vec::new(),
+                    ),
+                };
+                checks.insert("chain".to_string(), chain_check);
+                checks.insert("time".to_string(), self.verify_certificate_time(&cert, &opts));
+                checks.insert("hostname".to_string(), self.verify_hostname(&cert, &opts));
+                checks.insert("usage".to_string(), self.verify_key_usage(&cert, &opts));
+                checks.insert("keypair".to_string(), self.verify_keypair_matching(&cert, &opts));
+                checks.insert("revocation".to_string(), self.verify_revocation(&cert, &opts));
 
-                // Time check
-                let time_check = self.verify_certificate_time(&cert, &opts);
-                checks.insert("time".to_string(), time_check.clone());
-
-                // Hostname check
-                let hostname_check = self.verify_hostname(&cert, &opts);
-                checks.insert("hostname".to_string(), hostname_check.clone());
-
-                // Usage check
-                let usage_check = self.verify_key_usage(&cert, &opts);
-                checks.insert("usage".to_string(), usage_check.clone());
-
-                // Keypair check
-                let keypair_check = self.verify_keypair_matching(&cert, &opts);
-                checks.insert("keypair".to_string(), keypair_check.clone());
-
-                // Revocation check
-                let revocation_check = self.verify_revocation(&cert, &opts);
-                checks.insert("revocation".to_string(), revocation_check.clone());
-
-                // Add warnings for informational issues
-                if matches!(opts.check_revocation, RevocationMode::None) {
-                    warnings.push("Revocation not checked (mode=none)".to_string());
+                match opts.check_revocation {
+                    RevocationMode::None => warnings.push("Revocation not checked (check_revocation=none)".to_string()),
+                    RevocationMode::Soft => warnings.push("Revocation not checked (check_revocation=soft)".to_string()),
+                    RevocationMode::Hard => {}
                 }
 
-                // Determine overall result
                 let overall_ok = checks.values().all(|c| c.ok);
 
                 CertVerifyResponse {
                     ok: overall_ok,
                     target: format!("cert://{}", self.target_path),
                     cert_type: CertObjectKind::Certificate,
-                    encoding: match detected_encoding {
-                        CertEncoding::Pem => "pem".to_string(),
-                        CertEncoding::Der => "der".to_string(),
-                        CertEncoding::Auto => unreachable!(),
-                    },
+                    encoding: encoding_name,
                     checks,
                     chain_report: if opts.include_chain_report { chain_report } else { Vec::new() },
                     warnings,
@@ -4270,27 +4159,26 @@ impl CertHandle {
                 }
             }
             CertObjectKind::PrivateKey => {
-                // Simplified verification for private keys
                 let mut checks = HashMap::new();
-                checks.insert("structure".to_string(), CheckResult::ok("Private key structure is valid (simplified)"));
-                checks.insert("chain".to_string(), CheckResult::fail("Not applicable for private keys", "cert.not_applicable"));
-                checks.insert("time".to_string(), CheckResult::fail("Not applicable for private keys", "cert.not_applicable"));
-                checks.insert("hostname".to_string(), CheckResult::fail("Not applicable for private keys", "cert.not_applicable"));
-                checks.insert("usage".to_string(), CheckResult::fail("Not applicable for private keys", "cert.not_applicable"));
-                checks.insert("keypair".to_string(), CheckResult::ok("No keypair target specified"));
-                checks.insert("revocation".to_string(), CheckResult::ok("Not applicable for private keys"));
+                let structure = match rcgen_keypair_from_bytes(&data, &self.target_path) {
+                    Ok(kp) => CheckResult::ok(&format!(
+                        "Private key parsed ({})",
+                        signature_algorithm_label(kp.algorithm())
+                    )),
+                    Err(e) => CheckResult::fail(&e.to_string(), "cert.key_parse_failed"),
+                };
+                checks.insert("structure".to_string(), structure);
+                for name in ["chain", "time", "hostname", "usage", "keypair", "revocation"] {
+                    checks.insert(name.to_string(), CheckResult::skipped("Not applicable for private keys"));
+                }
 
-                let overall_ok = checks.values().all(|c| c.ok || c.error_code.as_ref().map(|e| e == "cert.not_applicable").unwrap_or(false));
+                let overall_ok = checks.values().all(|c| c.ok);
 
                 CertVerifyResponse {
                     ok: overall_ok,
                     target: format!("cert://{}", self.target_path),
                     cert_type: CertObjectKind::PrivateKey,
-                    encoding: match detected_encoding {
-                        CertEncoding::Pem => "pem".to_string(),
-                        CertEncoding::Der => "der".to_string(),
-                        CertEncoding::Auto => unreachable!(),
-                    },
+                    encoding: encoding_name,
                     checks,
                     chain_report: Vec::new(),
                     warnings: Vec::new(),
@@ -4337,6 +4225,7 @@ impl CertHandle {
         for (name, check) in &response.checks {
             let check_json = json!({
                 "ok": check.ok,
+                "status": check.status.as_str(),
                 "message": check.message,
                 "error_code": check.error_code
             });
@@ -4397,10 +4286,7 @@ impl CertHandle {
         for check_name in &check_order {
             if let Some(check) = response.checks.get(*check_name) {
                 output.push_str(&format!("[{}]\n", check_name.to_uppercase()));
-                output.push_str(&format!("  {}: {}\n", 
-                    if check.ok { "OK" } else { "FAILED" }, 
-                    check.message
-                ));
+                output.push_str(&format!("  {}: {}\n", check.status.label(), check.message));
                 if let Some(error_code) = &check.error_code {
                     output.push_str(&format!("  Error Code: {}\n", error_code));
                 }
@@ -4540,6 +4426,7 @@ impl CertHandle {
                     let mut obj = json!({
                         "kind": "csr",
                         "subject": csr.subject,
+                        "fingerprints": csr.fingerprints,
                         "public_key": csr.public_key,
                         "extensions": csr.extensions
                     });
@@ -5212,6 +5099,10 @@ impl CertHandle {
             };
         }
 
+        if let Some(path) = args.get("existing_key_path") {
+            opts.existing_key_path = Some(path.clone());
+        }
+
         // Parse algorithm (for rekey)
         if let Some(alg_str) = args.get("algorithm") {
             opts.algorithm = Some(match alg_str.as_str() {
@@ -5237,9 +5128,8 @@ impl CertHandle {
             opts.ecdsa_curve = Some(match curve_str.as_str() {
                 "P-256" => EcdsaCurve::P256,
                 "P-384" => EcdsaCurve::P384,
-                "P-521" => EcdsaCurve::P521,
-                "secp256k1" => EcdsaCurve::Secp256k1,
-                _ => bail!("Invalid ECDSA curve '{}'. Supported: P-256, P-384, P-521, secp256k1", curve_str),
+                "P-521" | "secp256k1" => bail!("ECDSA curve '{}' is not supported. Supported: P-256, P-384", curve_str),
+                _ => bail!("Invalid ECDSA curve '{}'. Supported: P-256, P-384", curve_str),
             });
         }
 
@@ -5353,7 +5243,7 @@ impl CertHandle {
             if not_before_str == "now" {
                 opts.not_before = NotBeforeSetting::Now;
             } else if not_before_str == "carry_over_start" {
-                opts.not_before = NotBeforeSetting::Now; // Will be overridden in implementation
+                opts.carry_over_start = true;
             } else {
                 match DateTime::parse_from_rfc3339(not_before_str) {
                     Ok(dt) => opts.not_before = NotBeforeSetting::Explicit(dt.with_timezone(&Utc)),
@@ -5554,6 +5444,18 @@ impl CertHandle {
             error: None,
         };
 
+        if matches!(opts.mode, CertSignMode::Csr) {
+            if let Err(e) = self.sign_csr(&opts, &mut response) {
+                response.ok = false;
+                response.error = Some(SignErrorInfo {
+                    code: "cert.signing_failed".to_string(),
+                    message: format!("Signing operation failed: {:#}", e),
+                    details: HashMap::new(),
+                });
+            }
+            return Ok(response);
+        }
+
         // Load the signer key
         let signer_key = match self.load_private_key(&opts.signer_key, opts.signer_key_passphrase.as_deref()) {
             Ok(key) => key,
@@ -5567,44 +5469,11 @@ impl CertHandle {
             }
         };
 
-        // Load signer certificate if provided (needed for CSR mode)
-        let signer_cert = if let Some(ref cert_path) = opts.signer_cert {
-            match self.load_certificate(cert_path) {
-                Ok(cert) => Some(cert),
-                Err(e) => {
-                    response.error = Some(SignErrorInfo {
-                        code: "cert.signer_cert_load_failed".to_string(),
-                        message: format!("Failed to load signer certificate: {}", e),
-                        details: HashMap::new(),
-                    });
-                    return Ok(response);
-                }
-            }
-        } else {
-            None
-        };
+        if opts.signer_cert.is_some() {
+            response.warnings.push("signer_cert is not used in data mode (raw signatures only)".to_string());
+        }
 
-        // Handle the specific signing mode
-        let result = match opts.mode {
-            CertSignMode::Data => {
-                self.sign_data(&opts, &signer_key, signer_cert.as_ref(), &mut response)
-            },
-            CertSignMode::Csr => {
-                if let Some(signer_cert) = signer_cert.as_ref() {
-                    self.sign_csr(&opts, &signer_key, signer_cert, &mut response)
-                } else {
-                    response.error = Some(SignErrorInfo {
-                        code: "cert.signer_cert_required".to_string(),
-                        message: "Signer certificate is required for CSR signing mode".to_string(),
-                        details: HashMap::new(),
-                    });
-                    return Ok(response);
-                }
-            }
-        };
-
-        // Handle any errors from the signing operation
-        if let Err(e) = result {
+        if let Err(e) = self.sign_data(&opts, &signer_key, None, &mut response) {
             response.ok = false;
             response.error = Some(SignErrorInfo {
                 code: "cert.signing_failed".to_string(),
@@ -5616,6 +5485,111 @@ impl CertHandle {
         Ok(response)
     }
 
+    /// Issues a certificate from the CSR at `csr_source`, signed by the CA in
+    /// `signer_cert` and `signer_key`, and writes it to `output_path`. Shared
+    /// by `sign mode=csr` and `csr.sign`.
+    #[allow(clippy::too_many_arguments)]
+    fn issue_certificate_from_csr_file(
+        &self,
+        csr_source: &str,
+        csr_encoding: &EncodingHint,
+        signer_cert: &str,
+        signer_key: &str,
+        signer_key_passphrase: Option<&str>,
+        output_path: &str,
+        cert_encoding: &Encoding,
+        overwrite: bool,
+        settings: &CsrIssueSettings,
+    ) -> Result<IssuedFromCsr> {
+        if signer_key_passphrase.is_some() {
+            bail!("Encrypted signer keys are not supported; decrypt signer_key first");
+        }
+        let ca = load_ca_signer(
+            &self.load_data_from_source(signer_cert).with_context(|| format!("Failed to read signer certificate {}", signer_cert))?,
+            signer_cert,
+            &self.load_data_from_source(signer_key).with_context(|| format!("Failed to read signer key {}", signer_key))?,
+            signer_key,
+        )?;
+
+        let csr_data = self.load_data_from_source(csr_source)
+            .with_context(|| format!("Failed to read CSR {}", csr_source))?;
+        let (csr_der, csr_encoding_used) = csr_der_from_bytes(&csr_data, csr_encoding)?;
+
+        if !overwrite && self.target_file_exists(output_path)? {
+            bail!("Certificate output file already exists: {}", output_path);
+        }
+
+        let der = issue_from_csr(&csr_der, settings, &ca)?;
+        self.write_certificate_to_path(output_path, &encode_cert_der(&der, cert_encoding))?;
+
+        Ok(IssuedFromCsr {
+            summary: summarize_cert_der(&der)?,
+            csr: describe_csr(&csr_der)?,
+            csr_encoding: csr_encoding_used,
+            der,
+        })
+    }
+
+    fn sign_csr(&self, opts: &CertSignOptions, response: &mut CertSignResponse) -> Result<()> {
+        let csr_source = opts.csr_source.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CSR source not specified"))?;
+        let signer_cert = opts.signer_cert.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Signer certificate is required for CSR signing mode"))?;
+        let output_path = opts.cert_output_path.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Certificate output path not specified"))?;
+
+        let settings = CsrIssueSettings {
+            subject_override: None,
+            sans_override: opts.sans_override.clone(),
+            not_before: opts.not_before.clone(),
+            not_after: opts.not_after,
+            not_after_offset_days: opts.not_after_offset_days,
+            is_ca: opts.is_ca,
+            path_len: opts.path_len,
+            key_usage: opts.key_usage.clone(),
+            extended_key_usage: opts.extended_key_usage.clone(),
+            serial: None,
+        };
+        let issued = self.issue_certificate_from_csr_file(
+            csr_source,
+            &opts.csr_encoding,
+            signer_cert,
+            &opts.signer_key,
+            opts.signer_key_passphrase.as_deref(),
+            output_path,
+            &opts.cert_encoding,
+            opts.overwrite,
+            &settings,
+        )?;
+
+        let s = &issued.summary;
+        response.ok = true;
+        response.algorithm = Some(issued.signature_algorithm());
+        response.csr_subject = Some(issued.csr.subject.clone());
+        response.cert = Some(SignCertInfo {
+            stored_at: output_path.clone(),
+            encoding: format!("{:?}", opts.cert_encoding).to_lowercase(),
+            serial_number: s.serial_hex.clone(),
+            fingerprints: s.fingerprints.clone(),
+            validity: [
+                ("not_before".to_string(), s.not_before.clone()),
+                ("not_after".to_string(), s.not_after.clone()),
+            ].into_iter().collect(),
+            is_ca: s.is_ca,
+            path_len: s.path_len,
+        });
+        response.cert_pem = if opts.include_cert_pem {
+            Some(pem_encode_lf(&Pem::new("CERTIFICATE", issued.der.clone())))
+        } else {
+            None
+        };
+        response.error = None;
+        Ok(())
+    }
+
+    /// Programmatic CSR signing (`csr.sign`); not reachable from the command
+    /// line because `cert://<path>.csr.sign` parses as the sign verb. Uses the
+    /// same issuing code as `sign mode=csr`.
     fn csr_sign(&self, opts: &CsrSignOptions) -> Result<CsrSignResponse> {
         let mut response = CsrSignResponse {
             ok: false,
@@ -5630,196 +5604,139 @@ impl CertHandle {
                 cert_pem: None,
                 cert_der_base64: None,
             },
-            warnings: vec!["This is a simplified implementation for demonstration".to_string()],
+            warnings: Vec::new(),
             error: None,
         };
+        let error = |code: &str, message: String| CsrSignErrorInfo {
+            code: code.to_string(),
+            message,
+            details: HashMap::new(),
+        };
 
-        // Step 1: Basic validation that required files exist
-        if !self.file_exists(&self.target_path) {
-            response.error = Some(CsrSignErrorInfo {
-                code: "cert.csr_not_found".to_string(),
-                message: format!("CSR not found at {}", self.target_path),
-                details: HashMap::new(),
-            });
-            return Ok(response);
-        }
-
-        if !self.file_exists(&opts.signer_ca) {
-            response.error = Some(CsrSignErrorInfo {
-                code: "cert.signer_ca_not_found".to_string(),
-                message: format!("Signer CA not found at {}", opts.signer_ca),
-                details: HashMap::new(),
-            });
-            return Ok(response);
-        }
-
-        if !self.file_exists(&opts.signer_key) {
-            response.error = Some(CsrSignErrorInfo {
-                code: "cert.signer_key_not_found".to_string(),
-                message: format!("Signer key not found at {}", opts.signer_key),
-                details: HashMap::new(),
-            });
-            return Ok(response);
-        }
-
-        // Step 2: Check if target exists
-        if !opts.overwrite && self.file_exists(&opts.cert_output_path) {
-            response.error = Some(CsrSignErrorInfo {
-                code: "cert.target_exists".to_string(),
-                message: format!("Certificate already exists at {}", opts.cert_output_path),
-                details: HashMap::new(),
-            });
-            return Ok(response);
-        }
-
-        // Step 3: Create a simple mock certificate for demonstration
-        // In a real implementation, this would parse the CSR, validate it, and create a real certificate
-        let mock_cert_content = format!(
-            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
-            base64::prelude::BASE64_STANDARD.encode("MOCK_CERTIFICATE_DATA_FOR_DEMONSTRATION")
-        );
-
-        // Step 4: Write the mock certificate
-        if let Err(e) = self.write_file(&opts.cert_output_path, mock_cert_content.as_bytes()) {
-            response.error = Some(CsrSignErrorInfo {
-                code: "cert.io_error".to_string(),
-                message: format!("Failed to write certificate: {}", e),
-                details: HashMap::new(),
-            });
-            return Ok(response);
-        }
-
-        // Step 5: Build mock response data
-        response.csr = Some(CsrSignCsrInfo {
-            encoding: "pem".to_string(),
-            subject: CsrSignSubjectInfo {
-                common_name: Some("example.com".to_string()),
-                organization: vec!["Example Corp".to_string()],
-                raw_dn: "CN=example.com,O=Example Corp,C=US".to_string(),
-            },
-            sans: vec!["DNS:example.com".to_string(), "DNS:www.example.com".to_string()],
-            public_key: CsrSignPublicKeyInfo {
-                algorithm: "RSA".to_string(),
-                rsa_bits: Some(2048),
-                ecdsa_curve: None,
-            },
-        });
-
-        response.certificate = Some(CsrSignCertInfo {
-            path: opts.cert_output_path.clone(),
-            encoding: match opts.cert_encoding {
-                Encoding::Pem => "pem".to_string(),
-                Encoding::Der => "der".to_string(),
-            },
-            subject: CsrSignSubjectInfo {
-                common_name: Some("example.com".to_string()),
-                organization: vec!["Example Corp".to_string()],
-                raw_dn: "CN=example.com,O=Example Corp,C=US".to_string(),
-            },
-            issuer: CsrSignSubjectInfo {
-                common_name: Some("Example Root CA".to_string()),
-                organization: vec!["Example Org".to_string()],
-                raw_dn: "CN=Example Root CA,C=US".to_string(),
-            },
-            validity: CsrSignValidityInfo {
-                not_before: "2025-01-01T00:00:00Z".to_string(),
-                not_after: "2027-01-01T00:00:00Z".to_string(),
-            },
-            is_ca: opts.is_ca.unwrap_or(false),
-            path_len: opts.path_len,
-            serial_number: "01ABCDEF".to_string(),
-            fingerprints: {
-                let mut fingerprints = HashMap::new();
-                fingerprints.insert("sha256".to_string(), "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99".to_string());
-                fingerprints
-            },
-            key_usage: vec!["digitalSignature".to_string(), "keyEncipherment".to_string()],
-            extended_key_usage: vec!["serverAuth".to_string(), "clientAuth".to_string()],
-        });
-
-        // Add returned data if requested
-        if opts.include_cert_pem {
-            match opts.cert_encoding {
-                Encoding::Pem => {
-                    response.returned.cert_pem = Some(mock_cert_content);
-                }
-                Encoding::Der => {
-                    response.returned.cert_der_base64 = Some(base64::prelude::BASE64_STANDARD.encode("MOCK_DER_CERT_DATA"));
-                }
+        for (path, code, what) in [
+            (&self.target_path, "cert.csr_not_found", "CSR"),
+            (&opts.signer_ca, "cert.signer_ca_not_found", "Signer CA"),
+            (&opts.signer_key, "cert.signer_key_not_found", "Signer key"),
+        ] {
+            if !self.file_exists(path) {
+                response.error = Some(error(code, format!("{} not found at {}", what, path)));
+                return Ok(response);
             }
         }
 
+        if !opts.copy_subject && opts.subject_override.is_none() {
+            response.error = Some(error("cert.invalid_options", "copy_subject=false requires a subject override".to_string()));
+            return Ok(response);
+        }
+        let serial = match &opts.serial_override {
+            Some(hex_str) => match hex::decode(hex_str.trim_start_matches("0x").replace(':', "")) {
+                Ok(bytes) if !bytes.is_empty() => Some(bytes),
+                _ => {
+                    response.error = Some(error("cert.invalid_options", format!("Invalid serial_override (hex expected): {}", hex_str)));
+                    return Ok(response);
+                }
+            },
+            None => None,
+        };
+        if serial.is_none() && !matches!(opts.serial_strategy, SerialStrategy::Random) {
+            response.warnings.push(format!("serial_strategy={:?} is not implemented; a random serial was used", opts.serial_strategy).to_lowercase());
+        }
+
+        let settings = CsrIssueSettings {
+            subject_override: opts.subject_override.clone(),
+            sans_override: match (&opts.sans_override, opts.copy_sans) {
+                (Some(s), _) => Some(s.clone()),
+                (None, false) => Some(Vec::new()),
+                (None, true) => None,
+            },
+            not_before: opts.not_before.clone(),
+            not_after: opts.not_after,
+            not_after_offset_days: opts.not_after_offset_days,
+            is_ca: opts.is_ca.unwrap_or(false),
+            path_len: opts.path_len,
+            // A CSR carries only subjectAltName here, so "copy" yields none.
+            key_usage: opts.key_usage_override.clone().unwrap_or_default(),
+            extended_key_usage: opts.extended_key_usage_override.clone().unwrap_or_default(),
+            serial,
+        };
+
+        let issued = match self.issue_certificate_from_csr_file(
+            &self.target_path,
+            &opts.csr_encoding,
+            &opts.signer_ca,
+            &opts.signer_key,
+            opts.signer_key_passphrase.as_deref(),
+            &opts.cert_output_path,
+            &opts.cert_encoding,
+            opts.overwrite,
+            &settings,
+        ) {
+            Ok(i) => i,
+            Err(e) => {
+                let msg = format!("{:#}", e);
+                let code = if msg.contains("already exists") { "cert.target_exists" } else { "cert.csr_sign_failed" };
+                response.error = Some(error(code, msg));
+                return Ok(response);
+            }
+        };
+
+        let subject_info = |m: &HashMap<String, Value>| CsrSignSubjectInfo {
+            common_name: m.get("common_name").and_then(|v| v.as_str()).map(String::from),
+            organization: m.get("organization")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            raw_dn: m.get("raw_dn").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        };
+        let key = &issued.csr.public_key;
+        response.csr = Some(CsrSignCsrInfo {
+            encoding: issued.csr_encoding.to_string(),
+            subject: subject_info(&issued.csr.subject),
+            sans: issued.csr.sans.clone(),
+            public_key: CsrSignPublicKeyInfo {
+                algorithm: key.algorithm.to_uppercase(),
+                rsa_bits: key.bits.filter(|_| key.algorithm == "rsa").and_then(|b| u16::try_from(b).ok()),
+                ecdsa_curve: key.curve.clone(),
+            },
+        });
+        let s = &issued.summary;
+        response.certificate = Some(CsrSignCertInfo {
+            path: opts.cert_output_path.clone(),
+            encoding: format!("{:?}", opts.cert_encoding).to_lowercase(),
+            subject: subject_info(&s.subject),
+            issuer: subject_info(&s.issuer),
+            validity: CsrSignValidityInfo {
+                not_before: s.not_before.clone(),
+                not_after: s.not_after.clone(),
+            },
+            is_ca: s.is_ca,
+            path_len: s.path_len,
+            serial_number: s.serial_hex.clone(),
+            fingerprints: s.fingerprints.clone(),
+            key_usage: s.key_usage.clone(),
+            extended_key_usage: s.extended_key_usage.clone(),
+        });
+        if opts.include_cert_pem {
+            match opts.cert_encoding {
+                Encoding::Pem => response.returned.cert_pem = Some(pem_encode_lf(&Pem::new("CERTIFICATE", issued.der.clone()))),
+                Encoding::Der => response.returned.cert_der_base64 = Some(BASE64_STANDARD.encode(&issued.der)),
+            }
+        }
         response.ok = true;
         Ok(response)
     }
-
     // Renewal helper methods
-    fn parse_certificate_for_renewal(&self, data: &[u8]) -> Result<ParsedCertificate> {
-        // Try to parse as PEM first
-        if let Ok(pem_data) = std::str::from_utf8(data) {
-            if pem_data.trim_start().starts_with("-----BEGIN CERTIFICATE-----") {
-                return self.parse_pem_certificate_for_renewal(data);
-            }
-        }
-        
-        // Try to parse as DER
-        self.parse_der_certificate_for_renewal(data)
-    }
-
-    fn parse_pem_certificate_for_renewal(&self, data: &[u8]) -> Result<ParsedCertificate> {
-        let pem_str = std::str::from_utf8(data)?;
-        let pem_objects: Vec<_> = ::pem::parse_many(pem_str)?;
-        
-        for pem_obj in pem_objects {
-            if pem_obj.tag() == "CERTIFICATE" {
-                return self.parse_der_certificate_for_renewal(pem_obj.contents());
-            }
-        }
-        
-        bail!("No certificate found in PEM data");
-    }
-
     fn parse_der_certificate_for_renewal(&self, data: &[u8]) -> Result<ParsedCertificate> {
         let (_, cert) = X509Certificate::from_der(data)
             .map_err(|e| anyhow::anyhow!("Failed to parse certificate: {}", e))?;
 
-        // Extract subject
-        let subject = self.extract_subject_info(&cert)?;
-        
-        // Extract issuer
-        let issuer = self.extract_issuer_info(&cert)?;
-        
-        // Extract validity
-        let validity = self.extract_validity_info(&cert)?;
-        
-        // Extract SANs
-        let sans = self.extract_sans(&cert)?;
-        
-        // Extract key usage
-        let (key_usage, extended_key_usage) = self.extract_key_usages(&cert)?;
-        
-        // Check if it's a CA certificate
-        let is_ca = self.extract_ca_constraint(&cert);
-        let path_len = self.extract_path_len_constraint(&cert);
-        
-        // Extract public key
-        let public_key = cert.public_key().raw.to_vec();
-        
-        // Calculate fingerprints
-        let fingerprints = self.calculate_fingerprints(data);
-
         Ok(ParsedCertificate {
-            subject,
-            issuer,
-            validity,
-            sans,
-            key_usage,
-            extended_key_usage,
-            is_ca,
-            path_len,
-            public_key,
-            fingerprints,
-            raw_der: data.to_vec(),
+            subject: self.extract_subject_info(&cert)?,
+            issuer: self.extract_issuer_info(&cert)?,
+            validity: self.extract_validity_info(&cert)?,
+            is_ca: is_ca_cert(&cert),
+            self_issued: is_self_issued(&cert),
+            fingerprints: self.calculate_fingerprints(data),
         })
     }
 
@@ -5911,9 +5828,8 @@ impl CertHandle {
             opts.ecdsa_curve = Some(match curve_str.as_str() {
                 "P-256" => EcdsaCurve::P256,
                 "P-384" => EcdsaCurve::P384,
-                "P-521" => EcdsaCurve::P521,
-                "secp256k1" => EcdsaCurve::Secp256k1,
-                _ => bail!("invalid ecdsa_curve: {}", curve_str),
+                "P-521" | "secp256k1" => bail!("ecdsa_curve '{}' is not supported. Supported: P-256, P-384", curve_str),
+                _ => bail!("invalid ecdsa_curve: {}. Supported: P-256, P-384", curve_str),
             });
         }
 
@@ -6496,33 +6412,29 @@ impl CertHandle {
             }
         }
         
-        // Try Ed25519 raw 32-byte key
-        if key_data.len() == 32 {
-            if let Ok(_ed25519_key) = Ed25519SigningKey::try_from(key_data.as_slice()) {
-                // For Ed25519, we need to generate a new key since rcgen might not support
-                // direct conversion from Ed25519 raw keys
-                let key_pair = rcgen::KeyPair::generate(&rcgen::PKCS_ED25519)?;
+        // Ed25519 (PKCS#8 PEM/DER or a raw 32-byte seed)
+        if let Ok(key_pair) = rcgen_keypair_from_bytes(&key_data, key_path) {
+            if key_pair.algorithm() == &rcgen::PKCS_ED25519 {
                 let key_info = json!({
-                    "reused": false, // Note: we generated new due to conversion limitations
+                    "reused": true,
                     "algorithm": "ed25519",
                     "rsa_bits": null,
                     "ecdsa_curve": null,
                     "path": key_path,
-                    "encoding": "raw",
-                    "key_format": "raw",
-                    "encrypted": false,
-                    "note": "Ed25519 key regenerated due to format conversion limitations"
+                    "encoding": if looks_like_pem(&key_data) { "pem" } else if key_data.len() == 32 { "raw" } else { "der" },
+                    "key_format": if key_data.len() == 32 { "raw" } else { "pkcs8" },
+                    "encrypted": false
                 });
                 return Ok((key_pair, key_info));
             }
         }
-        
+
         // Handle encrypted keys with passphrase
         if passphrase.is_some() {
             bail!("Encrypted key support not yet implemented");
         }
         
-        bail!("Unable to parse private key from '{}'. Supported formats: RSA (PKCS1/PKCS8 PEM/DER), ECDSA P-256/P-384 (SEC1/PKCS8 PEM/DER), Ed25519 (raw)", key_path);
+        bail!("Unable to parse private key from '{}'. Supported formats: RSA (PKCS1/PKCS8 PEM/DER), ECDSA P-256/P-384 (SEC1/PKCS8 PEM/DER), Ed25519 (PKCS8 PEM/DER, raw)", key_path);
     }
 
     fn generate_new_key_for_csr(&self, opts: &CsrCreateOptions) -> Result<(KeyPair, Value)> {
@@ -6548,20 +6460,9 @@ impl CertHandle {
                         let key_pair = KeyPair::from_der(&signing_key.to_pkcs8_der()?.as_bytes())?;
                         key_pair
                     }
-                    _ => bail!("ECDSA curve {:?} not yet implemented", curve),
                 }
             }
-            CertAlgorithm::Ed25519 => {
-                let mut rng = rand::thread_rng();
-                let mut seed = [0u8; 32];
-                rng.fill_bytes(&mut seed);
-                let signing_key = Ed25519SigningKey::from_bytes(&seed);
-                // Ed25519 keys need special handling - create PKCS8 manually or use different approach
-                let key_bytes = signing_key.to_bytes();
-                // For now, create a simple key pair with rcgen directly
-                let key_pair = rcgen::KeyPair::generate(&rcgen::PKCS_ED25519)?;
-                key_pair
-            }
+            CertAlgorithm::Ed25519 => rcgen::KeyPair::generate(&rcgen::PKCS_ED25519)?,
         };
 
         let key_info = json!({
@@ -6575,9 +6476,7 @@ impl CertHandle {
             "ecdsa_curve": if matches!(algorithm, CertAlgorithm::Ecdsa) {
                 Some(match opts.ecdsa_curve.as_ref().unwrap_or(&EcdsaCurve::P256) {
                     EcdsaCurve::P256 => "P-256",
-                    EcdsaCurve::P384 => "P-384", 
-                    EcdsaCurve::P521 => "P-521",
-                    EcdsaCurve::Secp256k1 => "secp256k1",
+                    EcdsaCurve::P384 => "P-384",
                 })
             } else { None },
             "path": opts.new_key_output_path,
@@ -6611,7 +6510,7 @@ impl CertHandle {
                 };
                 
                 let pem_object = ::pem::Pem::new(pem_label, key_der);
-                let pem_content = ::pem::encode(&pem_object);
+                let pem_content = pem_encode_lf(&pem_object);
                 
                 Ok(pem_content.into_bytes())
             }
@@ -6924,423 +6823,24 @@ impl CertHandle {
         Ok(output)
     }
 
-    fn handle_key_strategy(&self, opts: &CertRenewOptions, old_cert: &ParsedCertificate) -> Result<Option<(RenewedKey, RenewedKeyInfo)>> {
-        match opts.key_strategy {
-            KeyStrategy::Reuse => {
-                let key_info = RenewedKeyInfo {
-                    reused: true,
-                    algorithm: self.detect_key_algorithm(&old_cert.public_key),
-                    rsa_bits: self.detect_rsa_bits(&old_cert.public_key),
-                    ecdsa_curve: self.detect_ecdsa_curve(&old_cert.public_key),
-                    stored_at: None,
-                    encrypted: false,
-                };
-                
-                Ok(Some((RenewedKey::Reused(old_cert.public_key.clone()), key_info)))
-            }
-            KeyStrategy::Rekey => {
-                let algorithm = opts.algorithm.clone()
-                    .unwrap_or_else(|| self.detect_cert_algorithm(&old_cert.public_key));
-                let curve = opts.ecdsa_curve.clone().unwrap_or(EcdsaCurve::P256);
-                
-                let (new_keypair, algorithm_str, rsa_bits, ecdsa_curve) = match algorithm {
-                    CertAlgorithm::Rsa => {
-                        let keypair = self.generate_rcgen_keypair(&algorithm, opts.rsa_bits, &curve)?;
-                        (keypair, "rsa".to_string(), Some(opts.rsa_bits), None)
-                    }
-                    CertAlgorithm::Ecdsa => {
-                        let keypair = self.generate_rcgen_keypair(&algorithm, opts.rsa_bits, &curve)?;
-                        (keypair, "ecdsa".to_string(), None, Some(format!("{:?}", curve)))
-                    }
-                    CertAlgorithm::Ed25519 => {
-                        let keypair = self.generate_rcgen_keypair(&algorithm, opts.rsa_bits, &curve)?;
-                        (keypair, "ed25519".to_string(), None, None)
-                    }
-                };
-
-                let key_info = RenewedKeyInfo {
-                    reused: false,
-                    algorithm: algorithm_str,
-                    rsa_bits,
-                    ecdsa_curve,
-                    stored_at: opts.new_key_output_path.clone(),
-                    encrypted: opts.key_passphrase.is_some(),
-                };
-
-                Ok(Some((RenewedKey::New(new_keypair), key_info)))
-            }
-        }
-    }
-
-    fn build_renewed_cert_params(&self, opts: &CertRenewOptions, old_cert: &ParsedCertificate, renewed_key: &RenewedKey) -> Result<RenewedCertParams> {
-        // Determine subject
-        let subject = if opts.copy_subject {
-            if let Some(ref override_subject) = opts.subject_override {
-                self.merge_subject_with_override(&old_cert.subject, override_subject)?
-            } else {
-                old_cert.subject.clone()
-            }
-        } else {
-            if let Some(ref override_subject) = opts.subject_override {
-                self.convert_cert_subject_to_hashmap(override_subject)?
-            } else {
-                HashMap::new()
-            }
-        };
-
-        // Determine SANs
-        let sans = if opts.copy_sans {
-            if let Some(ref override_sans) = opts.sans_override {
-                override_sans.clone()
-            } else {
-                old_cert.sans.clone()
-            }
-        } else {
-            opts.sans_override.clone().unwrap_or_default()
-        };
-
-        // Determine key usage
-        let key_usage = if opts.copy_key_usage {
-            if let Some(ref override_usage) = opts.key_usage_override {
-                override_usage.clone()
-            } else {
-                old_cert.key_usage.clone()
-            }
-        } else {
-            opts.key_usage_override.clone().unwrap_or_default()
-        };
-
-        // Determine extended key usage
-        let extended_key_usage = if opts.copy_extended_key_usage {
-            if let Some(ref override_eku) = opts.extended_key_usage_override {
-                override_eku.clone()
-            } else {
-                old_cert.extended_key_usage.clone()
-            }
-        } else {
-            opts.extended_key_usage_override.clone().unwrap_or_default()
-        };
-
-        // Determine CA flags
-        let is_ca = opts.is_ca.unwrap_or(old_cert.is_ca);
-        let path_len = opts.path_len.or(old_cert.path_len);
-
-        // Calculate validity
-        let not_before = match &opts.not_before {
-            NotBeforeSetting::Now => Utc::now(),
-            NotBeforeSetting::Explicit(dt) => *dt,
-        };
-
-        let not_after = if let Some(explicit_after) = opts.not_after {
-            explicit_after
-        } else {
-            not_before + chrono::Duration::days(opts.not_after_offset_days)
-        };
-
-        Ok(RenewedCertParams {
-            subject,
-            sans,
-            key_usage,
-            extended_key_usage,
-            is_ca,
-            path_len,
-            not_before,
-            not_after,
-            public_key: renewed_key.public_key_bytes()?,
-        })
-    }
-
-    fn issue_renewed_certificate(&self, params: &RenewedCertParams, signer: &SignerInfo) -> Result<rcgen::Certificate> {
-        // Create certificate parameters
-        let mut cert_params = rcgen::CertificateParams::default();
-        
-        // Set subject
-        let mut dn = rcgen::DistinguishedName::new();
-        if let Some(serde_json::Value::String(cn)) = params.subject.get("common_name") {
-            dn.push(rcgen::DnType::CommonName, cn);
-        }
-        if let Some(serde_json::Value::Array(orgs)) = params.subject.get("organization") {
-            for org in orgs {
-                if let serde_json::Value::String(org_str) = org {
-                    dn.push(rcgen::DnType::OrganizationName, org_str);
-                }
-            }
-        }
-        cert_params.distinguished_name = dn;
-
-        // Set SANs
-        for san in &params.sans {
-            if san.starts_with("DNS:") {
-                cert_params.subject_alt_names.push(rcgen::SanType::DnsName(san[4..].to_string()));
-            } else if san.starts_with("IP:") {
-                // Parse IP address
-                if let Ok(ip) = san[3..].parse::<std::net::IpAddr>() {
-                    cert_params.subject_alt_names.push(rcgen::SanType::IpAddress(ip));
-                }
-            }
-        }
-
-        // Set validity - simplified for now  
-        // Note: This is a simplified implementation; a full implementation would properly convert times
-        // For now, just use default values
-
-        // Set CA constraints
-        if params.is_ca {
-            cert_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Constrained(params.path_len.unwrap_or(0)));
-        }
-
-        // For now, create a self-signed certificate
-        // In a full implementation, this would use the signer's key when appropriate
-        let cert = rcgen::Certificate::from_params(cert_params)?;
-
-        Ok(cert)
-    }
-
-    fn derive_renewed_cert_path(&self) -> String {
-        if self.target_path.ends_with(".pem") {
-            format!("{}-renewed.pem", &self.target_path[..self.target_path.len()-4])
-        } else if self.target_path.ends_with(".crt") {
-            format!("{}-renewed.crt", &self.target_path[..self.target_path.len()-4])
-        } else {
-            format!("{}-renewed.pem", self.target_path)
-        }
-    }
-
-    fn derive_renewed_key_path(&self, cert_path: &str) -> String {
-        if cert_path.ends_with(".pem") {
-            format!("{}-key.pem", &cert_path[..cert_path.len()-4])
-        } else if cert_path.ends_with(".crt") {
-            format!("{}-key.pem", &cert_path[..cert_path.len()-4])
-        } else {
-            format!("{}-key.pem", cert_path)
-        }
-    }
-
-    fn write_certificate(&self, cert: &rcgen::Certificate, path: &str, encoding: &Encoding) -> Result<()> {
-        let cert_data = match encoding {
-            Encoding::Pem => cert.serialize_pem()?.into_bytes(),
-            Encoding::Der => cert.serialize_der()?,
-        };
-        
-        std::fs::write(path, cert_data)
-            .with_context(|| format!("Failed to write certificate to {}", path))?;
-        
-        Ok(())
-    }
-
-    fn write_renewed_key(&self, key: &RenewedKey, path: &str, opts: &CertRenewOptions) -> Result<()> {
-        match key {
-            RenewedKey::Reused(_) => {
-                // Should not happen for rekey strategy
-                bail!("Cannot write reused key");
-            }
-            RenewedKey::New(keypair) => {
-                let key_data = match opts.key_encoding {
-                    Encoding::Pem => {
-                        let key_pem = keypair.serialize_pem();
-                        if let Some(ref passphrase) = opts.key_passphrase {
-                            // For simplicity, we'll store the passphrase-protected key as PEM
-                            // In a real implementation, you'd properly encrypt this
-                            key_pem.into_bytes()
-                        } else {
-                            key_pem.into_bytes()
-                        }
-                    }
-                    Encoding::Der => keypair.serialize_der(),
-                };
-                
-                std::fs::write(path, key_data)
-                    .with_context(|| format!("Failed to write key to {}", path))?;
-                
-                Ok(())
-            }
-        }
-    }
-
-    fn build_new_cert_info(&self, cert: &rcgen::Certificate, path: &str, encoding: &Encoding) -> Result<NewCertInfo> {
-        // For this implementation, we'll create simplified cert info
-        let mut subject = HashMap::new();
-        subject.insert("common_name".to_string(), serde_json::Value::String("renewed-cert".to_string()));
-        subject.insert("raw_dn".to_string(), serde_json::Value::String("CN=renewed-cert".to_string()));
-
-        let mut issuer = HashMap::new();
-        issuer.insert("common_name".to_string(), serde_json::Value::String("renewed-cert".to_string()));
-        issuer.insert("raw_dn".to_string(), serde_json::Value::String("CN=renewed-cert".to_string()));
-
-        let mut validity = HashMap::new();
-        validity.insert("not_before".to_string(), Utc::now().to_rfc3339());
-        validity.insert("not_after".to_string(), (Utc::now() + chrono::Duration::days(365)).to_rfc3339());
-
-        let mut fingerprints = HashMap::new();
-        fingerprints.insert("sha256".to_string(), "dummy-fingerprint".to_string());
-
-        Ok(NewCertInfo {
-            path: path.to_string(),
-            encoding: match encoding {
-                Encoding::Pem => "pem".to_string(),
-                Encoding::Der => "der".to_string(),
-            },
-            subject,
-            issuer,
-            validity,
-            is_ca: false,
-            path_len: None,
-            fingerprints,
-        })
-    }
-
     // Utility methods for certificate parsing
     fn extract_subject_info(&self, cert: &X509Certificate) -> Result<HashMap<String, serde_json::Value>> {
-        let mut subject = HashMap::new();
-        let subject_str = cert.subject().to_string();
-        subject.insert("raw_dn".to_string(), serde_json::Value::String(subject_str));
-        
-        // Extract common name if available - simplified approach
-        let subject_str = cert.subject().to_string();
-        if let Some(start) = subject_str.find("CN=") {
-            let cn_part = &subject_str[start+3..];
-            if let Some(end) = cn_part.find(',') {
-                let cn = &cn_part[..end];
-                subject.insert("common_name".to_string(), serde_json::Value::String(cn.to_string()));
-            } else {
-                subject.insert("common_name".to_string(), serde_json::Value::String(cn_part.to_string()));
-            }
-        }
-        
-        Ok(subject)
+        Ok(name_to_map(cert.subject()))
     }
 
     fn extract_issuer_info(&self, cert: &X509Certificate) -> Result<HashMap<String, serde_json::Value>> {
-        let mut issuer = HashMap::new();
-        let issuer_str = cert.issuer().to_string();
-        issuer.insert("raw_dn".to_string(), serde_json::Value::String(issuer_str));
-        
-        // Extract common name if available - simplified approach
-        let issuer_str = cert.issuer().to_string();
-        if let Some(start) = issuer_str.find("CN=") {
-            let cn_part = &issuer_str[start+3..];
-            if let Some(end) = cn_part.find(',') {
-                let cn = &cn_part[..end];
-                issuer.insert("common_name".to_string(), serde_json::Value::String(cn.to_string()));
-            } else {
-                issuer.insert("common_name".to_string(), serde_json::Value::String(cn_part.to_string()));
-            }
-        }
-        
-        Ok(issuer)
+        Ok(name_to_map(cert.issuer()))
     }
 
     fn extract_validity_info(&self, cert: &X509Certificate) -> Result<HashMap<String, String>> {
         let mut validity = HashMap::new();
-        
-        // Convert x509_parser OffsetDateTime to string format
-        let not_before = cert.validity().not_before.to_datetime();
-        let not_after = cert.validity().not_after.to_datetime();
-        
-        // Create RFC3339 strings manually since OffsetDateTime doesn't have to_rfc3339()
-        let not_before_str = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            not_before.year(),
-            not_before.month(),
-            not_before.day(),
-            not_before.hour(),
-            not_before.minute(),
-            not_before.second()
-        );
-        
-        let not_after_str = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            not_after.year(),
-            not_after.month(),
-            not_after.day(),
-            not_after.hour(),
-            not_after.minute(),
-            not_after.second()
-        );
-        
-        validity.insert("not_before".to_string(), not_before_str);
-        validity.insert("not_after".to_string(), not_after_str);
-        
+        validity.insert("not_before".to_string(), asn1_time_rfc3339(&cert.validity().not_before));
+        validity.insert("not_after".to_string(), asn1_time_rfc3339(&cert.validity().not_after));
         Ok(validity)
     }
 
-    fn extract_sans(&self, cert: &X509Certificate) -> Result<Vec<String>> {
-        let mut sans = Vec::new();
-        
-        // This is a simplified implementation
-        // In a real implementation, you'd parse the SAN extension properly
-        
-        Ok(sans)
-    }
-
-    fn extract_key_usages(&self, _cert: &X509Certificate) -> Result<(Vec<CertKeyUsage>, Vec<CertExtendedKeyUsage>)> {
-        // Simplified implementation
-        Ok((Vec::new(), Vec::new()))
-    }
-
-    fn extract_ca_constraint(&self, _cert: &X509Certificate) -> bool {
-        // Simplified implementation
-        false
-    }
-
-    fn extract_path_len_constraint(&self, _cert: &X509Certificate) -> Option<u8> {
-        // Simplified implementation
-        None
-    }
-
     fn is_self_signed(&self, cert: &ParsedCertificate) -> bool {
-        // Check if subject equals issuer (simplified check)
-        cert.subject.get("raw_dn") == cert.issuer.get("raw_dn")
-    }
-
-    fn detect_key_algorithm(&self, _public_key: &[u8]) -> String {
-        // Simplified implementation
-        "rsa".to_string()
-    }
-
-    fn detect_rsa_bits(&self, _public_key: &[u8]) -> Option<u16> {
-        // Simplified implementation
-        Some(2048)
-    }
-
-    fn detect_ecdsa_curve(&self, _public_key: &[u8]) -> Option<String> {
-        // Simplified implementation
-        None
-    }
-
-    fn detect_cert_algorithm(&self, _public_key: &[u8]) -> CertAlgorithm {
-        // Simplified implementation
-        CertAlgorithm::Rsa
-    }
-
-    fn convert_cert_subject_to_hashmap(&self, subject: &CertSubject) -> Result<HashMap<String, serde_json::Value>> {
-        let mut map = HashMap::new();
-        if let Some(ref cn) = subject.common_name {
-            map.insert("common_name".to_string(), serde_json::Value::String(cn.clone()));
-        }
-        
-        // Build raw DN string
-        let mut dn_parts = Vec::new();
-        if let Some(ref cn) = subject.common_name {
-            dn_parts.push(format!("CN={}", cn));
-        }
-        for org in &subject.organization {
-            dn_parts.push(format!("O={}", org));
-        }
-        for ou in &subject.organizational_unit {
-            dn_parts.push(format!("OU={}", ou));
-        }
-        for country in &subject.country {
-            dn_parts.push(format!("C={}", country));
-        }
-        
-        let raw_dn = dn_parts.join(",");
-        map.insert("raw_dn".to_string(), serde_json::Value::String(raw_dn));
-        
-        Ok(map)
-    }
-
-    fn merge_subject_with_override(&self, _base: &HashMap<String, serde_json::Value>, override_sub: &CertSubject) -> Result<HashMap<String, serde_json::Value>> {
-        // For now, just use the override
-        self.convert_cert_subject_to_hashmap(override_sub)
+        cert.self_issued
     }
 
     fn sign_data(&self, opts: &CertSignOptions, signer_key: &SignerKey, signer_cert: Option<&Certificate>, response: &mut CertSignResponse) -> Result<()> {
@@ -7400,69 +6900,6 @@ impl CertHandle {
         Ok(())
     }
 
-    fn sign_csr(&self, opts: &CertSignOptions, signer_key: &SignerKey, signer_cert: &Certificate, response: &mut CertSignResponse) -> Result<()> {
-        // Load CSR
-        let csr_source = opts.csr_source.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CSR source not specified"))?;
-        let csr_data = self.load_data_from_source(csr_source)?;
-        let csr = self.parse_csr(&csr_data, &opts.csr_encoding)?;
-
-        // Verify CSR signature
-        if !self.verify_csr_signature(&csr)? {
-            bail!("CSR signature verification failed");
-        }
-
-        // Issue certificate from CSR
-        let cert = self.issue_certificate_from_csr(&csr, opts, signer_key, signer_cert)?;
-
-        // Serialize certificate
-        let cert_der = cert.serialize_der()?;
-        let cert_pem = cert.serialize_pem()?;
-
-        // Write certificate to output path
-        let output_path = opts.cert_output_path.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Certificate output path not specified"))?;
-
-        if !opts.overwrite && self.target_file_exists(output_path)? {
-            bail!("Certificate output file already exists: {}", output_path);
-        }
-
-        let cert_data = match opts.cert_encoding {
-            Encoding::Pem => cert_pem.as_bytes().to_vec(),
-            Encoding::Der => cert_der.clone(),
-        };
-
-        self.write_certificate_to_path(output_path, &cert_data)?;
-
-        // Compute certificate fingerprints
-        let fingerprints = self.compute_cert_fingerprints(&cert_der)?;
-
-        // Extract CSR subject
-        let csr_subject_str = self.extract_csr_subject(&csr)?;
-        // Parse the subject string into a JSON object (simplified)
-        let csr_subject: HashMap<String, Value> = HashMap::new();
-
-        // Update response
-        response.ok = true;
-        response.csr_subject = Some(csr_subject);
-        response.cert = Some(SignCertInfo {
-            stored_at: output_path.clone(),
-            encoding: format!("{:?}", opts.cert_encoding),
-            serial_number: self.get_cert_serial_hex(&cert)?,
-            fingerprints: HashMap::new(), // Convert Value to String as needed
-            validity: HashMap::new(), // Add validity information
-            is_ca: false, // Set based on certificate properties
-            path_len: None, // Set based on certificate properties
-        });
-        response.cert_pem = if opts.include_cert_pem {
-            Some(cert_pem)
-        } else {
-            None
-        };
-        response.error = None;
-
-        Ok(())
-    }
 }
 
 // Renewal supporting types
@@ -7471,46 +6908,9 @@ struct ParsedCertificate {
     subject: HashMap<String, serde_json::Value>,
     issuer: HashMap<String, serde_json::Value>,
     validity: HashMap<String, String>,
-    sans: Vec<String>,
-    key_usage: Vec<CertKeyUsage>,
-    extended_key_usage: Vec<CertExtendedKeyUsage>,
     is_ca: bool,
-    path_len: Option<u8>,
-    public_key: Vec<u8>,
+    self_issued: bool,
     fingerprints: HashMap<String, String>,
-    raw_der: Vec<u8>,
-}
-
-#[derive(Debug)]
-enum RenewedKey {
-    Reused(Vec<u8>),
-    New(rcgen::KeyPair),
-}
-
-impl RenewedKey {
-    fn public_key_bytes(&self) -> Result<Vec<u8>> {
-        match self {
-            RenewedKey::Reused(bytes) => Ok(bytes.clone()),
-            RenewedKey::New(keypair) => {
-                // Get the public key from the keypair
-                // This is simplified - in a real implementation you'd extract the actual public key bytes
-                Ok(keypair.serialize_der()[..32].to_vec()) // Simplified placeholder
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct RenewedCertParams {
-    subject: HashMap<String, serde_json::Value>,
-    sans: Vec<String>,
-    key_usage: Vec<CertKeyUsage>,
-    extended_key_usage: Vec<CertExtendedKeyUsage>,
-    is_ca: bool,
-    path_len: Option<u8>,
-    not_before: DateTime<Utc>,
-    not_after: DateTime<Utc>,
-    public_key: Vec<u8>,
 }
 
 // Helper types for signing
@@ -7539,10 +6939,40 @@ impl CertHandle {
                 return Ok(SignerKey::Rsa(rsa_key));
             }
             
-            // Try PKCS1 PEM format - need different approach since from_pkcs1_der doesn't exist
-            if key_str.contains("-----BEGIN RSA PRIVATE KEY-----") {
-                // For now, skip PKCS1 format or implement conversion
-                // Could use pkcs1 crate to parse and convert to PKCS8
+            if key_str.contains("-----BEGIN RSA PRIVATE KEY-----") && !key_str.contains("ENCRYPTED") {
+                if let Some(block) = pem_blocks(&key_data).into_iter().find(|b| b.tag() == "RSA PRIVATE KEY") {
+                    if let Ok(rsa_key) = RsaPrivateKey::from_pkcs1_der(block.contents()) {
+                        return Ok(SignerKey::Rsa(rsa_key));
+                    }
+                }
+            }
+            if let Some(block) = pem_blocks(&key_data).into_iter().find(|b| b.tag() == "EC PRIVATE KEY") {
+                if let Ok(k) = P256SigningKey::from_sec1_der(block.contents()) {
+                    return Ok(SignerKey::EcdsaP256(k));
+                }
+                if let Ok(k) = P384SigningKey::from_sec1_der(block.contents()) {
+                    return Ok(SignerKey::EcdsaP384(k));
+                }
+            }
+        }
+        if let Ok(rsa_key) = RsaPrivateKey::from_pkcs1_der(&key_data) {
+            return Ok(SignerKey::Rsa(rsa_key));
+        }
+
+        // Ed25519 PKCS#8 (PEM or DER): the private key is an OCTET STRING
+        // holding the 32-byte seed (RFC 8410).
+        let pkcs8_der = pem_blocks(&key_data)
+            .into_iter()
+            .find(|b| b.tag() == "PRIVATE KEY")
+            .map(|b| b.contents().to_vec())
+            .unwrap_or_else(|| key_data.clone());
+        if let Ok(info) = Pkcs8PrivateKeyInfo::try_from(pkcs8_der.as_slice()) {
+            if info.algorithm.oid == const_oid::db::rfc8410::ID_ED_25519 {
+                if let [0x04, 0x20, seed @ ..] = info.private_key {
+                    if let Ok(seed) = <[u8; 32]>::try_from(seed) {
+                        return Ok(SignerKey::Ed25519(Ed25519SigningKey::from_bytes(&seed)));
+                    }
+                }
             }
         }
         
@@ -7680,25 +7110,6 @@ impl CertHandle {
         bail!("Encrypted PKCS#1 RSA keys are not yet fully supported. Use PKCS#8 format instead.");
     }
 
-    fn load_certificate(&self, path: &str) -> Result<Certificate> {
-        let cert_data = self.load_data_from_source(path)?;
-        
-        // Try PEM first
-        if let Ok(cert_str) = std::str::from_utf8(&cert_data) {
-            if cert_str.contains("-----BEGIN CERTIFICATE-----") {
-                let pem = ::pem::parse(cert_str)
-                    .with_context(|| "Failed to parse certificate PEM")?;
-                // For rcgen, we need to parse the certificate differently
-                // rcgen doesn't directly support loading existing certificates
-                bail!("Loading existing certificates into rcgen::Certificate is not supported. Use x509_parser instead.");
-            }
-        }
-        
-        // Try DER format
-        // rcgen doesn't support loading existing certificates from DER
-        bail!("Loading existing certificates into rcgen::Certificate is not supported. Use x509_parser for parsing existing certificates.")
-    }
-
     fn load_data_from_source(&self, source: &str) -> Result<Vec<u8>> {
         if source.starts_with("file://") {
             let file_path = &source[7..]; // Remove "file://"
@@ -7827,95 +7238,6 @@ impl CertHandle {
         Ok(())
     }
 
-    fn parse_csr(&self, csr_data: &[u8], encoding_hint: &EncodingHint) -> Result<rcgen::CertificateSigningRequest> {
-        // Try PEM first
-        if let Ok(csr_str) = std::str::from_utf8(csr_data) {
-            if csr_str.contains("-----BEGIN CERTIFICATE REQUEST-----") ||
-               csr_str.contains("-----BEGIN NEW CERTIFICATE REQUEST-----") {
-                // Parse PEM format CSR
-                let pem = ::pem::parse(csr_str)
-                    .with_context(|| "Failed to parse CSR PEM")?;
-                return rcgen::CertificateSigningRequest::from_der(pem.contents())
-                    .with_context(|| "Failed to parse CSR DER from PEM");
-            }
-        }
-        
-        // Try DER format
-        rcgen::CertificateSigningRequest::from_der(csr_data)
-            .with_context(|| "Failed to parse CSR in DER format")
-    }
-
-    fn verify_csr_signature(&self, _csr: &rcgen::CertificateSigningRequest) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn issue_certificate_from_csr(&self, csr: &rcgen::CertificateSigningRequest, opts: &CertSignOptions, signer_key: &SignerKey, signer_cert: &Certificate) -> Result<Certificate> {
-        // Create certificate parameters based on CSR
-        let mut params = CertificateParams::new(vec![]);
-        
-        // Note: rcgen::CertificateSigningRequest doesn't provide direct access to subject/SANs
-        // For a full implementation, you would need to parse the CSR with x509_parser first
-        // and extract the information, then use it to populate params
-        // For now, we'll use default values
-        params.distinguished_name = DistinguishedName::new();
-        
-        // Set validity period
-        let not_before = match opts.not_before {
-            NotBeforeSetting::Now => Utc::now(),
-            NotBeforeSetting::Explicit(dt) => dt,
-        };
-        let not_after = if let Some(not_after) = opts.not_after {
-            not_after
-        } else {
-            not_before + chrono::Duration::days(opts.not_after_offset_days)
-        };
-        
-        params.not_before = ::time::OffsetDateTime::from_unix_timestamp(not_before.timestamp())
-            .map_err(|e| anyhow::anyhow!("Failed to convert not_before time: {}", e))?;
-        params.not_after = ::time::OffsetDateTime::from_unix_timestamp(not_after.timestamp())
-            .map_err(|e| anyhow::anyhow!("Failed to convert not_after time: {}", e))?;
-        
-        // Set CA flag and path length constraint
-        if opts.is_ca {
-            params.is_ca = IsCa::Ca(BasicConstraints::Constrained(opts.path_len.unwrap_or(0)));
-        }
-        
-        // Set key usage if specified
-        if !opts.key_usage.is_empty() {
-            params.key_usages = opts.key_usage.iter().map(|ku| {
-                match ku {
-                    CertKeyUsage::DigitalSignature => rcgen::KeyUsagePurpose::DigitalSignature,
-                    CertKeyUsage::ContentCommitment => rcgen::KeyUsagePurpose::ContentCommitment,
-                    CertKeyUsage::KeyEncipherment => rcgen::KeyUsagePurpose::KeyEncipherment,
-                    CertKeyUsage::DataEncipherment => rcgen::KeyUsagePurpose::DataEncipherment,
-                    CertKeyUsage::KeyAgreement => rcgen::KeyUsagePurpose::KeyAgreement,
-                    CertKeyUsage::KeyCertSign => rcgen::KeyUsagePurpose::KeyCertSign,
-                    CertKeyUsage::CrlSign => rcgen::KeyUsagePurpose::CrlSign,
-                    CertKeyUsage::EncipherOnly => rcgen::KeyUsagePurpose::EncipherOnly,
-                    CertKeyUsage::DecipherOnly => rcgen::KeyUsagePurpose::DecipherOnly,
-                }
-            }).collect();
-        }
-        
-        // Note: rcgen::CertificateSigningRequest doesn't provide direct access to key_pair
-        // For a full implementation, you would need to extract the public key from the CSR
-        // and create a new KeyPair. For now, generate a new key pair
-        let key_pair = KeyPair::generate(&rcgen::PKCS_RSA_SHA256)?;
-        params.key_pair = Some(key_pair);
-        
-        // Create the certificate
-        let cert = Certificate::from_params(params)?;
-        
-        // Sign with the signer certificate
-        let signed_cert = cert.serialize_der_with_signer(signer_cert)?;
-        
-        // Return the signed certificate as DER bytes
-        // Note: rcgen doesn't support loading certificates from DER
-        // The signed_cert is already in DER format as bytes
-        // For this function, we should return the Certificate object that was used for signing
-        Ok(cert)
-    }
-
     fn write_certificate_to_path(&self, path: &str, cert_data: &[u8]) -> Result<()> {
         let file_path = if path.starts_with("file://") {
             &path[7..]
@@ -7931,38 +7253,6 @@ impl CertHandle {
         
         fs::write(file_path, cert_data)?;
         Ok(())
-    }
-
-    fn compute_cert_fingerprints(&self, cert_der: &[u8]) -> Result<HashMap<String, String>> {
-        let mut fingerprints = HashMap::new();
-        
-        let sha256_digest = digest(&digest::SHA256, cert_der);
-        let sha256_hex = hex::encode(sha256_digest.as_ref());
-        let sha256_formatted = sha256_hex.chars()
-            .enumerate()
-            .flat_map(|(i, c)| {
-                if i > 0 && i % 2 == 0 {
-                    Some(':')
-                } else {
-                    None
-                }.into_iter().chain(std::iter::once(c.to_ascii_uppercase()))
-            })
-            .collect::<String>();
-        fingerprints.insert("sha256".to_string(), sha256_formatted);
-        
-        Ok(fingerprints)
-    }
-
-    fn extract_csr_cn(&self, _csr: &rcgen::CertificateSigningRequest) -> Result<String> {
-        Ok("example.com".to_string())
-    }
-
-    fn extract_csr_subject(&self, _csr: &rcgen::CertificateSigningRequest) -> Result<String> {
-        Ok("CN=example.com".to_string())
-    }
-
-    fn get_cert_serial_hex(&self, _cert: &Certificate) -> Result<String> {
-        Ok(format!("{:08X}", rand::random::<u32>()))
     }
 
     // Add missing parsing helper functions for sign options
@@ -8102,6 +7392,8 @@ impl CertHandle {
                             "validity": cert.validity,
                             "is_ca": cert.is_ca,
                             "path_len": cert.path_len,
+                            "serial_number": cert.serial_number,
+                            "sans": cert.sans,
                             "fingerprints": cert.fingerprints
                         })),
                         "key_strategy": response.key_strategy,
@@ -8160,6 +7452,11 @@ impl CertHandle {
                         writeln!(io.stdout)?;
                         writeln!(io.stdout, "Old Subject: {}", response.old_cert.subject.get("raw_dn").and_then(|v| v.as_str()).unwrap_or("N/A"))?;
                         writeln!(io.stdout, "New Subject: {}", new_cert.subject.get("raw_dn").and_then(|v| v.as_str()).unwrap_or("N/A"))?;
+                        writeln!(io.stdout, "New Issuer: {}", new_cert.issuer.get("raw_dn").and_then(|v| v.as_str()).unwrap_or("N/A"))?;
+                        writeln!(io.stdout, "New Serial: {}", new_cert.serial_number)?;
+                        if let Some(fp) = new_cert.fingerprints.get("sha256") {
+                            writeln!(io.stdout, "New SHA256: {}", fp)?;
+                        }
                         writeln!(io.stdout)?;
                         writeln!(io.stdout, "Old Validity:")?;
                         writeln!(io.stdout, "  Not Before: {}", response.old_cert.validity.get("not_before").unwrap_or(&"N/A".to_string()))?;
@@ -8176,6 +7473,9 @@ impl CertHandle {
                             }
                             if let Some(key_path) = &signer.signer_key {
                                 writeln!(io.stdout, "  Key: {}", key_path)?;
+                            }
+                            if signer.signer_ca.is_none() && signer.signer_key.is_none() {
+                                writeln!(io.stdout, "  self-signed")?;
                             }
                         }
                         if !key.reused {
@@ -9095,339 +8395,29 @@ impl CertHandle {
     }
 }
 
-impl CertHandle {
-    /// Check if this is a help request and display help if so
-    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
-        // Check for help verbs
-        if verb == "--help" || verb == "-h" || verb == "help" {
-            write!(io.stdout, "{}", CERT_HELP_TEXT)?;
-            return Ok(Some(Status::ok()));
-        }
-        
-        // Check for verb-specific help
-        if verb.starts_with("--help=") {
-            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
-            Self::display_verb_help(help_verb, io)?;
-            return Ok(Some(Status::ok()));
-        }
-        
-        Ok(None)
-    }
-    
-    /// Display help for a specific verb
-    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
-        match verb {
-            "info" => {
-                write!(io.stdout, r#"
-INFO VERB - CERT HANDLE
-======================
-
-DESCRIPTION:
-  View detailed information about certificates, private keys, or CSRs including
-  subject, validity dates, fingerprints, and key details.
-
-SYNTAX:
-  cert://path/to/file.info(arguments)
-
-ARGUMENTS:
-  format=FORMAT          Output format (default: json)
-                         Values: json, text
-  encoding=ENCODING      File encoding (default: auto)
-                         Values: auto, pem, der
-  include_pem=BOOL       Include PEM data in output (default: false)
-  include_raw=BOOL       Include raw DER as base64 (default: false)
-  fingerprint_algs=ARRAY Fingerprint algorithms (default: ["sha256"])
-                         Values: sha1, sha256, sha512
-
-EXAMPLES:
-  # View certificate details in JSON
-  cert:///tmp/certificate.pem.info
-
-  # View in human-readable format
-  cert:///tmp/certificate.pem.info(format=text)
-
-  # Include PEM data
-  cert:///tmp/certificate.pem.info(include_pem=true)
-
-  # Multiple fingerprints
-  cert:///tmp/certificate.pem.info(fingerprint_algs=["sha1","sha256"])
-
-Use 'cert:// --help' for complete cert handle documentation.
-"#)?;
-                Ok(Status::ok())
-            }
-            "verify" => {
-                write!(io.stdout, r#"
-VERIFY VERB - CERT HANDLE
-========================
-
-DESCRIPTION:
-  Validate certificates, check signatures, and verify certificate chains.
-
-SYNTAX:
-  cert://path/to/certificate.verify(arguments)
-
-ARGUMENTS:
-  ca_bundle=PATH         CA certificates bundle
-  check_revocation=BOOL  Check revocation status (default: false)
-  allow_self_signed=BOOL Allow self-signed (default: false)
-
-EXAMPLES:
-  # Basic verification
-  cert:///tmp/certificate.pem.verify
-
-  # Verify with CA bundle
-  cert:///tmp/certificate.pem.verify(ca_bundle=/ca/bundle.pem)
-
-  # Allow self-signed
-  cert:///tmp/certificate.pem.verify(allow_self_signed=true)
-
-Use 'cert:// --help' for complete cert handle documentation.
-"#)?;
-                Ok(Status::ok())
-            }
-            "generate" => {
-                write!(io.stdout, r#"
-GENERATE VERB - CERT HANDLE
-==========================
-
-DESCRIPTION:
-  Generate keys, self-signed certificates, CSRs, and leaf certificates.
-
-SYNTAX:
-  cert://path/to/output.generate(arguments)
-
-REQUIRED ARGUMENTS:
-  mode=MODE              What to generate
-                         Values: key, self_signed, csr, leaf_cert
-
-KEY GENERATION (mode=key):
-  algorithm=ALG          Key algorithm (default: rsa)
-                         Values: rsa, ecdsa, ed25519
-  rsa_bits=NUMBER        RSA key size (default: 2048)
-  ecdsa_curve=CURVE      ECDSA curve (default: P-256)
-  key_format=FORMAT      Key format (default: pkcs8)
-
-CERTIFICATE GENERATION (mode=self_signed, leaf_cert):
-  subject=JSON           Certificate subject (required)
-  sans=JSON_ARRAY        Subject Alternative Names
-  validity_days=NUM      Certificate validity (default: 365)
-  is_ca=BOOL             CA certificate (default: false)
-
-EXAMPLES:
-  # Generate RSA key
-  cert:///tmp/key.generate(mode=key,algorithm=rsa,rsa_bits=2048)
-
-  # Generate self-signed certificate
-  cert:///tmp/cert.generate(mode=self_signed,subject='{{\"common_name\":\"example.com\"}}')
-
-  # Generate CA certificate
-  cert:///tmp/ca.generate(mode=self_signed,subject='{{\"common_name\":\"My CA\"}}',is_ca=true)
-
-Use 'cert:// --help' for complete cert handle documentation.
-"#)?;
-                Ok(Status::ok())
-            }
-            "sign" => {
-                write!(io.stdout, r#"
-SIGN VERB - CERT HANDLE
-======================
-
-DESCRIPTION:
-  Sign data or CSRs to create digital signatures or certificates.
-
-SYNTAX:
-  cert://path/to/data.sign(arguments)
-
-REQUIRED ARGUMENTS:
-  mode=MODE              What to sign
-                         Values: data, csr
-
-DATA SIGNING (mode=data):
-  data=STRING            Data to sign (required)
-  signer_key=PATH        Private key path (required)
-  algorithm=ALG          Signature algorithm (required)
-                         Values: rsa_pss_sha256, ecdsa_sha256, ed25519
-
-CSR SIGNING (mode=csr):
-  signer_cert=PATH       CA certificate path (required)
-  signer_key=PATH        CA private key path (required)
-  cert_output_path=PATH  Certificate output path (required)
-
-EXAMPLES:
-  # Sign data with RSA-PSS
-  cert:///tmp/data.sign(mode=data,data="Hello World",signer_key=/keys/private.pem,algorithm=rsa_pss_sha256)
-
-  # Sign CSR with CA
-  cert:///tmp/request.csr.sign(mode=csr,signer_cert=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem)
-
-Use 'cert:// --help' for complete cert handle documentation.
-"#)?;
-                Ok(Status::ok())
-            }
-            "renew" => {
-                write!(io.stdout, r#"
-RENEW VERB - CERT HANDLE
-=======================
-
-DESCRIPTION:
-  Renew existing certificates with updated validity dates.
-
-SYNTAX:
-  cert://path/to/certificate.renew(arguments)
-
-REQUIRED ARGUMENTS:
-  mode=MODE              Renewal mode
-                         Values: self_signed, ca_signed
-
-OPTIONAL ARGUMENTS:
-  key_strategy=STRATEGY  Key handling (default: reuse)
-                         Values: reuse, rekey
-  validity_days=NUM      New validity period (default: 365)
-
-EXAMPLES:
-  # Renew self-signed certificate
-  cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=reuse)
-
-  # Renew and rekey
-  cert:///tmp/certificate.pem.renew(mode=self_signed,key_strategy=rekey,algorithm=rsa,rsa_bits=4096)
-
-  # Renew with custom validity
-  cert:///tmp/certificate.pem.renew(mode=self_signed,validity_days=730)
-
-Use 'cert:// --help' for complete cert handle documentation.
-"#)?;
-                Ok(Status::ok())
-            }
-            "csr.create" => {
-                write!(io.stdout, r#"
-CSR.CREATE VERB - CERT HANDLE
-============================
-
-DESCRIPTION:
-  Generate Certificate Signing Requests (CSRs) for CA signing.
-
-SYNTAX:
-  cert://path/to/request.csr.create(arguments)
-
-REQUIRED ARGUMENTS:
-  key_strategy=STRATEGY  Key handling
-                         Values: generate, reuse
-  subject=JSON           Certificate subject
-                         Format: {{\"common_name\":\"...\"}}
-
-GENERATE STRATEGY:
-  new_key_output_path=PATH  Where to save new key (required)
-  algorithm=ALG        Key algorithm (default: rsa)
-  rsa_bits=NUMBER      RSA key size (default: 2048)
-
-REUSE STRATEGY:
-  existing_key_path=PATH    Existing key path (required)
-
-OPTIONAL:
-  sans=JSON_ARRAY      Subject Alternative Names
-  key_usage=JSON_ARRAY Key usage extensions
-  csr_encoding=ENC     CSR encoding (default: pem)
-
-EXAMPLES:
-  # Generate new key and CSR
-  cert:///tmp/request.csr.create(key_strategy=generate,algorithm=rsa,new_key_output_path=/keys/server.pem,subject='{{\"common_name\":\"example.com\"}}')
-
-  # CSR with existing key
-  cert:///tmp/request.csr.create(key_strategy=reuse,existing_key_path=/keys/existing.pem,subject='{{\"common_name\":\"example.com\"}}')
-
-  # CSR with SANs
-  cert:///tmp/request.csr.create(key_strategy=generate,new_key_output_path=/keys/key.pem,subject='{{\"common_name\":\"example.com\"}}',sans='[\"DNS:example.com\",\"IP:192.0.2.1\"]')
-
-Use 'cert:// --help' for complete cert handle documentation.
-"#)?;
-                Ok(Status::ok())
-            }
-            "csr.sign" => {
-                write!(io.stdout, r#"
-CSR.SIGN VERB - CERT HANDLE
-==========================
-
-DESCRIPTION:
-  Sign CSRs with a Certificate Authority to create certificates.
-
-SYNTAX:
-  cert://path/to/request.csr.sign(arguments)
-
-REQUIRED ARGUMENTS:
-  signer_ca=PATH         CA certificate path
-  signer_key=PATH        CA private key path
-  cert_output_path=PATH  Certificate output path
-
-OPTIONAL ARGUMENTS:
-  signer_key_password=PASS  CA key password
-  validity_days=NUM      Certificate validity (default: 365)
-  copy_subject=BOOL      Copy subject from CSR (default: true)
-  copy_sans=BOOL         Copy SANs from CSR (default: true)
-  copy_key_usage=BOOL    Copy key usage from CSR (default: true)
-
-EXAMPLES:
-  # Sign CSR with CA
-  cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem)
-
-  # Sign with password-protected CA key
-  cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,signer_key_password="secret",cert_output_path=/certs/server.pem)
-
-  # Sign with custom validity
-  cert:///tmp/request.csr.sign(signer_ca=/ca/ca.pem,signer_key=/ca/ca-key.pem,cert_output_path=/certs/server.pem,validity_days=90)
-
-Use 'cert:// --help' for complete cert handle documentation.
-"#)?;
-                Ok(Status::ok())
-            }
-            "chain.info" => {
-                write!(io.stdout, r#"
-CHAIN.INFO VERB - CERT HANDLE
-============================
-
-DESCRIPTION:
-  Analyze certificate chains and trust paths.
-
-SYNTAX:
-  cert://path/to/chain.pem.chain.info(arguments)
-
-OPTIONAL ARGUMENTS:
-  trust_store=PATH       Trust store path for validation
-  include_details=BOOL   Include detailed info (default: false)
-
-EXAMPLES:
-  # View chain information
-  cert:///tmp/chain.pem.chain.info
-
-  # Include detailed certificate info
-  cert:///tmp/chain.pem.chain.info(include_details=true)
-
-  # Verify against trust store
-  cert:///tmp/chain.pem.chain.info(trust_store=/etc/ssl/certs/ca-certificates.crt)
-
-Use 'cert:// --help' for complete cert handle documentation.
-"#)?;
-                Ok(Status::ok())
-            }
-            _ => {
-                writeln!(io.stdout, "Unknown verb: {}. Use --help for full list of verbs.", verb)?;
-                Ok(Status::ok())
-            }
-        }
-    }
-}
-
 impl Handle for CertHandle {
     fn verbs(&self) -> &'static [&'static str] {
         &["info", "verify", "generate", "sign", "renew", "csr.create", "csr.sign", "chain.info", "help"]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&CERT_HELP)
+    }
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Check for help requests first
-        if let Some(status) = Self::check_and_display_help(verb, io)? {
-            return Ok(status);
+        // In-URL help: cert://--help, cert://--help=<verb>, or the help verb
+        // (optionally with verb=<verb>).
+        let help_verb = if verb == "help" || help::is_help_flag(verb) {
+            Some(args.get("verb").map(String::as_str))
+        } else {
+            verb.strip_prefix("--help=").map(Some)
+        };
+        if let Some(topic) = help_verb {
+            let text = help::render_legacy("cert", &CERT_HELP, self.verbs(), topic);
+            write!(io.stdout, "{}", text).with_context(|| "Failed to write help text to stdout")?;
+            return Ok(Status::ok());
         }
-        
+
         match verb {
             "info" => self.handle_info(args, io),
             "verify" => self.handle_verify(args, io),
@@ -9437,19 +8427,973 @@ impl Handle for CertHandle {
             "csr.create" => self.handle_csr_create(args, io),
             "csr.sign" => self.handle_csr_sign(args, io),
             "chain.info" => self.handle_chain_info(args, io),
-            "help" => {
-                write!(io.stdout, "{}", CERT_HELP_TEXT)
-                    .with_context(|| "Failed to write help text to stdout")?;
-                Ok(Status::ok())
-            },
             _ => bail!("unknown verb for cert://: {}", verb),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// X.509 helpers shared by info, verify, generate, sign, and renew
+// ---------------------------------------------------------------------------
+
+const OID_RSA_ENCRYPTION: &str = "1.2.840.113549.1.1.1";
+const OID_EC_PUBLIC_KEY: &str = "1.2.840.10045.2.1";
+const OID_ED25519: &str = "1.3.101.112";
+
+/// Fingerprint algorithms accepted by `fingerprint_algs`.
+const FINGERPRINT_ALGS: &[&str] = &["sha1", "sha256", "sha384", "sha512"];
+
+/// System CA bundles tried, in order, for `trust=system`.
+const SYSTEM_TRUST_BUNDLES: &[&str] = &[
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/ssl/cert.pem",
+];
+
+/// PEM text with LF line endings (the pem crate defaults to CRLF).
+fn pem_encode_lf(p: &::pem::Pem) -> String {
+    ::pem::encode_config(p, ::pem::EncodeConfig::new().set_line_ending(::pem::LineEnding::LF))
+}
+
+fn colon_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(":")
+}
+
+/// Colon-separated uppercase hex digest of `der`, or None for an unknown algorithm.
+fn fingerprint(alg: &str, der: &[u8]) -> Option<String> {
+    let algorithm = match alg {
+        "sha1" => &SHA1_FOR_LEGACY_USE_ONLY,
+        "sha256" => &SHA256,
+        "sha384" => &digest::SHA384,
+        "sha512" => &digest::SHA512,
+        _ => return None,
+    };
+    Some(colon_hex(digest(algorithm, der).as_ref()))
+}
+
+fn validate_fingerprint_algs(algs: &[String]) -> Result<()> {
+    for alg in algs {
+        if !FINGERPRINT_ALGS.contains(&alg.as_str()) {
+            bail!(
+                "Unsupported fingerprint algorithm: {}. Supported: {}",
+                alg,
+                FINGERPRINT_ALGS.join(", ")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn looks_like_pem(data: &[u8]) -> bool {
+    data.windows(11).any(|w| w == b"-----BEGIN ")
+}
+
+/// All PEM blocks in `data` (empty if it is not PEM text).
+fn pem_blocks(data: &[u8]) -> Vec<::pem::Pem> {
+    std::str::from_utf8(data)
+        .ok()
+        .and_then(|s| ::pem::parse_many(s).ok())
+        .unwrap_or_default()
+}
+
+/// DER bytes of every certificate in `data`: each CERTIFICATE block of a PEM
+/// bundle, or `data` itself when it is a single DER certificate.
+fn certificate_ders(data: &[u8]) -> Vec<Vec<u8>> {
+    if looks_like_pem(data) {
+        pem_blocks(data)
+            .into_iter()
+            .filter(|p| p.tag() == "CERTIFICATE")
+            .map(|p| p.contents().to_vec())
+            .filter(|der| X509Certificate::from_der(der).is_ok())
+            .collect()
+    } else if X509Certificate::from_der(data).is_ok() {
+        vec![data.to_vec()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Bit length of a big-endian RSA modulus.
+fn rsa_modulus_bits(modulus: &[u8]) -> usize {
+    let m: &[u8] = {
+        let start = modulus.iter().position(|b| *b != 0).unwrap_or(modulus.len());
+        &modulus[start..]
+    };
+    match m.first() {
+        None => 0,
+        Some(first) => (m.len() - 1) * 8 + (8 - first.leading_zeros() as usize),
+    }
+}
+
+/// Algorithm, size, and curve of a public key.
+#[derive(Debug, Clone, PartialEq)]
+struct KeyDescription {
+    /// "rsa", "ecdsa", "ed25519", or the algorithm OID when unknown.
+    algorithm: String,
+    bits: Option<usize>,
+    /// "P-256", "P-384", "P-521", "secp256k1", or the curve OID.
+    curve: Option<String>,
+}
+
+fn curve_name(oid: &str) -> String {
+    match oid {
+        "1.2.840.10045.3.1.7" => "P-256".to_string(),
+        "1.3.132.0.34" => "P-384".to_string(),
+        "1.3.132.0.35" => "P-521".to_string(),
+        "1.3.132.0.10" => "secp256k1".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn describe_spki(spki: &SubjectPublicKeyInfo) -> KeyDescription {
+    let oid = spki.algorithm.algorithm.to_id_string();
+    match oid.as_str() {
+        OID_RSA_ENCRYPTION => {
+            let bits = match spki.parsed() {
+                Ok(x509_parser::public_key::PublicKey::RSA(rsa)) => Some(rsa_modulus_bits(rsa.modulus)),
+                _ => None,
+            };
+            KeyDescription { algorithm: "rsa".to_string(), bits, curve: None }
+        }
+        OID_EC_PUBLIC_KEY => {
+            let curve = spki
+                .algorithm
+                .parameters
+                .as_ref()
+                .and_then(|p| p.as_oid().ok())
+                .map(|o| curve_name(&o.to_id_string()));
+            let bits = match curve.as_deref() {
+                Some("P-256") | Some("secp256k1") => Some(256),
+                Some("P-384") => Some(384),
+                Some("P-521") => Some(521),
+                _ => None,
+            };
+            KeyDescription { algorithm: "ecdsa".to_string(), bits, curve }
+        }
+        OID_ED25519 => KeyDescription { algorithm: "ed25519".to_string(), bits: Some(256), curve: None },
+        _ => KeyDescription { algorithm: oid, bits: None, curve: None },
+    }
+}
+
+fn spki_key_bytes<'a>(spki: &'a SubjectPublicKeyInfo) -> &'a [u8] {
+    &spki.subject_public_key.data
+}
+
+/// Human-readable name of a signature algorithm OID.
+fn signature_algorithm_name(oid: &str) -> &'static str {
+    match oid {
+        "1.2.840.113549.1.1.2" => "md2WithRSAEncryption",
+        "1.2.840.113549.1.1.3" => "md4WithRSAEncryption",
+        "1.2.840.113549.1.1.4" => "md5WithRSAEncryption",
+        "1.2.840.113549.1.1.5" | "1.3.14.3.2.29" => "sha1WithRSAEncryption",
+        "1.2.840.113549.1.1.10" => "rsassaPss",
+        "1.2.840.113549.1.1.11" => "sha256WithRSAEncryption",
+        "1.2.840.113549.1.1.12" => "sha384WithRSAEncryption",
+        "1.2.840.113549.1.1.13" => "sha512WithRSAEncryption",
+        "1.2.840.10045.4.1" => "ecdsa-with-SHA1",
+        "1.2.840.10045.4.3.2" => "ecdsa-with-SHA256",
+        "1.2.840.10045.4.3.3" => "ecdsa-with-SHA384",
+        "1.2.840.10045.4.3.4" => "ecdsa-with-SHA512",
+        "1.2.840.10040.4.3" => "dsa-with-SHA1",
+        OID_ED25519 => "Ed25519",
+        _ => "unknown",
+    }
+}
+
+/// Signature algorithms considered weak (MD2, MD4, MD5, SHA-1).
+fn is_weak_signature_algorithm(oid: &str) -> bool {
+    matches!(
+        oid,
+        "1.2.840.113549.1.1.2"
+            | "1.2.840.113549.1.1.3"
+            | "1.2.840.113549.1.1.4"
+            | "1.2.840.113549.1.1.5"
+            | "1.3.14.3.2.29"
+            | "1.2.840.10045.4.1"
+            | "1.2.840.10040.4.3"
+    )
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum SignatureCheck {
+    Valid,
+    Invalid,
+    Unsupported(String),
+}
+
+/// Verifies `signature` over `message` with `signer`'s public key, for RSA
+/// PKCS#1 v1.5 with SHA-256/384/512, ECDSA P-256/P-384 with SHA-256/384, and
+/// Ed25519. Other algorithms report Unsupported.
+fn verify_signature_with_key(
+    signature_oid: &str,
+    signer: &SubjectPublicKeyInfo,
+    message: &[u8],
+    signature: &[u8],
+) -> SignatureCheck {
+    use ring::signature as rs;
+    let key = describe_spki(signer);
+    let alg: &'static dyn rs::VerificationAlgorithm = match (signature_oid, key.algorithm.as_str()) {
+        ("1.2.840.113549.1.1.11", "rsa") | ("1.2.840.113549.1.1.12", "rsa") | ("1.2.840.113549.1.1.13", "rsa")
+            if key.bits.unwrap_or(0) < 2048 =>
+        {
+            return SignatureCheck::Unsupported(format!(
+                "RSA signer keys under 2048 bits are not supported ({} bits)",
+                key.bits.unwrap_or(0)
+            ));
+        }
+        ("1.2.840.113549.1.1.11", "rsa") => &rs::RSA_PKCS1_2048_8192_SHA256,
+        ("1.2.840.113549.1.1.12", "rsa") => &rs::RSA_PKCS1_2048_8192_SHA384,
+        ("1.2.840.113549.1.1.13", "rsa") => &rs::RSA_PKCS1_2048_8192_SHA512,
+        ("1.2.840.10045.4.3.2", "ecdsa") | ("1.2.840.10045.4.3.3", "ecdsa") => {
+            match (signature_oid, key.curve.as_deref()) {
+                ("1.2.840.10045.4.3.2", Some("P-256")) => &rs::ECDSA_P256_SHA256_ASN1,
+                ("1.2.840.10045.4.3.3", Some("P-256")) => &rs::ECDSA_P256_SHA384_ASN1,
+                ("1.2.840.10045.4.3.2", Some("P-384")) => &rs::ECDSA_P384_SHA256_ASN1,
+                ("1.2.840.10045.4.3.3", Some("P-384")) => &rs::ECDSA_P384_SHA384_ASN1,
+                (_, curve) => {
+                    return SignatureCheck::Unsupported(format!(
+                        "ECDSA curve {} is not supported for signature verification",
+                        curve.unwrap_or("unknown")
+                    ))
+                }
+            }
+        }
+        (OID_ED25519, "ed25519") => &rs::ED25519,
+        _ => {
+            return SignatureCheck::Unsupported(format!(
+                "signature algorithm {} ({}) with a {} key is not supported for verification",
+                signature_algorithm_name(signature_oid),
+                signature_oid,
+                key.algorithm
+            ))
+        }
+    };
+    match rs::UnparsedPublicKey::new(alg, spki_key_bytes(signer)).verify(message, signature) {
+        Ok(()) => SignatureCheck::Valid,
+        Err(_) => SignatureCheck::Invalid,
+    }
+}
+
+/// Verifies that `cert` was signed by the key in `issuer_spki`.
+fn verify_cert_signed_by(cert: &X509Certificate, issuer_spki: &SubjectPublicKeyInfo) -> SignatureCheck {
+    let oid = cert.signature_algorithm.algorithm.to_id_string();
+    if oid != cert.tbs_certificate.signature.algorithm.to_id_string() {
+        return SignatureCheck::Invalid;
+    }
+    verify_signature_with_key(&oid, issuer_spki, cert.tbs_certificate.as_ref(), &cert.signature_value.data)
+}
+
+fn is_self_issued(cert: &X509Certificate) -> bool {
+    cert.tbs_certificate.subject.as_raw() == cert.tbs_certificate.issuer.as_raw()
+}
+
+/// Basic constraints (cA flag and path length) of a certificate.
+fn basic_constraints_of(cert: &X509Certificate) -> (bool, Option<u32>) {
+    match cert.basic_constraints() {
+        Ok(Some(bc)) => (bc.value.ca, bc.value.path_len_constraint),
+        _ => (false, None),
+    }
+}
+
+fn is_ca_cert(cert: &X509Certificate) -> bool {
+    basic_constraints_of(cert).0
+}
+
+fn key_usage_names(cert: &X509Certificate) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(Some(ku)) = cert.key_usage() {
+        let ku = ku.value;
+        let flags = [
+            (ku.digital_signature(), "digitalSignature"),
+            (ku.non_repudiation(), "contentCommitment"),
+            (ku.key_encipherment(), "keyEncipherment"),
+            (ku.data_encipherment(), "dataEncipherment"),
+            (ku.key_agreement(), "keyAgreement"),
+            (ku.key_cert_sign(), "keyCertSign"),
+            (ku.crl_sign(), "cRLSign"),
+            (ku.encipher_only(), "encipherOnly"),
+            (ku.decipher_only(), "decipherOnly"),
+        ];
+        out.extend(flags.iter().filter(|(set, _)| *set).map(|(_, n)| n.to_string()));
+    }
+    out
+}
+
+fn extended_key_usage_names(cert: &X509Certificate) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(Some(eku)) = cert.extended_key_usage() {
+        let e = eku.value;
+        let flags = [
+            (e.any, "anyExtendedKeyUsage"),
+            (e.server_auth, "serverAuth"),
+            (e.client_auth, "clientAuth"),
+            (e.code_signing, "codeSigning"),
+            (e.email_protection, "emailProtection"),
+            (e.time_stamping, "timeStamping"),
+            (e.ocsp_signing, "ocspSigning"),
+        ];
+        out.extend(flags.iter().filter(|(set, _)| *set).map(|(_, n)| n.to_string()));
+        out.extend(e.other.iter().map(|o| o.to_id_string()));
+    }
+    out
+}
+
+fn format_ip_bytes(bytes: &[u8]) -> String {
+    match bytes.len() {
+        4 => std::net::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string(),
+        16 => {
+            let mut a = [0u8; 16];
+            a.copy_from_slice(bytes);
+            std::net::Ipv6Addr::from(a).to_string()
+        }
+        _ => hex::encode(bytes),
+    }
+}
+
+fn general_name_string(gn: &GeneralName) -> String {
+    match gn {
+        GeneralName::DNSName(s) => format!("DNS:{}", s),
+        GeneralName::IPAddress(b) => format!("IP:{}", format_ip_bytes(b)),
+        GeneralName::RFC822Name(s) => format!("EMAIL:{}", s),
+        GeneralName::URI(s) => format!("URI:{}", s),
+        GeneralName::DirectoryName(n) => format!("DirName:{}", n),
+        other => format!("{:?}", other),
+    }
+}
+
+/// SANs of a certificate as "DNS:x", "IP:x", "EMAIL:x", "URI:x" strings.
+fn san_strings(cert: &X509Certificate) -> Vec<String> {
+    match cert.subject_alternative_name() {
+        Ok(Some(san)) => san.value.general_names.iter().map(general_name_string).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Subject or issuer name as a JSON-friendly map.
+fn name_to_map(name: &X509Name) -> HashMap<String, Value> {
+    fn values<'a>(it: impl Iterator<Item = &'a AttributeTypeAndValue<'a>>) -> Vec<String> {
+        it.filter_map(|a| a.as_str().ok().map(|s| s.to_string())).collect()
+    }
+    let mut map = HashMap::new();
+    map.insert("raw_dn".to_string(), json!(name.to_string()));
+    if let Some(cn) = values(name.iter_common_name()).into_iter().next() {
+        map.insert("common_name".to_string(), json!(cn));
+    }
+    let lists = [
+        ("organization", values(name.iter_organization())),
+        ("organizational_unit", values(name.iter_organizational_unit())),
+        ("country", values(name.iter_country())),
+        ("state_or_province", values(name.iter_state_or_province())),
+        ("locality", values(name.iter_locality())),
+    ];
+    for (key, vals) in lists {
+        if !vals.is_empty() {
+            map.insert(key.to_string(), json!(vals));
+        }
+    }
+    map
+}
+
+fn asn1_time_rfc3339(t: &ASN1Time) -> String {
+    DateTime::from_timestamp(t.timestamp(), 0).unwrap_or_default().to_rfc3339()
+}
+
+/// True if `pattern` (a DNS SAN or CN) matches `host`. A wildcard is allowed
+/// only as the entire leftmost label ("*.example.com"), matches exactly one
+/// label, and needs at least two labels after it.
+fn dns_name_matches(pattern: &str, host: &str) -> bool {
+    let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if pattern.is_empty() || host.is_empty() {
+        return false;
+    }
+    if let Some(rest) = pattern.strip_prefix("*.") {
+        if rest.contains('*') || !rest.contains('.') {
+            return false;
+        }
+        match host.split_once('.') {
+            Some((label, host_rest)) => !label.is_empty() && host_rest == rest,
+            None => false,
+        }
+    } else {
+        !pattern.contains('*') && pattern == host
+    }
+}
+
+fn ip_matches(san_bytes: &[u8], ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => san_bytes == v4.octets(),
+        std::net::IpAddr::V6(v6) => san_bytes == v6.octets(),
+    }
+}
+
+/// Checks `hostname` against the certificate's DNS and IP SANs, falling back
+/// to the subject CN only when the certificate has no SAN extension.
+fn check_hostname(cert: &X509Certificate, hostname: &str) -> CheckResult {
+    let host = hostname.trim().trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');
+    let host = host.to_ascii_lowercase();
+    let ip: Option<std::net::IpAddr> = host.parse().ok();
+
+    let san = match cert.subject_alternative_name() {
+        Ok(san) => san,
+        Err(e) => {
+            return CheckResult::fail(
+                &format!("Subject alternative name extension could not be parsed: {}", e),
+                "cert.san_parse_failed",
+            )
+        }
+    };
+
+    if let Some(san) = san {
+        let names = &san.value.general_names;
+        for gn in names {
+            match (gn, &ip) {
+                (GeneralName::IPAddress(bytes), Some(ip)) if ip_matches(bytes, ip) => {
+                    return CheckResult::ok(&format!("Hostname {} matches IP SAN {}", hostname, ip));
+                }
+                (GeneralName::DNSName(name), None) if dns_name_matches(name, &host) => {
+                    return CheckResult::ok(&format!("Hostname {} matches DNS SAN {}", hostname, name));
+                }
+                _ => {}
+            }
+        }
+        let listed: Vec<String> = names
+            .iter()
+            .filter(|gn| matches!(gn, GeneralName::DNSName(_) | GeneralName::IPAddress(_)))
+            .map(general_name_string)
+            .collect();
+        return CheckResult::fail(
+            &format!(
+                "Hostname {} does not match any SAN ({})",
+                hostname,
+                if listed.is_empty() { "no DNS or IP SANs".to_string() } else { listed.join(", ") }
+            ),
+            "cert.hostname_mismatch",
+        );
+    }
+
+    // No SAN extension: fall back to the subject common name.
+    let cns: Vec<String> = cert
+        .subject()
+        .iter_common_name()
+        .filter_map(|a| a.as_str().ok().map(|s| s.to_string()))
+        .collect();
+    for cn in &cns {
+        let matched = match &ip {
+            Some(ip) => cn.trim().parse::<std::net::IpAddr>().map(|c| &c == ip).unwrap_or(false),
+            None => dns_name_matches(cn, &host),
+        };
+        if matched {
+            return CheckResult::ok(&format!(
+                "Hostname {} matches subject CN {} (certificate has no SAN extension)",
+                hostname, cn
+            ));
+        }
+    }
+    CheckResult::fail(
+        &format!(
+            "Hostname {} does not match the subject CN ({}); certificate has no SAN extension",
+            hostname,
+            if cns.is_empty() { "none".to_string() } else { cns.join(", ") }
+        ),
+        "cert.hostname_mismatch",
+    )
+}
+
+/// Checks extended key usage and key usage against a purpose. A missing
+/// extension does not restrict usage.
+fn check_purpose(cert: &X509Certificate, purpose: &Purpose) -> CheckResult {
+    let (eku_needed, label): (fn(&x509_parser::extensions::ExtendedKeyUsage) -> bool, &str) = match purpose {
+        Purpose::Any => return CheckResult::skipped("No purpose requested (purpose=any)"),
+        Purpose::ServerAuth => (|e| e.server_auth, "serverAuth"),
+        Purpose::ClientAuth => (|e| e.client_auth, "clientAuth"),
+        Purpose::CodeSigning => (|e| e.code_signing, "codeSigning"),
+        Purpose::EmailProtection => (|e| e.email_protection, "emailProtection"),
+    };
+
+    let eku = match cert.extended_key_usage() {
+        Ok(e) => e,
+        Err(e) => return CheckResult::fail(&format!("Extended key usage could not be parsed: {}", e), "cert.eku_parse_failed"),
+    };
+    let ku = match cert.key_usage() {
+        Ok(k) => k,
+        Err(e) => return CheckResult::fail(&format!("Key usage could not be parsed: {}", e), "cert.key_usage_parse_failed"),
+    };
+
+    let mut notes = Vec::new();
+    if let Some(eku) = eku {
+        if !(eku.value.any || eku_needed(eku.value)) {
+            return CheckResult::fail(
+                &format!(
+                    "Extended key usage ({}) does not include {}",
+                    extended_key_usage_names(cert).join(", "),
+                    label
+                ),
+                "cert.eku_mismatch",
+            );
+        }
+        notes.push(format!("extended key usage allows {}", label));
+    } else {
+        notes.push("no extended key usage extension".to_string());
+    }
+
+    if let Some(ku) = ku {
+        let k = ku.value;
+        let allowed = match purpose {
+            Purpose::ServerAuth => k.digital_signature() || k.key_encipherment() || k.key_agreement(),
+            Purpose::ClientAuth => k.digital_signature() || k.key_agreement(),
+            Purpose::CodeSigning => k.digital_signature(),
+            Purpose::EmailProtection => k.digital_signature() || k.non_repudiation() || k.key_encipherment(),
+            Purpose::Any => true,
+        };
+        if !allowed {
+            return CheckResult::fail(
+                &format!(
+                    "Key usage ({}) does not permit {}",
+                    key_usage_names(cert).join(", "),
+                    label
+                ),
+                "cert.key_usage_mismatch",
+            );
+        }
+        notes.push(format!("key usage permits {}", label));
+    } else {
+        notes.push("no key usage extension".to_string());
+    }
+
+    CheckResult::ok(&format!("Purpose {}: {}", label, notes.join("; ")))
+}
+
+/// PKCS#8 v1 document for a raw Ed25519 seed.
+fn ed25519_pkcs8_from_seed(seed: &[u8; 32]) -> Result<Vec<u8>> {
+    use der::Encode;
+    let algorithm = spki::AlgorithmIdentifier { oid: const_oid::db::rfc8410::ID_ED_25519, parameters: None };
+    // The PKCS#8 privateKey for Ed25519 is itself an OCTET STRING (RFC 8410).
+    let inner = der::asn1::OctetStringRef::new(seed)
+        .map_err(|e| anyhow::anyhow!("Failed to encode Ed25519 key: {}", e))?
+        .to_der()
+        .map_err(|e| anyhow::anyhow!("Failed to encode Ed25519 key: {}", e))?;
+    Pkcs8PrivateKeyInfo::new(algorithm, &inner)
+        .to_der()
+        .map_err(|e| anyhow::anyhow!("Failed to encode Ed25519 key as PKCS#8: {}", e))
+}
+
+/// Parses an unencrypted private key (PKCS#8, PKCS#1 RSA, SEC1 EC, or a raw
+/// 32-byte Ed25519 seed; PEM or DER) into an rcgen KeyPair.
+fn rcgen_keypair_from_bytes(data: &[u8], label: &str) -> Result<KeyPair> {
+    fn from_pkcs1(der: &[u8]) -> Option<KeyPair> {
+        let key = RsaPrivateKey::from_pkcs1_der(der).ok()?;
+        let pkcs8 = key.to_pkcs8_der().ok()?;
+        KeyPair::from_der(pkcs8.as_bytes()).ok()
+    }
+    fn from_sec1(der: &[u8]) -> Option<KeyPair> {
+        if let Ok(k) = P256SigningKey::from_sec1_der(der) {
+            return KeyPair::from_der(k.to_pkcs8_der().ok()?.as_bytes()).ok();
+        }
+        if let Ok(k) = P384SigningKey::from_sec1_der(der) {
+            return KeyPair::from_der(k.to_pkcs8_der().ok()?.as_bytes()).ok();
+        }
+        None
+    }
+
+    if looks_like_pem(data) {
+        for block in pem_blocks(data) {
+            let parsed = match block.tag() {
+                "PRIVATE KEY" => KeyPair::from_der(block.contents()).ok(),
+                "RSA PRIVATE KEY" => from_pkcs1(block.contents()),
+                "EC PRIVATE KEY" => from_sec1(block.contents()),
+                "ENCRYPTED PRIVATE KEY" => {
+                    bail!("Private key {} is encrypted; encrypted keys are not supported here", label)
+                }
+                _ => None,
+            };
+            if let Some(kp) = parsed {
+                return Ok(kp);
+            }
+        }
+        bail!("No supported private key found in {} (PKCS#8, PKCS#1 RSA, SEC1 P-256/P-384)", label);
+    }
+
+    if let Ok(kp) = KeyPair::from_der(data) {
+        return Ok(kp);
+    }
+    if let Some(kp) = from_pkcs1(data).or_else(|| from_sec1(data)) {
+        return Ok(kp);
+    }
+    if let Ok(seed) = <[u8; 32]>::try_from(data) {
+        return Ok(KeyPair::from_der(&ed25519_pkcs8_from_seed(&seed)?)?);
+    }
+    bail!("Unable to parse private key from {}", label)
+}
+
+/// rcgen signature algorithm used for a subject public key.
+fn rcgen_alg_for_key(key: &KeyDescription) -> Result<&'static rcgen::SignatureAlgorithm> {
+    match (key.algorithm.as_str(), key.curve.as_deref()) {
+        ("rsa", _) => Ok(&rcgen::PKCS_RSA_SHA256),
+        ("ecdsa", Some("P-256")) => Ok(&rcgen::PKCS_ECDSA_P256_SHA256),
+        ("ecdsa", Some("P-384")) => Ok(&rcgen::PKCS_ECDSA_P384_SHA384),
+        ("ed25519", _) => Ok(&rcgen::PKCS_ED25519),
+        (alg, curve) => bail!(
+            "Unsupported public key: {}{}",
+            alg,
+            curve.map(|c| format!(" ({})", c)).unwrap_or_default()
+        ),
+    }
+}
+
+/// A key pair that holds only a public key, for issuing a certificate to a
+/// key whose private half is not available (signing uses the issuer's key).
+struct PublicKeyOnly {
+    raw: Vec<u8>,
+    alg: &'static rcgen::SignatureAlgorithm,
+}
+
+impl rcgen::RemoteKeyPair for PublicKeyOnly {
+    fn public_key(&self) -> &[u8] {
+        &self.raw
+    }
+    fn sign(&self, _msg: &[u8]) -> std::result::Result<Vec<u8>, rcgen::Error> {
+        Err(rcgen::Error::RemoteKeyError)
+    }
+    fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
+        self.alg
+    }
+}
+
+/// Short key algorithm name for an rcgen signature algorithm.
+fn signature_algorithm_label(alg: &rcgen::SignatureAlgorithm) -> &'static str {
+    if alg == &rcgen::PKCS_ED25519 {
+        "ed25519"
+    } else if alg == &rcgen::PKCS_ECDSA_P256_SHA256 {
+        "ecdsa P-256"
+    } else if alg == &rcgen::PKCS_ECDSA_P384_SHA384 {
+        "ecdsa P-384"
+    } else {
+        "rsa"
+    }
+}
+
+/// A random positive 128-bit serial number.
+fn random_serial() -> rcgen::SerialNumber {
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    bytes[0] &= 0x7F;
+    if bytes[0] == 0 {
+        bytes[0] = 0x01;
+    }
+    rcgen::SerialNumber::from(bytes.to_vec())
+}
+
+fn to_offset_datetime(dt: DateTime<Utc>) -> Result<::time::OffsetDateTime> {
+    ::time::OffsetDateTime::from_unix_timestamp(dt.timestamp())
+        .map_err(|e| anyhow::anyhow!("Invalid timestamp {}: {}", dt, e))
+}
+
+fn rcgen_key_usage(ku: &CertKeyUsage) -> rcgen::KeyUsagePurpose {
+    match ku {
+        CertKeyUsage::DigitalSignature => rcgen::KeyUsagePurpose::DigitalSignature,
+        CertKeyUsage::ContentCommitment => rcgen::KeyUsagePurpose::ContentCommitment,
+        CertKeyUsage::KeyEncipherment => rcgen::KeyUsagePurpose::KeyEncipherment,
+        CertKeyUsage::DataEncipherment => rcgen::KeyUsagePurpose::DataEncipherment,
+        CertKeyUsage::KeyAgreement => rcgen::KeyUsagePurpose::KeyAgreement,
+        CertKeyUsage::KeyCertSign => rcgen::KeyUsagePurpose::KeyCertSign,
+        CertKeyUsage::CrlSign => rcgen::KeyUsagePurpose::CrlSign,
+        CertKeyUsage::EncipherOnly => rcgen::KeyUsagePurpose::EncipherOnly,
+        CertKeyUsage::DecipherOnly => rcgen::KeyUsagePurpose::DecipherOnly,
+    }
+}
+
+fn rcgen_extended_key_usage(eku: &CertExtendedKeyUsage) -> rcgen::ExtendedKeyUsagePurpose {
+    match eku {
+        CertExtendedKeyUsage::ServerAuth => rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+        CertExtendedKeyUsage::ClientAuth => rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+        CertExtendedKeyUsage::CodeSigning => rcgen::ExtendedKeyUsagePurpose::CodeSigning,
+        CertExtendedKeyUsage::EmailProtection => rcgen::ExtendedKeyUsagePurpose::EmailProtection,
+        CertExtendedKeyUsage::TimeStamping => rcgen::ExtendedKeyUsagePurpose::TimeStamping,
+        CertExtendedKeyUsage::OcspSigning => rcgen::ExtendedKeyUsagePurpose::OcspSigning,
+    }
+}
+
+fn encode_cert_der(der: &[u8], encoding: &Encoding) -> Vec<u8> {
+    match encoding {
+        Encoding::Pem => pem_encode_lf(&Pem::new("CERTIFICATE", der.to_vec())).into_bytes(),
+        Encoding::Der => der.to_vec(),
+    }
+}
+
+/// Details of an issued certificate, read back from its DER encoding.
+#[derive(Debug, Clone)]
+struct IssuedCertSummary {
+    subject: HashMap<String, Value>,
+    issuer: HashMap<String, Value>,
+    serial_hex: String,
+    not_before: String,
+    not_after: String,
+    is_ca: bool,
+    path_len: Option<u8>,
+    sans: Vec<String>,
+    key_usage: Vec<String>,
+    extended_key_usage: Vec<String>,
+    fingerprints: HashMap<String, String>,
+}
+
+fn summarize_cert_der(der: &[u8]) -> Result<IssuedCertSummary> {
+    let (_, cert) = X509Certificate::from_der(der)
+        .map_err(|e| anyhow::anyhow!("Failed to parse issued certificate: {}", e))?;
+    let (is_ca, path_len) = basic_constraints_of(&cert);
+    let mut fingerprints = HashMap::new();
+    for alg in ["sha1", "sha256"] {
+        if let Some(fp) = fingerprint(alg, der) {
+            fingerprints.insert(alg.to_string(), fp);
+        }
+    }
+    Ok(IssuedCertSummary {
+        subject: name_to_map(cert.subject()),
+        issuer: name_to_map(cert.issuer()),
+        serial_hex: hex::encode_upper(cert.tbs_certificate.raw_serial()),
+        not_before: asn1_time_rfc3339(&cert.validity().not_before),
+        not_after: asn1_time_rfc3339(&cert.validity().not_after),
+        is_ca,
+        path_len: path_len.and_then(|p| u8::try_from(p).ok()),
+        sans: san_strings(&cert),
+        key_usage: key_usage_names(&cert),
+        extended_key_usage: extended_key_usage_names(&cert),
+        fingerprints,
+    })
+}
+
+/// A CA certificate and key loaded for signing.
+struct CaSigner {
+    cert: rcgen::Certificate,
+    subject: String,
+}
+
+/// Loads a CA certificate and its private key for signing. Fails if the key
+/// does not belong to the certificate or the certificate is not a CA.
+fn load_ca_signer(ca_cert_data: &[u8], ca_label: &str, key_data: &[u8], key_label: &str) -> Result<CaSigner> {
+    let ders = certificate_ders(ca_cert_data);
+    let ca_der = ders
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("No certificate found in signer CA {}", ca_label))?;
+    let (_, ca) = X509Certificate::from_der(ca_der)
+        .map_err(|e| anyhow::anyhow!("Failed to parse signer CA {}: {}", ca_label, e))?;
+    if !is_ca_cert(&ca) {
+        bail!("Signer certificate {} is not a CA (basicConstraints cA is not set)", ca_label);
+    }
+    let key_pair = rcgen_keypair_from_bytes(key_data, key_label)?;
+    if key_pair.public_key_raw() != spki_key_bytes(ca.public_key()) {
+        bail!("Signer key {} does not match the public key of signer CA {}", key_label, ca_label);
+    }
+    let alg = key_pair.algorithm();
+    let mut params = CertificateParams::from_ca_cert_der(ca_der, key_pair)
+        .map_err(|e| anyhow::anyhow!("Failed to load signer CA {}: {}", ca_label, e))?;
+    // Sign with the algorithm of the CA's own key, not the one that signed the CA.
+    params.alg = alg;
+    let cert = Certificate::from_params(params)
+        .map_err(|e| anyhow::anyhow!("Failed to prepare signer CA {}: {}", ca_label, e))?;
+    Ok(CaSigner { cert, subject: ca.subject().to_string() })
+}
+
+/// Validity window from a not_before setting, an explicit not_after, and an
+/// offset in days.
+fn validity_window(
+    not_before: &NotBeforeSetting,
+    not_after: Option<DateTime<Utc>>,
+    offset_days: i64,
+) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
+    let start = match not_before {
+        NotBeforeSetting::Now => Utc::now(),
+        NotBeforeSetting::Explicit(dt) => *dt,
+    };
+    let end = not_after.unwrap_or_else(|| start + chrono::Duration::days(offset_days));
+    if end <= start {
+        bail!("not_after ({}) must be later than not_before ({})", end.to_rfc3339(), start.to_rfc3339());
+    }
+    Ok((start, end))
+}
+
+/// Issues a certificate for a CSR, signed by `ca`. The CSR's own signature is
+/// verified while parsing.
+fn issue_from_csr(csr_der: &[u8], settings: &CsrIssueSettings, ca: &CaSigner) -> Result<Vec<u8>> {
+    let mut csr = rcgen::CertificateSigningRequest::from_der(csr_der).map_err(|e| match e {
+        rcgen::Error::UnsupportedExtension => anyhow::anyhow!(
+            "CSR requests extensions other than subjectAltName, which are not supported"
+        ),
+        rcgen::Error::RingUnspecified => anyhow::anyhow!("CSR signature verification failed"),
+        other => anyhow::anyhow!("Failed to parse CSR: {}", other),
+    })?;
+    let p = &mut csr.params;
+    if let Some(sub) = &settings.subject_override {
+        p.distinguished_name = build_distinguished_name(sub)?;
+    }
+    if let Some(sans) = &settings.sans_override {
+        p.subject_alt_names = parse_san_list(sans)?;
+    }
+    let (start, end) = validity_window(&settings.not_before, settings.not_after, settings.not_after_offset_days)?;
+    p.not_before = to_offset_datetime(start)?;
+    p.not_after = to_offset_datetime(end)?;
+    p.serial_number = Some(match &settings.serial {
+        Some(bytes) => rcgen::SerialNumber::from(bytes.clone()),
+        None => random_serial(),
+    });
+    p.is_ca = if settings.is_ca {
+        IsCa::Ca(match settings.path_len {
+            Some(n) => BasicConstraints::Constrained(n),
+            None => BasicConstraints::Unconstrained,
+        })
+    } else {
+        IsCa::ExplicitNoCa
+    };
+    p.key_usages = settings.key_usage.iter().map(rcgen_key_usage).collect();
+    p.extended_key_usages = settings.extended_key_usage.iter().map(rcgen_extended_key_usage).collect();
+    p.use_authority_key_identifier_extension = true;
+    csr.serialize_der_with_signer(&ca.cert)
+        .map_err(|e| anyhow::anyhow!("Failed to sign certificate: {}", e))
+}
+
+/// Certificate settings applied when issuing from a CSR.
+#[derive(Debug, Clone)]
+struct CsrIssueSettings {
+    subject_override: Option<CertSubject>,
+    sans_override: Option<Vec<String>>,
+    not_before: NotBeforeSetting,
+    not_after: Option<DateTime<Utc>>,
+    not_after_offset_days: i64,
+    is_ca: bool,
+    path_len: Option<u8>,
+    key_usage: Vec<CertKeyUsage>,
+    extended_key_usage: Vec<CertExtendedKeyUsage>,
+    /// Explicit serial number bytes; random when None.
+    serial: Option<Vec<u8>>,
+}
+
+/// Result of issuing a certificate from a CSR.
+struct IssuedFromCsr {
+    der: Vec<u8>,
+    summary: IssuedCertSummary,
+    csr: CsrDescription,
+    csr_encoding: &'static str,
+}
+
+impl IssuedFromCsr {
+    fn signature_algorithm(&self) -> String {
+        X509Certificate::from_der(&self.der)
+            .map(|(_, c)| signature_algorithm_name(&c.signature_algorithm.algorithm.to_id_string()).to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+}
+
+/// Subject, SANs, and key of a CSR.
+struct CsrDescription {
+    subject: HashMap<String, Value>,
+    sans: Vec<String>,
+    public_key: KeyDescription,
+}
+
+fn describe_csr(der: &[u8]) -> Result<CsrDescription> {
+    use x509_parser::certification_request::X509CertificationRequest;
+    let (_, csr) = X509CertificationRequest::from_der(der)
+        .map_err(|e| anyhow::anyhow!("Failed to parse CSR: {}", e))?;
+    let info = &csr.certification_request_info;
+    let mut sans = Vec::new();
+    if let Some(exts) = csr.requested_extensions() {
+        for ext in exts {
+            if let ParsedExtension::SubjectAlternativeName(san) = ext {
+                sans.extend(san.general_names.iter().map(general_name_string));
+            }
+        }
+    }
+    Ok(CsrDescription {
+        subject: name_to_map(&info.subject),
+        sans,
+        public_key: describe_spki(&info.subject_pki),
+    })
+}
+
+/// DER bytes of a CSR given as PEM or DER, and the encoding found.
+fn csr_der_from_bytes(data: &[u8], hint: &EncodingHint) -> Result<(Vec<u8>, &'static str)> {
+    let pem = match hint {
+        EncodingHint::Pem => true,
+        EncodingHint::Der => false,
+        EncodingHint::Auto => looks_like_pem(data),
+    };
+    if pem {
+        pem_blocks(data)
+            .into_iter()
+            .find(|b| b.tag() == "CERTIFICATE REQUEST" || b.tag() == "NEW CERTIFICATE REQUEST")
+            .map(|b| (b.contents().to_vec(), "pem"))
+            .ok_or_else(|| anyhow::anyhow!("No CERTIFICATE REQUEST block found in the CSR"))
+    } else {
+        Ok((data.to_vec(), "der"))
+    }
+}
+
+fn build_distinguished_name(subject: &CertSubject) -> Result<DistinguishedName> {
+    let mut dn = DistinguishedName::new();
+    if let Some(cn) = &subject.common_name {
+        dn.push(rcgen::DnType::CommonName, cn.as_str());
+    }
+    for v in &subject.organization {
+        dn.push(rcgen::DnType::OrganizationName, v.as_str());
+    }
+    for v in &subject.organizational_unit {
+        dn.push(rcgen::DnType::OrganizationalUnitName, v.as_str());
+    }
+    for v in &subject.country {
+        dn.push(rcgen::DnType::CountryName, v.as_str());
+    }
+    for v in &subject.state_or_province {
+        dn.push(rcgen::DnType::StateOrProvinceName, v.as_str());
+    }
+    for v in &subject.locality {
+        dn.push(rcgen::DnType::LocalityName, v.as_str());
+    }
+    Ok(dn)
+}
+
+fn parse_san_list(sans: &[String]) -> Result<Vec<SanType>> {
+    let mut out = Vec::new();
+    for s in sans {
+        let s = s.trim();
+        if let Some(v) = s.strip_prefix("DNS:") {
+            out.push(SanType::DnsName(v.to_string()));
+        } else if let Some(v) = s.strip_prefix("IP:") {
+            out.push(SanType::IpAddress(v.parse().with_context(|| format!("Invalid IP SAN: {}", s))?));
+        } else if let Some(v) = s.strip_prefix("EMAIL:") {
+            out.push(SanType::Rfc822Name(v.to_string()));
+        } else if let Some(v) = s.strip_prefix("URI:") {
+            out.push(SanType::URI(v.to_string()));
+        } else {
+            bail!("Invalid SAN format: {}. Must be DNS:, IP:, EMAIL:, or URI:", s);
+        }
+    }
+    Ok(out)
+}
+
+/// Parses a boolean option value ("true"/"false", "1"/"0", "yes"/"no").
+fn parse_bool_arg(name: &str, value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        _ => bail!("Invalid {} '{}'. Use true or false", name, value),
+    }
+}
+
+/// A JSON boolean, or a string holding one (CLI values arrive as strings).
+fn json_bool(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(b) => Some(*b),
+        Value::String(s) => parse_bool_arg("value", s).ok(),
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sec1::EncodeEcPrivateKey;
     use tempfile::tempdir;
     use std::path::Path;
 
@@ -9457,6 +9401,626 @@ mod tests {
         CertHandle {
             target_path: target_path.to_string(),
         }
+    }
+
+    // ---- Shared fixtures for verify, renew, and CSR signing tests ----
+
+    fn run_verb(handle: &CertHandle, verb: &str, args: &[(&str, &str)]) -> (Status, String) {
+        let args: Args = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut stdin = std::io::empty();
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        let status = {
+            let mut io = IoStreams { stdin: &mut stdin, stdout: &mut out, stderr: &mut err };
+            handle.call(verb, &args, &mut io).unwrap()
+        };
+        (status, String::from_utf8(out).unwrap())
+    }
+
+    fn ec_key() -> KeyPair {
+        KeyPair::generate(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap()
+    }
+
+    fn base_params(cn: &str, key: KeyPair) -> CertificateParams {
+        let mut p = CertificateParams::new(vec![]);
+        p.distinguished_name = DistinguishedName::new();
+        p.distinguished_name.push(rcgen::DnType::CommonName, cn);
+        p.alg = key.algorithm();
+        p.key_pair = Some(key);
+        p.not_before = ::time::OffsetDateTime::now_utc() - ::time::Duration::days(1);
+        p.not_after = ::time::OffsetDateTime::now_utc() + ::time::Duration::days(30);
+        p
+    }
+
+    fn ca_cert(cn: &str) -> Certificate {
+        let mut p = base_params(cn, ec_key());
+        p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        p.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign, rcgen::KeyUsagePurpose::CrlSign];
+        Certificate::from_params(p).unwrap()
+    }
+
+    fn leaf_params(cn: &str, sans: Vec<SanType>) -> CertificateParams {
+        let mut p = base_params(cn, ec_key());
+        p.subject_alt_names = sans;
+        p.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        p.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+        p
+    }
+
+    fn pem_of(der: &[u8]) -> String {
+        pem_encode_lf(&Pem::new("CERTIFICATE", der.to_vec()))
+    }
+
+    fn parse(der: &[u8]) -> X509Certificate<'_> {
+        X509Certificate::from_der(der).unwrap().1
+    }
+
+    /// root -> intermediate -> leaf, as DER.
+    struct TestPki {
+        root: Vec<u8>,
+        intermediate: Vec<u8>,
+        leaf: Vec<u8>,
+        leaf_key_pem: String,
+    }
+
+    fn test_pki() -> TestPki {
+        let root = ca_cert("Test Root");
+        let intermediate = ca_cert("Test Intermediate");
+        let leaf = Certificate::from_params(leaf_params(
+            "www.example.com",
+            vec![
+                SanType::DnsName("*.example.com".to_string()),
+                SanType::DnsName("example.com".to_string()),
+                SanType::IpAddress("192.0.2.1".parse().unwrap()),
+            ],
+        ))
+        .unwrap();
+        TestPki {
+            root: root.serialize_der().unwrap(),
+            intermediate: intermediate.serialize_der_with_signer(&root).unwrap(),
+            leaf: leaf.serialize_der_with_signer(&intermediate).unwrap(),
+            leaf_key_pem: leaf.serialize_private_key_pem(),
+        }
+    }
+
+    fn mount_opts(trust_pem: &str) -> CertVerifyOptions {
+        CertVerifyOptions {
+            trust: TrustMode::Inline,
+            trust_pem: Some(trust_pem.to_string()),
+            ..CertVerifyOptions::default()
+        }
+    }
+
+    // ---- verify: hostname ----
+
+    #[test]
+    fn test_dns_name_matching_rules() {
+        assert!(dns_name_matches("example.com", "EXAMPLE.com."));
+        assert!(dns_name_matches("*.example.com", "www.example.com"));
+        assert!(!dns_name_matches("*.example.com", "a.b.example.com"));
+        assert!(!dns_name_matches("*.example.com", "example.com"));
+        assert!(!dns_name_matches("*.com", "example.com"));
+        assert!(!dns_name_matches("w*.example.com", "www.example.com"));
+        assert!(!dns_name_matches("www.*.com", "www.example.com"));
+        assert!(!dns_name_matches("example.com", "other.com"));
+    }
+
+    #[test]
+    fn test_hostname_checked_against_sans() {
+        let pki = test_pki();
+        let leaf = parse(&pki.leaf);
+        assert_eq!(check_hostname(&leaf, "api.example.com").status, CheckStatus::Passed);
+        assert_eq!(check_hostname(&leaf, "example.com").status, CheckStatus::Passed);
+        assert_eq!(check_hostname(&leaf, "192.0.2.1").status, CheckStatus::Passed);
+        for bad in ["evil.com", "a.b.example.com", "192.0.2.2", "www.example.com.evil.com"] {
+            let r = check_hostname(&leaf, bad);
+            assert!(!r.ok, "{} should not match", bad);
+            assert_eq!(r.error_code.as_deref(), Some("cert.hostname_mismatch"));
+        }
+    }
+
+    #[test]
+    fn test_hostname_cn_fallback_only_without_sans() {
+        let cert = Certificate::from_params(base_params("host.example.org", ec_key())).unwrap();
+        let der = cert.serialize_der().unwrap();
+        let c = parse(&der);
+        assert!(check_hostname(&c, "host.example.org").ok);
+        assert!(!check_hostname(&c, "other.example.org").ok);
+
+        // With a SAN extension the CN is ignored.
+        let cert = Certificate::from_params(leaf_params(
+            "cn-only.example.org",
+            vec![SanType::DnsName("san.example.org".to_string())],
+        ))
+        .unwrap();
+        let der = cert.serialize_der().unwrap();
+        let c = parse(&der);
+        assert!(!check_hostname(&c, "cn-only.example.org").ok);
+        assert!(check_hostname(&c, "san.example.org").ok);
+    }
+
+    // ---- verify: chain ----
+
+    #[test]
+    fn test_chain_verifies_to_trust_anchor() {
+        let pki = test_pki();
+        let handle = create_test_handle("leaf.pem");
+        let opts = mount_opts(&pem_of(&pki.root));
+        let (check, links) = handle.verify_certificate_chain(
+            &[pki.leaf.clone(), pki.intermediate.clone()],
+            &[pki.root.clone()],
+            &opts,
+        );
+        assert_eq!(check.status, CheckStatus::Passed, "{}", check.message);
+        assert_eq!(links.len(), 3);
+        assert!(links[2].is_trust_anchor);
+    }
+
+    #[test]
+    fn test_chain_fails_without_anchor_or_intermediate() {
+        let pki = test_pki();
+        let handle = create_test_handle("leaf.pem");
+        let opts = mount_opts(&pem_of(&pki.root));
+
+        // Not self-signed, no trust store: must not pass.
+        let (check, _) = handle.verify_certificate_chain(&[pki.leaf.clone(), pki.intermediate.clone()], &[], &opts);
+        assert!(!check.ok);
+        assert_eq!(check.error_code.as_deref(), Some("cert.issuer_not_found"));
+
+        // A root shipped in the bundle is not trusted unless it is an anchor.
+        let (check, _) = handle.verify_certificate_chain(
+            &[pki.leaf.clone(), pki.intermediate.clone(), pki.root.clone()],
+            &[],
+            &opts,
+        );
+        assert_eq!(check.error_code.as_deref(), Some("cert.untrusted_root"));
+
+        // Missing intermediate.
+        let (check, _) = handle.verify_certificate_chain(&[pki.leaf.clone()], &[pki.root.clone()], &opts);
+        assert!(!check.ok);
+        assert_eq!(check.error_code.as_deref(), Some("cert.issuer_not_found"));
+    }
+
+    #[test]
+    fn test_signature_verification_rsa_and_ed25519_issuers() {
+        let handle = create_test_handle("x");
+        for alg in [CertAlgorithm::Rsa, CertAlgorithm::Ed25519] {
+            let key = handle.generate_rcgen_keypair(&alg, 2048, &EcdsaCurve::P256).unwrap();
+            let mut p = base_params("Alg CA", key);
+            p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            let ca = Certificate::from_params(p).unwrap();
+            let ca_der = ca.serialize_der().unwrap();
+            let leaf = Certificate::from_params(leaf_params("leaf", vec![])).unwrap();
+            let leaf_der = leaf.serialize_der_with_signer(&ca).unwrap();
+            assert_eq!(verify_cert_signed_by(&parse(&leaf_der), parse(&ca_der).public_key()), SignatureCheck::Valid, "{:?}", alg);
+            // A different key of the same type does not verify.
+            let other = Certificate::from_params(base_params("Other", handle.generate_rcgen_keypair(&alg, 2048, &EcdsaCurve::P256).unwrap())).unwrap();
+            let other_der = other.serialize_der().unwrap();
+            assert_eq!(verify_cert_signed_by(&parse(&leaf_der), parse(&other_der).public_key()), SignatureCheck::Invalid, "{:?}", alg);
+        }
+    }
+
+    #[test]
+    fn test_chain_rejects_forged_issuer() {
+        let pki = test_pki();
+        // A different CA with the same name as the real intermediate.
+        let forged = ca_cert("Test Intermediate");
+        let forged_der = forged.serialize_der_with_signer(&ca_cert("Test Root")).unwrap();
+        let handle = create_test_handle("leaf.pem");
+        let opts = mount_opts(&pem_of(&pki.root));
+        let (check, _) = handle.verify_certificate_chain(&[pki.leaf.clone(), forged_der], &[pki.root.clone()], &opts);
+        assert!(!check.ok);
+        assert_eq!(check.error_code.as_deref(), Some("cert.bad_signature"));
+    }
+
+    #[test]
+    fn test_chain_self_signed_policy() {
+        let cert = Certificate::from_params(base_params("self.example", ec_key())).unwrap();
+        let der = cert.serialize_der().unwrap();
+        let handle = create_test_handle("self.pem");
+        let mut opts = CertVerifyOptions::default();
+        let (check, _) = handle.verify_certificate_chain(&[der.clone()], &[], &opts);
+        assert_eq!(check.error_code.as_deref(), Some("cert.self_signed_not_allowed"));
+        opts.allow_self_signed = true;
+        let (check, _) = handle.verify_certificate_chain(&[der.clone()], &[], &opts);
+        assert_eq!(check.status, CheckStatus::Passed);
+        // A self-signed certificate that is itself an anchor is trusted.
+        opts.allow_self_signed = false;
+        let (check, _) = handle.verify_certificate_chain(&[der.clone()], &[der], &opts);
+        assert_eq!(check.status, CheckStatus::Passed);
+    }
+
+    #[test]
+    fn test_chain_rejects_non_ca_issuer() {
+        let root = ca_cert("Root");
+        let not_ca = Certificate::from_params(base_params("Not A CA", ec_key())).unwrap();
+        let not_ca_der = not_ca.serialize_der_with_signer(&root).unwrap();
+        let leaf = Certificate::from_params(leaf_params("leaf", vec![])).unwrap();
+        let leaf_der = leaf.serialize_der_with_signer(&not_ca).unwrap();
+        let handle = create_test_handle("leaf.pem");
+        let (check, _) = handle.verify_certificate_chain(
+            &[leaf_der, not_ca_der],
+            &[root.serialize_der().unwrap()],
+            &CertVerifyOptions::default(),
+        );
+        assert_eq!(check.error_code.as_deref(), Some("cert.issuer_not_ca"));
+    }
+
+    // ---- verify: usage, keypair, revocation, end to end ----
+
+    #[test]
+    fn test_purpose_checks_eku() {
+        let pki = test_pki();
+        let leaf = parse(&pki.leaf);
+        assert_eq!(check_purpose(&leaf, &Purpose::ServerAuth).status, CheckStatus::Passed);
+        let r = check_purpose(&leaf, &Purpose::CodeSigning);
+        assert_eq!(r.error_code.as_deref(), Some("cert.eku_mismatch"));
+        assert_eq!(check_purpose(&leaf, &Purpose::Any).status, CheckStatus::Skipped);
+    }
+
+    #[test]
+    fn test_keypair_check_compares_public_keys() {
+        let pki = test_pki();
+        let dir = tempdir().unwrap();
+        let good = dir.path().join("good.pem");
+        let bad = dir.path().join("bad.pem");
+        fs::write(&good, &pki.leaf_key_pem).unwrap();
+        fs::write(&bad, ec_key().serialize_pem()).unwrap();
+        let handle = create_test_handle("leaf.pem");
+        let leaf = parse(&pki.leaf);
+        let mut opts = CertVerifyOptions::default();
+        opts.keypair_target = Some(good.to_string_lossy().to_string());
+        assert_eq!(handle.verify_keypair_matching(&leaf, &opts).status, CheckStatus::Passed);
+        opts.keypair_target = Some(bad.to_string_lossy().to_string());
+        let r = handle.verify_keypair_matching(&leaf, &opts);
+        assert_eq!(r.error_code.as_deref(), Some("cert.keypair_mismatch"));
+        opts.keypair_target = None;
+        assert_eq!(handle.verify_keypair_matching(&leaf, &opts).status, CheckStatus::Skipped);
+    }
+
+    #[test]
+    fn test_revocation_is_never_a_pass() {
+        let pki = test_pki();
+        let leaf = parse(&pki.leaf);
+        let handle = create_test_handle("leaf.pem");
+        let mut opts = CertVerifyOptions::default();
+        opts.check_revocation = RevocationMode::Soft;
+        let r = handle.verify_revocation(&leaf, &opts);
+        assert_eq!(r.status, CheckStatus::NotChecked);
+        opts.check_revocation = RevocationMode::Hard;
+        let r = handle.verify_revocation(&leaf, &opts);
+        assert_eq!(r.status, CheckStatus::Unsupported);
+        assert!(!r.ok);
+    }
+
+    #[test]
+    fn test_verify_end_to_end() {
+        let pki = test_pki();
+        let dir = tempdir().unwrap();
+        let bundle = dir.path().join("bundle.pem");
+        fs::write(&bundle, format!("{}{}", pem_of(&pki.leaf), pem_of(&pki.intermediate))).unwrap();
+        let root = dir.path().join("root.pem");
+        fs::write(&root, pem_of(&pki.root)).unwrap();
+        let key = dir.path().join("leaf-key.pem");
+        fs::write(&key, &pki.leaf_key_pem).unwrap();
+        let handle = create_test_handle(&bundle.to_string_lossy());
+        let root_s = root.to_string_lossy().to_string();
+        let key_s = key.to_string_lossy().to_string();
+
+        let (status, out) = run_verb(&handle, "verify", &[
+            ("trust", "mount"), ("trust_paths", &root_s), ("hostname", "api.example.com"),
+            ("purpose", "server_auth"), ("keypair_target", &key_s),
+        ]);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true, "{}", out);
+        assert!(status.is_success());
+        for check in ["structure", "chain", "time", "hostname", "usage", "keypair"] {
+            assert_eq!(v["checks"][check]["status"], "passed", "{}: {}", check, out);
+        }
+        assert_eq!(v["checks"]["revocation"]["status"], "skipped");
+
+        // Wrong hostname fails overall.
+        let (_, out) = run_verb(&handle, "verify", &[("trust", "mount"), ("trust_paths", &root_s), ("hostname", "evil.com")]);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], false);
+
+        // Hard revocation cannot pass.
+        let (_, out) = run_verb(&handle, "verify", &[("trust", "mount"), ("trust_paths", &root_s), ("check_revocation", "hard")]);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["checks"]["revocation"]["status"], "unsupported");
+    }
+
+    // ---- info ----
+
+    #[test]
+    fn test_info_reports_key_extensions_and_sha512() {
+        let pki = test_pki();
+        let dir = tempdir().unwrap();
+        let bundle = dir.path().join("bundle.pem");
+        fs::write(&bundle, format!("{}{}", pem_of(&pki.leaf), pem_of(&pki.intermediate))).unwrap();
+        let handle = create_test_handle(&bundle.to_string_lossy());
+        let (_, out) = run_verb(&handle, "info", &[("fingerprint_algs", "sha256,sha512")]);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["type"], "certificatechain");
+        let objs = v["objects"].as_array().unwrap();
+        assert_eq!(objs.len(), 2);
+        assert_eq!(objs[0]["public_key"]["algorithm"], "ECDSA");
+        assert_eq!(objs[0]["public_key"]["curve"], "P-256");
+        assert_eq!(objs[0]["is_ca"], false);
+        assert_eq!(objs[1]["is_ca"], true);
+        assert!(objs[0]["extensions"]["subject_alt_names"].as_array().unwrap().contains(&json!("DNS:*.example.com")));
+        assert_eq!(objs[0]["extensions"]["extended_key_usage"], json!(["serverAuth"]));
+        assert_eq!(objs[0]["fingerprints"]["sha512"].as_str().unwrap().len(), 64 * 3 - 1);
+    }
+
+    // ---- help ----
+
+    #[test]
+    fn test_in_url_help_uses_approved_metadata() {
+        let handle = CertHandle::from_url(Url::parse("cert://--help").unwrap()).unwrap();
+        let (_, out) = run_verb(&handle, "help", &[]);
+        assert!(out.starts_with("Handle: cert"), "{}", out);
+        let (_, out) = run_verb(&handle, "help", &[("verb", "verify")]);
+        assert!(out.contains("verify"), "{}", out);
+        assert!(out.starts_with("Handle: cert") || out.contains("Usage"), "{}", out);
+    }
+
+    #[test]
+    fn test_from_url_keeps_absolute_paths() {
+        let h = CertHandle::from_url(Url::parse("cert:///etc/ssl/certs/server.pem").unwrap()).unwrap();
+        assert_eq!(h.target_path, "/etc/ssl/certs/server.pem");
+        let h = CertHandle::from_url(Url::parse("cert://./server.pem").unwrap()).unwrap();
+        assert_eq!(h.target_path, "./server.pem");
+    }
+
+    #[test]
+    fn test_targets_containing_dash_h_are_not_help() {
+        for url in ["cert:///home/x/my-hosts.pem", "cert://./pre-hotfix.pem", "cert:///etc/my-httpd/cert.pem"] {
+            let h = CertHandle::from_url(Url::parse(url).unwrap()).unwrap();
+            assert_ne!(h.target_path, "help", "{}", url);
+        }
+    }
+
+    // ---- generate ----
+
+    #[test]
+    fn test_generate_rejects_unsupported_curves_at_parse_time() {
+        let handle = create_test_handle("x");
+        for curve in ["P-521", "secp256k1"] {
+            let args: Args = [("mode", "key"), ("algorithm", "ecdsa"), ("ecdsa_curve", curve)]
+                .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let err = handle.parse_generate_options(&args).unwrap_err().to_string();
+            assert!(err.contains("not supported"), "{}", err);
+        }
+    }
+
+    #[test]
+    fn test_generate_csr_writes_csr_by_default_and_reports_real_serial() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join("web").to_string_lossy().to_string();
+        let handle = create_test_handle(&base);
+        let (status, out) = run_verb(&handle, "generate", &[
+            ("mode", "csr"), ("algorithm", "ecdsa"), ("subject", r#"{"common_name":"web"}"#),
+        ]);
+        assert!(status.is_success(), "{}", out);
+        let csr = fs::read(format!("{}.csr", base)).unwrap();
+        assert!(String::from_utf8_lossy(&csr).contains("BEGIN CERTIFICATE REQUEST"));
+
+        let (status, out) = run_verb(&handle, "generate", &[
+            ("mode", "self_signed"), ("algorithm", "ecdsa"), ("subject", r#"{"common_name":"web"}"#),
+            ("overwrite", "true"),
+        ]);
+        assert!(status.is_success(), "{}", out);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let der = certificate_ders(&fs::read(format!("{}.pem", base)).unwrap()).remove(0);
+        let summary = summarize_cert_der(&der).unwrap();
+        assert_eq!(v["certificate"]["serial_number"], json!(summary.serial_hex));
+        assert_eq!(v["certificate"]["fingerprints"]["sha256"], json!(summary.fingerprints["sha256"]));
+    }
+
+    #[test]
+    fn test_generate_key_passphrase_is_rejected_not_faked() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join("k").to_string_lossy().to_string();
+        let handle = create_test_handle(&base);
+        let (status, _) = run_verb(&handle, "generate", &[("mode", "key"), ("algorithm", "ecdsa"), ("key_passphrase", "pw")]);
+        assert!(!status.is_success());
+        assert!(!std::path::Path::new(&format!("{}-key.pem", base)).exists());
+    }
+
+    #[test]
+    fn test_generate_leaf_cert_signed_by_ca() {
+        let dir = tempdir().unwrap();
+        let ca_base = dir.path().join("ca").to_string_lossy().to_string();
+        let (status, out) = run_verb(&create_test_handle(&ca_base), "generate", &[
+            ("mode", "self_signed"), ("algorithm", "ecdsa"), ("subject", r#"{"common_name":"Leaf CA"}"#), ("is_ca", "true"),
+        ]);
+        assert!(status.is_success(), "{}", out);
+        let leaf_base = dir.path().join("leaf").to_string_lossy().to_string();
+        let ca_pem = format!("{}.pem", ca_base);
+        let ca_key = format!("{}-key.pem", ca_base);
+        let (status, out) = run_verb(&create_test_handle(&leaf_base), "generate", &[
+            ("mode", "leaf_cert"), ("algorithm", "rsa"), ("subject", r#"{"common_name":"leaf.example"}"#),
+            ("sans", r#"["DNS:leaf.example"]"#), ("signer_ca", &ca_pem), ("signer_key", &ca_key),
+        ]);
+        assert!(status.is_success(), "{}", out);
+        let leaf = certificate_ders(&fs::read(format!("{}.pem", leaf_base)).unwrap()).remove(0);
+        let ca = certificate_ders(&fs::read(&ca_pem).unwrap()).remove(0);
+        assert_eq!(verify_cert_signed_by(&parse(&leaf), parse(&ca).public_key()), SignatureCheck::Valid);
+        assert_eq!(parse(&leaf).issuer().to_string(), "CN=Leaf CA");
+        // The saved key belongs to the certificate.
+        let key = rcgen_keypair_from_bytes(&fs::read(format!("{}-key.pem", leaf_base)).unwrap(), "k").unwrap();
+        assert_eq!(key.public_key_raw(), spki_key_bytes(parse(&leaf).public_key()));
+    }
+
+    // ---- renew ----
+
+    fn write_self_signed(dir: &std::path::Path) -> (String, String) {
+        let base = dir.join("server").to_string_lossy().to_string();
+        let (status, out) = run_verb(&create_test_handle(&base), "generate", &[
+            ("mode", "self_signed"), ("algorithm", "ecdsa"),
+            ("subject", r#"{"common_name":"server.example","organization":["Example Org"],"country":["US"]}"#),
+            ("sans", r#"["DNS:server.example","IP:192.0.2.7"]"#),
+        ]);
+        assert!(status.is_success(), "{}", out);
+        (format!("{}.pem", base), format!("{}-key.pem", base))
+    }
+
+    #[test]
+    fn test_renew_reuse_keeps_key_subject_and_sans() {
+        let dir = tempdir().unwrap();
+        let (cert_path, _key_path) = write_self_signed(dir.path());
+        let handle = create_test_handle(&cert_path);
+        let (status, out) = run_verb(&handle, "renew", &[("not_after_offset_days", "10")]);
+        assert!(status.is_success(), "{}", out);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let new_path = v["new_cert"]["path"].as_str().unwrap().to_string();
+        assert!(new_path.ends_with("server-renewed.pem"));
+
+        let old = certificate_ders(&fs::read(&cert_path).unwrap()).remove(0);
+        let new = certificate_ders(&fs::read(&new_path).unwrap()).remove(0);
+        let (o, n) = (parse(&old), parse(&new));
+        assert_eq!(spki_key_bytes(o.public_key()), spki_key_bytes(n.public_key()));
+        assert_eq!(o.subject().to_string(), n.subject().to_string());
+        assert_eq!(san_strings(&o), san_strings(&n));
+        assert_eq!(verify_cert_signed_by(&n, n.public_key()), SignatureCheck::Valid);
+        let days = (n.validity().not_after.timestamp() - n.validity().not_before.timestamp()) / 86400;
+        assert_eq!(days, 10);
+        let summary = summarize_cert_der(&new).unwrap();
+        assert_eq!(v["new_cert"]["serial_number"], json!(summary.serial_hex));
+        assert_eq!(v["new_cert"]["fingerprints"]["sha256"], json!(summary.fingerprints["sha256"]));
+        assert_eq!(v["new_cert"]["subject"]["common_name"], "server.example");
+    }
+
+    #[test]
+    fn test_renew_rekey_saves_the_issued_key() {
+        let dir = tempdir().unwrap();
+        let (cert_path, _) = write_self_signed(dir.path());
+        let handle = create_test_handle(&cert_path);
+        let (status, out) = run_verb(&handle, "renew", &[("key_strategy", "rekey")]);
+        assert!(status.is_success(), "{}", out);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let new = certificate_ders(&fs::read(v["new_cert"]["path"].as_str().unwrap()).unwrap()).remove(0);
+        let key_path = v["key"]["stored_at"].as_str().unwrap();
+        let key = rcgen_keypair_from_bytes(&fs::read(key_path).unwrap(), key_path).unwrap();
+        let n = parse(&new);
+        assert_eq!(key.public_key_raw(), spki_key_bytes(n.public_key()));
+        let old = certificate_ders(&fs::read(&cert_path).unwrap()).remove(0);
+        assert_ne!(spki_key_bytes(parse(&old).public_key()), spki_key_bytes(n.public_key()));
+        assert_eq!(verify_cert_signed_by(&n, n.public_key()), SignatureCheck::Valid);
+    }
+
+    #[test]
+    fn test_renew_with_signer_uses_ca() {
+        let dir = tempdir().unwrap();
+        let ca = ca_cert("Renew CA");
+        let ca_path = dir.path().join("ca.pem");
+        let ca_key_path = dir.path().join("ca-key.pem");
+        fs::write(&ca_path, ca.serialize_pem().unwrap()).unwrap();
+        fs::write(&ca_key_path, ca.serialize_private_key_pem()).unwrap();
+        let leaf = Certificate::from_params(leaf_params("svc.example", vec![SanType::DnsName("svc.example".into())])).unwrap();
+        let leaf_path = dir.path().join("svc.pem");
+        fs::write(&leaf_path, leaf.serialize_pem_with_signer(&ca).unwrap()).unwrap();
+
+        let handle = create_test_handle(&leaf_path.to_string_lossy());
+        let ca_s = ca_path.to_string_lossy().to_string();
+        let key_s = ca_key_path.to_string_lossy().to_string();
+        // No leaf private key on disk: the public key is reused.
+        let (status, out) = run_verb(&handle, "renew", &[("signer_ca", &ca_s), ("signer_key", &key_s)]);
+        assert!(status.is_success(), "{}", out);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["new_cert"]["issuer"]["common_name"], "Renew CA");
+        let new = certificate_ders(&fs::read(v["new_cert"]["path"].as_str().unwrap()).unwrap()).remove(0);
+        let ca_der = ca.serialize_der().unwrap();
+        assert_eq!(verify_cert_signed_by(&parse(&new), parse(&ca_der).public_key()), SignatureCheck::Valid);
+        assert_eq!(check_purpose(&parse(&new), &Purpose::ServerAuth).status, CheckStatus::Passed);
+
+        // The renewed certificate verifies against the CA.
+        let (check, _) = handle.verify_certificate_chain(&[new], &[ca_der], &CertVerifyOptions::default());
+        assert_eq!(check.status, CheckStatus::Passed, "{}", check.message);
+    }
+
+    #[test]
+    fn test_renew_self_signed_reuse_without_key_fails() {
+        let dir = tempdir().unwrap();
+        let (cert_path, key_path) = write_self_signed(dir.path());
+        fs::remove_file(&key_path).unwrap();
+        let handle = create_test_handle(&cert_path);
+        let (status, out) = run_verb(&handle, "renew", &[]);
+        assert!(!status.is_success());
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["error"]["code"], "cert.key_strategy_failed");
+    }
+
+    // ---- sign mode=csr and csr.sign ----
+
+    fn csr_fixture(dir: &std::path::Path) -> (String, String, String, Vec<u8>) {
+        let ca = ca_cert("CSR CA");
+        let ca_path = dir.join("ca.pem").to_string_lossy().to_string();
+        let ca_key = dir.join("ca-key.pem").to_string_lossy().to_string();
+        fs::write(&ca_path, ca.serialize_pem().unwrap()).unwrap();
+        fs::write(&ca_key, ca.serialize_private_key_pem()).unwrap();
+        let mut p = base_params("req.example", ec_key());
+        p.subject_alt_names = vec![SanType::DnsName("req.example".into())];
+        let req = Certificate::from_params(p).unwrap();
+        let csr_path = dir.join("req.csr").to_string_lossy().to_string();
+        fs::write(&csr_path, req.serialize_request_pem().unwrap()).unwrap();
+        let req_pub = req.get_key_pair().public_key_raw().to_vec();
+        (ca_path, ca_key, csr_path, req_pub)
+    }
+
+    #[test]
+    fn test_sign_mode_csr_issues_real_certificate() {
+        let dir = tempdir().unwrap();
+        let (ca_path, ca_key, csr_path, req_pub) = csr_fixture(dir.path());
+        let out_path = dir.path().join("issued.pem").to_string_lossy().to_string();
+        let handle = create_test_handle("ca");
+        let (status, out) = run_verb(&handle, "sign", &[
+            ("mode", "csr"), ("signer_key", &ca_key), ("signer_cert", &ca_path),
+            ("csr_source", &csr_path), ("cert_output_path", &out_path),
+        ]);
+        assert!(status.is_success(), "{}", out);
+        let der = certificate_ders(&fs::read(&out_path).unwrap()).remove(0);
+        let c = parse(&der);
+        assert_eq!(c.subject().to_string(), "CN=req.example");
+        assert_eq!(c.issuer().to_string(), "CN=CSR CA");
+        assert_eq!(spki_key_bytes(c.public_key()), req_pub.as_slice());
+        assert_eq!(san_strings(&c), vec!["DNS:req.example".to_string()]);
+        let ca_der = certificate_ders(&fs::read(&ca_path).unwrap()).remove(0);
+        assert_eq!(verify_cert_signed_by(&c, parse(&ca_der).public_key()), SignatureCheck::Valid);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["cert"]["serial_number"], json!(summarize_cert_der(&der).unwrap().serial_hex));
+    }
+
+    #[test]
+    fn test_csr_sign_delegates_to_real_issuer() {
+        let dir = tempdir().unwrap();
+        let (ca_path, ca_key, csr_path, req_pub) = csr_fixture(dir.path());
+        let out_path = dir.path().join("issued.pem").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
+        let opts = CsrSignOptions {
+            signer_ca: ca_path.clone(),
+            signer_key: ca_key,
+            cert_output_path: out_path.clone(),
+            ..CsrSignOptions::default()
+        };
+        let resp = handle.csr_sign(&opts).unwrap();
+        assert!(resp.ok, "{:?}", resp.error);
+        let der = certificate_ders(&fs::read(&out_path).unwrap()).remove(0);
+        assert!(!String::from_utf8_lossy(&fs::read(&out_path).unwrap()).contains("MOCK"));
+        let c = parse(&der);
+        assert_eq!(spki_key_bytes(c.public_key()), req_pub.as_slice());
+        let cert = resp.certificate.unwrap();
+        assert_eq!(cert.subject.common_name.as_deref(), Some("req.example"));
+        assert_eq!(cert.issuer.common_name.as_deref(), Some("CSR CA"));
+        assert_eq!(cert.serial_number, summarize_cert_der(&der).unwrap().serial_hex);
+        assert_eq!(resp.csr.unwrap().public_key.ecdsa_curve.as_deref(), Some("P-256"));
+
+        // Overwrite protection.
+        let resp = handle.csr_sign(&opts).unwrap();
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, "cert.target_exists");
     }
 
     #[test]
@@ -9483,7 +10047,7 @@ mod tests {
         args.insert("mode".to_string(), "self_signed".to_string());
         args.insert("algorithm".to_string(), "ecdsa".to_string());
         args.insert("ecdsa_curve".to_string(), "P-384".to_string());
-        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
         args.insert("sans".to_string(), r#"["DNS:example.com", "DNS:www.example.com"]"#.to_string());
         args.insert("is_ca".to_string(), "true".to_string());
         args.insert("overwrite".to_string(), "true".to_string());
@@ -9527,7 +10091,7 @@ mod tests {
         // Missing signer for leaf cert
         let mut args = HashMap::new();
         args.insert("mode".to_string(), "leaf_cert".to_string());
-        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
         assert!(handle.parse_generate_options(&args).is_err());
     }
 
@@ -9547,10 +10111,8 @@ mod tests {
         
         let p384_key = handle.generate_ecdsa_key(&EcdsaCurve::P384).unwrap();
         assert_eq!(p384_key.len(), 48); // P384 key size
-        
-        // Test unsupported curves
-        assert!(handle.generate_ecdsa_key(&EcdsaCurve::P521).is_err());
-        assert!(handle.generate_ecdsa_key(&EcdsaCurve::Secp256k1).is_err());
+        // P-521 and secp256k1 are rejected at parse time; see
+        // test_generate_rejects_unsupported_curves_at_parse_time.
     }
 
     #[test]
@@ -9562,16 +10124,14 @@ mod tests {
 
     #[test]
     fn test_generate_serial_number() {
-        let handle = create_test_handle("test");
-        let serial1 = handle.generate_serial_number();
-        let serial2 = handle.generate_serial_number();
-        
-        // Serial numbers should be different
+        // Serial numbers are random, positive, and 16 bytes long.
+        let serial1 = random_serial().to_bytes();
+        let serial2 = random_serial().to_bytes();
         assert_ne!(serial1, serial2);
-        
-        // Should be valid hexadecimal
-        assert!(u64::from_str_radix(&serial1, 16).is_ok());
-        assert!(u64::from_str_radix(&serial2, 16).is_ok());
+        for s in [&serial1, &serial2] {
+            assert_eq!(s.len(), 16);
+            assert!(s[0] & 0x80 == 0 && s[0] != 0);
+        }
     }
 
     #[test]
@@ -9755,7 +10315,7 @@ mod tests {
         args.insert("algorithm".to_string(), "rsa".to_string());
         args.insert("rsa_bits".to_string(), "2048".to_string());
         args.insert("new_key_output_path".to_string(), "cert://keys/test-key.pem".to_string());
-        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
         
         let opts = handle.parse_csr_create_options(&args).unwrap();
         
@@ -9772,7 +10332,7 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("key_strategy".to_string(), "reuse".to_string());
         args.insert("existing_key_path".to_string(), "cert://keys/existing-key.pem".to_string());
-        args.insert("subject".to_string(), r#"{{"common_name": "example.com", "organization": ["Example Corp"]}"#.to_string());
+        args.insert("subject".to_string(), r#"{"common_name": "example.com", "organization": ["Example Corp"]}"#.to_string());
         args.insert("sans".to_string(), r#"["DNS:example.com", "DNS:www.example.com", "IP:192.0.2.1"]"#.to_string());
         
         let opts = handle.parse_csr_create_options(&args).unwrap();
@@ -9790,7 +10350,7 @@ mod tests {
         
         // Test missing common_name
         let mut args = HashMap::new();
-        args.insert("subject".to_string(), r#"{{"organization": ["Example Corp"]}"#.to_string());
+        args.insert("subject".to_string(), r#"{"organization": ["Example Corp"]}"#.to_string());
         let result = handle.parse_csr_create_options(&args);
         assert!(result.is_err());
         let err_msg = result.err().unwrap().to_string();
@@ -9799,7 +10359,7 @@ mod tests {
         // Test generate mode without new_key_output_path
         let mut args = HashMap::new();
         args.insert("key_strategy".to_string(), "generate".to_string());
-        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
         let result = handle.parse_csr_create_options(&args);
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("new_key_output_path is required"));
@@ -9807,7 +10367,7 @@ mod tests {
         // Test reuse mode without existing_key_path
         let mut args = HashMap::new();
         args.insert("key_strategy".to_string(), "reuse".to_string());
-        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
         let result = handle.parse_csr_create_options(&args);
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("existing_key_path is required"));
@@ -9817,7 +10377,7 @@ mod tests {
         args.insert("key_strategy".to_string(), "generate".to_string());
         args.insert("rsa_bits".to_string(), "1024".to_string());
         args.insert("new_key_output_path".to_string(), "test.key".to_string());
-        args.insert("subject".to_string(), r#"{{"common_name": "example.com"}"#.to_string());
+        args.insert("subject".to_string(), r#"{"common_name": "example.com"}"#.to_string());
         let result = handle.parse_csr_create_options(&args);
         assert!(result.is_err());
         assert!(result.err().unwrap().to_string().contains("rsa_bits must be at least 2048"));
@@ -9825,12 +10385,14 @@ mod tests {
 
     #[test]
     fn test_csr_create_generate_rsa() {
-        let handle = create_test_handle("test.csr");
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("test.csr").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
         let mut opts = CsrCreateOptions::default();
         opts.key_strategy = CsrKeyStrategy::Generate;
         opts.algorithm = Some(CertAlgorithm::Rsa);
         opts.rsa_bits = 2048;
-        opts.new_key_output_path = Some("cert://keys/test-key.pem".to_string());
+        opts.new_key_output_path = Some(dir.path().join("keys/test-key.pem").to_string_lossy().to_string());
         opts.subject.common_name = Some("example.com".to_string());
         opts.subject.organization = vec!["Example Corp".to_string()];
         
@@ -9847,12 +10409,14 @@ mod tests {
 
     #[test]
     fn test_csr_create_generate_ecdsa_p256() {
-        let handle = create_test_handle("test.csr");
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("test.csr").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
         let mut opts = CsrCreateOptions::default();
         opts.key_strategy = CsrKeyStrategy::Generate;
         opts.algorithm = Some(CertAlgorithm::Ecdsa);
         opts.ecdsa_curve = Some(EcdsaCurve::P256);
-        opts.new_key_output_path = Some("cert://keys/test-key.pem".to_string());
+        opts.new_key_output_path = Some(dir.path().join("keys/test-key.pem").to_string_lossy().to_string());
         opts.subject.common_name = Some("example.com".to_string());
         
         let result = handle.create_csr(&opts).unwrap();
@@ -9866,12 +10430,14 @@ mod tests {
 
     #[test]
     fn test_csr_create_generate_ecdsa_p384() {
-        let handle = create_test_handle("test.csr");
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("test.csr").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
         let mut opts = CsrCreateOptions::default();
         opts.key_strategy = CsrKeyStrategy::Generate;
         opts.algorithm = Some(CertAlgorithm::Ecdsa);
         opts.ecdsa_curve = Some(EcdsaCurve::P384);
-        opts.new_key_output_path = Some("cert://keys/test-key.pem".to_string());
+        opts.new_key_output_path = Some(dir.path().join("keys/test-key.pem").to_string_lossy().to_string());
         opts.subject.common_name = Some("example.com".to_string());
         
         let result = handle.create_csr(&opts).unwrap();
@@ -9885,11 +10451,13 @@ mod tests {
 
     #[test]
     fn test_csr_create_generate_ed25519() {
-        let handle = create_test_handle("test.csr");
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("test.csr").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
         let mut opts = CsrCreateOptions::default();
         opts.key_strategy = CsrKeyStrategy::Generate;
         opts.algorithm = Some(CertAlgorithm::Ed25519);
-        opts.new_key_output_path = Some("cert://keys/test-key.pem".to_string());
+        opts.new_key_output_path = Some(dir.path().join("keys/test-key.pem").to_string_lossy().to_string());
         opts.subject.common_name = Some("example.com".to_string());
         
         let result = handle.create_csr(&opts).unwrap();
@@ -9904,11 +10472,13 @@ mod tests {
 
     #[test]
     fn test_csr_create_with_sans() {
-        let handle = create_test_handle("test.csr");
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("test.csr").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
         let mut opts = CsrCreateOptions::default();
         opts.key_strategy = CsrKeyStrategy::Generate;
         opts.algorithm = Some(CertAlgorithm::Rsa);
-        opts.new_key_output_path = Some("cert://keys/test-key.pem".to_string());
+        opts.new_key_output_path = Some(dir.path().join("keys/test-key.pem").to_string_lossy().to_string());
         opts.subject.common_name = Some("example.com".to_string());
         opts.sans = vec![
             "DNS:example.com".to_string(),
@@ -9931,11 +10501,13 @@ mod tests {
 
     #[test]
     fn test_csr_create_with_key_usage() {
-        let handle = create_test_handle("test.csr");
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("test.csr").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
         let mut opts = CsrCreateOptions::default();
         opts.key_strategy = CsrKeyStrategy::Generate;
         opts.algorithm = Some(CertAlgorithm::Rsa);
-        opts.new_key_output_path = Some("cert://keys/test-key.pem".to_string());
+        opts.new_key_output_path = Some(dir.path().join("keys/test-key.pem").to_string_lossy().to_string());
         opts.subject.common_name = Some("example.com".to_string());
         opts.key_usage = vec![
             KeyUsage::DigitalSignature,
@@ -9946,20 +10518,21 @@ mod tests {
             ExtendedKeyUsage::ClientAuth,
         ];
         
-        let result = handle.create_csr(&opts).unwrap();
-        
-        assert_eq!(result["ok"], true);
-        // Key usage handling in CSRs might vary by implementation
-        // This test mainly ensures the options are accepted without error
+        // rcgen cannot put key usage in a CSR, so this is reported as an error.
+        let err = handle.create_csr(&opts).unwrap_err().to_string();
+        assert!(err.contains("unsupported"), "unexpected error: {}", err);
+        assert!(!std::path::Path::new(&csr_path).exists());
     }
 
     #[test]
     fn test_csr_create_with_output_options() {
-        let handle = create_test_handle("test.csr");
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("test.csr").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
         let mut opts = CsrCreateOptions::default();
         opts.key_strategy = CsrKeyStrategy::Generate;
         opts.algorithm = Some(CertAlgorithm::Rsa);
-        opts.new_key_output_path = Some("cert://keys/test-key.pem".to_string());
+        opts.new_key_output_path = Some(dir.path().join("keys/test-key.pem").to_string_lossy().to_string());
         opts.subject.common_name = Some("example.com".to_string());
         opts.include_csr_pem = true;
         opts.csr_encoding = Encoding::Pem;
@@ -9974,11 +10547,13 @@ mod tests {
 
     #[test]
     fn test_csr_create_der_encoding() {
-        let handle = create_test_handle("test.csr");
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("test.csr").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
         let mut opts = CsrCreateOptions::default();
         opts.key_strategy = CsrKeyStrategy::Generate;
         opts.algorithm = Some(CertAlgorithm::Rsa);
-        opts.new_key_output_path = Some("cert://keys/test-key.pem".to_string());
+        opts.new_key_output_path = Some(dir.path().join("keys/test-key.pem").to_string_lossy().to_string());
         opts.subject.common_name = Some("example.com".to_string());
         opts.include_csr_pem = true;
         opts.csr_encoding = Encoding::Der;
@@ -9995,11 +10570,13 @@ mod tests {
 
     #[test]
     fn test_csr_create_text_format() {
-        let handle = create_test_handle("test.csr");
+        let dir = tempfile::tempdir().unwrap();
+        let csr_path = dir.path().join("test.csr").to_string_lossy().to_string();
+        let handle = create_test_handle(&csr_path);
         let mut opts = CsrCreateOptions::default();
         opts.key_strategy = CsrKeyStrategy::Generate;
         opts.algorithm = Some(CertAlgorithm::Rsa);
-        opts.new_key_output_path = Some("cert://keys/test-key.pem".to_string());
+        opts.new_key_output_path = Some(dir.path().join("keys/test-key.pem").to_string_lossy().to_string());
         opts.subject.common_name = Some("example.com".to_string());
         opts.subject.organization = vec!["Example Corp".to_string()];
         opts.subject.country = vec!["US".to_string()];
@@ -10008,7 +10585,7 @@ mod tests {
         let result = handle.create_csr(&opts).unwrap();
         let text_output = handle.format_csr_create_text(&result, &opts);
         
-        assert!(text_output.contains("CSR Target: test.csr"));
+        assert!(text_output.contains(&format!("CSR Target: {}", csr_path)));
         assert!(text_output.contains("Key Strategy: generate"));
         assert!(text_output.contains("Algorithm: RSA 2048-bit"));
         assert!(text_output.contains("Subject:"));
@@ -10101,8 +10678,9 @@ mod tests {
                 locality: vec![],
             },
             sans: vec!["DNS:example.com".to_string(), "DNS:www.example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10163,8 +10741,9 @@ mod tests {
                 locality: vec![],
             },
             sans: vec!["DNS:example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10215,8 +10794,9 @@ mod tests {
                 locality: vec![],
             },
             sans: vec!["DNS:example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10266,8 +10846,9 @@ mod tests {
                 locality: vec![],
             },
             sans: vec!["DNS:test.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10331,8 +10912,9 @@ mod tests {
                 locality: vec![],
             },
             sans: vec!["DNS:example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: false, // Test with overwrite disabled
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10379,8 +10961,9 @@ mod tests {
                 ..Default::default()
             },
             sans: vec!["DNS:test.example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10437,8 +11020,9 @@ mod tests {
                 ..Default::default()
             },
             sans: vec!["DNS:test.example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10481,8 +11065,9 @@ mod tests {
                 ..Default::default()
             },
             sans: vec!["DNS:test.example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10528,8 +11113,9 @@ mod tests {
                 ..Default::default()
             },
             sans: vec!["DNS:test.example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10577,8 +11163,9 @@ mod tests {
                 ..Default::default()
             },
             sans: vec!["DNS:test.example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10618,8 +11205,9 @@ mod tests {
                 ..Default::default()
             },
             sans: vec!["DNS:test.example.com".to_string()],
-            key_usage: vec![CertKeyUsage::DigitalSignature],
-            extended_key_usage: vec![CertExtendedKeyUsage::ServerAuth],
+            // Key usage cannot be requested in a CSR (rcgen limitation).
+            key_usage: vec![],
+            extended_key_usage: vec![],
             overwrite: true,
             format: OutputFormat::Json,
             include_csr_pem: false,
@@ -10943,14 +11531,14 @@ mod tests {
             None
         )?;
         
-        // Verify key_info
-        assert_eq!(key_info["reused"], false); // Ed25519 regenerates due to conversion limitations
+        // The existing key is used, not replaced.
+        assert_eq!(key_info["reused"], true);
         assert_eq!(key_info["algorithm"], "ed25519");
         assert_eq!(key_info["rsa_bits"], serde_json::Value::Null);
         assert_eq!(key_info["ecdsa_curve"], serde_json::Value::Null);
         assert_eq!(key_info["encoding"], "raw");
         assert_eq!(key_info["key_format"], "raw");
-        assert!(key_info["note"].as_str().is_some());
+        assert_eq!(key_pair.public_key_raw(), ed25519_key.verifying_key().as_bytes());
         
         Ok(())
     }
@@ -11472,7 +12060,9 @@ dummyencrypteddata1234567890ABCDEF
         let result = handle.load_encrypted_private_key(encrypted_rsa.as_bytes(), "password", "test");
         // Should attempt RSA decryption (will fail as PKCS#1 not fully supported)
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not yet fully supported"));
+        let err = result.unwrap_err().to_string();
+        // The RSA (PKCS#1) decryption path was taken.
+        assert!(err.contains("not yet fully supported") || err.contains("encrypted RSA"), "{}", err);
     }
 
     #[test]

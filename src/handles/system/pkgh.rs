@@ -13,8 +13,387 @@ use url::Url;
 use which::which;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
+};
+
+/// Metadata for `resh pkg --help` and `resh pkg <verb> --help`.
+static PKG_HELP: HandleHelp = HandleHelp {
+    description: "The pkg handle installs, removes, updates, queries, and snapshots system \
+        packages through the host's package manager, supporting apt, dnf, yum, pacman, apk, \
+        and brew. Every verb requires an input argument holding one JSON object, whose \
+        manager key names the backend or is auto to detect it. The URL host is a \
+        free-form alias, such as pkg://system, that is echoed in the output.",
+    usage: "resh pkg://<alias>.<verb> input=<json>",
+    verbs: &[
+        VerbHelp {
+            name: "info",
+            definition: "Reports details for named packages, such as installed and candidate \
+                versions, summary, homepage, and repository.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.info input=<json>\n  \
+                    <json> keys: manager, packages (both required),\n  \
+                    include_dependencies, include_reverse_deps, include_files,\n  \
+                    include_repo, timeout_ms, extra_args, env",
+                example: "resh pkg://system.info 'input={\"manager\":\"apt\",\"packages\":[\"nginx\"]}'",
+                example_output: Some(
+                    r#"{
+  "alias": "system",
+  "backend": "pkg",
+  "manager": "apt",
+  "packages": [
+    {
+      "architecture": "amd64",
+      "candidate_version": "1.24.0-2ubuntu7",
+      "description": "Nginx is a web server and reverse proxy.",
+      "found": true,
+      "homepage": "https://nginx.org",
+      "installed": true,
+      "installed_version": "1.24.0-2ubuntu7",
+      "license": null,
+      "repository": "http://archive.ubuntu.com/ubuntu",
+      "summary": "small, powerful, scalable web/proxy server"
+    }
+  ]
+}
+
+Shown for apt. Other managers fill different subsets of these fields."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "search",
+            definition: "Searches the package index by name or description and returns \
+                paginated matches with versions and installed state.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.search input=<json>\n  \
+                    <json> keys: manager, query (both required), search_in, exact,\n  \
+                    case_sensitive, limit, offset, include_installed, include_versions,\n  \
+                    include_repo, timeout_ms, extra_args, env",
+                example: "resh pkg://system.search 'input={\"manager\":\"apt\",\"query\":\"nginx\",\"limit\":1}'",
+                example_output: Some(
+                    r#"{
+  "alias": "system",
+  "backend": "pkg",
+  "case_sensitive": false,
+  "exact": false,
+  "limit": 1,
+  "manager": "apt",
+  "offset": 0,
+  "query": "nginx",
+  "results": [
+    {
+      "description": null,
+      "homepage": "https://nginx.org",
+      "installed": true,
+      "name": "nginx",
+      "repository": "main",
+      "score": 1.0,
+      "summary": "small, powerful, scalable web/proxy server",
+      "version": "1.24.0-2ubuntu7"
+    }
+  ],
+  "search_in": [
+    "name",
+    "description"
+  ],
+  "total_matches": 12
+}
+
+Shown for apt."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "list_installed",
+            definition: "Lists installed packages with their versions, optionally filtered \
+                by name prefix or substring and paginated.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.list_installed input=<json>\n  \
+                    <json> keys: manager (required), filter, prefix, include_versions,\n  \
+                    include_repo, include_size, include_install_reason, limit, offset,\n  \
+                    timeout_ms, extra_args, env",
+                example: "resh pkg://system.list_installed 'input={\"manager\":\"apt\",\"prefix\":\"nginx\"}'",
+                example_output: Some(
+                    r#"{
+  "alias": "system",
+  "backend": "pkg",
+  "limit": 500,
+  "manager": "apt",
+  "offset": 0,
+  "results": [
+    {
+      "architecture": "amd64",
+      "install_reason": null,
+      "installed_size_bytes": null,
+      "manager_specific": null,
+      "name": "nginx",
+      "repository": null,
+      "version": "1.24.0-2ubuntu7"
+    }
+  ],
+  "total_installed": 1
+}
+
+Shown for apt."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "snapshot",
+            definition: "Captures the installed package set as a pkg-lock/v1 lockfile in \
+                JSON, YAML, or text form, along with parsed metadata.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.snapshot input=<json>\n  \
+                    <json> keys: manager (required), scope (all|manual|dependency),\n  \
+                    include_versions (exact|minimal|none), include_repo, include_arch,\n  \
+                    include_install_reason, include_os_metadata, exclude_patterns,\n  \
+                    format (json|yaml|text), timeout_ms, extra_args, env",
+                example: "resh pkg://system.snapshot 'input={\"manager\":\"apt\",\"scope\":\"manual\"}'",
+                example_output: Some(
+                    r#"{
+  "action": "snapshot",
+  "alias": "system",
+  "backend": "pkg",
+  "format": "json",
+  "lockfile": "{\n  \"lockfile_version\": \"pkg-lock/v1\",\n  ...\n}",
+  "manager": "apt",
+  "parsed": {
+    "lockfile_version": "pkg-lock/v1",
+    "manager": {
+      "alias": "system",
+      "name": "apt",
+      "version": "apt 2.7.14 (amd64)"
+    },
+    "packages_count": 214,
+    "platform": {
+      "architecture": "x86_64",
+      "kernel": "Linux 6.8.0-45-generic",
+      "os_family": "debian",
+      "os_name": "Ubuntu",
+      "os_version": "24.04"
+    },
+    "scope": "manual"
+  }
+}
+
+Shown for apt with the lockfile string shortened."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "install",
+            definition: "Installs packages, refreshing the package index first and skipping \
+                packages that are already installed by default.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.install input=<json>\n  \
+                    <json> keys: manager, packages (both required; each package is\n  \
+                    {name, version, source}), update_cache, assume_yes, only_if_missing,\n  \
+                    reinstall, upgrade, dry_run, timeout_ms, arch, extra_args, env",
+                example: "resh pkg://system.install 'input={\"manager\":\"apt\",\"packages\":[{\"name\":\"jq\"}]}'",
+                example_output: Some(
+                    r#"{
+  "alias": "system",
+  "backend": "pkg",
+  "dry_run": false,
+  "manager": "apt",
+  "packages": [
+    {
+      "action": "installed",
+      "from_cache": false,
+      "installed_version": "1.7.1-3build1",
+      "name": "jq",
+      "requested_version": null
+    }
+  ],
+  "summary": {
+    "failed": 0,
+    "installed": 1,
+    "reinstalled": 0,
+    "unchanged": 0,
+    "upgraded": 0
+  },
+  "update_cache": true
+}
+
+Shown for apt. With dry_run true, the output lists commands and planned
+actions instead."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "remove",
+            definition: "Removes packages, optionally purging configuration and removing \
+                unused dependencies.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.remove input=<json>\n  \
+                    <json> keys: manager, packages (both required), purge, recursive,\n  \
+                    assume_yes, only_if_installed, fail_if_missing, dry_run,\n  \
+                    timeout_ms, arch, extra_args, env",
+                example: "resh pkg://system.remove 'input={\"manager\":\"apt\",\"packages\":[{\"name\":\"jq\"}]}'",
+                example_output: Some(
+                    r#"{
+  "alias": "system",
+  "backend": "pkg",
+  "dry_run": false,
+  "manager": "apt",
+  "packages": [
+    {
+      "action": "removed",
+      "from_cache": false,
+      "installed_version": "1.7.1-3build1",
+      "name": "jq",
+      "requested_version": null
+    }
+  ],
+  "purge": false,
+  "recursive": false,
+  "summary": {
+    "autoremove_run": false,
+    "failed": 0,
+    "not_installed": 0,
+    "purged": 0,
+    "removed": 1,
+    "skipped": 0
+  }
+}
+
+Shown for apt."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "update",
+            definition: "Refreshes the package index and, by default, upgrades all or the \
+                listed packages, or only reports available updates when check_only is set.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.update input=<json>\n  \
+                    <json> keys: manager (required), packages, refresh_index, upgrade,\n  \
+                    assume_yes, security_only, check_only, dry_run, timeout_ms,\n  \
+                    extra_args, env",
+                example: "resh pkg://system.update 'input={\"manager\":\"apt\",\"check_only\":true}'",
+                example_output: Some(
+                    r#"{
+  "alias": "system",
+  "available_updates": [
+    {
+      "candidate_version": "1.24.0-2ubuntu7.1",
+      "current_version": "1.24.0-2ubuntu7",
+      "name": "nginx",
+      "security": true
+    }
+  ],
+  "backend": "pkg",
+  "check_only": true,
+  "commands": [
+    "apt-get update"
+  ],
+  "dry_run": false,
+  "manager": "apt",
+  "packages_scope": "all",
+  "refresh_index": true,
+  "upgrade": true
+}
+
+Shown for apt with check_only. A real update reports packages and summary
+instead of available_updates and commands."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "upgrade",
+            definition: "Upgrades all or the listed packages to their latest available \
+                versions, or only reports available upgrades when check_only is set.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.upgrade input=<json>\n  \
+                    <json> keys: manager (required), packages, refresh_index,\n  \
+                    assume_yes, security_only, dry_run, check_only, timeout_ms,\n  \
+                    extra_args, env",
+                example: "resh pkg://system.upgrade 'input={\"manager\":\"apt\",\"check_only\":true}'",
+                example_output: Some(
+                    r#"{
+  "alias": "system",
+  "available_upgrades": [
+    {
+      "candidate_version": "1.24.0-2ubuntu7.1",
+      "current_version": "1.24.0-2ubuntu7",
+      "name": "nginx",
+      "security": true
+    }
+  ],
+  "backend": "pkg",
+  "check_only": true,
+  "commands": [
+    "apt-get update"
+  ],
+  "dry_run": false,
+  "manager": "apt",
+  "packages_scope": "all",
+  "refresh_index": true
+}
+
+Shown for apt with check_only. A real upgrade reports packages and summary
+instead of available_upgrades and commands."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "restore",
+            definition: "Installs, upgrades, downgrades, or removes packages so the host \
+                matches a lockfile produced by snapshot.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.restore input=<json>\n  \
+                    <json> keys: manager, lockfile (both required; lockfile is the\n  \
+                    lockfile content as a string), format, mode (exact|best_effort),\n  \
+                    allow_downgrades, allow_removals, allow_newer, on_missing_package,\n  \
+                    on_repo_mismatch, on_platform_mismatch, include_dependencies,\n  \
+                    dry_run, timeout_ms, extra_args, env\n  \
+                    A text lockfile (name=version lines) restores with the given\n  \
+                    manager, or with the detected system manager for manager=auto",
+                example: "resh pkg://system.restore \"input=$(cat restore.json)\"",
+                example_output: Some(
+                    r#"{
+  "action": "restore",
+  "alias": "system",
+  "backend": "pkg",
+  "commands": [
+    "apt-get install -y jq"
+  ],
+  "dry_run": true,
+  "manager": "apt",
+  "mode": "exact",
+  "plan": {
+    "downgrade": [],
+    "extra": [],
+    "install": [
+      "jq"
+    ],
+    "keep": [
+      "nginx"
+    ],
+    "remove": [],
+    "unresolved": [],
+    "upgrade": []
+  }
+}
+
+Shown for apt with dry_run true in restore.json. Without dry_run, the
+output adds results and summary and omits commands."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "apply_lock",
+            definition: "Alias for restore.",
+            detail: Some(VerbDetail {
+                usage: "resh pkg://<alias>.apply_lock input=<json>\n  \
+                    <json> keys: the same as restore",
+                example: "resh pkg://system.apply_lock \"input=$(cat restore.json)\"",
+                example_output: None,
+            }),
+        },
+    ],
 };
 
 /// Package manager error types
@@ -786,1309 +1165,22 @@ pub struct RestoreSummary {
     pub success: bool,
 }
 
-/// Comprehensive pkg handle help text
-pub const PKG_HELP_TEXT: &str = r#"RESOURCE SHELL - PACKAGE MANAGER HANDLE
-========================================
-
-USAGE:
-  pkg://alias.VERB input='{"json":"config"}'
-
-DESCRIPTION:
-  The pkg handle provides unified package management across multiple Linux
-  distributions and macOS. Install, remove, update, and search for software
-  packages using a consistent interface. Automatically detects and uses the
-  appropriate package manager (apt, dnf, yum, pacman, apk, brew). Create
-  snapshots of installed packages for backup and restoration. Essential for
-  system administration, software deployment, configuration management, and
-  maintaining reproducible environments across different platforms.
-
-URL FORMAT:
-  pkg://alias.VERB input='{"json":"config"}'
-  pkg://system.install input='{"packages":[{"name":"curl"}]}'
-  pkg://system.search input='{"query":"text editor"}'
-
-  alias: Connection identifier (typically "system")
-  VERB: Package management operation
-  input: JSON configuration for the operation
-
-SUPPORTED PACKAGE MANAGERS:
-
-  The pkg handle automatically detects and works with:
-
-  apt:
-    • Debian, Ubuntu, Linux Mint, Pop!_OS
-    • Advanced Package Tool
-    • .deb packages
-    • Command: apt, apt-get
-
-  dnf:
-    • Fedora, CentOS Stream, RHEL 8+
-    • Dandified YUM (next-generation YUM)
-    • .rpm packages
-    • Command: dnf
-
-  yum:
-    • CentOS 7, RHEL 7, older Red Hat systems
-    • Yellowdog Updater Modified
-    • .rpm packages
-    • Command: yum
-
-  pacman:
-    • Arch Linux, Manjaro, EndeavourOS
-    • Arch Linux package manager
-    • .pkg.tar.zst packages
-    • Command: pacman
-
-  apk:
-    • Alpine Linux
-    • Alpine Package Keeper
-    • .apk packages
-    • Command: apk
-    • Lightweight for containers
-
-  brew:
-    • macOS, Linux (Linuxbrew/Homebrew)
-    • Homebrew package manager
-    • Source and binary packages
-    • Command: brew
-    • Cross-platform support
-
-VERBS (9 total):
-
-  Package Installation:
-    install         Install new packages
-    remove          Remove packages from system
-
-  Package Updates:
-    update          Update package lists and upgrade packages
-    upgrade         Upgrade all packages to latest versions
-
-  Package Information:
-    info            Get detailed package information
-    search          Search for packages by name/description
-    list_installed  List currently installed packages
-
-  System State:
-    snapshot        Create snapshot of installed packages
-    restore         Restore packages from snapshot
-    apply_lock      Alias for restore verb
-
-EXAMPLES:
-
-  Install Packages (install):
-    # Install single package
-    pkg://system.install input='{"packages":[{"name":"curl"}]}'
-
-    # Install multiple packages
-    pkg://system.install input='{"packages":[{"name":"curl"},{"name":"git"},{"name":"wget"}]}'
-
-    # Install with specific version
-    pkg://system.install input='{"packages":[{"name":"nginx","version":"1.18.0"}]}'
-
-    # Install with auto-yes
-    pkg://system.install input='{"packages":[{"name":"curl"}],"assume_yes":true}'
-
-    # Install with cache update
-    pkg://system.install input='{"packages":[{"name":"curl"}],"update_cache":true}'
-
-    # Install only if missing
-    pkg://system.install input='{"packages":[{"name":"curl"}],"only_if_missing":true}'
-
-    # Force reinstall
-    pkg://system.install input='{"packages":[{"name":"curl"}],"reinstall":true}'
-
-    # Install with upgrade
-    pkg://system.install input='{"packages":[{"name":"curl"}],"upgrade":true}'
-
-    # Dry run install
-    pkg://system.install input='{"packages":[{"name":"curl"}],"dry_run":true}'
-
-    # Install with specific manager
-    pkg://system.install input='{"manager":"apt","packages":[{"name":"curl"}]}'
-
-    # Install with timeout
-    pkg://system.install input='{"packages":[{"name":"curl"}],"timeout_ms":300000}'
-
-    # Install development tools
-    pkg://system.install input='{"packages":[{"name":"build-essential"},{"name":"cmake"},{"name":"gcc"}],"assume_yes":true}'
-
-    # Install web server stack
-    pkg://system.install input='{"packages":[{"name":"nginx"},{"name":"postgresql"},{"name":"redis"}],"update_cache":true,"assume_yes":true}'
-
-  Remove Packages (remove):
-    # Remove single package
-    pkg://system.remove input='{"packages":[{"name":"curl"}]}'
-
-    # Remove multiple packages
-    pkg://system.remove input='{"packages":[{"name":"curl"},{"name":"wget"}]}'
-
-    # Remove with auto-yes
-    pkg://system.remove input='{"packages":[{"name":"curl"}],"assume_yes":true}'
-
-    # Remove with purge (config files)
-    pkg://system.remove input='{"packages":[{"name":"nginx"}],"purge":true}'
-
-    # Remove with dependencies
-    pkg://system.remove input='{"packages":[{"name":"curl"}],"recursive":true}'
-
-    # Remove only if installed
-    pkg://system.remove input='{"packages":[{"name":"curl"}],"only_if_installed":true}'
-
-    # Remove without failing if missing
-    pkg://system.remove input='{"packages":[{"name":"curl"}],"fail_if_missing":false}'
-
-    # Dry run remove
-    pkg://system.remove input='{"packages":[{"name":"curl"}],"dry_run":true}'
-
-    # Remove with specific manager
-    pkg://system.remove input='{"manager":"apt","packages":[{"name":"curl"}]}'
-
-    # Remove old kernels (careful!)
-    pkg://system.remove input='{"packages":[{"name":"linux-image-old"}],"assume_yes":true,"only_if_installed":true}'
-
-  Update Packages (update):
-    # Update package lists
-    pkg://system.update input='{"refresh_index":true}'
-
-    # Update and upgrade all
-    pkg://system.update input='{"refresh_index":true,"upgrade":true}'
-
-    # Update with auto-yes
-    pkg://system.update input='{"refresh_index":true,"upgrade":true,"assume_yes":true}'
-
-    # Update specific packages
-    pkg://system.update input='{"packages":["curl","git"],"upgrade":true}'
-
-    # Security updates only
-    pkg://system.update input='{"refresh_index":true,"upgrade":true,"security_only":true}'
-
-    # Check for updates only
-    pkg://system.update input='{"refresh_index":true,"check_only":true}'
-
-    # Dry run update
-    pkg://system.update input='{"refresh_index":true,"upgrade":true,"dry_run":true}'
-
-    # Update with timeout
-    pkg://system.update input='{"refresh_index":true,"upgrade":true,"timeout_ms":900000}'
-
-    # Update with specific manager
-    pkg://system.update input='{"manager":"apt","refresh_index":true,"upgrade":true}'
-
-  Upgrade Packages (upgrade):
-    # Upgrade all packages
-    pkg://system.upgrade input='{"refresh_index":true}'
-
-    # Upgrade with auto-yes
-    pkg://system.upgrade input='{"refresh_index":true,"assume_yes":true}'
-
-    # Upgrade specific packages
-    pkg://system.upgrade input='{"packages":["curl","git"]}'
-
-    # Security upgrades only
-    pkg://system.upgrade input='{"security_only":true}'
-
-    # Check upgrades only
-    pkg://system.upgrade input='{"check_only":true}'
-
-    # Dry run upgrade
-    pkg://system.upgrade input='{"dry_run":true}'
-
-    # Upgrade with specific manager
-    pkg://system.upgrade input='{"manager":"dnf","refresh_index":true,"assume_yes":true}'
-
-    # Full system upgrade
-    pkg://system.upgrade input='{"refresh_index":true,"assume_yes":true,"timeout_ms":1800000}'
-
-  Package Information (info):
-    # Get info for single package
-    pkg://system.info input='{"packages":["curl"]}'
-
-    # Get info for multiple packages
-    pkg://system.info input='{"packages":["curl","git","nginx"]}'
-
-    # Info with dependencies
-    pkg://system.info input='{"packages":["curl"],"include_dependencies":true}'
-
-    # Info with reverse dependencies
-    pkg://system.info input='{"packages":["curl"],"include_reverse_deps":true}'
-
-    # Info with file list
-    pkg://system.info input='{"packages":["curl"],"include_files":true}'
-
-    # Info with repository
-    pkg://system.info input='{"packages":["curl"],"include_repo":true}'
-
-    # Complete package info
-    pkg://system.info input='{"packages":["nginx"],"include_dependencies":true,"include_reverse_deps":true,"include_files":true,"include_repo":true}'
-
-    # Info with specific manager
-    pkg://system.info input='{"manager":"apt","packages":["curl"]}'
-
-  Search Packages (search):
-    # Basic search
-    pkg://system.search input='{"query":"curl"}'
-
-    # Search in name only
-    pkg://system.search input='{"query":"curl","search_in":["name"]}'
-
-    # Search in description
-    pkg://system.search input='{"query":"text editor","search_in":["description"]}'
-
-    # Search everywhere
-    pkg://system.search input='{"query":"python","search_in":["name","description"]}'
-
-    # Exact match search
-    pkg://system.search input='{"query":"curl","exact":true}'
-
-    # Case-sensitive search
-    pkg://system.search input='{"query":"NGINX","case_sensitive":true}'
-
-    # Limited results
-    pkg://system.search input='{"query":"lib","limit":20}'
-
-    # Search with offset (pagination)
-    pkg://system.search input='{"query":"lib","limit":20,"offset":20}'
-
-    # Include installed status
-    pkg://system.search input='{"query":"curl","include_installed":true}'
-
-    # Include versions
-    pkg://system.search input='{"query":"curl","include_versions":true}'
-
-    # Include repository
-    pkg://system.search input='{"query":"curl","include_repo":true}'
-
-    # Complete search
-    pkg://system.search input='{"query":"nginx","include_installed":true,"include_versions":true,"include_repo":true,"limit":10}'
-
-    # Search with specific manager
-    pkg://system.search input='{"manager":"brew","query":"git"}'
-
-  List Installed (list_installed):
-    # List all installed packages
-    pkg://system.list_installed input='{}'
-
-    # List with filter
-    pkg://system.list_installed input='{"filter":"lib*"}'
-
-    # List with prefix
-    pkg://system.list_installed input='{"prefix":"python"}'
-
-    # List with versions
-    pkg://system.list_installed input='{"include_versions":true}'
-
-    # List with repository
-    pkg://system.list_installed input='{"include_repo":true}'
-
-    # List with size
-    pkg://system.list_installed input='{"include_size":true}'
-
-    # List with install reason
-    pkg://system.list_installed input='{"include_install_reason":true}'
-
-    # Limited list
-    pkg://system.list_installed input='{"limit":100}'
-
-    # List with offset (pagination)
-    pkg://system.list_installed input='{"limit":100,"offset":100}'
-
-    # Complete listing
-    pkg://system.list_installed input='{"include_versions":true,"include_repo":true,"include_size":true,"include_install_reason":true}'
-
-    # List with specific manager
-    pkg://system.list_installed input='{"manager":"pacman","include_versions":true}'
-
-  Create Snapshot (snapshot):
-    # Basic snapshot
-    pkg://system.snapshot input='{"scope":"all"}'
-
-    # Snapshot all with versions
-    pkg://system.snapshot input='{"scope":"all","include_versions":"exact"}'
-
-    # Snapshot manual only
-    pkg://system.snapshot input='{"scope":"manual"}'
-
-    # Snapshot with repository info
-    pkg://system.snapshot input='{"scope":"all","include_repo":true}'
-
-    # Snapshot with architecture
-    pkg://system.snapshot input='{"scope":"all","include_arch":true}'
-
-    # Snapshot with install reason
-    pkg://system.snapshot input='{"scope":"all","include_install_reason":true}'
-
-    # Snapshot with OS metadata
-    pkg://system.snapshot input='{"scope":"all","include_os_metadata":true}'
-
-    # Snapshot excluding patterns
-    pkg://system.snapshot input='{"scope":"all","exclude_patterns":["linux-headers-*","*-dev"]}'
-
-    # Snapshot in YAML format
-    pkg://system.snapshot input='{"scope":"all","format":"yaml"}'
-
-    # Snapshot in text format
-    pkg://system.snapshot input='{"scope":"all","format":"text"}'
-
-    # Complete snapshot
-    pkg://system.snapshot input='{"scope":"all","include_versions":"exact","include_repo":true,"include_arch":true,"include_install_reason":true,"include_os_metadata":true,"format":"json","inline":true}'
-
-    # Snapshot with specific manager
-    pkg://system.snapshot input='{"manager":"brew","scope":"all","format":"json"}'
-
-  Restore from Snapshot (restore):
-    # Restore from JSON
-    pkg://system.restore input='{"lockfile":"{\"lockfile_version\":\"1.0\",\"packages\":[{\"name\":\"curl\"}]}"}'
-
-    # Restore exact versions
-    pkg://system.restore input='{"lockfile":"...","mode":"exact"}'
-
-    # Restore best effort
-    pkg://system.restore input='{"lockfile":"...","mode":"best_effort"}'
-
-    # Restore with downgrades
-    pkg://system.restore input='{"lockfile":"...","allow_downgrades":true}'
-
-    # Restore with removals
-    pkg://system.restore input='{"lockfile":"...","allow_removals":true}'
-
-    # Restore with newer versions
-    pkg://system.restore input='{"lockfile":"...","allow_newer":true}'
-
-    # Restore handling missing packages
-    pkg://system.restore input='{"lockfile":"...","on_missing_package":"warn"}'
-
-    # Restore handling repo mismatch
-    pkg://system.restore input='{"lockfile":"...","on_repo_mismatch":"ignore"}'
-
-    # Restore handling platform mismatch
-    pkg://system.restore input='{"lockfile":"...","on_platform_mismatch":"warn"}'
-
-    # Restore with dependencies
-    pkg://system.restore input='{"lockfile":"...","include_dependencies":true}'
-
-    # Dry run restore
-    pkg://system.restore input='{"lockfile":"...","dry_run":true}'
-
-    # Restore from YAML
-    pkg://system.restore input='{"lockfile":"...","format":"yaml"}'
-
-    # Restore with specific manager
-    pkg://system.restore input='{"manager":"apt","lockfile":"..."}'
-
-INSTALL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-                         Values: auto, apt, dnf, yum, pacman, apk, brew
-  packages=ARRAY         Packages to install (required)
-                         Format: [{"name":"pkg","version":"1.0"}]
-  dry_run=BOOL           Test without installing (default: false)
-  update_cache=BOOL      Update package lists first (default: false)
-  assume_yes=BOOL        Auto-answer yes to prompts (default: false)
-  only_if_missing=BOOL   Install only if not present (default: false)
-  reinstall=BOOL         Force reinstall (default: false)
-  upgrade=BOOL           Upgrade if newer available (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 300000)
-
-REMOVE ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  packages=ARRAY         Packages to remove (required)
-                         Format: [{"name":"pkg"}]
-  dry_run=BOOL           Test without removing (default: false)
-  purge=BOOL             Remove config files too (default: false)
-  recursive=BOOL         Remove unused dependencies (default: false)
-  assume_yes=BOOL        Auto-answer yes to prompts (default: false)
-  only_if_installed=BOOL Remove only if installed (default: false)
-  fail_if_missing=BOOL   Fail if not found (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 300000)
-
-UPDATE ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  packages=ARRAY         Specific packages to update (optional)
-  refresh_index=BOOL     Update package lists (default: true)
-  upgrade=BOOL           Actually upgrade packages (default: true)
-  assume_yes=BOOL        Auto-answer yes to prompts (default: false)
-  security_only=BOOL     Only security updates (default: false)
-  check_only=BOOL        Check without installing (default: false)
-  dry_run=BOOL           Test without updating (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 900000)
-
-UPGRADE ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  packages=ARRAY         Specific packages to upgrade (optional)
-  refresh_index=BOOL     Update package lists (default: true)
-  assume_yes=BOOL        Auto-answer yes to prompts (default: false)
-  security_only=BOOL     Only security upgrades (default: false)
-  dry_run=BOOL           Test without upgrading (default: false)
-  check_only=BOOL        Check without installing (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 900000)
-
-INFO ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  packages=ARRAY         Package names (required)
-  include_dependencies=BOOL    Include dependencies (default: false)
-  include_reverse_deps=BOOL    Include reverse deps (default: false)
-  include_files=BOOL     Include file list (default: false)
-  include_repo=BOOL      Include repository (default: true)
-  timeout_ms=NUMBER      Operation timeout (default: 5000)
-
-SEARCH ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  query=TEXT             Search query (required)
-  search_in=ARRAY        Where to search (default: ["name","description"])
-                         Values: name, description, all
-  exact=BOOL             Exact match only (default: false)
-  case_sensitive=BOOL    Case-sensitive match (default: false)
-  limit=NUMBER           Max results (default: 50)
-  offset=NUMBER          Skip results (default: 0)
-  include_installed=BOOL Show install status (default: true)
-  include_versions=BOOL  Show versions (default: true)
-  include_repo=BOOL      Show repository (default: true)
-  timeout_ms=NUMBER      Operation timeout (default: 5000)
-
-LIST_INSTALLED ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  filter=PATTERN         Filter by pattern (optional)
-  prefix=TEXT            Filter by prefix (optional)
-  include_versions=BOOL  Include versions (default: true)
-  include_repo=BOOL      Include repository (default: true)
-  include_size=BOOL      Include sizes (default: false)
-  include_install_reason=BOOL  Include reason (default: false)
-  limit=NUMBER           Max packages (default: 500)
-  offset=NUMBER          Skip packages (default: 0)
-  timeout_ms=NUMBER      Operation timeout (default: 600000)
-
-SNAPSHOT ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  scope=SCOPE            Which packages (default: all)
-                         Values: all, manual, dependency
-  include_versions=LEVEL Version detail (default: exact)
-                         Values: exact, minimal, none
-  include_repo=BOOL      Include repository (default: true)
-  include_arch=BOOL      Include architecture (default: true)
-  include_install_reason=BOOL  Include reason (default: true)
-  include_os_metadata=BOOL     Include OS info (default: true)
-  exclude_patterns=ARRAY Exclude patterns (optional)
-  format=FORMAT          Output format (default: json)
-                         Values: json, yaml, text
-  inline=BOOL            Return data inline (default: true)
-  timeout_ms=NUMBER      Operation timeout (default: 15000)
-
-RESTORE ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  lockfile=TEXT          Snapshot data (required)
-  format=FORMAT          Lockfile format (default: auto)
-                         Values: auto, json, yaml, text
-  mode=MODE              Restoration mode (default: exact)
-                         Values: exact, best_effort
-  allow_downgrades=BOOL  Allow older versions (default: false)
-  allow_removals=BOOL    Remove extra packages (default: false)
-  allow_newer=BOOL       Allow newer if exact unavailable (default: true)
-  on_missing_package=ACTION  Missing package action (default: fail)
-                         Values: fail, warn, ignore
-  on_repo_mismatch=ACTION    Repo mismatch action (default: warn)
-                         Values: fail, warn, ignore
-  on_platform_mismatch=ACTION  Platform mismatch action (default: warn)
-                         Values: fail, warn, ignore
-  include_dependencies=BOOL  Restore dependencies (default: true)
-  dry_run=BOOL           Test without restoring (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 180000)
-
-PACKAGE MANAGER AUTO-DETECTION:
-
-  When manager=auto (default), the pkg handle detects the system's
-  package manager automatically:
-
-  Detection order:
-    1. Check for /etc/os-release
-    2. Identify distribution
-    3. Select appropriate package manager
-    4. Verify package manager is available
-    5. Fall back if primary unavailable
-
-  Detection logic:
-    • Ubuntu/Debian/Mint → apt
-    • Fedora/RHEL 8+ → dnf
-    • CentOS 7/RHEL 7 → yum
-    • Arch/Manjaro → pacman
-    • Alpine → apk
-    • macOS → brew
-    • Linuxbrew detected → brew
-
-  Override detection:
-    Explicitly specify manager to bypass auto-detection
-    Example: manager=apt
-
-OUTPUT FORMATS:
-
-  install output:
-    {
-      "installed": 2,
-      "upgraded": 0,
-      "reinstalled": 0,
-      "unchanged": 0,
-      "failed": 0
-    }
-
-  remove output:
-    {
-      "removed": 2,
-      "purged": 0,
-      "not_installed": 0,
-      "skipped": 0,
-      "failed": 0,
-      "autoremove_run": false
-    }
-
-  update output:
-    {
-      "upgraded": 15,
-      "unchanged": 5,
-      "failed": 0
-    }
-
-  upgrade output:
-    {
-      "upgraded": 20,
-      "unchanged": 2,
-      "failed": 0
-    }
-
-  info output:
-    {
-      "packages": [
-        {
-          "name": "curl",
-          "found": true,
-          "installed": true,
-          "installed_version": "7.68.0",
-          "candidate_version": "7.68.0",
-          "architecture": "amd64",
-          "summary": "command line tool...",
-          "description": "...",
-          "homepage": "https://curl.se",
-          "license": "curl",
-          "repository": "main"
-        }
-      ]
-    }
-
-  search output:
-    {
-      "backend": "pkg",
-      "manager": "apt",
-      "query": "curl",
-      "total_matches": 25,
-      "results": [
-        {
-          "name": "curl",
-          "version": "7.68.0",
-          "installed": true,
-          "summary": "...",
-          "score": 1.0
-        }
-      ]
-    }
-
-  list_installed output:
-    {
-      "total_packages": 1247,
-      "packages": [
-        {
-          "name": "curl",
-          "version": "7.68.0",
-          "repository": "main",
-          "installed": true
-        }
-      ]
-    }
-
-  snapshot output:
-    {
-      "lockfile_version": "1.0",
-      "generated_at": "2024-12-04T10:30:00Z",
-      "manager": {
-        "name": "apt",
-        "version": "2.4.8"
-      },
-      "platform": {
-        "os_family": "unix",
-        "os_name": "ubuntu",
-        "os_version": "20.04"
-      },
-      "packages": [...]
-    }
-
-  restore output:
-    {
-      "status": "success",
-      "restored": 15,
-      "skipped": 2,
-      "failed": 0,
-      "warnings": []
-    }
-
-EXIT CODES:
-  0                      Success
-  1                      General error
-  2                      Package not found
-  3                      Permission denied (need root/sudo)
-  4                      Network error
-  5                      Dependency conflict
-  6                      Invalid configuration
-  7                      Timeout
-  8                      Package manager not available
-  9                      Lock file error
-
-ERROR MESSAGES:
-
-  Package errors:
-    "package not found"            Package doesn't exist in repositories
-    "package already installed"    Package is already installed
-    "package not installed"        Package is not installed
-    "version not available"        Specific version not found
-
-  Permission errors:
-    "permission denied"            Need root/sudo privileges
-    "insufficient privileges"      Cannot modify packages
-
-  Network errors:
-    "network error"                Cannot reach repositories
-    "download failed"              Package download failed
-    "repository unreachable"       Repository server down
-
-  Dependency errors:
-    "dependency conflict"          Package conflicts with installed
-    "unresolved dependencies"      Missing dependencies
-    "broken dependencies"          Dependency chain broken
-
-  Manager errors:
-    "manager not available"        Package manager not installed
-    "manager not supported"        Unsupported package manager
-    "auto-detection failed"        Cannot detect package manager
-
-  Configuration errors:
-    "invalid configuration"        Invalid JSON configuration
-    "missing required field"       Required parameter missing
-    "invalid package format"       Package specification invalid
-
-  Lock errors:
-    "lock file error"              Cannot acquire package manager lock
-    "another instance running"     Package manager in use
-
-COMMON WORKFLOWS:
-
-  Initial system setup:
-    # Update package lists
-    pkg://system.update input='{"refresh_index":true,"upgrade":false}'
-
-    # Install essential tools
-    pkg://system.install input='{"packages":[{"name":"curl"},{"name":"git"},{"name":"vim"},{"name":"htop"}],"assume_yes":true}'
-
-    # Create initial snapshot
-    pkg://system.snapshot input='{"scope":"all","include_versions":"exact","format":"json"}'
-
-  Development environment setup:
-    # Install development tools
-    pkg://system.install input='{"packages":[{"name":"build-essential"},{"name":"cmake"},{"name":"gdb"}],"assume_yes":true}'
-
-    # Install language runtimes
-    pkg://system.install input='{"packages":[{"name":"python3"},{"name":"nodejs"},{"name":"golang"}],"assume_yes":true}'
-
-    # Install version control
-    pkg://system.install input='{"packages":[{"name":"git"},{"name":"git-lfs"}],"assume_yes":true}'
-
-  Server deployment:
-    # Update system
-    pkg://system.update input='{"refresh_index":true,"upgrade":true,"assume_yes":true}'
-
-    # Install web server
-    pkg://system.install input='{"packages":[{"name":"nginx"}],"assume_yes":true}'
-
-    # Install database
-    pkg://system.install input='{"packages":[{"name":"postgresql"}],"assume_yes":true}'
-
-    # Install monitoring
-    pkg://system.install input='{"packages":[{"name":"prometheus"},{"name":"grafana"}],"assume_yes":true}'
-
-  System maintenance:
-    # Check for updates
-    pkg://system.update input='{"refresh_index":true,"check_only":true}'
-
-    # Apply security updates
-    pkg://system.update input='{"refresh_index":true,"upgrade":true,"security_only":true,"assume_yes":true}'
-
-    # Remove unused packages
-    pkg://system.remove input='{"packages":[{"name":"old-package"}],"recursive":true,"assume_yes":true}'
-
-    # Clean package cache
-    # (Use package manager directly: apt clean, dnf clean all, etc.)
-
-  Backup and restore:
-    # Create backup snapshot
-    pkg://system.snapshot input='{"scope":"all","include_versions":"exact","include_repo":true,"include_arch":true,"format":"json","inline":false}'
-
-    # Later, restore from snapshot
-    pkg://system.restore input='{"lockfile":"...snapshot data...","mode":"exact","allow_newer":false}'
-
-  Search and discovery:
-    # Search for package
-    pkg://system.search input='{"query":"text editor","search_in":["name","description"],"limit":10}'
-
-    # Get package info
-    pkg://system.info input='{"packages":["vim"],"include_dependencies":true}'
-
-    # Install found package
-    pkg://system.install input='{"packages":[{"name":"vim"}],"assume_yes":true}'
-
-  Cross-platform deployment:
-    # Create snapshot on Ubuntu
-    pkg://system.snapshot input='{"manager":"apt","scope":"manual","format":"json"}'
-
-    # Convert to brew format (manual process)
-    # Install on macOS
-    pkg://system.install input='{"manager":"brew","packages":[{"name":"curl"},{"name":"git"}]}'
-
-  Testing changes safely:
-    # Test install
-    pkg://system.install input='{"packages":[{"name":"new-package"}],"dry_run":true}'
-
-    # Review changes
-    # Install for real
-    pkg://system.install input='{"packages":[{"name":"new-package"}],"assume_yes":true}'
-
-  Container image preparation:
-    # Minimal Alpine image
-    pkg://system.install input='{"manager":"apk","packages":[{"name":"ca-certificates"},{"name":"curl"}],"assume_yes":true}'
-
-    # Create snapshot for reproducibility
-    pkg://system.snapshot input='{"manager":"apk","scope":"all","format":"json"}'
-
-BEST PRACTICES:
-  • Always use dry_run=true to test operations first
-  • Use assume_yes=true for automation
-  • Update package lists before installing (update_cache=true)
-  • Create snapshots before major changes
-  • Use only_if_missing=true to avoid reinstalls
-  • Set reasonable timeouts for network operations
-  • Use security_only=true for security updates
-  • Remove packages with recursive=true to clean dependencies
-  • Use purge=true when completely removing software
-  • Check package info before installing
-  • Search before installing to find correct package names
-  • List installed packages periodically for audit
-  • Keep snapshots for rollback capability
-  • Use specific versions for production
-  • Test on non-production first
-  • Monitor disk space before updates
-  • Review update list before applying
-  • Use package manager directly for complex operations
-  • Avoid mixing package managers
-  • Clean package cache regularly
-  • Use minimal packages in containers
-  • Pin versions in production
-  • Document installed packages
-  • Automate package management
-  • Use configuration management tools
-  • Test backup restoration regularly
-  • Keep package lists up to date
-  • Use repository mirrors for speed
-  • Configure automatic security updates
-
-PACKAGE MANAGER GUIDELINES:
-  • Use native package manager when possible
-  • Respect distribution conventions
-  • Follow version pinning best practices
-  • Use official repositories first
-  • Verify package signatures
-  • Check package maintainer
-  • Read package changelogs
-  • Understand package dependencies
-  • Use stable releases in production
-  • Test updates in staging first
-
-SNAPSHOT GUIDELINES:
-  • Create snapshots before major changes
-  • Include exact versions for reproducibility
-  • Include architecture for cross-platform
-  • Document snapshot purpose and date
-  • Store snapshots in version control
-  • Test restoration process
-  • Use scope="manual" for user-installed only
-  • Exclude development packages if appropriate
-  • Include OS metadata for compatibility checks
-  • Use YAML for human-readable snapshots
-
-SECURITY CONSIDERATIONS:
-  • Require sudo/root for package operations
-  • Verify package sources
-  • Check package signatures
-  • Use HTTPS for repository access
-  • Keep package lists updated
-  • Apply security updates promptly
-  • Audit installed packages regularly
-  • Remove unused packages
-  • Use minimal package sets
-  • Avoid third-party repositories when possible
-  • Verify package integrity
-  • Monitor security advisories
-  • Use automated security updates
-  • Test updates before production
-  • Maintain update schedule
-  • Document security exceptions
-  • Use package manager locks
-  • Implement change control
-  • Keep audit logs
-  • Monitor package vulnerabilities
-  • Use container scanning
-  • Implement least privilege
-  • Separate dev and prod packages
-  • Use signed packages only
-  • Verify checksums
-
-TROUBLESHOOTING:
-
-  Permission denied:
-    • Use sudo for package operations
-    • Check user is in admin group
-    • Verify file permissions
-    • Check SELinux/AppArmor policies
-
-  Package not found:
-    • Update package lists: refresh_index=true
-    • Check repository configuration
-    • Search for correct package name
-    • Verify repository is enabled
-    • Check distribution version
-
-  Network errors:
-    • Check internet connectivity
-    • Verify DNS resolution
-    • Check repository URLs
-    • Try different mirror
-    • Check firewall settings
-    • Increase timeout_ms
-
-  Dependency conflicts:
-    • Check package dependencies
-    • Remove conflicting packages first
-    • Use package manager directly
-    • Check for version conflicts
-    • Review held packages
-
-  Lock file errors:
-    • Wait for other package operations
-    • Kill hung package manager processes
-    • Remove stale lock files (carefully)
-    • Check for background updates
-
-  Auto-detection failed:
-    • Manually specify manager
-    • Check /etc/os-release exists
-    • Verify package manager installed
-    • Check PATH contains package manager
-
-  Snapshot restore fails:
-    • Check platform compatibility
-    • Use allow_newer=true
-    • Use mode=best_effort
-    • Handle missing packages gracefully
-    • Review restore warnings
-
-DEBUGGING:
-
-  Test package manager:
-    # Verify manager available
-    which apt || which dnf || which yum || which pacman || which apk || which brew
-
-  Check package lists:
-    pkg://system.update input='{"refresh_index":true,"upgrade":false}'
-
-  Search for package:
-    pkg://system.search input='{"query":"package-name","include_installed":true}'
-
-  Get package info:
-    pkg://system.info input='{"packages":["package-name"]}'
-
-  List installed:
-    pkg://system.list_installed input='{"filter":"package*"}'
-
-  Test with dry_run:
-    pkg://system.install input='{"packages":[{"name":"test"}],"dry_run":true}'
-
-  Check permissions:
-    sudo -v
-
-  Verify repositories:
-    # apt: cat /etc/apt/sources.list
-    # dnf: dnf repolist
-    # yum: yum repolist
-    # pacman: cat /etc/pacman.conf
-    # brew: brew tap
-
-PLATFORM SUPPORT:
-
-  Linux (Debian/Ubuntu):
-    • Package manager: apt
-    • Full support for all verbs
-    • Requires sudo for operations
-
-  Linux (Fedora/RHEL/CentOS):
-    • Package manager: dnf (RHEL 8+) or yum (RHEL 7)
-    • Full support for all verbs
-    • Requires sudo for operations
-
-  Linux (Arch):
-    • Package manager: pacman
-    • Full support for all verbs
-    • Requires sudo for operations
-
-  Linux (Alpine):
-    • Package manager: apk
-    • Full support for all verbs
-    • Lightweight, ideal for containers
-    • Requires root or sudo
-
-  macOS:
-    • Package manager: brew
-    • Full support for all verbs
-    • Homebrew must be installed
-    • Does not require sudo
-
-  Windows:
-    • Not supported
-    • Use winget or chocolatey directly
-
-PERFORMANCE CONSIDERATIONS:
-  • Package operations can be slow
-  • Network speed affects downloads
-  • Use timeout_ms appropriately
-  • Update operations are slowest
-  • Search operations are fast
-  • Info operations are fast
-  • Snapshot operations scale with package count
-  • Restore operations are slow
-  • Use only_if_missing to skip installed
-  • Parallel package operations not supported
-  • Cache updates can be slow
-  • Use local mirrors for speed
-
-LIMITATIONS:
-  • Cannot manage system packages requiring special handling
-  • No parallel package operations
-  • No package building support
-  • No repository management
-  • Limited cross-manager compatibility
-  • Cannot mix package managers safely
-  • No automatic conflict resolution
-  • No package rollback (use snapshots)
-  • No package pinning management
-  • Windows not supported
-  • Requires package manager installed
-  • Requires root/sudo for most operations
-  • No GUI package selection
-  • No interactive dependency resolution
-  • Snapshot format not standardized across managers
-
-INTEGRATION WITH OTHER HANDLES:
-
-  With exec handle:
-    # Run package manager directly
-    exec://apt update
-
-  With file handle:
-    # Check package manager exists
-    file:///usr/bin/apt.exists
-
-  With config handle:
-    # Store package list
-    config://packages/required.set(value='["curl","git"]')
-
-  With backup handle:
-    # Backup package database
-    backup://packages.create(target=/var/lib/apt)
-
-  With secret handle:
-    # Store private repository credentials
-    secret://local/apt/repo_token.set(value="...")
-
-MORE INFO:
-  For complete documentation of pkg handle operations:
-  https://github.com/[your-org]/resource-shell/docs/Packages_Software/pkg.md
-
-  Package manager documentation:
-    apt:    https://manpages.debian.org/apt
-    dnf:    https://dnf.readthedocs.io/
-    yum:    http://yum.baseurl.org/
-    pacman: https://wiki.archlinux.org/title/Pacman
-    apk:    https://wiki.alpinelinux.org/wiki/Package_management
-    brew:   https://docs.brew.sh/
-
-  Use 'pkg:// --help=VERB' for detailed help on a specific verb.
-"#;
-
-/// Help text constants for individual verbs
-pub const INSTALL_HELP: &str = "INSTALL VERB (pkg://alias.install)
-
-Installs new packages on the system.
-
-USAGE:
-  pkg://system.install input='{\"packages\":[{\"name\":\"curl\"}]}'
-
-REQUIRED ARGUMENTS:
-  packages=ARRAY         Packages to install
-                         Format: [{\"name\":\"pkg\",\"version\":\"1.0\"}]
-
-OPTIONAL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  dry_run=BOOL           Test without installing (default: false)
-  update_cache=BOOL      Update package lists first (default: false)
-  assume_yes=BOOL        Auto-answer yes to prompts (default: false)
-  only_if_missing=BOOL   Install only if not present (default: false)
-  reinstall=BOOL         Force reinstall (default: false)
-  upgrade=BOOL           Upgrade if newer available (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 300000)
-
-EXAMPLES:
-  # Install single package
-  pkg://system.install input='{\"packages\":[{\"name\":\"curl\"}]}'
-  
-  # Install multiple packages  
-  pkg://system.install input='{\"packages\":[{\"name\":\"curl\"},{\"name\":\"git\"}]}'
-  
-  # Install with specific version
-  pkg://system.install input='{\"packages\":[{\"name\":\"nginx\",\"version\":\"1.18.0\"}]}'
-  
-  # Dry run install
-  pkg://system.install input='{\"packages\":[{\"name\":\"curl\"}],\"dry_run\":true}'
-";
-
-pub const REMOVE_HELP: &str = "REMOVE VERB (pkg://alias.remove)
-
-Removes packages from the system.
-
-USAGE:
-  pkg://system.remove input='{\"packages\":[{\"name\":\"curl\"}]}'
-
-REQUIRED ARGUMENTS:
-  packages=ARRAY         Packages to remove
-                         Format: [{\"name\":\"pkg\"}]
-
-OPTIONAL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  dry_run=BOOL           Test without removing (default: false)  
-  purge=BOOL             Remove config files too (default: false)
-  recursive=BOOL         Remove unused dependencies (default: false)
-  assume_yes=BOOL        Auto-answer yes to prompts (default: false)
-  only_if_installed=BOOL Remove only if installed (default: false)
-  fail_if_missing=BOOL   Fail if not found (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 300000)
-
-EXAMPLES:
-  # Remove single package
-  pkg://system.remove input='{\"packages\":[{\"name\":\"curl\"}]}'
-  
-  # Remove with purge
-  pkg://system.remove input='{\"packages\":[{\"name\":\"nginx\"}],\"purge\":true}'
-  
-  # Remove with dependencies
-  pkg://system.remove input='{\"packages\":[{\"name\":\"curl\"}],\"recursive\":true}'
-";
-
-pub const UPDATE_HELP: &str = "UPDATE VERB (pkg://alias.update)
-
-Updates package lists and upgrades packages.
-
-USAGE:
-  pkg://system.update input='{\"refresh_index\":true}'
-
-OPTIONAL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  packages=ARRAY         Specific packages to update (optional)
-  refresh_index=BOOL     Update package lists (default: true)
-  upgrade=BOOL           Actually upgrade packages (default: true)
-  assume_yes=BOOL        Auto-answer yes to prompts (default: false)
-  security_only=BOOL     Only security updates (default: false)
-  check_only=BOOL        Check without installing (default: false)
-  dry_run=BOOL           Test without updating (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 900000)
-
-EXAMPLES:
-  # Update package lists
-  pkg://system.update input='{\"refresh_index\":true}'
-  
-  # Update and upgrade all
-  pkg://system.update input='{\"refresh_index\":true,\"upgrade\":true}'
-  
-  # Security updates only
-  pkg://system.update input='{\"security_only\":true}'
-";
-
-pub const UPGRADE_HELP: &str = "UPGRADE VERB (pkg://alias.upgrade)
-
-Upgrades packages to latest versions.
-
-USAGE:
-  pkg://system.upgrade input='{\"refresh_index\":true}'
-
-OPTIONAL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  packages=ARRAY         Specific packages to upgrade (optional)
-  refresh_index=BOOL     Update package lists (default: true)
-  assume_yes=BOOL        Auto-answer yes to prompts (default: false)
-  security_only=BOOL     Only security upgrades (default: false)
-  dry_run=BOOL           Test without upgrading (default: false)
-  check_only=BOOL        Check without installing (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 900000)
-
-EXAMPLES:
-  # Upgrade all packages
-  pkg://system.upgrade input='{\"refresh_index\":true}'
-  
-  # Upgrade specific packages
-  pkg://system.upgrade input='{\"packages\":[\"curl\",\"git\"]}'
-";
-
-pub const INFO_HELP: &str = "INFO VERB (pkg://alias.info)
-
-Gets detailed information about packages.
-
-USAGE:
-  pkg://system.info input='{\"packages\":[\"curl\"]}'
-
-REQUIRED ARGUMENTS:
-  packages=ARRAY         Package names
-
-OPTIONAL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  include_dependencies=BOOL    Include dependencies (default: false)
-  include_reverse_deps=BOOL    Include reverse deps (default: false)
-  include_files=BOOL     Include file list (default: false)
-  include_repo=BOOL      Include repository (default: true)
-  timeout_ms=NUMBER      Operation timeout (default: 5000)
-
-EXAMPLES:
-  # Get basic info
-  pkg://system.info input='{\"packages\":[\"curl\"]}'
-  
-  # Get info with dependencies
-  pkg://system.info input='{\"packages\":[\"curl\"],\"include_dependencies\":true}'
-";
-
-pub const SEARCH_HELP: &str = "SEARCH VERB (pkg://alias.search)
-
-Searches for packages by name/description.
-
-USAGE:
-  pkg://system.search input='{\"query\":\"text editor\"}'
-
-REQUIRED ARGUMENTS:
-  query=TEXT             Search query
-
-OPTIONAL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  search_in=ARRAY        Where to search (default: [\"name\",\"description\"])
-  exact=BOOL             Exact match only (default: false)
-  case_sensitive=BOOL    Case-sensitive match (default: false)
-  limit=NUMBER           Max results (default: 50)
-  offset=NUMBER          Skip results (default: 0)
-  include_installed=BOOL Show install status (default: true)
-  include_versions=BOOL  Show versions (default: true)
-  include_repo=BOOL      Show repository (default: true)
-  timeout_ms=NUMBER      Operation timeout (default: 5000)
-
-EXAMPLES:
-  # Basic search
-  pkg://system.search input='{\"query\":\"curl\"}'
-  
-  # Search in name only
-  pkg://system.search input='{\"query\":\"curl\",\"search_in\":[\"name\"]}'
-";
-
-pub const LIST_INSTALLED_HELP: &str = "LIST_INSTALLED VERB (pkg://alias.list_installed)
-
-Lists currently installed packages.
-
-USAGE:
-  pkg://system.list_installed input='{}'
-
-OPTIONAL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  filter=PATTERN         Filter by pattern (optional)
-  prefix=TEXT            Filter by prefix (optional)
-  include_versions=BOOL  Include versions (default: true)
-  include_repo=BOOL      Include repository (default: true)
-  include_size=BOOL      Include sizes (default: false)
-  include_install_reason=BOOL  Include reason (default: false)
-  limit=NUMBER           Max packages (default: 500)
-  offset=NUMBER          Skip packages (default: 0)
-  timeout_ms=NUMBER      Operation timeout (default: 600000)
-
-EXAMPLES:
-  # List all installed
-  pkg://system.list_installed input='{}'
-  
-  # List with filter
-  pkg://system.list_installed input='{\"filter\":\"lib*\"}'
-";
-
-pub const SNAPSHOT_HELP: &str = "SNAPSHOT VERB (pkg://alias.snapshot)
-
-Creates snapshot of installed packages.
-
-USAGE:
-  pkg://system.snapshot input='{\"scope\":\"all\"}'
-
-OPTIONAL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  scope=SCOPE            Which packages (default: all)
-  include_versions=LEVEL Version detail (default: exact)
-  include_repo=BOOL      Include repository (default: true)
-  include_arch=BOOL      Include architecture (default: true)
-  include_install_reason=BOOL  Include reason (default: true)
-  include_os_metadata=BOOL     Include OS info (default: true)
-  exclude_patterns=ARRAY Exclude patterns (optional)
-  format=FORMAT          Output format (default: json)
-  inline=BOOL            Return data inline (default: true)
-  timeout_ms=NUMBER      Operation timeout (default: 15000)
-
-EXAMPLES:
-  # Basic snapshot
-  pkg://system.snapshot input='{\"scope\":\"all\"}'
-  
-  # Snapshot with exact versions
-  pkg://system.snapshot input='{\"scope\":\"all\",\"include_versions\":\"exact\"}'
-";
-
-pub const RESTORE_HELP: &str = "RESTORE VERB (pkg://alias.restore)
-
-Restores packages from snapshot.
-
-USAGE:
-  pkg://system.restore input='{\"lockfile\":\"...snapshot data...\"}'
-
-REQUIRED ARGUMENTS:
-  lockfile=TEXT          Snapshot data
-
-OPTIONAL ARGUMENTS:
-  manager=MANAGER        Package manager (default: auto)
-  format=FORMAT          Lockfile format (default: auto)
-  mode=MODE              Restoration mode (default: exact)
-  allow_downgrades=BOOL  Allow older versions (default: false)
-  allow_removals=BOOL    Remove extra packages (default: false)
-  allow_newer=BOOL       Allow newer if exact unavailable (default: true)
-  on_missing_package=ACTION  Missing package action (default: fail)
-  on_repo_mismatch=ACTION    Repo mismatch action (default: warn)
-  on_platform_mismatch=ACTION  Platform mismatch action (default: warn)
-  include_dependencies=BOOL  Restore dependencies (default: true)
-  dry_run=BOOL           Test without restoring (default: false)
-  timeout_ms=NUMBER      Operation timeout (default: 180000)
-
-EXAMPLES:
-  # Restore from snapshot
-  pkg://system.restore input='{\"lockfile\":\"...\"}'
-  
-  # Best effort restore
-  pkg://system.restore input='{\"lockfile\":\"...\",\"mode\":\"best_effort\"}'
-";
+/// Verbs registered by the pkg handle (shared by `Handle::verbs` and the
+/// in-URL help forms).
+const PKG_VERBS: &[&str] = &[
+    "install", "remove", "update", "upgrade", "info", "search", "list_installed", "snapshot",
+    "restore", "apply_lock",
+];
+
+/// True for the in-URL help forms `pkg://--help`, `pkg://-h` and `pkg://help`.
+fn is_pkg_help_word(s: &str) -> bool {
+    crate::core::help::is_help_flag(s) || s == "help"
+}
+
+/// Renders the approved pkg help, for one verb when `verb` names a registered verb.
+fn pkg_help_text(verb: Option<&str>) -> String {
+    crate::core::help::render_legacy("pkg", &PKG_HELP, PKG_VERBS, verb)
+}
 
 /// Package handle for managing system packages
 #[derive(Debug)]
@@ -2101,8 +1193,8 @@ impl PkgHandle {
         // For pkg:// URLs, the alias can be in the host or path
         let alias = if let Some(host) = url.host_str() {
             // Check if host is a help request
-            if host == "--help" || host == "-h" || host == "help" {
-                print!("{}", PKG_HELP_TEXT);
+            if is_pkg_help_word(host) {
+                print!("{}", pkg_help_text(None));
                 std::process::exit(0);
             }
             // If we have a host, that's our alias (pkg://system)
@@ -2113,8 +1205,8 @@ impl PkgHandle {
         } else {
             // Path-based alias (pkg:///system)
             let path_alias = url.path().trim_start_matches('/').to_string();
-            if path_alias == "--help" || path_alias == "-h" || path_alias == "help" {
-                print!("{}", PKG_HELP_TEXT);
+            if is_pkg_help_word(&path_alias) {
+                print!("{}", pkg_help_text(None));
                 std::process::exit(0);
             }
             path_alias
@@ -2135,19 +1227,19 @@ pub fn register(reg: &mut crate::core::Registry) {
 
 impl Handle for PkgHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["install", "remove", "update", "upgrade", "info", "search", "list_installed", "snapshot", "restore", "apply_lock"]
+        PKG_VERBS
+    }
+
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&PKG_HELP)
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Handle verb-specific help first
-        if let Some(help_verb) = args.get("help") {
-            return self.show_verb_help(help_verb);
-        }
-
-        // Handle general help requests 
-        if verb == "help" || verb == "--help" || verb == "-h" ||
-           args.get("--help").is_some() || args.get("-h").is_some() {
-            print!("{}", PKG_HELP_TEXT);
+        // In-URL help forms: help=<verb>, --help[=<verb>], -h, or a help verb.
+        let help_arg = ["help", "--help", "-h"].iter().find_map(|k| args.get(*k));
+        if help_arg.is_some() || is_pkg_help_word(verb) {
+            let wanted = help_arg.map(|v| v.as_str()).filter(|v| !v.is_empty());
+            write!(io.stdout, "{}", pkg_help_text(wanted))?;
             return Ok(Status::success());
         }
 
@@ -2168,26 +1260,6 @@ impl Handle for PkgHandle {
 }
 
 impl PkgHandle {
-    /// Show verb-specific help
-    fn show_verb_help(&self, verb: &str) -> Result<Status> {
-        match verb {
-            "install" => print!("{}", INSTALL_HELP),
-            "remove" => print!("{}", REMOVE_HELP),
-            "update" => print!("{}", UPDATE_HELP),
-            "upgrade" => print!("{}", UPGRADE_HELP),
-            "info" => print!("{}", INFO_HELP),
-            "search" => print!("{}", SEARCH_HELP),
-            "list_installed" => print!("{}", LIST_INSTALLED_HELP),
-            "snapshot" => print!("{}", SNAPSHOT_HELP),
-            "restore" | "apply_lock" => print!("{}", RESTORE_HELP),
-            _ => {
-                eprintln!("Unknown verb: {}. Use --help for full list.", verb);
-                return Ok(Status::err(1, format!("Unknown verb: {}", verb)));
-            },
-        }
-        Ok(Status::success())
-    }
-
     fn install_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Parse arguments from JSON input
         let config_json = args.get("input")
@@ -6379,8 +5451,14 @@ impl PkgHandle {
         // Validate lockfile against policies
         self.validate_lockfile(&lockfile, &config).await?;
         
-        // Resolve manager (from config or lockfile)
-        let manager = self.resolve_restore_manager(&config.manager, &lockfile)?;
+        // Resolve manager (from config or lockfile). A text lockfile records no
+        // manager ("auto"), so with manager=auto the system manager is detected.
+        let detected = if config.manager == ManagerKind::Auto && lockfile.manager.name == "auto" {
+            Some(self.detect_manager().await?)
+        } else {
+            None
+        };
+        let manager = self.resolve_restore_manager(&config.manager, &lockfile, detected)?;
         
         // Perform restore operation with timeout
         let result = timeout(
@@ -8084,7 +7162,23 @@ impl PkgHandle {
         Ok(())
     }
 
-    fn resolve_restore_manager(&self, config_manager: &ManagerKind, lockfile: &Lockfile) -> Result<ManagerKind, PkgError> {
+    /// Chooses the manager for `restore`. `detected` is the auto-detected system
+    /// manager, used only when both the request and the lockfile say "auto"
+    /// (a text lockfile records no manager).
+    fn resolve_restore_manager(
+        &self,
+        config_manager: &ManagerKind,
+        lockfile: &Lockfile,
+        detected: Option<ManagerKind>,
+    ) -> Result<ManagerKind, PkgError> {
+        if lockfile.manager.name == "auto" {
+            return match config_manager {
+                ManagerKind::Auto => detected.ok_or_else(|| {
+                    PkgError::ManagerNotAvailable("No supported package manager found".to_string())
+                }),
+                explicit => Ok(explicit.clone()),
+            };
+        }
         match config_manager {
             ManagerKind::Auto => {
                 // Use lockfile manager
@@ -10004,19 +9098,41 @@ mod tests {
         };
 
         // Test auto resolution
-        let result = handle.resolve_restore_manager(&ManagerKind::Auto, &lockfile);
+        let result = handle.resolve_restore_manager(&ManagerKind::Auto, &lockfile, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), ManagerKind::Apt);
 
         // Test compatible explicit manager
-        let result = handle.resolve_restore_manager(&ManagerKind::Apt, &lockfile);
+        let result = handle.resolve_restore_manager(&ManagerKind::Apt, &lockfile, None);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), ManagerKind::Apt);
 
         // Test incompatible manager
-        let result = handle.resolve_restore_manager(&ManagerKind::Pacman, &lockfile);
+        let result = handle.resolve_restore_manager(&ManagerKind::Pacman, &lockfile, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn test_restore_manager_resolution_text_lockfile() {
+        let handle = PkgHandle { alias: "test".to_string() };
+        // A text lockfile records its manager as "auto".
+        let lockfile = handle.parse_text_lockfile("curl=7.0\nvim\n").unwrap();
+        assert_eq!(lockfile.manager.name, "auto");
+
+        // An explicitly requested manager is used as-is.
+        let result = handle.resolve_restore_manager(&ManagerKind::Pacman, &lockfile, None);
+        assert_eq!(result.unwrap(), ManagerKind::Pacman);
+        let result = handle.resolve_restore_manager(&ManagerKind::Apt, &lockfile, Some(ManagerKind::Dnf));
+        assert_eq!(result.unwrap(), ManagerKind::Apt);
+
+        // manager=auto uses the detected system manager.
+        let result = handle.resolve_restore_manager(&ManagerKind::Auto, &lockfile, Some(ManagerKind::Apk));
+        assert_eq!(result.unwrap(), ManagerKind::Apk);
+
+        // manager=auto with nothing detected fails instead of looking up "auto".
+        let err = handle.resolve_restore_manager(&ManagerKind::Auto, &lockfile, None).unwrap_err();
+        assert!(matches!(err, PkgError::ManagerNotAvailable(_)));
     }
 
     #[test] 
