@@ -58,16 +58,26 @@ pub trait Handle: Send + Sync {
     #[allow(dead_code)]
     fn verbs(&self) -> &'static [&'static str];
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status>;
+
+    /// Descriptive metadata for `resh <handle> --help`. Handles without
+    /// metadata keep the default CLI help behavior.
+    fn help(&self) -> Option<&'static super::help::HandleHelp> {
+        None
+    }
 }
 
 pub struct Registry {
     schemes: HashMap<String, Arc<dyn Fn(&url::Url) -> Result<Box<dyn Handle>>>>,
+    /// Placeholder URLs for handles whose constructor needs a specific
+    /// URL shape; see `instantiate`.
+    probe_urls: HashMap<String, String>,
 }
 
 impl Default for Registry {
     fn default() -> Self {
         Self {
             schemes: HashMap::new(),
+            probe_urls: HashMap::new(),
         }
     }
 }
@@ -84,6 +94,26 @@ impl Registry {
         F: Fn(&url::Url) -> Result<Box<dyn Handle>> + 'static + Send + Sync,
     {
         self.schemes.insert(scheme.to_string(), Arc::new(ctor));
+    }
+
+    /// Sets the placeholder URL `instantiate` uses for `scheme`, for
+    /// constructors that reject the default `<scheme>://resh-help-probe`.
+    /// The constructor must not perform I/O for this URL.
+    pub fn set_probe_url(&mut self, scheme: &str, url: &str) {
+        self.probe_urls.insert(scheme.to_string(), url.to_string());
+    }
+
+    /// Constructs the handle registered for `scheme` from a placeholder URL,
+    /// for reading metadata such as `verbs()` and `help()`.
+    /// Returns `None` if the scheme is not registered.
+    pub fn instantiate(&self, scheme: &str) -> Option<Result<Box<dyn Handle>>> {
+        let ctor = self.schemes.get(scheme)?;
+        let probe = self
+            .probe_urls
+            .get(scheme)
+            .cloned()
+            .unwrap_or_else(|| format!("{scheme}://resh-help-probe"));
+        Some(url::Url::parse(&probe).map_err(Into::into).and_then(|u| ctor(&u)))
     }
 
     pub fn resolve(&self, target: &str) -> Result<Box<dyn Handle>> {

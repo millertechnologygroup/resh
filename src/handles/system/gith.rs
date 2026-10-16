@@ -13,9 +13,522 @@ use thiserror::Error;
 use url::Url;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
+
+/// Metadata for `resh git --help` and `resh git <verb> --help`.
+static GIT_HELP: HandleHelp = HandleHelp {
+    description: "The git handle works with local Git repositories through libgit2, covering \
+        status queries, branches, tags, diffs, commits, merges, rebases, and remote clone, \
+        pull, push, and sync. The URL host is a free-form alias, such as git://main, that \
+        labels the output and selects a registered credential profile, while the repository \
+        directory is always given with the path argument. Boolean, numeric, and list \
+        options take text values such as true, 5000, or a,b.",
+    usage: "resh git://<alias>.<verb> path=<repo-dir> [key=value ...]",
+    verbs: &[
+        VerbHelp {
+            name: "status",
+            definition: "Reports the current branch and upstream, the staged, unstaged, \
+                untracked, and conflicted files, and any operation in progress.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.status path=<repo-dir>\n  \
+                    [include_untracked=true|false] [include_ignored=true|false]\n  \
+                    [include_staged=true|false] [include_branch=true|false]\n  \
+                    [include_remote=true|false] [timeout_ms=<n>]",
+                example: "resh --json-pretty git://main.status path=/srv/app",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "git",
+  "branch": {
+    "detached": false,
+    "head": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba",
+    "name": "main",
+    "upstream": null
+  },
+  "in_progress": {
+    "bisect": false,
+    "cherry_pick": false,
+    "merge": false,
+    "rebase": false,
+    "revert": false
+  },
+  "path": "/srv/app",
+  "working_tree": {
+    "clean": false,
+    "conflicts": [],
+    "ignored": [],
+    "staged": [],
+    "unstaged": [
+      {
+        "path": "README.md",
+        "status": "modified"
+      }
+    ],
+    "untracked": [
+      {
+        "path": "notes.txt",
+        "status": "untracked"
+      }
+    ]
+  }
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "status_summary",
+            definition: "Summarizes repository state as file counts, a sync state, and a \
+                recommended next action.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.status_summary path=<repo-dir> [remote=<name>]\n  \
+                    [branch=<name>] [include_untracked=true|false]\n  \
+                    [include_ignored=true|false] [include_remote=true|false]\n  \
+                    [compute_diffstats=true|false] [max_files=<n>] [timeout_ms=<n>]",
+                example: "resh --json-pretty git://main.status_summary path=/srv/app",
+                example_output: Some(
+                    r#"{
+  "action": "status_summary",
+  "alias": "main",
+  "backend": "git",
+  "branch": {
+    "detached": false,
+    "has_commits": true,
+    "head": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba",
+    "name": "main",
+    "upstream": null
+  },
+  "diffstats": null,
+  "path": "/srv/app",
+  "recommendation": {
+    "actions": [
+      "commit_changes",
+      "sync_with_remote"
+    ],
+    "description": "Commit your local changes and sync with remote.",
+    "primary_action": "commit"
+  },
+  "summary": {
+    "blocked_by_conflicts": false,
+    "can_commit": false,
+    "has_uncommitted_changes": true,
+    "needs_pull": false,
+    "needs_push": false,
+    "state": "local_changes_only"
+  },
+  "working_tree": {
+    "clean": false,
+    "conflicts_count": 0,
+    "ignored_count": 0,
+    "in_progress": {
+      "bisect": false,
+      "cherry_pick": false,
+      "merge": false,
+      "rebase": false,
+      "revert": false
+    },
+    "staged_count": 0,
+    "unstaged_count": 1,
+    "untracked_count": 1
+  }
+}
+
+Shown for a branch without an upstream with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "status_short",
+            definition: "Builds a compact one-line status string for shell prompts from the \
+                branch name, ahead and behind counts, and dirty and conflict markers.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.status_short path=<repo-dir> [branch=<name>]\n  \
+                    [remote=<name>] [include_remote=true|false]\n  \
+                    [include_dirty=true|false] [include_conflicts=true|false]\n  \
+                    [symbols=<json-object>] [timeout_ms=<n>]",
+                example: "resh --json-pretty git://main.status_short path=/srv/app",
+                example_output: Some(
+                    r#"{
+  "action": "status_short",
+  "alias": "main",
+  "backend": "git",
+  "components": {
+    "ahead": 0,
+    "behind": 0,
+    "branch": "main",
+    "clean": false,
+    "detached": false,
+    "has_conflicts": false,
+    "has_upstream": true
+  },
+  "path": "/srv/app",
+  "summary": "main*"
+}
+
+Shown for a modified branch level with its upstream, with --json-pretty.
+The ahead, behind, conflict, and no-upstream markers are Unicode symbols."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "diff",
+            definition: "Compares the working tree, index, HEAD, or commits and reports each \
+                changed file with its hunks and lines.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.diff path=<repo-dir> [mode=<mode>] [from=<rev>]\n  \
+                    [to=<rev>] [paths=<p1,p2,...>] [unified=<n>]\n  \
+                    [ignore_whitespace=true|false] [detect_renames=true|false]\n  \
+                    [max_files=<n>] [max_hunks=<n>] [<option>=<value> ...]\n  \
+                    mode: workdir_vs_index (default), index_vs_head, head_vs_workdir,\n  \
+                    commit_vs_commit, commit_vs_workdir, commit_vs_index",
+                example: "resh --json-pretty git://main.diff path=/srv/app mode=head_vs_workdir",
+                example_output: Some(
+                    r##"{
+  "alias": "main",
+  "backend": "git",
+  "files": [
+    {
+      "hunks": [
+        {
+          "lines": [
+            {
+              "content": "# app",
+              "type": "context"
+            },
+            {
+              "content": "Run make to build.",
+              "type": "add"
+            }
+          ],
+          "new_lines": 2,
+          "new_start": 1,
+          "old_lines": 1,
+          "old_start": 1
+        }
+      ],
+      "is_binary": false,
+      "new_path": "README.md",
+      "old_path": "README.md",
+      "status": "modified"
+    }
+  ],
+  "from": "HEAD",
+  "mode": "head_vs_workdir",
+  "path": "/srv/app",
+  "summary": {
+    "deletions": 0,
+    "files_changed": 1,
+    "insertions": 1,
+    "truncated": false
+  },
+  "to": "WORKDIR"
+}
+
+Shown with --json-pretty."##,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "branch",
+            definition: "Lists, creates, deletes, renames, or checks out branches, listing \
+                local branches when no action is given.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.branch path=<repo-dir>\n  \
+                    [action=list|create|delete|rename|checkout] [name=<branch>]\n  \
+                    [new_name=<branch>] [start_point=<rev>] [local_only=true|false]\n  \
+                    [remote_only=true|false] [all=true|false] [force=true|false]",
+                example: "resh --json-pretty git://main.branch path=/srv/app",
+                example_output: Some(
+                    r#"{
+  "action": "list",
+  "alias": "main",
+  "backend": "git",
+  "branches": [
+    {
+      "full_ref": "refs/heads/main",
+      "head": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba",
+      "is_current": true,
+      "is_remote": false,
+      "name": "main",
+      "upstream": null
+    }
+  ],
+  "path": "/srv/app"
+}
+
+Shown for action=list with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "tag",
+            definition: "Lists, creates, or deletes tags, listing all tags sorted by name \
+                when no action is given.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.tag path=<repo-dir> [action=list|create|delete]\n  \
+                    [name=<tag>] [pattern=<glob>]\n  \
+                    [sort=name|version|taggerdate|committerdate]\n  \
+                    [annotated=true|false] [message=<text>] [target=<rev>]\n  \
+                    [force=true|false] [author_name=<name>] [author_email=<email>]",
+                example: "resh --json-pretty git://main.tag path=/srv/app",
+                example_output: Some(
+                    r#"{
+  "action": "list",
+  "alias": "main",
+  "backend": "git",
+  "count": 1,
+  "path": "/srv/app",
+  "pattern": null,
+  "sort": "name",
+  "tags": [
+    {
+      "annotated": false,
+      "message": null,
+      "name": "v1.0.0",
+      "tagger": null,
+      "target": {
+        "oid": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba",
+        "type": "commit"
+      }
+    }
+  ]
+}
+
+Shown for action=list with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "commit",
+            definition: "Creates a commit from the staged changes, first staging tracked \
+                changes when all=true and the listed paths when paths is given.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.commit path=<repo-dir> message=<text>\n  \
+                    [all=true|false] [paths=<p1,p2,...>] [allow_empty=true|false]\n  \
+                    [amend=true|false] [no_edit=true|false] [signoff=true|false]\n  \
+                    [author_name=<name>] [author_email=<email>]\n  \
+                    [committer_name=<name>] [committer_email=<email>]\n  \
+                    [timestamp=<iso8601>] [timeout_ms=<n>]",
+                example: "resh --json-pretty git://main.commit path=/srv/app 'message=Fix typo'",
+                example_output: Some(
+                    r#"{
+  "action": "commit",
+  "alias": "main",
+  "backend": "git",
+  "commit": {
+    "allow_empty": false,
+    "amend": false,
+    "author": {
+      "email": "alice@example.com",
+      "name": "Alice"
+    },
+    "committer": {
+      "email": "alice@example.com",
+      "name": "Alice"
+    },
+    "message": "Fix typo",
+    "oid": "9f3c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+  },
+  "path": "/srv/app",
+  "stats": {
+    "deletions": null,
+    "insertions": null,
+    "staged_files": 0
+  }
+}
+
+Shown with --json-pretty. staged_files counts only files staged by this call."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "merge",
+            definition: "Merges a source branch or commit into the current or target branch, \
+                fast-forwarding when possible.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.merge path=<repo-dir> source=<rev>\n  \
+                    [target=<branch>] [commit_message=<text>] [author_name=<name>]\n  \
+                    [author_email=<email>] [committer_name=<name>]\n  \
+                    [committer_email=<email>] [ff_only=true|false] [no_ff=true|false]\n  \
+                    [squash=true|false] [allow_uncommitted=true|false]\n  \
+                    [abort_on_conflict=true|false] [timeout_ms=<n>]",
+                example: "resh --json-pretty git://main.merge path=/srv/app source=feature",
+                example_output: Some(
+                    r#"{
+  "action": "merge",
+  "alias": "main",
+  "backend": "git",
+  "commit": {
+    "message": null,
+    "oid": "9f3c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+  },
+  "ff_only": false,
+  "mode": "fast_forward",
+  "no_ff": false,
+  "path": "/srv/app",
+  "source": "feature",
+  "squash": false,
+  "status": "fast_forward",
+  "target": "main"
+}
+
+Shown for a fast-forward merge with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "rebase",
+            definition: "Rebases a branch onto an upstream revision, or continues or aborts \
+                a rebase in progress.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.rebase path=<repo-dir> upstream=<rev>\n  \
+                    [operation=start|continue|abort] [branch=<branch>]\n  \
+                    [author_name=<name>] [author_email=<email>]\n  \
+                    [committer_name=<name>] [committer_email=<email>]\n  \
+                    [ff_only=true|false] [preserve_merges=true|false]\n  \
+                    [autosquash=true|false] [allow_uncommitted=true|false]\n  \
+                    [abort_on_conflict=true|false] [timeout_ms=<n>]",
+                example: "resh --json-pretty git://main.rebase path=/srv/app upstream=main",
+                example_output: Some(
+                    r#"{
+  "action": "rebase",
+  "alias": "main",
+  "autosquash": false,
+  "backend": "git",
+  "branch": "feature",
+  "ff_only": false,
+  "mode": "normal",
+  "operation": "start",
+  "path": "/srv/app",
+  "preserve_merges": false,
+  "status": "rebased",
+  "summary": {
+    "commits_rebased": 2,
+    "new_base": "7a1d9e0c3b5f4a2e8d6c1b0a9f8e7d6c5b4a3f21",
+    "old_base": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba"
+  },
+  "upstream": "main"
+}
+
+Shown for operation=start with --json-pretty. upstream is not required for
+operation=continue or operation=abort."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "clone",
+            definition: "Clones a remote repository into a new or empty local directory.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.clone url=<repo-url> path=<dir> [branch=<name>]\n  \
+                    [depth=<n>] [recursive=true|false] [ssh_key=<file>]\n  \
+                    [username=<user>] [password=<pass>] [token=<token>]\n  \
+                    [timeout_ms=<n>]",
+                example: "resh git://main.clone url=https://example.com/app.git path=/srv/app",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "git",
+  "branch": null,
+  "depth": null,
+  "path": "/srv/app",
+  "recursive": false,
+  "status": "cloned",
+  "url": "https://example.com/app.git"
+}"#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "pull",
+            definition: "Fetches from a remote and fast-forwards the local branch, returning \
+                an error when a merge or rebase would be needed, which is not implemented.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.pull path=<repo-dir> [remote=<name>]\n  \
+                    [branch=<name>] [ff_only=true|false] [prune=true|false]\n  \
+                    [ssh_key=<file>] [username=<user>] [password=<pass>]\n  \
+                    [token=<token>] [timeout_ms=<n>]",
+                example: "resh --json-pretty git://main.pull path=/srv/app remote=origin",
+                example_output: Some(
+                    r#"{
+  "ahead_by": 0,
+  "alias": "main",
+  "backend": "git",
+  "behind_by": 3,
+  "branch": "main",
+  "commits_fetched": 3,
+  "ff_only": false,
+  "path": "/srv/app",
+  "rebase": false,
+  "remote": "origin",
+  "status": "updated"
+}
+
+Shown for a fast-forward pull with --json-pretty. An up-to-date branch
+reports status up_to_date."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "push",
+            definition: "Pushes the named branch, or the current branch by default, to a \
+                remote and reports each branch's ahead and behind counts.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.push path=<repo-dir> [remote=<name>]\n  \
+                    [branch=<name>] [branches=<b1,b2,...>] [tags=true|false]\n  \
+                    [force=true|false] [ff_only=true|false]\n  \
+                    [set_upstream=true|false] [ssh_key=<file>] [username=<user>]\n  \
+                    [password=<pass>] [token=<token>] [timeout_ms=<n>]",
+                example: "resh --json-pretty git://main.push path=/srv/app branch=main",
+                example_output: Some(
+                    r#"{
+  "alias": "main",
+  "backend": "git",
+  "branches": [
+    {
+      "ahead_by": 2,
+      "behind_by": 0,
+      "name": "main",
+      "status": "pushed"
+    }
+  ],
+  "path": "/srv/app",
+  "remote": "origin",
+  "tags_pushed": false
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "sync",
+            definition: "Fetches from a remote, integrates the changes by rebase, merge, or \
+                fast-forward, and then pushes the current branch.",
+            detail: Some(VerbDetail {
+                usage: "resh git://<alias>.sync path=<repo-dir> [remote=<name>]\n  \
+                    [branch=<name>] [remote_branch=<name>]\n  \
+                    [pull_strategy=rebase|merge|ff_only] [push=true|false]\n  \
+                    [push_tags=true|false] [force_push=true|false]\n  \
+                    [allow_uncommitted=true|false] [stash_uncommitted=true|false]\n  \
+                    [abort_on_conflict=true|false] [dry_run=true|false]\n  \
+                    [timeout_ms=<n>]",
+                example: "resh --json-pretty git://main.sync path=/srv/app pull_strategy=rebase",
+                example_output: None,
+            }),
+        },
+    ],
+};
+
+/// Parses one CLI argument value (usually a string such as "true" or "5000")
+/// into a typed value, accepting already-typed JSON values too.
+fn lenient_arg<T: serde::de::DeserializeOwned>(key: &str, value: &Value) -> Result<T, String> {
+    crate::core::lenient::from_value(value.clone())
+        .map_err(|e| format!("invalid {} value: {}", key, e))
+}
 
 /// Git handle implementation
 #[derive(Debug)]
@@ -1376,189 +1889,22 @@ type GitConnectionRegistry = std::sync::LazyLock<dashmap::DashMap<String, GitCon
 
 static GIT_CONNECTIONS: GitConnectionRegistry = std::sync::LazyLock::new(|| dashmap::DashMap::new());
 
-/// Comprehensive git handle help text
-pub const GIT_HELP_TEXT: &str = r#"RESOURCE SHELL - GIT HANDLE
-===========================
+/// Verbs registered by the git handle (shared by `Handle::verbs` and the
+/// in-URL help forms).
+const GIT_VERBS: &[&str] = &[
+    "clone", "pull", "push", "status", "branch", "commit", "diff", "tag", "merge", "rebase",
+    "sync", "status_summary", "status_short",
+];
 
-USAGE:
-  git://alias.VERB(arguments)
+/// True for the in-URL help forms `git://--help`, `git://-h` and `git://help`.
+fn is_git_help_word(s: &str) -> bool {
+    crate::core::help::is_help_flag(s) || s == "help"
+}
 
-DESCRIPTION:
-  The git handle provides comprehensive Git repository management for Resource
-  Shell. Clone repositories, manage branches, create commits, handle merges and
-  rebases, synchronize with remotes, view diffs, manage tags, and check repository
-  status. Supports authentication via SSH keys, HTTPS credentials, and tokens.
-  Essential for version control, source code management, development workflows,
-  CI/CD integration, and team collaboration. Works with local and remote Git
-  repositories across GitHub, GitLab, Bitbucket, and self-hosted Git servers.
-
-URL FORMAT:
-  git://alias.VERB(arguments)
-  git://default.clone(url=https://github.com/user/repo.git,path=/tmp/repo)
-  git://main.branch(path=/tmp/repo,action=list)
-  git://deploy.push(path=/tmp/repo,remote=origin)
-
-  alias: Connection identifier (e.g., default, main, deploy)
-  VERB: Git operation to perform
-
-VERBS (13 total):
-
-  Repository Operations:
-    clone             Clone a remote repository
-    status            Get detailed repository status
-    status_summary    Get summary with recommendations
-    status_short      Get compact status for shell prompts
-
-  Branch Management:
-    branch            Manage branches (list, create, delete, rename, checkout)
-
-  Change Management:
-    commit            Create commits with staged changes
-    diff              Show differences between commits/branches/working tree
-
-  Synchronization:
-    pull              Pull changes from remote
-    push              Push changes to remote
-    sync              Synchronize with remote (fetch + merge/rebase + push)
-
-  Branch Integration:
-    merge             Merge branches
-    rebase            Rebase branches
-
-  Tagging:
-    tag               Manage tags (list, create, delete)
-
-AUTHENTICATION METHODS:
-
-SSH Key Authentication:
-  • Most secure for automated operations
-  • No password prompts
-  • Path to private key file
-  • Example: ssh_key=/home/user/.ssh/id_rsa
-  • Supports: GitHub, GitLab, Bitbucket, custom servers
-
-HTTPS Token Authentication:
-  • Personal access tokens
-  • Fine-grained permissions
-  • Recommended for HTTPS
-  • Example: token=ghp_xxxxxxxxxxxx
-  • GitHub: Personal Access Tokens
-  • GitLab: Personal Access Tokens
-  • Bitbucket: App Passwords
-
-HTTPS Username/Password:
-  • Basic authentication
-  • Less secure than tokens
-  • May not work with 2FA
-  • Example: username=user,password=pass
-  • Not recommended for production
-
-Authentication Priority:
-  1. SSH key (if provided)
-  2. Token (if provided)
-  3. Username/Password (if provided)
-  4. System credentials (git credential helper)
-
-BEST PRACTICES:
-• Always check status before operations
-• Pull before starting new work
-• Use feature branches for development
-• Keep commits atomic and focused
-• Write descriptive commit messages
-• Use conventional commit format
-• Pull before pushing
-• Resolve conflicts promptly
-• Use rebase for cleaner history
-• Use merge for feature integration
-• Tag releases with semantic versioning
-• Use SSH keys for authentication
-• Never commit secrets or credentials
-• Use .gitignore properly
-• Review diffs before committing
-• Test before committing
-• Commit frequently with small changes
-• Use descriptive branch names
-• Delete merged branches
-• Keep main/master stable
-• Use protected branches
-• Require code reviews
-• Use branch naming conventions
-• Document repository structure
-• Use issue tracking integration
-• Automate with CI/CD
-• Use signed commits for security
-• Back up repositories regularly
-• Use shallow clones for CI
-• Limit repository size
-• Use Git LFS for large files
-
-TROUBLESHOOTING:
-
-Repository not found:
-  • Verify path is correct
-  • Check repository is initialized
-  • Ensure .git directory exists
-  • Verify permissions
-
-Authentication failed:
-  • Check credentials are correct
-  • Verify token hasn't expired
-  • Check SSH key permissions (600)
-  • Verify SSH key is added to agent
-  • Check 2FA requirements
-  • Try different authentication method
-
-Merge conflicts:
-  • Use git://default.status to see conflicts
-  • Resolve conflicts manually
-  • Stage resolved files
-  • Complete merge with commit
-  • Use abort_on_conflict=true to prevent
-
-Cannot push:
-  • Pull latest changes first
-  • Check branch protection rules
-  • Verify push permissions
-  • Check network connectivity
-  • Use force=true if intentional
-
-Network timeout:
-  • Check internet connection
-  • Increase timeout_ms
-  • Try different network
-  • Check firewall settings
-
-EXIT CODES:
-  0                      Success
-  1                      General error
-  2                      Repository not found
-  3                      Authentication failed
-  4                      Network timeout
-  5                      Merge conflict
-  6                      Invalid configuration
-  7                      Permission denied
-  8                      Detached HEAD state
-  9                      Uncommitted changes blocking operation
-
-MORE INFO:
-  Use 'git:// --help=VERB' for detailed help on a specific verb.
-
-"#;
-
-/// Help text constants for individual verbs
-pub const CLONE_HELP: &str = "CLONE VERB (git://alias.clone)\n\nClones a repository from a remote location.\n\nRequires: url, path\n\nExample: git://default.clone(url=https://github.com/user/repo.git,path=/local/path)\n";
-pub const BRANCH_HELP: &str = "BRANCH VERB (git://alias.branch)\n\nManages branches - list, create, delete, rename, checkout.\n\nRequires: path, action\n\nExample: git://default.branch(path=/repo,action=list)\n";
-pub const PULL_HELP: &str = "PULL VERB (git://alias.pull)\n\nPulls changes from remote repository.\n\nRequires: path\n\nExample: git://default.pull(path=/repo,remote=origin)\n";
-pub const PUSH_HELP: &str = "PUSH VERB (git://alias.push)\n\nPushes changes to remote repository.\n\nRequires: path\n\nExample: git://default.push(path=/repo,branch=main)\n";
-pub const STATUS_HELP: &str = "STATUS VERB (git://alias.status)\n\nShows detailed repository status.\n\nRequires: path\n\nExample: git://default.status(path=/repo)\n";
-pub const STATUS_SUMMARY_HELP: &str = "STATUS_SUMMARY VERB (git://alias.status_summary)\n\nShows repository status summary with recommendations.\n\nRequires: path\n\nExample: git://default.status_summary(path=/repo)\n";
-pub const STATUS_SHORT_HELP: &str = "STATUS_SHORT VERB (git://alias.status_short)\n\nShows compact status for shell prompts.\n\nRequires: path\n\nExample: git://default.status_short(path=/repo)\n";
-pub const COMMIT_HELP: &str = "COMMIT VERB (git://alias.commit)\n\nCreates commits with staged changes.\n\nRequires: path, message\n\nExample: git://default.commit(path=/repo,message=\"Fix bug\")\n";
-pub const DIFF_HELP: &str = "DIFF VERB (git://alias.diff)\n\nShows differences between commits, branches, working tree.\n\nRequires: path\n\nExample: git://default.diff(path=/repo,mode=workdir_vs_index)\n";
-pub const TAG_HELP: &str = "TAG VERB (git://alias.tag)\n\nManages tags - list, create, delete.\n\nRequires: path, action\n\nExample: git://default.tag(path=/repo,action=list)\n";
-pub const MERGE_HELP: &str = "MERGE VERB (git://alias.merge)\n\nMerges branches together.\n\nRequires: path, branch\n\nExample: git://default.merge(path=/repo,branch=feature)\n";
-pub const REBASE_HELP: &str = "REBASE VERB (git://alias.rebase)\n\nRebases current branch onto another.\n\nRequires: path, onto\n\nExample: git://default.rebase(path=/repo,onto=main)\n";
-pub const SYNC_HELP: &str = "SYNC VERB (git://alias.sync)\n\nSynchronizes with remote (fetch + merge/rebase + push).\n\nRequires: path\n\nExample: git://default.sync(path=/repo,pull_strategy=rebase)\n";
+/// Renders the approved git help, for one verb when `verb` names a registered verb.
+fn git_help_text(verb: Option<&str>) -> String {
+    crate::core::help::render_legacy("git", &GIT_HELP, GIT_VERBS, verb)
+}
 
 impl GitHandle {
     /// Create new GitHandle from URL
@@ -1566,8 +1912,8 @@ impl GitHandle {
         // For git:// URLs, the alias can be in the host or path
         let alias = if let Some(host) = url.host_str() {
             // Check if host is a help request
-            if host == "--help" || host == "-h" || host == "help" {
-                print!("{}", GIT_HELP_TEXT);
+            if is_git_help_word(host) {
+                print!("{}", git_help_text(None));
                 std::process::exit(0);
             }
             // If we have a host, that's our alias (git://main)
@@ -1578,8 +1924,8 @@ impl GitHandle {
         } else {
             // Path-based alias (git:///main)
             let path_alias = url.path().trim_start_matches('/').to_string();
-            if path_alias == "--help" || path_alias == "-h" || path_alias == "help" {
-                print!("{}", GIT_HELP_TEXT);
+            if is_git_help_word(&path_alias) {
+                print!("{}", git_help_text(None));
                 std::process::exit(0);
             }
             path_alias
@@ -1590,30 +1936,6 @@ impl GitHandle {
         }
 
         Ok(GitHandle { alias })
-    }
-
-    /// Show verb-specific help
-    fn show_verb_help(&self, verb: &str) -> Result<Status> {
-        match verb {
-            "clone" => print!("{}", CLONE_HELP),
-            "branch" => print!("{}", BRANCH_HELP),
-            "pull" => print!("{}", PULL_HELP),
-            "push" => print!("{}", PUSH_HELP),
-            "status" => print!("{}", STATUS_HELP),
-            "status_summary" => print!("{}", STATUS_SUMMARY_HELP),
-            "status_short" => print!("{}", STATUS_SHORT_HELP),
-            "commit" => print!("{}", COMMIT_HELP),
-            "diff" => print!("{}", DIFF_HELP),
-            "tag" => print!("{}", TAG_HELP),
-            "merge" => print!("{}", MERGE_HELP),
-            "rebase" => print!("{}", REBASE_HELP),
-            "sync" => print!("{}", SYNC_HELP),
-            _ => {
-                eprintln!("Unknown verb: {}. Use --help for full list.", verb);
-                return Ok(Status::err(1, format!("Unknown verb: {}", verb)));
-            },
-        }
-        Ok(Status::success())
     }
 
     /// Clone verb implementation
@@ -1875,7 +2197,7 @@ impl GitHandle {
 
     /// Parse clone configuration from arguments
     fn parse_clone_config(&self, args: Value) -> Result<CloneConfig, GitError> {
-        serde_json::from_value(args)
+        crate::core::lenient::from_value(args)
             .map_err(|e| GitError::InvalidCloneConfig {
                 message: format!("failed to parse clone config: {}", e),
             })
@@ -1883,7 +2205,7 @@ impl GitHandle {
 
     /// Parse pull configuration from arguments
     fn parse_pull_config(&self, args: Value) -> Result<PullConfig, GitError> {
-        serde_json::from_value(args)
+        crate::core::lenient::from_value(args)
             .map_err(|e| GitError::InvalidPullConfig {
                 message: format!("failed to parse pull config: {}", e),
             })
@@ -1891,7 +2213,7 @@ impl GitHandle {
 
     /// Parse push configuration from arguments
     fn parse_push_config(&self, args: Value) -> Result<PushConfig, GitError> {
-        serde_json::from_value(args)
+        crate::core::lenient::from_value(args)
             .map_err(|e| GitError::InvalidPushConfig {
                 message: format!("failed to parse push config: {}", e),
             })
@@ -2115,7 +2437,7 @@ impl GitHandle {
 
     /// Parse status configuration from arguments
     fn parse_status_config(&self, args: Value) -> Result<StatusConfig, GitError> {
-        serde_json::from_value(args)
+        crate::core::lenient::from_value(args)
             .map_err(|e| GitError::InvalidStatusConfig {
                 message: format!("failed to parse status config: {}", e),
             })
@@ -2158,7 +2480,7 @@ impl GitHandle {
 
     /// Parse branch configuration from arguments
     fn parse_branch_config(&self, args: Value) -> Result<BranchConfig, GitError> {
-        serde_json::from_value(args)
+        crate::core::lenient::from_value(args)
             .map_err(|e| GitError::InvalidBranchConfig {
                 message: format!("failed to parse branch config: {}", e),
             })
@@ -2268,7 +2590,7 @@ impl GitHandle {
 
     /// Parse commit configuration from arguments
     fn parse_commit_config(&self, args: Value) -> Result<CommitConfig, GitError> {
-        serde_json::from_value(args)
+        crate::core::lenient::from_value(args)
             .map_err(|e| GitError::InvalidCommitConfig {
                 message: format!("failed to parse commit config: {}", e),
             })
@@ -2428,8 +2750,8 @@ impl GitHandle {
                     }
                     "paths" => {
                         if let Some(val_str) = value.as_str() {
-                            // Parse JSON array string
-                            let paths: Vec<String> = serde_json::from_str(val_str).map_err(|_| {
+                            // A JSON array string or a comma-separated list
+                            let paths: Vec<String> = lenient_arg(key, value).map_err(|_| {
                                 GitError::InvalidDiffConfig {
                                     message: format!("invalid paths value: {}", val_str),
                                 }
@@ -2465,7 +2787,7 @@ impl GitHandle {
             Ok(config)
         } else {
             // Fallback to direct deserialization for backwards compatibility
-            serde_json::from_value(args)
+            crate::core::lenient::from_value(args)
                 .map_err(|e| GitError::InvalidDiffConfig {
                     message: format!("failed to parse diff config: {}", e),
                 })
@@ -2615,7 +2937,7 @@ impl GitHandle {
             Ok(config)
         } else {
             // Fallback to direct deserialization for backwards compatibility
-            serde_json::from_value(args)
+            crate::core::lenient::from_value(args)
                 .map_err(|e| GitError::InvalidTagConfig {
                     message: format!("failed to parse tag config: {}", e),
                 })
@@ -2719,19 +3041,16 @@ impl GitHandle {
                         }
                     }
                     "ff_only" => {
-                        if let Some(ff_only_bool) = value.as_bool() {
-                            config.ff_only = Some(ff_only_bool);
-                        }
+                        config.ff_only = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
                     }
                     "no_ff" => {
-                        if let Some(no_ff_bool) = value.as_bool() {
-                            config.no_ff = Some(no_ff_bool);
-                        }
+                        config.no_ff = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
                     }
                     "squash" => {
-                        if let Some(squash_bool) = value.as_bool() {
-                            config.squash = Some(squash_bool);
-                        }
+                        config.squash = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
                     }
                     "commit_message" => {
                         if let Some(message_str) = value.as_str() {
@@ -2759,19 +3078,16 @@ impl GitHandle {
                         }
                     }
                     "allow_uncommitted" => {
-                        if let Some(allow_bool) = value.as_bool() {
-                            config.allow_uncommitted = Some(allow_bool);
-                        }
+                        config.allow_uncommitted = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
                     }
                     "abort_on_conflict" => {
-                        if let Some(abort_bool) = value.as_bool() {
-                            config.abort_on_conflict = Some(abort_bool);
-                        }
+                        config.abort_on_conflict = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
                     }
                     "timeout_ms" => {
-                        if let Some(timeout_num) = value.as_u64() {
-                            config.timeout_ms = Some(timeout_num);
-                        }
+                        config.timeout_ms = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
                     }
                     _ => {
                         log::debug!("Unknown merge config key: {}", key);
@@ -2782,7 +3098,7 @@ impl GitHandle {
             Ok(config)
         } else {
             // Try to parse as direct JSON
-            serde_json::from_value(args)
+            crate::core::lenient::from_value(args)
                 .map_err(|e| GitError::InvalidMergeConfig {
                     message: format!("failed to parse merge config: {}", e),
                 })
@@ -2917,29 +3233,24 @@ impl GitHandle {
                         }
                     }
                     "ff_only" => {
-                        if let Some(ff_only_bool) = value.as_bool() {
-                            config.ff_only = Some(ff_only_bool);
-                        }
+                        config.ff_only = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
                     }
                     "preserve_merges" => {
-                        if let Some(preserve_bool) = value.as_bool() {
-                            config.preserve_merges = Some(preserve_bool);
-                        }
+                        config.preserve_merges = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
                     }
                     "autosquash" => {
-                        if let Some(autosquash_bool) = value.as_bool() {
-                            config.autosquash = Some(autosquash_bool);
-                        }
+                        config.autosquash = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
                     }
                     "allow_uncommitted" => {
-                        if let Some(allow_bool) = value.as_bool() {
-                            config.allow_uncommitted = Some(allow_bool);
-                        }
+                        config.allow_uncommitted = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
                     }
                     "abort_on_conflict" => {
-                        if let Some(abort_bool) = value.as_bool() {
-                            config.abort_on_conflict = Some(abort_bool);
-                        }
+                        config.abort_on_conflict = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
                     }
                     "author_name" => {
                         if let Some(author_str) = value.as_str() {
@@ -2962,9 +3273,8 @@ impl GitHandle {
                         }
                     }
                     "timeout_ms" => {
-                        if let Some(timeout_num) = value.as_u64() {
-                            config.timeout_ms = Some(timeout_num);
-                        }
+                        config.timeout_ms = Some(lenient_arg(key, value)
+                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
                     }
                     _ => {
                         log::debug!("Unknown rebase config key: {}", key);
@@ -2975,7 +3285,7 @@ impl GitHandle {
             Ok(config)
         } else {
             // Try to parse as direct JSON
-            serde_json::from_value(args)
+            crate::core::lenient::from_value(args)
                 .map_err(|e| GitError::InvalidRebaseConfig {
                     message: format!("failed to parse rebase config: {}", e),
                 })
@@ -3320,19 +3630,34 @@ impl GitHandle {
     }
 
     /// Stage a specific path
-    fn stage_specific_path(&self, _repo: &Repository, index: &mut Index, path: &str) -> Result<usize, GitError> {
-        let path_buf = Path::new(path);
-        
-        // Check if path exists in working tree
-        if path_buf.exists() {
+    fn stage_specific_path(&self, repo: &Repository, index: &mut Index, path: &str) -> Result<usize, GitError> {
+        // Index paths are relative to the work tree, so resolve the given path
+        // against it rather than the process's current directory. Absolute
+        // paths inside the work tree are accepted too.
+        let workdir = repo.workdir().ok_or_else(|| GitError::CommitFailed {
+            message: "cannot stage paths in a bare repository".to_string(),
+        })?;
+        let given = Path::new(path);
+        let rel_path: PathBuf = if given.is_absolute() {
+            given
+                .strip_prefix(workdir)
+                .map(Path::to_path_buf)
+                .map_err(|_| GitError::CommitFailed {
+                    message: format!("path '{}' is outside the repository work tree", path),
+                })?
+        } else {
+            given.to_path_buf()
+        };
+
+        if workdir.join(&rel_path).exists() {
             // Add the file to index
-            index.add_path(path_buf).map_err(|e| GitError::CommitFailed {
+            index.add_path(&rel_path).map_err(|e| GitError::CommitFailed {
                 message: format!("failed to add path '{}' to index: {}", path, e),
             })?;
             Ok(1)
         } else {
             // File might be deleted, try to remove from index
-            match index.remove_path(path_buf) {
+            match index.remove_path(&rel_path) {
                 Ok(_) => Ok(1),
                 Err(e) => Err(GitError::CommitFailed {
                     message: format!("failed to stage path '{}': {}", path, e),
@@ -6748,7 +7073,7 @@ impl GitHandle {
 
     /// Parse sync configuration from arguments
     fn parse_sync_config(&self, args: Value) -> Result<SyncConfig, GitError> {
-        serde_json::from_value(args)
+        crate::core::lenient::from_value(args)
             .map_err(|e| GitError::InvalidSyncConfig {
                 message: format!("failed to parse sync config: {}", e),
             })
@@ -6811,7 +7136,7 @@ impl GitHandle {
 
     /// Parse status summary configuration from arguments
     fn parse_status_summary_config(&self, args: Value) -> Result<StatusSummaryConfig, GitError> {
-        let config: StatusSummaryConfig = serde_json::from_value(args)
+        let config: StatusSummaryConfig = crate::core::lenient::from_value(args)
             .map_err(|e| GitError::InvalidStatusSummaryConfig {
                 message: format!("failed to parse status summary config: {}", e),
             })?;
@@ -7725,7 +8050,7 @@ impl GitHandle {
 
     /// Parse status_short configuration from arguments
     fn parse_status_short_config(&self, args: Value) -> Result<StatusShortConfig, GitError> {
-        serde_json::from_value(args).map_err(|e| GitError::InvalidStatusShortConfig {
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidStatusShortConfig {
             message: format!("failed to parse status_short config: {}", e),
         })
     }
@@ -8064,19 +8389,19 @@ impl GitHandle {
 
 impl Handle for GitHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["clone", "pull", "push", "status", "branch", "commit", "diff", "tag", "merge", "rebase", "sync", "status_summary", "status_short"]
+        GIT_VERBS
     }
 
-    fn call(&self, verb: &str, args: &Args, _io: &mut IoStreams) -> Result<Status> {
-        // Handle verb-specific help first
-        if let Some(help_verb) = args.get("help") {
-            return self.show_verb_help(help_verb);
-        }
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&GIT_HELP)
+    }
 
-        // Handle general help requests 
-        if verb == "help" || verb == "--help" || verb == "-h" ||
-           args.get("--help").is_some() || args.get("-h").is_some() {
-            print!("{}", GIT_HELP_TEXT);
+    fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // In-URL help forms: help=<verb>, --help[=<verb>], -h, or a help verb.
+        let help_arg = ["help", "--help", "-h"].iter().find_map(|k| args.get(*k));
+        if help_arg.is_some() || is_git_help_word(verb) {
+            let wanted = help_arg.map(|v| v.as_str()).filter(|v| !v.is_empty());
+            write!(io.stdout, "{}", git_help_text(wanted))?;
             return Ok(Status::success());
         }
 
@@ -11129,5 +11454,184 @@ mod tests {
         let error = GitError::StatusShortFailed { message: "git operation failed".to_string() };
         let shell_error: crate::core::status::ShellError = error.into();
         assert_eq!(shell_error.code, "git.status_short_failed");
+    }
+
+    /// CLI args as the registry delivers them: every value is a string.
+    fn cli_args(pairs: &[(&str, &str)]) -> Value {
+        let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        serde_json::to_value(args).unwrap()
+    }
+
+    #[test]
+    fn test_parse_commit_config_from_cli_strings() {
+        let handle = GitHandle { alias: "test".to_string() };
+        let config = handle
+            .parse_commit_config(cli_args(&[
+                ("path", "/repo"),
+                ("message", "msg"),
+                ("all", "true"),
+                ("paths", "a.txt,b.txt"),
+                ("allow_empty", "false"),
+                ("timeout_ms", "5000"),
+            ]))
+            .unwrap();
+        assert_eq!(config.all, Some(true));
+        assert_eq!(config.paths, Some(vec!["a.txt".to_string(), "b.txt".to_string()]));
+        assert_eq!(config.allow_empty, Some(false));
+        assert_eq!(config.timeout_ms, Some(5000));
+
+        let config = handle
+            .parse_commit_config(cli_args(&[("path", "/repo"), ("paths", r#"["x y.txt"]"#)]))
+            .unwrap();
+        assert_eq!(config.paths, Some(vec!["x y.txt".to_string()]));
+
+        assert!(handle
+            .parse_commit_config(cli_args(&[("path", "/repo"), ("all", "maybe")]))
+            .is_err());
+    }
+
+    #[test]
+    fn test_parse_typed_configs_from_cli_strings() {
+        let handle = GitHandle { alias: "test".to_string() };
+
+        let pull = handle
+            .parse_pull_config(cli_args(&[("path", "/r"), ("ff_only", "true"), ("timeout_ms", "100")]))
+            .unwrap();
+        assert_eq!(pull.ff_only, Some(true));
+        assert_eq!(pull.timeout_ms, Some(100));
+
+        let push = handle
+            .parse_push_config(cli_args(&[("path", "/r"), ("tags", "yes"), ("branches", "main,dev")]))
+            .unwrap();
+        assert_eq!(push.tags, Some(true));
+        assert_eq!(push.branches, Some(vec!["main".to_string(), "dev".to_string()]));
+
+        let status = handle
+            .parse_status_config(cli_args(&[("path", "/r"), ("include_ignored", "1")]))
+            .unwrap();
+        assert_eq!(status.include_ignored, Some(true));
+
+        let branch = handle
+            .parse_branch_config(cli_args(&[("path", "/r"), ("action", "list"), ("all", "true")]))
+            .unwrap();
+        assert_eq!(branch.action, Some(BranchAction::List));
+        assert_eq!(branch.all, Some(true));
+
+        let sync = handle
+            .parse_sync_config(cli_args(&[("path", "/r"), ("pull_strategy", "ff_only"), ("dry_run", "true")]))
+            .unwrap();
+        assert_eq!(sync.pull_strategy, Some(PullStrategy::FfOnly));
+        assert_eq!(sync.dry_run, Some(true));
+
+        let summary = handle
+            .parse_status_summary_config(cli_args(&[("path", "/r"), ("max_files", "10")]))
+            .unwrap();
+        assert_eq!(summary.max_files, Some(10));
+
+        let short = handle
+            .parse_status_short_config(cli_args(&[("path", "/r"), ("include_dirty", "false")]))
+            .unwrap();
+        assert_eq!(short.include_dirty, Some(false));
+    }
+
+    #[test]
+    fn test_parse_merge_and_rebase_config_from_cli_strings() {
+        let handle = GitHandle { alias: "test".to_string() };
+
+        let merge = handle
+            .parse_merge_config(cli_args(&[
+                ("path", "/r"),
+                ("source", "feature"),
+                ("ff_only", "true"),
+                ("squash", "false"),
+                ("timeout_ms", "250"),
+            ]))
+            .unwrap();
+        assert_eq!(merge.ff_only, Some(true));
+        assert_eq!(merge.squash, Some(false));
+        assert_eq!(merge.timeout_ms, Some(250));
+        assert!(handle
+            .parse_merge_config(cli_args(&[("path", "/r"), ("source", "f"), ("no_ff", "maybe")]))
+            .is_err());
+
+        let rebase = handle
+            .parse_rebase_config(cli_args(&[
+                ("path", "/r"),
+                ("upstream", "main"),
+                ("autosquash", "yes"),
+                ("timeout_ms", "300"),
+            ]))
+            .unwrap();
+        assert_eq!(rebase.autosquash, Some(true));
+        assert_eq!(rebase.timeout_ms, Some(300));
+        assert!(handle
+            .parse_rebase_config(cli_args(&[("path", "/r"), ("timeout_ms", "soon")]))
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_commit_all_true_from_cli_strings_stages_tracked_changes() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = Repository::init(temp_dir.path()).unwrap();
+        let file = temp_dir.path().join("a.txt");
+        std::fs::write(&file, "one\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("a.txt")).unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = Signature::now("T", "t@example.com").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        }
+        std::fs::write(&file, "two\n").unwrap();
+
+        let handle = GitHandle { alias: "test".to_string() };
+        let path = temp_dir.path().to_string_lossy().to_string();
+        let result = handle
+            .commit(cli_args(&[
+                ("path", &path),
+                ("message", "update"),
+                ("all", "true"),
+                ("author_name", "T"),
+                ("author_email", "t@example.com"),
+            ]))
+            .await
+            .unwrap();
+        assert_eq!(result["stats"]["staged_files"], 1);
+
+        let statuses = repo.statuses(None).unwrap();
+        assert!(statuses.iter().all(|e| !e.status().contains(GitStatus::WT_MODIFIED)));
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.message(), Some("update"));
+
+        // paths= is resolved against the work tree, not the current directory.
+        std::fs::write(temp_dir.path().join("b.txt"), "new\n").unwrap();
+        std::fs::write(temp_dir.path().join("c.txt"), "new\n").unwrap();
+        let result = handle
+            .commit(cli_args(&[
+                ("path", &path),
+                ("message", "add b"),
+                ("paths", "b.txt"),
+                ("author_name", "T"),
+                ("author_email", "t@example.com"),
+            ]))
+            .await
+            .unwrap();
+        assert_eq!(result["stats"]["staged_files"], 1);
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let tree = head.tree().unwrap();
+        assert!(tree.get_name("b.txt").is_some());
+        assert!(tree.get_name("c.txt").is_none());
+    }
+
+    #[test]
+    fn test_in_url_help_uses_approved_metadata() {
+        assert!(git_help_text(None).starts_with("Handle: git"));
+        let verb = git_help_text(Some("commit"));
+        assert!(verb.starts_with("Handle: git"));
+        assert!(verb.contains("Verb: commit"));
+        assert!(is_git_help_word("--help"));
+        assert!(is_git_help_word("help"));
+        assert!(!is_git_help_word("my-helper"));
     }
 }

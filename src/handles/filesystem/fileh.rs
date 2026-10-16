@@ -27,6 +27,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use xattr;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
@@ -34,763 +35,6 @@ use crate::core::{
 // Constants for production safety
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10GB limit
 const BUFFER_SIZE: usize = 8192; // 8KB chunks for streaming
-
-// Help text for --help command
-const HELP_TEXT: &str = r#"RESOURCE SHELL - FILE HANDLE
-============================
-
-USAGE:
-  file:///path/to/file.txt.VERB(arguments)
-
-DESCRIPTION:
-  The file handle lets you work with files and directories on your computer.
-  It provides comprehensive operations to manage files, check contents, manipulate
-  properties, calculate hashes, search content, and work with extended attributes.
-  Supports both Unix and Windows platforms with platform-specific features.
-
-URL FORMAT:
-  file:///absolute/path/to/file.txt
-  file:///path/to/directory
-
-VERB CATEGORIES:
-  Basic I/O:         read, write, append
-  File Info:         exists, stat
-  File Operations:   copy, delete, rename, move
-  Permissions:       chmod, chown (Unix only)
-  Hashing:           md5, sha1, sha256, sha512, hash, verify
-  Search/Analysis:   find, grep, replace, tail, preview, schema, summary, watch, analyze
-  Extended Attrs:    ea.get, ea.set, tag.add, tag.rm (Unix only)
-
-VERBS (30 total):
-
-  Basic I/O Operations:
-    read            Read and output entire file contents
-    write           Create new file or overwrite with content
-    append          Add content to end of existing file
-
-  File Information:
-    exists          Check if file/directory exists (JSON output)
-    stat            Get detailed file metadata (JSON output)
-
-  File Operations:
-    copy            Copy file to another location
-    delete          Delete file or directory (alias: remove)
-    rename          Rename or move file to different location
-    move            Move file to another location (alias: mv)
-
-  Permissions (Unix only):
-    chmod           Change file permissions
-    chown           Change file ownership
-
-  Hashing Operations:
-    md5             Calculate MD5 hash
-    sha1            Calculate SHA-1 hash
-    sha256          Calculate SHA-256 hash
-    sha512          Calculate SHA-512 hash
-    hash            Calculate hash with specified algorithm
-    verify          Verify file hash against expected values
-
-  Search and Analysis:
-    find            Search for files recursively
-    grep            Search for text patterns in file
-    replace         Replace text patterns in file
-    tail            Show last lines of file
-    preview         Show preview with intelligent formatting
-    schema          Analyze file structure and generate schema
-    summary         Provide summary of file/directory contents
-    watch           Monitor file for changes
-    analyze         Perform detailed file content analysis
-
-  Extended Attributes (Unix only):
-    ea.get          Get extended attributes
-    ea.set          Set extended attributes
-    tag.add         Add tags to file
-    tag.rm          Remove tags from file
-
-EXAMPLES:
-
-  Basic I/O:
-    # Read entire file
-    file:///tmp/myfile.txt.read
-
-    # Write new content (create if needed)
-    file:///tmp/test.txt.write(data="hello")
-
-    # Overwrite existing file
-    file:///tmp/existing.txt.write(data="new content")
-
-    # Write with create disabled
-    file:///tmp/nofile.txt.write(data="x",create=false)
-
-    # Append to file
-    file:///tmp/log.txt.append(data="bar")
-
-    # Append with create disabled
-    file:///tmp/missing.txt.append(data="zzz",create=false)
-
-  File Information:
-    # Check if file exists
-    file:///tmp/existing.txt.exists
-
-    # Check if directory exists
-    file:///tmp/directory.exists
-
-    # Check missing file
-    file:///tmp/missing.txt.exists
-
-    # Get detailed file metadata
-    file:///tmp/test.txt.stat
-
-    # Stat symlink without following
-    file:///tmp/symlink.stat(nofollow=true)
-
-  File Operations:
-    # Copy file
-    file:///tmp/source.txt.copy(to="/tmp/destination.txt")
-
-    # Copy with overwrite
-    file:///tmp/file.txt.copy(to="/tmp/existing.txt",overwrite=true)
-
-    # Copy preserving timestamps
-    file:///tmp/file.txt.copy(to="/tmp/dest.txt",preserve_times=true)
-
-    # Delete file
-    file:///tmp/file.txt.delete
-
-    # Delete directory recursively
-    file:///tmp/directory.delete(recursive=true)
-
-    # Delete with missing_ok
-    file:///tmp/missing.txt.delete(missing_ok=true)
-
-    # Rename file
-    file:///tmp/old.txt.rename(to="/tmp/new.txt")
-
-    # Rename with overwrite
-    file:///tmp/file.txt.rename(to="/tmp/existing.txt",overwrite=true)
-
-    # Rename creating parent directories
-    file:///tmp/file.txt.rename(to="/new/path/file.txt",create_parents=true)
-
-    # Move file
-    file:///tmp/source.txt.move(to="/home/user/dest.txt")
-
-    # Move with overwrite (using mv alias)
-    file:///tmp/file.txt.mv(to="/tmp/existing.txt",overwrite=true)
-
-  Permissions (Unix):
-    # Make script executable
-    file:///tmp/script.sh.chmod(mode=755)
-
-    # Private file (owner only)
-    file:///tmp/secret.txt.chmod(mode=600)
-
-    # Public readable
-    file:///tmp/public.txt.chmod(mode=644)
-
-    # Change owner by username
-    file:///tmp/file.txt.chown(user="alice")
-
-    # Change owner by ID
-    file:///tmp/file.txt.chown(uid=1000,gid=100)
-
-    # Change owner recursively
-    file:///tmp/directory.chown(user="alice",recursive=true)
-
-  Hashing:
-    # Calculate MD5 hash
-    file:///tmp/file.txt.md5
-
-    # Calculate SHA-1 hash
-    file:///tmp/file.txt.sha1
-
-    # Calculate SHA-256 hash
-    file:///tmp/file.txt.sha256
-
-    # Calculate SHA-512 hash
-    file:///tmp/file.txt.sha512
-
-    # Calculate hash with default algorithm (SHA-256)
-    file:///tmp/file.txt.hash
-
-    # Calculate BLAKE3 hash
-    file:///tmp/file.txt.hash(algo=blake3)
-
-    # Verify file hash
-    file:///tmp/file.txt.verify(algo=sha256,expected="a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447")
-
-    # Verify hash and size
-    file:///tmp/file.txt.verify(algo=md5,expected="098f6bcd4621d373cade4e832627b4f6",size=4)
-
-    # Verify against multiple acceptable hashes
-    file:///tmp/file.txt.verify(algo=sha256,expected_any="hash1;hash2;hash3")
-
-  Search and Analysis:
-    # Find all files
-    file:///tmp/directory.find
-
-    # Find .txt files only
-    file:///tmp/directory.find(pattern="*.txt",type=f)
-
-    # Find directories only
-    file:///tmp/directory.find(type=d)
-
-    # Find with max depth
-    file:///tmp/directory.find(max_depth=2)
-
-    # Find including hidden files
-    file:///tmp/directory.find(hidden=true)
-
-    # Search for text in file
-    file:///tmp/log.txt.grep(pattern="foo")
-
-    # Case-insensitive search
-    file:///tmp/file.txt.grep(pattern="error",ignore_case=true)
-
-    # Regex search
-    file:///tmp/file.txt.grep(pattern="[0-9]+",regex=true)
-
-    # Search without line numbers
-    file:///tmp/file.txt.grep(pattern="test",line_numbers=false)
-
-    # Replace text
-    file:///tmp/config.txt.replace(pattern="old_value",replacement="new_value")
-
-    # Replace with regex
-    file:///tmp/file.txt.replace(pattern="v[0-9]+",replacement="v2.0",regex=true)
-
-    # Replace with backup
-    file:///tmp/config.txt.replace(pattern="old",replacement="new",backup=true)
-
-    # Tail last 10 lines (default)
-    file:///var/log/app.log.tail
-
-    # Tail specific number of lines
-    file:///var/log/app.log.tail(lines=5)
-
-    # Tail last N bytes
-    file:///var/log/app.log.tail(bytes=1024)
-
-    # Follow file (continuous monitoring)
-    file:///var/log/app.log.tail(follow=true)
-
-    # Preview file
-    file:///tmp/document.txt.preview
-
-    # Preview with custom limits
-    file:///tmp/document.txt.preview(max_lines=100,max_bytes=131072)
-
-    # Analyze CSV schema
-    file:///tmp/data.csv.schema
-
-    # Analyze JSON schema
-    file:///tmp/data.json.schema(format=json)
-
-    # Analyze with sample size
-    file:///tmp/large.csv.schema(sample_size=5000)
-
-    # Summarize file
-    file:///tmp/document.txt.summary
-
-    # Summarize directory
-    file:///tmp/directory.summary
-
-    # Summarize including hidden files
-    file:///tmp/directory.summary(include_hidden=true)
-
-    # Watch file for changes
-    file:///tmp/config.conf.watch
-
-    # Watch with custom timeout
-    file:///tmp/dir.watch(timeout=60)
-
-    # Watch specific events
-    file:///tmp/dir.watch(events="create,modify")
-
-    # Analyze file
-    file:///tmp/source.py.analyze
-
-    # Analyze with type hint
-    file:///tmp/image.jpg.analyze(type=image)
-
-    # Deep analysis
-    file:///tmp/binary.analyze(deep=true)
-
-  Extended Attributes (Unix):
-    # List all extended attributes
-    file:///tmp/file.txt.ea.get
-
-    # Get specific attribute
-    file:///tmp/file.txt.ea.get(name="user.comment")
-
-    # Set extended attribute
-    file:///tmp/file.txt.ea.set(name="user.comment",value="Important file")
-
-    # Add tags
-    file:///tmp/document.pdf.tag.add(tags="work,important,draft")
-
-    # Remove tags
-    file:///tmp/document.pdf.tag.rm(tags="draft")
-
-READ ARGUMENTS:
-  None - reads entire file to output
-
-WRITE ARGUMENTS:
-  data=TEXT              Content to write (required)
-  create=BOOL            Create file if doesn't exist (default: true)
-
-APPEND ARGUMENTS:
-  data=TEXT              Content to append (required)
-  create=BOOL            Create file if doesn't exist (default: true)
-
-EXISTS ARGUMENTS:
-  None - returns JSON with existence and type info
-
-STAT ARGUMENTS:
-  nofollow=BOOL          Don't follow symbolic links (default: false)
-
-COPY ARGUMENTS:
-  to=PATH                Destination path (required)
-  overwrite=BOOL         Allow overwriting existing files (default: false)
-  preserve_mode=BOOL     Preserve file permissions (default: true on Unix)
-  preserve_times=BOOL    Preserve timestamps (default: false)
-
-DELETE ARGUMENTS (alias: remove):
-  recursive=BOOL         Delete directories and contents (default: false)
-  force=BOOL             Don't error if file doesn't exist (default: false)
-  missing_ok=BOOL        Same as force (default: false)
-
-RENAME ARGUMENTS:
-  to=PATH                New path (required)
-  overwrite=BOOL         Allow overwriting (default: false)
-  create_parents=BOOL    Create parent directories (default: false)
-  atomic=BOOL            Use atomic operation if possible (default: true)
-
-MOVE ARGUMENTS (alias: mv):
-  to=PATH                Destination path (required)
-  overwrite=BOOL         Allow overwriting (default: false)
-
-CHMOD ARGUMENTS (Unix only):
-  mode=OCTAL             Octal permission mode (required, e.g., 755, 644)
-
-CHOWN ARGUMENTS (Unix only):
-  user=USERNAME          Username to set as owner
-  uid=NUMBER             User ID to set as owner
-  group=GROUPNAME        Group name to set
-  gid=NUMBER             Group ID to set
-  recursive=BOOL         Apply recursively (default: false)
-
-MD5/SHA1/SHA256/SHA512 ARGUMENTS:
-  None - calculates hash and returns JSON
-
-HASH ARGUMENTS:
-  algo=ALGORITHM         Hash algorithm: sha256, sha512, blake3 (default: sha256)
-
-VERIFY ARGUMENTS:
-  algo=ALGORITHM         Hash algorithm: sha256, sha1, md5, blake3 (default: sha256)
-  expected=HASH          Single expected hash value
-  expected_any=HASHES    Semicolon-separated list of acceptable hashes
-  size=BYTES             Expected file size in bytes
-
-FIND ARGUMENTS:
-  pattern=GLOB           Glob pattern to match filenames (e.g., *.txt)
-  type=TYPE              Filter by type: f (files), d (dirs), l (symlinks)
-  hidden=BOOL            Include hidden files (default: false)
-  max_depth=NUMBER       Maximum directory depth to search
-
-GREP ARGUMENTS:
-  pattern=TEXT           Text or regex pattern to search (required)
-  regex=BOOL             Treat pattern as regex (default: false)
-  ignore_case=BOOL       Case-insensitive search (default: false)
-  line_numbers=BOOL      Show line numbers (default: true)
-  max_count=NUMBER       Stop after this many matches
-
-REPLACE ARGUMENTS:
-  pattern=TEXT           Text or regex pattern to find (required)
-  replacement=TEXT       Text to replace with (required)
-  regex=BOOL             Treat pattern as regex (default: false)
-  global=BOOL            Replace all matches (default: true)
-  backup=BOOL            Create backup before modifying (default: false)
-
-TAIL ARGUMENTS:
-  lines=NUMBER           Number of lines to show (default: 10)
-  bytes=NUMBER           Show last N bytes instead of lines
-  follow=BOOL            Continue reading as file grows (default: false)
-
-PREVIEW ARGUMENTS:
-  max_lines=NUMBER       Maximum lines to show (default: 50)
-  max_bytes=NUMBER       Maximum bytes to read (default: 64KB)
-
-SCHEMA ARGUMENTS:
-  format=FORMAT          Output format: auto, json, csv, text (default: auto)
-  sample_size=NUMBER     Number of records to analyze (default: 1000)
-
-SUMMARY ARGUMENTS:
-  max_bytes=NUMBER       Maximum bytes to read (default: 1MB)
-  include_hidden=BOOL    Include hidden files in directory summary
-
-WATCH ARGUMENTS:
-  timeout=SECONDS        How long to watch (default: 30)
-  events=TYPES           Event types: create, modify, delete (default: all)
-
-ANALYZE ARGUMENTS:
-  type=TYPE              Analysis type: text, binary, image, code (default: auto)
-  deep=BOOL              Perform deep analysis (default: false)
-
-EA.GET ARGUMENTS (Unix only):
-  name=ATTRIBUTE         Specific attribute name to retrieve
-
-EA.SET ARGUMENTS (Unix only):
-  name=ATTRIBUTE         Attribute name (required)
-  value=VALUE            Attribute value (required)
-
-TAG.ADD ARGUMENTS (Unix only):
-  tags=TAG_LIST          Comma-separated list of tags (required)
-
-TAG.RM ARGUMENTS (Unix only):
-  tags=TAG_LIST          Comma-separated list of tags to remove (required)
-
-OUTPUT FORMATS:
-
-  read success:
-    (file contents to stdout)
-
-  write/append success:
-    {"written": true, "bytes": 1024, "path": "/tmp/file.txt"}
-
-  exists output:
-    {"path":"/tmp/file.txt","exists":true,"kind":"file"}
-    {"path":"/tmp/dir","exists":true,"kind":"dir"}
-    {"path":"/tmp/missing","exists":false,"kind":"none"}
-
-  stat output:
-    {
-      "path": "/tmp/file.txt",
-      "size": 1024,
-      "file_type": "file",
-      "readonly": false,
-      "mode": "0644",
-      "uid": 1000,
-      "gid": 100,
-      "modified": "2025-01-15T10:30:00Z",
-      "accessed": "2025-01-15T11:00:00Z",
-      "created": "2025-01-10T08:00:00Z"
-    }
-
-  hash output (md5, sha1, sha256, sha512, hash):
-    {
-      "path": "/tmp/file.txt",
-      "algorithm": "sha256",
-      "hash": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
-      "size": 5
-    }
-
-  verify output:
-    {
-      "path": "/tmp/file.txt",
-      "algorithm": "sha256",
-      "expected": "a948904f...",
-      "digest": "a948904f...",
-      "match": true,
-      "size_match": true,
-      "verified": true,
-      "error": null
-    }
-
-  find output:
-    [
-      {
-        "path": "/tmp/dir/file1.txt",
-        "kind": "file",
-        "size": 1024
-      },
-      {
-        "path": "/tmp/dir/subdir",
-        "kind": "dir"
-      }
-    ]
-
-  grep output:
-    3: pattern found here
-    7: another match
-    12: third occurrence
-
-ERROR CODES:
-  0                      Success
-  1                      General error (operation failed)
-  2                      File not found or doesn't exist
-  3                      Permission denied
-  95                     Feature not supported on this platform
-
-PLATFORM SUPPORT:
-
-  All platforms (Unix, Linux, macOS, Windows):
-    • Basic I/O: read, write, append
-    • File info: exists, stat
-    • File operations: copy, delete, rename, move
-    • Hashing: md5, sha1, sha256, sha512, hash, verify
-    • Search: find, grep, replace, tail
-    • Analysis: preview, schema, summary, watch, analyze
-
-  Unix only (Linux, macOS):
-    • Permissions: chmod, chown
-    • Extended attributes: ea.get, ea.set
-    • File tagging: tag.add, tag.rm
-
-  Notes:
-    • Unix-only features return exit code 95 on Windows
-    • Some features have platform-specific behavior
-    • Always check exit codes for portability
-
-HASH ALGORITHMS:
-
-  Supported algorithms:
-    md5            MD5 (128-bit, legacy)
-    sha1           SHA-1 (160-bit, legacy)
-    sha256         SHA-256 (256-bit, recommended)
-    sha512         SHA-512 (512-bit)
-    blake3         BLAKE3 (256-bit, modern)
-
-  Security recommendations:
-    • Use SHA-256 or SHA-512 for security
-    • Avoid MD5 and SHA-1 for security purposes
-    • Use BLAKE3 for performance + security
-    • File size limit: 10GB for security
-
-  Performance:
-    • BLAKE3 is fastest for large files
-    • SHA-256 is good balance of speed/security
-    • MD5/SHA-1 are fast but insecure
-
-PERMISSION MODES (Unix):
-
-  Common octal modes:
-    755    rwxr-xr-x    Executable by owner, readable by all
-    644    rw-r--r--    Writable by owner, readable by all
-    600    rw-------    Private to owner only
-    777    rwxrwxrwx    Full access for everyone (dangerous)
-    700    rwx------    Private executable
-    444    r--r--r--    Read-only for everyone
-
-  Permission bits:
-    4    Read (r)
-    2    Write (w)
-    1    Execute (x)
-
-  Examples:
-    7 = 4+2+1 = rwx (read, write, execute)
-    6 = 4+2   = rw- (read, write)
-    5 = 4+1   = r-x (read, execute)
-    4 = 4     = r-- (read only)
-
-GLOB PATTERNS:
-
-  Pattern syntax for find:
-    *              Match any characters
-    ?              Match single character
-    [abc]          Match any character in set
-    [!abc]         Match any character not in set
-    **             Match directories recursively
-
-  Examples:
-    *.txt          All .txt files
-    test?.log      test1.log, test2.log, etc.
-    **/*.py        All .py files in any subdirectory
-    [Mm]akefile    Makefile or makefile
-
-REGEX PATTERNS:
-
-  Basic regex syntax for grep and replace:
-    .              Any character
-    ^              Start of line
-    $              End of line
-    *              Zero or more
-    +              One or more
-    ?              Zero or one
-    [abc]          Character class
-    [^abc]         Negated class
-    \d             Digit
-    \w             Word character
-    \s             Whitespace
-
-  Examples:
-    [0-9]+         One or more digits
-    ^ERROR         Lines starting with ERROR
-    \berror\b      Word boundary matching
-    (foo|bar)      Alternation
-
-COMMON WORKFLOWS:
-
-  File backup:
-    # Create backup copy
-    file:///important/file.txt.copy(to="/backup/file.txt")
-    
-    # Verify backup integrity
-    file:///important/file.txt.sha256
-    file:///backup/file.txt.verify(algo=sha256,expected="<hash>")
-
-  Configuration management:
-    # Update config value
-    file:///etc/app/config.ini.replace(pattern="old_value",replacement="new_value",backup=true)
-    
-    # Verify changes
-    file:///etc/app/config.ini.grep(pattern="new_value")
-
-  Log analysis:
-    # Find errors in logs
-    file:///var/log/app.log.grep(pattern="ERROR",ignore_case=true)
-    
-    # Get recent errors
-    file:///var/log/app.log.tail(lines=100)
-
-  File integrity checking:
-    # Generate checksums
-    file:///downloads/file.iso.sha256
-    
-    # Verify downloaded file
-    file:///downloads/file.iso.verify(algo=sha256,expected="<published-hash>")
-
-  Directory organization:
-    # Find all Python files
-    file:///project.find(pattern="*.py",type=f)
-    
-    # Find large files over 1MB
-    file:///data.find(type=f)
-
-  Security and permissions:
-    # Make script executable
-    file:///scripts/deploy.sh.chmod(mode=755)
-    
-    # Secure sensitive file
-    file:///config/secrets.json.chmod(mode=600)
-    
-    # Change ownership
-    file:///var/www.chown(user="www-data",recursive=true)
-
-  File metadata management:
-    # Tag important documents
-    file:///docs/proposal.pdf.tag.add(tags="work,important,q1-2025,reviewed")
-    
-    # Add custom metadata
-    file:///archive/report.pdf.ea.set(name="user.author",value="John Doe")
-
-  Search and replace:
-    # Update API endpoint
-    file:///src/config.js.replace(pattern="api.old.com",replacement="api.new.com")
-    
-    # Update version numbers
-    file:///package.json.replace(pattern="\"version\": \".*\"",replacement="\"version\": \"2.0.0\"",regex=true)
-
-  Data analysis:
-    # Analyze CSV structure
-    file:///data/sales.csv.schema
-    
-    # Preview large file
-    file:///data/large-dataset.json.preview(max_lines=100)
-    
-    # Get directory statistics
-    file:///project.summary
-
-  File monitoring:
-    # Watch config for changes
-    file:///etc/app/config.yaml.watch(timeout=60)
-    
-    # Monitor log file
-    file:///var/log/app.log.tail(follow=true)
-
-BEST PRACTICES:
-  • Always use absolute paths for reliability
-  • Check exit codes in scripts for error handling
-  • Use appropriate hash algorithms (SHA-256+ for security)
-  • Create backups before destructive operations
-  • Use atomic operations when available (rename, write)
-  • Verify file integrity with hash.verify
-  • Use chmod to secure sensitive files (600, 640)
-  • Enable create=false for safety when appropriate
-  • Use overwrite=false to prevent accidental data loss
-  • Leverage find with patterns for efficient searching
-  • Use grep for content searching within files
-  • Preview large files before processing
-  • Use schema to understand data structure
-  • Monitor logs with tail(follow=true)
-  • Tag files for better organization (Unix)
-  • Use extended attributes for metadata (Unix)
-  • Handle URL encoding for special characters
-  • Test regex patterns before using in replace
-  • Use backup=true when using replace
-  • Check platform support for Unix-only features
-  • Use glob patterns efficiently in find
-  • Combine verbs with Unix pipes for workflows
-  • Use stat to check file metadata
-  • Use exists before operations to prevent errors
-  • Monitor file changes with watch
-  • Use analyze for automated content detection
-  • Respect hash size limits (10GB)
-  • Use appropriate permission modes for security
-  • Document permission requirements
-  • Use deep=true for thorough analysis when needed
-
-PERFORMANCE CONSIDERATIONS:
-
-  Hashing large files:
-    • 10GB file size limit enforced
-    • BLAKE3 is fastest for large files
-    • Consider using hash instead of specific algorithm verbs
-
-  Search operations:
-    • find with max_depth limits directory traversal
-    • grep with max_count stops early
-    • Use specific patterns to reduce matches
-
-  File I/O:
-    • read loads entire file into memory
-    • Use tail for large log files
-    • Use preview for quick inspection
-    • watch has timeout parameter
-
-  Analysis operations:
-    • schema has sample_size parameter
-    • summary has max_bytes limit
-    • Use type hints for faster analyze
-
-LIMITATIONS:
-  • Hash operations limited to 10GB files
-  • File paths must use URL encoding for special chars
-  • Some features Unix-only (chmod, chown, ea.*, tag.*)
-  • Extended attributes have platform limitations
-  • Watch timeout maximum depends on system
-  • Follow mode (tail) runs indefinitely
-  • Regex engine has standard limitations
-  • Find performance depends on directory size
-  • Schema analysis limited by sample size
-  • Binary analysis limited by file type detection
-
-FILE ENCODING:
-  • Files are read/written with UTF-8 encoding by default
-  • Binary data is preserved in read/write operations
-  • grep works with text files
-  • hash works with any file type (binary-safe)
-  • Use analyze to detect encoding issues
-
-ATOMIC OPERATIONS:
-  • write uses atomic file creation when possible
-  • rename uses atomic move when possible (atomic=true)
-  • append is atomic on most filesystems
-  • copy is not atomic (destination created progressively)
-  • delete is atomic for single files
-
-MORE INFO:
-  For complete documentation of all file handle verbs and examples:
-  https://github.com/smiller/resh/blob/main/docs/Filesystem_Storage/file.md
-
-  Unix file permissions reference:
-  https://man7.org/linux/man-pages/man1/chmod.1.html
-
-  Extended attributes documentation:
-  https://man7.org/linux/man-pages/man7/xattr.7.html
-
-  Use 'file:// --help=VERB' for detailed help on a specific verb.
-"#;
 
 // Helper functions for streaming hash calculation
 fn calculate_sha1_hash(file_path: &std::path::Path) -> Result<(String, u64)> {
@@ -1019,6 +263,641 @@ pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("file", |u| Ok(Box::new(FileHandle::from_url(u.clone())?)));
 }
 
+/// Metadata for `resh file --help` and `resh file <verb> --help`.
+static FILE_HELP: HandleHelp = HandleHelp {
+    description: "The file handle reads, writes, inspects, hashes, and searches files and \
+        directories on the local filesystem, and on Unix also manages permissions, ownership, \
+        extended attributes, and tags. It uses the Rust standard library for file I/O, the \
+        xattr crate for extended attributes, and the notify crate for change watching. The \
+        target is the path after file://: absolute paths take three slashes, as in \
+        file:///var/log/syslog, and relative paths such as file://data.txt or \
+        file://./logs/app.log resolve from the current directory, except that URL parsing \
+        lowercases the first segment of a relative path and drops a leading localhost, so \
+        write file://./Report.txt for a mixed-case relative name.",
+    usage: "resh file://<path>.<verb>[(key=value,...)]",
+    verbs: &[
+        VerbHelp {
+            name: "read",
+            definition: "Prints the entire contents of a file to standard output.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.read",
+                example: "resh file:///etc/hostname.read",
+                example_output: Some("web01"),
+            }),
+        },
+        VerbHelp {
+            name: "exists",
+            definition: "Reports whether a path exists and whether it is a file, directory, \
+                or symlink, as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.exists",
+                example: "resh --json-pretty file:///etc/hosts.exists",
+                example_output: Some(
+                    r#"{
+  "exists": true,
+  "kind": "file",
+  "path": "/etc/hosts"
+}
+
+A missing path reports exists false and kind none. Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "stat",
+            definition: "Reports a path's type, size, permissions, ownership, and timestamps \
+                as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.stat [nofollow=true|false]",
+                example: "resh --json-pretty file:///etc/hosts.stat",
+                example_output: Some(
+                    r#"{
+  "accessed": "2026-10-16T08:01:12.442193+00:00",
+  "created": "2026-03-02T14:20:05.118374+00:00",
+  "exists": true,
+  "file_type": "file",
+  "gid": 0,
+  "mode": "0644",
+  "modified": "2026-03-02T14:20:05.118374+00:00",
+  "path": "/etc/hosts",
+  "readonly": false,
+  "size": 220,
+  "uid": 0
+}
+
+Shown for a Unix host with --json-pretty. On other platforms mode, uid,
+and gid are null, and created is null where the filesystem lacks it."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "preview",
+            definition: "Reads the first bytes and lines of a file and reports them as a JSON \
+                object, base64 or hex encoding the sample when the content is binary.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.preview [max_bytes=<n>] [max_lines=<n>]\n  \
+                    [mode=auto|text|binary] [encoding=base64|hex]\n  \
+                    [include_metadata=true|false]",
+                example: "resh --json-pretty file:///etc/hosts.preview max_lines=2",
+                example_output: Some(
+                    r#"{
+  "encoding": "utf-8",
+  "file_size_bytes": 220,
+  "is_truncated": false,
+  "line_count": 2,
+  "metadata": {
+    "exists": true,
+    "is_dir": false,
+    "is_file": true,
+    "modified": "2026-03-02T14:20:05.118374+00:00",
+    "permissions": "0644"
+  },
+  "mode": "text",
+  "path": "/etc/hosts",
+  "preview_len_bytes": 220,
+  "sample": "127.0.0.1 localhost\n::1 localhost"
+}
+
+Shown for a text file with --json-pretty. Binary samples report mode
+binary, line_count null, and encoding base64 or hex."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "summary",
+            definition: "Summarizes a file's size, modification time, content type, and line \
+                statistics, or a directory's entry count, as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.summary [max_bytes=<n>]",
+                example: "resh --json-pretty file:///srv/data/users.csv.summary",
+                example_output: Some(
+                    r#"{
+  "avg_line_length": 16.0,
+  "content_type": "csv",
+  "exists": true,
+  "is_dir": false,
+  "line_count": 3,
+  "modified": "2026-10-16T15:52:21.053651+00:00",
+  "path": "/srv/data/users.csv",
+  "sample": "id,name,joined\n1,alice,2026-01-05\n2,bob,2026-02-11\n",
+  "size": 51
+}
+
+Shown for a CSV file with --json-pretty. Directories report only path,
+exists, is_dir, and entry_count."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "analyze",
+            definition: "Samples a file and reports its ASCII ratio, byte entropy, line count, \
+                and a json, csv, log, text, or binary classification as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.analyze [max_bytes=<n>]",
+                example: "resh --json-pretty file:///var/log/app.log.analyze",
+                example_output: Some(
+                    r#"{
+  "ascii_ratio": 1.0,
+  "classification": "text",
+  "entropy": 4.004247855285173,
+  "format_hints": {
+    "is_csv": false,
+    "is_json": false,
+    "is_log_like": false
+  },
+  "line_count": 4,
+  "null_byte_present": false,
+  "path": "/var/log/app.log",
+  "sample_bytes": 48,
+  "size_bytes": 48
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "schema",
+            definition: "Detects whether a file is JSON, NDJSON, CSV, TSV, or plain text and \
+                reports its inferred structure as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.schema [format=json|ndjson|csv|tsv|text]\n  \
+                    [max_bytes=<n>] [max_rows=<n>]",
+                example: "resh --json-pretty file:///srv/data/users.csv.schema",
+                example_output: Some(
+                    r#"{
+  "byte_sample": 51,
+  "detected": {
+    "columns": [
+      {
+        "name": "id",
+        "types": [
+          "integer"
+        ]
+      },
+      {
+        "name": "joined",
+        "types": [
+          "datetime"
+        ]
+      }
+    ],
+    "delimiter": ",",
+    "has_header": true,
+    "row_count_sampled": 2
+  },
+  "encoding": "utf-8",
+  "format": "csv",
+  "path": "/srv/data/users.csv"
+}
+
+Shown for a CSV file with --json-pretty, with one column omitted. The
+detected object has different fields for JSON, NDJSON, and text input."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "tail",
+            definition: "Prints the last lines or bytes of a file, defaulting to 10 lines, and \
+                with follow=true keeps printing data appended to it.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.tail [lines=<n>] [bytes=<n>] \
+                    [follow=true|false]",
+                example: "resh file:///var/log/syslog.tail lines=2",
+                example_output: Some(
+                    "Oct 16 09:12:44 web01 systemd[1]: Started nginx.service.\n\
+                     Oct 16 09:13:02 web01 CRON[2211]: (root) CMD (run-parts /etc/cron.hourly)",
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "grep",
+            definition: "Searches a file line by line for a regular expression or literal \
+                text and prints the matching lines with their line numbers.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.grep pattern=<pattern> [regex=true|false]\n  \
+                    [ignore_case=true|false] [invert=true|false] [max=<n>]\n  \
+                    [before=<n>] [after=<n>] [format=text|json]\n  \
+                    [line_numbers=true|false]",
+                example: "resh file:///var/log/app.log.grep pattern=error ignore_case=true",
+                example_output: Some(
+                    "2:ERROR disk full\n\
+                     4:error again\n\
+                     \n\
+                     The pattern is a regular expression unless regex=false. With\n\
+                     format=json, matches print as an array of objects with path, line,\n\
+                     text, and matched fields.",
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "find",
+            definition: "Walks a directory tree and lists matching entries with their type, \
+                size, mode, and modification time as a JSON array.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<dir>.find [name=<glob>] [type=file|dir|symlink]\n  \
+                    [max_depth=<n>] [limit=<n>] [include_hidden=true|false]\n  \
+                    [follow_symlinks=true|false]",
+                example: "resh --json-pretty file:///srv/www.find name='*.html' type=file",
+                example_output: Some(
+                    r#"[
+  {
+    "depth": 1,
+    "is_hidden": false,
+    "mode": "0644",
+    "mtime": "2026-09-30T17:45:10.902113+00:00",
+    "path": "/srv/www/index.html",
+    "size": 5120,
+    "type": "file"
+  }
+]
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "watch",
+            definition: "Watches a path for create, modify, remove, and rename events and \
+                prints each one as a line of JSON until max_events or timeout_ms is reached.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.watch [timeout_ms=<ms>] [max_events=<n>]\n  \
+                    [events=create,modify,remove,rename]",
+                example: "resh file:///etc/nginx/nginx.conf.watch events=modify \
+                    timeout_ms=60000",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "md5",
+            definition: "Computes the MD5 digest of a file and reports it with the file size \
+                as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.md5",
+                example: "resh --json-pretty file:///srv/data/users.csv.md5",
+                example_output: Some(
+                    r#"{
+  "algorithm": "md5",
+  "hash": "d8dc1c6300e5fa108ffbd95730a9ac2e",
+  "path": "/srv/data/users.csv",
+  "size": 51
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "sha1",
+            definition: "Computes the SHA-1 digest of a file and reports it with the file \
+                size as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.sha1",
+                example: "resh --json-pretty file:///srv/data/users.csv.sha1",
+                example_output: Some(
+                    r#"{
+  "algorithm": "sha1",
+  "hash": "1509a8b17ac3590783ec2ee08d0a104333b6ecbd",
+  "path": "/srv/data/users.csv",
+  "size": 51
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "sha256",
+            definition: "Computes the SHA-256 digest of a file and reports it with the file \
+                size as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.sha256",
+                example: "resh --json-pretty file:///srv/data/users.csv.sha256",
+                example_output: Some(
+                    r#"{
+  "algorithm": "sha256",
+  "hash": "8ce5f37fbff5c2cf2dfe59511587fd29e7a55104ab1629ac0b646bc6bdddc049",
+  "path": "/srv/data/users.csv",
+  "size": 51
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "sha512",
+            definition: "Computes the SHA-512 digest of a file and reports it with the file \
+                size as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.sha512",
+                example: "resh --json-pretty file:///srv/data/users.csv.sha512",
+                example_output: Some(
+                    r#"{
+  "algorithm": "sha512",
+  "hash": "d7cb064f0a32ab92d3268f23...d0d7848436f4987102",
+  "path": "/srv/data/users.csv",
+  "size": 51
+}
+
+The 128-digit hash is shortened here to fit. Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "hash",
+            definition: "Computes a SHA-256, SHA-512, or BLAKE3 digest of a regular file, \
+                defaulting to SHA-256, and reports it as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.hash [algo=sha256|sha512|blake3]",
+                example: "resh --json-pretty file:///srv/data/users.csv.hash algo=blake3",
+                example_output: Some(
+                    r#"{
+  "algo": "blake3",
+  "hash_hex": "148ae65478551f4df22f13b148664e39...3b50bcface7c2564",
+  "path": "/srv/data/users.csv",
+  "size_bytes": 51
+}
+
+The 64-digit hash is shortened here to fit. Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "verify",
+            definition: "Computes a file's digest and checks it against expected values and an \
+                optional size, reporting the result as JSON and failing on a mismatch.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.verify [algo=sha256|sha1|md5|blake3]\n  \
+                    [expected=<hex>] [expected_any=<hex>;<hex>...] [size=<bytes>]",
+                example: "resh --json-pretty file:///srv/data/users.csv.verify algo=md5 \
+                    size=51",
+                example_output: Some(
+                    r#"{
+  "algorithm": "md5",
+  "digest": "d8dc1c6300e5fa108ffbd95730a9ac2e",
+  "error": null,
+  "expected": null,
+  "expected_any": [],
+  "match": true,
+  "path": "/srv/data/users.csv",
+  "size": 51,
+  "size_match": true,
+  "verified": true
+}
+
+Shown with --json-pretty. A wrong expected digest or size sets verified
+to false and exits with status 1."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "write",
+            definition: "Atomically replaces a file's contents with the data argument or \
+                standard input and reports the bytes written as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.write [data=<text>] [create=true|false] \
+                    [mode=<octal>]",
+                example: "resh --json-pretty file:///tmp/greeting.txt.write \
+                    data='hello world'",
+                example_output: Some(
+                    r#"{
+  "bytes": 11,
+  "path": "/tmp/greeting.txt",
+  "written": true
+}
+
+Shown with --json-pretty. Without data, the content is read from stdin."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "append",
+            definition: "Appends the data argument or standard input to the end of a file and \
+                reports the bytes appended as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.append [data=<text>] [create=true|false]",
+                example: "resh --json-pretty file:///var/tmp/jobs.log.append \
+                    data='job finished'",
+                example_output: Some(
+                    r#"{
+  "appended": true,
+  "bytes": 12,
+  "path": "/var/tmp/jobs.log"
+}
+
+Shown with --json-pretty. No newline is added after the data."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "replace",
+            definition: "Replaces literal text or regular expression matches in a file, \
+                rewriting it atomically, and reports the replacement count as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.replace pattern=<text> replacement=<text>\n  \
+                    [regex=true|false] [count=<n>] [dry_run=true|false]\n  \
+                    [backup=<suffix>]",
+                example: "resh --json-pretty file:///etc/app.conf.replace pattern=8080 \
+                    replacement=9090",
+                example_output: Some(
+                    r#"{
+  "changed": true,
+  "count_limit": null,
+  "dry_run": false,
+  "new_bytes": 412,
+  "original_bytes": 412,
+  "path": "/etc/app.conf",
+  "pattern": "8080",
+  "regex": false,
+  "replacements": 2
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "copy",
+            definition: "Copies a regular file to the path given by to through a temporary \
+                file and prints nothing on success.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.copy to=<path> [overwrite=true|false]\n  \
+                    [preserve_mode=true|false] [preserve_times=true|false]",
+                example: "resh file:///etc/nginx/nginx.conf.copy \
+                    to=/etc/nginx/nginx.conf.bak",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "rename",
+            definition: "Renames a file or directory to the path given by to, copying across \
+                filesystems when needed, and reports the result as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.rename to=<path> [overwrite=true|false]\n  \
+                    [create_parents=true|false] [atomic=true|false]",
+                example: "resh --json-pretty file:///srv/data/old.csv.rename \
+                    to=/srv/data/new.csv",
+                example_output: Some(
+                    r#"{
+  "from": "/srv/data/old.csv",
+  "renamed": true,
+  "to": "/srv/data/new.csv"
+}
+
+Shown for a same-filesystem rename with --json-pretty. A rename across
+filesystems also reports cross_filesystem as true."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "move",
+            definition: "Moves a file or directory to the path given by to, or into it when to \
+                is an existing directory, and prints nothing on success.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.move to=<path> [overwrite=true|false]",
+                example: "resh file:///tmp/report.pdf.move to=/srv/reports",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "mv",
+            definition: "Alias for move.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.mv to=<path> [overwrite=true|false]",
+                example: "resh file:///tmp/report.pdf.mv to=/srv/reports/q3.pdf",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "delete",
+            definition: "Deletes a file, or a directory tree when recursive=true, and prints \
+                nothing on success.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.delete [recursive=true|false] \
+                    [force=true|false]\n  [missing_ok=true|false]",
+                example: "resh file:///tmp/build.cache.delete recursive=true",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "remove",
+            definition: "Alias for delete.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.remove [recursive=true|false] \
+                    [force=true|false]\n  [missing_ok=true|false]",
+                example: "resh file:///tmp/old.log.remove missing_ok=true",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "chmod",
+            definition: "Sets a file's permission bits from an octal mode on Unix and prints \
+                nothing on success.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.chmod mode=<octal>",
+                example: "resh file:///usr/local/bin/backup.sh.chmod mode=755",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "chown",
+            definition: "Changes a path's owner and group by name or numeric ID on Unix, \
+                optionally recursively, and prints nothing on success.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.chown [user=<name>] [uid=<n>] [group=<name>]\n  \
+                    [gid=<n>] [recursive=true|false]",
+                example: "resh file:///srv/www.chown user=alice group=www recursive=true",
+                example_output: None,
+            }),
+        },
+        VerbHelp {
+            name: "ea.get",
+            definition: "Reads one extended attribute of a file on Unix and reports its value \
+                as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.ea.get name=<attr> [allow_missing=true|false]",
+                example: "resh --json-pretty file:///srv/data/report.pdf.ea.get \
+                    name=user.comment",
+                example_output: Some(
+                    r#"{
+  "exists": true,
+  "name": "user.comment",
+  "path": "/srv/data/report.pdf",
+  "value": "reviewed by alice"
+}
+
+Shown with --json-pretty. Non-UTF-8 values are base64 encoded and add
+an encoding field."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "ea.set",
+            definition: "Writes an extended attribute on a file on Unix and reports its \
+                previous and current values as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.ea.set name=<attr> value=<text>\n  \
+                    [mode=create|update|upsert]",
+                example: "resh --json-pretty file:///srv/report.pdf.ea.set \
+                    name=user.comment value=final",
+                example_output: Some(
+                    r#"{
+  "current": "final",
+  "encoding": "utf-8",
+  "mode": "upsert",
+  "name": "user.comment",
+  "path": "/srv/report.pdf",
+  "previous": "reviewed by alice"
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "tag.add",
+            definition: "Adds comma-separated lowercase tags to a file, stored in the \
+                user.resh.tags extended attribute, and reports the full tag list as JSON.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.tag.add name=<tag>[,<tag>...]",
+                example: "resh --json-pretty file:///srv/data/report.pdf.tag.add \
+                    name=work,q3",
+                example_output: Some(
+                    r#"{
+  "path": "/srv/data/report.pdf",
+  "tags": [
+    "q3",
+    "work"
+  ]
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "tag.rm",
+            definition: "Removes comma-separated tags from a file's user.resh.tags extended \
+                attribute and reports the remaining tag list as JSON.",
+            detail: Some(VerbDetail {
+                usage: "resh file://<path>.tag.rm name=<tag>[,<tag>...]",
+                example: "resh --json-pretty file:///srv/data/report.pdf.tag.rm name=q3",
+                example_output: Some(
+                    r#"{
+  "path": "/srv/data/report.pdf",
+  "tags": [
+    "work"
+  ]
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+    ],
+};
+
 pub struct FileHandle {
     path: PathBuf,
 }
@@ -1059,9 +938,15 @@ fn normalize_path(p: &PathBuf) -> PathBuf {
     for comp in p.components() {
         match comp {
             Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
+            // Keep a leading ".." on relative paths (../x stays ../x); at
+            // the root, ".." is the root itself.
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::RootDir) | Some(Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
             other => out.push(other.as_os_str()),
         }
     }
@@ -1106,24 +991,37 @@ fn resolve_file_path(path: &PathBuf) -> Result<PathBuf, anyhow::Error> {
     Ok(path.clone())
 }
 
+/// Placeholder path used for an in-URL help request.
+const HELP_PATH: &str = "--help";
+
+/// Joins the URL host and path into the target path, like the other handles
+/// do: `file://./x` is `./x`, `file://dir/x` is `dir/x`, `file://name` is
+/// `name`, and `file:///abs` is `/abs`.
+///
+/// The `url` crate treats `file` as a special scheme, so a relative first
+/// segment in the host position is lowercased (`file://Dir/x` is `dir/x`)
+/// and `localhost` is dropped (`file://localhost/x` is `/x`).
+fn url_target_path(url: &Url) -> String {
+    let path = url.path();
+    match url.host_str().filter(|h| !h.is_empty()) {
+        Some(host) if path.is_empty() || path == "/" => host.to_string(),
+        Some(host) => format!("{}{}", host, path),
+        None => path.to_string(),
+    }
+}
+
 impl FileHandle {
     pub fn from_url(url: Url) -> Result<FileHandle, anyhow::Error> {
-        let path_str = if url.host_str().is_some() && !url.host_str().unwrap().is_empty() {
-            // Handle case where filename is in host position (e.g., file://test.txt)
-            url.host_str().unwrap()
-        } else {
-            url.path()
-        };
+        let path_str = url_target_path(&url);
 
         // Decode URL encoding and escape sequences
-        let decoded = percent_decode_str(path_str).decode_utf8_lossy().to_string();
+        let decoded = percent_decode_str(&path_str).decode_utf8_lossy().to_string();
         let unescaped = unescape_backslashes(&decoded);
-        
-        // Check for help flags in the path
-        if unescaped.contains("--help") || unescaped.contains("-h") {
-            // Create a dummy path for help display
-            let help_path = PathBuf::from("--help");
-            return Ok(FileHandle { path: help_path });
+
+        // In-URL help (file://--help, file://-h). Exact match only, so a
+        // target such as my-hosts or pre-hotfix.txt is a normal file.
+        if crate::core::help::is_help_flag(&unescaped) {
+            return Ok(FileHandle { path: PathBuf::from(HELP_PATH) });
         }
         
         let path = PathBuf::from(unescaped);
@@ -4352,6 +4250,19 @@ impl FileHandle {
     }
 }
 
+impl FileHandle {
+    /// Writes the approved help, for one verb when `verb=<name>` is given.
+    fn write_help(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let verb = args.get("verb").map(String::as_str);
+        write!(
+            io.stdout,
+            "{}",
+            crate::core::help::render_legacy("file", &FILE_HELP, self.verbs(), verb)
+        )?;
+        Ok(Status::ok())
+    }
+}
+
 impl Handle for FileHandle {
     fn verbs(&self) -> &'static [&'static str] {
         &[
@@ -4362,18 +4273,15 @@ impl Handle for FileHandle {
         ]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&FILE_HELP)
+    }
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Check if this is a help request based on the path
-        if self.path.to_string_lossy().contains("--help") || self.path.to_string_lossy().contains("-h") {
-            // Check for specific verb help request
-            if let Some(specific_verb) = args.get("verb") {
-                writeln!(io.stdout, "Detailed help for '{}' verb is not yet implemented.", specific_verb)?;
-                writeln!(io.stdout, "Please refer to the general help below:\n")?;
-            }
-            
-            // Display the comprehensive help text
-            writeln!(io.stdout, "{}", HELP_TEXT)?;
-            return Ok(Status::ok());
+        // In-URL help request (file://--help, file://--help=<verb>); see
+        // from_url. Exact match, so ordinary paths containing "-h" run.
+        if self.path.as_os_str() == HELP_PATH {
+            return self.write_help(args, io);
         }
         
         match verb {
@@ -5384,17 +5292,7 @@ impl Handle for FileHandle {
             "ea.set" => self.verb_ea_set(args, io),
             "tag.add" => self.verb_tag_add(args, io),
             "tag.rm" => self.verb_tag_rm(args, io),
-            "help" | "h" => {
-                // Check for specific verb help request
-                if let Some(specific_verb) = args.get("verb") {
-                    writeln!(io.stdout, "Detailed help for '{}' verb is not yet implemented.", specific_verb)?;
-                    writeln!(io.stdout, "Please refer to the general help below:\n")?;
-                }
-                
-                // Display the comprehensive help text
-                writeln!(io.stdout, "{}", HELP_TEXT)?;
-                Ok(Status::ok())
-            }
+            "help" | "h" => self.write_help(args, io),
             _ => {
                 bail!(
                     "unknown verb for file://: {} (available: read, rename, write, copy, delete, move, mv, exists, stat, chmod, chown, md5, sha1, sha256, sha512, verify, append, find, grep, replace, tail, preview, schema, summary, watch, analyze, hash, ea.get, ea.set, tag.add, tag.rm, help, h)",
@@ -5402,5 +5300,75 @@ impl Handle for FileHandle {
                 )
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(u: &str) -> PathBuf {
+        FileHandle::from_url(Url::parse(u).unwrap()).unwrap().path
+    }
+
+    #[test]
+    fn from_url_joins_host_and_path() {
+        assert_eq!(target("file://./x"), PathBuf::from("x"));
+        assert_eq!(target("file://./dir/x.txt"), PathBuf::from("dir/x.txt"));
+        assert_eq!(target("file://dir/x"), PathBuf::from("dir/x"));
+        assert_eq!(target("file://dir/sub/x.txt"), PathBuf::from("dir/sub/x.txt"));
+        assert_eq!(target("file://name"), PathBuf::from("name"));
+        assert_eq!(target("file://name.txt"), PathBuf::from("name.txt"));
+        assert_eq!(target("file:///abs"), PathBuf::from("/abs"));
+        assert_eq!(target("file:///var/log/syslog"), PathBuf::from("/var/log/syslog"));
+        assert_eq!(target("file://../up/x"), PathBuf::from("../up/x"));
+    }
+
+    /// The url crate normalizes the host of a special-scheme URL. These
+    /// cases document the limitation described in FILE_HELP.
+    #[test]
+    fn from_url_host_is_normalized_by_url_crate() {
+        assert_eq!(target("file://Dir/X.txt"), PathBuf::from("dir/X.txt"));
+        assert_eq!(target("file://localhost/x"), PathBuf::from("/x"));
+        // The workaround named in FILE_HELP keeps the case.
+        assert_eq!(target("file://./Report.txt"), PathBuf::from("Report.txt"));
+    }
+
+    #[test]
+    fn help_detection_is_exact() {
+        assert_eq!(target("file://--help"), PathBuf::from(HELP_PATH));
+        assert_eq!(target("file://-h"), PathBuf::from(HELP_PATH));
+        assert_eq!(target("file:///home/x/my-hosts"), PathBuf::from("/home/x/my-hosts"));
+        assert_eq!(target("file://pre-hotfix.txt"), PathBuf::from("pre-hotfix.txt"));
+        assert_eq!(target("file://my-httpd/conf"), PathBuf::from("my-httpd/conf"));
+    }
+
+    fn run(h: &FileHandle, verb: &str, args: &Args) -> (Status, String) {
+        let mut stdin = std::io::empty();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut io = IoStreams::new(&mut stdin, &mut out, &mut err);
+        let st = h.call(verb, args, &mut io).unwrap();
+        (st, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn hyphenated_file_is_read_not_help() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("my-hosts");
+        std::fs::write(&p, "127.0.0.1 localhost\n").unwrap();
+        let h = FileHandle::from_url(Url::from_file_path(&p).unwrap()).unwrap();
+        let (st, out) = run(&h, "read", &Args::new());
+        assert!(st.ok);
+        assert_eq!(out, "127.0.0.1 localhost\n");
+    }
+
+    #[test]
+    fn in_url_help_renders_approved_help() {
+        let h = FileHandle::from_url(Url::parse("file://--help").unwrap()).unwrap();
+        let (_, out) = run(&h, "help", &Args::new());
+        assert!(out.starts_with("Handle: file\n"));
+        let args: Args = [("verb".to_string(), "read".to_string())].into_iter().collect();
+        let (_, out) = run(&h, "help", &args);
+        assert!(out.starts_with("Handle: file\nVerb: read\n"));
     }
 }

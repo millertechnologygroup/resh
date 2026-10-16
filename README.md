@@ -56,17 +56,14 @@ mysql -u root -p -e "SELECT COUNT(*) FROM users;" mydb
 
 **resh approach (structured, AI-ready):**
 ```bash
-# Check service status (structured JSON)
-resh svc://nginx.status --json
-# {"status": "active", "uptime_seconds": 86400, "pid": 1234}
+# Check service status (structured JSON: active_state, sub_state, pid, ...)
+resh --json-pretty svc://nginx.status
 
-# Get disk usage (consistent format)
-resh system://.disk --json
-# {"root": {"used_percent": 45, "available_gb": 120}}
+# Get disk usage for the root filesystem (capacity, inodes, I/O per mount)
+resh --json-pretty system://.disk 'input={"mount_points":["/"]}'
 
-# Read database (unified syntax)
-resh db://mydb.query --sql "SELECT COUNT(*) FROM users" --json
-# {"rows": [{"count": 1523}], "affected": 0}
+# Query a database (rows plus column metadata)
+resh db://sqlite/app.query 'sql=SELECT COUNT(*) AS n FROM users' dsn=sqlite:app.db
 ```
 
 **Why this matters for AI agents:**
@@ -127,8 +124,8 @@ resh db://mydb.query --sql "SELECT COUNT(*) FROM users" --json
 ### Plugin & Extension Management  
 - ✅ `plugin://` - Full plugin lifecycle operations
   - Install from registry, URL, or local files
-  - Search, update, and remove plugins
-  - Security verification and dependency management
+  - Search, update, enable, disable, and remove plugins
+  - SHA-256 artifact verification and dry-run plans
 
 ### Template & Content Generation
 - ✅ `template://` - Powerful template rendering system
@@ -144,17 +141,19 @@ resh db://mydb.query --sql "SELECT COUNT(*) FROM users" --json
 
 ```bash
 # Example: Complete backup workflow
-resh backup://daily.create --data-source /home/user --destination s3://mybucket
-resh backup://daily.list --json-pretty
-resh backup://daily.verify --backup-id latest
+resh backup://daily.create src=/home/user backend=restic repo_url=/srv/restic password_file=/etc/resh/restic.pass
+resh --json-pretty backup://daily.list backend=restic repo_url=/srv/restic password_file=/etc/resh/restic.pass
+resh backup://daily.verify backend=restic repo_url=/srv/restic password_file=/etc/resh/restic.pass
 
 # Example: Plugin management
-resh plugin://security-scanner.install --source registry
+resh plugin://available.search q=security
+resh plugin://security-scanner.install source=registry dry_run=true
+resh plugin://security-scanner.install source=registry
 resh plugin://security-scanner.enable
 resh plugin://security-scanner.update
 
 # Example: Template rendering
-resh template://config.yml.render --data-file vars.json --output /etc/myapp/
+resh template://config.yml.render context_file=vars.json
 ```
 
 ---
@@ -164,7 +163,7 @@ resh template://config.yml.render --data-file vars.json --output /etc/myapp/
 ### Automation Utilities
 - ✅ `template://` - Template operations (render, validate, test)
 - ✅ `backup://` - Backup operations (create, list, restore, verify, prune, size, schedule)
-- ✅ `plugin://` - Full plugin lifecycle operations (install, update, remove, enable, disable, available.list, available.search, available.info)
+- ✅ `plugin://` - Full plugin lifecycle operations (install, update, remove, enable, disable, available.list, available.search, available.info, installed.list)
 
 ### Filesystem & Storage ✅
 - ✅ `file://` - File operations (read, write, copy, move, delete, chmod, hash)

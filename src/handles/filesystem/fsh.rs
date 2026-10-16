@@ -15,8 +15,522 @@ use tokio::time::timeout;
 use url::Url;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
+};
+
+/// Sample output shared by `unmount` and its alias `umount`.
+const FS_UNMOUNT_EXAMPLE_OUTPUT: &str = r#"{
+  "action": "unmounted",
+  "alias": "local",
+  "backend": "fs",
+  "by": "target",
+  "detach_children": false,
+  "errors": [],
+  "force": false,
+  "lazy": false,
+  "skipped": [],
+  "target": "/mnt/usb",
+  "unmounted": [
+    {
+      "options": [
+        "rw",
+        "relatime"
+      ],
+      "source": "/dev/sdb1",
+      "target": "/mnt/usb",
+      "type": "ext4"
+    }
+  ],
+  "verb": "unmount"
+}
+
+Shown with --json-pretty. The verb field is "unmount" for both spellings."#;
+
+/// Sample output shared by `check` and its alias `fsck`.
+const FS_CHECK_EXAMPLE_OUTPUT: &str = r#"{
+  "action": null,
+  "alias": "local",
+  "allow_repair": false,
+  "analysis": {
+    "errors_found": false,
+    "filesystem_state": "clean",
+    "needs_repair": false,
+    "repaired": false
+  },
+  "backend": "fs",
+  "by": "auto",
+  "dry_run": null,
+  "filesystem": {
+    "fstype": "ext4",
+    "mounted": false,
+    "readonly": false,
+    "source": "/dev/sdb1"
+  },
+  "mode": "check",
+  "plan": null,
+  "reason": null,
+  "summary": {
+    "skipped_reason": null,
+    "status": "success"
+  },
+  "target": "/dev/sdb1",
+  "tool": {
+    "command": "fsck.ext4 -n /dev/sdb1",
+    "exit_code": 0,
+    "name": "fsck.ext4",
+    "stderr": "e2fsck 1.47.0 (5-Feb-2023)\n",
+    "stdout": "/dev/sdb1: clean, 11/65536 files, 12955/262144 blocks\n"
+  },
+  "verb": "check"
+}
+
+Shown for an unmounted ext4 device with --json-pretty. The verb field is
+"check" for both spellings. mode=repair with allow_repair=true runs
+fsck -p, xfs_repair, or btrfs check --repair on an unmounted filesystem."#;
+
+/// Metadata for `resh fs --help` and `resh fs <verb> --help`.
+static FS_HELP: HandleHelp = HandleHelp {
+    description: "The fs handle manages mounted filesystems on the local host, covering \
+        mounting and unmounting, mount table listings and lockfile snapshots, disk usage, \
+        quotas, resizing, and consistency checks. It reads /proc/mounts and statvfs data \
+        and runs system tools such as mount, umount, quota, resize2fs, xfs_growfs, and \
+        fsck. The URL host is a free-form alias, such as fs://local, that is echoed back \
+        in the JSON result.",
+    usage: "resh fs://<alias>.<verb>[(key=value,...)]",
+    verbs: &[
+        VerbHelp {
+            name: "list-mounts",
+            definition: "Lists the mounted filesystems from the mount table with their \
+                options and read-only, pseudo, network, and loop flags, as JSON.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.list-mounts [paths=<path,...>]\n  \
+                    [include_pseudo=true|false] [include_readonly=true|false]\n  \
+                    [include_types=<type,...>] [exclude_types=<type,...>]",
+                example: "resh --json-pretty fs://local.list-mounts",
+                example_output: Some(
+                    r#"{
+  "alias": "local",
+  "backend": "fs",
+  "filters": {
+    "exclude_mountpoints": [],
+    "exclude_sources": [],
+    "exclude_types": [],
+    "include_loop": true,
+    "include_mountpoints": [],
+    "include_network": true,
+    "include_pseudo": false,
+    "include_readonly": true,
+    "include_readwrite": true,
+    "include_sources": [],
+    "include_types": [],
+    "paths": []
+  },
+  "mounts": [
+    {
+      "fstype": "ext4",
+      "loop": false,
+      "network": false,
+      "options": [
+        "noatime",
+        "rw"
+      ],
+      "pseudo": false,
+      "read_only": false,
+      "source": "/dev/sda2",
+      "target": "/"
+    }
+  ],
+  "verb": "list-mounts"
+}
+
+Shown with --json-pretty and one mount. List options take
+comma-separated values, for example include_types=ext4,xfs."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "usage",
+            definition: "Reports size, used, and free space and inode counts for each \
+                mounted filesystem, or an aggregate total, as JSON.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.usage [mode=mounts|paths|aggregate]\n  \
+                    [paths=<path,...>] [include_inodes=true|false]\n  \
+                    [units=auto|bytes|kilobytes|megabytes|gigabytes|blocks]",
+                example: "resh --json-pretty fs://local.usage units=megabytes",
+                example_output: Some(
+                    r#"{
+  "alias": "local",
+  "backend": "fs",
+  "filesystems": [
+    {
+      "free": 61440,
+      "fstype": "ext4",
+      "inodes": {
+        "free": 5120000,
+        "total": 6553600,
+        "used": 1433600,
+        "used_percent": 21.875
+      },
+      "read_only": false,
+      "size": 102400,
+      "source": "/dev/sda2",
+      "target": "/",
+      "used": 40960,
+      "used_percent": 40.0
+    }
+  ],
+  "filters": {
+    "exclude_mountpoints": [],
+    "exclude_sources": [],
+    "exclude_types": [],
+    "include_mountpoints": [],
+    "include_sources": [],
+    "include_types": []
+  },
+  "include_inodes": true,
+  "mode": "mounts",
+  "units": "megabytes",
+  "verb": "usage"
+}
+
+Shown with --json-pretty and one filesystem. With mode=aggregate the
+result also has an aggregate object with the summed size, used, free,
+used_percent, and inodes. mode=paths needs paths and adds a
+path_to_filesystem list. Mounts whose usage cannot be read are skipped
+and listed in a warnings array."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "snapshot",
+            definition: "Captures the current mount table, with usage and filesystem \
+                metadata, as a deterministic fs-lock/v1 lockfile string.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.snapshot [format=json|yaml|text]",
+                example: "resh --json-pretty fs://local.snapshot format=json",
+                example_output: Some(
+                    r#"{
+  "action": "snapshot",
+  "alias": "local",
+  "backend": "fs",
+  "format": "json",
+  "lockfile": "{\n  \"lockfile_version\": \"fs-lock/v1\",\n  ...\n}",
+  "parsed": {
+    "filters_applied": false,
+    "host": {
+      "architecture": "x86_64",
+      "hostname": "web01",
+      "kernel": "6.8.0-45-generic",
+      "os_family": "Linux",
+      "os_name": "Ubuntu",
+      "os_version": "24.04"
+    },
+    "lockfile_version": "fs-lock/v1",
+    "mount_count": 25
+  }
+}
+
+Shown with --json-pretty; the lockfile string is abbreviated. It holds
+the generated_at time, alias, host, filters, and one entry per mount.
+format=yaml currently produces the same JSON text as format=json."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "quota",
+            definition: "Reports the disk space and inode quota usage and limits of one \
+                user, group, or project on the filesystem holding a path, using the quota tool.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.quota [path=<path>] [subject=<name-or-id>]\n  \
+                    [subject_type=auto|user|group|project] [units=auto|blocks|bytes]",
+                example: "resh --json-pretty fs://local.quota path=/home subject=alice",
+                example_output: Some(
+                    r#"{
+  "alias": "local",
+  "backend": "fs",
+  "filesystem": {
+    "fstype": "ext4",
+    "source": "/dev/sda3",
+    "target": "/home"
+  },
+  "inode_quota_enabled": true,
+  "path": "/home",
+  "space_quota_enabled": true,
+  "subject_query": {
+    "resolved_gid": 1000,
+    "resolved_uid": 1000,
+    "subject": "alice",
+    "subject_type": "user"
+  },
+  "subjects": [
+    {
+      "gid": 1000,
+      "inodes": {
+        "grace_exceeded": false,
+        "grace_time_remaining_sec": null,
+        "hard_limit": 120000,
+        "soft_limit": 100000,
+        "used": 4210,
+        "used_percent_of_soft": 4.21
+      },
+      "space": {
+        "grace_exceeded": false,
+        "grace_time_remaining_sec": null,
+        "hard_limit": 12582912,
+        "soft_limit": 10485760,
+        "used": 2097152,
+        "used_percent_of_soft": 20.0
+      },
+      "subject": "alice",
+      "subject_type": "user",
+      "uid": 1000
+    }
+  ],
+  "units": "auto",
+  "verb": "quota"
+}
+
+Shown with --json-pretty. Without path the root filesystem is queried,
+and without subject the current user is queried."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "quota_summary",
+            definition: "Aggregates the quota usage and limits of one user or group across \
+                all mounted filesystems, listing filesystems without quotas separately.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.quota_summary [subject=<name-or-id>]\n  \
+                    [subject_type=auto|user|group|project] [units=auto|blocks|bytes]",
+                example: "resh --json-pretty fs://local.quota_summary subject=alice",
+                example_output: Some(
+                    r#"{
+  "alias": "local",
+  "all_subjects": false,
+  "backend": "fs",
+  "filesystems": [
+    {
+      "fstype": "ext4",
+      "inode_quota_enabled": true,
+      "inodes": {
+        "grace_exceeded": false,
+        "grace_time_remaining_sec": null,
+        "hard_limit": 120000,
+        "soft_limit": 100000,
+        "used": 4210,
+        "used_percent_of_soft": 4.21
+      },
+      "source": "/dev/sda3",
+      "space": {
+        "grace_exceeded": false,
+        "grace_time_remaining_sec": null,
+        "hard_limit": 12582912,
+        "soft_limit": 10485760,
+        "used": 2097152,
+        "used_percent_of_soft": 20.0
+      },
+      "space_quota_enabled": true,
+      "target": "/home"
+    }
+  ],
+  "filesystems_without_quotas": [
+    {
+      "fstype": "vfat",
+      "source": "/dev/sda1",
+      "target": "/boot/efi"
+    }
+  ],
+  "filters": {
+    "exclude_mountpoints": [],
+    "exclude_sources": [],
+    "exclude_types": [],
+    "include_mountpoints": [],
+    "include_sources": [],
+    "include_types": []
+  },
+  "include_inodes": true,
+  "include_space": true,
+  "partial_failures": [],
+  "subject_query": {
+    "resolved_gid": 1000,
+    "resolved_uid": 1000,
+    "subject": "alice",
+    "subject_type": "user"
+  },
+  "summary": {
+    "inodes": {
+      "any_grace_exceeded": false,
+      "hard_limit": 120000,
+      "soft_limit": 100000,
+      "used": 4210,
+      "used_percent_of_soft": 4.21
+    },
+    "space": {
+      "any_grace_exceeded": false,
+      "hard_limit": 12582912,
+      "soft_limit": 10485760,
+      "used": 2097152,
+      "used_percent_of_soft": 20.0
+    }
+  },
+  "units": "auto",
+  "verb": "quota_summary"
+}
+
+Shown with --json-pretty, trimmed to one filesystem in each list."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "mount",
+            definition: "Mounts a device, network share, or bind source on a target \
+                directory, creating the directory if needed, and reports the result as JSON.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.mount target=<dir> [source=<device-or-path>]\n  \
+                    [type=<fstype>] [options=<opt,opt,...>] [read_only=true|false]\n  \
+                    [bind=true|false] [remount=true|false] [network=true|false]\n  \
+                    [create_target=true|false] [make_parents=true|false]\n  \
+                    [fail_if_mounted=true|false] [dry_run=true|false] [timeout_ms=<ms>]",
+                example: "resh --json-pretty fs://local.mount target=/mnt/usb source=/dev/sdb1 type=ext4",
+                example_output: Some(
+                    r#"{
+  "action": "mounted",
+  "alias": "local",
+  "backend": "fs",
+  "bind": false,
+  "created_target": false,
+  "details": {
+    "device": "/dev/sdb1",
+    "from_existing": false,
+    "fs_type": "ext4",
+    "mount_flags": []
+  },
+  "dry_run": null,
+  "options": [],
+  "plan": null,
+  "read_only": false,
+  "remount": false,
+  "source": "/dev/sdb1",
+  "target": "/mnt/usb",
+  "type": "ext4",
+  "verb": "mount"
+}
+
+Shown with --json-pretty. An existing compatible mount returns action
+"already_mounted"; dry_run=true returns action "planned" with a plan."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "unmount",
+            definition: "Unmounts the filesystems matching a mount point or source device, \
+                optionally with their child mounts, and reports the result as JSON.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.unmount target=<dir-or-device>\n  \
+                    [by=target|source|auto] [force=true|false] [lazy=true|false]\n  \
+                    [detach_children=true|false] [fail_if_not_mounted=true|false]\n  \
+                    [dry_run=true|false] [timeout_ms=<ms>]",
+                example: "resh --json-pretty fs://local.unmount target=/mnt/usb",
+                example_output: Some(FS_UNMOUNT_EXAMPLE_OUTPUT),
+            }),
+        },
+        VerbHelp {
+            name: "umount",
+            definition: "Alias for unmount.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.umount target=<dir-or-device>\n  \
+                    [by=target|source|auto] [force=true|false] [lazy=true|false]\n  \
+                    [detach_children=true|false] [fail_if_not_mounted=true|false]\n  \
+                    [dry_run=true|false] [timeout_ms=<ms>]",
+                example: "resh --json-pretty fs://local.umount target=/mnt/usb",
+                example_output: Some(FS_UNMOUNT_EXAMPLE_OUTPUT),
+            }),
+        },
+        VerbHelp {
+            name: "resize",
+            definition: "Grows or shrinks a filesystem, located by mount point or device, to an \
+                absolute size or by a delta using resize2fs, xfs_growfs, or btrfs.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.resize target=<dir-or-device>\n  \
+                    size=<size>|delta=<+size|-size> [by=auto|mountpoint|device]\n  \
+                    [mode=grow|shrink|auto] [allow_shrink=true|false]\n  \
+                    [dry_run=true|false]",
+                example: "resh --json-pretty fs://local.resize target=/data size=200G",
+                example_output: Some(
+                    r#"{
+  "action": "success",
+  "actions": [
+    {
+      "command": "resize2fs /dev/sdb1 52428800K",
+      "status": "success",
+      "tool": "resize2fs",
+      "type": "filesystem_resize"
+    }
+  ],
+  "alias": "local",
+  "backend": "fs",
+  "by": "auto",
+  "delta_bytes": 107374182400,
+  "dry_run": false,
+  "filesystem": {
+    "current_size_bytes": 107374182400,
+    "delta_bytes": 107374182400,
+    "fstype": "ext4",
+    "mounted": true,
+    "requested_size_bytes": 214748364800,
+    "source": "/dev/sdb1"
+  },
+  "final_size_bytes": 214748364800,
+  "mode": "grow",
+  "plan": null,
+  "previous_size_bytes": 107374182400,
+  "reason": null,
+  "requested_size_bytes": 214748364800,
+  "summary": {
+    "grew": true,
+    "shrink": false,
+    "status": "success"
+  },
+  "target": "/data",
+  "verb": "resize"
+}
+
+Shown for an ext4 filesystem with --json-pretty. Sizes accept K, M, G,
+and T suffixes (powers of 1024). A size equal to the current size
+returns action "noop". Shrinking needs allow_shrink=true, is refused
+for xfs, and needs an unmounted ext3 or ext4 filesystem."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "check",
+            definition: "Checks a filesystem for errors with fsck, xfs_repair, or btrfs, \
+                read-only unless repair is allowed, and reports the tool output and \
+                analysis as JSON.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.check target=<dir-or-device>\n  \
+                    [by=auto|mountpoint|device] [filesystem_type=<fstype>]\n  \
+                    [mode=check|repair|auto] [allow_repair=true|false]\n  \
+                    [aggressiveness=safe|normal|aggressive] [dry_run=true|false]",
+                example: "resh --json-pretty fs://local.check target=/dev/sdb1",
+                example_output: Some(FS_CHECK_EXAMPLE_OUTPUT),
+            }),
+        },
+        VerbHelp {
+            name: "fsck",
+            definition: "Alias for check.",
+            detail: Some(VerbDetail {
+                usage: "resh fs://<alias>.fsck target=<dir-or-device>\n  \
+                    [by=auto|mountpoint|device] [filesystem_type=<fstype>]\n  \
+                    [mode=check|repair|auto] [allow_repair=true|false]\n  \
+                    [aggressiveness=safe|normal|aggressive] [dry_run=true|false]",
+                example: "resh --json-pretty fs://local.fsck target=/dev/sdb1",
+                example_output: Some(FS_CHECK_EXAMPLE_OUTPUT),
+            }),
+        },
+    ],
 };
 
 /// Filesystem handle for mounting operations
@@ -160,779 +674,6 @@ pub struct UnmountPlan {
     pub order: Vec<String>,
     pub commands: Vec<String>,
 }
-
-/// Comprehensive help text for filesystem handle
-const FS_HELP_TEXT: &str = r#"RESOURCE SHELL - FILESYSTEM HANDLE
-==================================
-
-USAGE:
-  fs://alias.VERB(arguments)
-
-DESCRIPTION:
-  The filesystem handle helps you work with mounted filesystems and storage
-  devices. It provides tools to mount and unmount filesystems, check disk usage,
-  resize partitions, manage quotas, and create snapshots of your filesystem
-  configuration. Many operations require root privileges for safety.
-
-URL FORMAT:
-  fs://alias.VERB(arguments)
-
-  Common aliases: system, local, or custom names you define
-
-VERBS (9 total):
-
-  Mount Operations:
-    mount           Mount a filesystem to a directory
-    unmount         Unmount a mounted filesystem (alias: umount)
-    list-mounts     Show information about mounted filesystems
-
-  Storage Management:
-    usage           Show disk space usage information
-    resize          Change filesystem or storage size
-    check           Check filesystem for errors (alias: fsck)
-
-  Quota Management:
-    quota           Show disk quota information for users/groups
-    quota_summary   Show quota usage across multiple filesystems
-
-  Configuration:
-    snapshot        Create snapshot of filesystem mount configuration
-
-EXAMPLES:
-
-  Mount Operations:
-    # Mount USB drive
-    fs://system.mount(target="/mnt/usb",source="/dev/sdb1",type="ext4")
-
-    # Mount with options
-    fs://system.mount(target="/mnt/data",source="/dev/sdb1",create_target=true,options=["noatime","user_xattr"])
-
-    # Mount read-only
-    fs://system.mount(target="/mnt/backup",source="/dev/sdb1",read_only=true)
-
-    # Create bind mount
-    fs://system.mount(target="/mnt/mirror",source="/original/path",bind=true)
-
-    # Mount network filesystem
-    fs://system.mount(target="/mnt/nfs",source="server:/export",type="nfs",network=true)
-
-    # Remount with new options
-    fs://system.mount(target="/mnt/data",remount=true,options=["ro"])
-
-    # Dry run (test without executing)
-    fs://system.mount(target="/mnt/test",source="/dev/sdb1",type="ext4",dry_run=true)
-
-    # Unmount by target
-    fs://system.unmount(target="/mnt/usb")
-
-    # Force unmount if busy
-    fs://system.unmount(target="/mnt/data",force=true)
-
-    # Lazy unmount (detach immediately)
-    fs://system.unmount(target="/mnt/stuck",lazy=true)
-
-    # Unmount by source device
-    fs://system.unmount(target="/dev/sdb1",by="source")
-
-    # Unmount with children
-    fs://system.unmount(target="/mnt/parent",detach_children=true)
-
-    # Dry run unmount
-    fs://system.unmount(target="/mnt/test",dry_run=true)
-
-    # List all mounts
-    fs://system.list-mounts()
-
-    # List excluding virtual filesystems
-    fs://system.list-mounts(exclude_types=["proc","sysfs","tmpfs","devtmpfs"],include_pseudo=false)
-
-    # List with labels and features
-    fs://system.list-mounts(resolve_labels=true,resolve_fs_features=true)
-
-    # List specific filesystem types
-    fs://system.list-mounts(include_types=["ext4","xfs"])
-
-    # List only read-write mounts
-    fs://system.list-mounts(include_readonly=false)
-
-  Storage Management:
-    # Show all filesystem usage
-    fs://system.usage()
-
-    # Show usage excluding system filesystems
-    fs://system.usage(exclude_types=["proc","sysfs","tmpfs","devtmpfs"],human_readable=true)
-
-    # Show total aggregate usage
-    fs://system.usage(mode="aggregate",exclude_types=["proc","sysfs","tmpfs","devtmpfs"])
-
-    # Check specific paths
-    fs://system.usage(mode="paths",paths=["/","/home","/var"])
-
-    # Find filesystems over 80% full
-    fs://system.usage(threshold_used_percent_min=80,exclude_types=["proc","sysfs","tmpfs"])
-
-    # Show usage with inode information
-    fs://system.usage(include_inodes=true)
-
-    # Grow filesystem to 100GB
-    fs://system.resize(target="/data",size="100G")
-
-    # Add 50GB to current size
-    fs://system.resize(target="/data",delta="+50G")
-
-    # Shrink by 20GB (requires allow_shrink)
-    fs://system.resize(target="/data",delta="-20G",allow_shrink=true)
-
-    # Resize with minimum free space
-    fs://system.resize(target="/data",size="100G",min_free_space_percent=10)
-
-    # Resize LVM volume and filesystem
-    fs://system.resize(target="/data",delta="+50G",manage_underlying_volume=true)
-
-    # Dry run resize
-    fs://system.resize(target="/data",size="100G",dry_run=true)
-
-    # Check filesystem (read-only)
-    fs://system.check(target="/dev/sdb1")
-
-    # Check and repair if errors found
-    fs://system.check(target="/dev/sdb1",mode="repair",allow_repair=true)
-
-    # Aggressive check
-    fs://system.check(target="/data",aggressiveness="aggressive")
-
-    # Check with btrfs scrub
-    fs://system.check(target="/btrfs",btrfs_use_scrub=true)
-
-    # Dry run check
-    fs://system.check(target="/dev/sdb1",dry_run=true)
-
-  Quota Management:
-    # Check current user's quota
-    fs://system.quota(path="/home")
-
-    # Check specific user's quota
-    fs://system.quota(subject="alice",path="/var/mail")
-
-    # Check group quota
-    fs://system.quota(subject="developers",subject_type="group",path="/data")
-
-    # Show all user quotas
-    fs://system.quota(path="/data",all_subjects=true)
-
-    # Show quota in gigabytes
-    fs://system.quota(path="/home",units="gigabytes")
-
-    # Show quota without grace periods
-    fs://system.quota(path="/home",include_grace=false)
-
-    # Summary of current user's quotas
-    fs://system.quota_summary()
-
-    # Summary excluding system filesystems
-    fs://system.quota_summary(exclude_types=["proc","sysfs","tmpfs","devtmpfs"])
-
-    # Summary for specific user
-    fs://system.quota_summary(subject="alice")
-
-    # Summary for all users
-    fs://system.quota_summary(all_subjects=true)
-
-  Configuration:
-    # Basic snapshot
-    fs://system.snapshot()
-
-    # Snapshot excluding system filesystems
-    fs://system.snapshot(exclude_types=["proc","sysfs","tmpfs"],exclude_mountpoints=["/dev","/run"])
-
-    # Snapshot with specific filesystem types
-    fs://system.snapshot(include_types=["ext4","xfs"])
-
-    # Text format snapshot
-    fs://system.snapshot(format="text")
-
-    # YAML format snapshot
-    fs://system.snapshot(format="yaml")
-
-    # Snapshot without usage data
-    fs://system.snapshot(include_usage=false)
-
-    # Snapshot with inode information
-    fs://system.snapshot(include_inodes=true)
-
-    # Snapshot for specific mountpoints
-    fs://local.snapshot(include_mountpoints=["/","/home"])
-
-MOUNT ARGUMENTS:
-  target=PATH            Where to mount (required)
-  source=DEVICE          What to mount (optional for some operations)
-  type=FSTYPE            Filesystem type: ext4, xfs, btrfs, ntfs, vfat, etc.
-                         (auto-detected if not provided)
-  options=LIST           Mount options (default: empty list)
-  read_only=BOOL         Mount as read-only (default: false)
-  bind=BOOL              Create bind mount (default: false)
-  create_target=BOOL     Create target directory (default: true)
-  make_parents=BOOL      Create parent directories (default: true)
-  fail_if_mounted=BOOL   Fail if already mounted (default: false)
-  remount=BOOL           Remount with new options (default: false)
-  network=BOOL           Network filesystem (default: false)
-  timeout_ms=N           Operation timeout in milliseconds (default: 30000)
-  dry_run=BOOL           Show what would be done (default: false)
-
-UNMOUNT ARGUMENTS (alias: umount):
-  target=PATH            What to unmount (required)
-  by=METHOD              How to find: target, source, auto (default: target)
-  force=BOOL             Force unmount if busy (default: false)
-  lazy=BOOL              Detach now, clean up later (default: false)
-  detach_children=BOOL   Also unmount child mounts (default: false)
-  fail_if_not_mounted=BOOL Fail if not mounted (default: false)
-  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
-  dry_run=BOOL           Show what would be done (default: false)
-
-SNAPSHOT ARGUMENTS:
-  include_mountpoints=LIST Only these mount points (default: all)
-  exclude_mountpoints=LIST Skip these mount points (default: empty)
-  include_types=LIST     Only these filesystem types (default: all)
-  exclude_types=LIST     Skip these filesystem types (default: empty)
-  include_sources=LIST   Only these source devices (default: all)
-  exclude_sources=LIST   Skip these source devices (default: empty)
-  include_usage=BOOL     Include disk space usage (default: true)
-  include_inodes=BOOL    Include inode usage (default: false)
-  include_fs_metadata=BOOL Include filesystem details (default: true)
-  include_os_metadata=BOOL Include system info (default: true)
-  normalize_paths=BOOL   Clean up path formatting (default: true)
-  format=FORMAT          Output: json, yaml, text (default: json)
-  inline=BOOL            Include data in response (default: true)
-  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
-
-QUOTA ARGUMENTS:
-  path=PATH              Filesystem path to check (optional)
-  subject=NAME           User or group name (optional, current user if not set)
-  subject_type=TYPE      Subject is: user, group (default: user)
-  resolve_uid_gid=BOOL   Convert IDs to names (default: true)
-  include_space=BOOL     Show disk space quotas (default: true)
-  include_inodes=BOOL    Show file count quotas (default: true)
-  include_grace=BOOL     Show grace period info (default: true)
-  all_subjects=BOOL      Show all users/groups (default: false)
-  units=UNITS            Display: auto, bytes, kilobytes, megabytes,
-                         gigabytes, blocks (default: auto)
-  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
-
-QUOTA_SUMMARY ARGUMENTS:
-  subject=NAME           User or group name (optional)
-  subject_type=TYPE      Subject is: user, group, auto (default: auto)
-  resolve_uid_gid=BOOL   Convert IDs to names (default: true)
-  include_mountpoints=LIST Only these mount points (default: all)
-  exclude_mountpoints=LIST Skip these mount points (default: empty)
-  include_types=LIST     Only these filesystem types (default: all)
-  exclude_types=LIST     Skip these filesystem types (default: empty)
-  include_sources=LIST   Only these source devices (default: all)
-  exclude_sources=LIST   Skip these source devices (default: empty)
-  include_space=BOOL     Show disk space quotas (default: true)
-  include_inodes=BOOL    Show file count quotas (default: true)
-  include_grace=BOOL     Show grace period info (default: true)
-  all_subjects=BOOL      Show all users/groups (default: false)
-  units=UNITS            Display units (default: auto)
-  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
-
-USAGE ARGUMENTS:
-  paths=LIST             Specific paths to check (default: empty, use mode)
-  mode=MODE              Report: mounts (all mount points), paths (specific),
-                         aggregate (combined totals) (default: mounts)
-  include_mountpoints=LIST Only these mount points (default: all)
-  exclude_mountpoints=LIST Skip these mount points (default: empty)
-  include_types=LIST     Only these filesystem types (default: all)
-  exclude_types=LIST     Skip these filesystem types (default: empty)
-  include_sources=LIST   Only these source devices (default: all)
-  exclude_sources=LIST   Skip these source devices (default: empty)
-  include_inodes=BOOL    Include file count info (default: true)
-  include_readonly=BOOL  Include read-only filesystems (default: true)
-  normalize_paths=BOOL   Clean up path formatting (default: true)
-  units=UNITS            Display units (default: auto)
-  human_readable=BOOL    Use sizes like "1.2G" (default: false)
-  threshold_used_percent_min=N Only show above this % (optional)
-  threshold_used_percent_max=N Only show below this % (optional)
-  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
-
-RESIZE ARGUMENTS:
-  target=PATH            Mount point or device to resize (required)
-  by=METHOD              How to find: auto, mountpoint, device (default: auto)
-  size=SIZE              New size like "100G", "500M" (use size OR delta)
-  delta=DELTA            Size change like "+50G", "-10G" (use size OR delta)
-  size_units=UNITS       Units: auto, bytes, kilobytes, megabytes, gigabytes,
-                         terabytes (default: auto)
-  mode=MODE              Direction: grow, shrink, auto (default: grow)
-  allow_shrink=BOOL      Allow making smaller (default: false)
-  min_free_space_percent=N Keep this much free (default: 5.0)
-  manage_underlying_volume=BOOL Also resize LVM/volumes (default: false)
-  volume_resize_only=BOOL Only resize volume (default: false)
-  filesystem_resize_only=BOOL Only resize filesystem (default: false)
-  require_unmounted_for_shrink=BOOL Unmount before shrink (default: true)
-  force=BOOL             Skip safety checks (default: false)
-  dry_run=BOOL           Show what would be done (default: false)
-  timeout_ms=N           Operation timeout in milliseconds (default: 600000)
-
-CHECK ARGUMENTS (alias: fsck):
-  target=PATH            Mount point or device to check (required)
-  by=METHOD              How to find: auto, mountpoint, device (default: auto)
-  filesystem_type=TYPE   Override type detection (optional)
-  mode=MODE              What to do: check, repair, auto (default: check)
-  aggressiveness=LEVEL   How thorough: safe, normal, aggressive (default: safe)
-  allow_repair=BOOL      Allow fixing errors (default: false)
-  allow_online_check=BOOL Check mounted if supported (default: true)
-  require_unmounted_for_repair=BOOL Unmount before repair (default: true)
-  skip_if_mounted=BOOL   Skip if mounted (default: false)
-  force=BOOL             Override safety checks (default: false)
-  max_pass=N             Maximum check passes (optional)
-  btrfs_use_scrub=BOOL   Use scrub for btrfs (default: true)
-  btrfs_allow_offline_check=BOOL Allow offline btrfs check (default: false)
-  dry_run=BOOL           Show what would be done (default: false)
-  timeout_ms=N           Operation timeout in milliseconds (default: 600000)
-
-LIST-MOUNTS ARGUMENTS:
-  paths=LIST             Only show mounts for these paths (default: all)
-  include_mountpoints=LIST Only these mount points (default: all)
-  exclude_mountpoints=LIST Skip these mount points (default: empty)
-  include_types=LIST     Only these filesystem types (default: all)
-  exclude_types=LIST     Skip these filesystem types (default: empty)
-  include_sources=LIST   Only these source devices (default: all)
-  exclude_sources=LIST   Skip these source devices (default: empty)
-  include_readonly=BOOL  Include read-only mounts (default: true)
-  include_readwrite=BOOL Include read-write mounts (default: true)
-  include_pseudo=BOOL    Include virtual filesystems (default: false)
-  include_loop=BOOL      Include loop device mounts (default: true)
-  include_network=BOOL   Include network filesystems (default: true)
-  normalize_paths=BOOL   Clean up path formatting (default: true)
-  resolve_labels=BOOL    Look up labels and UUIDs (default: false)
-  resolve_fs_features=BOOL Include detailed filesystem info (default: false)
-  timeout_ms=N           Operation timeout in milliseconds (default: 3000)
-
-FILESYSTEM TYPES:
-
-  Common filesystem types:
-    ext4           Fourth extended filesystem (Linux default)
-    xfs            XFS filesystem (good for large files)
-    btrfs          B-tree filesystem (copy-on-write, snapshots)
-    ntfs           Windows NTFS
-    vfat           FAT32 (USB drives, compatibility)
-    exfat          exFAT (large USB drives)
-    nfs            Network File System
-    cifs           Common Internet File System (Windows shares)
-    tmpfs          Temporary filesystem in RAM
-    iso9660        CD/DVD filesystem
-
-MOUNT OPTIONS:
-
-  Common mount options:
-    ro             Read-only
-    rw             Read-write
-    noatime        Don't update access times
-    relatime       Update access times occasionally
-    user_xattr     Allow user extended attributes
-    acl            Enable POSIX ACLs
-    noexec         Disallow executing binaries
-    nosuid         Disallow suid/sgid bits
-    nodev          Disallow device files
-    defaults       Default options (rw, suid, dev, exec, auto, nouser, async)
-
-  Performance options:
-    async          Async I/O (faster, less safe)
-    sync           Sync I/O (slower, safer)
-    barrier        Write barriers for safety
-    nobarrier      Disable write barriers
-
-  Network options (NFS):
-    soft           Return errors on timeout
-    hard           Retry indefinitely (default)
-    intr           Allow interrupting operations
-    tcp            Use TCP protocol
-    udp            Use UDP protocol
-
-SIZE FORMATS:
-
-  Size specifications for resize:
-    100G           100 gigabytes
-    500M           500 megabytes
-    1T             1 terabyte
-    +50G           Add 50 gigabytes
-    -10G           Subtract 10 gigabytes
-    100%           Use all available space
-
-  Examples:
-    size="100G"    Set to 100GB
-    size="1.5T"    Set to 1.5TB
-    delta="+50G"   Grow by 50GB
-    delta="-20G"   Shrink by 20GB
-
-OUTPUT FORMATS:
-
-  mount success:
-    (no output, exit code 0)
-
-  unmount success:
-    (no output, exit code 0)
-
-  snapshot output (JSON):
-    {
-      "timestamp": "2025-02-07T10:30:00Z",
-      "mounts": [
-        {
-          "target": "/",
-          "source": "/dev/sda1",
-          "type": "ext4",
-          "options": ["rw", "relatime"],
-          "usage": {
-            "total_bytes": 107374182400,
-            "used_bytes": 53687091200,
-            "available_bytes": 53687091200,
-            "used_percent": 50.0
-          }
-        }
-      ]
-    }
-
-  quota output:
-    {
-      "path": "/home",
-      "subject": "alice",
-      "subject_type": "user",
-      "space": {
-        "used": 5368709120,
-        "soft_limit": 10737418240,
-        "hard_limit": 11811160064,
-        "grace_period": null
-      },
-      "inodes": {
-        "used": 12450,
-        "soft_limit": 50000,
-        "hard_limit": 55000,
-        "grace_period": null
-      }
-    }
-
-  usage output:
-    [
-      {
-        "mountpoint": "/",
-        "source": "/dev/sda1",
-        "type": "ext4",
-        "total_bytes": 107374182400,
-        "used_bytes": 53687091200,
-        "available_bytes": 53687091200,
-        "used_percent": 50.0
-      }
-    ]
-
-  list-mounts output:
-    [
-      {
-        "target": "/",
-        "source": "/dev/sda1",
-        "type": "ext4",
-        "options": ["rw", "relatime"],
-        "readonly": false
-      }
-    ]
-
-EXIT CODES:
-  0                      Success
-  1                      Invalid configuration or arguments
-  2                      Target not found or profile missing
-  3                      Operation not supported on this system
-  13                     Permission denied (need root privileges)
-  16                     Resource busy (filesystem in use)
-  17                     Conflicting operation (already mounted)
-  18                     Failed to create target directory
-  19                     Not mounted when expected
-  32                     Operation failed (general failure)
-  62                     Operation timed out
-  95                     Unknown verb or unsupported option
-
-ERROR HANDLING:
-
-  Permission denied (exit code 13):
-    Most filesystem operations require root privileges.
-    Use sudo or run as root:
-      sudo resh fs://system.mount(...)
-
-  Resource busy (exit code 16):
-    Filesystem is in use and cannot be unmounted.
-    Use force=true or lazy=true for unmount:
-      fs://system.unmount(target="/mnt/data",force=true)
-
-  Already mounted (exit code 17):
-    Target is already mounted.
-    Use remount=true or unmount first:
-      fs://system.mount(target="/mnt/data",remount=true,...)
-
-  Timeout (exit code 62):
-    Operation took too long.
-    Increase timeout_ms:
-      fs://system.resize(target="/data",size="100G",timeout_ms=900000)
-
-COMMON WORKFLOWS:
-
-  USB drive workflow:
-    # Check what devices are available
-    fs://system.list-mounts(include_types=["ext4","vfat","exfat"])
-    
-    # Mount the drive
-    fs://system.mount(target="/mnt/usb",source="/dev/sdb1",create_target=true)
-    
-    # Check usage
-    fs://system.usage(paths=["/mnt/usb"])
-    
-    # Work with files...
-    
-    # Safely unmount
-    fs://system.unmount(target="/mnt/usb")
-
-  Disk space management:
-    # Check overall usage
-    fs://system.usage(exclude_types=["proc","sysfs","tmpfs"],human_readable=true)
-    
-    # Find filesystems over 80% full
-    fs://system.usage(threshold_used_percent_min=80,exclude_types=["proc","sysfs","tmpfs"])
-    
-    # Check specific user quotas
-    fs://system.quota(subject="alice",all_subjects=false)
-
-  Filesystem maintenance:
-    # Create configuration snapshot before changes
-    fs://system.snapshot(format="json",include_usage=true)
-    
-    # Check filesystem health
-    fs://system.check(target="/dev/sdb1",mode="check")
-    
-    # Test resize operation
-    fs://system.resize(target="/data",delta="+10G",dry_run=true)
-    
-    # Actually resize
-    fs://system.resize(target="/data",delta="+10G")
-
-  Safe filesystem operations:
-    # Always use dry_run first
-    fs://system.mount(target="/mnt/test",source="/dev/sdb1",dry_run=true)
-    
-    # Check result, then execute
-    fs://system.mount(target="/mnt/test",source="/dev/sdb1")
-    
-    # Create snapshot before risky operations
-    fs://system.snapshot(format="json")
-    
-    # Perform operation with safety checks
-    fs://system.resize(target="/data",size="100G",min_free_space_percent=10)
-
-  Quota monitoring:
-    # Check current user quotas on all filesystems
-    fs://system.quota_summary()
-    
-    # Check specific user across all filesystems
-    fs://system.quota_summary(subject="alice")
-    
-    # Check all users on specific filesystem
-    fs://system.quota(path="/data",all_subjects=true)
-
-  Network filesystem mounting:
-    # Mount NFS share
-    fs://system.mount(target="/mnt/nfs",source="server:/export",type="nfs",network=true,options=["soft","intr"])
-    
-    # Mount CIFS (Windows) share
-    fs://system.mount(target="/mnt/share",source="//server/share",type="cifs",network=true,options=["username=user","password=pass"])
-
-  LVM resize workflow:
-    # Check current size
-    fs://system.usage(paths=["/data"])
-    
-    # Test resize with LVM
-    fs://system.resize(target="/data",delta="+50G",manage_underlying_volume=true,dry_run=true)
-    
-    # Execute resize
-    fs://system.resize(target="/data",delta="+50G",manage_underlying_volume=true)
-    
-    # Verify new size
-    fs://system.usage(paths=["/data"])
-
-  Filesystem check and repair:
-    # Check if filesystem has errors
-    fs://system.check(target="/dev/sdb1",mode="check")
-    
-    # If errors found, repair (may require unmount)
-    fs://system.unmount(target="/mnt/backup")
-    fs://system.check(target="/dev/sdb1",mode="repair",allow_repair=true)
-    fs://system.mount(target="/mnt/backup",source="/dev/sdb1")
-
-  Bind mount setup:
-    # Create bind mount for chroot
-    fs://system.mount(target="/mnt/chroot/proc",source="/proc",bind=true,type="proc")
-    fs://system.mount(target="/mnt/chroot/sys",source="/sys",bind=true,type="sysfs")
-    fs://system.mount(target="/mnt/chroot/dev",source="/dev",bind=true)
-
-BEST PRACTICES:
-  • Always use dry_run=true to test operations before executing
-  • Create configuration snapshots before major changes
-  • Run as root or with sudo for most operations
-  • Check filesystem health regularly with check verb
-  • Monitor disk usage with usage verb
-  • Set appropriate min_free_space_percent when resizing
-  • Use force and lazy unmount options cautiously
-  • Enable quotas on multi-user systems
-  • Use read_only mounts for safety when possible
-  • Unmount filesystems before checking or repairing
-  • Use allow_shrink=true explicitly for shrink operations
-  • Test network mounts with timeout_ms limits
-  • Exclude virtual filesystems (proc, sysfs, tmpfs) from monitoring
-  • Use human_readable output for easier reading
-  • Set threshold filters to focus on problematic filesystems
-  • Use bind mounts for secure chroot environments
-  • Keep parent directories creation enabled (make_parents=true)
-  • Use normalize_paths for consistent path handling
-  • Monitor quota grace periods regularly
-  • Use aggregate mode for total usage across filesystems
-  • Enable resolve_labels for better device identification
-  • Use appropriate filesystem types for use cases
-  • Mount with noatime for better performance
-  • Use barriers for data integrity on critical filesystems
-  • Set timeouts appropriate to operation (longer for resize/check)
-  • Use btrfs scrub for btrfs filesystem checks
-  • Verify resize operations with usage checks afterward
-  • Use fail_if_mounted to prevent double-mounting
-  • Document custom mount options in configuration
-  • Use remount for changing options without unmounting
-
-SAFETY CONSIDERATIONS:
-  • Most operations require root privileges for security
-  • Resize operations can cause data loss if not careful
-  • Shrinking filesystems is dangerous (requires allow_shrink=true)
-  • Force unmount can corrupt data if filesystem is busy
-  • Lazy unmount detaches immediately but may delay cleanup
-  • Always backup data before resize or check operations
-  • Test with dry_run before executing destructive operations
-  • Filesystem repair can cause data loss in edge cases
-  • Network mounts may hang without proper timeouts
-  • Bind mounts don't create new filesystems
-  • Remount changes options on live filesystem
-  • Some filesystems don't support online resize
-  • LVM resize affects multiple layers of storage
-  • Quota enforcement requires filesystem support
-  • Check operations may find serious errors requiring repair
-
-PLATFORM SUPPORT:
-  The filesystem handle works on Unix-like systems (Linux, macOS).
-  
-  Linux features:
-    • Full support for ext4, xfs, btrfs, vfat, ntfs
-    • LVM resize support
-    • Quota management
-    • Extended filesystem checks
-    • Network filesystem mounting (NFS, CIFS)
-  
-  macOS features:
-    • Basic mount/unmount operations
-    • Limited filesystem type support
-    • Some operations may require FUSE
-  
-  Not supported:
-    • Windows native (use WSL)
-    • FreeBSD (may work with adaptation)
-
-QUOTA REQUIREMENTS:
-  Quotas require specific filesystem support:
-  
-  • Filesystem must be mounted with quota options
-  • Quota tools must be installed (quota, quotacheck)
-  • Quota files must be initialized
-  • Requires root privileges to manage quotas
-  
-  Enabling quotas (example for ext4):
-    1. Edit /etc/fstab, add usrquota,grpquota to options
-    2. Remount filesystem
-    3. Run quotacheck to initialize
-    4. Enable quotas with quotaon
-
-FILESYSTEM-SPECIFIC NOTES:
-
-  ext4:
-    • Most stable and widely supported
-    • Supports online resize (grow only)
-    • Offline resize for shrink
-    • Good fsck support
-
-  xfs:
-    • Excellent performance for large files
-    • Online resize (grow only)
-    • Cannot shrink XFS filesystems
-    • Use xfs_repair for checks
-
-  btrfs:
-    • Copy-on-write with snapshots
-    • Online resize (grow and shrink)
-    • Use scrub instead of fsck
-    • Experimental offline check
-
-  ntfs:
-    • Windows filesystem
-    • Limited write support on Linux
-    • Use ntfsresize carefully
-    • May require ntfs-3g driver
-
-PERFORMANCE CONSIDERATIONS:
-  • Mount with noatime for better performance
-  • Use async for faster writes (less safe)
-  • Network mounts are slower than local
-  • Resize operations can take hours for large filesystems
-  • Check operations are time-intensive
-  • Quota checks add overhead to filesystem operations
-  • Bind mounts have minimal overhead
-  • Virtual filesystems (tmpfs) are very fast
-
-LIMITATIONS:
-  • Requires root privileges for most operations
-  • Some filesystems don't support online operations
-  • XFS cannot be shrunk
-  • Network mounts depend on network reliability
-  • Quotas require specific filesystem support
-  • Resize requires appropriate filesystem tools
-  • Check operations may require unmounting
-  • Some operations platform-specific
-  • Timeout limits on long operations
-  • Bind mounts don't duplicate data
-
-DEBUGGING:
-  Use dry_run to test operations:
-    fs://system.mount(...,dry_run=true)
-    fs://system.resize(...,dry_run=true)
-  
-  Check current mounts:
-    fs://system.list-mounts(resolve_labels=true,resolve_fs_features=true)
-  
-  Monitor filesystem status:
-    fs://system.usage(human_readable=true)
-  
-  Create snapshots for comparison:
-    fs://system.snapshot(format="json")
-  
-  Check for errors:
-    fs://system.check(target="/dev/sdb1")
-
-MORE INFO:
-  For complete documentation of filesystem handle operations:
-  https://github.com/[your-org]/resource-shell/docs/filesystem-handle.md
-
-  Linux mount documentation:
-  https://man7.org/linux/man-pages/man8/mount.8.html
-
-  Filesystem check (fsck) documentation:
-  https://man7.org/linux/man-pages/man8/fsck.8.html
-
-  LVM resize documentation:
-  https://man7.org/linux/man-pages/man8/lvresize.8.html
-
-  Quota management:
-  https://man7.org/linux/man-pages/man8/quota.8.html
-
-  Use 'fs:// --help=VERB' for detailed help on a specific verb.
-"#;
 
 /// Filesystem-specific errors
 #[derive(Error, Debug)]
@@ -1505,6 +1246,7 @@ pub enum QuotaUnits {
 
 /// Quota configuration structure
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct FsQuotaConfig {
     pub path: Option<String>,
     pub subject: Option<String>,
@@ -1521,6 +1263,7 @@ pub struct FsQuotaConfig {
 
 /// Quota summary configuration structure
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct FsQuotaSummaryConfig {
     pub subject: Option<String>,
     pub subject_type: SubjectType,
@@ -1563,6 +1306,7 @@ pub enum UsageUnits {
 
 /// Filesystem usage configuration
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct FsUsageConfig {
     pub paths: Vec<String>,
     pub mode: UsageMode,
@@ -1950,6 +1694,9 @@ pub struct UsageResult {
     pub aggregate: Option<AggregateUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path_to_filesystem: Option<Vec<PathToFilesystem>>,
+    /// Mounts that were skipped because their usage could not be read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl Default for SnapshotConfig {
@@ -3022,8 +2769,8 @@ impl FsHandle {
 
     /// Parse snapshot configuration from arguments
     fn parse_snapshot_config(&self, args: Value) -> Result<SnapshotConfig, anyhow::Error> {
-        let mut config: SnapshotConfig = serde_json::from_value(args)
-            .context("Failed to parse snapshot configuration")?;
+        let mut config: SnapshotConfig = crate::core::lenient::from_value(args)
+            .map_err(|e| FsError::InvalidSnapshotConfig(e.to_string()))?;
 
         // Set default timeout if not provided
         if config.timeout_ms == 0 {
@@ -3173,8 +2920,7 @@ impl FsHandle {
     fn parse_proc_mounts(&self, content: &str) -> Result<Vec<RawMountInfo>, anyhow::Error> {
         let mut mounts = Vec::new();
         
-        eprintln!("DEBUG: Parsing {} lines from /proc/mounts", content.lines().count());
-        for (i, line) in content.lines().enumerate() {
+        for line in content.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 4 {
                 let mount = RawMountInfo {
@@ -3185,14 +2931,10 @@ impl FsHandle {
                     dump: parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0),
                     pass: parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(0),
                 };
-                if i < 5 || mount.fstype == "proc" || mount.fstype == "tmpfs" {
-                    eprintln!("DEBUG mount {}: {} {} {} {}", i, mount.source, mount.target, mount.fstype, mount.options);
-                }
                 mounts.push(mount);
             }
         }
         
-        eprintln!("DEBUG: Parsed {} mounts total", mounts.len());
         Ok(mounts)
     }
 
@@ -3636,40 +3378,8 @@ impl FsHandle {
 
     /// Parse quota configuration from arguments
     fn parse_quota_config(&self, args: Value) -> Result<FsQuotaConfig, anyhow::Error> {
-        let mut config: FsQuotaConfig = serde_json::from_value(args.clone())
-            .unwrap_or_else(|_| {
-                // Handle cases where some fields might be missing, using defaults
-                FsQuotaConfig {
-                    path: args.get("path").and_then(|v| v.as_str().map(String::from)),
-                    subject: args.get("subject").and_then(|v| v.as_str().map(String::from)),
-                    subject_type: args.get("subject_type")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or(SubjectType::Auto),
-                    resolve_uid_gid: args.get("resolve_uid_gid")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    include_space: args.get("include_space")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    include_inodes: args.get("include_inodes")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    include_grace: args.get("include_grace")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    all_subjects: args.get("all_subjects")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    units: args.get("units")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or(QuotaUnits::Auto),
-                    timeout_ms: args.get("timeout_ms")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(5000),
-                    env: args.get("env")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
-                }
-            });
+        let mut config: FsQuotaConfig = crate::core::lenient::from_value(args)
+            .map_err(|e| FsError::InvalidQuotaConfig(e.to_string()))?;
 
         // Set default timeout if not provided
         if config.timeout_ms == 0 {
@@ -4366,57 +4076,8 @@ impl FsHandle {
 
     /// Parse quota summary configuration from arguments
     pub fn parse_quota_summary_config(&self, args: Value) -> Result<FsQuotaSummaryConfig, anyhow::Error> {
-        let mut config: FsQuotaSummaryConfig = serde_json::from_value(args.clone())
-            .unwrap_or_else(|_| {
-                // Handle cases where some fields might be missing, using defaults
-                FsQuotaSummaryConfig {
-                    subject: args.get("subject").and_then(|v| v.as_str().map(String::from)),
-                    subject_type: args.get("subject_type")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or(SubjectType::Auto),
-                    resolve_uid_gid: args.get("resolve_uid_gid")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    include_mountpoints: args.get("include_mountpoints")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    exclude_mountpoints: args.get("exclude_mountpoints")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    include_types: args.get("include_types")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    exclude_types: args.get("exclude_types")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    include_sources: args.get("include_sources")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    exclude_sources: args.get("exclude_sources")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    include_space: args.get("include_space")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    include_inodes: args.get("include_inodes")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    include_grace: args.get("include_grace")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    all_subjects: args.get("all_subjects")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    units: args.get("units")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or(QuotaUnits::Auto),
-                    timeout_ms: args.get("timeout_ms")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(8000),
-                    env: args.get("env")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
-                }
-            });
+        let mut config: FsQuotaSummaryConfig = crate::core::lenient::from_value(args)
+            .map_err(|e| FsError::InvalidQuotaSummaryConfig(e.to_string()))?;
 
         // Set default timeout if not provided
         if config.timeout_ms == 0 {
@@ -4976,82 +4637,8 @@ impl FsHandle {
 
     /// Parse usage configuration from arguments
     fn parse_usage_config(&self, args: Value) -> Result<FsUsageConfig, anyhow::Error> {
-        let mut config: FsUsageConfig = serde_json::from_value(args.clone())
-            .unwrap_or_else(|_| {
-                // Handle cases where some fields might be missing, using defaults
-                FsUsageConfig {
-                    paths: args.get("paths")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    mode: args.get("mode")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or(UsageMode::Mounts),
-                    include_mountpoints: args.get("include_mountpoints")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    exclude_mountpoints: args.get("exclude_mountpoints")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    include_types: args.get("include_types")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    exclude_types: args.get("exclude_types")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    include_sources: args.get("include_sources")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    exclude_sources: args.get("exclude_sources")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(Vec::new),
-                    include_inodes: args.get("include_inodes")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    include_readonly: args.get("include_readonly")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    normalize_paths: args.get("normalize_paths")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    units: args.get("units")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or(UsageUnits::Auto),
-                    human_readable: args.get("human_readable")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    threshold_used_percent_min: args.get("threshold_used_percent_min")
-                        .and_then(|v| v.as_f64()),
-                    threshold_used_percent_max: args.get("threshold_used_percent_max")
-                        .and_then(|v| v.as_f64()),
-                    timeout_ms: args.get("timeout_ms")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(5000),
-                    env: args.get("env")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok()),
-                }
-            });
-
-        // Handle potential string values for enum fields
-        if let Some(mode_str) = args.get("mode").and_then(|v| v.as_str()) {
-            config.mode = match mode_str {
-                "mounts" => UsageMode::Mounts,
-                "paths" => UsageMode::Paths,
-                "aggregate" => UsageMode::Aggregate,
-                _ => config.mode,
-            };
-        }
-
-        if let Some(units_str) = args.get("units").and_then(|v| v.as_str()) {
-            config.units = match units_str {
-                "auto" => UsageUnits::Auto,
-                "bytes" => UsageUnits::Bytes,
-                "kilobytes" => UsageUnits::Kilobytes,
-                "megabytes" => UsageUnits::Megabytes,
-                "gigabytes" => UsageUnits::Gigabytes,
-                "blocks" => UsageUnits::Blocks,
-                _ => config.units,
-            };
-        }
+        let config: FsUsageConfig = crate::core::lenient::from_value(args)
+            .map_err(|e| FsError::InvalidUsageConfig(e.to_string()))?;
 
         Ok(config)
     }
@@ -5115,14 +4702,24 @@ impl FsHandle {
                 filesystems: Vec::new(),
                 aggregate: None,
                 path_to_filesystem: None,
+                warnings: Vec::new(),
             })?);
         }
 
         // 5. Collect usage statistics for each filesystem
+        // A mount whose statistics cannot be read (for example a stale
+        // network mount or a mountpoint without permission) is skipped with a
+        // warning instead of failing the whole call.
         let mut filesystem_usages = Vec::new();
+        let mut warnings = Vec::new();
         for mount in selected_mounts {
-            let usage = self.get_filesystem_usage(&mount, config).await?;
-            filesystem_usages.push(usage);
+            match self.get_filesystem_usage(&mount, config).await {
+                Ok(usage) => filesystem_usages.push(usage),
+                Err(_) => warnings.push(format!(
+                    "skipped {}: usage statistics could not be read",
+                    mount.target
+                )),
+            }
         }
 
         // 6. Apply threshold filters
@@ -5171,6 +4768,7 @@ impl FsHandle {
             filesystems: filesystem_usages,
             aggregate,
             path_to_filesystem,
+            warnings,
         };
 
         Ok(serde_json::to_value(result)?)
@@ -5195,8 +4793,10 @@ impl FsHandle {
             let mut best_match: Option<&RawMountInfo> = None;
             let mut best_match_len = 0;
 
+            // Match on whole path components so /homex is not placed under /home.
+            let resolved = fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
             for mount in mounts {
-                if path.starts_with(&mount.target) && mount.target.len() > best_match_len {
+                if resolved.starts_with(&mount.target) && mount.target.len() >= best_match_len {
                     best_match = Some(mount);
                     best_match_len = mount.target.len();
                 }
@@ -5450,10 +5050,11 @@ impl FsHandle {
             let mut best_match: Option<&FilesystemUsage> = None;
             let mut best_match_len = 0;
 
-            for fs in filesystems {
-                if path.starts_with(&fs.target) && fs.target.len() > best_match_len {
-                    best_match = Some(fs);
-                    best_match_len = fs.target.len();
+            let resolved = fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+            for usage in filesystems {
+                if resolved.starts_with(&usage.target) && usage.target.len() >= best_match_len {
+                    best_match = Some(usage);
+                    best_match_len = usage.target.len();
                 }
             }
 
@@ -5501,8 +5102,8 @@ impl FsHandle {
         let mut config: FsResizeConfig = if args.is_null() {
             FsResizeConfig::default()
         } else {
-            serde_json::from_value(args)
-                .context("Failed to parse resize configuration")?
+            crate::core::lenient::from_value(args)
+                .map_err(|e| FsError::InvalidResizeConfig(e.to_string()))?
         };
 
         // Apply defaults if not provided
@@ -5845,6 +5446,12 @@ impl FsHandle {
                     SizeUnits::Gigabytes => Ok(bytes * 1024 * 1024 * 1024),
                     SizeUnits::Terabytes => Ok(bytes * 1024 * 1024 * 1024 * 1024),
                 }
+            }
+            // A bare number from the command line ("1024") is a count in
+            // size_units, exactly like a JSON number.
+            Value::String(st) if st.trim().parse::<u64>().is_ok() => {
+                let n: u64 = st.trim().parse().unwrap_or(0);
+                self.parse_size(&Value::from(n), units)
             }
             Value::String(s) => {
                 self.parse_human_readable_size(s)
@@ -6305,8 +5912,8 @@ impl FsHandle {
 
     /// Parse check configuration from input arguments
     fn parse_check_config(&self, args: Value) -> Result<FsCheckConfig, anyhow::Error> {
-        let config: FsCheckConfig = serde_json::from_value(args)
-            .context("Failed to parse check configuration")?;
+        let config: FsCheckConfig = crate::core::lenient::from_value(args)
+            .map_err(|e| FsError::InvalidCheckConfig(e.to_string()))?;
 
         // Apply defaults
         if config.target.is_empty() {
@@ -6893,10 +6500,8 @@ impl FsHandle {
 
     /// Parse list-mounts configuration from arguments
     fn parse_list_mounts_config(&self, args: Value) -> Result<ListMountsConfig, anyhow::Error> {
-        eprintln!("DEBUG: Input args: {}", args);
-        let mut config: ListMountsConfig = serde_json::from_value(args)
-            .context("Failed to parse list-mounts configuration")?;
-        eprintln!("DEBUG: Parsed config: include_pseudo={}", config.include_pseudo);
+        let mut config: ListMountsConfig = crate::core::lenient::from_value(args)
+            .map_err(|e| FsError::InvalidListMountsConfig(e.to_string()))?;
 
         // Set default timeout if not provided or zero
         if config.timeout_ms == 0 {
@@ -6927,11 +6532,7 @@ impl FsHandle {
 
         // 2. Parse and classify mounts
         let mut mount_entries: Vec<ListMountEntry> = Vec::new();
-        eprintln!("DEBUG: Processing {} raw mounts", raw_mounts.len());
-        for (i, raw_mount) in raw_mounts.iter().enumerate() {
-            if i < 5 || raw_mount.fstype == "proc" || raw_mount.fstype == "tmpfs" {
-                eprintln!("DEBUG: Processing mount {}: {} {} {}", i, raw_mount.source, raw_mount.target, raw_mount.fstype);
-            }
+        for raw_mount in raw_mounts.iter() {
             let mut entry = ListMountEntry {
                 source: raw_mount.source.clone(),
                 target: if config.normalize_paths {
@@ -6968,9 +6569,7 @@ impl FsHandle {
         }
 
         // 4. Apply filters
-        eprintln!("DEBUG: Before filtering: {} mount entries", mount_entries.len());
         mount_entries = self.apply_list_mounts_filters(mount_entries, config)?;
-        eprintln!("DEBUG: After filtering: {} mount entries", mount_entries.len());
 
         // 5. Sort deterministically
         mount_entries.sort_by(|a, b| {
@@ -7016,9 +6615,6 @@ impl FsHandle {
             "cgroup2" | "pstore" | "securityfs" | "debugfs" | "tracefs" |
             "bpf" | "configfs" | "fusectl" | "mqueue" | "hugetlbfs"
         );
-        if is_pseudo {
-            eprintln!("DEBUG: {} is a pseudo filesystem", fstype);
-        }
         is_pseudo
     }
 
@@ -7074,8 +6670,6 @@ impl FsHandle {
 
     /// Apply all the include/exclude filters
     fn apply_list_mounts_filters(&self, mut mounts: Vec<ListMountEntry>, config: &ListMountsConfig) -> Result<Vec<ListMountEntry>, anyhow::Error> {
-        eprintln!("DEBUG: Filter config: include_pseudo={}, include_readonly={}, include_readwrite={}", 
-                 config.include_pseudo, config.include_readonly, config.include_readwrite);
         
         // Apply mountpoint filters
         if !config.include_mountpoints.is_empty() {
@@ -7280,53 +6874,13 @@ impl FsHandle {
     }
 }
 
-impl FsHandle {
-    /// Check if the URL or verb indicates a help request
-    fn should_show_help(url: &Url, verb: &str, args: &Args) -> bool {
-        // Check if verb is help
-        if verb == "help" || verb == "h" {
-            return true;
-        }
-
-        // Check host for --help or -h
-        if let Some(host) = url.host_str() {
-            if host == "--help" || host == "-h" {
-                return true;
-            }
-        }
-
-        // Check path for --help or -h
-        let path = url.path();
-        if path.contains("--help") || path.contains("-h") {
-            return true;
-        }
-
-        // Check query parameters for help
-        for (key, _) in url.query_pairs() {
-            if key == "help" || key == "h" {
-                return true;
-            }
-        }
-
-        // Check args for help
-        if args.contains_key("help") || args.contains_key("h") {
-            return true;
-        }
-
-        false
-    }
-
-    /// Display comprehensive filesystem handle help
-    fn display_help(io: &mut IoStreams) -> Result<Status> {
-        write!(io.stdout, "{}", FS_HELP_TEXT)
-            .context("Failed to write help text to stdout")?;
-        Ok(Status::ok())
-    }
-}
-
 impl Handle for FsHandle {
     fn verbs(&self) -> &'static [&'static str] {
         &["mount", "unmount", "umount", "snapshot", "quota", "quota_summary", "usage", "resize", "check", "fsck", "list-mounts", "help", "h"]
+    }
+
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&FS_HELP)
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -7657,8 +7211,14 @@ impl Handle for FsHandle {
                 }
             }
             "help" | "h" => {
-                // Display comprehensive filesystem help
-                Self::display_help(io)
+                let verb = args.get("verb").map(String::as_str);
+                write!(
+                    io.stdout,
+                    "{}",
+                    crate::core::help::render_legacy("fs", &FS_HELP, self.verbs(), verb)
+                )
+                .context("Failed to write help text to stdout")?;
+                Ok(Status::ok())
             }
             _ => Ok(Status::err(95, "unknown verb")),
         }
@@ -9581,5 +9141,103 @@ mod tests {
         assert_eq!(result.filesystems.len(), 1);
         assert_eq!(result.filesystems[0].target, "/home");
         assert_eq!(result.filesystems[0].fstype, "ext4");
+    }
+
+    /// Builds the JSON value the CLI produces: every argument is a string.
+    fn cli_args(pairs: &[(&str, &str)]) -> Value {
+        let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        serde_json::to_value(args).unwrap()
+    }
+
+    #[test]
+    fn cli_string_args_parse_into_typed_configs() {
+        let h = FsHandle::new_for_test("t".to_string());
+
+        let c = h.parse_snapshot_config(cli_args(&[("include_inodes", "true"), ("timeout_ms", "1234"), ("include_types", "ext4,xfs")])).unwrap();
+        assert!(c.include_inodes);
+        assert_eq!(c.timeout_ms, 1234);
+        assert_eq!(c.include_types, vec!["ext4", "xfs"]);
+
+        let c = h.parse_resize_config(cli_args(&[("target", "/data"), ("mode", "shrink"), ("allow_shrink", "true"), ("dry_run", "true"), ("timeout_ms", "9000")])).unwrap();
+        assert_eq!(c.mode, ResizeMode::Shrink);
+        assert!(c.allow_shrink && c.dry_run);
+        assert_eq!(c.timeout_ms, 9000);
+        assert!(h.validate_resize_config(&FsResizeConfig { size: Some(json!("1G")), ..c }).is_ok());
+
+        let c = h.parse_check_config(cli_args(&[("target", "/dev/sdz9"), ("mode", "repair"), ("allow_repair", "yes"), ("max_pass", "2")])).unwrap();
+        assert_eq!(c.mode, CheckMode::Repair);
+        assert!(c.allow_repair);
+        assert_eq!(c.max_pass, Some(2));
+
+        let c = h.parse_list_mounts_config(cli_args(&[("include_pseudo", "true"), ("include_readonly", "false"), ("timeout_ms", "100")])).unwrap();
+        assert!(c.include_pseudo && !c.include_readonly);
+        assert_eq!(c.timeout_ms, 100);
+
+        let c = h.parse_quota_config(cli_args(&[("include_inodes", "false"), ("timeout_ms", "42"), ("units", "bytes")])).unwrap();
+        assert!(!c.include_inodes && c.include_space && c.resolve_uid_gid);
+        assert_eq!(c.timeout_ms, 42);
+        assert_eq!(c.units, QuotaUnits::Bytes);
+
+        let c = h.parse_quota_summary_config(cli_args(&[("all_subjects", "true"), ("include_types", "ext4")])).unwrap();
+        assert!(c.all_subjects);
+        assert_eq!(c.include_types, vec!["ext4"]);
+        assert_eq!(c.timeout_ms, 8000);
+
+        let c = h.parse_usage_config(cli_args(&[("mode", "paths"), ("paths", "/a,/b"), ("human_readable", "true"), ("threshold_used_percent_min", "10.5")])).unwrap();
+        assert_eq!(c.mode, UsageMode::Paths);
+        assert_eq!(c.paths, vec!["/a", "/b"]);
+        assert!(c.human_readable && c.include_inodes);
+        assert_eq!(c.threshold_used_percent_min, Some(10.5));
+        assert!(h.validate_usage_config(&c).is_ok());
+    }
+
+    #[test]
+    fn cli_invalid_typed_args_are_reported() {
+        let h = FsHandle::new_for_test("t".to_string());
+        assert!(h.parse_quota_config(cli_args(&[("timeout_ms", "soon")])).is_err());
+        assert!(h.parse_usage_config(cli_args(&[("units", "parsecs")])).is_err());
+        assert!(h.parse_check_config(cli_args(&[("target", "/x"), ("allow_repair", "maybe")])).is_err());
+    }
+
+    #[test]
+    fn resize_bare_number_string_uses_size_units() {
+        let h = FsHandle::new_for_test("t".to_string());
+        assert_eq!(h.parse_size(&json!("2"), &SizeUnits::Kilobytes).unwrap(), 2048);
+        assert_eq!(h.parse_size(&json!("1K"), &SizeUnits::Auto).unwrap(), 1024);
+    }
+
+    #[test]
+    fn usage_paths_mode_with_cli_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        std::fs::create_dir(&a).unwrap();
+        let paths = format!("{},{}", a.display(), dir.path().display());
+        let h = FsHandle::new_for_test("t".to_string());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let out = rt
+            .block_on(h.usage(cli_args(&[("mode", "paths"), ("paths", &paths)])))
+            .unwrap();
+        assert_eq!(out["mode"], "paths");
+        let mapping = out["path_to_filesystem"].as_array().unwrap();
+        assert_eq!(mapping.len(), 2);
+    }
+
+    #[test]
+    fn help_verb_renders_approved_help() {
+        let h = FsHandle::new_for_test("t".to_string());
+        let mut stdin = std::io::empty();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut io = IoStreams::new(&mut stdin, &mut out, &mut err);
+        h.call("help", &Args::new(), &mut io).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("Handle: fs"));
+
+        let mut stdin = std::io::empty();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut io = IoStreams::new(&mut stdin, &mut out, &mut err);
+        let args: Args = [("verb".to_string(), "resize".to_string())].into_iter().collect();
+        h.call("help", &args, &mut io).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("Handle: fs\nVerb: resize"));
     }
 }

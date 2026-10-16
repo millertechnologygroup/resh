@@ -3,921 +3,446 @@ use base64::prelude::*;
 use std::collections::HashMap;
 use std::io::Write;
 use std::time::{Duration, Instant};
-use std::thread;
 use url::Url;
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use rand;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
 
-// ===== COMPREHENSIVE SSH HELP TEXT =====
-
-static SSH_HELP_TEXT: &str = r#"
-RESOURCE SHELL - SSH HANDLE
-===========================
-
-USAGE:
-  ssh://[username@]hostname[:port].VERB(arguments)
-
-DESCRIPTION:
-  The SSH handle allows you to connect to remote systems using the SSH protocol.
-  Execute commands, transfer files, create secure tunnels, and manage SSH keys
-  on remote hosts. Supports multiple authentication methods including SSH agent,
-  password (requires sshpass), and key-based authentication. Perfect for remote
-  system administration, automation, deployment, and secure communication.
-
-URL FORMAT:
-  ssh://username@hostname.VERB
-  ssh://username@hostname:port.VERB
-  ssh://hostname.VERB                    [uses current username]
-
-  CRITICAL: SSH URLs require an explicit verb with a dot (.)
-            ssh://user@host will fail - use ssh://user@host.exec instead
-
-VERBS (8 total):
-
-  Command Execution:
-    exec            Execute commands on remote hosts
-
-  File Transfer:
-    upload          Upload files to remote hosts
-    download        Download files from remote hosts
-
-  Tunneling:
-    tunnel          Create SSH tunnels (local, remote, dynamic/SOCKS)
-
-  Key Management:
-    keys.list       List SSH keys (authorized_keys, host keys)
-    key.add         Add SSH keys to remote authorized_keys
-
-  Configuration & Testing:
-    config.get      Get SSH configuration values
-    test            Test SSH connections (connectivity and authentication)
-
-EXAMPLES:
-
-  Command Execution (exec):
-    # Simple command - no quotes needed
-    ssh://user@host.exec command=whoami
-
-    # Simple command with explicit auth
-    ssh://user@host.exec command=uptime method=key
-
-    # Command with spaces - quotes required
-    ssh://user@host.exec command="ls -la /tmp"
-
-    # Command with pipe
-    ssh://user@host.exec command="ps aux | grep ssh"
-
-    # SSH key authentication
-    ssh://user@host.exec command=whoami method=key identity_path="$HOME/.ssh/id_rsa"
-
-    # Password authentication (requires sshpass)
-    ssh://user@host.exec command=whoami method=password password="yourpassword"
-
-    # SSH agent authentication (default)
-    ssh://user@host.exec command=whoami method=agent
-
-    # Execute in bash shell
-    ssh://user@host.exec command="echo \$HOME" shell_mode=bash
-
-    # Execute with working directory
-    ssh://user@host.exec command=pwd shell_mode=bash cwd=/tmp
-
-    # Dry run (test without executing)
-    ssh://user@host.exec command="rm -rf /tmp/*" dry_run=true
-
-    # Custom timeout
-    ssh://user@host.exec command="long-task" connect_timeout_ms=5000 command_timeout_ms=30000
-
-    # Base64 output encoding
-    ssh://user@host.exec command="cat /bin/data" output_encoding=base64
-
-    # Disable output capture
-    ssh://user@host.exec command="echo hello" capture_output=false
-
-    # Text format output
-    ssh://user@host.exec command=whoami format=text
-
-    # Custom port
-    ssh://user@host:2222.exec command=whoami
-
-  File Upload (upload):
-    # Upload inline content
-    ssh://user@host.upload source="Hello World" source_mode=inline dest="/tmp/test.txt" overwrite=true
-
-    # Upload from file
-    ssh://user@host.upload source="/local/file.txt" source_mode=file dest="/remote/file.txt" overwrite=true
-
-    # Upload base64 content
-    ssh://user@host.upload source="SGVsbG8gV29ybGQh" source_mode=inline source_encoding=base64 dest="/tmp/file.txt"
-
-    # Atomic upload (temp file then rename)
-    ssh://user@host.upload source="data" source_mode=inline dest="/tmp/file.txt" atomic=true
-
-    # Upload with checksum verification
-    ssh://user@host.upload source="data" source_mode=inline dest="/tmp/file.txt" verify_checksum=true checksum_algorithm=sha256
-
-    # Dry run upload
-    ssh://user@host.upload source="test" source_mode=inline dest="/tmp/test.txt" dry_run=true
-
-    # Upload with password auth
-    ssh://user@host.upload source="data" source_mode=inline dest="/tmp/file.txt" method=password password="pass"
-
-    # Upload with key auth
-    ssh://user@host.upload source="/local/file" source_mode=file dest="/remote/file" method=key identity_path="$HOME/.ssh/id_rsa"
-
-    # Text format output
-    ssh://user@host.upload source="data" source_mode=inline dest="/tmp/file.txt" format=text
-
-  File Download (download):
-    # Download to local file
-    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt"
-
-    # Download content only (no file)
-    ssh://user@host.download source="/remote/config.yaml" dest_mode=none return_content=true
-
-    # Download with content in response
-    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt" return_content=true
-
-    # Download as base64
-    ssh://user@host.download source="/bin/data" dest_mode=none return_content=true return_encoding=base64
-
-    # Download with overwrite
-    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt" overwrite=true
-
-    # Download with parent directory creation
-    ssh://user@host.download source="/remote/file.txt" dest="/local/nested/dir/file.txt" mkdir_parents=true
-
-    # Download with checksum verification
-    ssh://user@host.download source="/remote/file.txt" dest_mode=none return_content=true verify_checksum=true checksum_algorithm=sha256
-
-    # Dry run download
-    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt" dry_run=true
-
-    # Download with size limit
-    ssh://user@host.download source="/remote/file.txt" dest_mode=none max_size_bytes=1048576
-
-    # Download with password auth
-    ssh://user@host.download source="/remote/file.txt" dest="/local/file.txt" method=password password="pass"
-
-  SSH Tunneling (tunnel):
-    # Local tunnel (forward local port to remote)
-    ssh://user@host.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432
-
-    # Remote tunnel (forward remote port to local)
-    ssh://user@host.tunnel mode=remote remote_bind_port=9090 local_dest_host=localhost local_dest_port=8080
-
-    # Dynamic tunnel (SOCKS proxy)
-    ssh://user@host.tunnel mode=dynamic local_bind_port=1080 socks_version=socks5
-
-    # Local tunnel with custom bind address
-    ssh://user@host.tunnel mode=local local_bind_host=127.0.0.1 local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432
-
-    # Tunnel with lifetime limits
-    ssh://user@host.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 tunnel_timeout_ms=60000 idle_timeout_ms=30000 max_connections=10
-
-    # Tunnel with bandwidth limits
-    ssh://user@host.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 max_bytes_in=1048576 max_bytes_out=2097152
-
-    # Wildcard bind (use with caution)
-    ssh://user@host.tunnel mode=local local_bind_host=0.0.0.0 local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 allow_wildcard_binds=true
-
-    # Tunnel dry run
-    ssh://user@host.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 dry_run=true
-
-    # SOCKS4 proxy
-    ssh://user@host.tunnel mode=dynamic local_bind_port=1080 socks_version=socks4
-
-  Key Management (keys.list):
-    # List authorized keys
-    ssh://user@host.keys.list
-
-    # List authorized keys with scope
-    ssh://user@host.keys.list scope=authorized
-
-    # List host keys
-    ssh://user@host.keys.list scope=host
-
-    # List keys from custom paths
-    ssh://user@host.keys.list scope=custom custom_paths="/path/to/keys1,/path/to/keys2"
-
-    # Filter by key types
-    ssh://user@host.keys.list key_types="ed25519,rsa"
-
-    # List with specific fingerprint algorithm
-    ssh://user@host.keys.list fingerprint_algorithm=sha256
-
-    # List keys without raw key data
-    ssh://user@host.keys.list include_raw_key=false
-
-  Add Keys (key.add):
-    # Add public key to authorized_keys
-    ssh://user@host.key.add public_key="ssh-rsa AAAAB3NzaC1yc2E... user@host" target_path="~/.ssh/authorized_keys"
-
-    # Add key with custom path
-    ssh://user@host.key.add public_key="ssh-ed25519 AAAAC3N... user@host" target_path="/home/user/.ssh/authorized_keys"
-
-  Configuration (config.get):
-    # Get SSH configuration
-    ssh://user@host.config.get
-
-    # Get config with specific auth
-    ssh://user@host.config.get method=key identity_path="$HOME/.ssh/id_rsa"
-
-  Connection Testing (test):
-    # Test connection
-    ssh://user@host.test
-
-    # Test with password auth
-    ssh://user@host.test method=password password="secret"
-
-    # Test with key auth
-    ssh://user@host.test method=key identity_path="$HOME/.ssh/id_rsa"
-
-    # Test custom port
-    ssh://user@host:2222.test
-
-SYNTAX RULES:
-
-  Critical SSH URL requirement:
-    ✅ CORRECT:   ssh://user@host.exec command=whoami
-    ❌ WRONG:     ssh://user@host command=whoami
-    ❌ WRONG:     ssh://user@host .exec command=whoami
-
-    SSH URLs MUST include an explicit verb with a dot (.)
-
-  When to use quotes:
-    No quotes needed:
-      • Simple commands:           command=whoami
-      • Simple parameters:         method=key
-      • Numbers:                   port=2222
-      • Paths without spaces:      dest=/tmp/file.txt
-
-    Quotes required:
-      • Commands with spaces:      command="ls -la"
-      • Commands with pipes:       command="ps | grep ssh"
-      • Paths with spaces:         dest="/path with spaces/file.txt"
-      • Complex strings:           source="Hello World"
-
-  Examples:
-    # No quotes needed
-    ssh://user@host.exec command=whoami method=key port=2222
-
-    # Quotes required
-    ssh://user@host.exec command="ls -la /tmp" dest="/path with spaces/file.txt"
-
-EXEC ARGUMENTS:
-  command=CMD            Command to execute (required)
-  shell_mode=SHELL       Shell to use: bash, sh, none (default: none)
-  cwd=PATH               Working directory for command
-  method=METHOD          Authentication method: agent, password, key
-  password=PASS          Password (requires sshpass)
-  identity_path=PATH     Path to private key file
-  identity_data=DATA     Private key data inline
-  identity_passphrase=PASS  Key passphrase
-  connect_timeout_ms=MS  Connection timeout (default: 30000)
-  command_timeout_ms=MS  Command timeout (default: none)
-  capture_output=BOOL    Capture stdout/stderr (default: true)
-  output_encoding=ENC    Output encoding: utf8, base64 (default: utf8)
-  max_output_bytes=N     Max output size in bytes
-  dry_run=BOOL           Test without executing (default: false)
-  format=FORMAT          Output format: json, text (default: json)
-
-UPLOAD ARGUMENTS:
-  source=DATA            Source data or file path (required)
-  source_mode=MODE       Source mode: inline, file (required)
-  source_encoding=ENC    Source encoding: utf8, base64 (default: utf8)
-  dest=PATH              Destination path on remote host (required)
-  overwrite=BOOL         Overwrite if exists (default: false)
-  atomic=BOOL            Use atomic write (temp + rename) (default: false)
-  verify_checksum=BOOL   Verify after upload (default: false)
-  checksum_algorithm=ALG Checksum algorithm: md5, sha256 (default: sha256)
-  method=METHOD          Authentication method
-  password=PASS          Password
-  identity_path=PATH     Private key path
-  dry_run=BOOL           Test without uploading (default: false)
-  format=FORMAT          Output format: json, text (default: json)
-
-DOWNLOAD ARGUMENTS:
-  source=PATH            Source path on remote host (required)
-  dest=PATH              Destination path on local system
-  dest_mode=MODE         Destination mode: file, none (default: file)
-  overwrite=BOOL         Overwrite if exists (default: false)
-  mkdir_parents=BOOL     Create parent directories (default: false)
-  return_content=BOOL    Include content in response (default: false)
-  return_encoding=ENC    Content encoding: utf8, base64 (default: utf8)
-  max_size_bytes=N       Maximum file size
-  verify_checksum=BOOL   Verify after download (default: false)
-  checksum_algorithm=ALG Checksum algorithm (default: sha256)
-  method=METHOD          Authentication method
-  password=PASS          Password
-  identity_path=PATH     Private key path
-  dry_run=BOOL           Test without downloading (default: false)
-  format=FORMAT          Output format: json, text (default: json)
-
-TUNNEL ARGUMENTS:
-  mode=MODE              Tunnel mode: local, remote, dynamic (required)
-  
-  Local tunnel:
-    local_bind_host=HOST   Local bind address (default: 127.0.0.1)
-    local_bind_port=PORT   Local bind port (required)
-    remote_dest_host=HOST  Remote destination host (required)
-    remote_dest_port=PORT  Remote destination port (required)
-  
-  Remote tunnel:
-    remote_bind_host=HOST  Remote bind address (default: 127.0.0.1)
-    remote_bind_port=PORT  Remote bind port (required)
-    local_dest_host=HOST   Local destination host (required)
-    local_dest_port=PORT   Local destination port (required)
-  
-  Dynamic tunnel:
-    local_bind_host=HOST   Local bind address (default: 127.0.0.1)
-    local_bind_port=PORT   Local bind port (required)
-    socks_version=VER      SOCKS version: socks4, socks5 (default: socks5)
-  
-  Lifetime controls:
-    connect_timeout_ms=MS  Connection timeout (default: 30000)
-    tunnel_timeout_ms=MS   Total tunnel lifetime
-    idle_timeout_ms=MS     Idle timeout
-    max_connections=N      Max concurrent connections
-    max_bytes_in=N         Max bytes received
-    max_bytes_out=N        Max bytes sent
-  
-  Security:
-    allow_wildcard_binds=BOOL  Allow 0.0.0.0 binds (default: false)
-    known_hosts_mode=MODE      Host verification: strict, accept_new, insecure
-  
-  Other:
-    method=METHOD          Authentication method
-    password=PASS          Password
-    identity_path=PATH     Private key path
-    dry_run=BOOL           Test without creating tunnel (default: false)
-    format=FORMAT          Output format: json, text (default: json)
-
-KEYS.LIST ARGUMENTS:
-  scope=SCOPE            Key scope: authorized, host, custom (default: authorized)
-  custom_paths=PATHS     Comma-separated paths (for scope=custom)
-  key_types=TYPES        Filter key types: rsa,ecdsa,ed25519,dsa
-  fingerprint_algorithm=ALG  Algorithm: md5, sha256 (default: sha256)
-  max_keys=N             Maximum keys to return (default: 1024)
-  max_bytes=N            Maximum bytes to read (default: 1048576)
-  include_options=BOOL   Include key options (default: true)
-  include_raw_key=BOOL   Include raw key data (default: true)
-  method=METHOD          Authentication method
-  format=FORMAT          Output format: json, text (default: json)
-
-KEY.ADD ARGUMENTS:
-  public_key=KEY         Public key to add (required)
-  target_path=PATH       Target authorized_keys path (default: ~/.ssh/authorized_keys)
-  method=METHOD          Authentication method
-  password=PASS          Password
-  identity_path=PATH     Private key path
-  format=FORMAT          Output format: json, text (default: json)
-
-CONFIG.GET ARGUMENTS:
-  method=METHOD          Authentication method
-  password=PASS          Password
-  identity_path=PATH     Private key path
-  format=FORMAT          Output format: json, text (default: json)
-
-TEST ARGUMENTS:
-  method=METHOD          Authentication method
-  password=PASS          Password
-  identity_path=PATH     Private key path
-  connect_timeout_ms=MS  Connection timeout (default: 30000)
-  format=FORMAT          Output format: json, text (default: json)
-
-AUTHENTICATION METHODS:
-
-  agent (default):
-    Uses SSH agent for authentication
-    No additional parameters required
-    Requires SSH agent to be running
-    Most convenient for interactive use
-
-    Example:
-      ssh://user@host.exec command=whoami method=agent
-
-  password:
-    Uses password authentication
-    Requires 'sshpass' utility to be installed
-    Less secure than key-based authentication
-    Suitable for automation with stored passwords
-
-    Install sshpass:
-      Ubuntu/Debian:  sudo apt-get install sshpass
-      CentOS/RHEL:    sudo yum install sshpass
-      macOS:          brew install sshpass
-
-    Example:
-      ssh://user@host.exec command=whoami method=password password="secret"
-
-  key:
-    Uses SSH key authentication
-    Most secure method
-    Recommended for automation
-    Supports key passphrases
-
-    Example:
-      ssh://user@host.exec command=whoami method=key identity_path="$HOME/.ssh/id_rsa"
-
-    With passphrase:
-      ssh://user@host.exec command=whoami method=key identity_path="$HOME/.ssh/id_rsa" identity_passphrase="keypass"
-
-    Inline key data:
-      ssh://user@host.exec command=whoami method=key identity_data="-----BEGIN RSA PRIVATE KEY-----..."
-
-TUNNEL MODES:
-
-  local (Local Port Forwarding):
-    Forward local port to remote destination through SSH server
-    Use case: Access remote service through jump host
-
-    Flow: localhost:local_port → SSH server → remote_dest_host:remote_dest_port
-
-    Example:
-      ssh://jump.example.com.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432
-      # Access: localhost:5433 → jump.example.com → db.internal:5432
-      # Connect to database: psql -h localhost -p 5433
-
-  remote (Remote Port Forwarding):
-    Forward remote port to local destination through SSH server
-    Use case: Expose local service to remote network
-
-    Flow: SSH server:remote_port → localhost → local_dest_host:local_dest_port
-
-    Example:
-      ssh://server.example.com.tunnel mode=remote remote_bind_port=9090 local_dest_host=localhost local_dest_port=8080
-      # Remote users access: server.example.com:9090 → your machine → localhost:8080
-
-  dynamic (Dynamic Port Forwarding / SOCKS Proxy):
-    Create SOCKS proxy for dynamic forwarding
-    Use case: Browse through SSH tunnel, bypass restrictions
-
-    Flow: Application → SOCKS proxy:local_port → SSH server → destination
-
-    Example:
-      ssh://proxy.example.com.tunnel mode=dynamic local_bind_port=1080 socks_version=socks5
-      # Configure browser: SOCKS5 proxy localhost:1080
-      # All browser traffic goes through proxy.example.com
-
-SHELL MODES:
-
-  none (default):
-    Execute command directly without shell
-    No shell interpretation
-    Safest option, no injection risks
-    Command: exactly as specified
-
-  bash:
-    Execute through bash shell
-    Shell interpretation enabled
-    Variables expanded: $HOME, $USER, etc.
-    Command: bash -c 'command'
-
-  sh:
-    Execute through sh shell
-    POSIX shell interpretation
-    Command: sh -c 'command'
-
-  Working directory with shell:
-    When cwd is specified with shell_mode:
-    Command becomes: bash -c 'cd "/path" && command'
-
-HOST KEY VERIFICATION:
-
-  strict (default):
-    Verify against known_hosts
-    Fail if host key doesn't match
-    Secure, recommended for production
-
-  accept_new:
-    Accept unknown hosts automatically
-    Add to known_hosts
-    Reject if key changes
-    Convenient for first connection
-
-  insecure:
-    Skip host key verification entirely
-    Accept any host key
-    SECURITY WARNING: Vulnerable to MITM
-    Only use for testing/development
-
-OUTPUT FORMATS:
-
-  json (default):
-    Structured JSON output
-    {
-      "ok": true,
-      "connection": {...},
-      "result": {...}
+/// Metadata for `resh ssh --help` and `resh ssh <verb> --help`.
+static SSH_HELP: HandleHelp = HandleHelp {
+    description: "The ssh handle runs commands on remote hosts through the system ssh client, \
+        using sshpass for password logins, and reads the local OpenSSH client configuration. \
+        The target is written as ssh://[user[:password]@]host[:port] followed by a dot and \
+        the verb, such as ssh://alice@192.0.2.10.exec. The exec, upload, download, test, \
+        and config.get verbs do real work (transfers need a POSIX shell and cat on the \
+        remote host, plus sha256sum, sha1sum, or md5sum for checksums), while key.add, \
+        keys.list, and tunnel succeed only with dry_run=true.",
+    usage: "resh ssh://[user@]host[:port].<verb>[(key=value,...)]",
+    verbs: &[
+        VerbHelp {
+            name: "config.get",
+            definition: "Parses the local OpenSSH client config files and reports the settings \
+                that apply to the host given by the host argument, ignoring the URL host.",
+            detail: Some(VerbDetail {
+                usage: "resh ssh://<host>.config.get host=<name> [user_config_path=<path>]\n  \
+                    [system_config_path=<path>] [extra_config_paths=<path,...>]\n  \
+                    [follow_includes=true|false] [include_raw_entries=true|false]\n  \
+                    [include_origin=true|false] [user_home=<dir>] [dry_run=true|false]\n  \
+                    [format=json|text]",
+                example: "resh --json-pretty ssh://web01.config.get host=web01 \
+                    include_raw_entries=false",
+                example_output: Some(
+                    r#"{
+  "dry_run": false,
+  "effective": {
+    "HostName": {
+      "origin": {
+        "block": "Host web01",
+        "file": "/home/alice/.ssh/config",
+        "line": 2
+      },
+      "value": "192.0.2.10"
+    },
+    "User": {
+      "origin": {
+        "block": "Host web01",
+        "file": "/home/alice/.ssh/config",
+        "line": 3
+      },
+      "value": "alice"
     }
+  },
+  "host": "web01",
+  "ok": true,
+  "sources": {
+    "extra_config_paths": [],
+    "follow_includes": true,
+    "system_config_path": "/etc/ssh/ssh_config",
+    "user_config_path": "~/.ssh/config"
+  },
+  "summary": {
+    "matched_blocks": [
+      "Host web01 (/home/alice/.ssh/config:2)",
+      "Host web01 (/home/alice/.ssh/config:3)"
+    ],
+    "total_entries": 2,
+    "total_files": 2,
+    "truncated": false
+  }
+}
+
+Shown with --json-pretty for a ~/.ssh/config holding HostName and User
+under Host web01. A later matching entry replaces an earlier one."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "keys.list",
+            definition: "Plans which authorized_keys or host key files would be read on the \
+                remote host, and returns a not-implemented error unless dry_run=true.",
+            detail: Some(VerbDetail {
+                usage: "resh ssh://user@host[:port].keys.list [dry_run=true|false]\n  \
+                    [scope=authorized|host|custom] [authorized_user=<name>]\n  \
+                    [authorized_paths=<path,...>] [host_key_paths=<path,...>]\n  \
+                    [custom_paths=<path,...>] [format=json|text]",
+                example: "resh --json-pretty ssh://alice@192.0.2.10.keys.list dry_run=true",
+                example_output: Some(
+                    r#"{
+  "connection": {
+    "backend": "system",
+    "host": "192.0.2.10",
+    "port": 22,
+    "username": "alice"
+  },
+  "dry_run": true,
+  "ok": true,
+  "planned_files": [
+    "/home/alice/.ssh/authorized_keys",
+    "/home/alice/.ssh/authorized_keys2"
+  ],
+  "scope": "authorized",
+  "summary": {
+    "matched_keys": 0,
+    "total_keys": 0,
+    "truncated": false
+  },
+  "warnings": [
+    "Dry run: no SSH connection was made and no keys were read."
+  ]
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "test",
+            definition: "Checks through the system ssh client that the host is reachable \
+                (connect), that the login works (auth), and that exec_command exits with 0 \
+                (exec); the sftp and hostkey checks are not implemented and always fail.",
+            detail: Some(VerbDetail {
+                usage: "resh ssh://user@host[:port].test [tests=connect,auth,sftp,exec,hostkey]\n  \
+                    [exec_command=<cmd>] [known_hosts_mode=strict|accept-new|insecure]\n  \
+                    [allow_insecure_hostkey=true|false] [dry_run=true|false]\n  \
+                    [format=json|text]",
+                example: "resh --json-pretty ssh://alice@192.0.2.10.test",
+                example_output: Some(
+                    r#"{
+  "dry_run": false,
+  "ok": true,
+  "security": {
+    "insecure_hostkey_allowed": false,
+    "known_hosts_mode": "strict"
+  },
+  "summary": {
+    "overall_duration_ms": 101,
+    "tests_failed": 0,
+    "tests_passed": 2,
+    "tests_requested": [
+      "connect",
+      "auth"
+    ],
+    "tests_run": 2,
+    "tests_skipped": 0
+  },
+  "target": {
+    "host": "192.0.2.10",
+    "port": 22,
+    "username": "alice"
+  },
+  "tests": [
+    {
+      "duration_ms": 50,
+      "name": "connect",
+      "status": "passed"
+    },
+    {
+      "duration_ms": 50,
+      "name": "auth",
+      "status": "passed"
+    }
+  ],
+  "warnings": []
+}
+
+Shown with --json-pretty. The default tests are connect and auth. Each
+check opens its own ssh connection; auth, exec, and sftp are skipped when
+the check they depend on did not pass."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "exec",
+            definition: "Runs a command on the remote host through the system ssh client and \
+                reports its exit code, stdout, and stderr as JSON.",
+            detail: Some(VerbDetail {
+                usage: "resh ssh://[user@]host[:port].exec command=<cmd> [command_args=<a,b>]\n  \
+                    [shell_mode=none|sh|bash|cmd|powershell] [cwd=<dir>]\n  \
+                    [auth_method=auto|agent|key|password] [identity_path=<file>]\n  \
+                    [password=<pw>] [known_hosts_mode=strict|accept-new|insecure]\n  \
+                    [command_timeout_ms=<ms>] [dry_run=true|false] [format=json|text]\n  \
+                    [<option>=<value> ...]",
+                example: "resh --json-pretty ssh://alice@192.0.2.10.exec command=hostname",
+                example_output: Some(
+                    r#"{
+  "command": {
+    "allocate_pty": false,
+    "cwd": null,
+    "raw": "hostname",
+    "shell_mode": "none"
+  },
+  "connection": {
+    "backend": "system",
+    "host": "192.0.2.10",
+    "port": 22,
+    "username": "alice"
+  },
+  "dry_run": false,
+  "ok": true,
+  "result": {
+    "executed": true,
+    "exit_code": 0,
+    "output_truncated": false,
+    "signal": null,
+    "stderr": null,
+    "stdout": "web01",
+    "timed_out": false
+  },
+  "timing": {
+    "command_ms": 412,
+    "connect_ms": 0
+  }
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "upload",
+            definition: "Copies a local file or inline data to the remote path by piping it \
+                into cat over the system ssh client, writing a temporary file and renaming it \
+                when atomic=true.",
+            detail: Some(VerbDetail {
+                usage: "resh ssh://[user@]host[:port].upload source=<path|data> dest=<path>\n  \
+                    [source_mode=file|inline] [source_encoding=utf8|base64]\n  \
+                    [overwrite=true|false] [atomic=true|false] [mkdir_parents=true|false]\n  \
+                    [file_mode=<0644>] [verify_checksum=true|false]\n  \
+                    [checksum_algorithm=sha256|sha1|md5] [dry_run=true|false]\n  \
+                    [format=json|text]",
+                example: "resh ssh://alice@web01.upload source=app.conf dest=/srv/app.conf \
+                    dry_run=true",
+                example_output: Some(
+                    r#"{
+  "ok": true,
+  "dry_run": true,
+  "connection": {
+    "host": "web01",
+    "port": 22,
+    "username": "alice",
+    "backend": "system"
+  },
+  "source": {
+    "mode": "file",
+    "path": "app.conf",
+    "size_bytes": 512
+  },
+  "dest": {
+    "path": "/srv/app.conf",
+    "overwrite": false,
+    "atomic": true,
+    "mkdir_parents": true,
+    "size_bytes": 512
+  },
+  "result": {
+    "uploaded": false,
+    "planned": true,
+    "verify_checksum": false,
+    "checksum_algorithm": "sha256"
+  },
+  "warnings": [
+    "Dry run: no SSH connection was made and no file was uploaded."
+  ]
+}
+
+Printed as indented JSON in field order; --json-pretty sorts the keys.
+verify_checksum=true compares the local checksum with sha256sum, sha1sum,
+or md5sum output from the remote host. A refused overwrite returns
+ssh.upload_dest_exists and a missing directory with mkdir_parents=false
+returns ssh.upload_remote_dir_missing."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "download",
+            definition: "Copies a remote file through the system ssh client into a temporary \
+                file next to the local dest and renames it into place, or only returns the \
+                content when dest_mode=none.",
+            detail: Some(VerbDetail {
+                usage: "resh ssh://[user@]host[:port].download source=<remote-path>\n  \
+                    dest=<local-path> [dest_mode=file|none] [return_content=true|false]\n  \
+                    [return_encoding=utf8|base64] [overwrite=true|false]\n  \
+                    [mkdir_parents=true|false] [max_size_bytes=<n>] [dry_run=true|false]\n  \
+                    [format=json|text]",
+                example: "resh ssh://alice@web01.download source=/etc/hosts dest=hosts \
+                    dry_run=true",
+                example_output: Some(
+                    r#"{
+  "ok": true,
+  "dry_run": true,
+  "connection": {
+    "host": "web01",
+    "port": 22,
+    "username": "alice",
+    "backend": "system"
+  },
+  "source": {
+    "path": "/etc/hosts"
+  },
+  "dest": {
+    "mode": "file",
+    "path": "hosts",
+    "overwrite": false,
+    "mkdir_parents": true
+  },
+  "result": {
+    "downloaded": false,
+    "planned": true,
+    "return_content": true,
+    "return_encoding": "utf8",
+    "verify_checksum": false,
+    "checksum_algorithm": "sha256"
+  },
+  "warnings": [
+    "Dry run: no SSH connection was made and no file was downloaded."
+  ]
+}
+
+Printed as indented JSON in field order; --json-pretty sorts the keys.
+dest is not needed when dest_mode=none. The local dest is left untouched
+when the transfer, the size limit, or verify_checksum=true fails, and an
+existing dest is replaced only with overwrite=true."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "key.add",
+            definition: "Validates an OpenSSH public key and, with dry_run=true, reports the \
+                authorized_keys file it would change; without dry_run it returns a \
+                not-implemented error and writes nothing.",
+            detail: Some(VerbDetail {
+                usage: "resh ssh://user@host[:port].key.add public_key=<key-line>\n  \
+                    [public_key_source=inline|file] [public_key_path=<file>]\n  \
+                    [scope=authorized|custom] [authorized_user=<name>]\n  \
+                    [custom_paths=<path,...>] [on_duplicate=skip|error|replace]\n  \
+                    [dry_run=true|false] [format=json|text]",
+                example: "resh --json-pretty ssh://bob@web01.key.add public_key_path=id.pub \
+                    dry_run=true",
+                example_output: Some(
+                    r#"{
+  "connection": {
+    "backend": "system",
+    "host": "web01",
+    "port": 22,
+    "username": "bob"
+  },
+  "dry_run": true,
+  "key": {
+    "comment": "bob@laptop",
+    "fingerprint": "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU",
+    "fingerprint_algorithm": "sha256",
+    "type": "ed25519",
+    "type_raw": "ssh-ed25519"
+  },
+  "ok": true,
+  "operation": {
+    "backup_created": false,
+    "created_file": false,
+    "duplicates_found": 0,
+    "on_duplicate": "skip",
+    "status": "dry_run"
+  },
+  "scope": "authorized",
+  "target_file": "/home/bob/.ssh/authorized_keys"
+}
+
+Shown with --json-pretty. public_key_path is read from the local machine
+and implies public_key_source=file.
+Without dry_run=true the verb exits 1 with error code ssh.not_implemented."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "tunnel",
+            definition: "Validates a local, remote, or dynamic port forward and reports the plan \
+                when dry_run=true, since creating the tunnel is not implemented and returns an \
+                error.",
+            detail: Some(VerbDetail {
+                usage: "resh ssh://user@host[:port].tunnel mode=local|remote|dynamic\n  \
+                    [local_bind_host=<addr>] [local_bind_port=<n>] [remote_dest_host=<host>]\n  \
+                    [remote_dest_port=<n>] [remote_bind_host=<addr>] [remote_bind_port=<n>]\n  \
+                    [local_dest_host=<host>] [local_dest_port=<n>]\n  \
+                    [socks_version=socks5|socks4] [allow_wildcard_binds=true|false]\n  \
+                    [dry_run=true|false] [format=json|text]",
+                example: "resh ssh://alice@bastion.tunnel mode=dynamic local_bind_port=1080 \
+                    dry_run=true",
+                example_output: Some(
+                    r#"{
+  "ok": true,
+  "dry_run": true,
+  "connection": {
+    "host": "bastion",
+    "port": 22,
+    "username": "alice",
+    "backend": "system"
+  },
+  "tunnel": {
+    "mode": "dynamic",
+    "local_bind_host": "127.0.0.1",
+    "local_bind_port": 1080,
+    "remote_bind_host": null,
+    "remote_bind_port": null,
+    "remote_dest_host": null,
+    "remote_dest_port": null,
+    "local_dest_host": null,
+    "local_dest_port": null,
+    "socks_version": "socks5"
+  },
+  "lifetime": {
+    "connect_timeout_ms": 10000,
+    "tunnel_timeout_ms": null,
+    "idle_timeout_ms": 300000,
+    "max_connections": null,
+    "max_bytes_in": null,
+    "max_bytes_out": null,
+    "closed_reason": null
+  },
+  "stats": {
+    "connections_accepted": 0,
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "uptime_ms": 0
+  },
+  "warnings": [
+    "Dry run: no SSH connection was made and no tunnel was created."
+  ]
+}
+
+Printed as indented JSON in field order; --json-pretty sorts the keys.
+mode=local needs remote_dest_host and remote_dest_port, and mode=remote
+needs local_dest_host and local_dest_port."#,
+                ),
+            }),
+        },
+    ],
+};
 
-  text:
-    Human-readable text output
-    SSH Exec
-    ========
-    Host: example.com
-    Command: whoami
-    Exit Code: 0
-    ...
-
-EXIT CODES:
-  0                      Success
-  1                      General error
-  2                      Connection failed
-  3                      Authentication failed
-  4                      Command execution failed
-  5                      File transfer failed
-  6                      Tunnel creation failed
-  7                      Invalid arguments
-
-ERROR CODES:
-
-  Connection errors:
-    ssh.host_required              Host not specified
-    ssh.connection_failed          Cannot connect to host
-    ssh.connection_timeout         Connection timed out
-
-  Authentication errors:
-    ssh.auth_failed                Authentication failed
-    ssh.auth_missing_password      Password required but not provided
-    ssh.auth_missing_key           Key required but not provided
-    ssh.agent_not_available        SSH agent not running
-
-  Exec errors:
-    ssh.command_required           Command not specified
-    ssh.command_failed             Command execution failed
-    ssh.command_timeout            Command execution timed out
-
-  Upload errors:
-    ssh.upload_source_missing      Source not specified
-    ssh.upload_dest_missing        Destination not specified
-    ssh.upload_dest_exists         File exists and overwrite=false
-    ssh.upload_checksum_mismatch   Upload verification failed
-    ssh.upload_remote_write_failed Permission denied or disk full
-    ssh.upload_timeout             Upload operation timed out
-
-  Download errors:
-    ssh.download_source_missing    Source not specified
-    ssh.download_dest_missing      Destination required for file mode
-    ssh.download_dest_exists       File exists and overwrite=false
-    ssh.download_too_large         File exceeds max_size_bytes
-    ssh.download_checksum_mismatch Download verification failed
-    ssh.download_failed            Download operation failed
-
-  Tunnel errors:
-    ssh.tunnel_mode_required       Tunnel mode not specified
-    ssh.tunnel_missing_remote_dest Remote destination required
-    ssh.tunnel_missing_local_dest  Local destination required
-    ssh.tunnel_wildcard_bind_forbidden  Wildcard bind not allowed
-    ssh.tunnel_creation_failed     Failed to create tunnel
-
-COMMON WORKFLOWS:
-
-  Remote command execution:
-    # Check system status
-    ssh://server.example.com.exec command=uptime
-
-    # Check disk usage
-    ssh://server.example.com.exec command="df -h"
-
-    # Process management
-    ssh://server.example.com.exec command="ps aux | grep nginx"
-
-    # System maintenance
-    ssh://server.example.com.exec command="sudo apt-get update" method=key identity_path="$HOME/.ssh/id_rsa"
-
-  File deployment:
-    # Upload configuration
-    ssh://server.example.com.upload source="/local/config.yaml" source_mode=file dest="/etc/app/config.yaml" method=key identity_path="$HOME/.ssh/id_rsa" overwrite=true
-
-    # Download logs
-    ssh://server.example.com.download source="/var/log/app.log" dest="/local/logs/app.log" method=key identity_path="$HOME/.ssh/id_rsa"
-
-    # Backup configuration
-    ssh://server.example.com.download source="/etc/app/config.yaml" dest="/backups/config-$(date +%Y%m%d).yaml" method=key identity_path="$HOME/.ssh/id_rsa"
-
-  Database access through bastion:
-    # Create tunnel to database
-    ssh://bastion.example.com.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432 method=key identity_path="$HOME/.ssh/id_rsa"
-
-    # Connect to database
-    psql -h localhost -p 5433 -U dbuser -d mydb
-
-  Service monitoring:
-    # Check if service is running
-    ssh://server.example.com.exec command="systemctl status nginx" method=key identity_path="$HOME/.ssh/id_rsa"
-
-    # Check service logs
-    ssh://server.example.com.exec command="journalctl -u nginx -n 50" method=key identity_path="$HOME/.ssh/id_rsa"
-
-  Remote development:
-    # Create SOCKS proxy
-    ssh://dev-server.example.com.tunnel mode=dynamic local_bind_port=1080 method=key identity_path="$HOME/.ssh/id_rsa"
-
-    # Configure browser to use SOCKS5 proxy localhost:1080
-    # Access internal services through tunnel
-
-  Key management:
-    # List authorized keys
-    ssh://server.example.com.keys.list method=key identity_path="$HOME/.ssh/id_rsa"
-
-    # Add new key
-    ssh://server.example.com.key.add public_key="$(cat ~/.ssh/new_key.pub)" method=key identity_path="$HOME/.ssh/id_rsa"
-
-  Automation scripts:
-    # Deploy application
-    ssh://app-server.example.com.upload source="/local/app.tar.gz" source_mode=file dest="/tmp/app.tar.gz" method=key identity_path="$HOME/.ssh/deploy_key"
-    ssh://app-server.example.com.exec command="cd /opt/app && tar xzf /tmp/app.tar.gz" method=key identity_path="$HOME/.ssh/deploy_key"
-    ssh://app-server.example.com.exec command="systemctl restart app" method=key identity_path="$HOME/.ssh/deploy_key"
-
-  Testing connectivity:
-    # Test before operations
-    ssh://server.example.com.test method=key identity_path="$HOME/.ssh/id_rsa"
-
-    # Test password auth
-    ssh://server.example.com.test method=password password="secret"
-
-BEST PRACTICES:
-  • Use SSH keys instead of passwords for automation
-  • Always use key authentication for production systems
-  • Protect private keys with proper permissions (chmod 600)
-  • Use SSH agent for interactive sessions
-  • Test connections with .test verb before operations
-  • Use dry_run to verify commands before execution
-  • Set appropriate timeouts for long-running commands
-  • Use atomic uploads for critical files
-  • Verify checksums for important transfers
-  • Use strict host key verification in production
-  • Limit tunnel lifetime and connections
-  • Avoid wildcard binds (0.0.0.0) in production
-  • Use local tunnels for accessing remote services
-  • Use remote tunnels for exposing local services
-  • Use dynamic tunnels for SOCKS proxy
-  • Always specify explicit verbs in SSH URLs
-  • Use quotes for commands with spaces or special characters
-  • Store passwords and keys securely (environment variables, vaults)
-  • Rotate SSH keys regularly
-  • Use different keys for different purposes
-  • Monitor SSH access logs
-  • Implement proper error handling in scripts
-  • Use meaningful command timeouts
-  • Capture output for logging and debugging
-  • Test in development before production deployment
-  • Use format=text for human-readable output
-  • Use format=json for programmatic parsing
-  • Document SSH access patterns
-  • Implement backup procedures for SSH keys
-  • Use SSH config file for common settings
-  • Implement connection retry logic for flaky networks
-
-SECURITY CONSIDERATIONS:
-  • Password authentication is less secure than keys
-  • Password auth requires sshpass utility
-  • Never hardcode passwords in scripts (use environment variables)
-  • Protect private keys with file permissions (600)
-  • Use key passphrases for additional security
-  • Never share private keys
-  • Use SSH agent forwarding carefully (security risk)
-  • Verify host keys to prevent MITM attacks
-  • Use strict host key verification in production
-  • Only use known_hosts_mode=insecure for testing
-  • Wildcard binds (0.0.0.0) expose tunnels to network
-  • Limit tunnel lifetime and connection counts
-  • Monitor tunnel usage for security incidents
-  • Use firewall rules to restrict SSH access
-  • Implement fail2ban or similar for brute force protection
-  • Use non-standard SSH ports for obscurity (not security)
-  • Keep SSH server and client software updated
-  • Disable root login over SSH
-  • Use SSH certificates for large deployments
-  • Implement proper key rotation policies
-  • Log all SSH connections and commands
-  • Use separate keys for different environments
-  • Implement two-factor authentication where possible
-  • Monitor for unauthorized key additions
-  • Audit authorized_keys files regularly
-  • Use jump hosts (bastions) for production access
-  • Implement network segmentation
-  • Use VPN in conjunction with SSH for additional security
-
-SSHPASS REQUIREMENT:
-
-  Password authentication requires the sshpass utility.
-
-  Installation:
-    Ubuntu/Debian:
-      sudo apt-get install sshpass
-
-    CentOS/RHEL/Fedora:
-      sudo yum install sshpass
-      # or
-      sudo dnf install sshpass
-
-    macOS:
-      brew install sshpass
-
-    Arch Linux:
-      sudo pacman -S sshpass
-
-  Without sshpass:
-    Error: "Failed to spawn ssh process"
-    Solution: Install sshpass or use key-based authentication
-
-  Security note:
-    • sshpass is convenient but less secure than keys
-    • Passwords may appear in process lists
-    • Use keys for production systems
-
-TROUBLESHOOTING:
-
-  "Cannot parse stage" error:
-    Problem: ssh://user@host fails
-    Solution: Add explicit verb
-      ✅ ssh://user@host.exec command=whoami
-
-  "SSH agent is not available" error:
-    Problem: Default auth method (agent) not available
-    Solution: Specify auth method
-      ssh://user@host.exec command=whoami method=key identity_path="$HOME/.ssh/id_rsa"
-
-  "Failed to spawn ssh process" error:
-    Problem: sshpass not installed (password auth)
-    Solution: Install sshpass or use key auth
-
-  "Permission denied (publickey)" error:
-    Solutions:
-      • Check key is in remote authorized_keys
-      • Verify correct key path
-      • Check key permissions (chmod 600)
-      • Test with: ssh user@host
-
-  Connection timeout:
-    Solutions:
-      • Increase connect_timeout_ms
-      • Check firewall rules
-      • Verify host is reachable
-      • Check DNS resolution
-
-  Command timeout:
-    Solutions:
-      • Increase command_timeout_ms
-      • Optimize command for speed
-      • Run command in background if appropriate
-
-  File transfer fails:
-    Solutions:
-      • Check disk space on remote
-      • Verify file permissions
-      • Use overwrite=true if file exists
-      • Check network bandwidth
-
-  Tunnel fails to create:
-    Solutions:
-      • Check if port is already in use
-      • Verify remote service is accessible
-      • Check firewall rules
-      • Use dry_run to test configuration
-
-  Host key verification failed:
-    Solutions:
-      • Add host to known_hosts manually
-      • Use known_hosts_mode=accept_new for first connection
-      • Use known_hosts_mode=insecure for testing only
-      • Check if host key has changed (security concern)
-
-PLATFORM SUPPORT:
-
-  All verbs:               Linux, macOS, Windows (with limitations)
-  Password auth:           Requires sshpass (all platforms)
-  SSH agent:               All platforms (requires agent running)
-  Key auth:                All platforms
-  Tunneling:               All platforms
-
-  Platform notes:
-
-  Linux:
-    • Full support for all features
-    • Native SSH client
-    • sshpass available in repositories
-
-  macOS:
-    • Full support for all features
-    • Native SSH client
-    • sshpass available via Homebrew
-
-  Windows:
-    • Requires OpenSSH client
-    • sshpass support limited
-    • Use WSL for best experience
-    • PowerShell SSH support varies
-
-PERFORMANCE CONSIDERATIONS:
-  • SSH connections have overhead (handshake, encryption)
-  • Connection pooling not supported (each command = new connection)
-  • File transfers limited by network bandwidth
-  • Large file transfers may timeout (increase timeout_ms)
-  • Compression can improve transfer speeds (SSH config)
-  • Tunnels add latency overhead
-  • Multiple concurrent connections may strain server
-  • Use keep-alive for long-running operations
-  • Consider connection reuse in SSH config
-  • Monitor network latency and packet loss
-
-LIMITATIONS:
-  • No connection pooling (new connection per operation)
-  • No built-in SCP support (uses SFTP/SSH)
-  • No rsync integration
-  • Limited SSH config file support
-  • No interactive shell sessions
-  • No X11 forwarding
-  • No agent forwarding
-  • Tunnels don't auto-reconnect
-  • No built-in retry logic for failed operations
-  • No progress indicators for file transfers
-  • No bandwidth limiting for transfers
-  • Command output size limited by max_output_bytes
-  • No built-in log tailing (use exec with tail -f)
-
-DEBUGGING:
-
-  Enable dry_run:
-    ssh://user@host.exec command="rm -rf /" dry_run=true
-
-  Use text format:
-    ssh://user@host.exec command=whoami format=text
-
-  Test connection first:
-    ssh://user@host.test
-
-  Check authentication:
-    ssh://user@host.test method=password password="secret"
-    ssh://user@host.test method=key identity_path="$HOME/.ssh/id_rsa"
-
-  Verbose SSH output:
-    # Use native ssh command with -v flag for debugging
-    ssh -v user@host
-
-  Common issues:
-    • Wrong verb (missing or incorrect)
-    • Missing quotes for complex commands
-    • Wrong authentication method
-    • sshpass not installed (password auth)
-    • SSH agent not running (agent auth)
-    • Wrong key path or permissions
-    • Host not in known_hosts
-    • Firewall blocking connection
-    • DNS resolution issues
-
-INTEGRATION WITH OTHER HANDLES:
-
-  With file handle:
-    # Copy local file content to remote
-    ssh://server.example.com.upload source="$(file:///local/file.txt.read)" source_mode=inline dest="/remote/file.txt"
-
-  With log handle:
-    # Log remote command output
-    ssh://server.example.com.exec command=whoami | log://./ssh-output.log.append
-
-  With backup handle:
-    # Backup remote file
-    ssh://server.example.com.download source="/etc/app/config.yaml" dest="/backups/config.yaml"
-    backup://config-backup.create target="/backups"
-
-  With event handle:
-    # Trigger on SSH operation
-    ssh://server.example.com.exec command="deploy.sh" && event://emit topic="deploy.complete"
-
-  With config handle:
-    # Store SSH credentials
-    config://ssh/servers/production.set value="server.example.com"
-    config://ssh/keys/production.set value="/path/to/key"
-
-MORE INFO:
-  For complete documentation of SSH handle operations:
-  https://github.com/[your-org]/resource-shell/docs/Network_RemoteOperations/ssh.md
-
-  SSH protocol specifications:
-  https://www.rfc-editor.org/rfc/rfc4251 (SSH Protocol Architecture)
-  https://www.rfc-editor.org/rfc/rfc4252 (SSH Authentication Protocol)
-  https://www.rfc-editor.org/rfc/rfc4253 (SSH Transport Layer Protocol)
-
-  OpenSSH documentation:
-  https://www.openssh.com/manual.html
-
-  SSH security best practices:
-  https://www.ssh.com/academy/ssh/security
-
-  Use 'ssh:// --help=VERB' for detailed help on a specific verb.
-"#;
-
-/// SSH authentication methods
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SshAuthMethod {
@@ -1516,7 +1041,7 @@ pub struct SshConnectionInfo {
 pub struct SshCommandInfo {
     pub raw: String,
     pub shell_mode: String,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
     pub cwd: Option<String>,
     pub allocate_pty: bool,
@@ -1564,7 +1089,7 @@ pub struct SshExecResponse {
     pub timing: Option<SshTimingInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<SshErrorDetails>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 
@@ -2379,6 +1904,8 @@ pub struct SshTarget {
 impl SshTarget {
     /// Parse SSH target from URL
     pub fn from_url(url: &Url) -> Self {
+        // The URL keeps user info percent-encoded (p%40ss for p@ss).
+        let decode = |s: &str| percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned();
         let host = if url.host_str().unwrap_or("").is_empty() {
             None
         } else {
@@ -2394,10 +1921,10 @@ impl SshTarget {
         let username = if url.username().is_empty() {
             None
         } else {
-            Some(url.username().to_string())
+            Some(decode(url.username()))
         };
 
-        let password = url.password().map(|p| p.to_string());
+        let password = url.password().map(decode);
 
         Self {
             host,
@@ -3122,6 +2649,444 @@ pub struct SshHandle {
     target: SshTarget,
 }
 
+// ===== System ssh client invocation (shared by exec, upload and download) =====
+
+/// A fully built local command line that runs the system ssh client.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SshCommandLine {
+    pub program: String,
+    pub args: Vec<String>,
+    /// Extra environment variables for the local process.
+    pub env: Vec<(String, String)>,
+}
+
+/// Connection settings used to build an ssh command line.
+pub(crate) struct SshConnSpec<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub username: &'a str,
+    /// Resolved authentication method (Auto leaves ssh defaults in place).
+    pub auth_method: &'a SshAuthMethod,
+    pub identity_path: Option<&'a str>,
+    pub password: Option<&'a str>,
+    pub agent_socket: Option<&'a str>,
+    pub known_hosts_mode: &'a KnownHostsMode,
+    pub known_hosts_path: Option<&'a str>,
+    pub connect_timeout_ms: u64,
+    pub allocate_pty: bool,
+}
+
+/// Build the local command line that runs `remote_command` on the host.
+///
+/// Password logins go through `sshpass -e`, which reads the password from
+/// the SSHPASS environment variable so it never appears in the process list.
+pub(crate) fn build_ssh_command_line(spec: &SshConnSpec, remote_command: &str) -> SshCommandLine {
+    let mut args: Vec<String> = vec!["-p".into(), spec.port.to_string()];
+    let opt = |args: &mut Vec<String>, o: String| {
+        args.push("-o".into());
+        args.push(o);
+    };
+
+    match spec.auth_method {
+        SshAuthMethod::Auto => {}
+        SshAuthMethod::Key => {
+            if let Some(identity_path) = spec.identity_path {
+                args.push("-i".into());
+                args.push(identity_path.to_string());
+            }
+        }
+        SshAuthMethod::Password => {
+            opt(&mut args, "PasswordAuthentication=yes".into());
+            opt(&mut args, "PubkeyAuthentication=no".into());
+        }
+        SshAuthMethod::Agent => {
+            opt(&mut args, "PasswordAuthentication=no".into());
+        }
+    }
+
+    let strict = match spec.known_hosts_mode {
+        KnownHostsMode::Strict => "yes",
+        KnownHostsMode::AcceptNew => "accept-new",
+        KnownHostsMode::Insecure => "no",
+    };
+    opt(&mut args, format!("StrictHostKeyChecking={}", strict));
+    if let Some(path) = spec.known_hosts_path {
+        opt(&mut args, format!("UserKnownHostsFile={}", path));
+    }
+
+    if spec.connect_timeout_ms > 0 {
+        opt(&mut args, format!("ConnectTimeout={}", spec.connect_timeout_ms.div_ceil(1000)));
+    }
+
+    args.push(if spec.allocate_pty { "-t" } else { "-T" }.into());
+
+    let batch = if matches!(spec.auth_method, SshAuthMethod::Password) { "no" } else { "yes" };
+    opt(&mut args, format!("BatchMode={}", batch));
+
+    args.push("--".into());
+    args.push(format!("{}@{}", spec.username, spec.host));
+    args.push(remote_command.to_string());
+
+    let mut env = Vec::new();
+    if let Some(sock) = spec.agent_socket {
+        env.push(("SSH_AUTH_SOCK".to_string(), sock.to_string()));
+    }
+
+    match (spec.auth_method, spec.password) {
+        (SshAuthMethod::Password, Some(password)) => {
+            env.push(("SSHPASS".to_string(), password.to_string()));
+            let mut sshpass_args = vec!["-e".to_string(), "ssh".to_string()];
+            sshpass_args.extend(args);
+            SshCommandLine { program: "sshpass".into(), args: sshpass_args, env }
+        }
+        _ => SshCommandLine { program: "ssh".into(), args, env },
+    }
+}
+
+/// Resolve `auth_method=auto` the same way exec does: password, then key,
+/// then agent, then ssh's default key lookup.
+pub(crate) fn resolve_auth_method(
+    method: &SshAuthMethod,
+    password: Option<&str>,
+    identity_path: Option<&str>,
+    agent_socket: Option<&str>,
+) -> Result<SshAuthMethod> {
+    let agent_available = agent_socket.is_some() || std::env::var("SSH_AUTH_SOCK").is_ok();
+    match method {
+        SshAuthMethod::Auto => Ok(if password.is_some() {
+            SshAuthMethod::Password
+        } else if identity_path.is_some() {
+            SshAuthMethod::Key
+        } else if agent_available {
+            SshAuthMethod::Agent
+        } else {
+            SshAuthMethod::Key
+        }),
+        SshAuthMethod::Password => {
+            if password.is_none() {
+                return Err(SshError::AuthMissingPassword.into());
+            }
+            Ok(SshAuthMethod::Password)
+        }
+        SshAuthMethod::Key => Ok(SshAuthMethod::Key),
+        SshAuthMethod::Agent => {
+            if !agent_available {
+                return Err(SshError::AgentUnavailable.into());
+            }
+            Ok(SshAuthMethod::Agent)
+        }
+    }
+}
+
+/// Quote a remote path for the remote POSIX shell. A leading `~/` is left
+/// unquoted so the remote shell still expands it to the home directory.
+pub(crate) fn quote_remote_path(path: &str) -> String {
+    match path.strip_prefix("~/") {
+        Some(rest) => format!("~/{}", SshHandle::shell_escape(rest)),
+        None => SshHandle::shell_escape(path),
+    }
+}
+
+/// Remote command that prints a file's checksum (`<hex>  <path>`).
+pub(crate) fn remote_checksum_tool(algorithm: &str) -> Result<&'static str> {
+    match algorithm.to_lowercase().as_str() {
+        "sha256" => Ok("sha256sum"),
+        "sha1" => Ok("sha1sum"),
+        "md5" => Ok("md5sum"),
+        _ => Err(SshError::InternalError(format!("Unsupported checksum algorithm: {}", algorithm)).into()),
+    }
+}
+
+/// Parse the first hex token printed by sha256sum/sha1sum/md5sum.
+pub(crate) fn parse_checksum_output(stdout: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stdout);
+    let token = text.split_whitespace().next()?;
+    if token.chars().all(|c| c.is_ascii_hexdigit()) && !token.is_empty() {
+        Some(token.to_lowercase())
+    } else {
+        None
+    }
+}
+
+/// Exit codes the upload script uses to report specific failures.
+const UPLOAD_EXIT_DEST_EXISTS: i32 = 17;
+const UPLOAD_EXIT_DIR_MISSING: i32 = 18;
+const UPLOAD_EXIT_WRITE_FAILED: i32 = 19;
+
+/// Build the remote shell script that stores stdin at `dest`.
+///
+/// With atomic=true the data goes to `<dest>.resh.tmp.<suffix>` in the same
+/// directory and is renamed over `dest` only after it is complete.
+pub(crate) fn build_upload_script(
+    dest: &str,
+    options: &SshUploadOptions,
+    temp_suffix: u32,
+    mtime_secs: Option<i64>,
+) -> Result<String> {
+    let q_dest = quote_remote_path(dest);
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(parent) = std::path::Path::new(dest).parent().map(|p| p.to_string_lossy().to_string()) {
+        if !parent.is_empty() {
+            let q_parent = quote_remote_path(&parent);
+            if options.mkdir_parents {
+                parts.push(format!(
+                    "mkdir -p -- {} || exit {}",
+                    q_parent, UPLOAD_EXIT_WRITE_FAILED
+                ));
+            } else {
+                parts.push(format!(
+                    "[ -d {} ] || {{ echo 'resh: remote directory missing' >&2; exit {}; }}",
+                    q_parent, UPLOAD_EXIT_DIR_MISSING
+                ));
+            }
+        }
+    }
+
+    if !options.overwrite {
+        parts.push(format!(
+            "if [ -e {} ]; then echo 'resh: remote file exists' >&2; exit {}; fi",
+            q_dest, UPLOAD_EXIT_DEST_EXISTS
+        ));
+    }
+
+    let (target, cleanup) = if options.atomic {
+        let tmp = quote_remote_path(&format!("{}.resh.tmp.{}", dest, temp_suffix));
+        let cleanup = format!("rm -f -- {}; ", tmp);
+        (tmp, cleanup)
+    } else {
+        (q_dest.clone(), String::new())
+    };
+    let fail = format!("|| {{ {}exit {}; }}", cleanup, UPLOAD_EXIT_WRITE_FAILED);
+
+    parts.push(format!("cat > {} {}", target, fail));
+    if let Some(mode) = &options.file_mode {
+        parts.push(format!("chmod {} -- {} {}", mode, target, fail));
+    }
+    if let Some(secs) = mtime_secs {
+        parts.push(format!("touch -d @{} -- {} {}", secs, target, fail));
+    }
+    if options.atomic {
+        parts.push(format!("mv -f -- {} {} {}", target, q_dest, fail));
+    }
+    if options.verify_checksum {
+        parts.push(format!(
+            "{} -- {}",
+            remote_checksum_tool(&options.checksum_algorithm)?,
+            q_dest
+        ));
+    }
+    Ok(parts.join("; "))
+}
+
+/// Authentication and host key settings for upload and download.
+pub(crate) struct TransferConn<'a> {
+    pub identity_path: Option<&'a str>,
+    pub password: Option<&'a str>,
+    pub agent_socket: Option<&'a str>,
+    pub known_hosts_mode: &'a KnownHostsMode,
+    pub known_hosts_path: Option<&'a str>,
+    pub connect_timeout_ms: u64,
+}
+
+/// Output of a finished ssh process.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProcessOutput {
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+impl ProcessOutput {
+    fn success(&self) -> bool {
+        self.exit_code == Some(0)
+    }
+
+    fn stderr_text(&self) -> String {
+        String::from_utf8_lossy(&self.stderr).trim().to_string()
+    }
+}
+
+#[derive(Debug)]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) enum RunError {
+    Timeout,
+    Spawn(String, std::io::Error),
+    Io(String),
+}
+
+impl RunError {
+    /// Convert to an SshError, using `timeout` for the timeout case.
+    fn into_ssh_error(self, timeout: SshError) -> SshError {
+        match self {
+            RunError::Timeout => timeout,
+            RunError::Spawn(program, e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if program == "sshpass" {
+                    SshError::InternalError(
+                        "Password authentication requires 'sshpass' to be installed. \
+                        Install sshpass or use key-based authentication instead."
+                            .to_string(),
+                    )
+                } else {
+                    SshError::InternalError(format!("'{}' was not found on PATH", program))
+                }
+            }
+            RunError::Spawn(program, e) => SshError::IoError(format!("failed to start {}: {}", program, e)),
+            RunError::Io(msg) => SshError::IoError(msg),
+        }
+    }
+}
+
+/// JSON error details for `e`, using the SshError code when there is one.
+fn error_details(e: &anyhow::Error, fallback_code: &str) -> SshErrorDetails {
+    match e.downcast_ref::<SshError>() {
+        Some(err) => err.to_json(),
+        None => SshErrorDetails {
+            code: fallback_code.to_string(),
+            message: e.to_string(),
+            details: HashMap::new(),
+        },
+    }
+}
+
+/// Map a failed ssh run (exit 255 or host key trouble) to a connection error.
+fn connection_error(output: &ProcessOutput) -> Option<SshError> {
+    let stderr = output.stderr_text();
+    if stderr.contains("Host key verification failed") || stderr.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+        return Some(SshError::HostKeyVerificationFailed(stderr));
+    }
+    if output.exit_code == Some(255) {
+        return Some(SshError::ConnectFailed(stderr));
+    }
+    None
+}
+
+#[cfg(test)]
+type MockSshRunner = Box<dyn FnMut(&SshCommandLine, Option<&[u8]>) -> Result<ProcessOutput, RunError>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Unit tests install a fake ssh here; without one, running ssh fails.
+    static MOCK_SSH: std::cell::RefCell<Option<MockSshRunner>> = std::cell::RefCell::new(None);
+}
+
+/// Run a command line, feeding `stdin`, reading at most `max_stdout + 1`
+/// bytes of stdout, and killing the process when `timeout` elapses.
+pub(crate) fn run_ssh_process(
+    cmd: &SshCommandLine,
+    stdin: Option<&[u8]>,
+    max_stdout: Option<u64>,
+    timeout: Option<Duration>,
+) -> std::result::Result<ProcessOutput, RunError> {
+    #[cfg(test)]
+    {
+        let _ = timeout;
+        let mut out = MOCK_SSH.with(|m| match m.borrow_mut().as_mut() {
+            Some(f) => f(cmd, stdin),
+            None => Err(RunError::Io("real ssh is disabled in unit tests".to_string())),
+        })?;
+        if let Some(max) = max_stdout {
+            out.stdout.truncate((max + 1) as usize);
+        }
+        Ok(out)
+    }
+    #[cfg(not(test))]
+    {
+        run_real_process(cmd, stdin, max_stdout, timeout)
+    }
+}
+
+#[cfg(not(test))]
+fn run_real_process(
+    cmd: &SshCommandLine,
+    stdin: Option<&[u8]>,
+    max_stdout: Option<u64>,
+    timeout: Option<Duration>,
+) -> std::result::Result<ProcessOutput, RunError> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut command = Command::new(&cmd.program);
+    command.args(&cmd.args);
+    for (k, v) in &cmd.env {
+        command.env(k, v);
+    }
+    command.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let mut child = command.spawn().map_err(|e| RunError::Spawn(cmd.program.clone(), e))?;
+
+    let writer = match (stdin, child.stdin.take()) {
+        (Some(data), Some(mut pipe)) => {
+            let data = data.to_vec();
+            Some(std::thread::spawn(move || {
+                let _ = pipe.write_all(&data);
+            }))
+        }
+        _ => None,
+    };
+
+    let mut out_pipe = child.stdout.take().ok_or_else(|| RunError::Io("no stdout pipe".into()))?;
+    let out_thread = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        match max_stdout {
+            Some(max) => {
+                (&mut out_pipe).take(max + 1).read_to_end(&mut buf)?;
+            }
+            None => {
+                out_pipe.read_to_end(&mut buf)?;
+            }
+        }
+        Ok(buf)
+    });
+
+    let mut err_pipe = child.stderr.take().ok_or_else(|| RunError::Io("no stderr pipe".into()))?;
+    let err_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = err_pipe.read_to_end(&mut buf);
+        buf.truncate(65_536);
+        buf
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => return Err(RunError::Io(e.to_string())),
+        }
+        if let Some(t) = timeout {
+            if start.elapsed() >= t {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RunError::Timeout);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    let stdout = out_thread
+        .join()
+        .map_err(|_| RunError::Io("stdout reader panicked".into()))?
+        .map_err(|e| RunError::Io(e.to_string()))?;
+    let stderr = err_thread.join().unwrap_or_default();
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
+
+    #[cfg(unix)]
+    let signal = {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal()
+    };
+    #[cfg(not(unix))]
+    let signal = None;
+
+    Ok(ProcessOutput { exit_code: status.code(), signal, stdout, stderr })
+}
+
 impl SshHandle {
     /// Create SSH handle from URL
     pub fn from_url(url: &Url) -> Result<Self> {
@@ -3129,441 +3094,20 @@ impl SshHandle {
         Ok(SshHandle { target })
     }
 
-    /// Check if this is a help request and display help if so
-    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
-        // Check for help verbs
-        if verb == "--help" || verb == "-h" || verb == "help" {
-            write!(io.stdout, "{}", SSH_HELP_TEXT)?;
-            return Ok(Some(Status::ok()));
-        }
-        
-        // Check for verb-specific help
-        if verb.starts_with("--help=") {
-            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
-            Self::display_verb_help(help_verb, io)?;
-            return Ok(Some(Status::ok()));
-        }
-        
-        Ok(None)
-    }
-
-    /// Display help for a specific verb
-    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
-        match verb {
-            "exec" => {
-                write!(io.stdout, r#"
-EXEC VERB - SSH HANDLE
-=====================
-
-DESCRIPTION:
-  Execute commands on remote systems via SSH connection. Supports various shell
-  modes, authentication methods, output formats, and execution options like
-  working directory, timeouts, and dry-run testing.
-
-SYNTAX:
-  ssh://[username@]hostname[:port].exec(command="COMMAND" [options])
-
-REQUIRED ARGUMENTS:
-  command=CMD            Command to execute on remote host
-
-OPTIONAL ARGUMENTS:
-  Authentication:
-    method=METHOD          Authentication: agent, password, key (default: agent)
-    password=PASS          Password for authentication (requires sshpass)
-    identity_path=PATH     Path to private key file
-    identity_data=DATA     Private key content inline (PEM format)
-    identity_passphrase=PASS  Passphrase for encrypted private keys
-    agent_socket=PATH      Custom SSH agent socket path
-
-  Execution:
-    shell_mode=SHELL       Shell: bash, sh, none (default: none)
-    cwd=PATH               Working directory for command execution
-    env=KEY=VAL,KEY2=VAL2  Environment variables to set
-    allocate_pty=BOOL      Allocate pseudo-TTY (default: false)
-
-  Timeouts:
-    connect_timeout_ms=MS  SSH connection timeout (default: 30000)
-    command_timeout_ms=MS  Command execution timeout (default: unlimited)
-
-  Output:
-    capture_output=BOOL    Capture stdout/stderr (default: true)
-    output_encoding=ENC    Encoding: utf8, base64 (default: utf8)
-    max_output_bytes=N     Maximum output size in bytes
-    trim_trailing_newlines=BOOL  Remove trailing newlines (default: true)
-
-  Control:
-    dry_run=BOOL           Test without executing (default: false)
-    format=FORMAT          Output: json, text (default: json)
-
-EXAMPLES:
-  # Simple command
-  ssh://user@server.exec command=whoami
-
-  # Command with authentication
-  ssh://user@server.exec command=uptime method=key identity_path="$HOME/.ssh/id_rsa"
-
-  # Complex command with shell
-  ssh://user@server.exec command="cd /var/log && tail -n 20 syslog" shell_mode=bash
-
-  # Dry run test
-  ssh://user@server.exec command="sudo reboot" dry_run=true
-
-For complete help: ssh:// --help
-"#)?;
-                Ok(Status::ok())
-            },
-            "upload" => {
-                write!(io.stdout, r#"
-UPLOAD VERB - SSH HANDLE
-=======================
-
-DESCRIPTION:
-  Upload files or data to remote systems via SFTP/SSH. Supports inline content,
-  file uploads, atomic operations, checksum verification, and various encoding
-  options for secure file transfer.
-
-SYNTAX:
-  ssh://[username@]hostname[:port].upload(source="DATA" source_mode="MODE" dest="PATH" [options])
-
-REQUIRED ARGUMENTS:
-  source=DATA            Source data (content or file path)
-  source_mode=MODE       Source type: inline, file
-  dest=PATH              Destination path on remote system
-
-OPTIONAL ARGUMENTS:
-  Source:
-    source_encoding=ENC    Source encoding: utf8, base64 (default: utf8)
-    content_type=TYPE      MIME content type hint
-
-  Transfer:
-    overwrite=BOOL         Overwrite existing files (default: false)
-    atomic=BOOL            Atomic upload (temp file + rename) (default: false)
-    verify_checksum=BOOL   Verify transfer integrity (default: false)
-    checksum_algorithm=ALG Algorithm: md5, sha256 (default: sha256)
-
-  Authentication:
-    method=METHOD          Authentication: agent, password, key (default: agent)
-    password=PASS          Password (requires sshpass)
-    identity_path=PATH     Private key file path
-
-  Control:
-    dry_run=BOOL           Test without uploading (default: false)
-    format=FORMAT          Output: json, text (default: json)
-
-EXAMPLES:
-  # Upload inline content
-  ssh://user@server.upload source="Hello World" source_mode=inline dest="/tmp/hello.txt"
-
-  # Upload file with overwrite
-  ssh://user@server.upload source="/local/config.yaml" source_mode=file dest="/etc/app/config.yaml" overwrite=true
-
-  # Atomic upload with verification
-  ssh://user@server.upload source="important data" source_mode=inline dest="/critical/file.txt" atomic=true verify_checksum=true
-
-For complete help: ssh:// --help
-"#)?;
-                Ok(Status::ok())
-            },
-            "download" => {
-                write!(io.stdout, r#"
-DOWNLOAD VERB - SSH HANDLE
-=========================
-
-DESCRIPTION:
-  Download files from remote systems via SFTP/SSH. Supports file downloads,
-  content-only retrieval, checksum verification, and various encoding options
-  for secure file transfer.
-
-SYNTAX:
-  ssh://[username@]hostname[:port].download(source="PATH" [options])
-
-REQUIRED ARGUMENTS:
-  source=PATH            Source path on remote system
-
-OPTIONAL ARGUMENTS:
-  Destination:
-    dest=PATH              Local destination path
-    dest_mode=MODE         Mode: file, none (default: file)
-    overwrite=BOOL         Overwrite existing files (default: false)
-    mkdir_parents=BOOL     Create parent directories (default: false)
-
-  Content:
-    return_content=BOOL    Include content in response (default: false)
-    return_encoding=ENC    Content encoding: utf8, base64 (default: utf8)
-    max_size_bytes=N       Maximum file size to download
-
-  Verification:
-    verify_checksum=BOOL   Verify transfer integrity (default: false)
-    checksum_algorithm=ALG Algorithm: md5, sha256 (default: sha256)
-
-  Authentication:
-    method=METHOD          Authentication: agent, password, key (default: agent)
-    password=PASS          Password (requires sshpass)
-    identity_path=PATH     Private key file path
-
-  Control:
-    dry_run=BOOL           Test without downloading (default: false)
-    format=FORMAT          Output: json, text (default: json)
-
-EXAMPLES:
-  # Download to local file
-  ssh://user@server.download source="/remote/data.txt" dest="/local/data.txt"
-
-  # Download content only (no file)
-  ssh://user@server.download source="/remote/config.json" dest_mode=none return_content=true
-
-  # Download with verification
-  ssh://user@server.download source="/important/file.txt" dest="/backup/file.txt" verify_checksum=true
-
-For complete help: ssh:// --help
-"#)?;
-                Ok(Status::ok())
-            },
-            "tunnel" => {
-                write!(io.stdout, r#"
-TUNNEL VERB - SSH HANDLE
-=======================
-
-DESCRIPTION:
-  Create SSH tunnels for port forwarding and SOCKS proxy functionality.
-  Supports local forwarding (access remote services), remote forwarding
-  (expose local services), and dynamic forwarding (SOCKS proxy).
-
-SYNTAX:
-  ssh://[username@]hostname[:port].tunnel(mode="MODE" [options])
-
-REQUIRED ARGUMENTS:
-  mode=MODE              Tunnel type: local, remote, dynamic
-
-MODE-SPECIFIC ARGUMENTS:
-
-Local Tunnel (access remote service through SSH):
-  local_bind_host=HOST   Local bind address (default: 127.0.0.1)
-  local_bind_port=PORT   Local port to bind (required)
-  remote_dest_host=HOST  Remote target host (required)
-  remote_dest_port=PORT  Remote target port (required)
-
-Remote Tunnel (expose local service to remote):
-  remote_bind_host=HOST  Remote bind address (default: 127.0.0.1)
-  remote_bind_port=PORT  Remote port to bind (required)
-  local_dest_host=HOST   Local target host (required)
-  local_dest_port=PORT   Local target port (required)
-
-Dynamic Tunnel (SOCKS proxy):
-  local_bind_host=HOST   Local bind address (default: 127.0.0.1)
-  local_bind_port=PORT   Local SOCKS port (required)
-  socks_version=VER      SOCKS version: socks4, socks5 (default: socks5)
-
-OPTIONAL ARGUMENTS:
-  Lifetime:
-    tunnel_timeout_ms=MS   Total tunnel lifetime
-    idle_timeout_ms=MS     Idle connection timeout
-    max_connections=N      Maximum concurrent connections
-    max_bytes_in=N         Maximum bytes received
-    max_bytes_out=N        Maximum bytes sent
-
-  Security:
-    allow_wildcard_binds=BOOL  Allow 0.0.0.0 binds (default: false)
-    known_hosts_mode=MODE      Host verification mode
-
-  Control:
-    dry_run=BOOL           Test configuration without creating tunnel
-    format=FORMAT          Output: json, text (default: json)
-
-EXAMPLES:
-  # Local tunnel to database
-  ssh://jump.example.com.tunnel mode=local local_bind_port=5433 remote_dest_host=db.internal remote_dest_port=5432
-
-  # Remote tunnel to expose local service
-  ssh://server.example.com.tunnel mode=remote remote_bind_port=8080 local_dest_host=localhost local_dest_port=3000
-
-  # SOCKS proxy
-  ssh://proxy.example.com.tunnel mode=dynamic local_bind_port=1080 socks_version=socks5
-
-For complete help: ssh:// --help
-"#)?;
-                Ok(Status::ok())
-            },
-            "keys.list" => {
-                write!(io.stdout, r#"
-KEYS.LIST VERB - SSH HANDLE
-===========================
-
-DESCRIPTION:
-  List SSH keys from remote systems including authorized_keys, host keys,
-  or custom key files. Supports filtering by key type, fingerprint format,
-  and inclusion of key metadata.
-
-SYNTAX:
-  ssh://[username@]hostname[:port].keys.list([options])
-
-OPTIONAL ARGUMENTS:
-  Scope:
-    scope=SCOPE            Key scope: authorized, host, custom (default: authorized)
-    custom_paths=PATHS     Comma-separated paths (for scope=custom)
-
-  Filtering:
-    key_types=TYPES        Filter by types: rsa,ecdsa,ed25519,dsa
-    fingerprint_algorithm=ALG  Algorithm: md5, sha256 (default: sha256)
-    max_keys=N             Maximum keys to return (default: 1024)
-    max_bytes=N            Maximum file size to read (default: 1MB)
-
-  Output:
-    include_options=BOOL   Include key options/restrictions (default: true)
-    include_raw_key=BOOL   Include full key data (default: true)
-    format=FORMAT          Output: json, text (default: json)
-
-  Authentication:
-    method=METHOD          Authentication: agent, password, key (default: agent)
-    password=PASS          Password (requires sshpass)
-    identity_path=PATH     Private key file path
-
-EXAMPLES:
-  # List authorized keys
-  ssh://user@server.keys.list
-
-  # List only Ed25519 keys
-  ssh://user@server.keys.list key_types=ed25519
-
-  # List host keys
-  ssh://user@server.keys.list scope=host
-
-  # List keys from custom locations
-  ssh://user@server.keys.list scope=custom custom_paths="/path/to/keys1,/path/to/keys2"
-
-For complete help: ssh:// --help
-"#)?;
-                Ok(Status::ok())
-            },
-            "key.add" => {
-                write!(io.stdout, r#"
-KEY.ADD VERB - SSH HANDLE
-========================
-
-DESCRIPTION:
-  Add SSH public keys to remote authorized_keys files. Supports duplicate
-  detection, key validation, and secure key management operations.
-
-SYNTAX:
-  ssh://[username@]hostname[:port].key.add(public_key="KEY" [options])
-
-REQUIRED ARGUMENTS:
-  public_key=KEY         SSH public key to add
-
-OPTIONAL ARGUMENTS:
-  Target:
-    target_path=PATH       Target file path (default: ~/.ssh/authorized_keys)
-    on_duplicate=ACTION    Action: ignore, replace, error (default: ignore)
-
-  Authentication:
-    method=METHOD          Authentication: agent, password, key (default: agent)
-    password=PASS          Password (requires sshpass)
-    identity_path=PATH     Private key file path
-
-  Control:
-    dry_run=BOOL           Test without modifying files (default: false)
-    format=FORMAT          Output: json, text (default: json)
-
-EXAMPLES:
-  # Add public key
-  ssh://user@server.key.add public_key="ssh-rsa AAAAB3NzaC... user@local"
-
-  # Add key to custom location
-  ssh://user@server.key.add public_key="ssh-ed25519 AAAAC3N... user@local" target_path="/home/user/.ssh/authorized_keys"
-
-  # Add key with duplicate replacement
-  ssh://user@server.key.add public_key="ssh-rsa AAAAB3N... user@local" on_duplicate=replace
-
-For complete help: ssh:// --help
-"#)?;
-                Ok(Status::ok())
-            },
-            "config.get" => {
-                write!(io.stdout, r#"
-CONFIG.GET VERB - SSH HANDLE
-===========================
-
-DESCRIPTION:
-  Retrieve SSH client configuration information from remote systems including
-  effective configuration, SSH client settings, and connection parameters.
-
-SYNTAX:
-  ssh://[username@]hostname[:port].config.get([options])
-
-OPTIONAL ARGUMENTS:
-  Authentication:
-    method=METHOD          Authentication: agent, password, key (default: agent)
-    password=PASS          Password (requires sshpass)
-    identity_path=PATH     Private key file path
-
-  Control:
-    format=FORMAT          Output: json, text (default: json)
-
-EXAMPLES:
-  # Get SSH configuration
-  ssh://user@server.config.get
-
-  # Get config with key auth
-  ssh://user@server.config.get method=key identity_path="$HOME/.ssh/id_rsa"
-
-For complete help: ssh:// --help
-"#)?;
-                Ok(Status::ok())
-            },
-            "test" => {
-                write!(io.stdout, r#"
-TEST VERB - SSH HANDLE
-=====================
-
-DESCRIPTION:
-  Test SSH connectivity and authentication to remote systems. Validates
-  connection parameters, authentication methods, and provides diagnostic
-  information for troubleshooting.
-
-SYNTAX:
-  ssh://[username@]hostname[:port].test([options])
-
-OPTIONAL ARGUMENTS:
-  Authentication:
-    method=METHOD          Authentication: agent, password, key (default: agent)
-    password=PASS          Password (requires sshpass)
-    identity_path=PATH     Private key file path
-    identity_passphrase=PASS  Key passphrase
-
-  Testing:
-    tests=TEST1,TEST2      Tests to run (default: all available)
-    exec_command=CMD       Command to test execution (default: echo)
-
-  Timeouts:
-    connect_timeout_ms=MS  Connection timeout (default: 30000)
-    handshake_timeout_ms=MS  SSH handshake timeout
-    auth_timeout_ms=MS     Authentication timeout
-    exec_timeout_ms=MS     Command execution timeout
-    overall_timeout_ms=MS  Total test timeout
-
-  Control:
-    dry_run=BOOL           Validate parameters without connecting
-    format=FORMAT          Output: json, text (default: json)
-
-EXAMPLES:
-  # Basic connectivity test
-  ssh://user@server.test
-
-  # Test with specific authentication
-  ssh://user@server.test method=key identity_path="$HOME/.ssh/id_rsa"
-
-  # Test password authentication
-  ssh://user@server.test method=password password="secret"
-
-For complete help: ssh:// --help
-"#)?;
-                Ok(Status::ok())
-            },
-            _ => {
-                write!(io.stdout, "Unknown verb: {}. Available verbs: exec, upload, download, tunnel, keys.list, key.add, config.get, test.\n\nUse 'ssh:// --help' for complete documentation.\n", verb)?;
-                Ok(Status::ok())
-            }
-        }
+    /// Handle the in-URL help forms (`ssh://--help`, `ssh://-h`, the `help`
+    /// verb, and `ssh://--help=VERB`) by printing the handle help metadata.
+    /// The parser turns `ssh://--help=VERB` into the `help` verb with verb=VERB.
+    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+        let requested = if verb == "help" || crate::core::help::is_help_flag(verb) {
+            args.get("verb").map(|v| v.as_str())
+        } else if let Some(v) = verb.strip_prefix("--help=") {
+            Some(v)
+        } else {
+            return Ok(None);
+        };
+        let text = crate::core::help::render_legacy("ssh", &SSH_HELP, self.verbs(), requested);
+        write!(io.stdout, "{}", text)?;
+        Ok(Some(Status::ok()))
     }
 
     /// Apply URL target defaults to SSH options
@@ -4189,7 +3733,22 @@ For complete help: ssh:// --help
         Ok(())
     }
 
-    /// Execute SSH upload using SFTP operations
+    /// Modification time (whole seconds) to set on the uploaded file, from
+    /// mtime_epoch_ms or, with preserve_times=true, from the local source file.
+    fn upload_mtime_secs(options: &SshUploadOptions, source_path: Option<&str>) -> Option<i64> {
+        if let Some(ms) = options.mtime_epoch_ms {
+            return Some(ms.div_euclid(1000));
+        }
+        if options.preserve_times {
+            let modified = std::fs::metadata(source_path?).ok()?.modified().ok()?;
+            let secs = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+            return i64::try_from(secs).ok();
+        }
+        None
+    }
+
+    /// Upload data by piping it into a remote shell script over the system
+    /// ssh client (see `build_upload_script`).
     fn execute_ssh_upload(
         &self,
         host: &str,
@@ -4197,84 +3756,80 @@ For complete help: ssh:// --help
         username: &str,
         data: &[u8],
         dest_path: &str,
+        source_path: Option<&str>,
         options: &SshUploadOptions,
     ) -> Result<(SshUploadResult, SshTimingInfo)> {
-        use std::time::Instant;
-        
-        let connect_start = Instant::now();
-        
-        // Simulate connection time - in real implementation this would establish SSH+SFTP
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let connect_ms = connect_start.elapsed().as_millis() as u64;
-        
+        let auth = resolve_auth_method(
+            &options.auth_method,
+            options.password.as_deref(),
+            options.identity_path.as_deref(),
+            options.agent_socket.as_deref(),
+        )?;
+        let local_checksum = if options.verify_checksum {
+            Some(self.compute_checksum(data, &options.checksum_algorithm)?)
+        } else {
+            None
+        };
+
+        let script = build_upload_script(
+            dest_path,
+            options,
+            rand::random::<u32>(),
+            Self::upload_mtime_secs(options, source_path),
+        )?;
+        let conn = TransferConn {
+            identity_path: options.identity_path.as_deref(),
+            password: options.password.as_deref(),
+            agent_socket: options.agent_socket.as_deref(),
+            known_hosts_mode: &options.known_hosts_mode,
+            known_hosts_path: options.known_hosts_path.as_deref(),
+            connect_timeout_ms: options.connect_timeout_ms,
+        };
+        let cmd = Self::transfer_command_line(host, port, username, &auth, conn, &script);
+        let timeout = (options.transfer_timeout_ms > 0)
+            .then(|| Duration::from_millis(options.transfer_timeout_ms));
+
         let transfer_start = Instant::now();
-        
-        // Simulate various upload scenarios for testing
-        if dest_path.contains("permission_denied") {
-            return Err(SshError::UploadRemoteWriteFailed("Permission denied".to_string()).into());
-        }
-        
-        if dest_path.contains("timeout_test") {
-            return Err(SshError::UploadTimeout.into());
-        }
-        
-        if dest_path.contains("existing_file") && !options.overwrite {
-            return Err(SshError::UploadDestExists(dest_path.to_string()).into());
-        }
-        
-        if dest_path.contains("missing_dir") && !options.mkdir_parents {
-            let parent_dir = std::path::Path::new(dest_path)
+        let output = run_ssh_process(&cmd, Some(data), Some(65_536), timeout)
+            .map_err(|e| e.into_ssh_error(SshError::UploadTimeout))?;
+        let transfer_ms = transfer_start.elapsed().as_millis() as u64;
+
+        if !output.success() {
+            if let Some(e) = connection_error(&output) {
+                return Err(e.into());
+            }
+            let parent = std::path::Path::new(dest_path)
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| "/".to_string());
-            return Err(SshError::UploadRemoteDirMissing(parent_dir).into());
+                .unwrap_or_default();
+            let err = match output.exit_code {
+                Some(UPLOAD_EXIT_DEST_EXISTS) => SshError::UploadDestExists(dest_path.to_string()),
+                Some(UPLOAD_EXIT_DIR_MISSING) => SshError::UploadRemoteDirMissing(parent),
+                _ => {
+                    let stderr = output.stderr_text();
+                    SshError::UploadRemoteWriteFailed(if stderr.is_empty() {
+                        format!("remote exit code {:?}", output.exit_code)
+                    } else {
+                        stderr
+                    })
+                }
+            };
+            return Err(err.into());
         }
-        
-        // Simulate atomic upload process
-        if options.atomic {
-            // Would upload to temp file first, then rename
-            let _temp_path = format!("{}.resh.tmp.{}", dest_path, rand::random::<u32>());
-            
-            // Simulate upload to temp file
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            
-            // Simulate rename operation
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        } else {
-            // Direct upload
-            std::thread::sleep(std::time::Duration::from_millis(15));
-        }
-        
-        // Simulate setting file permissions
-        if options.file_mode.is_some() {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        
-        // Simulate setting timestamps
-        if options.preserve_times || options.mtime_epoch_ms.is_some() {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        
-        let transfer_ms = transfer_start.elapsed().as_millis() as u64;
-        
-        // Simulate checksum verification if requested
-        let mut checksum_verified = None;
-        if options.verify_checksum {
-            // Simulate reading remote file for checksum
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            
-            let local_checksum = self.compute_checksum(data, &options.checksum_algorithm)?;
-            
-            // In real implementation, would fetch remote file and compute checksum
-            // For testing, assume checksum matches unless path contains "checksum_mismatch"
-            if dest_path.contains("checksum_mismatch") {
-                let fake_remote_checksum = "deadbeef";
-                return Err(SshError::UploadChecksumMismatch(local_checksum, fake_remote_checksum.to_string()).into());
-            } else {
-                checksum_verified = Some(true);
+
+        let checksum_verified = match local_checksum {
+            Some(local) => {
+                let remote = parse_checksum_output(&output.stdout).ok_or_else(|| {
+                    SshError::UploadRemoteWriteFailed("could not read the remote checksum".to_string())
+                })?;
+                if remote != local {
+                    return Err(SshError::UploadChecksumMismatch(local, remote).into());
+                }
+                Some(true)
             }
-        }
-        
+            None => None,
+        };
+
         let result = SshUploadResult {
             uploaded: true,
             planned: false,
@@ -4282,12 +3837,10 @@ For complete help: ssh:// --help
             checksum_algorithm: options.checksum_algorithm.clone(),
             checksum_verified,
         };
-        
         let timing = SshTimingInfo {
-            connect_ms: Some(connect_ms),
-            command_ms: Some(transfer_ms), // Reusing command_ms field for transfer time
+            connect_ms: None,
+            command_ms: Some(transfer_ms),
         };
-        
         Ok((result, timing))
     }
 
@@ -4499,7 +4052,8 @@ For complete help: ssh:// --help
 
         // Execute the SSH upload
         let dest_path = options.dest.as_ref().unwrap();
-        match self.execute_ssh_upload(&host, port, &username, &data, dest_path, &options) {
+        let local_source = source_info.path.clone();
+        match self.execute_ssh_upload(&host, port, &username, &data, dest_path, local_source.as_deref(), &options) {
             Ok((result, timing)) => {
                 let response = SshUploadResponse {
                     ok: true,
@@ -5031,7 +4585,64 @@ For complete help: ssh:// --help
         Ok((host, port, username))
     }
 
-    /// Execute SSH download (simulation/placeholder for now)
+    /// Build the local ssh command line for an upload or download transfer.
+    fn transfer_command_line(
+        host: &str,
+        port: u16,
+        username: &str,
+        auth: &SshAuthMethod,
+        conn: TransferConn<'_>,
+        remote_command: &str,
+    ) -> SshCommandLine {
+        let spec = SshConnSpec {
+            host,
+            port,
+            username,
+            auth_method: auth,
+            identity_path: conn.identity_path,
+            password: conn.password,
+            agent_socket: conn.agent_socket,
+            known_hosts_mode: conn.known_hosts_mode,
+            known_hosts_path: conn.known_hosts_path,
+            connect_timeout_ms: conn.connect_timeout_ms,
+            allocate_pty: false,
+        };
+        build_ssh_command_line(&spec, remote_command)
+    }
+
+    fn download_conn(options: &SshDownloadOptions) -> TransferConn<'_> {
+        TransferConn {
+            identity_path: options.identity_path.as_deref(),
+            password: options.password.as_deref(),
+            agent_socket: options.agent_socket.as_deref(),
+            known_hosts_mode: &options.known_hosts_mode,
+            known_hosts_path: options.known_hosts_path.as_deref(),
+            connect_timeout_ms: options.connect_timeout_ms,
+        }
+    }
+
+    /// Map a failed `cat` of the remote file to a download error.
+    fn download_read_error(source: &str, output: &ProcessOutput) -> SshError {
+        if let Some(e) = connection_error(output) {
+            return e;
+        }
+        let stderr = output.stderr_text();
+        if stderr.contains("No such file or directory") {
+            SshError::DownloadSourceNotFound(source.to_string())
+        } else if stderr.contains("Is a directory") {
+            SshError::DownloadSourceIsDirectory(source.to_string())
+        } else if stderr.is_empty() {
+            SshError::DownloadRemoteReadFailed(format!("remote exit code {:?}", output.exit_code))
+        } else {
+            SshError::DownloadRemoteReadFailed(stderr)
+        }
+    }
+
+    /// Download a remote file by running `cat` over the system ssh client.
+    ///
+    /// The data is read into memory (at most max_size_bytes), optionally
+    /// checked against the remote checksum, then written to a temporary file
+    /// next to dest and renamed over it. dest is never touched on failure.
     fn execute_ssh_download(
         &self,
         host: &str,
@@ -5040,91 +4651,104 @@ For complete help: ssh:// --help
         source: &str,
         options: &SshDownloadOptions,
     ) -> Result<(SshDownloadSourceInfo, SshDownloadDestInfo, SshDownloadResult, SshDownloadTimingInfo)> {
-        let connect_start = Instant::now();
-
-        // Simulate connection delay
-        thread::sleep(Duration::from_millis(50 + (rand::random::<u64>() % 100)));
-        let connect_ms = connect_start.elapsed().as_millis() as u64;
-
-        let transfer_start = Instant::now();
-
-        // Simulate file metadata
-        let file_size: u64 = 2048; // Simulated file size
-        let file_mode = "0644".to_string();
-        let mtime_epoch_ms = 1730400000000i64;
-
-        // Check size limit
-        if file_size > options.max_size_bytes {
-            return Err(SshError::DownloadTooLarge(file_size, options.max_size_bytes).into());
-        }
-
-        // Simulate download content
-        let content_bytes = b"key: value\ndata: test\n".to_vec();
-
-        // Prepare content for return based on encoding
-        let content = if options.return_content {
-            match options.return_encoding {
-                ReturnEncoding::Utf8 => {
-                    match String::from_utf8(content_bytes.clone()) {
-                        Ok(s) => Some(s),
-                        Err(_) => return Err(SshError::DownloadInvalidUtf8.into()),
-                    }
-                },
-                ReturnEncoding::Base64 => {
-                    Some(BASE64_STANDARD.encode(&content_bytes))
-                },
-            }
+        let auth = resolve_auth_method(
+            &options.auth_method,
+            options.password.as_deref(),
+            options.identity_path.as_deref(),
+            options.agent_socket.as_deref(),
+        )?;
+        let checksum_tool = if options.verify_checksum {
+            Some(remote_checksum_tool(&options.checksum_algorithm)?)
         } else {
             None
         };
 
-        // Write to local file if dest_mode is File
-        let local_size = if options.dest_mode == DestMode::File {
-            let dest_path = options.dest.as_ref().unwrap();
-
-            // Check if dest exists and overwrite is false
-            if std::path::Path::new(dest_path).exists() && !options.overwrite {
-                return Err(SshError::DownloadDestExists(dest_path.clone()).into());
+        // Check the local side before connecting.
+        let dest_path = if options.dest_mode == DestMode::File {
+            let dest = options.dest.as_ref().ok_or(SshError::DownloadDestMissing)?;
+            let path = std::path::Path::new(dest);
+            if path.exists() && !options.overwrite {
+                return Err(SshError::DownloadDestExists(dest.clone()).into());
             }
-
-            // Check parent directory
-            if let Some(parent) = std::path::Path::new(dest_path).parent() {
-                if !parent.exists() {
-                    if options.mkdir_parents {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| SshError::DownloadLocalWriteFailed(e.to_string()))?;
-                    } else {
-                        return Err(SshError::DownloadLocalDirMissing(parent.display().to_string()).into());
-                    }
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                if !parent.exists() && !options.mkdir_parents {
+                    return Err(SshError::DownloadLocalDirMissing(parent.display().to_string()).into());
                 }
             }
-
-            // Write file (atomic: temp + rename)
-            let temp_path = format!("{}.resh.tmp.{}", dest_path, rand::random::<u32>());
-            std::fs::write(&temp_path, &content_bytes)
-                .map_err(|e| SshError::DownloadLocalWriteFailed(e.to_string()))?;
-
-            std::fs::rename(&temp_path, dest_path)
-                .map_err(|e| {
-                    let _ = std::fs::remove_file(&temp_path);
-                    SshError::DownloadLocalWriteFailed(e.to_string())
-                })?;
-
-            Some(content_bytes.len() as u64)
+            Some(dest.clone())
         } else {
             None
         };
 
-        // Simulate transfer time
-        thread::sleep(Duration::from_millis(50 + (rand::random::<u64>() % 100)));
+        let timeout = (options.transfer_timeout_ms > 0)
+            .then(|| Duration::from_millis(options.transfer_timeout_ms));
+        let remote_path = quote_remote_path(source);
+
+        let transfer_start = Instant::now();
+        let cmd = Self::transfer_command_line(
+            host, port, username, &auth, Self::download_conn(options),
+            &format!("cat -- {}", remote_path),
+        );
+        let output = run_ssh_process(&cmd, None, Some(options.max_size_bytes), timeout)
+            .map_err(|e| e.into_ssh_error(SshError::DownloadTimeout))?;
+        if output.stdout.len() as u64 > options.max_size_bytes {
+            return Err(SshError::DownloadTooLarge(output.stdout.len() as u64, options.max_size_bytes).into());
+        }
+        if !output.success() {
+            return Err(Self::download_read_error(source, &output).into());
+        }
+        let content_bytes = output.stdout;
+
+        // Verify against the checksum computed on the remote host.
+        let checksum_verified = match checksum_tool {
+            Some(tool) => {
+                let cmd = Self::transfer_command_line(
+                    host, port, username, &auth, Self::download_conn(options),
+                    &format!("{} -- {}", tool, remote_path),
+                );
+                let out = run_ssh_process(&cmd, None, Some(65_536), timeout)
+                    .map_err(|e| e.into_ssh_error(SshError::DownloadTimeout))?;
+                if !out.success() {
+                    return Err(Self::download_read_error(source, &out).into());
+                }
+                let remote = parse_checksum_output(&out.stdout).ok_or_else(|| {
+                    SshError::DownloadRemoteReadFailed(format!("could not parse {} output", tool))
+                })?;
+                let local = self.compute_checksum(&content_bytes, &options.checksum_algorithm)?;
+                if remote != local {
+                    return Err(SshError::DownloadChecksumMismatch(remote, local).into());
+                }
+                Some(true)
+            }
+            None => None,
+        };
+
+        let content = if options.return_content {
+            match options.return_encoding {
+                ReturnEncoding::Utf8 => match String::from_utf8(content_bytes.clone()) {
+                    Ok(s) => Some(s),
+                    Err(_) => return Err(SshError::DownloadInvalidUtf8.into()),
+                },
+                ReturnEncoding::Base64 => Some(BASE64_STANDARD.encode(&content_bytes)),
+            }
+        } else {
+            None
+        };
+
+        let local_size = match &dest_path {
+            Some(dest) => {
+                Self::write_download_dest(dest, &content_bytes, options)?;
+                Some(content_bytes.len() as u64)
+            }
+            None => None,
+        };
         let transfer_ms = transfer_start.elapsed().as_millis() as u64;
 
-        // Build response structs
         let source_info = SshDownloadSourceInfo {
             path: source.to_string(),
-            size_bytes: Some(file_size),
-            file_mode: Some(file_mode),
-            mtime_epoch_ms: Some(mtime_epoch_ms),
+            size_bytes: Some(content_bytes.len() as u64),
+            file_mode: None,
+            mtime_epoch_ms: None,
         };
 
         let dest_info = SshDownloadDestInfo {
@@ -5143,15 +4767,50 @@ For complete help: ssh:// --help
             content,
             verify_checksum: options.verify_checksum,
             checksum_algorithm: options.checksum_algorithm.clone(),
-            checksum_verified: if options.verify_checksum { Some(true) } else { None },
+            checksum_verified,
         };
 
         let timing = SshDownloadTimingInfo {
-            connect_ms: Some(connect_ms),
+            connect_ms: None,
             transfer_ms: Some(transfer_ms),
         };
 
         Ok((source_info, dest_info, result, timing))
+    }
+
+    /// Write downloaded bytes to a temporary file next to dest, then rename.
+    fn write_download_dest(dest: &str, data: &[u8], options: &SshDownloadOptions) -> Result<()> {
+        let path = std::path::Path::new(dest);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            if !parent.exists() {
+                if options.mkdir_parents {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| SshError::DownloadLocalWriteFailed(e.to_string()))?;
+                } else {
+                    return Err(SshError::DownloadLocalDirMissing(parent.display().to_string()).into());
+                }
+            }
+        }
+
+        let temp_path = format!("{}.resh.tmp.{}", dest, rand::random::<u32>());
+        let write = || -> std::io::Result<()> {
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp_path)?;
+            f.write_all(data)?;
+            f.sync_all()
+        };
+        if let Err(e) = write() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(SshError::DownloadLocalWriteFailed(e.to_string()).into());
+        }
+        if !options.overwrite && path.exists() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(SshError::DownloadDestExists(dest.to_string()).into());
+        }
+        std::fs::rename(&temp_path, dest).map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            SshError::DownloadLocalWriteFailed(e.to_string())
+        })?;
+        Ok(())
     }
 
     /// Merge target and options to resolve final connection parameters
@@ -5299,12 +4958,12 @@ For complete help: ssh:// --help
                     }
                 }
 
-                // Wrap with shell if cwd is specified
-                if let Some(cwd) = &options.cwd {
-                    Ok(format!("{} -c 'cd {} && {}'", shell, Self::shell_escape(cwd), cmd))
-                } else {
-                    Ok(format!("{} -c '{}'", shell, cmd.replace('\'', "'\"'\"'")))
-                }
+                // Apply cwd inside the shell script, then quote the whole script once
+                let script = match &options.cwd {
+                    Some(cwd) => format!("cd {} && {}", Self::shell_escape(cwd), cmd),
+                    None => cmd,
+                };
+                Ok(format!("{} -c {}", shell, Self::shell_escape(&script)))
             },
             ShellMode::Cmd => {
                 let mut cmd = base_command.clone();
@@ -5639,11 +5298,7 @@ For complete help: ssh:// --help
                     command: None,
                     result: None,
                     timing: None,
-                    error: Some(SshErrorDetails {
-                        code: "CONNECTION_ERROR".to_string(),
-                        message: e.to_string(),
-                        details: HashMap::new(),
-                    }),
+                    error: Some(error_details(&e, "CONNECTION_ERROR")),
                     warnings: vec![],
                 };
                 
@@ -5669,11 +5324,7 @@ For complete help: ssh:// --help
                     command: None,
                     result: None,
                     timing: None,
-                    error: Some(SshErrorDetails {
-                        code: "AUTH_ERROR".to_string(),
-                        message: e.to_string(),
-                        details: HashMap::new(),
-                    }),
+                    error: Some(error_details(&e, "AUTH_ERROR")),
                     warnings: vec![],
                 };
                 
@@ -5703,11 +5354,7 @@ For complete help: ssh:// --help
                     command: None,
                     result: None,
                     timing: None,
-                    error: Some(SshErrorDetails {
-                        code: "COMMAND_ERROR".to_string(),
-                        message: e.to_string(),
-                        details: HashMap::new(),
-                    }),
+                    error: Some(error_details(&e, "COMMAND_ERROR")),
                     warnings: vec![],
                 };
                 
@@ -5798,6 +5445,44 @@ For complete help: ssh:// --help
         }
     }
 
+    /// Remote command for exec. With shell_mode=none, cwd becomes a leading
+    /// `cd`; the other shell modes already apply cwd in `build_command`.
+    fn exec_remote_command(options: &SshExecOptions, command: &str) -> String {
+        match (&options.cwd, &options.shell_mode) {
+            (Some(cwd), ShellMode::None) => format!("cd {} && {}", Self::shell_escape(cwd), command),
+            _ => command.to_string(),
+        }
+    }
+
+    /// Build the local ssh command line for exec.
+    fn exec_command_line(
+        &self,
+        host: &str,
+        port: u16,
+        username: &str,
+        command: &str,
+        options: &SshExecOptions,
+    ) -> SshCommandLine {
+        let spec = SshConnSpec {
+            host,
+            port,
+            username,
+            auth_method: &options.auth_method,
+            identity_path: options.identity_path.as_deref(),
+            password: options.password.as_deref(),
+            agent_socket: options.agent_socket.as_deref(),
+            known_hosts_mode: &options.known_hosts_mode,
+            known_hosts_path: options.known_hosts_path.as_deref(),
+            connect_timeout_ms: options.connect_timeout_ms,
+            allocate_pty: options.allocate_pty,
+        };
+        let mut cmd = build_ssh_command_line(&spec, &Self::exec_remote_command(options, command));
+        let mut env: Vec<_> = options.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        env.sort();
+        cmd.env.extend(env);
+        cmd
+    }
+
     /// Execute SSH command using ssh binary
     fn execute_ssh_command(
         &self,
@@ -5807,223 +5492,29 @@ For complete help: ssh:// --help
         command: &str,
         options: &SshExecOptions,
     ) -> Result<(SshExecResult, SshTimingInfo)> {
-        let connect_start = Instant::now();
+        let cmd = self.exec_command_line(host, port, username, command, options);
+        let timeout = (options.command_timeout_ms > 0)
+            .then(|| Duration::from_millis(options.command_timeout_ms));
 
-        // Build SSH command arguments
-        let mut ssh_args = Vec::new();
-        
-        // Connection parameters
-        ssh_args.push("-p".to_string());
-        ssh_args.push(port.to_string());
-        
-        // Authentication configuration
-        match options.auth_method {
-            SshAuthMethod::Auto => {
-                // Auto should not reach here since validate_auth_options converts it to a specific method
-                // But handle it gracefully by allowing SSH's default behavior
-            },
-            SshAuthMethod::Key => {
-                if let Some(identity_path) = &options.identity_path {
-                    ssh_args.push("-i".to_string());
-                    ssh_args.push(identity_path.clone());
-                }
-                // Allow both key and password authentication for flexibility
-            },
-            SshAuthMethod::Password => {
-                // Enable password authentication
-                ssh_args.push("-o".to_string());
-                ssh_args.push("PasswordAuthentication=yes".to_string());
-                ssh_args.push("-o".to_string());
-                ssh_args.push("PubkeyAuthentication=no".to_string());
-            },
-            SshAuthMethod::Agent => {
-                // Use SSH agent (default behavior)
-                ssh_args.push("-o".to_string());
-                ssh_args.push("PasswordAuthentication=no".to_string());
-            }
-        }
-
-        // Known hosts configuration
-        match options.known_hosts_mode {
-            KnownHostsMode::Strict => {
-                ssh_args.push("-o".to_string());
-                ssh_args.push("StrictHostKeyChecking=yes".to_string());
-                if let Some(known_hosts_path) = &options.known_hosts_path {
-                    ssh_args.push("-o".to_string());
-                    ssh_args.push(format!("UserKnownHostsFile={}", known_hosts_path));
-                }
-            },
-            KnownHostsMode::AcceptNew => {
-                ssh_args.push("-o".to_string());
-                ssh_args.push("StrictHostKeyChecking=accept-new".to_string());
-            },
-            KnownHostsMode::Insecure => {
-                ssh_args.push("-o".to_string());
-                ssh_args.push("StrictHostKeyChecking=no".to_string());
-            }
-        }
-
-        // Connection timeout
-        if options.connect_timeout_ms > 0 {
-            let timeout_secs = (options.connect_timeout_ms + 999) / 1000; // Round up
-            ssh_args.push("-o".to_string());
-            ssh_args.push(format!("ConnectTimeout={}", timeout_secs));
-        }
-
-        // PTY allocation
-        if options.allocate_pty {
-            ssh_args.push("-t".to_string());
-        } else {
-            ssh_args.push("-T".to_string()); // Disable PTY allocation
-        }
-
-        // Interactive prompts setting
-        if matches!(options.auth_method, SshAuthMethod::Password) {
-            // Enable interactive mode for password authentication
-            ssh_args.push("-o".to_string());
-            ssh_args.push("BatchMode=no".to_string());
-        } else {
-            // Disable interactive prompts for other auth methods
-            ssh_args.push("-o".to_string());
-            ssh_args.push("BatchMode=yes".to_string());
-        }
-
-        // Target
-        ssh_args.push(format!("{}@{}", username, host));
-        
-        // Command
-        ssh_args.push(command.to_string());
-
-        // Execute ssh command
-        let mut ssh_cmd = std::process::Command::new("ssh");
-        ssh_cmd.args(&ssh_args);
-
-        // Set environment variables if specified
-        for (key, value) in &options.env {
-            ssh_cmd.env(key, value);
-        }
-
-        // Set working directory if specified (this affects where ssh is executed from, not remote cwd)
-        if let Some(cwd) = &options.cwd {
-            // For remote working directory, we need to modify the command
-            let modified_command = format!("cd {} && {}", Self::shell_escape(cwd), command);
-            ssh_cmd.args(&ssh_args[..ssh_args.len()-1]); // Remove the original command
-            ssh_cmd.arg(modified_command);
-        }
-
-        // Configure stdin/stdout/stderr
-        ssh_cmd.stdin(std::process::Stdio::null());
-        ssh_cmd.stdout(std::process::Stdio::piped());
-        ssh_cmd.stderr(std::process::Stdio::piped());
-
-        // Handle password authentication if needed
-        if matches!(options.auth_method, SshAuthMethod::Password) && options.password.is_some() {
-            // For password auth, we'll use sshpass if available, otherwise return an error
-            if let Some(password) = &options.password {
-                // Check if sshpass is available
-                match std::process::Command::new("which").arg("sshpass").output() {
-                    Ok(output) if output.status.success() => {
-                        // Use sshpass for password authentication
-                        let mut sshpass_cmd = std::process::Command::new("sshpass");
-                        sshpass_cmd.arg("-p").arg(password);
-                        sshpass_cmd.arg("ssh");
-                        sshpass_cmd.args(&ssh_args);
-                        ssh_cmd = sshpass_cmd;
-                    }
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "Password authentication requires 'sshpass' to be installed. \
-                            Please install sshpass or use key-based authentication instead."
-                        ));
-                    }
-                }
-            }
-        }
-
-        let connect_ms = connect_start.elapsed().as_millis() as u64;
         let command_start = Instant::now();
-
-        // Execute with timeout
-        let timeout_duration = Duration::from_millis(options.command_timeout_ms);
-        
-        let result = if timeout_duration.as_millis() > 0 {
-            // Use timeout for command execution
-            self.execute_with_timeout(ssh_cmd, timeout_duration, options)
-        } else {
-            // No timeout, execute normally
-            self.execute_ssh_process(ssh_cmd, options)
-        };
-
+        let output = run_ssh_process(&cmd, None, None, timeout)
+            .map_err(|e| e.into_ssh_error(SshError::CommandTimeout))?;
         let command_ms = command_start.elapsed().as_millis() as u64;
 
         let timing = SshTimingInfo {
-            connect_ms: Some(connect_ms),
+            connect_ms: Some(0),
             command_ms: Some(command_ms),
         };
-
-        match result {
-            Ok(exec_result) => Ok((exec_result, timing)),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Execute SSH process with timeout support
-    fn execute_with_timeout(
-        &self,
-        mut cmd: std::process::Command,
-        timeout: Duration,
-        options: &SshExecOptions,
-    ) -> Result<SshExecResult> {
-        use std::sync::mpsc;
-        use std::thread;
-        use std::process::Stdio;
-
-        // Configure the command to capture output
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        let mut child = cmd.spawn()
-            .with_context(|| "Failed to spawn ssh process")?;
-
-        let (tx, rx) = mpsc::channel();
-
-        // Spawn thread to wait for process completion
-        let handle = thread::spawn(move || {
-            let result = child.wait_with_output();
-            let _ = tx.send(result);
-        });
-
-        // Wait for either completion or timeout
-        let output = match rx.recv_timeout(timeout) {
-            Ok(result) => result.map_err(|e| SshError::IoError(e.to_string()))?,
-            Err(_) => {
-                // Timeout occurred - unfortunately we can't kill the process 
-                // since it's been moved into the thread
-                return Err(SshError::CommandTimeout.into());
-            }
-        };
-
-        self.process_ssh_output(output, options)
-    }
-
-    /// Execute SSH process without timeout
-    fn execute_ssh_process(
-        &self,
-        mut cmd: std::process::Command,
-        options: &SshExecOptions,
-    ) -> Result<SshExecResult> {
-        let output = cmd.output()
-            .with_context(|| "Failed to execute ssh command")?;
-
-        self.process_ssh_output(output, options)
+        Ok((self.process_ssh_output(output, options)?, timing))
     }
 
     /// Process SSH command output and convert to SshExecResult
     fn process_ssh_output(
         &self,
-        output: std::process::Output,
+        output: ProcessOutput,
         options: &SshExecOptions,
     ) -> Result<SshExecResult> {
-        let exit_code = output.status.code();
+        let exit_code = output.exit_code;
         
         // Apply output size limits
         let stdout_bytes = &output.stdout;
@@ -6072,18 +5563,7 @@ For complete help: ssh:// --help
             OutputEncoding::Base64 => BASE64_STANDARD.encode(stderr_final.as_bytes()),
         };
 
-        // Handle signal information on Unix systems
-        let signal = if !output.status.success() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                output.status.signal().map(|sig| format!("SIGNAL {}", sig))
-            }
-            #[cfg(not(unix))]
-            None
-        } else {
-            None
-        };
+        let signal = output.signal.map(|sig| format!("SIGNAL {}", sig));
 
         Ok(SshExecResult {
             executed: true,
@@ -7348,6 +6828,10 @@ For complete help: ssh:// --help
                 .with_context(|| format!("Invalid public_key_source: {}", source_str))?;
         }
         options.public_key_path = args.get("public_key_path").cloned();
+        // public_key_path alone implies public_key_source=file
+        if args.get("public_key_source").is_none() && options.public_key.is_none() && options.public_key_path.is_some() {
+            options.public_key_source = PublicKeySource::File;
+        }
 
         // Parse duplicate handling
         if let Some(dup_str) = args.get("on_duplicate") {
@@ -7575,7 +7059,7 @@ For complete help: ssh:// --help
         // In a full implementation, you might handle multiple paths
         let target_file = target_paths[0].clone();
 
-        let mut warnings = Vec::new();
+        let warnings = Vec::new();
 
         // Handle dry run
         if options.dry_run {
@@ -7616,22 +7100,10 @@ For complete help: ssh:// --help
             return Ok(Status { ok: true, code: Some(0), reason: None });
         }
 
-        // For a real implementation, we would:
-        // 1. Connect via SSH
-        // 2. Check if file exists
-        // 3. Read file content
-        // 4. Find duplicates
-        // 5. Apply on_duplicate policy
-        // 6. Write atomically with backup
-        // 7. Set permissions
-        //
-        // Since this is a mock implementation (no actual SSH connection for now),
-        // we'll return a placeholder response
-
-        warnings.push("MOCK: Actual SSH connection not implemented in this version".to_string());
-
+        // Writing authorized_keys on the remote host is not implemented yet.
+        // Report that instead of claiming the key was added.
         let response = SshKeyAddResponse {
-            ok: true,
+            ok: false,
             dry_run: false,
             connection: Some(SshConnectionInfo {
                 host: host.clone(),
@@ -7641,13 +7113,7 @@ For complete help: ssh:// --help
             }),
             scope: options.scope.clone(),
             target_file: Some(target_file.clone()),
-            operation: Some(SshKeyAddOperation {
-                status: "added".to_string(),
-                on_duplicate: options.on_duplicate.clone(),
-                duplicates_found: 0,
-                created_file: false,
-                backup_created: false,
-            }),
+            operation: None,
             key: Some(SshKeySummary {
                 type_normalized: Self::normalize_key_type(&type_raw),
                 type_raw: type_raw.clone(),
@@ -7655,7 +7121,13 @@ For complete help: ssh:// --help
                 fingerprint_algorithm: "sha256".to_string(),
                 comment: comment.clone(),
             }),
-            error: None,
+            error: Some(SshErrorDetails {
+                code: "ssh.not_implemented".to_string(),
+                message: "key.add cannot write to the remote host yet; nothing was changed \
+                    (use dry_run=true to validate the key and see the target file)"
+                    .to_string(),
+                details: HashMap::new(),
+            }),
             warnings,
         };
 
@@ -7665,7 +7137,7 @@ For complete help: ssh:// --help
             serde_json::to_string_pretty(&response)?
         };
         write!(io.stdout, "{}", output)?;
-        Ok(Status { ok: true, code: Some(0), reason: None })
+        Ok(Status::err(1, "key.add is not implemented: nothing was written".to_string()))
     }
 
     // ========== End key.add implementation ==========
@@ -8722,89 +8194,129 @@ For complete help: ssh:// --help
         }
     }
 
-    /// Test connect functionality (stub for now - will be implemented with real SSH connection)
-    fn test_connect(&self, _options: &SshTestOptions) -> SshSingleTestResult {
-        let start = Instant::now();
+    /// Run one remote command with the test options through the system ssh
+    /// client and return its output.
+    fn run_test_probe(
+        &self,
+        options: &SshTestOptions,
+        remote_command: &str,
+        timeout_ms: u64,
+        timeout_error: SshError,
+    ) -> std::result::Result<ProcessOutput, SshError> {
+        let auth = resolve_auth_method(
+            &options.auth_method,
+            options.password.as_deref(),
+            options.identity_path.as_deref(),
+            options.agent_socket.as_deref(),
+        )
+        .map_err(|e| match e.downcast_ref::<SshError>() {
+            Some(err) => err.clone(),
+            None => SshError::InternalError(e.to_string()),
+        })?;
+        let spec = SshConnSpec {
+            host: options.host.as_deref().unwrap_or_default(),
+            port: options.port,
+            username: options.username.as_deref().unwrap_or_default(),
+            auth_method: &auth,
+            identity_path: options.identity_path.as_deref(),
+            password: options.password.as_deref(),
+            agent_socket: options.agent_socket.as_deref(),
+            known_hosts_mode: &options.known_hosts_mode,
+            known_hosts_path: options.known_hosts_path.as_deref(),
+            connect_timeout_ms: options.connect_timeout_ms,
+            allocate_pty: false,
+        };
+        let cmd = build_ssh_command_line(&spec, remote_command);
+        let timeout = (timeout_ms > 0).then(|| Duration::from_millis(timeout_ms));
+        run_ssh_process(&cmd, None, Some(65_536), timeout).map_err(|e| e.into_ssh_error(timeout_error))
+    }
 
-        // This is a stub - real implementation would attempt actual SSH connection
-        // For now, simulate success
-        thread::sleep(Duration::from_millis(50));
-
+    fn test_result(name: &str, start: Instant, error: Option<SshError>, details: Option<serde_json::Value>) -> SshSingleTestResult {
         SshSingleTestResult {
-            name: "connect".to_string(),
-            status: TestStatus::Passed,
+            name: name.to_string(),
+            status: if error.is_none() { TestStatus::Passed } else { TestStatus::Failed },
             duration_ms: Some(start.elapsed().as_millis() as u64),
-            details: None,
-            error: None,
+            details,
+            error: error.map(|e| e.to_json()),
         }
     }
 
-    /// Test auth functionality (stub for now)
-    fn test_auth(&self, _options: &SshTestOptions) -> SshSingleTestResult {
-        let start = Instant::now();
-
-        // Stub - real implementation would attempt authentication
-        thread::sleep(Duration::from_millis(50));
-
-        SshSingleTestResult {
-            name: "auth".to_string(),
-            status: TestStatus::Passed,
-            duration_ms: Some(start.elapsed().as_millis() as u64),
-            details: None,
-            error: None,
-        }
+    /// True when ssh reached the server but the login was refused.
+    fn is_auth_rejection(output: &ProcessOutput) -> bool {
+        let stderr = output.stderr_text();
+        stderr.contains("Permission denied") || stderr.contains("Too many authentication failures")
     }
 
-    /// Test SFTP functionality (stub for now)
+    /// Connect test: the server must be reachable and its host key accepted.
+    fn test_connect(&self, options: &SshTestOptions) -> SshSingleTestResult {
+        let start = Instant::now();
+        let error = match self.run_test_probe(options, "true", options.connect_timeout_ms + options.auth_timeout_ms, SshError::TestConnectTimeout) {
+            Err(e) => Some(e),
+            Ok(out) if out.success() || Self::is_auth_rejection(&out) => None,
+            Ok(out) => match connection_error(&out) {
+                Some(SshError::HostKeyVerificationFailed(msg)) => Some(SshError::TestHostkeyFailed(msg)),
+                Some(_) => Some(SshError::TestConnectFailed(out.stderr_text())),
+                None => None,
+            },
+        };
+        Self::test_result("connect", start, error, None)
+    }
+
+    /// Auth test: a login with the given credentials must succeed.
+    fn test_auth(&self, options: &SshTestOptions) -> SshSingleTestResult {
+        let start = Instant::now();
+        let error = match self.run_test_probe(options, "true", options.connect_timeout_ms + options.auth_timeout_ms, SshError::TestAuthTimeout) {
+            Err(e) => Some(e),
+            Ok(out) if out.exit_code == Some(255) => Some(SshError::TestAuthFailed(out.stderr_text())),
+            Ok(_) => None,
+        };
+        Self::test_result("auth", start, error, None)
+    }
+
+    /// SFTP test: not implemented, so it always fails rather than pass unchecked.
     fn test_sftp(&self, _options: &SshTestOptions) -> SshSingleTestResult {
         let start = Instant::now();
-
-        // Stub - real implementation would open SFTP session
-        thread::sleep(Duration::from_millis(50));
-
-        SshSingleTestResult {
-            name: "sftp".to_string(),
-            status: TestStatus::Passed,
-            duration_ms: Some(start.elapsed().as_millis() as u64),
-            details: None,
-            error: None,
-        }
+        Self::test_result(
+            "sftp",
+            start,
+            Some(SshError::TestSftpFailed("the sftp test is not implemented".to_string())),
+            None,
+        )
     }
 
-    /// Test exec functionality (stub for now)
+    /// Exec test: exec_command must exit with status 0.
     fn test_exec(&self, options: &SshTestOptions) -> SshSingleTestResult {
         let start = Instant::now();
-
-        // Stub - real implementation would execute command
-        thread::sleep(Duration::from_millis(50));
-
         let mut details = serde_json::Map::new();
         details.insert("command".to_string(), serde_json::Value::String(options.exec_command.clone()));
-        details.insert("exit_status".to_string(), serde_json::Value::Number(0.into()));
-
-        SshSingleTestResult {
-            name: "exec".to_string(),
-            status: TestStatus::Passed,
-            duration_ms: Some(start.elapsed().as_millis() as u64),
-            details: Some(serde_json::Value::Object(details)),
-            error: None,
-        }
+        let error = match self.run_test_probe(options, &options.exec_command, options.connect_timeout_ms + options.exec_timeout_ms, SshError::TestExecTimeout) {
+            Err(e) => Some(e),
+            Ok(out) => {
+                details.insert("exit_status".to_string(), out.exit_code.map_or(serde_json::Value::Null, |c| c.into()));
+                if out.success() {
+                    None
+                } else {
+                    Some(SshError::TestExecFailed(format!(
+                        "exit status {:?}: {}",
+                        out.exit_code,
+                        out.stderr_text()
+                    )))
+                }
+            }
+        };
+        Self::test_result("exec", start, error, Some(serde_json::Value::Object(details)))
     }
 
-    /// Test hostkey functionality (stub for now)
+    /// Host key test: not implemented, so it always fails rather than pass
+    /// unchecked. (The connect test already fails on a rejected host key.)
     fn test_hostkey(&self, _options: &SshTestOptions) -> SshSingleTestResult {
         let start = Instant::now();
-
-        // Stub - real implementation would verify host key
-        thread::sleep(Duration::from_millis(50));
-
-        SshSingleTestResult {
-            name: "hostkey".to_string(),
-            status: TestStatus::Passed,
-            duration_ms: Some(start.elapsed().as_millis() as u64),
-            details: None,
-            error: None,
-        }
+        Self::test_result(
+            "hostkey",
+            start,
+            Some(SshError::TestHostkeyFailed("the hostkey test is not implemented".to_string())),
+            None,
+        )
     }
 
     /// Output test response
@@ -8922,9 +8434,13 @@ impl Handle for SshHandle {
         &["exec", "upload", "download", "tunnel", "keys.list", "key.add", "config.get", "test", "help", "--help", "-h"]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&SSH_HELP)
+    }
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Check if this is a help request and display help if so
-        if let Some(status) = Self::check_and_display_help(verb, io)? {
+        if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
 
@@ -8953,8 +8469,73 @@ mod tests {
     use crate::core::registry::IoStreams;
     use std::io::Cursor;
 
-    /// Helper to create test SSH handle
+    /// Content the fake remote host returns for `cat`.
+    const FAKE_REMOTE_FILE: &[u8] = b"key: value\ndata: test\n";
+
+    fn ok_output(stdout: &[u8]) -> ProcessOutput {
+        ProcessOutput { exit_code: Some(0), stdout: stdout.to_vec(), ..Default::default() }
+    }
+
+    fn failed_output(code: i32, stderr: &str) -> ProcessOutput {
+        ProcessOutput { exit_code: Some(code), stderr: stderr.as_bytes().to_vec(), ..Default::default() }
+    }
+
+    fn checksum_line(data: &[u8], algorithm: &str) -> Vec<u8> {
+        let handle = SshHandle { target: SshTarget { host: None, port: None, username: None, password: None } };
+        format!("{}  -\n", handle.compute_checksum(data, algorithm).unwrap()).into_bytes()
+    }
+
+    /// The remote command (last ssh argument) of a command line.
+    fn remote_of(cmd: &SshCommandLine) -> &str {
+        cmd.args.last().unwrap()
+    }
+
+    /// Default fake ssh: never contacts a host. `cat` returns FAKE_REMOTE_FILE,
+    /// checksum tools hash it, upload scripts accept stdin (and print its
+    /// checksum when asked), `false` exits 1, `echo X` prints X.
+    fn fake_remote(cmd: &SshCommandLine, stdin: Option<&[u8]>) -> std::result::Result<ProcessOutput, RunError> {
+        let remote = remote_of(cmd).to_string();
+        let algo = ["sha256", "sha1", "md5"].into_iter().find(|a| remote.contains(&format!("{}sum -- ", a)));
+        if let Some(data) = stdin {
+            return Ok(ok_output(&algo.map(|a| checksum_line(data, a)).unwrap_or_default()));
+        }
+        if remote.starts_with("cat -- ") {
+            return Ok(ok_output(FAKE_REMOTE_FILE));
+        }
+        if let Some(a) = algo {
+            return Ok(ok_output(&checksum_line(FAKE_REMOTE_FILE, a)));
+        }
+        let last = remote.rsplit("&& ").next().unwrap_or(&remote);
+        if last == "false" {
+            return Ok(failed_output(1, ""));
+        }
+        if let Some(text) = last.strip_prefix("echo ") {
+            return Ok(ok_output(format!("{}\n", text).as_bytes()));
+        }
+        Ok(ok_output(b""))
+    }
+
+    type Calls = std::rc::Rc<std::cell::RefCell<Vec<(SshCommandLine, Option<Vec<u8>>)>>>;
+
+    /// Install a fake ssh runner on this thread and record every call.
+    fn mock_ssh<F>(mut reply: F) -> Calls
+    where
+        F: FnMut(&SshCommandLine, Option<&[u8]>) -> std::result::Result<ProcessOutput, RunError> + 'static,
+    {
+        let calls: Calls = Default::default();
+        let rec = calls.clone();
+        MOCK_SSH.with(|m| {
+            *m.borrow_mut() = Some(Box::new(move |cmd: &SshCommandLine, stdin: Option<&[u8]>| {
+                rec.borrow_mut().push((cmd.clone(), stdin.map(|d| d.to_vec())));
+                reply(cmd, stdin)
+            }))
+        });
+        calls
+    }
+
+    /// Helper to create test SSH handle (installs the fake remote host)
     fn create_test_handle(host: Option<&str>, port: Option<u16>, username: Option<&str>) -> SshHandle {
+        mock_ssh(fake_remote);
         let target = SshTarget {
             host: host.map(|s| s.to_string()),
             port,
@@ -9207,7 +8788,7 @@ mod tests {
         options.cwd = Some("/tmp".to_string());
         
         let command = handle.build_command(&options).unwrap();
-        assert_eq!(command, "bash -c 'cd '/tmp' && pwd'");
+        assert_eq!(command, "bash -c 'cd '\"'\"'/tmp'\"'\"' && pwd'");
     }
 
     #[test]
@@ -9351,7 +8932,10 @@ mod tests {
 
     #[test]
     fn test_auth_missing_key_error() {
+        // auth_method=key without identity_path is allowed: ssh then uses its
+        // default keys (~/.ssh/id_*), so no -i option is passed.
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
+        let calls = mock_ssh(fake_remote);
         let args = args_from_pairs(&[
             ("command", "echo hello"),
             ("auth_method", "key"),
@@ -9361,12 +8945,12 @@ mod tests {
             handle.verb_exec(&args, io)
         });
 
-        assert_eq!(status.code, Some(1));
-        
-        // Parse JSON response
+        assert_eq!(status.code, Some(0));
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
-        assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.auth_missing_key");
+        assert!(response.ok);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert!(!calls[0].0.args.contains(&"-i".to_string()));
     }
 
     #[test]
@@ -9472,18 +9056,20 @@ mod tests {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let args = args_from_pairs(&[]);
 
-        let (_, _, status) = capture_output(|io| {
-            handle.call("unknown_verb", &args, io)
-        });
+        let mut stdin = Cursor::new(Vec::new());
+        let mut stdout = Cursor::new(Vec::new());
+        let mut stderr = Cursor::new(Vec::new());
+        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        let result = handle.call("unknown_verb", &args, &mut io);
 
-        assert_ne!(status.code, Some(0));
+        assert!(result.unwrap_err().to_string().contains("unknown verb"));
     }
 
     #[test]
     fn test_verbs_list() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let verbs = handle.verbs();
-        assert_eq!(verbs, &["exec", "upload", "download", "tunnel"]);
+        assert_eq!(verbs, &["exec", "upload", "download", "tunnel", "keys.list", "key.add", "config.get", "test", "help", "--help", "-h"]);
     }
 
     #[test]
@@ -9626,8 +9212,11 @@ mod tests {
     #[test]
     fn test_upload_verb_file_source() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
+        let source_file = std::env::temp_dir().join(format!("resh_ssh_upload_src_{}.txt", rand::random::<u32>()));
+        std::fs::write(&source_file, b"file contents\n").unwrap();
+        let calls = mock_ssh(fake_remote);
         let args = args_from_pairs(&[
-            ("source", "/home/smiller/Development/rust/resh/test_upload.txt"),
+            ("source", source_file.to_str().unwrap()),
             ("source_mode", "file"),
             ("dest", "/tmp/test.txt"),
             ("overwrite", "true"),
@@ -9643,8 +9232,11 @@ mod tests {
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
         assert_eq!(response.source.as_ref().unwrap().mode, "file");
-        assert!(response.source.as_ref().unwrap().size_bytes.is_some());
+        assert_eq!(response.source.as_ref().unwrap().size_bytes, Some(14));
         assert!(response.result.as_ref().unwrap().uploaded);
+        // The file's bytes are piped to the remote script on stdin
+        assert_eq!(calls.borrow()[0].1.as_deref(), Some(&b"file contents\n"[..]));
+        let _ = std::fs::remove_file(source_file);
     }
 
     #[test]
@@ -9682,6 +9274,7 @@ mod tests {
             ("dest", "/tmp/existing_file.txt"),
             ("overwrite", "false"),
         ]);
+        let calls = mock_ssh(|_, _| Ok(failed_output(UPLOAD_EXIT_DEST_EXISTS, "resh: remote file exists")));
 
         let (stdout, _stderr, status) = capture_output(|io| {
             handle.verb_upload(&args, io)
@@ -9693,6 +9286,7 @@ mod tests {
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
         assert_eq!(response.error.as_ref().unwrap().code, "ssh.upload_dest_exists");
+        assert!(remote_of(&calls.borrow()[0].0).contains("if [ -e '/tmp/existing_file.txt' ]"));
     }
 
     #[test]
@@ -9729,6 +9323,7 @@ mod tests {
             ("dest", "/tmp/checksum_mismatch.txt"),
             ("verify_checksum", "true"),
         ]);
+        mock_ssh(|_, _| Ok(ok_output(b"deadbeef  /tmp/checksum_mismatch.txt\n")));
 
         let (stdout, _stderr, status) = capture_output(|io| {
             handle.verb_upload(&args, io)
@@ -9799,6 +9394,7 @@ mod tests {
             ("source_mode", "inline"),
             ("dest", "/tmp/permission_denied.txt"),
         ]);
+        mock_ssh(|_, _| Ok(failed_output(UPLOAD_EXIT_WRITE_FAILED, "sh: /tmp/permission_denied.txt: Permission denied")));
 
         let (stdout, _stderr, status) = capture_output(|io| {
             handle.verb_upload(&args, io)
@@ -9820,6 +9416,7 @@ mod tests {
             ("source_mode", "inline"),
             ("dest", "/tmp/timeout_test.txt"),
         ]);
+        mock_ssh(|_, _| Err(RunError::Timeout));
 
         let (stdout, _stderr, status) = capture_output(|io| {
             handle.verb_upload(&args, io)
@@ -9837,7 +9434,7 @@ mod tests {
     fn test_upload_verbs_list() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let verbs = handle.verbs();
-        assert_eq!(verbs, &["exec", "upload", "download", "tunnel"]);
+        assert_eq!(verbs, &["exec", "upload", "download", "tunnel", "keys.list", "key.add", "config.get", "test", "help", "--help", "-h"]);
     }
 
     #[test]
@@ -10231,19 +9828,18 @@ mod tests {
     fn test_download_with_max_size_limit() {
         let handle = create_test_handle(Some("example.com"), Some(22), Some("deploy"));
 
-        // Set a very small limit to trigger the error in simulation
+        // The fake remote file is 22 bytes, larger than the limit
         let args = args_from_pairs(&[
             ("source", "/large/file.bin"),
             ("auth_method", "password"),
             ("password", "testpass"),
             ("dest_mode", "none"),
-            ("max_size_bytes", "100"),  // Very small limit
+            ("max_size_bytes", "10"),
             ("format", "json"),
         ]);
 
         let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
 
-        // The simulated file size is 2048 bytes, which exceeds 100 bytes
         assert_eq!(status.code, Some(1));
 
         let response: SshDownloadResponse = serde_json::from_str(&stdout).unwrap();
@@ -10303,25 +9899,26 @@ mod tests {
 
     #[test]
     fn test_download_auth_validation_key() {
+        // auth_method=key without identity_path or identity_data is accepted;
+        // ssh falls back to its default keys.
         let handle = create_test_handle(Some("example.com"), Some(22), Some("deploy"));
+        let calls = mock_ssh(fake_remote);
 
         let args = args_from_pairs(&[
             ("source", "/etc/config.yaml"),
             ("dest_mode", "none"),
             ("auth_method", "key"),
-            // Missing identity_path and identity_data
             ("format", "json"),
         ]);
 
         let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
 
-        assert_eq!(status.code, Some(1));
-
+        assert_eq!(status.code, Some(0));
         let response: SshDownloadResponse = serde_json::from_str(&stdout).unwrap();
-        assert!(!response.ok);
-
-        let error = response.error.unwrap();
-        assert_eq!(error.code, "ssh.auth_missing_key");
+        assert!(response.ok);
+        let calls = calls.borrow();
+        assert_eq!(calls[0].0.program, "ssh");
+        assert!(!calls[0].0.args.contains(&"-i".to_string()));
     }
 
     // Tunnel verb tests
@@ -10740,5 +10337,290 @@ mod tests {
         assert_eq!(options.port, 3333);
         assert_eq!(options.username, Some("options-user".to_string()));
         assert_eq!(options.password, Some("options-pass".to_string()));
+    }
+
+    // ===== Command construction and real transfer paths (fake ssh) =====
+
+    fn spec_for<'a>(auth: &'a SshAuthMethod, khm: &'a KnownHostsMode, password: Option<&'a str>) -> SshConnSpec<'a> {
+        SshConnSpec {
+            host: "web01",
+            port: 2222,
+            username: "alice",
+            auth_method: auth,
+            identity_path: Some("/k/id"),
+            password,
+            agent_socket: None,
+            known_hosts_mode: khm,
+            known_hosts_path: None,
+            connect_timeout_ms: 1500,
+            allocate_pty: false,
+        }
+    }
+
+    #[test]
+    fn test_build_ssh_command_line_key() {
+        let cmd = build_ssh_command_line(&spec_for(&SshAuthMethod::Key, &KnownHostsMode::Strict, None), "uptime");
+        assert_eq!(cmd.program, "ssh");
+        assert_eq!(
+            cmd.args,
+            vec![
+                "-p", "2222", "-i", "/k/id", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=2",
+                "-T", "-o", "BatchMode=yes", "--", "alice@web01", "uptime",
+            ]
+        );
+        assert!(cmd.env.is_empty());
+    }
+
+    #[test]
+    fn test_build_ssh_command_line_password_uses_env() {
+        let cmd = build_ssh_command_line(
+            &spec_for(&SshAuthMethod::Password, &KnownHostsMode::AcceptNew, Some("s3cret")),
+            "uptime",
+        );
+        assert_eq!(cmd.program, "sshpass");
+        assert_eq!(&cmd.args[..2], &["-e", "ssh"]);
+        assert!(!cmd.args.iter().any(|a| a.contains("s3cret")));
+        assert_eq!(cmd.env, vec![("SSHPASS".to_string(), "s3cret".to_string())]);
+        assert!(cmd.args.contains(&"StrictHostKeyChecking=accept-new".to_string()));
+        assert!(cmd.args.contains(&"BatchMode=no".to_string()));
+    }
+
+    fn exec_options(cwd: Option<&str>, shell: ShellMode, auth: SshAuthMethod) -> SshExecOptions {
+        let mut options = SshExecOptions::default();
+        options.command = Some("ls".to_string());
+        options.cwd = cwd.map(|s| s.to_string());
+        options.shell_mode = shell;
+        options.auth_method = auth;
+        options.password = Some("pw".to_string());
+        options
+    }
+
+    #[test]
+    fn test_exec_cwd_applied_once() {
+        let handle = create_test_handle(Some("host.com"), None, Some("user"));
+        for auth in [SshAuthMethod::Key, SshAuthMethod::Password] {
+            let options = exec_options(Some("/srv/app"), ShellMode::None, auth);
+            let command = handle.build_command(&options).unwrap();
+            let cmd = handle.exec_command_line("host.com", 22, "user", &command, &options);
+            // ssh options appear once and the command is the single last argument
+            assert_eq!(cmd.args.iter().filter(|a| *a == "-p").count(), 1);
+            assert_eq!(cmd.args.iter().filter(|a| *a == "user@host.com").count(), 1);
+            assert_eq!(remote_of(&cmd), "cd '/srv/app' && ls");
+        }
+    }
+
+    #[test]
+    fn test_exec_cwd_with_bash_not_doubled() {
+        let handle = create_test_handle(Some("host.com"), None, Some("user"));
+        let options = exec_options(Some("/srv"), ShellMode::Bash, SshAuthMethod::Key);
+        let command = handle.build_command(&options).unwrap();
+        let cmd = handle.exec_command_line("host.com", 22, "user", &command, &options);
+        let remote = remote_of(&cmd);
+        assert!(remote.starts_with("bash -c "));
+        assert_eq!(remote.matches("cd ").count(), 1);
+    }
+
+    #[test]
+    fn test_exec_runs_through_runner() {
+        let handle = create_test_handle(Some("host.com"), None, Some("user"));
+        let calls = mock_ssh(fake_remote);
+        let args = args_from_pairs(&[("command", "echo hi"), ("cwd", "/tmp"), ("auth_method", "password"), ("password", "pw")]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
+        assert_eq!(status.code, Some(0));
+        let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(response.result.unwrap().stdout.as_deref(), Some("hi"));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.program, "sshpass");
+        assert_eq!(remote_of(&calls[0].0), "cd '/tmp' && echo hi");
+    }
+
+    #[test]
+    fn test_build_upload_script_atomic() {
+        let mut options = SshUploadOptions::default();
+        options.file_mode = Some("0640".to_string());
+        options.verify_checksum = true;
+        let script = build_upload_script("/srv/app.conf", &options, 7, Some(1700000000)).unwrap();
+        assert_eq!(
+            script,
+            "mkdir -p -- '/srv' || exit 19; \
+             if [ -e '/srv/app.conf' ]; then echo 'resh: remote file exists' >&2; exit 17; fi; \
+             cat > '/srv/app.conf.resh.tmp.7' || { rm -f -- '/srv/app.conf.resh.tmp.7'; exit 19; }; \
+             chmod 0640 -- '/srv/app.conf.resh.tmp.7' || { rm -f -- '/srv/app.conf.resh.tmp.7'; exit 19; }; \
+             touch -d @1700000000 -- '/srv/app.conf.resh.tmp.7' || { rm -f -- '/srv/app.conf.resh.tmp.7'; exit 19; }; \
+             mv -f -- '/srv/app.conf.resh.tmp.7' '/srv/app.conf' || { rm -f -- '/srv/app.conf.resh.tmp.7'; exit 19; }; \
+             sha256sum -- '/srv/app.conf'"
+        );
+    }
+
+    #[test]
+    fn test_build_upload_script_direct_overwrite_no_mkdir() {
+        let mut options = SshUploadOptions::default();
+        options.atomic = false;
+        options.overwrite = true;
+        options.mkdir_parents = false;
+        let script = build_upload_script("~/notes/a b.txt", &options, 1, None).unwrap();
+        assert_eq!(
+            script,
+            "[ -d ~/'notes' ] || { echo 'resh: remote directory missing' >&2; exit 18; }; \
+             cat > ~/'notes/a b.txt' || { exit 19; }"
+        );
+    }
+
+    #[test]
+    fn test_upload_checksum_verified_against_remote_output() {
+        let handle = create_test_handle(Some("host.com"), None, Some("user"));
+        let calls = mock_ssh(fake_remote);
+        let args = args_from_pairs(&[
+            ("source", "abc"), ("source_mode", "inline"), ("dest", "/tmp/x"),
+            ("verify_checksum", "true"), ("checksum_algorithm", "md5"),
+        ]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
+        assert_eq!(status.code, Some(0));
+        let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(response.result.unwrap().checksum_verified, Some(true));
+        let calls = calls.borrow();
+        assert_eq!(calls[0].1.as_deref(), Some(&b"abc"[..]));
+        assert!(remote_of(&calls[0].0).ends_with("md5sum -- '/tmp/x'"));
+    }
+
+    #[test]
+    fn test_download_writes_remote_content() {
+        let handle = create_test_handle(Some("example.com"), None, Some("deploy"));
+        let dir = std::env::temp_dir().join(format!("resh_ssh_dl_{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("hosts");
+        std::fs::write(&dest, b"original\n").unwrap();
+        let calls = mock_ssh(fake_remote);
+
+        let args = args_from_pairs(&[
+            ("source", "/etc/hosts"), ("dest", dest.to_str().unwrap()), ("overwrite", "true"),
+            ("verify_checksum", "true"), ("return_content", "false"),
+        ]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
+        assert_eq!(status.code, Some(0), "{}", stdout);
+        let response: SshDownloadResponse = serde_json::from_str(&stdout).unwrap();
+        let result = response.result.unwrap();
+        assert_eq!(result.checksum_verified, Some(true));
+        assert_eq!(response.source.unwrap().size_bytes, Some(FAKE_REMOTE_FILE.len() as u64));
+        assert_eq!(std::fs::read(&dest).unwrap(), FAKE_REMOTE_FILE);
+        // Only dest remains: the temporary file was renamed into place
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let calls = calls.borrow();
+        assert_eq!(remote_of(&calls[0].0), "cat -- '/etc/hosts'");
+        assert_eq!(remote_of(&calls[1].0), "sha256sum -- '/etc/hosts'");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_download_failure_leaves_dest_untouched() {
+        let handle = create_test_handle(Some("example.com"), None, Some("deploy"));
+        let dir = std::env::temp_dir().join(format!("resh_ssh_dl_fail_{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("hosts");
+        std::fs::write(&dest, b"original\n").unwrap();
+
+        // Remote file missing
+        mock_ssh(|_, _| Ok(failed_output(1, "cat: /nope: No such file or directory")));
+        let args = args_from_pairs(&[("source", "/nope"), ("dest", dest.to_str().unwrap()), ("overwrite", "true")]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
+        assert_eq!(status.code, Some(1));
+        let response: SshDownloadResponse = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(response.error.unwrap().code, "ssh.download_source_not_found");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"original\n");
+
+        // Checksum mismatch
+        mock_ssh(|cmd, _| {
+            if remote_of(cmd).starts_with("cat") { Ok(ok_output(b"data")) } else { Ok(ok_output(b"0000  /x\n")) }
+        });
+        let args = args_from_pairs(&[
+            ("source", "/x"), ("dest", dest.to_str().unwrap()), ("overwrite", "true"), ("verify_checksum", "true"),
+        ]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
+        assert_eq!(status.code, Some(1));
+        let response: SshDownloadResponse = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(response.error.unwrap().code, "ssh.download_checksum_mismatch");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"original\n");
+
+        // overwrite=false: refused before connecting
+        let calls = mock_ssh(fake_remote);
+        let args = args_from_pairs(&[("source", "/etc/hosts"), ("dest", dest.to_str().unwrap())]);
+        let (_stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
+        assert_eq!(status.code, Some(1));
+        assert!(calls.borrow().is_empty());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"original\n");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_download_dry_run_does_not_connect() {
+        let handle = create_test_handle(Some("example.com"), None, Some("deploy"));
+        let calls = mock_ssh(fake_remote);
+        let dest = std::env::temp_dir().join(format!("resh_ssh_dry_{}", rand::random::<u32>()));
+        let args = args_from_pairs(&[("source", "/etc/hosts"), ("dest", dest.to_str().unwrap()), ("dry_run", "true")]);
+        let (_stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
+        assert_eq!(status.code, Some(0));
+        assert!(calls.borrow().is_empty());
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn test_key_add_without_dry_run_is_not_implemented() {
+        let handle = create_test_handle(Some("web01"), None, Some("alice"));
+        let calls = mock_ssh(fake_remote);
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl alice@laptop";
+        let args = args_from_pairs(&[("public_key", key)]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_key_add(&args, io));
+        assert_eq!(status.code, Some(1), "{}", stdout);
+        assert!(!stdout.contains("\"added\""));
+        let response: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "ssh.not_implemented");
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn test_test_verb_uses_real_probe() {
+        let handle = create_test_handle(Some("web01"), None, Some("alice"));
+        mock_ssh(|_, _| Ok(failed_output(255, "alice@web01: Permission denied (publickey).")));
+        let args = args_from_pairs(&[("tests", "connect,auth,sftp")]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_test(&args, io));
+        assert_eq!(status.code, Some(1));
+        let response: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(response["tests"][0]["status"], "passed");
+        assert_eq!(response["tests"][1]["status"], "failed");
+        assert_eq!(response["tests"][2]["status"], "skipped");
+
+        mock_ssh(fake_remote);
+        let args = args_from_pairs(&[]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_test(&args, io));
+        assert_eq!(status.code, Some(0), "{}", stdout);
+
+        mock_ssh(fake_remote);
+        let args = args_from_pairs(&[("tests", "connect,auth,sftp,hostkey")]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_test(&args, io));
+        assert_eq!(status.code, Some(1));
+        let response: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(response["tests"][2]["status"], "failed");
+        assert_eq!(response["tests"][3]["status"], "failed");
+    }
+
+    #[test]
+    fn test_in_url_help_uses_metadata() {
+        let handle = create_test_handle(Some("host.com"), None, Some("user"));
+        let args = args_from_pairs(&[]);
+        for verb in ["--help", "-h", "help"] {
+            let (stdout, _stderr, status) = capture_output(|io| handle.call(verb, &args, io));
+            assert_eq!(status.code, Some(0));
+            assert!(stdout.starts_with("Handle: ssh"), "{}", stdout);
+        }
+        let (stdout, _stderr, _status) = capture_output(|io| handle.call("--help=download", &args, io));
+        assert!(stdout.contains("Verb: download"), "{}", stdout);
+        assert!(!stdout.contains("placeholder"));
+        // ssh://--help=download reaches the handle as the help verb with verb=download
+        let args = args_from_pairs(&[("verb", "download")]);
+        let (stdout, _stderr, _status) = capture_output(|io| handle.call("help", &args, io));
+        assert!(stdout.contains("Verb: download"), "{}", stdout);
     }
 }

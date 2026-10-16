@@ -19,6 +19,14 @@ pub struct ExecutionEngine {
 }
 
 impl ExecutionEngine {
+    /// Create an execution engine that uses the given plugin store.
+    pub fn with_store(timeout_ms: u64, store: PluginStore) -> Result<Self> {
+        Ok(Self {
+            registry_client: RegistryClient::new(timeout_ms)?,
+            store,
+        })
+    }
+
     /// Create new execution engine
     pub fn new(timeout_ms: u64) -> Result<Self> {
         let registry_client = RegistryClient::new(timeout_ms)?;
@@ -118,10 +126,40 @@ impl ExecutionEngine {
                 // Step 4: Execute plan
                 match plan_decision {
                     PlanDecision::Install { version, artifact } => {
-                        todo!("Install functionality not yet implemented")
+                        let previous = installed_metadata.as_ref().map(|m| m.version.clone());
+                        if args.dry_run {
+                            self.add_plan_action(&mut actions, &artifact, previous.as_deref(), &version);
+                            let result = PluginResult {
+                                removed: None,
+                                purged: None,
+                                installed: Some(false),
+                                previous_version: previous,
+                                version: Some(version),
+                                enabled: None,
+                                was_enabled: None,
+                            };
+                            return Ok((false, result, actions, installed_metadata));
+                        }
+                        let (mut result, metadata) = self.execute_install(args, &version, &artifact, &mut actions)?;
+                        result.previous_version = previous;
+                        Ok((true, result, actions, Some(metadata)))
                     }
                     PlanDecision::Update { from_version, to_version, artifact } => {
-                        todo!("Update functionality not yet implemented")
+                        if args.dry_run {
+                            self.add_plan_action(&mut actions, &artifact, Some(&from_version), &to_version);
+                            let result = PluginResult {
+                                removed: None,
+                                purged: None,
+                                installed: Some(true),
+                                previous_version: Some(from_version),
+                                version: Some(to_version),
+                                enabled: None,
+                                was_enabled: None,
+                            };
+                            return Ok((false, result, actions, installed_metadata));
+                        }
+                        let (result, metadata) = self.execute_update(args, &from_version, &to_version, &artifact, &mut actions)?;
+                        Ok((true, result, actions, Some(metadata)))
                     }
                     PlanDecision::NoOp { reason } => {
                         self.add_action(&mut actions, "a1", action_types::INSTALL, "noop", true, Some(serde_json::json!({"reason": reason})));
@@ -371,6 +409,33 @@ impl ExecutionEngine {
         }
     }
 
+    /// Records the planned install or update for a dry run; nothing is
+    /// downloaded, written, or activated.
+    fn add_plan_action(
+        &self,
+        actions: &mut Vec<Action>,
+        artifact: &ArtifactCandidate,
+        from_version: Option<&str>,
+        to_version: &str,
+    ) {
+        self.add_action(
+            actions,
+            &format!("plan-{}", actions.len()),
+            action_types::INSTALL,
+            "Dry run: no changes made",
+            true,
+            Some(serde_json::json!({
+                "dry_run": true,
+                "from_version": from_version,
+                "to_version": to_version,
+                "artifact_kind": artifact.kind,
+                "artifact_url": artifact.url,
+                "artifact_path": artifact.path,
+                "sha256": artifact.sha256,
+            })),
+        );
+    }
+
     /// Execute install operation
     fn execute_install(
         &mut self,
@@ -378,7 +443,7 @@ impl ExecutionEngine {
         version: &str,
         artifact: &ArtifactCandidate,
         actions: &mut Vec<Action>,
-    ) -> Result<PluginResult> {
+    ) -> Result<(PluginResult, super::types::InstalledPlugin)> {
         // Download artifact
         let artifact_data = self.download_artifact(artifact, actions)?;
 
@@ -411,16 +476,18 @@ impl ExecutionEngine {
         let _ = self.store.cleanup_staging(&args.plugin_id);
         self.add_action(actions, &format!("cleanup-{}", actions.len()), action_types::CLEANUP, "Staging cleanup completed", true, None);
 
-        // TODO: Implement this properly when updating install/update methods
-        Ok(PluginResult {
-            removed: None,
-            purged: None,
-            installed: Some(true),
-            previous_version: None,
-            version: Some("stub".to_string()),
-            enabled: None,
-            was_enabled: None,
-        })
+        Ok((
+            PluginResult {
+                removed: None,
+                purged: None,
+                installed: Some(true),
+                previous_version: None,
+                version: Some(installed_metadata.version.clone()),
+                enabled: None,
+                was_enabled: None,
+            },
+            installed_metadata,
+        ))
     }
 
     /// Execute update operation
@@ -431,15 +498,18 @@ impl ExecutionEngine {
         to_version: &str,
         artifact: &ArtifactCandidate,
         actions: &mut Vec<Action>,
-    ) -> Result<PluginResult> {
+    ) -> Result<(PluginResult, super::types::InstalledPlugin)> {
         // Execute install-like process for the new version
         let result = self.execute_install(args, to_version, artifact, actions);
 
         match result {
-            Ok(success_result) => Ok(PluginResult {
-                previous_version: Some(from_version.to_string()),
-                ..success_result
-            }),
+            Ok((success_result, metadata)) => Ok((
+                PluginResult {
+                    previous_version: Some(from_version.to_string()),
+                    ..success_result
+                },
+                metadata,
+            )),
             Err(install_error) => {
                 // Attempt rollback
                 if let Err(rollback_err) = self.store.rollback_to_previous(&args.plugin_id, to_version) {
@@ -621,6 +691,12 @@ impl ExecutionEngine {
         let binary_path = staging_dir.join(plugin_id);
         fs::write(&binary_path, data)
             .with_context(|| format!("Failed to write binary to: {}", binary_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&binary_path, fs::Permissions::from_mode(0o755))
+                .with_context(|| format!("Failed to make binary executable: {}", binary_path.display()))?;
+        }
 
         Ok(staging_dir.to_path_buf())
     }
@@ -1415,5 +1491,80 @@ impl ExecutionEngine {
         }
         
         Ok(())
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn op_args(mode: Mode, path: &str, dry_run: bool) -> PluginOpArgs {
+        PluginOpArgs {
+            mode,
+            plugin_id: "demo".to_string(),
+            source: super::super::types::SourceSpec::File { path: path.to_string() },
+            requested_version: super::super::types::RequestedVersion::Latest,
+            verify: VerifyMode::None,
+            force: false,
+            allow_downgrade: false,
+            dry_run,
+            strict: false,
+            purge: false,
+            timeout_ms: 1000,
+        }
+    }
+
+    /// A local-file plugin artifact and an engine whose store lives in a
+    /// temporary directory. Nothing touches the network or the real store.
+    fn setup() -> (TempDir, String, ExecutionEngine) {
+        let dir = TempDir::new().unwrap();
+        let artifact = dir.path().join("demo-bin");
+        fs::write(&artifact, b"#!/bin/sh\necho demo\n").unwrap();
+        let store = PluginStore::with_dir(dir.path().join("plugins")).unwrap();
+        let engine = ExecutionEngine::with_store(1000, store).unwrap();
+        (dir, artifact.to_string_lossy().to_string(), engine)
+    }
+
+    #[test]
+    fn install_dry_run_reports_plan_and_writes_nothing() {
+        let (dir, artifact, mut engine) = setup();
+        let env = engine.run_plugin_op(op_args(Mode::Install, &artifact, true));
+        assert!(env.ok, "{:?}", env.error.as_ref().map(|e| &e.message));
+        assert_eq!(env.result.installed, Some(false));
+        assert_eq!(env.result.version.as_deref(), Some("local"));
+        assert!(env.actions.iter().any(|a| a.id.starts_with("plan-")));
+        assert!(!dir.path().join("plugins/demo/versions").exists());
+        assert!(!dir.path().join("plugins/demo/current").exists());
+    }
+
+    #[test]
+    fn install_from_local_file_into_temp_store() {
+        let (dir, artifact, mut engine) = setup();
+        let env = engine.run_plugin_op(op_args(Mode::Install, &artifact, false));
+        assert!(env.ok, "{:?}", env.error.as_ref().map(|e| &e.message));
+        assert_eq!(env.result.installed, Some(true));
+        assert_eq!(env.result.version.as_deref(), Some("local"));
+        let bin = dir.path().join("plugins/demo/versions/local/demo");
+        assert!(bin.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(fs::metadata(&bin).unwrap().permissions().mode() & 0o111, 0);
+        }
+        assert!(dir.path().join("plugins/demo/versions/local/metadata.json").is_file());
+        assert!(fs::symlink_metadata(dir.path().join("plugins/demo/current")).is_ok());
+
+        // Same version again is a no-op, and update finds nothing newer.
+        let again = engine.run_plugin_op(op_args(Mode::Install, &artifact, false));
+        assert!(again.ok);
+        let update = engine.run_plugin_op(op_args(Mode::Update, &artifact, true));
+        assert!(update.ok, "{:?}", update.error.as_ref().map(|e| &e.message));
+    }
+
+    #[test]
+    fn update_of_missing_plugin_is_an_error_not_a_panic() {
+        let (_dir, artifact, mut engine) = setup();
+        let env = engine.run_plugin_op(op_args(Mode::Update, &artifact, false));
+        assert!(!env.ok);
     }
 }

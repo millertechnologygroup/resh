@@ -4,6 +4,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
@@ -11,6 +12,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::core::{
+    help::{self, HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
@@ -215,6 +217,253 @@ pub fn register(reg: &mut crate::core::Registry) {
     hook_manager.register_hook(Arc::new(ProcHook));
     hook_manager.register_hook(Arc::new(FsWatchHook));
 }
+
+/// Metadata for `resh event --help` and `resh event <verb> --help`.
+static EVENT_HELP: HandleHelp = HandleHelp {
+    description: "The event handle publishes and reads structured events on an event bus \
+        stored as one JSON Lines file per topic under the user's state directory, normally \
+        ~/.local/state/resh/events/<topic>.jsonl, so events emitted by one resh command can \
+        be read by later commands. The stage has no target, so the verb follows a dot \
+        directly, as in event://.emit, and options are passed as arguments.",
+    usage: "resh event://.<verb>[(key=value,...)]",
+    verbs: &[
+        VerbHelp {
+            name: "list-topics",
+            definition: "Lists topics from built-in sample catalogs for the event, mq, log, \
+                proc, and fs_watch sources as a JSON object, filtered by prefix, substring, \
+                and source.",
+            detail: Some(VerbDetail {
+                usage: "resh event://.list-topics [prefix=<text>] [match=<text>]\n  \
+                    [sources=<source,...>] [limit=<n>] [include_hidden=true|false]\n  \
+                    [include_stats=true|false] [include_schema=true|false]\n  \
+                    [format=json|text]",
+                example: "resh --json-pretty event://.list-topics prefix=jobs. sources=mq",
+                example_output: Some(
+                    r#"{
+  "error": null,
+  "filters": {
+    "include_hidden": false,
+    "include_schema": false,
+    "include_stats": false,
+    "limit": 1000,
+    "match": null,
+    "prefix": "jobs.",
+    "sources": [
+      "mq"
+    ]
+  },
+  "ok": true,
+  "timestamp_unix_ms": 1792166019775,
+  "topics": [
+    {
+      "backends": [
+        {
+          "handle": "mq",
+          "id": "mq:kafka:backups.completed",
+          "type": "mq"
+        }
+      ],
+      "category": "jobs",
+      "description": "Backup job completion messages",
+      "display_name": "jobs.backup.completed",
+      "first_seen_unix_ms": 1732000000000,
+      "is_hidden": false,
+      "name": "jobs.backup.completed",
+      "origin": "cron.handle",
+      "schema": null,
+      "sources": [
+        "mq"
+      ],
+      "stats": null,
+      "tags": [
+        "backup",
+        "job"
+      ]
+    }
+  ],
+  "topics_returned": 1,
+  "topics_total": 1,
+  "truncated": false,
+  "warnings": []
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "subscribe",
+            definition: "Reads stored events whose topic matches a pattern (with * and ? \
+                wildcards), starting at an offset (default latest, which skips events \
+                already stored) and applying optional tag, correlation, source, and \
+                age filters, and prints the batch as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh event://.subscribe topic=<pattern>\n  \
+                    [offset=latest|earliest|next|<n>] [limit=<n>] [group_id=<id>]\n  \
+                    [consumer_id=<id>] [auto_commit=true|false]\n  \
+                    [manual_commit_offset=<n>] [wait=true|false] [wait_timeout_ms=<n>]\n  \
+                    [match_tags=<json-array>] [match_correlation_id=<id>]\n  \
+                    [match_source=<name>] [max_latency_ms=<n>] [include_data=true|false]\n  \
+                    [include_summary=true|false] [include_raw=true|false]\n  \
+                    [format=json|text]",
+                example: "resh --json-pretty event://.subscribe topic='jobs.*' offset=earliest",
+                example_output: Some(
+                    r#"Log hook: subscription to jobs.* returned 1 events
+MQ hook processed subscription with 1 events
+{
+  "committed": false,
+  "committed_offset": null,
+  "consumer_id": null,
+  "effective_offset": "earliest",
+  "error": null,
+  "events": [
+    {
+      "backend": "state_file",
+      "causation_id": null,
+      "correlation_id": null,
+      "data": {
+        "status": "success"
+      },
+      "id": "evt_1792166019757_224a64d890cb",
+      "key": null,
+      "mode": "fire_and_forget",
+      "mode_used": "fire_and_forget",
+      "offset": "0",
+      "priority": "normal",
+      "raw": null,
+      "schema_version": null,
+      "source": null,
+      "summary": null,
+      "tags": [],
+      "timestamp_unix_ms": 1792166019757,
+      "topic": "jobs.backup.completed",
+      "ttl_ms": null
+    }
+  ],
+  "events_returned": 1,
+  "group_id": null,
+  "high_watermark": "1",
+  "next_offset": "1",
+  "offset_end": "0",
+  "offset_start": "0",
+  "ok": true,
+  "timed_out": false,
+  "timestamp_unix_ms": 1792166019771,
+  "topic": "jobs.*",
+  "warnings": []
+}
+
+Shown with --json-pretty. Offsets index the matching events in timestamp
+order. With group_id, offset=next resumes after the offset committed by an
+earlier call (auto_commit=true by default), and wait=true polls until an
+event arrives or wait_timeout_ms (default 30000) passes. The built-in log
+and mq hooks print the two status lines first, in no fixed order."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "emit",
+            definition: "Appends an event with a JSON payload to a topic's file in the event \
+                store and prints the resulting event envelope as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh event://.emit topic=<topic> data=<json> [source=<name>]\n  \
+                    [key=<key>] [correlation_id=<id>] [causation_id=<id>]\n  \
+                    [tags=<json-array>] [priority=low|normal|high]\n  \
+                    [mode=fire_and_forget|wait_for_persist] [ttl_ms=<n>]\n  \
+                    [summarize=true|false] [schema_version=<v>] [format=json|text]",
+                example: "resh event://.emit topic=jobs.backup.completed \
+                    'data={\"status\":\"success\"}'",
+                example_output: Some(
+                    r#"{
+  "error": null,
+  "event": {
+    "backend": "state_file",
+    "causation_id": null,
+    "correlation_id": null,
+    "data": {
+      "status": "success"
+    },
+    "id": "evt_1792166019757_224a64d890cb",
+    "key": null,
+    "mode": "fire_and_forget",
+    "mode_used": "fire_and_forget",
+    "priority": "normal",
+    "schema_version": null,
+    "source": null,
+    "summary": null,
+    "tags": [],
+    "timestamp_unix_ms": 1792166019757,
+    "topic": "jobs.backup.completed",
+    "ttl_ms": null
+  },
+  "ok": true,
+  "timestamp_unix_ms": 1792166019757,
+  "warnings": []
+}
+
+The topic must not contain the wildcards * or ?. With
+mode=wait_for_persist the file is synced to disk before the reply."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "hooks.list",
+            definition: "Lists the names of the registered event hooks as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh event://.hooks.list",
+                example: "resh --json-pretty event://.hooks.list",
+                example_output: Some(
+                    r#"{
+  "global_hooks": [
+    "proc",
+    "log",
+    "mq",
+    "fs"
+  ],
+  "instance_hooks": [],
+  "total": 4
+}
+
+Shown with --json-pretty. The order of global_hooks varies between runs."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "hooks.enable",
+            definition: "Registers one of the built-in hooks mq, log, proc, or fs for the \
+                current process.",
+            detail: Some(VerbDetail {
+                usage: "resh event://.hooks.enable name=mq|log|proc|fs",
+                example: "resh --json-pretty event://.hooks.enable name=mq",
+                example_output: Some(
+                    r#"{
+  "enabled": true,
+  "hook": "mq"
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "hooks.disable",
+            definition: "Removes a hook by name for the current process, reporting success \
+                even if no hook with that name was registered.",
+            detail: Some(VerbDetail {
+                usage: "resh event://.hooks.disable name=<hook>",
+                example: "resh --json-pretty event://.hooks.disable name=mq",
+                example_output: Some(
+                    r#"{
+  "disabled": true,
+  "hook": "mq"
+}
+
+Shown with --json-pretty."#,
+                ),
+            }),
+        },
+    ],
+};
 
 // ===========================================================================
 // Event Handle Types
@@ -458,7 +707,7 @@ pub trait EventBackend: Send + Sync + AsAny {
 // In-Memory Event Backend
 // ===========================================================================
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InMemoryEventBackend {
     events: Arc<Mutex<Vec<EventEnvelope>>>,
     consumer_offsets: Arc<Mutex<std::collections::HashMap<String, usize>>>,
@@ -472,6 +721,13 @@ impl InMemoryEventBackend {
         }
     }
 
+    /// The process-wide in-memory bus. Every handle in one process that
+    /// uses it sees the same events and committed offsets.
+    pub fn shared() -> Self {
+        static BUS: OnceLock<InMemoryEventBackend> = OnceLock::new();
+        BUS.get_or_init(InMemoryEventBackend::new).clone()
+    }
+
     #[allow(dead_code)]
     pub fn get_events(&self) -> Vec<EventEnvelope> {
         self.events.lock().unwrap().clone()
@@ -483,54 +739,90 @@ impl InMemoryEventBackend {
     }
 
     fn topic_matches_pattern(&self, topic: &str, pattern: &str) -> bool {
-        if pattern == topic {
-            return true;
-        }
-        
-        // Simple wildcard matching
-        if pattern.contains('*') {
-            let pattern_regex = pattern.replace(".", "\\.").replace("*", ".*");
-            if let Ok(regex) = Regex::new(&format!("^{}$", pattern_regex)) {
-                return regex.is_match(topic);
-            }
-        }
-        
-        false
+        topic_matches_pattern(topic, pattern)
     }
+}
 
-    fn apply_filters(&self, events: &[EventEnvelope], filters: &EventFilter, now_ms: i64) -> Vec<EventEnvelope> {
-        events.iter().filter(|evt| {
-            // Filter by tags
-            if !filters.match_tags.is_empty() {
-                if !filters.match_tags.iter().all(|tag| evt.tags.contains(tag)) {
-                    return false;
-                }
-            }
-
-            // Filter by correlation_id
-            if let Some(ref filter_corr_id) = filters.match_correlation_id {
-                if evt.correlation_id.as_ref() != Some(filter_corr_id) {
-                    return false;
-                }
-            }
-
-            // Filter by source
-            if let Some(ref filter_source) = filters.match_source {
-                if evt.source.as_ref() != Some(filter_source) {
-                    return false;
-                }
-            }
-
-            // Filter by max latency
-            if let Some(max_latency_ms) = filters.max_latency_ms {
-                if evt.timestamp_unix_ms < now_ms - (max_latency_ms as i64) {
-                    return false;
-                }
-            }
-
-            true
-        }).cloned().collect()
+/// True if `topic` equals `pattern`, or matches it with `*` (any run of
+/// characters) and `?` (one character) as wildcards.
+fn topic_matches_pattern(topic: &str, pattern: &str) -> bool {
+    if pattern == topic {
+        return true;
     }
+    if !has_wildcard(pattern) {
+        return false;
+    }
+    let re = regex::escape(pattern).replace(r"\*", ".*").replace(r"\?", ".");
+    Regex::new(&format!("^{}$", re)).map(|r| r.is_match(topic)).unwrap_or(false)
+}
+
+fn has_wildcard(pattern: &str) -> bool {
+    pattern.contains('*') || pattern.contains('?')
+}
+
+/// Keeps events that pass the tag, correlation, source and age filters.
+fn apply_filters(events: &[EventEnvelope], filters: &EventFilter, now_ms: i64) -> Vec<EventEnvelope> {
+    events.iter().filter(|evt| {
+        if !filters.match_tags.iter().all(|tag| evt.tags.contains(tag)) {
+            return false;
+        }
+        if let Some(ref id) = filters.match_correlation_id {
+            if evt.correlation_id.as_ref() != Some(id) {
+                return false;
+            }
+        }
+        if let Some(ref src) = filters.match_source {
+            if evt.source.as_ref() != Some(src) {
+                return false;
+            }
+        }
+        if let Some(max_latency_ms) = filters.max_latency_ms {
+            if evt.timestamp_unix_ms < now_ms - (max_latency_ms as i64) {
+                return false;
+            }
+        }
+        true
+    }).cloned().collect()
+}
+
+fn now_unix_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+}
+
+/// Selects up to `limit` events of `matching` starting at `start_index`,
+/// applies `filters`, and computes the batch offsets. Offsets index
+/// `matching`, so they stay stable as new events are appended.
+fn select_batch(matching: &[EventEnvelope], start_index: usize, limit: u32, filters: &EventFilter) -> EventBatch {
+    let start_index = start_index.min(matching.len());
+    let end_index = std::cmp::min(start_index + limit as usize, matching.len());
+    let events = apply_filters(&matching[start_index..end_index], filters, now_unix_ms());
+    EventBatch {
+        offset_start: if events.is_empty() { None } else { Some(start_index.to_string()) },
+        offset_end: if events.is_empty() { None } else { Some((end_index - 1).to_string()) },
+        events,
+        next_offset: Some(end_index.to_string()),
+        high_watermark: Some(matching.len().to_string()),
+    }
+}
+
+/// Resolves a subscribe offset to an index into the matching events.
+fn resolve_start_index(
+    offset: &EventOffset,
+    matching_len: usize,
+    group_id: Option<&str>,
+    committed: impl FnOnce(&str) -> Result<Option<usize>>,
+) -> Result<usize> {
+    Ok(match offset {
+        EventOffset::Latest => matching_len,
+        EventOffset::Earliest => 0,
+        EventOffset::Next => {
+            let group_id = group_id.ok_or_else(|| anyhow::anyhow!("offset='next' requires group_id"))?;
+            committed(group_id)?.unwrap_or(0)
+        }
+        EventOffset::Explicit(offset_str) => offset_str
+            .parse::<usize>()
+            .map_err(|_| anyhow::anyhow!("invalid numeric offset: {}", offset_str))?,
+    })
 }
 
 impl EventBackend for InMemoryEventBackend {
@@ -571,70 +863,32 @@ impl EventBackend for InMemoryEventBackend {
         wait_timeout_ms: Option<u64>,
         filters: &EventFilter,
     ) -> Result<EventBatch> {
-        use std::time::{SystemTime, UNIX_EPOCH, Duration};
-
-        let events = self.events.lock()
-            .map_err(|_| anyhow::anyhow!("failed to acquire events lock"))?;
-        
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-
-        // Filter events by topic pattern
-        let matching_events: Vec<&EventEnvelope> = events.iter()
-            .filter(|evt| self.topic_matches_pattern(&evt.topic, topic_pattern))
-            .collect();
-
-        // Determine start index based on offset
-        let start_index = match offset {
-            EventOffset::Latest => matching_events.len(),
-            EventOffset::Earliest => 0,
-            EventOffset::Next => {
-                if let Some(group_id) = group_id {
-                    let offsets = self.consumer_offsets.lock()
-                        .map_err(|_| anyhow::anyhow!("failed to acquire offsets lock"))?;
-                    let key = format!("{}:{}", group_id, topic_pattern);
-                    offsets.get(&key).cloned().unwrap_or(0)
-                } else {
-                    return Err(anyhow::anyhow!("offset='next' requires group_id"));
+        let deadline = std::time::Instant::now()
+            + Duration::from_millis(if wait { wait_timeout_ms.unwrap_or(30_000) } else { 0 });
+        let mut start_index: Option<usize> = None;
+        loop {
+            let matching: Vec<EventEnvelope> = {
+                let events = self.events.lock()
+                    .map_err(|_| anyhow::anyhow!("failed to acquire events lock"))?;
+                events.iter().filter(|e| self.topic_matches_pattern(&e.topic, topic_pattern)).cloned().collect()
+            };
+            let start = match start_index {
+                Some(s) => s,
+                None => {
+                    let s = resolve_start_index(offset, matching.len(), group_id, |g| {
+                        let offsets = self.consumer_offsets.lock()
+                            .map_err(|_| anyhow::anyhow!("failed to acquire offsets lock"))?;
+                        Ok(offsets.get(&format!("{}:{}", g, topic_pattern)).cloned())
+                    })?;
+                    start_index = Some(s);
+                    s
                 }
-            },
-            EventOffset::Explicit(offset_str) => {
-                offset_str.parse::<usize>()
-                    .map_err(|_| anyhow::anyhow!("invalid numeric offset: {}", offset_str))?
-            },
-        };
-
-        // If waiting and no events available, simulate wait
-        if wait && start_index >= matching_events.len() {
-            let timeout = wait_timeout_ms.unwrap_or(30000);
-            if timeout > 0 {
-                std::thread::sleep(Duration::from_millis(std::cmp::min(timeout, 100))); // Short sleep for demo
+            };
+            if start < matching.len() || std::time::Instant::now() >= deadline {
+                return Ok(select_batch(&matching, start, limit, filters));
             }
+            std::thread::sleep(Duration::from_millis(100));
         }
-
-        // Get events from start_index
-        let end_index = std::cmp::min(start_index + limit as usize, matching_events.len());
-        let selected_events: Vec<EventEnvelope> = matching_events[start_index..end_index]
-            .iter().map(|&e| e.clone()).collect();
-
-        // Apply filters
-        let filtered_events = self.apply_filters(&selected_events, filters, now_ms);
-
-        // Calculate offsets
-        let offset_start = if filtered_events.is_empty() { None } else { Some(start_index.to_string()) };
-        let offset_end = if filtered_events.is_empty() { None } else { Some((end_index - 1).to_string()) };
-        let next_offset = Some(end_index.to_string());
-        let high_watermark = Some(matching_events.len().to_string());
-
-        Ok(EventBatch {
-            events: filtered_events,
-            offset_start,
-            offset_end,
-            next_offset,
-            high_watermark,
-        })
     }
 
     fn commit_offset(
@@ -652,6 +906,209 @@ impl EventBackend for InMemoryEventBackend {
         let key = format!("{}:{}", group_id, topic_pattern);
         offsets.insert(key, offset_num);
         
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// File-backed Event Backend
+// ===========================================================================
+
+/// Event store shared by every resh process of the user: each topic is an
+/// append-only JSON Lines file `<base>/<topic>.jsonl`, and committed consumer
+/// group offsets live in `<base>/_offsets.json`. The base directory is
+/// normally `<state_dir>/resh/events` (`~/.local/state/resh/events`); it is
+/// created with mode 0700 and files with mode 0600.
+#[derive(Debug, Clone)]
+pub struct FileEventBackend {
+    base: PathBuf,
+}
+
+impl FileEventBackend {
+    pub fn new(base: impl Into<PathBuf>) -> Self {
+        Self { base: base.into() }
+    }
+
+    /// `<state_dir>/resh/events`, or None when the platform has no state
+    /// directory.
+    pub fn default_base() -> Option<PathBuf> {
+        dirs::state_dir().map(|d| d.join("resh").join("events"))
+    }
+
+    pub fn base(&self) -> &Path {
+        &self.base
+    }
+
+    fn ensure_dir(&self) -> Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.base)
+            .with_context(|| format!("event store unavailable: cannot create {}", self.base.display()))
+    }
+
+    fn open_private(path: &Path, append: bool) -> Result<std::fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut o = std::fs::OpenOptions::new();
+        o.create(true).mode(0o600);
+        if append {
+            o.append(true);
+        } else {
+            o.write(true).truncate(true);
+        }
+        o.open(path).with_context(|| format!("event store unavailable: cannot open {}", path.display()))
+    }
+
+    fn topic_path(&self, topic: &str) -> PathBuf {
+        self.base.join(format!("{}.jsonl", topic))
+    }
+
+    fn offsets_path(&self) -> PathBuf {
+        self.base.join("_offsets.json")
+    }
+
+    fn append(&self, evt: &EventEnvelope, sync: bool) -> Result<()> {
+        if has_wildcard(&evt.topic) {
+            bail!("emit topic cannot contain the wildcards * or ?");
+        }
+        self.ensure_dir()?;
+        let mut stored = evt.clone();
+        stored.offset = None;
+        let mut line = serde_json::to_string(&stored)?;
+        line.push('\n');
+        let mut f = Self::open_private(&self.topic_path(&evt.topic), true)?;
+        // One write of the whole line, so concurrent appenders do not interleave.
+        f.write_all(line.as_bytes())?;
+        if sync {
+            f.sync_data()?;
+        }
+        Ok(())
+    }
+
+    fn read_topic_file(path: &Path) -> Result<Vec<EventEnvelope>> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+        };
+        // A line that does not parse (for example a partial write) is skipped.
+        Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+    }
+
+    /// All stored events whose topic matches `pattern`, ordered by timestamp
+    /// (ties by topic name, then file order), with `offset` set to the index.
+    fn load_matching(&self, pattern: &str) -> Result<Vec<EventEnvelope>> {
+        let mut events = if !has_wildcard(pattern) {
+            Self::read_topic_file(&self.topic_path(pattern))?
+        } else {
+            let mut topics: Vec<(String, PathBuf)> = match std::fs::read_dir(&self.base) {
+                Ok(rd) => rd
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let path = e.path();
+                        let name = path.file_name()?.to_str()?.strip_suffix(".jsonl")?.to_string();
+                        Some((name, path))
+                    })
+                    .filter(|(t, _)| topic_matches_pattern(t, pattern))
+                    .collect(),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(e).with_context(|| format!("cannot read {}", self.base.display())),
+            };
+            topics.sort();
+            let mut all = Vec::new();
+            for (_, path) in topics {
+                all.extend(Self::read_topic_file(&path)?);
+            }
+            all.sort_by_key(|e| e.timestamp_unix_ms);
+            all
+        };
+        for (i, e) in events.iter_mut().enumerate() {
+            e.offset = Some(i.to_string());
+        }
+        Ok(events)
+    }
+
+    fn read_offsets(&self) -> Result<HashMap<String, usize>> {
+        match std::fs::read_to_string(self.offsets_path()) {
+            Ok(t) => Ok(serde_json::from_str(&t).unwrap_or_default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(e) => Err(e).context("cannot read committed offsets"),
+        }
+    }
+}
+
+impl AsAny for FileEventBackend {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl EventBackend for FileEventBackend {
+    fn emit_fire_and_forget(&self, evt: &EventEnvelope) -> Result<()> {
+        self.append(evt, false)
+    }
+
+    fn emit_wait_for_persist(&self, evt: &EventEnvelope) -> Result<()> {
+        self.append(evt, true)
+    }
+
+    fn name(&self) -> &str {
+        "state_file"
+    }
+
+    fn supports_persistence(&self) -> bool {
+        true
+    }
+
+    fn subscribe(
+        &self,
+        topic_pattern: &str,
+        offset: &EventOffset,
+        limit: u32,
+        group_id: Option<&str>,
+        _consumer_id: Option<&str>,
+        wait: bool,
+        wait_timeout_ms: Option<u64>,
+        filters: &EventFilter,
+    ) -> Result<EventBatch> {
+        let deadline = std::time::Instant::now()
+            + Duration::from_millis(if wait { wait_timeout_ms.unwrap_or(30_000) } else { 0 });
+        let mut start_index: Option<usize> = None;
+        loop {
+            let matching = self.load_matching(topic_pattern)?;
+            let start = match start_index {
+                Some(s) => s,
+                None => {
+                    let s = resolve_start_index(offset, matching.len(), group_id, |g| {
+                        Ok(self.read_offsets()?.get(&format!("{}:{}", g, topic_pattern)).cloned())
+                    })?;
+                    start_index = Some(s);
+                    s
+                }
+            };
+            if start < matching.len() || std::time::Instant::now() >= deadline {
+                return Ok(select_batch(&matching, start, limit, filters));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn commit_offset(&self, topic_pattern: &str, group_id: &str, offset: &str) -> Result<()> {
+        let offset_num = offset
+            .parse::<usize>()
+            .map_err(|_| anyhow::anyhow!("invalid offset for commit: {}", offset))?;
+        self.ensure_dir()?;
+        let mut offsets = self.read_offsets()?;
+        offsets.insert(format!("{}:{}", group_id, topic_pattern), offset_num);
+        // Write a temporary file and rename it so readers never see a partial file.
+        let tmp = self.base.join(format!("_offsets.json.{}.tmp", std::process::id()));
+        {
+            let mut f = Self::open_private(&tmp, false)?;
+            f.write_all(serde_json::to_string(&offsets)?.as_bytes())?;
+            f.sync_data()?;
+        }
+        std::fs::rename(&tmp, self.offsets_path()).context("cannot save committed offsets")?;
         Ok(())
     }
 }
@@ -1121,532 +1578,6 @@ impl TopicProvider for FsWatchTopicProvider {
 }
 
 // ===========================================================================
-// Event Handle Help Text
-// ===========================================================================
-
-const EVENT_HELP_TEXT: &str = r#"
-RESOURCE SHELL - EVENT HANDLE
-=============================
-
-USAGE:
-  event://VERB(arguments)
-
-DESCRIPTION:
-  The event handle provides a messaging system for publishing and subscribing
-  to events in Resource Shell. It supports fire-and-forget messaging,
-  wait-for-persist modes, topic patterns with wildcards, rich event metadata,
-  filtering options, and consumer group management.
-
-VERBS:
-  emit            Publish an event to a topic
-  subscribe       Subscribe to events from a topic or pattern
-  list-topics     List available event topics
-  hooks.list      List available and enabled event processing hooks
-  hooks.enable    Enable a specific event processing hook
-  hooks.disable   Disable a specific event processing hook
-
-EXAMPLES:
-
-  Basic event emission (fire-and-forget):
-    event://emit(topic="system.fs.resized",data="{\"mount\":\"/data\",\"old_size_gb\":100,\"new_size_gb\":200}",mode="fire_and_forget")
-
-  Event with wait-for-persist mode:
-    event://emit(topic="jobs.backup.completed",data="{\"status\":\"success\"}",mode="wait_for_persist")
-
-  Event with full metadata:
-    event://emit(topic="jobs.backup.completed",data="{\"job_id\":\"backup-123\",\"status\":\"success\",\"duration_ms\":5230}",correlation_id="backup-123",key="backup-2025",tags="[\"backup\",\"cron\",\"nightly\"]",priority="high",ttl_ms="600000",source="cron.handle",summarize="true",schema_version="v1")
-
-  Event with metadata fields:
-    event://emit(topic="test.metadata",data="{\"key\":\"value\"}",key="partition-key",correlation_id="corr-123",causation_id="cause-456",source="test.service",tags="[\"tag1\",\"tag2\"]",schema_version="v1")
-
-  Event with human-readable summary:
-    event://emit(topic="app.user.created",data="{\"user_id\":123,\"email\":\"user@example.com\"}",summarize="true")
-
-  Subscribe from latest position:
-    event://subscribe(topic="jobs.backup.completed",offset="latest",limit="10")
-
-  Subscribe from earliest position:
-    event://subscribe(topic="jobs.backup.completed",offset="earliest",limit="2")
-
-  Subscribe with wildcard pattern:
-    event://subscribe(topic="jobs.backup.*",offset="earliest",limit="10")
-
-  Subscribe with wildcard (all jobs):
-    event://subscribe(topic="jobs.*",offset="earliest",limit="10")
-
-  Durable subscription with consumer group:
-    event://subscribe(topic="jobs.backup.completed",offset="earliest",limit="1",group_id="g1",consumer_id="c1",auto_commit="true")
-
-  Manual offset commit:
-    event://subscribe(topic="jobs.backup.completed",offset="earliest",limit="0",group_id="g1",auto_commit="false",manual_commit_offset="12345")
-
-  Subscribe with tag filtering:
-    event://subscribe(topic="test.topic",offset="earliest",limit="10",match_tags="[\"backup\",\"job\"]")
-
-  Subscribe with correlation ID filter:
-    event://subscribe(topic="test.topic",offset="earliest",limit="10",match_correlation_id="corr123")
-
-  Subscribe with source filter:
-    event://subscribe(topic="test.topic",offset="earliest",limit="10",match_source="cron.handle")
-
-  Subscribe without data (metadata only):
-    event://subscribe(topic="test.topic",offset="earliest",limit="10",include_data="false")
-
-  Subscribe with wait for new events:
-    event://subscribe(topic="test.topic",offset="latest",limit="10",wait="true",wait_timeout_ms="5000")
-
-  Subscribe with max event age filter:
-    event://subscribe(topic="test.topic",offset="earliest",limit="10",max_latency_ms="3600000")
-
-  List all topics:
-    event://list-topics()
-
-  List topics with statistics:
-    event://list-topics(include_stats="true")
-
-  List topics with schema information:
-    event://list-topics(include_schema="true")
-
-  List topics from specific sources:
-    event://list-topics(sources="[\"event\",\"mq\"]")
-
-  Filter topics by prefix:
-    event://list-topics(prefix="jobs.")
-
-  Filter topics by substring:
-    event://list-topics(match="backup")
-
-  List with multiple filters:
-    event://list-topics(prefix="jobs.",include_stats="true",include_schema="true")
-
-  List available hooks:
-    event://hooks.list()
-
-  Enable MQ hook:
-    event://hooks.enable(name="mq")
-
-  Enable log hook:
-    event://hooks.enable(name="log")
-
-  Disable MQ hook:
-    event://hooks.disable(name="mq")
-
-EMIT ARGUMENTS:
-  topic=TOPIC            Event topic name (required, cannot be empty)
-  data=JSON              JSON payload data (required)
-  mode=MODE              Delivery mode: fire_and_forget, wait_for_persist
-                         (default: fire_and_forget)
-  priority=PRIORITY      Event priority: low, normal, high (default: normal)
-  ttl_ms=N               Time to live in milliseconds
-  key=KEY                Partition key for ordering
-  correlation_id=ID      ID to correlate related events
-  causation_id=ID        ID of the event that caused this one
-  source=SOURCE          Source component that emitted the event
-  tags=JSON_ARRAY        JSON array of tags for categorization (e.g., ["tag1","tag2"])
-  summarize=BOOL         Generate human-readable summary (default: false)
-  schema_version=VERSION Schema version identifier
-  format=FORMAT          Output format: json, text (default: json)
-
-SUBSCRIBE ARGUMENTS:
-  topic=TOPIC            Topic name or pattern (required, supports wildcards)
-  offset=OFFSET          Starting position: latest, earliest, next, or specific
-                         (default: latest)
-  limit=N                Maximum events to return (1-10000, default: 100)
-  group_id=ID            Consumer group for durable subscriptions
-  consumer_id=ID         Consumer identifier within the group
-  auto_commit=BOOL       Auto-commit offsets (default: true)
-  manual_commit_offset=N Manually commit specific offset
-  wait=BOOL              Wait for new events (default: false)
-  wait_timeout_ms=N      Wait timeout in milliseconds
-  match_tags=JSON_ARRAY  JSON array of tags to match (all must be present)
-  match_correlation_id=ID Correlation ID to match
-  match_source=SOURCE    Source component to match
-  max_latency_ms=N       Maximum event age in milliseconds
-  include_data=BOOL      Include event data (default: true)
-  include_summary=BOOL   Include summaries (default: true)
-  include_raw=BOOL       Include raw data (default: false)
-  format=FORMAT          Output format: json, text (default: json)
-
-LIST-TOPICS ARGUMENTS:
-  prefix=PREFIX          Filter topics by name prefix
-  match=SUBSTRING        Filter topics by substring match
-  sources=JSON_ARRAY     Sources to query: ["event","mq","log","proc","fs_watch"]
-                         (default: all)
-  limit=N                Maximum topics (1-10000, default: 1000)
-  include_hidden=BOOL    Include hidden topics (default: false)
-  include_stats=BOOL     Include statistics (default: false)
-  include_schema=BOOL    Include schema information (default: false)
-  include_backends=BOOL  Include backend information (default: true)
-  summarize=BOOL         Generate topic summaries (default: true)
-  format=FORMAT          Output format: json, text (default: json)
-
-HOOKS.ENABLE ARGUMENTS:
-  name=NAME              Hook name: mq, log, proc, fs (required)
-
-HOOKS.DISABLE ARGUMENTS:
-  name=NAME              Hook name to disable (required)
-
-EVENT METADATA:
-  Events include rich metadata for tracking and correlation:
-
-  id                     Unique identifier (evt_timestamp_uuid)
-  timestamp_unix_ms      Unix milliseconds when emitted
-  topic                  Hierarchical topic name
-  data                   JSON payload
-  tags                   Array of categorization tags
-  source                 Component that emitted the event
-  priority               low, normal, or high
-  ttl_ms                 Time-to-live in milliseconds
-  correlation_id         For tracking related events
-  causation_id           For tracking event chains
-  mode                   Requested delivery mode
-  mode_used              Actual delivery mode used
-  schema_version         Schema version identifier
-  summary                Human-readable event summary
-  backend                Backend system used
-
-TOPIC NAMING:
-  Event topics follow hierarchical naming patterns:
-
-  system.*               System events (filesystem, network, etc.)
-  jobs.*                 Job events (backup, restore, cleanup, etc.)
-  proc.*                 Process events (start, stop, exit, etc.)
-  logs.*                 Log events (application, system, etc.)
-  _internal.*            Internal events (hidden by default)
-
-  Examples:
-    system.fs.resized
-    jobs.backup.completed
-    jobs.backup.failed
-    proc.start
-    logs.application.error
-
-TOPIC PATTERNS:
-  Topic subscriptions support wildcard patterns:
-
-  *                      Matches any single level
-  jobs.backup.*          Matches jobs.backup.completed, jobs.backup.failed
-  jobs.*                 Matches jobs.backup.completed, jobs.restore.started
-  *.error                Matches logs.app.error, logs.system.error
-
-  Examples:
-    topic="jobs.backup.*"     Subscribe to all backup events
-    topic="jobs.*"            Subscribe to all job events
-    topic="*.completed"       Subscribe to all completion events
-    topic="system.*"          Subscribe to all system events
-
-DELIVERY MODES:
-  fire_and_forget        Publish event and return immediately
-                         No durability guarantee (default)
-
-  wait_for_persist       Wait for event to be persisted
-                         May downgrade to fire_and_forget with warning
-                         if backend doesn't support persistence
-
-  Note: Current in_memory_bus backend downgrades wait_for_persist
-        to fire_and_forget with a warning.
-
-SUBSCRIPTION OFFSETS:
-  latest                 Start from newest events (default)
-  earliest               Start from oldest available events
-  next                   Resume from last committed offset (requires group_id)
-  <number>               Start from specific offset position
-
-  Examples:
-    offset="latest"       Get only new events
-    offset="earliest"     Get all available events
-    offset="next"         Resume from last checkpoint
-    offset="12345"        Start from specific position
-
-CONSUMER GROUPS:
-  Consumer groups enable durable subscriptions with checkpointing:
-
-  • Multiple consumers in same group share the load
-  • Each event delivered to only one consumer per group
-  • Offsets tracked per group for resume capability
-  • Auto-commit automatically tracks progress
-  • Manual commit for precise control
-
-  Examples:
-    # Consumer 1 in group
-    group_id="processors", consumer_id="worker-1"
-
-    # Consumer 2 in same group
-    group_id="processors", consumer_id="worker-2"
-
-FILTERING OPTIONS:
-  Filters narrow events returned from subscriptions:
-
-  match_tags             Events must have ALL specified tags
-  match_correlation_id   Events must have matching correlation ID
-  match_source           Events must be from specified source
-  max_latency_ms         Events must be newer than this age
-
-  Examples:
-    # Only backup job events
-    match_tags="[\"backup\",\"job\"]"
-
-    # Only events from specific workflow
-    match_correlation_id="workflow-123"
-
-    # Only events from cron system
-    match_source="cron.handle"
-
-    # Only events from last hour
-    max_latency_ms="3600000"
-
-PRIORITY LEVELS:
-  low                    Low priority events
-  normal                 Normal priority events (default)
-  high                   High priority events
-
-  Priority affects processing order in some backends.
-
-OUTPUT FORMATS:
-
-  Emit success:
-  {
-    "ok": true,
-    "timestamp_unix_ms": 1732538400000,
-    "event": {
-      "id": "evt_1732538400000_abcd1234efgh",
-      "topic": "system.fs.resized",
-      "timestamp_unix_ms": 1732538400000,
-      "mode": "fire_and_forget",
-      "mode_used": "fire_and_forget",
-      "priority": "normal",
-      "data": {"mount": "/data", "old_size_gb": 100, "new_size_gb": 200},
-      "backend": "in_memory_bus"
-    },
-    "error": null,
-    "warnings": []
-  }
-
-  Emit with mode downgrade warning:
-  {
-    "ok": true,
-    "event": {...},
-    "warnings": [
-      "Backend does not support durable persist; mode downgraded to fire_and_forget."
-    ]
-  }
-
-  Subscribe success:
-  {
-    "ok": true,
-    "timestamp_unix_ms": 1732538400000,
-    "topic": "jobs.backup.completed",
-    "group_id": null,
-    "effective_offset": "latest",
-    "offset_start": "0",
-    "offset_end": "1",
-    "next_offset": "2",
-    "high_watermark": "2",
-    "events_returned": 2,
-    "events": [
-      {
-        "id": "evt_1732538400000_abcd1234efgh",
-        "topic": "jobs.backup.completed",
-        "data": {"status": "success"},
-        "tags": ["backup"]
-      }
-    ],
-    "committed_offset": null,
-    "committed": false
-  }
-
-  List-topics success:
-  {
-    "ok": true,
-    "topics_total": 5,
-    "topics_returned": 5,
-    "topics": [
-      {
-        "name": "jobs.backup.completed",
-        "display_name": "jobs.backup.completed",
-        "description": "Events emitted when backup jobs complete",
-        "category": "jobs",
-        "sources": ["event"],
-        "tags": ["backup", "job"]
-      }
-    ]
-  }
-
-  Hooks list:
-  {
-    "instance_hooks": [],
-    "global_hooks": ["mq", "log", "proc", "fs"],
-    "total": 4
-  }
-
-COMMON WORKFLOWS:
-
-  Simple event emission:
-    # Fire-and-forget event
-    event://emit(topic="app.user.login",data="{\"user_id\":123,\"timestamp\":1732538400000}")
-
-  Event correlation tracking:
-    # Emit parent event
-    event://emit(topic="order.created",data="{\"order_id\":\"ord-123\"}",correlation_id="ord-123")
-    
-    # Emit child event with causation
-    event://emit(topic="inventory.reserved",data="{\"order_id\":\"ord-123\"}",correlation_id="ord-123",causation_id="evt_123_parent")
-
-  Event-driven workflow:
-    # Emit start event
-    event://emit(topic="workflow.started",data="{\"workflow_id\":\"wf-123\"}",correlation_id="wf-123",tags="[\"workflow\",\"job\"]")
-    
-    # Subscribe to workflow events
-    event://subscribe(topic="workflow.*",offset="latest",match_correlation_id="wf-123",wait="true")
-
-  Consumer group processing:
-    # Worker 1
-    event://subscribe(topic="jobs.process",offset="next",group_id="workers",consumer_id="w1",auto_commit="true")
-    
-    # Worker 2 (shares load)
-    event://subscribe(topic="jobs.process",offset="next",group_id="workers",consumer_id="w2",auto_commit="true")
-
-  Event replay and debugging:
-    # Get all events from beginning
-    event://subscribe(topic="jobs.backup.*",offset="earliest",limit="1000")
-    
-    # Get events from specific time range
-    event://subscribe(topic="jobs.backup.*",offset="earliest",limit="100",max_latency_ms="86400000")
-
-  Topic discovery:
-    # List all available topics
-    event://list-topics()
-    
-    # Find backup-related topics
-    event://list-topics(prefix="jobs.backup.")
-    
-    # Get topic statistics
-    event://list-topics(include_stats="true",include_schema="true")
-
-  Hook management:
-    # List enabled hooks
-    event://hooks.list()
-    
-    # Enable message queue hook
-    event://hooks.enable(name="mq")
-    
-    # Enable logging hook
-    event://hooks.enable(name="log")
-    
-    # Disable hook
-    event://hooks.disable(name="mq")
-
-ERROR CODES:
-  event.emit_invalid_topic              Invalid topic name (empty or malformed)
-  event.emit_invalid_data               Invalid JSON data payload
-  event.emit_backend_unavailable        Backend not available
-  event.emit_backend_timeout            Backend operation timed out
-  event.subscribe_offset_next_requires_group Offset 'next' requires group_id
-  event.subscribe_backend_unavailable   Subscription backend unavailable
-  event.list_topics_invalid_limit       Invalid limit parameter
-  event.list_topics_backend_unavailable Topic listing backend unavailable
-
-ERROR HANDLING:
-  All verbs return structured error information:
-  {
-    "ok": false,
-    "timestamp_unix_ms": 1732538400000,
-    "error": {
-      "code": "event.emit_invalid_topic",
-      "message": "topic cannot be empty"
-    },
-    "warnings": []
-  }
-
-BACKEND INFORMATION:
-  Current backend: in_memory_bus
-
-  Features:
-  • Stores events in memory (not persistent)
-  • Does not support true durability
-  • Downgrades wait_for_persist to fire_and_forget
-  • Provides immediate delivery and consumption
-  • Resets when system restarts
-
-  Limitations:
-  • No persistence across restarts
-  • No distributed messaging
-  • No true durability guarantees
-
-  Future backends may support:
-  • Persistent storage (disk, database)
-  • Distributed messaging (Kafka, RabbitMQ)
-  • True durability and reliability
-  • Partitioning and replication
-
-BEST PRACTICES:
-  • Use hierarchical topic names (jobs.backup.completed)
-  • Add tags for categorization and filtering
-  • Use correlation IDs to track related events
-  • Use causation IDs to track event chains
-  • Set appropriate TTL for time-sensitive events
-  • Use priority levels for critical events
-  • Include source information for debugging
-  • Use schema versions for event evolution
-  • Enable summaries for human readability
-  • Use consumer groups for scalable processing
-  • Use wildcard patterns for flexible subscriptions
-  • Filter events to reduce unnecessary processing
-  • Use auto-commit for simple consumers
-  • Use manual-commit for exactly-once processing
-  • Set reasonable limits to avoid overwhelming consumers
-  • Use wait mode for real-time event processing
-  • Monitor topic statistics with include_stats
-  • Document event schemas with include_schema
-  • Use descriptive topic names that indicate purpose
-  • Organize topics by domain (jobs, system, logs)
-  • Test event flows with offset="earliest"
-  • Use offset="next" for resumable processing
-
-EVENT-DRIVEN PATTERNS:
-
-  Pub/Sub (broadcast):
-    # Publisher
-    event://emit(topic="notifications.user.update",data="{\"user_id\":123}")
-    
-    # Subscriber 1
-    event://subscribe(topic="notifications.user.update",offset="latest")
-    
-    # Subscriber 2
-    event://subscribe(topic="notifications.user.update",offset="latest")
-
-  Work queue (load balancing):
-    # Producer
-    event://emit(topic="tasks.process",data="{\"task_id\":456}")
-    
-    # Consumer in group (gets exclusive access)
-    event://subscribe(topic="tasks.process",group_id="workers",consumer_id="w1",offset="next")
-
-  Event sourcing:
-    # Store all state changes as events
-    event://emit(topic="account.deposited",data="{\"account\":\"123\",\"amount\":100}")
-    event://emit(topic="account.withdrawn",data="{\"account\":\"123\",\"amount\":50}")
-    
-    # Replay to rebuild state
-    event://subscribe(topic="account.*",offset="earliest")
-
-  Saga orchestration:
-    # Saga coordinator emits commands
-    event://emit(topic="saga.order.reserve_inventory",correlation_id="saga-123")
-    event://emit(topic="saga.order.charge_payment",correlation_id="saga-123")
-    
-    # Services subscribe and respond
-    event://subscribe(topic="saga.order.*",match_correlation_id="saga-123")
-
-MORE INFO:
-  For complete documentation of all verbs, event metadata, topic patterns,
-  and event-driven architectures, visit:
-  https://github.com/[your-org]/resource-shell/docs/event-handle.md
-
-  Use 'event:// --help=VERB' for detailed help on a specific verb.
-"#;
-
-// ===========================================================================
 // Event Handle Implementation
 // ===========================================================================
 
@@ -1663,9 +1594,14 @@ impl EventHandle {
         }
     }
 
+    /// Uses the file-backed store under the user's state directory, so
+    /// events persist across resh invocations. Without a state directory it
+    /// falls back to the process-wide in-memory bus (never /tmp).
     pub fn from_url(_url: &Url) -> Result<Self> {
-        // For now, always use in-memory backend
-        let backend = Box::new(InMemoryEventBackend::new());
+        let backend: Box<dyn EventBackend> = match FileEventBackend::default_base() {
+            Some(base) => Box::new(FileEventBackend::new(base)),
+            None => Box::new(InMemoryEventBackend::shared()),
+        };
         Ok(Self::new(backend))
     }
     
@@ -1679,182 +1615,20 @@ impl EventHandle {
         self.hook_manager.remove_hook(name);
     }
     
-    /// Check if this is a help request and display help if so
-    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
-        // Check for help verbs
-        if verb == "--help" || verb == "-h" || verb == "help" {
-            write!(io.stdout, "{}", EVENT_HELP_TEXT)?;
-            return Ok(Some(Status::ok()));
-        }
-        
-        // Check for verb-specific help
-        if verb.starts_with("--help=") {
-            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
-            Self::display_verb_help(help_verb, io)?;
-            return Ok(Some(Status::ok()));
-        }
-        
-        Ok(None)
+    /// Writes the approved help for `help`, `--help`, `-h`, `--help=<verb>`
+    /// and `help(verb=<verb>)`; returns None for any other verb.
+    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+        let help_verb = if help::HELP_ALIASES.contains(&verb) {
+            args.get("verb").map(String::as_str)
+        } else if let Some(v) = verb.strip_prefix("--help=") {
+            Some(v)
+        } else {
+            return Ok(None);
+        };
+        write!(io.stdout, "{}", help::render_legacy("event", &EVENT_HELP, self.verbs(), help_verb))?;
+        Ok(Some(Status::ok()))
     }
-    
-    /// Display help for a specific verb
-    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
-        match verb {
-            "emit" => {
-                write!(io.stdout, "
-HELP: EMIT VERB
 
-Publish an event to a topic.
-
-USAGE:
-  event://emit(topic=\"system.fs.resized\",data=\"{{\\\"mount\\\":\\\"/data\\\",\\\"old_size_gb\\\":100,\\\"new_size_gb\\\":200}}\")
-
-REQUIRED ARGUMENTS:
-  topic=TOPIC            Event topic name (required, cannot be empty)
-  data=JSON              JSON payload data (required)
-
-OPTIONAL ARGUMENTS:
-  mode=MODE              Delivery mode: fire_and_forget, wait_for_persist (default: fire_and_forget)
-  priority=PRIORITY      Event priority: low, normal, high (default: normal)
-  ttl_ms=N               Time to live in milliseconds
-  key=KEY                Partition key for ordering
-  correlation_id=ID      ID to correlate related events
-  causation_id=ID        ID of the event that caused this one
-  source=SOURCE          Source component that emitted the event
-  tags=JSON_ARRAY        JSON array of tags for categorization
-  summarize=BOOL         Generate human-readable summary (default: false)
-  schema_version=VERSION Schema version identifier
-  format=FORMAT          Output format: json, text (default: json)
-
-EXAMPLES:
-  event://emit(topic=\"system.fs.resized\",data=\"{{\\\"mount\\\":\\\"/data\\\",\\\"old_size_gb\\\":100,\\\"new_size_gb\\\":200}}\")
-  event://emit(topic=\"jobs.backup.completed\",data=\"{{\\\"status\\\":\\\"success\\\"}}\",mode=\"wait_for_persist\")
-  event://emit(topic=\"jobs.backup.completed\",data=\"{{\\\"job_id\\\":\\\"backup-123\\\"}}\",correlation_id=\"backup-123\",tags=\"[\\\"backup\\\",\\\"cron\\\",\\\"nightly\\\"]\")
-")?;
-            }
-            "subscribe" => {
-                write!(io.stdout, "
-HELP: SUBSCRIBE VERB
-
-Subscribe to events from a topic or pattern.
-
-USAGE:
-  event://subscribe(topic=\"jobs.backup.completed\",offset=\"latest\",limit=\"10\")
-
-REQUIRED ARGUMENTS:
-  topic=TOPIC            Topic name or pattern (required, supports wildcards)
-
-OPTIONAL ARGUMENTS:
-  offset=OFFSET          Starting position: latest, earliest, next, or specific (default: latest)
-  limit=N                Maximum events to return (1-10000, default: 100)
-  group_id=ID            Consumer group for durable subscriptions
-  consumer_id=ID         Consumer identifier within the group
-  auto_commit=BOOL       Auto-commit offsets (default: true)
-  manual_commit_offset=N Manually commit specific offset
-  wait=BOOL              Wait for new events (default: false)
-  wait_timeout_ms=N      Wait timeout in milliseconds
-  match_tags=JSON_ARRAY  JSON array of tags to match (all must be present)
-  match_correlation_id=ID Correlation ID to match
-  match_source=SOURCE    Source component to match
-  max_latency_ms=N       Maximum event age in milliseconds
-  include_data=BOOL      Include event data (default: true)
-  include_summary=BOOL   Include summaries (default: true)
-  include_raw=BOOL       Include raw data (default: false)
-  format=FORMAT          Output format: json, text (default: json)
-
-EXAMPLES:
-  event://subscribe(topic=\"jobs.backup.completed\",offset=\"latest\",limit=\"10\")
-  event://subscribe(topic=\"jobs.backup.*\",offset=\"earliest\",limit=\"10\")
-  event://subscribe(topic=\"jobs.backup.completed\",group_id=\"g1\",consumer_id=\"c1\",auto_commit=\"true\")
-  event://subscribe(topic=\"test.topic\",match_tags=\"[\\\"backup\\\",\\\"job\\\"]\")
-")?;
-            }
-            "list-topics" => {
-                write!(io.stdout, "
-HELP: LIST-TOPICS VERB
-
-List available event topics from various sources.
-
-USAGE:
-  event://list-topics()
-
-OPTIONAL ARGUMENTS:
-  prefix=PREFIX          Filter topics by name prefix
-  match=SUBSTRING        Filter topics by substring match
-  sources=JSON_ARRAY     Sources to query: [\"event\",\"mq\",\"log\",\"proc\",\"fs_watch\"] (default: all)
-  limit=N                Maximum topics (1-10000, default: 1000)
-  include_hidden=BOOL    Include hidden topics (default: false)
-  include_stats=BOOL     Include statistics (default: false)
-  include_schema=BOOL    Include schema information (default: false)
-  include_backends=BOOL  Include backend information (default: true)
-  summarize=BOOL         Generate topic summaries (default: true)
-  format=FORMAT          Output format: json, text (default: json)
-
-EXAMPLES:
-  event://list-topics()
-  event://list-topics(include_stats=\"true\")
-  event://list-topics(prefix=\"jobs.\")
-  event://list-topics(sources=\"[\\\"event\\\",\\\"mq\\\"]\")
-")?;
-            }
-            "hooks.list" => {
-                write!(io.stdout, "
-HELP: HOOKS.LIST VERB
-
-Lists available and enabled event processing hooks.
-
-USAGE:
-  event://hooks.list()
-
-ARGUMENTS:
-  None
-
-EXAMPLES:
-  event://hooks.list()
-")?;
-            }
-            "hooks.enable" => {
-                write!(io.stdout, "
-HELP: HOOKS.ENABLE VERB
-
-Enables a specific event processing hook.
-
-USAGE:
-  event://hooks.enable(name=\"mq\")
-
-REQUIRED ARGUMENTS:
-  name=NAME              Hook name: mq, log, proc, fs (required)
-
-EXAMPLES:
-  event://hooks.enable(name=\"mq\")
-  event://hooks.enable(name=\"log\")
-")?;
-            }
-            "hooks.disable" => {
-                write!(io.stdout, "
-HELP: HOOKS.DISABLE VERB
-
-Disables a specific event processing hook.
-
-USAGE:
-  event://hooks.disable(name=\"mq\")
-
-REQUIRED ARGUMENTS:
-  name=NAME              Hook name to disable (required)
-
-EXAMPLES:
-  event://hooks.disable(name=\"mq\")
-  event://hooks.disable(name=\"log\")
-")?;
-            }
-            _ => {
-                write!(io.stdout, "\nUnknown verb: {}. Use --help for full list of verbs.\n", verb)?;
-            }
-        }
-        Ok(Status::ok())
-    }
-    
-    /// List all registered hooks
     pub fn list_hooks(&self) -> Vec<String> {
         self.hook_manager.list_hooks()
     }
@@ -3224,9 +2998,13 @@ impl Handle for EventHandle {
         &["emit", "subscribe", "list-topics", "hooks.list", "hooks.enable", "hooks.disable", "help", "--help", "-h"]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&EVENT_HELP)
+    }
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Check for help requests first
-        if let Some(status) = Self::check_and_display_help(verb, io)? {
+        if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
         
@@ -3317,4 +3095,141 @@ mod tests {
         let no_summary = EventHandle::generate_summary_if_requested(&data, "test.topic", false);
         assert!(no_summary.is_none());
     }
+
+    fn file_handle(dir: &Path) -> EventHandle {
+        EventHandle::new(Box::new(FileEventBackend::new(dir.join("resh").join("events"))))
+    }
+
+    fn args(pairs: &[(&str, &str)]) -> Args {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn emit(h: &EventHandle, topic: &str, data: &str) -> EventEmitResponse {
+        let opts = EventHandle::parse_emit_options(&args(&[("topic", topic), ("data", data)])).unwrap();
+        h.emit(opts).unwrap()
+    }
+
+    fn subscribe(h: &EventHandle, pairs: &[(&str, &str)]) -> EventSubscribeResponse {
+        h.subscribe(EventHandle::parse_subscribe_options(&args(pairs)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn file_store_persists_across_handles() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = file_handle(dir.path());
+        assert!(emit(&a, "jobs.backup.completed", r#"{"status":"success"}"#).ok);
+        assert!(emit(&a, "jobs.backup.failed", r#"{"status":"error"}"#).ok);
+        assert!(emit(&a, "other.topic", "1").ok);
+
+        // A separate handle (as in a later resh invocation) sees the events.
+        let b = file_handle(dir.path());
+        let r = subscribe(&b, &[("topic", "jobs.backup.completed"), ("offset", "earliest")]);
+        assert!(r.ok);
+        assert_eq!(r.events_returned, 1);
+        assert_eq!(r.events[0].data, json!({"status": "success"}));
+        assert_eq!(r.events[0].backend, "state_file");
+
+        let r = subscribe(&b, &[("topic", "jobs.*"), ("offset", "earliest")]);
+        assert_eq!(r.events_returned, 2);
+        assert_eq!(r.high_watermark.as_deref(), Some("2"));
+
+        // Default offset=latest returns only new events.
+        let r = subscribe(&b, &[("topic", "jobs.*")]);
+        assert_eq!(r.events_returned, 0);
+
+        // limit and explicit offsets, including one past the end.
+        let r = subscribe(&b, &[("topic", "jobs.*"), ("offset", "1"), ("limit", "5")]);
+        assert_eq!(r.events_returned, 1);
+        assert_eq!(r.events[0].topic, "jobs.backup.failed");
+        let r = subscribe(&b, &[("topic", "jobs.*"), ("offset", "99")]);
+        assert!(r.ok);
+        assert_eq!(r.events_returned, 0);
+    }
+
+    #[test]
+    fn file_store_consumer_group_offsets_persist() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = file_handle(dir.path());
+        for n in 0..3 {
+            emit(&a, "q.work", &n.to_string());
+        }
+        let sub = [("topic", "q.work"), ("offset", "next"), ("group_id", "g1"), ("limit", "2")];
+        let r = subscribe(&file_handle(dir.path()), &sub);
+        assert_eq!(r.events.iter().map(|e| e.data.clone()).collect::<Vec<_>>(), [json!(0), json!(1)]);
+        assert!(r.committed);
+        let r = subscribe(&file_handle(dir.path()), &sub);
+        assert_eq!(r.events.iter().map(|e| e.data.clone()).collect::<Vec<_>>(), [json!(2)]);
+        let r = subscribe(&file_handle(dir.path()), &sub);
+        assert_eq!(r.events_returned, 0);
+    }
+
+    #[test]
+    fn file_store_wait_times_out_without_events() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let h = file_handle(dir.path());
+        let start = std::time::Instant::now();
+        let r = subscribe(&h, &[("topic", "none"), ("wait", "true"), ("wait_timeout_ms", "250")]);
+        assert!(r.timed_out);
+        assert!(start.elapsed() >= Duration::from_millis(250));
+    }
+
+    #[test]
+    fn file_store_permissions_and_layout() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let h = file_handle(dir.path());
+        emit(&h, "perm.check", "{}");
+        let base = dir.path().join("resh").join("events");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&base), 0o700);
+        assert_eq!(mode(&base.join("perm.check.jsonl")), 0o600);
+        let line = std::fs::read_to_string(base.join("perm.check.jsonl")).unwrap();
+        assert_eq!(line.lines().count(), 1);
+        let evt: EventEnvelope = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(evt.topic, "perm.check");
+
+        subscribe(&h, &[("topic", "perm.check"), ("offset", "earliest"), ("group_id", "g")]);
+        assert_eq!(mode(&base.join("_offsets.json")), 0o600);
+    }
+
+    #[test]
+    fn file_store_rejects_wildcard_emit_topic() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let r = emit(&file_handle(dir.path()), "jobs.*", "{}");
+        assert!(!r.ok);
+        assert!(r.error.unwrap().message.contains("wildcards"));
+    }
+
+    #[test]
+    fn in_memory_bus_is_shared_within_process() {
+        let a = EventHandle::new(Box::new(InMemoryEventBackend::shared()));
+        let b = EventHandle::new(Box::new(InMemoryEventBackend::shared()));
+        let topic = format!("shared.test{}", std::process::id());
+        emit(&a, &topic, "42");
+        let r = subscribe(&b, &[("topic", &topic), ("offset", "earliest")]);
+        assert_eq!(r.events_returned, 1);
+    }
+
+    #[test]
+    fn topic_patterns() {
+        assert!(topic_matches_pattern("jobs.backup", "jobs.*"));
+        assert!(topic_matches_pattern("jobs.a", "jobs.?"));
+        assert!(!topic_matches_pattern("jobsXbackup", "jobs.backup"));
+        assert!(!topic_matches_pattern("jobsxa", "jobs.?"));
+    }
+
+    #[test]
+    fn legacy_help_renders_approved_help() {
+        let h = EventHandle::new(Box::new(InMemoryEventBackend::new()));
+        let run = |verb: &str, a: Args| {
+            let (mut i, mut o, mut e) = (std::io::Cursor::new(Vec::new()), std::io::Cursor::new(Vec::new()), std::io::Cursor::new(Vec::new()));
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            h.call(verb, &a, &mut io).unwrap();
+            String::from_utf8(o.into_inner()).unwrap()
+        };
+        assert!(run("--help", Args::new()).starts_with("Handle: event"));
+        assert!(run("help", args(&[("verb", "subscribe")])).contains("Verb: subscribe"));
+        assert!(run("--help=emit", Args::new()).contains("Verb: emit"));
+    }
+
 }

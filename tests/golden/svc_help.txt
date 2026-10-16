@@ -1,0 +1,29 @@
+Handle: svc
+
+Description:
+  The svc handle inspects and controls system services through the host's
+  service manager, supporting systemd and OpenRC. It covers service state
+  queries, lifecycle control, boot-time configuration, and log access. Each
+  command names one service in the stage URL, such as svc://nginx.
+
+Available Verbs:
+  status       Reports the current state of a service, such as whether it is
+               running and its main process ID, as a JSON object.
+  is-enabled   Reports whether a service is configured to start at boot.
+  start        Starts a service.
+  stop         Stops a service, optionally waiting for it to become inactive.
+  restart      Stops and then starts a service.
+  reload       Reloads a service's configuration without stopping it.
+  enable       Configures a service to start automatically at boot.
+  disable      Prevents a service from starting automatically at boot.
+  mask         Blocks a service from being started at all (systemd only).
+  unmask       Removes a mask so a service can be started again (systemd only).
+  wait         Waits for a service to become active or inactive, with a timeout.
+  logs         Displays recent log entries for a service.
+  scale        Sets the number of running instances of a service.
+
+Usage:
+  resh svc://<service-name>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh svc <verb> --help

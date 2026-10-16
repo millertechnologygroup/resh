@@ -10,9 +10,292 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
+
+/// Metadata for `resh db --help` and `resh db <verb> --help`.
+static DB_HELP: HandleHelp = HandleHelp {
+    description: "The db handle runs SQL against PostgreSQL, MySQL, and SQLite databases \
+        through pooled sqlx connections. The target names a driver and a connection alias, \
+        such as db://postgres/app, and connect reads the DSN from dsn= or the \
+        DB_<ALIAS>_DSN environment variable. Pools live only for one resh process, so \
+        every other verb also connects on its own when given dsn= or when that \
+        environment variable is set.",
+    usage: "resh db://<driver>/<alias>.<verb>[(key=value,...)]",
+    verbs: &[
+        VerbHelp {
+            name: "connect",
+            definition: "Opens a connection pool for the alias, or reuses the existing pool \
+                when the DSN matches, and reports pool statistics.",
+            detail: Some(VerbDetail {
+                usage: "resh db://<driver>/<alias>.connect [dsn=<dsn>] [max_connections=<n>]\n  \
+                    [min_connections=<n>] [connect_timeout_ms=<ms>] [idle_timeout_ms=<ms>]\n  \
+                    [max_lifetime_ms=<ms>] [log_queries=true|false]\n  \
+                    [tls_mode=disable|allow|prefer|require|verify_ca|verify_full]",
+                example: "resh db://postgres/app.connect dsn=postgresql://app@db.example.com/app",
+                example_output: Some(
+                    r#"{
+  "alias": "app",
+  "driver": "postgres",
+  "pool_stats": {
+    "current_size": 1,
+    "idle_connections": 1,
+    "max_connections": 10,
+    "min_connections": 1
+  },
+  "reused": false,
+  "type": "db_connection"
+}
+
+Shown with --json-pretty. tls_mode overrides any SSL mode in the DSN;
+MySQL rejects allow and SQLite accepts only disable. log_queries=true
+enables sqlx statement logging at info level through the log crate."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "ping",
+            definition: "Runs SELECT 1 on the alias's pool, retrying on failure, and reports \
+                the latency and number of attempts.",
+            detail: Some(VerbDetail {
+                usage: "resh db://<driver>/<alias>.ping [dsn=<dsn>] [timeout_ms=<ms>]\n  \
+                    [retries=<n>] [backoff_ms=<ms>] [detailed=true|false]",
+                example: "resh --json-pretty db://sqlite/app.ping dsn=sqlite:app.db retries=2",
+                example_output: Some(
+                    r#"{
+  "alias": "app",
+  "attempts": 1,
+  "driver": "sqlite",
+  "latency_ms": 3,
+  "status": "ok"
+}
+
+Shown for a successful ping with --json-pretty. When every attempt fails,
+status is "error" and an error object is added, with last_error when
+detailed=true."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "query",
+            definition: "Runs a SQL statement and returns rows with column metadata, a single \
+                scalar value, or the affected row count, depending on mode.",
+            detail: Some(VerbDetail {
+                usage: "resh db://<driver>/<alias>.query sql=<sql> [params=<json-array>]\n  \
+                    [mode=rows|scalar|exec] [timeout_ms=<ms>] [max_rows=<n>]\n  \
+                    [dsn=<dsn>] [tx_id=<id>]",
+                example: "resh db://sqlite/app.query 'sql=SELECT id, name FROM users' \
+                    dsn=sqlite:app.db",
+                example_output: Some(
+                    r#"{
+  "meta": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "INTEGER"
+      },
+      {
+        "name": "name",
+        "type": "TEXT"
+      }
+    ],
+    "row_count": 2,
+    "truncated": false
+  },
+  "rows": [
+    {
+      "id": 1,
+      "name": "alice"
+    },
+    {
+      "id": 2,
+      "name": "bob"
+    }
+  ]
+}
+
+Shown for mode=rows with --json-pretty. mode=scalar returns value and
+meta (row_count, columns), and mode=exec returns rows_affected.
+timeout_ms defaults to 5000 and max_rows to 1000."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "tables",
+            definition: "Lists the tables in the database, or describes one table's columns \
+                when table= is given.",
+            detail: Some(VerbDetail {
+                usage: "resh db://<driver>/<alias>.tables [table=<name>] [schema=<name>]\n  \
+                    [include_views=true|false] [include_system=true|false]\n  \
+                    [max_tables=<n>] [timeout_ms=<ms>] [dsn=<dsn>]",
+                example: "resh --json-pretty db://postgres/app.tables include_views=true",
+                example_output: Some(
+                    r#"{
+  "meta": {
+    "count": 2,
+    "truncated": false
+  },
+  "tables": [
+    {
+      "name": "active_users",
+      "schema": "public",
+      "type": "VIEW"
+    },
+    {
+      "name": "orders",
+      "schema": "public",
+      "type": "BASE TABLE"
+    }
+  ]
+}
+
+Shown for PostgreSQL with --json-pretty and DB_APP_DSN set in the
+environment. SQLite reports schema as null. With table= the output has a
+table object and a columns array instead."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "schema",
+            definition: "Describes a table's columns and primary key, plus the index, foreign \
+                key, and constraint sections selected by the include flags.",
+            detail: Some(VerbDetail {
+                usage: "resh db://<driver>/<alias>.schema table=<name> [schema=<name>]\n  \
+                    [include_indexes=true|false] [include_foreign_keys=true|false]\n  \
+                    [include_unique_constraints=true|false] [include_checks=true|false]\n  \
+                    [include_triggers=true|false] [timeout_ms=<ms>] [dsn=<dsn>]",
+                example: "resh --json-pretty db://sqlite/app.schema table=users dsn=sqlite:app.db",
+                example_output: Some(
+                    r#"{
+  "columns": [
+    {
+      "data_type": "INTEGER",
+      "default": null,
+      "is_nullable": false,
+      "is_primary_key": true,
+      "name": "id",
+      "ordinal_position": 1
+    },
+    {
+      "data_type": "TEXT",
+      "default": null,
+      "is_nullable": false,
+      "is_primary_key": false,
+      "name": "email",
+      "ordinal_position": 2
+    }
+  ],
+  "foreign_keys": [],
+  "indexes": [
+    {
+      "columns": [
+        "email"
+      ],
+      "is_unique": true,
+      "name": "idx_users_email"
+    }
+  ],
+  "primary_key": {
+    "columns": [
+      "id"
+    ],
+    "name": "users_pkey"
+  },
+  "table": {
+    "name": "users",
+    "schema": "main",
+    "type": "BASE TABLE"
+  },
+  "unique_constraints": []
+}
+
+Shown for SQLite with --json-pretty. PostgreSQL and MySQL return empty
+index, foreign key, and constraint lists."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "exec",
+            definition: "Runs a single data-changing statement, such as INSERT, UPDATE, or \
+                DELETE, and reports the number of rows affected.",
+            detail: Some(VerbDetail {
+                usage: "resh db://<driver>/<alias>.exec sql=<sql> [params=<json-array>]\n  \
+                    [return_last_insert_id=true|false] [timeout_ms=<ms>] [dsn=<dsn>]\n  \
+                    [tx_id=<id>]",
+                example: "resh db://sqlite/app.exec 'sql=DELETE FROM sessions' dsn=sqlite:app.db",
+                example_output: Some(
+                    r#"{
+  "rows_affected": 3
+}
+
+Shown with --json-pretty. return_last_insert_id=true adds last_insert_id,
+which is always null on PostgreSQL."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "transaction",
+            definition: "Runs a list of statements in one transaction, committing only if \
+                every statement succeeds and rolling back otherwise.",
+            detail: Some(VerbDetail {
+                usage: "resh db://<driver>/<alias>.transaction [action=run] statements=<json-array>\n  \
+                    [isolation=<level>] [read_only=true|false] [timeout_ms=<ms>] [dsn=<dsn>]\n  \
+                    or: action=begin|commit|rollback [tx_id=<id>] (one process only)",
+                example: "resh db://sqlite/db.transaction 'statements=[\"DELETE FROM a\",\"DELETE FROM b\"]'",
+                example_output: Some(
+                    r#"{
+  "action": "run",
+  "alias": "db",
+  "committed": true,
+  "driver": "sqlite",
+  "results": [
+    {
+      "index": 0,
+      "rows_affected": 3
+    },
+    {
+      "index": 1,
+      "rows_affected": 2
+    }
+  ],
+  "status": "ok"
+}
+
+Shown as --json-pretty output, with DB_DB_DSN set. Items may also be
+{"sql":...,"params":[...]} objects.
+If a statement fails, all are rolled back and the error names its index.
+begin, commit and rollback with tx_id work only within one resh process,
+because the transaction is held in memory."#,
+                ),
+            }),
+        },
+    ],
+};
+
+/// Reads an optional unsigned integer argument. CLI arguments arrive as
+/// strings, so both JSON numbers and numeric strings are accepted; any other
+/// value is an error instead of being silently replaced by the default.
+fn typed_u64(args: &Value, key: &str) -> std::result::Result<Option<u64>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => crate::core::lenient::from_value::<u64>(v.clone())
+            .map(Some)
+            .map_err(|_| format!("{} must be a non-negative integer, got {}", key, v)),
+    }
+}
+
+/// Reads an optional boolean argument, accepting JSON booleans and the CLI
+/// strings true/false, 1/0, yes/no, on/off.
+fn typed_bool(args: &Value, key: &str) -> std::result::Result<Option<bool>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => crate::core::lenient::from_value::<bool>(v.clone())
+            .map(Some)
+            .map_err(|_| format!("{} must be true or false, got {}", key, v)),
+    }
+}
 
 /// Query execution mode
 #[derive(Debug, Clone, PartialEq)]
@@ -72,12 +355,10 @@ impl QueryConfig {
             .unwrap_or("rows");
         let mode = QueryMode::from_str(mode_str)?;
 
-        let timeout_ms = args.get("timeout_ms")
-            .and_then(|v| v.as_u64())
+        let timeout_ms = typed_u64(args, "timeout_ms").map_err(anyhow::Error::msg)?
             .unwrap_or(5000);
 
-        let max_rows = args.get("max_rows")
-            .and_then(|v| v.as_u64())
+        let max_rows = typed_u64(args, "max_rows").map_err(anyhow::Error::msg)?
             .unwrap_or(1000);
 
         let tx_id = args.get("tx_id")
@@ -151,12 +432,10 @@ impl ExecConfig {
             }
         };
 
-        let timeout_ms = args.get("timeout_ms")
-            .and_then(|v| v.as_u64())
+        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidExecConfig { message: m })?
             .unwrap_or(5000);
 
-        let return_last_insert_id = args.get("return_last_insert_id")
-            .and_then(|v| v.as_bool())
+        let return_last_insert_id = typed_bool(args, "return_last_insert_id").map_err(|m| DbError::InvalidExecConfig { message: m })?
             .unwrap_or(false);
 
         let tx_id = args.get("tx_id")
@@ -247,20 +526,16 @@ impl TablesConfig {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let include_views = args.get("include_views")
-            .and_then(|v| v.as_bool())
+        let include_views = typed_bool(args, "include_views").map_err(|m| DbError::InvalidTablesConfig { message: m })?
             .unwrap_or(false);
 
-        let include_system = args.get("include_system")
-            .and_then(|v| v.as_bool())
+        let include_system = typed_bool(args, "include_system").map_err(|m| DbError::InvalidTablesConfig { message: m })?
             .unwrap_or(false);
 
-        let timeout_ms = args.get("timeout_ms")
-            .and_then(|v| v.as_u64())
+        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidTablesConfig { message: m })?
             .unwrap_or(5000);
 
-        let max_tables = args.get("max_tables")
-            .and_then(|v| v.as_u64())
+        let max_tables = typed_u64(args, "max_tables").map_err(|m| DbError::InvalidTablesConfig { message: m })?
             .unwrap_or(1000);
 
         // Validation
@@ -330,28 +605,22 @@ impl SchemaConfig {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let include_indexes = args.get("include_indexes")
-            .and_then(|v| v.as_bool())
+        let include_indexes = typed_bool(args, "include_indexes").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(true);
 
-        let include_foreign_keys = args.get("include_foreign_keys")
-            .and_then(|v| v.as_bool())
+        let include_foreign_keys = typed_bool(args, "include_foreign_keys").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(true);
 
-        let include_unique_constraints = args.get("include_unique_constraints")
-            .and_then(|v| v.as_bool())
+        let include_unique_constraints = typed_bool(args, "include_unique_constraints").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(true);
 
-        let include_checks = args.get("include_checks")
-            .and_then(|v| v.as_bool())
+        let include_checks = typed_bool(args, "include_checks").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(false);
 
-        let include_triggers = args.get("include_triggers")
-            .and_then(|v| v.as_bool())
+        let include_triggers = typed_bool(args, "include_triggers").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(false);
 
-        let timeout_ms = args.get("timeout_ms")
-            .and_then(|v| v.as_u64())
+        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(5000);
 
         // Validation
@@ -385,21 +654,17 @@ pub struct PingConfig {
 
 impl PingConfig {
     fn from_args(args: &Value) -> Result<Self, DbError> {
-        let timeout_ms = args.get("timeout_ms")
-            .and_then(|v| v.as_u64())
+        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidPingConfig { message: m })?
             .unwrap_or(1000);
 
-        let retries = args.get("retries")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
+        let retries = typed_u64(args, "retries").map_err(|m| DbError::InvalidPingConfig { message: m })?
+            .map(|v| v.min(u32::MAX as u64) as u32)
             .unwrap_or(0);
 
-        let backoff_ms = args.get("backoff_ms")
-            .and_then(|v| v.as_u64())
+        let backoff_ms = typed_u64(args, "backoff_ms").map_err(|m| DbError::InvalidPingConfig { message: m })?
             .unwrap_or(100);
 
-        let detailed = args.get("detailed")
-            .and_then(|v| v.as_bool())
+        let detailed = typed_bool(args, "detailed").map_err(|m| DbError::InvalidPingConfig { message: m })?
             .unwrap_or(false);
 
         // Validation
@@ -510,8 +775,59 @@ pub struct DbConfig {
     pub connect_timeout_ms: u64,
     pub idle_timeout_ms: u64,
     pub max_lifetime_ms: u64,
-    pub tls_mode: String,
+    /// TLS mode from tls_mode=; `None` keeps the DSN's setting or the
+    /// driver default.
+    pub tls_mode: Option<String>,
     pub log_queries: bool,
+}
+
+/// Normalized tls_mode= value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsMode {
+    Disable,
+    Allow,
+    Prefer,
+    Require,
+    VerifyCa,
+    VerifyFull,
+}
+
+impl TlsMode {
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "disable" | "disabled" => Some(TlsMode::Disable),
+            "allow" => Some(TlsMode::Allow),
+            "prefer" | "preferred" => Some(TlsMode::Prefer),
+            "require" | "required" => Some(TlsMode::Require),
+            "verify-ca" => Some(TlsMode::VerifyCa),
+            "verify-full" | "verify-identity" => Some(TlsMode::VerifyFull),
+            _ => None,
+        }
+    }
+
+    fn postgres(self) -> sqlx::postgres::PgSslMode {
+        use sqlx::postgres::PgSslMode;
+        match self {
+            TlsMode::Disable => PgSslMode::Disable,
+            TlsMode::Allow => PgSslMode::Allow,
+            TlsMode::Prefer => PgSslMode::Prefer,
+            TlsMode::Require => PgSslMode::Require,
+            TlsMode::VerifyCa => PgSslMode::VerifyCa,
+            TlsMode::VerifyFull => PgSslMode::VerifyFull,
+        }
+    }
+
+    /// MySQL has no "allow" mode; validation rejects it before this is called.
+    fn mysql(self) -> sqlx::mysql::MySqlSslMode {
+        use sqlx::mysql::MySqlSslMode;
+        match self {
+            TlsMode::Disable => MySqlSslMode::Disabled,
+            TlsMode::Allow | TlsMode::Prefer => MySqlSslMode::Preferred,
+            TlsMode::Require => MySqlSslMode::Required,
+            TlsMode::VerifyCa => MySqlSslMode::VerifyCa,
+            TlsMode::VerifyFull => MySqlSslMode::VerifyIdentity,
+        }
+    }
 }
 
 impl Default for DbConfig {
@@ -522,7 +838,7 @@ impl Default for DbConfig {
             connect_timeout_ms: 5000,
             idle_timeout_ms: 600_000, // 10 minutes
             max_lifetime_ms: 1_800_000, // 30 minutes
-            tls_mode: "preferred".to_string(),
+            tls_mode: None,
             log_queries: false,
         }
     }
@@ -540,6 +856,8 @@ pub enum TransactionAction {
     Begin,
     Commit,
     Rollback,
+    /// Begin, run `statements`, and commit (or roll back on error) in one call.
+    Run,
 }
 
 impl TransactionAction {
@@ -548,8 +866,9 @@ impl TransactionAction {
             "begin" => Ok(TransactionAction::Begin),
             "commit" => Ok(TransactionAction::Commit),
             "rollback" => Ok(TransactionAction::Rollback),
+            "run" => Ok(TransactionAction::Run),
             _ => Err(DbError::InvalidTransactionConfig {
-                message: format!("invalid action: {}. Valid actions: begin, commit, rollback", s)
+                message: format!("invalid action: {}. Valid actions: run, begin, commit, rollback", s)
             }),
         }
     }
@@ -559,6 +878,7 @@ impl TransactionAction {
             TransactionAction::Begin => "begin",
             TransactionAction::Commit => "commit",
             TransactionAction::Rollback => "rollback",
+            TransactionAction::Run => "run",
         }
     }
 }
@@ -592,6 +912,8 @@ impl TransactionIsolation {
 #[derive(Debug, Clone)]
 pub struct TransactionConfig {
     pub action: TransactionAction,
+    /// Statements for `action=run`, executed in order inside one transaction.
+    pub statements: Vec<TxStatement>,
     pub tx_id: Option<String>,
     pub isolation: Option<TransactionIsolation>,
     pub read_only: bool,
@@ -600,13 +922,33 @@ pub struct TransactionConfig {
 
 impl TransactionConfig {
     fn from_args(args: &Value) -> Result<Self, DbError> {
-        let action_str = args.get("action")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DbError::InvalidTransactionConfig {
-                message: "missing required 'action' field".to_string()
-            })?;
+        let statements = TxStatement::parse_list(args.get("statements"))?;
 
-        let action = TransactionAction::from_str(action_str)?;
+        // action defaults to run when statements are given
+        let action = match args.get("action").and_then(|v| v.as_str()) {
+            Some(a) => TransactionAction::from_str(a)?,
+            None if statements.is_some() => TransactionAction::Run,
+            None => {
+                return Err(DbError::InvalidTransactionConfig {
+                    message: "missing required 'action' field (or pass statements=<json-array> to run them in one transaction)".to_string()
+                })
+            }
+        };
+
+        let statements = match (&action, statements) {
+            (TransactionAction::Run, Some(list)) => list,
+            (TransactionAction::Run, None) => {
+                return Err(DbError::InvalidTransactionConfig {
+                    message: "statements is required for 'run' action".to_string()
+                })
+            }
+            (_, Some(_)) => {
+                return Err(DbError::InvalidTransactionConfig {
+                    message: format!("statements is only valid with action=run, not '{}'", action.as_str())
+                })
+            }
+            (_, None) => Vec::new(),
+        };
 
         let tx_id = args.get("tx_id")
             .and_then(|v| v.as_str())
@@ -614,11 +956,11 @@ impl TransactionConfig {
 
         // Validate tx_id requirements based on action
         match action {
-            TransactionAction::Begin => {
-                // tx_id should NOT be provided for begin
+            TransactionAction::Begin | TransactionAction::Run => {
+                // tx_id should NOT be provided for begin or run
                 if tx_id.is_some() {
                     return Err(DbError::InvalidTransactionConfig {
-                        message: "tx_id must not be provided for 'begin' action".to_string()
+                        message: format!("tx_id must not be provided for '{}' action", action.as_str())
                     });
                 }
             }
@@ -639,7 +981,8 @@ impl TransactionConfig {
             }
         }
 
-        let isolation = if action == TransactionAction::Begin {
+        let starts_tx = matches!(action, TransactionAction::Begin | TransactionAction::Run);
+        let isolation = if starts_tx {
             args.get("isolation")
                 .and_then(|v| v.as_str())
                 .map(TransactionIsolation::from_str)
@@ -648,16 +991,14 @@ impl TransactionConfig {
             None // Ignore isolation for commit/rollback
         };
 
-        let read_only = if action == TransactionAction::Begin {
-            args.get("read_only")
-                .and_then(|v| v.as_bool())
+        let read_only = if starts_tx {
+            typed_bool(args, "read_only").map_err(|m| DbError::InvalidTransactionConfig { message: m })?
                 .unwrap_or(false)
         } else {
             false // Ignore read_only for commit/rollback
         };
 
-        let timeout_ms = args.get("timeout_ms")
-            .and_then(|v| v.as_u64())
+        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidTransactionConfig { message: m })?
             .unwrap_or(5000);
 
         // Validation
@@ -669,11 +1010,79 @@ impl TransactionConfig {
 
         Ok(TransactionConfig {
             action,
+            statements,
             tx_id,
             isolation,
             read_only,
             timeout_ms,
         })
+    }
+}
+
+/// One statement for `transaction action=run`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TxStatement {
+    pub sql: String,
+    pub params: Vec<Value>,
+}
+
+impl TxStatement {
+    /// Parses `statements`: a JSON array (or a string holding one) whose
+    /// items are SQL strings or objects with `sql` and optional `params`.
+    /// Returns `Ok(None)` when the argument is absent.
+    fn parse_list(value: Option<&Value>) -> Result<Option<Vec<TxStatement>>, DbError> {
+        let invalid = |message: String| DbError::InvalidTransactionConfig { message };
+        let parsed;
+        let items = match value {
+            None | Some(Value::Null) => return Ok(None),
+            Some(Value::Array(items)) => items,
+            Some(Value::String(text)) => {
+                parsed = serde_json::from_str::<Value>(text).map_err(|e| {
+                    invalid(format!("statements must be a JSON array of SQL strings: {}", e))
+                })?;
+                match &parsed {
+                    Value::Array(items) => items,
+                    _ => return Err(invalid("statements must be a JSON array".to_string())),
+                }
+            }
+            Some(_) => return Err(invalid("statements must be a JSON array".to_string())),
+        };
+        if items.is_empty() {
+            return Err(invalid("statements cannot be empty".to_string()));
+        }
+        let mut out = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            let (sql, params) = match item {
+                Value::String(sql) => (sql.clone(), Vec::new()),
+                Value::Object(obj) => {
+                    let sql = obj.get("sql").and_then(|v| v.as_str()).ok_or_else(|| {
+                        invalid(format!("statements[{}] must have a string 'sql' field", index))
+                    })?;
+                    let params = match obj.get("params") {
+                        None | Some(Value::Null) => Vec::new(),
+                        Some(Value::Array(p)) => p.clone(),
+                        Some(_) => {
+                            return Err(invalid(format!("statements[{}].params must be an array", index)))
+                        }
+                    };
+                    (sql.to_string(), params)
+                }
+                _ => {
+                    return Err(invalid(format!(
+                        "statements[{}] must be a SQL string or an object with sql and params",
+                        index
+                    )))
+                }
+            };
+            if sql.trim().is_empty() {
+                return Err(invalid(format!("statements[{}] cannot be empty", index)));
+            }
+            ExecConfig::validate_single_statement(&sql).map_err(|_| {
+                invalid(format!("statements[{}] must be a single SQL statement", index))
+            })?;
+            out.push(TxStatement { sql, params });
+        }
+        Ok(Some(out))
     }
 }
 
@@ -725,63 +1134,35 @@ pub struct DbHandle {
 }
 
 impl DbHandle {
-    /// Check if help was requested based on verb or arguments
+    /// Returns `Some(topic)` when the call is a help request: the verb is
+    /// `help`, `--help` or `-h` (exact match), or `--help=<verb>`, or the
+    /// arguments contain a bare `help`/`--help`/`-h` flag. The topic is the
+    /// verb whose help was asked for, if any.
+    fn help_topic<'a>(&self, verb: &'a str, args: &'a Args) -> Option<Option<&'a str>> {
+        let from_args = || args.get("verb").map(|s| s.as_str()).filter(|s| !s.is_empty());
+        if verb == "help" || crate::core::help::is_help_flag(verb) || self.driver_str == "help" {
+            return Some(from_args());
+        }
+        if let Some(v) = verb.strip_prefix("--help=") {
+            return Some(Some(v).filter(|s| !s.is_empty()));
+        }
+        if ["help", "h", "--help", "-h"].iter().any(|k| args.contains_key(*k)) {
+            return Some(Some(verb));
+        }
+        None
+    }
+
+    /// True if the call is a help request (see `help_topic`).
     pub fn should_show_help(&self, verb: &str, args: &Args) -> bool {
-        // Check if verb is a help request
-        verb == "--help" || verb == "-h" || verb == "help" ||
-        // Check if args contain help flags
-        args.get("help").is_some() || 
-        args.get("h").is_some() ||
-        args.contains_key("--help") ||
-        args.contains_key("-h") ||
-        // Check if verb ends with --help pattern
-        verb.ends_with("--help") ||
-        verb.ends_with("-h")
+        self.help_topic(verb, args).is_some()
     }
 
-    /// Display comprehensive help for the database handle
+    /// Writes the approved `DB_HELP` text, for one verb when `verb_specific`
+    /// names a documented verb, otherwise for the whole handle.
     pub fn display_help(&self, io: &mut IoStreams, verb_specific: Option<&str>) -> Result<Status> {
-        if let Some(specific_verb) = verb_specific {
-            // Show verb-specific help if implemented
-            self.display_verb_help(specific_verb, io)?;
-        } else {
-            // Show general help
-            writeln!(io.stdout, "{}", DB_HELP_TEXT)?;
-        }
+        let text = crate::core::help::render_legacy("db", &DB_HELP, self.verbs(), verb_specific);
+        write!(io.stdout, "{}", text)?;
         Ok(Status::ok())
-    }
-
-    /// Display help for a specific verb (optional feature)
-    pub fn display_verb_help(&self, verb: &str, io: &mut IoStreams) -> Result<()> {
-        match verb {
-            "connect" => {
-                writeln!(io.stdout, "{}", CONNECT_VERB_HELP)?;
-            }
-            "query" => {
-                writeln!(io.stdout, "{}", QUERY_VERB_HELP)?;
-            }
-            "exec" => {
-                writeln!(io.stdout, "{}", EXEC_VERB_HELP)?;
-            }
-            "tables" => {
-                writeln!(io.stdout, "{}", TABLES_VERB_HELP)?;
-            }
-            "schema" => {
-                writeln!(io.stdout, "{}", SCHEMA_VERB_HELP)?;
-            }
-            "ping" => {
-                writeln!(io.stdout, "{}", PING_VERB_HELP)?;
-            }
-            "transaction" => {
-                writeln!(io.stdout, "{}", TRANSACTION_VERB_HELP)?;
-            }
-            _ => {
-                writeln!(io.stdout, "Unknown verb '{}' for db:// handle.", verb)?;
-                writeln!(io.stdout, "Available verbs: connect, query, exec, tables, schema, ping, transaction")?;
-                writeln!(io.stdout, "\nUse 'db:// --help' for complete help.")?;
-            }
-        }
-        Ok(())
     }
 
     /// Create new DbHandle from URL
@@ -790,9 +1171,9 @@ impl DbHandle {
         let path = url.path();
         let host = url.host_str().unwrap_or("");
         
-        // Special handling for help requests at URL level
-        if host == "--help" || host == "-h" || 
-           path.contains("--help") || path.contains("-h") {
+        // Special handling for help requests at URL level (exact match, so
+        // aliases such as db://sqlite/my-hosts are not treated as help)
+        if crate::core::help::is_help_flag(host) || crate::core::help::is_help_flag(path) {
             // Return a dummy handle - help will be detected in call()
             return Ok(Self {
                 driver: DbDriver::Sqlite, // Dummy value
@@ -909,6 +1290,65 @@ impl DbHandle {
         }))
     }
 
+    /// Connection arguments forwarded to `connect` when a verb connects on demand.
+    const CONNECT_ARGS: &'static [&'static str] = &[
+        "dsn",
+        "max_connections",
+        "min_connections",
+        "connect_timeout_ms",
+        "idle_timeout_ms",
+        "max_lifetime_ms",
+        "tls_mode",
+        "log_queries",
+    ];
+
+    /// Returns the registered pool for this driver and alias. When none is
+    /// registered and a DSN is available (dsn= or DB_<ALIAS>_DSN), connects
+    /// first with the connection arguments in `args`. Pools exist only in
+    /// process memory, so this is what makes every verb usable from a fresh
+    /// resh invocation.
+    async fn resolve_connection(&self, args: &Value) -> Result<Arc<DbConnectionHandle>> {
+        let cache_key = (self.driver.clone(), self.alias.clone());
+        let existing = CONNECTION_REGISTRY.get(&cache_key).map(|r| Arc::clone(r.value()));
+        if let Some(handle) = existing {
+            return Ok(handle);
+        }
+
+        let mut connect_args = Args::new();
+        for key in Self::CONNECT_ARGS {
+            match args.get(*key) {
+                None | Some(Value::Null) => {}
+                Some(Value::String(v)) => {
+                    connect_args.insert(key.to_string(), v.clone());
+                }
+                Some(other) => {
+                    connect_args.insert(key.to_string(), other.to_string());
+                }
+            }
+        }
+        let env_var = format!("DB_{}_DSN", self.alias.to_uppercase());
+        let has_dsn = connect_args.get("dsn").map_or(false, |d| !d.is_empty())
+            || std::env::var(&env_var).map_or(false, |d| !d.is_empty());
+        if !has_dsn {
+            return Err(DbError::ConnectionNotFound {
+                driver: self.driver.as_str().to_string(),
+                alias: self.alias.clone(),
+            }
+            .into());
+        }
+
+        log::debug!("Auto-connecting driver='{}' alias='{}'", self.driver.as_str(), self.alias);
+        self.connect(connect_args).await?;
+        let connected = CONNECTION_REGISTRY.get(&cache_key).map(|r| Arc::clone(r.value()));
+        connected.ok_or_else(|| {
+            DbError::ConnectionNotFound {
+                driver: self.driver.as_str().to_string(),
+                alias: self.alias.clone(),
+            }
+            .into()
+        })
+    }
+
     /// Parse configuration from arguments with validation
     fn parse_config(&self, args: &Args) -> Result<DbConfig> {
         let mut config = DbConfig::default();
@@ -939,12 +1379,15 @@ impl DbHandle {
         }
 
         if let Some(tls_mode) = args.get("tls_mode") {
-            config.tls_mode = tls_mode.clone();
+            config.tls_mode = Some(tls_mode.clone()).filter(|m| !m.trim().is_empty());
         }
 
         if let Some(log_queries_str) = args.get("log_queries") {
-            config.log_queries = log_queries_str.parse()
-                .context("log_queries must be a boolean")?;
+            config.log_queries = crate::core::lenient::from_value::<bool>(Value::String(log_queries_str.clone()))
+                .map_err(|_| DbError::InvalidConfig {
+                    field: "log_queries".to_string(),
+                    message: format!("must be true or false, got '{}'", log_queries_str),
+                })?;
         }
 
         // Validate configuration
@@ -997,18 +1440,39 @@ impl DbHandle {
             }.into());
         }
 
-        // Validate TLS mode
-        match config.tls_mode.as_str() {
-            "disable" | "prefer" | "require" | "preferred" => {}
-            _ => {
-                return Err(DbError::InvalidConfig {
-                    field: "tls_mode".to_string(),
-                    message: "must be one of: disable, prefer, require, preferred".to_string(),
-                }.into());
-            }
-        }
+        // Validate TLS mode against what the driver supports
+        self.tls_mode(config)?;
 
         Ok(())
+    }
+
+    /// Parses and checks `config.tls_mode` for this driver. PostgreSQL takes
+    /// every mode; MySQL has no "allow"; SQLite has no TLS, so only
+    /// "disable" is accepted there.
+    fn tls_mode(&self, config: &DbConfig) -> Result<Option<TlsMode>> {
+        let raw = match config.tls_mode.as_deref() {
+            None => return Ok(None),
+            Some(raw) => raw,
+        };
+        let invalid = |message: String| -> anyhow::Error {
+            DbError::InvalidConfig { field: "tls_mode".to_string(), message }.into()
+        };
+        let mode = TlsMode::parse(raw).ok_or_else(|| {
+            invalid(format!(
+                "'{}' is not valid; use disable, allow, prefer, require, verify_ca or verify_full",
+                raw
+            ))
+        })?;
+        match (&self.driver, mode) {
+            (DbDriver::Mysql, TlsMode::Allow) => Err(invalid(
+                "allow is not supported by mysql; use disable, prefer, require, verify_ca or verify_full".to_string(),
+            )),
+            (DbDriver::Sqlite, TlsMode::Disable) => Ok(Some(mode)),
+            (DbDriver::Sqlite, _) => Err(invalid(
+                "sqlite connections do not use TLS; omit tls_mode or use tls_mode=disable".to_string(),
+            )),
+            _ => Ok(Some(mode)),
+        }
     }
 
     /// Resolve DSN from arguments or environment
@@ -1100,41 +1564,71 @@ impl DbHandle {
         }
     }
 
-    /// Create database connection pool
+    /// Create database connection pool. tls_mode= sets the driver's SSL mode
+    /// (overriding any sslmode/ssl-mode in the DSN), and log_queries= turns
+    /// sqlx statement logging on (info level) or off.
     async fn create_pool(&self, dsn: &str, config: &DbConfig) -> Result<DbPool> {
+        use sqlx::ConnectOptions;
+        use std::str::FromStr;
+
+        let tls = self.tls_mode(config)?;
+        let invalid_dsn = |e: sqlx::Error| DbError::InvalidDsn {
+            dsn: redact_dsn(dsn),
+            message: e.to_string(),
+        };
+        fn logging<O: ConnectOptions>(opts: O, log_queries: bool) -> O {
+            if log_queries {
+                opts.log_statements(log::LevelFilter::Info)
+            } else {
+                opts.disable_statement_logging()
+            }
+        }
+
         match self.driver {
             DbDriver::Postgres => {
+                let mut opts = sqlx::postgres::PgConnectOptions::from_str(dsn).map_err(invalid_dsn)?;
+                if let Some(mode) = tls {
+                    opts = opts.ssl_mode(mode.postgres());
+                }
+                let opts = logging(opts, config.log_queries);
                 let pool = sqlx::postgres::PgPoolOptions::new()
                     .max_connections(config.max_connections)
                     .min_connections(config.min_connections)
                     .acquire_timeout(Duration::from_millis(config.connect_timeout_ms))
                     .idle_timeout(Some(Duration::from_millis(config.idle_timeout_ms)))
                     .max_lifetime(Some(Duration::from_millis(config.max_lifetime_ms)))
-                    .connect(dsn)
+                    .connect_with(opts)
                     .await
                     .map_err(|e| DbError::ConnectFailed { message: format!("PostgreSQL connection failed: {}", e) })?;
                 Ok(DbPool::Postgres(pool))
             }
             DbDriver::Mysql => {
+                let mut opts = sqlx::mysql::MySqlConnectOptions::from_str(dsn).map_err(invalid_dsn)?;
+                if let Some(mode) = tls {
+                    opts = opts.ssl_mode(mode.mysql());
+                }
+                let opts = logging(opts, config.log_queries);
                 let pool = sqlx::mysql::MySqlPoolOptions::new()
                     .max_connections(config.max_connections)
                     .min_connections(config.min_connections)
                     .acquire_timeout(Duration::from_millis(config.connect_timeout_ms))
                     .idle_timeout(Some(Duration::from_millis(config.idle_timeout_ms)))
                     .max_lifetime(Some(Duration::from_millis(config.max_lifetime_ms)))
-                    .connect(dsn)
+                    .connect_with(opts)
                     .await
                     .map_err(|e| DbError::ConnectFailed { message: format!("MySQL connection failed: {}", e) })?;
                 Ok(DbPool::Mysql(pool))
             }
             DbDriver::Sqlite => {
+                let opts = sqlx::sqlite::SqliteConnectOptions::from_str(dsn).map_err(invalid_dsn)?;
+                let opts = logging(opts, config.log_queries);
                 let pool = sqlx::sqlite::SqlitePoolOptions::new()
                     .max_connections(config.max_connections)
                     .min_connections(config.min_connections)
                     .acquire_timeout(Duration::from_millis(config.connect_timeout_ms))
                     .idle_timeout(Some(Duration::from_millis(config.idle_timeout_ms)))
                     .max_lifetime(Some(Duration::from_millis(config.max_lifetime_ms)))
-                    .connect(dsn)
+                    .connect_with(opts)
                     .await
                     .map_err(|e| DbError::ConnectFailed { message: format!("SQLite connection failed: {}", e) })?;
                 Ok(DbPool::Sqlite(pool))
@@ -1164,43 +1658,8 @@ impl DbHandle {
 
     /// Execute query using connection pool (autocommit)
     async fn execute_query_with_pool(&self, config: &QueryConfig, args: &Value) -> Result<Value> {
-        // Look up connection handle
-        let cache_key = (self.driver.clone(), self.alias.clone());
-        let handle = match CONNECTION_REGISTRY.get(&cache_key) {
-            Some(handle) => handle.clone(),
-            None => {
-                // Try to auto-connect if DSN is provided
-                if let Some(dsn_value) = args.get("dsn") {
-                    if let Some(dsn_str) = dsn_value.as_str() {
-                        log::debug!("Auto-connecting for query with DSN: {}", dsn_str);
-                        
-                        // Create connection args for auto-connect
-                        let mut connect_args = std::collections::HashMap::new();
-                        connect_args.insert("dsn".to_string(), dsn_str.to_string());
-                        
-                        // Perform connection
-                        self.connect(connect_args).await?;
-                        
-                        // Retrieve the newly created connection
-                        CONNECTION_REGISTRY.get(&cache_key)
-                            .ok_or_else(|| DbError::ConnectionNotFound { 
-                                driver: self.driver.as_str().to_string(),
-                                alias: self.alias.clone(),
-                            })?.clone()
-                    } else {
-                        return Err(DbError::ConnectionNotFound { 
-                            driver: self.driver.as_str().to_string(),
-                            alias: self.alias.clone(),
-                        }.into());
-                    }
-                } else {
-                    return Err(DbError::ConnectionNotFound { 
-                        driver: self.driver.as_str().to_string(),
-                        alias: self.alias.clone(),
-                    }.into());
-                }
-            }
-        };
+        // Look up connection handle, connecting on demand when dsn= is given
+        let handle = self.resolve_connection(args).await?;
 
         // Execute query with timeout
         let result = tokio::time::timeout(
@@ -1296,43 +1755,8 @@ impl DbHandle {
 
     /// Execute exec using connection pool (autocommit)
     async fn execute_exec_with_pool(&self, config: &ExecConfig, args: &Value) -> Result<Value> {
-        // Look up connection handle
-        let cache_key = (self.driver.clone(), self.alias.clone());
-        let handle = match CONNECTION_REGISTRY.get(&cache_key) {
-            Some(handle) => handle.clone(),
-            None => {
-                // Try to auto-connect if DSN is provided
-                if let Some(dsn_value) = args.get("dsn") {
-                    if let Some(dsn_str) = dsn_value.as_str() {
-                        log::debug!("Auto-connecting for exec with DSN: {}", dsn_str);
-                        
-                        // Create connection args for auto-connect
-                        let mut connect_args = std::collections::HashMap::new();
-                        connect_args.insert("dsn".to_string(), dsn_str.to_string());
-                        
-                        // Perform connection
-                        self.connect(connect_args).await?;
-                        
-                        // Retrieve the newly created connection
-                        CONNECTION_REGISTRY.get(&cache_key)
-                            .ok_or_else(|| DbError::ConnectionNotFound { 
-                                driver: self.driver.as_str().to_string(),
-                                alias: self.alias.clone(),
-                            })?.clone()
-                    } else {
-                        return Err(DbError::ConnectionNotFound { 
-                            driver: self.driver.as_str().to_string(),
-                            alias: self.alias.clone(),
-                        }.into());
-                    }
-                } else {
-                    return Err(DbError::ConnectionNotFound { 
-                        driver: self.driver.as_str().to_string(),
-                        alias: self.alias.clone(),
-                    }.into());
-                }
-            }
-        };
+        // Look up connection handle, connecting on demand when dsn= is given
+        let handle = self.resolve_connection(args).await?;
 
         // Execute with timeout
         let result = tokio::time::timeout(
@@ -1485,13 +1909,8 @@ impl DbHandle {
         log::debug!("Executing tables for driver='{}' alias='{}' table={:?} schema={:?}", 
                    self.driver.as_str(), self.alias, config.table, config.schema);
 
-        // Look up connection handle
-        let cache_key = (self.driver.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&cache_key)
-            .ok_or_else(|| DbError::ConnectionNotFound { 
-                driver: self.driver.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        // Look up connection handle, connecting on demand when dsn= is given
+        let handle = self.resolve_connection(&args).await?;
 
         // Execute with timeout
         let result = tokio::time::timeout(
@@ -1538,13 +1957,8 @@ impl DbHandle {
         log::debug!("Executing schema for driver='{}' alias='{}' table='{}' schema={:?}", 
                    self.driver.as_str(), self.alias, config.table, config.schema);
 
-        // Look up connection handle
-        let cache_key = (self.driver.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&cache_key)
-            .ok_or_else(|| DbError::ConnectionNotFound { 
-                driver: self.driver.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        // Look up connection handle, connecting on demand when dsn= is given
+        let handle = self.resolve_connection(&args).await?;
 
         // Execute with timeout
         let result = tokio::time::timeout(
@@ -2155,13 +2569,8 @@ impl DbHandle {
         log::debug!("Executing ping for driver='{}' alias='{}' timeout_ms={} retries={}", 
                    self.driver.as_str(), self.alias, config.timeout_ms, config.retries);
 
-        // Look up connection handle
-        let cache_key = (self.driver.clone(), self.alias.clone());
-        let handle = CONNECTION_REGISTRY.get(&cache_key)
-            .ok_or_else(|| DbError::ConnectionNotFound { 
-                driver: self.driver.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+        // Look up connection handle, connecting on demand when dsn= is given
+        let handle = self.resolve_connection(&args).await?;
 
         // Perform ping with retry logic
         let mut last_error: Option<String> = None;
@@ -2266,21 +2675,17 @@ impl DbHandle {
         let config = TransactionConfig::from_args(&args)?;
         
         match config.action {
-            TransactionAction::Begin => self.transaction_begin(config).await,
+            TransactionAction::Run => self.transaction_run(config, &args).await,
+            TransactionAction::Begin => self.transaction_begin(config, &args).await,
             TransactionAction::Commit => self.transaction_commit(config).await,
             TransactionAction::Rollback => self.transaction_rollback(config).await,
         }
     }
 
     /// Begin a new transaction
-    async fn transaction_begin(&self, config: TransactionConfig) -> Result<Value> {
-        // Get connection pool
-        let connection_handle = CONNECTION_REGISTRY
-            .get(&(self.driver.clone(), self.alias.clone()))
-            .ok_or_else(|| DbError::ConnectionNotFound {
-                driver: self.driver.as_str().to_string(),
-                alias: self.alias.clone(),
-            })?;
+    async fn transaction_begin(&self, config: TransactionConfig, args: &Value) -> Result<Value> {
+        // Get connection pool, connecting on demand when dsn= is given
+        let connection_handle = self.resolve_connection(args).await?;
 
         let pool = &connection_handle.pool;
 
@@ -2331,6 +2736,76 @@ impl DbHandle {
             "driver": self.driver.as_str(),
             "alias": self.alias,
             "tx_id": tx_id
+        }))
+    }
+
+    /// Runs `config.statements` in one transaction within this call: begins
+    /// (with the requested isolation and read-only options), executes each
+    /// statement in order, then commits. If any statement fails, or the whole
+    /// run exceeds timeout_ms, the transaction is rolled back and nothing is
+    /// applied.
+    async fn transaction_run(&self, config: TransactionConfig, args: &Value) -> Result<Value> {
+        let connection_handle = self.resolve_connection(args).await?;
+        let pool = &connection_handle.pool;
+        let timeout_ms = config.timeout_ms;
+
+        let run = async {
+            let mut tx = self
+                .begin_transaction_with_options(pool, &config)
+                .await
+                .map_err(|e| DbError::TransactionBeginFailed { message: e.to_string() })?;
+
+            let mut results = Vec::with_capacity(config.statements.len());
+            for (index, stmt) in config.statements.iter().enumerate() {
+                let exec = ExecConfig {
+                    sql: stmt.sql.clone(),
+                    params: stmt.params.clone(),
+                    timeout_ms,
+                    return_last_insert_id: false,
+                    tx_id: None,
+                };
+                let outcome = match &mut tx {
+                    DbTransaction::Postgres(t) => self.execute_postgres_exec_on_tx(t, &exec).await,
+                    DbTransaction::Mysql(t) => self.execute_mysql_exec_on_tx(t, &exec).await,
+                    DbTransaction::Sqlite(t) => self.execute_sqlite_exec_on_tx(t, &exec).await,
+                };
+                match outcome {
+                    Ok(v) => results.push(json!({
+                        "index": index,
+                        "rows_affected": v.get("rows_affected").cloned().unwrap_or(Value::Null)
+                    })),
+                    Err(e) => {
+                        let rollback = self.rollback_transaction(tx).await;
+                        return Err(DbError::TransactionStatementFailed {
+                            index,
+                            message: e.to_string(),
+                            rolled_back: rollback.is_ok(),
+                        });
+                    }
+                }
+            }
+
+            self.commit_transaction(tx)
+                .await
+                .map_err(|e| DbError::TransactionCommitFailed { message: e.to_string() })?;
+            Ok::<_, DbError>(results)
+        };
+
+        // On timeout the transaction future is dropped, which rolls it back.
+        let results = tokio::time::timeout(Duration::from_millis(timeout_ms), run)
+            .await
+            .map_err(|_| DbError::TransactionTimeout { timeout_ms })??;
+
+        log::info!("Transaction run committed for driver='{}' alias='{}' statements={}",
+                  self.driver.as_str(), self.alias, results.len());
+
+        Ok(json!({
+            "action": "run",
+            "alias": self.alias,
+            "committed": true,
+            "driver": self.driver.as_str(),
+            "results": results,
+            "status": "ok"
         }))
     }
 
@@ -2674,6 +3149,9 @@ pub enum DbError {
     #[error("transaction commit failed: {message}")]
     TransactionCommitFailed { message: String },
 
+    #[error("transaction statement {index} failed: {message}")]
+    TransactionStatementFailed { index: usize, message: String, rolled_back: bool },
+
     #[error("transaction rollback failed: {message}")]
     TransactionRollbackFailed { message: String },
 
@@ -2953,6 +3431,17 @@ impl DbError {
                     "code": "db.transaction_commit_failed",
                     "message": self.to_string(),
                     "details": {
+                        "underlying_error": message
+                    }
+                }
+            }),
+            DbError::TransactionStatementFailed { index, message, rolled_back } => json!({
+                "error": {
+                    "code": "db.transaction_statement_failed",
+                    "message": self.to_string(),
+                    "details": {
+                        "index": index,
+                        "rolled_back": rolled_back,
                         "underlying_error": message
                     }
                 }
@@ -4282,409 +4771,29 @@ impl Handle for DbHandle {
         &["connect", "query", "exec", "tables", "schema", "ping", "transaction"]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&DB_HELP)
+    }
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Check for help requests before normal verb processing
-        if self.should_show_help(verb, args) {
-            // Extract verb name for specific help if requested (e.g., --help=connect)
-            let verb_specific = if verb.contains('=') {
-                verb.split('=').nth(1)
-            } else {
-                // Check if help is requested for a specific verb via arguments
-                args.get("verb").map(|s| s.as_str())
-            };
-            
-            return self.display_help(io, verb_specific);
+        // Help requests (help, --help, -h, --help=<verb>, help(verb=<verb>))
+        if let Some(topic) = self.help_topic(verb, args) {
+            return self.display_help(io, topic);
         }
-        // Since we need async for database operations, we need to use tokio runtime
-        let rt = tokio::runtime::Runtime::new()
-            .context("failed to create tokio runtime")?;
 
-        match verb {
-            "connect" => {
-                match rt.block_on(self.connect(args.clone())) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        // Check if it's a DbError that can be converted to JSON
-                        let error_json = if let Some(db_error) = e.downcast_ref::<DbError>() {
-                            db_error.to_json()
-                        } else {
-                            json!({
-                                "error": {
-                                    "code": "db.internal_error",
-                                    "message": e.to_string(),
-                                    "details": {}
-                                }
-                            })
-                        };
-                        
-                        write!(io.stdout, "{}", error_json)?;
-                        
-                        Ok(Status::err(1, e.to_string()))
-                    }
-                }
-            }
-            "query" => {
-                // Convert Args to JSON Value for query method
-                let query_args = {
-                    let mut json_args = serde_json::Map::new();
-                    for (key, value) in args {
-                        // Special handling for params field which should be JSON
-                        if key == "params" {
-                            match serde_json::from_str::<Value>(value) {
-                                Ok(parsed_params) => {
-                                    json_args.insert(key.clone(), parsed_params);
-                                }
-                                Err(_) => {
-                                    // If not valid JSON, treat as string
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else {
-                            json_args.insert(key.clone(), Value::String(value.clone()));
-                        }
-                    }
-                    Value::Object(json_args)
-                };
+        // One runtime per process, so pools registered by an earlier stage
+        // stay usable by later stages of the same resh invocation.
+        let rt = db_runtime()?;
 
-                match rt.block_on(self.query(query_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        // Check if it's a DbError that can be converted to JSON
-                        let error_json = if let Some(db_error) = e.downcast_ref::<DbError>() {
-                            db_error.to_json()
-                        } else {
-                            json!({
-                                "error": {
-                                    "code": "db.internal_error",
-                                    "message": e.to_string(),
-                                    "details": {}
-                                }
-                            })
-                        };
-                        
-                        write!(io.stdout, "{}", error_json)?;
-                        
-                        Ok(Status::err(1, e.to_string()))
-                    }
-                }
-            }
-            "exec" => {
-                // Convert Args to JSON Value for exec method
-                let exec_args = {
-                    let mut json_args = serde_json::Map::new();
-                    for (key, value) in args {
-                        // Special handling for params field which should be JSON
-                        if key == "params" {
-                            match serde_json::from_str::<Value>(value) {
-                                Ok(parsed_params) => {
-                                    json_args.insert(key.clone(), parsed_params);
-                                }
-                                Err(_) => {
-                                    // If not valid JSON, treat as string
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else if key == "return_last_insert_id" {
-                            // Handle boolean field
-                            match value.parse::<bool>() {
-                                Ok(bool_val) => {
-                                    json_args.insert(key.clone(), Value::Bool(bool_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else if key == "timeout_ms" {
-                            // Handle numeric field
-                            match value.parse::<u64>() {
-                                Ok(num_val) => {
-                                    json_args.insert(key.clone(), json!(num_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else {
-                            json_args.insert(key.clone(), Value::String(value.clone()));
-                        }
-                    }
-                    Value::Object(json_args)
-                };
-
-                match rt.block_on(self.exec(exec_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        // Check if it's a DbError that can be converted to JSON
-                        let error_json = if let Some(db_error) = e.downcast_ref::<DbError>() {
-                            db_error.to_json()
-                        } else {
-                            json!({
-                                "error": {
-                                    "code": "db.internal_error",
-                                    "message": e.to_string(),
-                                    "details": {}
-                                }
-                            })
-                        };
-                        
-                        write!(io.stdout, "{}", error_json)?;
-                        
-                        Ok(Status::err(1, e.to_string()))
-                    }
-                }
-            }
-            "tables" => {
-                // Convert Args to JSON Value for tables method
-                let tables_args = {
-                    let mut json_args = serde_json::Map::new();
-                    for (key, value) in args {
-                        // Handle boolean fields
-                        if key == "include_views" || key == "include_system" {
-                            match value.parse::<bool>() {
-                                Ok(bool_val) => {
-                                    json_args.insert(key.clone(), Value::Bool(bool_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else if key == "timeout_ms" || key == "max_tables" {
-                            // Handle numeric fields
-                            match value.parse::<u64>() {
-                                Ok(num_val) => {
-                                    json_args.insert(key.clone(), json!(num_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else {
-                            // Handle string fields (table, schema)
-                            json_args.insert(key.clone(), Value::String(value.clone()));
-                        }
-                    }
-                    Value::Object(json_args)
-                };
-
-                match rt.block_on(self.tables(tables_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        // Check if it's a DbError that can be converted to JSON
-                        let error_json = if let Some(db_error) = e.downcast_ref::<DbError>() {
-                            db_error.to_json()
-                        } else {
-                            json!({
-                                "error": {
-                                    "code": "db.internal_error",
-                                    "message": e.to_string(),
-                                    "details": {}
-                                }
-                            })
-                        };
-                        
-                        write!(io.stdout, "{}", error_json)?;
-                        
-                        Ok(Status::err(1, e.to_string()))
-                    }
-                }
-            }
-            "schema" => {
-                // Convert Args to JSON Value for schema method
-                let schema_args = {
-                    let mut json_args = serde_json::Map::new();
-                    for (key, value) in args {
-                        // Handle boolean fields
-                        if key == "include_indexes" || key == "include_foreign_keys" || 
-                           key == "include_unique_constraints" || key == "include_checks" ||
-                           key == "include_triggers" {
-                            match value.parse::<bool>() {
-                                Ok(bool_val) => {
-                                    json_args.insert(key.clone(), Value::Bool(bool_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else if key == "timeout_ms" {
-                            // Handle numeric fields
-                            match value.parse::<u64>() {
-                                Ok(num_val) => {
-                                    json_args.insert(key.clone(), json!(num_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else {
-                            // Handle string fields (table, schema)
-                            json_args.insert(key.clone(), Value::String(value.clone()));
-                        }
-                    }
-                    Value::Object(json_args)
-                };
-
-                match rt.block_on(self.schema(schema_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        // Check if it's a DbError that can be converted to JSON
-                        let error_json = if let Some(db_error) = e.downcast_ref::<DbError>() {
-                            db_error.to_json()
-                        } else {
-                            json!({
-                                "error": {
-                                    "code": "db.internal_error",
-                                    "message": e.to_string(),
-                                    "details": {}
-                                }
-                            })
-                        };
-                        
-                        write!(io.stdout, "{}", error_json)?;
-                        
-                        Ok(Status::err(1, e.to_string()))
-                    }
-                }
-            }
-            "ping" => {
-                // Convert Args to JSON Value for ping method
-                let ping_args = {
-                    let mut json_args = serde_json::Map::new();
-                    for (key, value) in args {
-                        // Handle boolean fields
-                        if key == "detailed" {
-                            match value.parse::<bool>() {
-                                Ok(bool_val) => {
-                                    json_args.insert(key.clone(), Value::Bool(bool_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else if key == "timeout_ms" || key == "backoff_ms" {
-                            // Handle numeric fields
-                            match value.parse::<u64>() {
-                                Ok(num_val) => {
-                                    json_args.insert(key.clone(), json!(num_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else if key == "retries" {
-                            // Handle retries as u32
-                            match value.parse::<u32>() {
-                                Ok(num_val) => {
-                                    json_args.insert(key.clone(), json!(num_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else {
-                            // Handle other string fields
-                            json_args.insert(key.clone(), Value::String(value.clone()));
-                        }
-                    }
-                    Value::Object(json_args)
-                };
-
-                match rt.block_on(self.ping(ping_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        // Check if it's a DbError that can be converted to JSON
-                        let error_json = if let Some(db_error) = e.downcast_ref::<DbError>() {
-                            db_error.to_json()
-                        } else {
-                            json!({
-                                "error": {
-                                    "code": "db.internal_error",
-                                    "message": e.to_string(),
-                                    "details": {}
-                                }
-                            })
-                        };
-                        
-                        write!(io.stdout, "{}", error_json)?;
-                        
-                        Ok(Status::err(1, e.to_string()))
-                    }
-                }
-            }
-            "transaction" => {
-                // Convert Args to JSON Value for transaction method
-                let transaction_args = {
-                    let mut json_args = serde_json::Map::new();
-                    for (key, value) in args {
-                        // Handle boolean fields
-                        if key == "read_only" {
-                            match value.parse::<bool>() {
-                                Ok(bool_val) => {
-                                    json_args.insert(key.clone(), Value::Bool(bool_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else if key == "timeout_ms" {
-                            // Handle numeric field
-                            match value.parse::<u64>() {
-                                Ok(num_val) => {
-                                    json_args.insert(key.clone(), json!(num_val));
-                                }
-                                Err(_) => {
-                                    json_args.insert(key.clone(), Value::String(value.clone()));
-                                }
-                            }
-                        } else {
-                            json_args.insert(key.clone(), Value::String(value.clone()));
-                        }
-                    }
-                    Value::Object(json_args)
-                };
-
-                match rt.block_on(self.transaction(transaction_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        // Check if it's a DbError that can be converted to JSON
-                        let error_json = if let Some(db_error) = e.downcast_ref::<DbError>() {
-                            db_error.to_json()
-                        } else {
-                            json!({
-                                "error": {
-                                    "code": "db.internal_error",
-                                    "message": e.to_string(),
-                                    "details": {}
-                                }
-                            })
-                        };
-                        
-                        write!(io.stdout, "{}", error_json)?;
-                        
-                        Ok(Status::err(1, e.to_string()))
-                    }
-                }
-            }
+        let json_args = cli_args_to_value(args);
+        let result = match verb {
+            "connect" => rt.block_on(self.connect(args.clone())),
+            "query" => rt.block_on(self.query(json_args)),
+            "exec" => rt.block_on(self.exec(json_args)),
+            "tables" => rt.block_on(self.tables(json_args)),
+            "schema" => rt.block_on(self.schema(json_args)),
+            "ping" => rt.block_on(self.ping(json_args)),
+            "transaction" => rt.block_on(self.transaction(json_args)),
             _ => {
                 let error_json = json!({
                     "error": {
@@ -4697,746 +4806,79 @@ impl Handle for DbHandle {
                     }
                 });
                 write!(io.stdout, "{}", error_json)?;
-                Ok(Status::err(1, format!("unknown verb: {}", verb)))
+                return Ok(Status::err(1, format!("unknown verb: {}", verb)));
+            }
+        };
+
+        match result {
+            Ok(result) => {
+                write!(io.stdout, "{}", result)?;
+                Ok(Status::ok())
+            }
+            Err(e) => {
+                // Check if it's a DbError that can be converted to JSON
+                let error_json = if let Some(db_error) = e.downcast_ref::<DbError>() {
+                    db_error.to_json()
+                } else {
+                    json!({
+                        "error": {
+                            "code": "db.internal_error",
+                            "message": e.to_string(),
+                            "details": {}
+                        }
+                    })
+                };
+                write!(io.stdout, "{}", error_json)?;
+                Ok(Status::err(1, e.to_string()))
             }
         }
     }
 }
 
+/// Process-wide runtime for db operations. sqlx pools are tied to the
+/// runtime that opened their connections.
+fn db_runtime() -> Result<&'static tokio::runtime::Runtime> {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    if let Some(rt) = RUNTIME.get() {
+        return Ok(rt);
+    }
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+    Ok(RUNTIME.get_or_init(|| rt))
+}
+
+/// Removes the password from a DSN for error messages.
+fn redact_dsn(dsn: &str) -> String {
+    match Url::parse(dsn) {
+        Ok(mut url) if url.password().is_some() => {
+            let _ = url.set_password(Some("***"));
+            url.to_string()
+        }
+        _ => dsn.to_string(),
+    }
+}
+
+/// Converts CLI arguments (always strings) to a JSON object for the verb
+/// config parsers. `params` and `statements` are parsed as JSON when they
+/// are valid JSON; every other value stays a string, and the parsers convert
+/// typed options (numbers, booleans) themselves.
+fn cli_args_to_value(args: &Args) -> Value {
+    let mut map = serde_json::Map::new();
+    for (key, value) in args {
+        let v = if key == "params" || key == "statements" {
+            serde_json::from_str::<Value>(value).unwrap_or_else(|_| Value::String(value.clone()))
+        } else {
+            Value::String(value.clone())
+        };
+        map.insert(key.clone(), v);
+    }
+    Value::Object(map)
+}
+
 /// Register db:// scheme with the registry
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("db", |u| Ok(Box::new(DbHandle::from_url(u.clone())?)));
+    reg.set_probe_url("db", "db://sqlite/resh-help-probe");
 }
-
-/// Main help text for the database handle
-const DB_HELP_TEXT: &str = r#"RESOURCE SHELL - DATABASE HANDLE
-================================
-
-USAGE:
-  db://driver/alias.VERB(arguments)
-
-DESCRIPTION:
-  The database handle provides access to SQL databases including SQLite,
-  PostgreSQL, and MySQL. You can run queries, manage transactions, inspect
-  table schemas, and more. Supports both traditional workflow (connect first)
-  and auto-connect (provide DSN with query/exec).
-
-SUPPORTED DRIVERS:
-  sqlite          SQLite embedded database
-  postgres        PostgreSQL database server
-  mysql           MySQL/MariaDB database server
-
-CONNECTION FORMAT:
-  db://driver/alias.verb()
-  
-  Examples:
-    db://sqlite/mydb.connect()
-    db://postgres/analytics.query()
-    db://mysql/production.exec()
-
-VERBS:
-  connect         Connect to a database
-  query           Run SELECT queries and get results
-  exec            Run INSERT, UPDATE, DELETE statements
-  tables          List tables or describe table structure
-  schema          Get detailed table schema information
-  ping            Test database connection health
-  transaction     Manage database transactions (begin, commit, rollback)
-
-EXAMPLES:
-
-  Connect to SQLite (in-memory):
-    db://sqlite/mydb.connect(dsn="sqlite::memory:")
-
-  Connect to SQLite (file):
-    db://sqlite/mydb.connect(dsn="sqlite:///path/to/database.db")
-
-  Connect to PostgreSQL:
-    db://postgres/mydb.connect(dsn="postgresql://user:pass@localhost:5432/dbname")
-
-  Connect to MySQL:
-    db://mysql/mydb.connect(dsn="mysql://user:pass@localhost:3306/dbname")
-
-  Connect with pool settings:
-    db://postgres/mydb.connect(dsn="postgresql://user:pass@localhost:5432/dbname",max_connections=10,min_connections=2,connect_timeout_ms=30000)
-
-  Connect with TLS:
-    db://postgres/mydb.connect(dsn="postgresql://user:pass@localhost:5432/dbname",tls_mode="require")
-
-  Query (traditional - after connect):
-    db://sqlite/mydb.query(sql="SELECT id, email FROM users WHERE active = ?",params="[true]",mode="rows")
-
-  Query with auto-connect (recommended for CLI):
-    db://sqlite/mydb.query(dsn="sqlite:///path/to/database.db",sql="SELECT id, email FROM users WHERE active = ?",params="[true]",mode="rows")
-
-  Query scalar value with auto-connect:
-    db://mysql/stocks.query(dsn="mysql://user:pass@host:3306/database",sql="SELECT COUNT(*) FROM stocks WHERE price > ?",params="[100]",mode="scalar")
-
-  Query without parameters:
-    db://sqlite/mydb.query(sql="SELECT COUNT(*) FROM users",mode="scalar")
-
-  Query with timeout and row limit:
-    db://postgres/mydb.query(sql="SELECT * FROM users",mode="rows",timeout_ms=10000,max_rows=500)
-
-  Execute insert (traditional):
-    db://sqlite/mydb.exec(sql="INSERT INTO users (name, active) VALUES (?, ?)",params="[\"Alice\", true]")
-
-  Execute insert with auto-connect:
-    db://mysql/mydb.exec(dsn="mysql://user:pass@host:3306/database",sql="INSERT INTO users (name, email, active) VALUES (?, ?, ?)",params="[\"Alice\", \"alice@example.com\", true]")
-
-  Execute update:
-    db://postgres/mydb.exec(sql="UPDATE users SET last_login = NOW() WHERE id = $1",params="[123]")
-
-  Execute delete:
-    db://sqlite/mydb.exec(dsn="sqlite:///path/to/database.db",sql="DELETE FROM users WHERE active = ?",params="[false]")
-
-  Execute with last insert ID:
-    db://sqlite/mydb.exec(sql="INSERT INTO users (name, active) VALUES (?, ?)",params="[\"Bob\", true]",return_last_insert_id=true)
-
-  Execute with timeout:
-    db://postgres/mydb.exec(sql="UPDATE large_table SET status = $1 WHERE processed = $2",params="[\"completed\", false]",timeout_ms=30000)
-
-  List all tables:
-    db://sqlite/mydb.tables()
-
-  List tables and views:
-    db://postgres/mydb.tables(include_views=true)
-
-  Describe specific table:
-    db://sqlite/mydb.tables(table="users")
-
-  Get table schema:
-    db://sqlite/mydb.schema(table="users")
-
-  Get schema with indexes:
-    db://postgres/mydb.schema(table="users",include_indexes=true)
-
-  Get complete schema:
-    db://postgres/mydb.schema(table="users",include_indexes=true,include_foreign_keys=true,include_unique_constraints=true)
-
-  Simple ping test:
-    db://sqlite/mydb.ping()
-
-  Ping with timeout:
-    db://postgres/mydb.ping(timeout_ms=2000)
-
-  Ping with retries:
-    db://mysql/mydb.ping(timeout_ms=1000,retries=3,backoff_ms=500)
-
-  Detailed ping:
-    db://sqlite/mydb.ping(detailed=true)
-
-  Begin transaction:
-    db://sqlite/mydb.transaction(action="begin")
-
-  Begin with isolation level:
-    db://postgres/mydb.transaction(action="begin",isolation="serializable",read_only=false)
-
-  Commit transaction:
-    db://sqlite/mydb.transaction(action="commit",tx_id="550e8400-e29b-41d4-a716-446655440000")
-
-  Rollback transaction:
-    db://postgres/mydb.transaction(action="rollback",tx_id="550e8400-e29b-41d4-a716-446655440000")
-
-  Query within transaction:
-    db://postgres/mydb.query(sql="SELECT * FROM users",tx_id="550e8400-e29b-41d4-a716-446655440000")
-
-  Execute within transaction:
-    db://postgres/mydb.exec(sql="INSERT INTO users (name) VALUES ($1)",params="[\"John\"]",tx_id="550e8400-e29b-41d4-a716-446655440000")
-
-CONNECT ARGUMENTS:
-  dsn=DSN                Database connection string (required)
-  max_connections=N      Maximum pool connections (default: 10)
-  min_connections=N      Minimum pool connections (default: 1)
-  connect_timeout_ms=N   Connection timeout in milliseconds (default: 30000)
-  idle_timeout_ms=N      Idle connection timeout (default: 600000)
-  max_lifetime_ms=N      Maximum connection lifetime (default: 1800000)
-  tls_mode=MODE          TLS mode: disable, allow, prefer, require
-
-QUERY ARGUMENTS:
-  dsn=DSN                Database connection string (for auto-connect)
-  sql=SQL                SQL SELECT statement (required)
-  params=JSON            Parameter values as JSON array (e.g., "[1, \"text\", true]")
-  mode=MODE              Query mode: rows, scalar, exec (default: rows)
-  timeout_ms=N           Query timeout in milliseconds
-  max_rows=N             Maximum rows to return (default: unlimited)
-  tx_id=UUID             Transaction ID to execute within
-
-EXEC ARGUMENTS:
-  dsn=DSN                Database connection string (for auto-connect)
-  sql=SQL                SQL INSERT/UPDATE/DELETE statement (required)
-  params=JSON            Parameter values as JSON array
-  return_last_insert_id=BOOL Return last inserted ID (default: false)
-  timeout_ms=N           Execution timeout in milliseconds
-  tx_id=UUID             Transaction ID to execute within
-
-TABLES ARGUMENTS:
-  table=NAME             Specific table to describe (optional)
-  include_views=BOOL     Include views in listing (default: false)
-  include_system=BOOL    Include system tables (default: false)
-  max_tables=N           Maximum tables to return (default: unlimited)
-  timeout_ms=N           Operation timeout in milliseconds
-
-SCHEMA ARGUMENTS:
-  table=NAME             Table name to get schema for (required)
-  include_indexes=BOOL   Include index information (default: false)
-  include_foreign_keys=BOOL Include foreign key relationships (default: false)
-  include_unique_constraints=BOOL Include unique constraints (default: false)
-  include_checks=BOOL    Include check constraints (default: false)
-  include_triggers=BOOL  Include trigger information (default: false)
-  timeout_ms=N           Operation timeout in milliseconds (default: 5000)
-
-PING ARGUMENTS:
-  timeout_ms=N           Connection timeout (default: 1000, min: 1ms)
-  retries=N              Number of retry attempts (default: 0, max: 10)
-  backoff_ms=N           Delay between retries (default: 100)
-  detailed=BOOL          Include extra connection info (default: false)
-
-TRANSACTION ARGUMENTS:
-  action=ACTION          Transaction action: begin, commit, rollback (required)
-  tx_id=UUID             Transaction ID (required for commit/rollback)
-  isolation=LEVEL        Isolation level: default, read_uncommitted, 
-                         read_committed, repeatable_read, serializable
-  read_only=BOOL         Read-only transaction (default: false)
-  timeout_ms=N           Transaction timeout (default: 15000)
-
-AUTO-CONNECT FEATURE:
-  The query and exec verbs support automatic connection establishment
-  when a DSN parameter is provided. This eliminates the need for separate connect commands
-  in simple workflows.
-
-  How it works:
-  1. Provide dsn parameter with query or exec command
-  2. If no existing connection found for alias
-  3. Connection automatically established using DSN
-  4. Command executes using new connection
-
-  Use auto-connect for:
-  • One-off CLI queries and commands
-  • Batch processing scripts
-  • Quick data exploration
-  • Simple automation tasks
-
-  Use traditional connect for:
-  • Long-running applications
-  • Multiple operations on same connection
-  • Transaction-based workflows
-  • Connection pooling scenarios
-
-PARAMETER BINDING:
-  All SQL operations support parameter binding to prevent SQL injection.
-
-  SQLite style (positional with ?):
-    sql="SELECT * FROM users WHERE id = ? AND active = ?"
-    params="[1, true]"
-
-  PostgreSQL style (positional with $1, $2):
-    sql="SELECT * FROM users WHERE id = $1 AND active = $2"
-    params="[1, true]"
-
-  MySQL style (positional with ?):
-    sql="SELECT * FROM users WHERE id = ? AND active = ?"
-    params="[1, true]"
-
-  Supported parameter types:
-  • Strings: "text value"
-  • Numbers: 42, 3.14
-  • Booleans: true, false
-  • Null: null
-
-DSN FORMAT:
-  SQLite in-memory:
-    sqlite::memory:
-
-  SQLite file:
-    sqlite:///path/to/database.db
-    sqlite:///absolute/path/database.db
-    sqlite://relative/path/database.db
-
-  PostgreSQL:
-    postgresql://user:password@host:port/database
-    postgres://user:password@host:port/database
-
-  MySQL:
-    mysql://user:password@host:port/database
-
-  Special characters in passwords:
-    Use single quotes: 'mysql://user:P@ssw0rd$123@host:3306/db'
-    Or URL-encode: mysql://user:P@ssw0rd%24123@host:3306/db
-
-QUERY MODES:
-  rows                   Returns multiple rows as array (default)
-  scalar                 Returns single value from first row, first column
-  exec                   For compatibility; use exec verb for DML
-
-TRANSACTION ISOLATION LEVELS:
-  default                Use database default
-  read_uncommitted       Allow dirty reads
-  read_committed         Prevent dirty reads (PostgreSQL default)
-  repeatable_read        Prevent non-repeatable reads (MySQL default)
-  serializable           Full isolation (strongest)
-
-OUTPUT FORMATS:
-
-  Connect success:
-  {
-    "type": "db_connection",
-    "driver": "sqlite",
-    "alias": "mydb",
-    "reused": false,
-    "pool_stats": {
-      "active_connections": 1,
-      "idle_connections": 0,
-      "max_connections": 10,
-      "min_connections": 1
-    }
-  }
-
-  Query success (rows mode):
-  {
-    "rows": [
-      {"id": 1, "email": "alice@example.com"},
-      {"id": 2, "email": "bob@example.com"}
-    ],
-    "meta": {
-      "row_count": 2,
-      "truncated": false,
-      "columns": [
-        {"name": "id", "type": "INTEGER", "ordinal": 1},
-        {"name": "email", "type": "TEXT", "ordinal": 2}
-      ]
-    }
-  }
-
-  Query success (scalar mode):
-  {
-    "value": 42,
-    "meta": {
-      "row_count": 1,
-      "columns": [{"name": "COUNT(*)", "type": "INTEGER", "ordinal": 1}]
-    }
-  }
-
-  Exec success:
-  {
-    "rows_affected": 1
-  }
-
-  Exec success (with last insert ID):
-  {
-    "rows_affected": 1,
-    "last_insert_id": 123
-  }
-
-  Tables list:
-  {
-    "tables": [
-      {"name": "users", "type": "BASE TABLE", "schema": "main"},
-      {"name": "orders", "type": "BASE TABLE", "schema": "main"}
-    ],
-    "meta": {"truncated": false, "table_count": 2}
-  }
-
-  Table describe:
-  {
-    "table": {"name": "users", "type": "BASE TABLE", "schema": "main"},
-    "columns": [
-      {
-        "name": "id",
-        "data_type": "INTEGER",
-        "is_nullable": false,
-        "is_primary_key": true,
-        "ordinal_position": 1,
-        "default_value": null
-      }
-    ]
-  }
-
-  Schema output:
-  {
-    "table": {"name": "users", "type": "BASE TABLE", "schema": "main"},
-    "columns": [...],
-    "primary_key": {"name": "users_pkey", "columns": ["id"]},
-    "indexes": [
-      {
-        "name": "idx_users_email",
-        "columns": ["email"],
-        "is_unique": true,
-        "is_primary": false
-      }
-    ],
-    "foreign_keys": [
-      {
-        "name": "fk_users_account",
-        "columns": ["account_id"],
-        "referenced_table": {"schema": "main", "name": "accounts"},
-        "referenced_columns": ["id"],
-        "on_delete": "CASCADE",
-        "on_update": "RESTRICT"
-      }
-    ]
-  }
-
-  Ping success:
-  {
-    "status": "ok",
-    "driver": "sqlite",
-    "alias": "mydb",
-    "attempts": 1,
-    "latency_ms": 2
-  }
-
-  Transaction begin:
-  {
-    "status": "ok",
-    "action": "begin",
-    "driver": "postgres",
-    "alias": "mydb",
-    "tx_id": "550e8400-e29b-41d4-a716-446655440000",
-    "isolation": "read_committed",
-    "read_only": false
-  }
-
-  Transaction commit/rollback:
-  {
-    "status": "ok",
-    "action": "commit",
-    "tx_id": "550e8400-e29b-41d4-a716-446655440000"
-  }
-
-COMMON WORKFLOWS:
-
-  Simple query workflow (auto-connect):
-    # Single command - connection and query
-    db://mysql/stocks.query(dsn="mysql://user:pass@host:3306/stocks",sql="SELECT COUNT(*) FROM stocks")
-
-  Traditional workflow (explicit connect):
-    # Step 1: Connect
-    db://postgres/analytics.connect(dsn="postgresql://user:pass@localhost:5432/analytics")
-    
-    # Step 2: Query multiple times
-    db://postgres/analytics.query(sql="SELECT * FROM users")
-    db://postgres/analytics.query(sql="SELECT * FROM orders")
-
-  Transaction workflow:
-    # Begin transaction
-    db://postgres/mydb.transaction(action="begin")
-    # Returns: {"tx_id": "550e8400..."}
-    
-    # Execute within transaction
-    db://postgres/mydb.exec(sql="INSERT INTO users (name) VALUES ($1)",params="[\"Alice\"]",tx_id="550e8400...")
-    db://postgres/mydb.exec(sql="UPDATE accounts SET balance = balance - 100",tx_id="550e8400...")
-    
-    # Commit transaction
-    db://postgres/mydb.transaction(action="commit",tx_id="550e8400...")
-
-  Schema exploration:
-    # List all tables
-    db://sqlite/mydb.tables()
-    
-    # Describe specific table
-    db://sqlite/mydb.tables(table="users")
-    
-    # Get complete schema
-    db://sqlite/mydb.schema(table="users",include_indexes=true,include_foreign_keys=true)
-
-  Data migration:
-    # Connect to source
-    db://mysql/source.connect(dsn="mysql://user:pass@old-host:3306/olddb")
-    
-    # Query source data
-    db://mysql/source.query(sql="SELECT * FROM users",mode="rows")
-    
-    # Connect to destination
-    db://postgres/dest.connect(dsn="postgresql://user:pass@new-host:5432/newdb")
-    
-    # Insert data to destination with return_last_insert_id=true
-    db://postgres/dest.exec(sql="INSERT INTO users (id, name) VALUES ($1, $2)",params="[123, \"Alice\"]",return_last_insert_id=true)
-    
-    # Insert into destination (using transaction)
-    db://postgres/dest.transaction(action="begin")
-    db://postgres/dest.exec(sql="INSERT INTO users (id, name) VALUES ($1, $2)",params="[1, \"Alice\"]",tx_id="...")
-    db://postgres/dest.transaction(action="commit",tx_id="...")
-
-  Health check:
-    # Test connection with detailed output
-    db://postgres/prod.ping(timeout_ms=2000,retries=3,detailed=true)
-    
-    # If ping fails, reconnect
-    db://postgres/prod.connect(dsn="postgresql://user:pass@host:5432/db")
-    
-    # Use include_views=true for table listing
-    db://sqlite/mydb.tables(include_views=true)
-
-  Performance monitoring:
-    # Monitor query performance with timeout
-    db://mysql/analytics.query(sql="SELECT COUNT(*) FROM large_table",timeout_ms=30000)
-    
-    # Check table statistics with system tables
-    db://postgres/metrics.tables(include_system=true,detailed=true)
-    
-    # Query with all options
-    db://mysql/stats.query(sql="SELECT COUNT(*) FROM logs",mode="scalar",timeout_ms=30000)
-    
-    # Test with specific retry settings 
-    db://postgres/health.ping(retries=3,timeout_ms=5000)
-
-ERROR CODES:
-  db.unsupported_driver         Database driver not supported
-  db.connection_not_found       No connection exists for the alias
-  db.invalid_config             Invalid connection configuration
-  db.missing_dsn                Data Source Name not provided
-  db.query_failed               SQL query execution failed
-  db.exec_failed                SQL execution failed
-  db.query_timeout              Query exceeded timeout limit
-  db.table_not_found            Table does not exist
-  db.transaction_not_found      Transaction ID not found
-  db.transaction_timeout        Transaction exceeded timeout
-
-ERROR HANDLING:
-  All verbs return structured error information:
-  {
-    "error": {
-      "code": "db.connection_not_found",
-      "message": "Connection not found for driver 'postgres', alias 'nonexistent'",
-      "details": {"driver": "postgres", "alias": "nonexistent"}
-    }
-  }
-
-DATABASE-SPECIFIC NOTES:
-
-  SQLite:
-  • In-memory: sqlite::memory:
-  • File: sqlite:///path/to/file.db
-  • Limited concurrency
-  • Enable foreign keys: PRAGMA foreign_keys = ON
-  • Supports transactions
-
-  PostgreSQL:
-  • Parameter placeholders: $1, $2, $3
-  • Full ACID transactions
-  • Rich schema introspection
-  • Multiple isolation levels
-  • Default isolation: read_committed
-
-  MySQL:
-  • Parameter placeholders: ?
-  • Full transaction support
-  • AUTO_INCREMENT with last_insert_id
-  • Default isolation: repeatable_read
-  • Schema introspection varies by version
-
-BEST PRACTICES:
-  • Always use parameter binding (never string concatenation)
-  • Use transactions for multiple related operations
-  • Set appropriate timeouts for long operations
-  • Close transactions promptly (commit or rollback)
-  • Use connection pool settings appropriate for workload
-  • Test connections with ping before critical operations
-  • Handle errors gracefully by checking error codes
-  • Use auto-connect for CLI and one-off queries
-  • Use traditional connect for long-running applications
-  • Use scalar mode for single-value queries
-  • Always specify isolation level for critical transactions
-  • Use max_rows to limit result set size
-  • Set reasonable timeouts based on query complexity
-  • Use descriptive alias names (analytics, prod, cache)
-  • Keep connection pools sized appropriately
-  • Monitor connection pool stats with detailed ping
-  • Use read_only transactions when possible for safety
-
-MORE INFO:
-  For complete documentation of all verbs, drivers, and transaction
-  management, visit:
-  https://github.com/[your-org]/resource-shell/docs/db-handle.md
-
-  Database driver documentation:
-  • SQLite: https://www.sqlite.org/docs.html
-  • PostgreSQL: https://www.postgresql.org/docs/
-  • MySQL: https://dev.mysql.com/doc/
-
-  Use 'db:// --help=VERB' for detailed help on a specific verb.
-"#;
-
-/// Help text for the connect verb
-const CONNECT_VERB_HELP: &str = r#"DATABASE CONNECT VERB
-====================
-
-DESCRIPTION:
-  Establish a connection to a database with connection pooling.
-
-USAGE:
-  db://driver/alias.connect(dsn="CONNECTION_STRING", [options...])
-
-REQUIRED ARGUMENTS:
-  dsn=CONNECTION_STRING     Database connection string
-
-OPTIONAL ARGUMENTS:
-  max_connections=N         Maximum pool connections (default: 10)
-  min_connections=N         Minimum pool connections (default: 1)
-  connect_timeout_ms=N      Connection timeout in milliseconds (default: 30000)
-  idle_timeout_ms=N         Idle connection timeout (default: 600000)
-  max_lifetime_ms=N         Maximum connection lifetime (default: 1800000)
-  tls_mode=MODE             TLS mode: disable, allow, prefer, require
-
-EXAMPLES:
-  db://sqlite/local.connect(dsn="sqlite::memory:")
-  db://postgres/prod.connect(dsn="postgresql://user:pass@host:5432/db")
-  db://mysql/analytics.connect(dsn="mysql://user:pass@host:3306/db",max_connections=20)
-"#;
-
-/// Help text for the query verb
-const QUERY_VERB_HELP: &str = r#"DATABASE QUERY VERB
-===================
-
-DESCRIPTION:
-  Execute SELECT queries and retrieve results. Supports auto-connect.
-
-USAGE:
-  db://driver/alias.query(sql=SELECT_STATEMENT, [options...])
-
-REQUIRED ARGUMENTS:
-  sql=SQL                   SQL SELECT statement
-
-OPTIONAL ARGUMENTS:
-  dsn=DSN                   Database connection string (for auto-connect)
-  params=JSON               Parameter values as JSON array
-  mode=MODE                 Query mode: rows, scalar, exec (default: rows)
-  timeout_ms=N              Query timeout in milliseconds
-  max_rows=N                Maximum rows to return (default: unlimited)
-  tx_id=UUID                Transaction ID to execute within
-
-EXAMPLES:
-  db://sqlite/mydb.query(sql="SELECT * FROM users")
-  db://postgres/mydb.query(sql="SELECT COUNT(*) FROM users",mode="scalar")
-  db://mysql/mydb.query(dsn="mysql://user:pass@host:3306/db",sql="SELECT * FROM users WHERE active = ?",params="[true]")
-"#;
-
-/// Help text for the exec verb
-const EXEC_VERB_HELP: &str = r#"DATABASE EXEC VERB
-==================
-
-DESCRIPTION:
-  Execute INSERT, UPDATE, DELETE statements. Supports auto-connect.
-
-USAGE:
-  db://driver/alias.exec(sql=DML_STATEMENT, [options...])
-
-REQUIRED ARGUMENTS:
-  sql=SQL                   SQL INSERT/UPDATE/DELETE statement
-
-OPTIONAL ARGUMENTS:
-  dsn=DSN                   Database connection string (for auto-connect)
-  params=JSON               Parameter values as JSON array
-  return_last_insert_id=BOOL Return last inserted ID (default: false)
-  timeout_ms=N              Execution timeout in milliseconds
-  tx_id=UUID                Transaction ID to execute within
-
-EXAMPLES:
-  db://sqlite/mydb.exec(sql="INSERT INTO users (name) VALUES (?)",params="[\"Alice\"]")
-  db://postgres/mydb.exec(sql="UPDATE users SET active = $1 WHERE id = $2",params="[true, 123]")
-  db://mysql/mydb.exec(dsn="mysql://user:pass@host:3306/db",sql="DELETE FROM users WHERE active = ?",params="[false]")
-"#;
-
-/// Help text for the tables verb
-const TABLES_VERB_HELP: &str = r#"DATABASE TABLES VERB
-====================
-
-DESCRIPTION:
-  List tables in database or describe specific table structure.
-
-USAGE:
-  db://driver/alias.tables([table=TABLE_NAME], [options...])
-
-OPTIONAL ARGUMENTS:
-  table=NAME                Specific table to describe (optional)
-  include_views=BOOL        Include views in listing (default: false)
-  include_system=BOOL       Include system tables (default: false)
-  max_tables=N              Maximum tables to return (default: unlimited)
-  timeout_ms=N              Operation timeout in milliseconds
-
-EXAMPLES:
-  db://sqlite/mydb.tables()
-  db://postgres/mydb.tables(include_views=true)
-  db://mysql/mydb.tables(table="users")
-"#;
-
-/// Help text for the schema verb
-const SCHEMA_VERB_HELP: &str = r#"DATABASE SCHEMA VERB
-====================
-
-DESCRIPTION:
-  Get detailed table schema information including columns, indexes, and constraints.
-
-USAGE:
-  db://driver/alias.schema(table="TABLE_NAME", [options...])
-
-REQUIRED ARGUMENTS:
-  table=NAME                Table name to get schema for
-
-OPTIONAL ARGUMENTS:
-  include_indexes=BOOL      Include index information (default: false)
-  include_foreign_keys=BOOL Include foreign key relationships (default: false)
-  include_unique_constraints=BOOL Include unique constraints (default: false)
-  include_checks=BOOL       Include check constraints (default: false)
-  include_triggers=BOOL     Include trigger information (default: false)
-  timeout_ms=N              Operation timeout in milliseconds (default: 5000)
-
-EXAMPLES:
-  db://sqlite/mydb.schema(table="users")
-  db://postgres/mydb.schema(table="users",include_indexes=true,include_foreign_keys=true)
-  db://mysql/mydb.schema(table="orders",include_indexes=true)
-"#;
-
-/// Help text for the ping verb
-const PING_VERB_HELP: &str = r#"DATABASE PING VERB
-==================
-
-DESCRIPTION:
-  Test database connection health and measure latency.
-
-USAGE:
-  db://driver/alias.ping([options...])
-
-OPTIONAL ARGUMENTS:
-  timeout_ms=N              Connection timeout (default: 1000, min: 1ms)
-  retries=N                 Number of retry attempts (default: 0, max: 10)
-  backoff_ms=N              Delay between retries (default: 100)
-  detailed=BOOL             Include extra connection info (default: false)
-
-EXAMPLES:
-  db://sqlite/mydb.ping()
-  db://postgres/mydb.ping(timeout_ms=2000,retries=3)
-  db://mysql/mydb.ping(detailed=true)
-"#;
-
-/// Help text for the transaction verb
-const TRANSACTION_VERB_HELP: &str = r#"DATABASE TRANSACTION VERB
-=========================
-
-DESCRIPTION:
-  Manage database transactions for ACID operations.
-
-USAGE:
-  db://driver/alias.transaction(action="ACTION", [options...])
-
-REQUIRED ARGUMENTS:
-  action=ACTION             Transaction action: begin, commit, rollback
-
-REQUIRED FOR COMMIT/ROLLBACK:
-  tx_id=UUID                Transaction ID (returned from begin)
-
-OPTIONAL ARGUMENTS (for begin):
-  isolation=LEVEL           Isolation level: default, read_uncommitted, read_committed, repeatable_read, serializable
-  read_only=BOOL            Read-only transaction (default: false)
-  timeout_ms=N              Transaction timeout (default: 15000)
-
-EXAMPLES:
-  db://postgres/mydb.transaction(action="begin")
-  db://postgres/mydb.transaction(action="begin",isolation="serializable")
-  db://postgres/mydb.transaction(action="commit",tx_id="550e8400-e29b-41d4-a716-446655440000")
-  db://postgres/mydb.transaction(action="rollback",tx_id="550e8400-e29b-41d4-a716-446655440000")
-"#;
 
 #[cfg(test)]
 mod tests {
@@ -5511,7 +4953,7 @@ mod tests {
 
     #[test]
     fn test_config_validation_valid() {
-        let url = Url::parse("db://sqlite/test").unwrap();
+        let url = Url::parse("db://postgres/test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
         
         let config = DbConfig {
@@ -5520,7 +4962,7 @@ mod tests {
             connect_timeout_ms: 1000,
             idle_timeout_ms: 10000,
             max_lifetime_ms: 60000,
-            tls_mode: "prefer".to_string(),
+            tls_mode: Some("prefer".to_string()),
             log_queries: false,
         };
 
@@ -5560,7 +5002,7 @@ mod tests {
         let handle = DbHandle::from_url(url).unwrap();
         
         let config = DbConfig {
-            tls_mode: "invalid_mode".to_string(),
+            tls_mode: Some("invalid_mode".to_string()),
             ..Default::default()
         };
 
@@ -7067,8 +6509,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_schema_with_foreign_keys() {
-        // Clear any existing connections
-        CONNECTION_REGISTRY.clear();
         
         let url = Url::parse("db://sqlite/test_sqlite_schema_fk").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
@@ -7463,8 +6903,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping_integration_sqlite_success() {
-        // Clear any existing connections
-        CONNECTION_REGISTRY.clear();
         
         // Create and register a SQLite connection
         let url = Url::parse("db://sqlite/test_ping").unwrap();
@@ -7490,14 +6928,10 @@ mod tests {
         let latency = result["latency_ms"].as_u64().unwrap();
         assert!(latency >= 0);
         
-        // Clean up
-        CONNECTION_REGISTRY.clear();
     }
 
     #[tokio::test]
     async fn test_ping_integration_sqlite_with_custom_config() {
-        // Clear any existing connections
-        CONNECTION_REGISTRY.clear();
         
         // Create and register a SQLite connection
         let url = Url::parse("db://sqlite/test_ping_custom").unwrap();
@@ -7528,14 +6962,10 @@ mod tests {
         let latency = result["latency_ms"].as_u64().unwrap();
         assert!(latency >= 0);
         
-        // Clean up
-        CONNECTION_REGISTRY.clear();
     }
 
     #[tokio::test]
     async fn test_ping_integration_connection_not_found() {
-        // Clear any existing connections
-        CONNECTION_REGISTRY.clear();
         
         // Create handle but don't connect
         let url = Url::parse("db://sqlite/nonexistent").unwrap();
@@ -7548,15 +6978,11 @@ mod tests {
         // Should return an error (not panic)
         assert!(ping_result.is_err());
         
-        // Clean up
-        CONNECTION_REGISTRY.clear();
     }
 
     #[tokio::test]
     async fn test_ping_integration_sqlite_multiple_attempts() {
         // This test verifies the ping mechanism works with a real SQLite connection
-        // Clear any existing connections
-        CONNECTION_REGISTRY.clear();
         
         // Create and register a SQLite connection
         let url = Url::parse("db://sqlite/test_ping_multi").unwrap();
@@ -7597,15 +7023,12 @@ mod tests {
             }
         }
         
-        // Clean up
-        CONNECTION_REGISTRY.clear();
     }
 
     #[tokio::test]
     async fn test_ping_integration_sqlite_very_short_timeout() {
         // This tests behavior with extremely short timeout 
         // (may timeout depending on system performance)
-        CONNECTION_REGISTRY.clear();
         
         // Create and register a SQLite connection
         let url = Url::parse("db://sqlite/test_ping_timeout").unwrap();
@@ -7643,8 +7066,6 @@ mod tests {
             assert!(error["code"] == "db.ping_timeout" || error["code"] == "db.ping_failed");
         }
         
-        // Clean up
-        CONNECTION_REGISTRY.clear();
     }
 
     // ============================================================================
@@ -7983,18 +7404,219 @@ mod tests {
         }
 
         #[test]
-        fn test_transaction_registry_operations() {
-            // Clear registry to start fresh
-            TRANSACTION_REGISTRY.clear();
-            
-            // Test that registry is initially empty
-            assert_eq!(TRANSACTION_REGISTRY.len(), 0);
-            
-            // These would need actual database connections for real testing
-            // The registry behavior will be tested in integration tests
-            
-            // Clean up
-            TRANSACTION_REGISTRY.clear();
+        fn test_transaction_registry_unknown_id() {
+            // Never clear the global registry here: other tests run in
+            // parallel and may hold live transactions in it.
+            let id = Uuid::new_v4().to_string();
+            assert!(TRANSACTION_REGISTRY.get(&id).is_none());
+        }
+    }
+
+    mod cli_fix_tests {
+        use super::*;
+        use std::io::Cursor;
+
+        fn handle(url: &str) -> DbHandle {
+            DbHandle::from_url(Url::parse(url).unwrap()).unwrap()
+        }
+
+        fn call_out(h: &DbHandle, verb: &str, args: &[(&str, &str)]) -> (Status, String) {
+            let args: Args = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let (mut i, mut o, mut e) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()), Cursor::new(Vec::new()));
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let st = h.call(verb, &args, &mut io).unwrap();
+            (st, String::from_utf8(o.into_inner()).unwrap())
+        }
+
+        fn json_out(h: &DbHandle, verb: &str, args: &[(&str, &str)]) -> Value {
+            let (_, out) = call_out(h, verb, args);
+            serde_json::from_str(&out).unwrap_or_else(|e| panic!("{}: {}", e, out))
+        }
+
+        /// A temp-file SQLite DSN unique to one test.
+        fn temp_dsn(name: &str) -> (String, std::path::PathBuf) {
+            let path = std::env::temp_dir().join(format!("resh-dbh-{}-{}.db", name, Uuid::new_v4()));
+            (format!("sqlite://{}?mode=rwc", path.display()), path)
+        }
+
+        #[test]
+        fn help_detection_is_exact() {
+            let h = handle("db://sqlite/my-hosts");
+            assert_eq!(h.alias, "my-hosts");
+            assert!(!h.should_show_help("query", &Args::new()));
+            let h = handle("db://sqlite/pre-hotfix");
+            assert_eq!(h.alias, "pre-hotfix");
+            assert_eq!(handle("db://--help").driver_str, "help");
+            assert_eq!(handle("db://sqlite/--help").driver_str, "help");
+        }
+
+        #[test]
+        fn in_url_help_renders_approved_help() {
+            let h = handle("db://sqlite/app");
+            for verb in ["help", "--help", "-h"] {
+                let (st, out) = call_out(&h, verb, &[]);
+                assert!(st.ok);
+                assert!(out.starts_with("Handle: db"), "{}", out);
+            }
+            let (_, out) = call_out(&h, "--help=transaction", &[]);
+            assert!(out.starts_with("Handle: db\nVerb: transaction"), "{}", out);
+            let (_, out) = call_out(&h, "help", &[("verb", "query")]);
+            assert!(out.contains("Verb: query"), "{}", out);
+            let (_, out) = call_out(&handle("db://--help"), "connect", &[]);
+            assert!(out.starts_with("Handle: db"), "{}", out);
+        }
+
+        #[test]
+        fn query_config_accepts_cli_strings() {
+            let c = QueryConfig::from_args(&json!({"sql": "SELECT 1", "timeout_ms": "250", "max_rows": "2"})).unwrap();
+            assert_eq!(c.timeout_ms, 250);
+            assert_eq!(c.max_rows, 2);
+            assert!(QueryConfig::from_args(&json!({"sql": "SELECT 1", "max_rows": "lots"})).is_err());
+            assert!(QueryConfig::from_args(&json!({"sql": "SELECT 1", "timeout_ms": "0"})).is_err());
+        }
+
+        #[test]
+        fn other_configs_accept_cli_strings() {
+            let t = TablesConfig::from_args(&json!({"include_views": "true", "max_tables": "5"})).unwrap();
+            assert!(t.include_views);
+            assert_eq!(t.max_tables, 5);
+            let p = PingConfig::from_args(&json!({"retries": "2", "detailed": "yes"})).unwrap();
+            assert_eq!(p.retries, 2);
+            assert!(p.detailed);
+            assert!(PingConfig::from_args(&json!({"detailed": "maybe"})).is_err());
+            let sc = SchemaConfig::from_args(&json!({"table": "t", "include_indexes": "false"})).unwrap();
+            assert!(!sc.include_indexes);
+        }
+
+        #[test]
+        fn query_max_rows_from_cli_truncates() {
+            let h = handle("db://sqlite/cli_fix_max_rows");
+            let out = json_out(&h, "query", &[
+                ("dsn", "sqlite::memory:"),
+                ("sql", "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x < 5) SELECT x FROM n"),
+                ("max_rows", "2"),
+            ]);
+            assert_eq!(out["rows"].as_array().unwrap().len(), 2, "{}", out);
+            assert_eq!(out["meta"]["truncated"], true);
+        }
+
+        #[test]
+        fn tables_schema_ping_auto_connect_with_dsn() {
+            let (dsn, path) = temp_dsn("auto");
+            let setup = handle("db://sqlite/cli_fix_auto_setup");
+            let out = json_out(&setup, "exec", &[
+                ("dsn", dsn.as_str()),
+                ("sql", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"),
+            ]);
+            assert_eq!(out["rows_affected"], 0, "{}", out);
+
+            let out = json_out(&handle("db://sqlite/cli_fix_auto_tables"), "tables", &[("dsn", dsn.as_str())]);
+            assert!(out["tables"].as_array().unwrap().iter().any(|t| t["name"] == "users"), "{}", out);
+
+            let out = json_out(&handle("db://sqlite/cli_fix_auto_schema"), "schema", &[
+                ("dsn", dsn.as_str()),
+                ("table", "users"),
+            ]);
+            assert_eq!(out["table"]["name"], "users", "{}", out);
+
+            let out = json_out(&handle("db://sqlite/cli_fix_auto_ping"), "ping", &[
+                ("dsn", dsn.as_str()),
+                ("retries", "1"),
+            ]);
+            assert_eq!(out["status"], "ok", "{}", out);
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn verbs_without_dsn_report_connection_not_found() {
+            for verb in ["tables", "ping"] {
+                let (st, out) = call_out(&handle("db://sqlite/cli_fix_no_dsn"), verb, &[]);
+                assert!(!st.ok);
+                assert!(out.contains("db.connection_not_found"), "{}: {}", verb, out);
+            }
+        }
+
+        #[test]
+        fn transaction_run_commits_all_statements() {
+            let (dsn, path) = temp_dsn("txrun");
+            let h = handle("db://sqlite/cli_fix_tx_commit");
+            let out = json_out(&h, "transaction", &[
+                ("dsn", dsn.as_str()),
+                ("statements", r#"["CREATE TABLE t (v INTEGER)", "INSERT INTO t VALUES (1)", {"sql": "INSERT INTO t VALUES (?)", "params": [2]}]"#),
+            ]);
+            assert_eq!(out["status"], "ok", "{}", out);
+            assert_eq!(out["committed"], true);
+            assert_eq!(out["results"].as_array().unwrap().len(), 3);
+            assert_eq!(out["results"][1]["rows_affected"], 1);
+
+            let out = json_out(&h, "query", &[("sql", "SELECT COUNT(*) FROM t"), ("mode", "scalar")]);
+            assert_eq!(out["value"], 2, "{}", out);
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn transaction_run_rolls_back_on_failure() {
+            let (dsn, path) = temp_dsn("txfail");
+            let h = handle("db://sqlite/cli_fix_tx_rollback");
+            json_out(&h, "exec", &[("dsn", dsn.as_str()), ("sql", "CREATE TABLE t (v INTEGER NOT NULL)")]);
+            let (st, out) = call_out(&h, "transaction", &[
+                ("action", "run"),
+                ("statements", r#"["INSERT INTO t VALUES (1)", "INSERT INTO t VALUES (NULL)"]"#),
+            ]);
+            assert!(!st.ok);
+            let v: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(v["error"]["code"], "db.transaction_statement_failed", "{}", out);
+            assert_eq!(v["error"]["details"]["index"], 1);
+            assert_eq!(v["error"]["details"]["rolled_back"], true);
+
+            let out = json_out(&h, "query", &[("sql", "SELECT COUNT(*) FROM t"), ("mode", "scalar")]);
+            assert_eq!(out["value"], 0, "{}", out);
+            let _ = std::fs::remove_file(path);
+        }
+
+        #[test]
+        fn transaction_config_statement_validation() {
+            let c = TransactionConfig::from_args(&json!({"statements": "[\"SELECT 1\"]"})).unwrap();
+            assert_eq!(c.action, TransactionAction::Run);
+            assert_eq!(c.statements.len(), 1);
+            assert!(TransactionConfig::from_args(&json!({"action": "run"})).is_err());
+            assert!(TransactionConfig::from_args(&json!({"action": "begin", "statements": ["SELECT 1"]})).is_err());
+            assert!(TransactionConfig::from_args(&json!({"statements": "[]"})).is_err());
+            assert!(TransactionConfig::from_args(&json!({"statements": "not json"})).is_err());
+            assert!(TransactionConfig::from_args(&json!({"statements": ["SELECT 1; SELECT 2"]})).is_err());
+            assert!(TransactionConfig::from_args(&json!({"action": "begin", "read_only": "true"})).unwrap().read_only);
+        }
+
+        #[test]
+        fn tls_mode_validation_per_driver() {
+            let cfg = |m: &str| DbConfig { tls_mode: Some(m.to_string()), ..Default::default() };
+            let pg = handle("db://postgres/cli_fix_tls");
+            for m in ["disable", "allow", "prefer", "preferred", "require", "verify_ca", "verify-full"] {
+                assert!(pg.validate_config(&cfg(m)).is_ok(), "{}", m);
+            }
+            assert!(pg.validate_config(&cfg("sometimes")).is_err());
+            let my = handle("db://mysql/cli_fix_tls");
+            assert!(my.validate_config(&cfg("require")).is_ok());
+            assert!(my.validate_config(&cfg("allow")).is_err());
+            let lite = handle("db://sqlite/cli_fix_tls");
+            assert!(lite.validate_config(&cfg("disable")).is_ok());
+            assert!(lite.validate_config(&cfg("require")).is_err());
+            assert!(lite.validate_config(&DbConfig::default()).is_ok());
+            assert!(matches!(TlsMode::parse("verify_full").unwrap().postgres(), sqlx::postgres::PgSslMode::VerifyFull));
+            assert!(matches!(TlsMode::parse("verify_full").unwrap().mysql(), sqlx::mysql::MySqlSslMode::VerifyIdentity));
+        }
+
+        #[test]
+        fn sqlite_connect_rejects_tls_and_bad_log_queries() {
+            let h = handle("db://sqlite/cli_fix_tls_connect");
+            let (st, out) = call_out(&h, "connect", &[("dsn", "sqlite::memory:"), ("tls_mode", "require")]);
+            assert!(!st.ok);
+            assert!(out.contains("tls_mode"), "{}", out);
+            let (st, out) = call_out(&h, "connect", &[("dsn", "sqlite::memory:"), ("log_queries", "loud")]);
+            assert!(!st.ok);
+            assert!(out.contains("log_queries"), "{}", out);
+            let (st, _) = call_out(&h, "connect", &[("dsn", "sqlite::memory:"), ("log_queries", "true")]);
+            assert!(st.ok);
         }
     }
 }

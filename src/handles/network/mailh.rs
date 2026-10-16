@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
@@ -17,6 +18,200 @@ use lettre::{
     message::Mailbox,
     transport::smtp::{authentication::Credentials, client::Tls},
     Message, SmtpTransport, Transport,
+};
+
+/// Metadata for `resh mail --help` and `resh mail <verb> --help`.
+static MAIL_HELP: HandleHelp = HandleHelp {
+    description: "The mail handle sends email over SMTP with the lettre library, renders \
+        built-in message templates, checks SMTP settings, and keeps named SMTP profiles in \
+        ~/.config/resh/mail/smtp_profiles.json. The verb is the first path segment of the \
+        URL, such as mail://send, and its arguments follow as key=value words. SMTP host, \
+        port, credentials, and sender fall back to the MAIL_SMTP_HOST, MAIL_SMTP_PORT, \
+        MAIL_SMTP_USERNAME, MAIL_SMTP_PASSWORD, and MAIL_FROM environment variables, \
+        and stored profiles are not read by send or test.",
+    usage: "resh mail://<verb> [key=value ...]",
+    verbs: &[
+        VerbHelp {
+            name: "test",
+            definition: "Checks SMTP settings by resolving the server address and building a \
+                transport, and sends a real test message only when send_test_email=true.",
+            detail: Some(VerbDetail {
+                usage: "resh mail://test [smtp_host=<host>] [smtp_port=<n>]\n  \
+                    [use_tls=none|starttls|tls] [smtp_username=<user>] [smtp_password=<pass>]\n  \
+                    [connection_only=true|false] [send_test_email=true|false]\n  \
+                    [to=<addr,...>] [from=<addr>] [subject=<text>] [timeout_ms=<ms>]\n  \
+                    [max_retry=<n>] [format_output=json|text]",
+                example: "resh mail://test smtp_host=smtp.example.com connection_only=true",
+                example_output: Some(
+                    r#"{
+  "connection": {
+    "attempts": 1,
+    "auth_attempted": false,
+    "auth_succeeded": false,
+    "last_response": "Connection test completed",
+    "resolved_ip": "192.0.2.25",
+    "smtp_host": "smtp.example.com",
+    "smtp_port": 587,
+    "tls_established": true,
+    "use_tls": "starttls"
+  },
+  "error": null,
+  "ok": true,
+  "query": {
+    "connection_only": true,
+    "from": null,
+    "max_retry": 0,
+    "send_test_email": false,
+    "smtp_host": "smtp.example.com",
+    "smtp_port": null,
+    "subject": "SMTP test",
+    "timeout_ms": 10000,
+    "to": [],
+    "use_tls": "starttls"
+  },
+  "send_test_email": null,
+  "timestamp_unix_ms": 1792141964512,
+  "warnings": []
+}
+
+Without send_test_email=true no SMTP session is opened, so tls_established
+and auth_succeeded reflect the settings, not a live check. mail prints
+sorted, indented JSON without --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "config",
+            definition: "Manages named SMTP profiles in a local JSON file, with action choosing \
+                list, get, set, delete, activate, or get_active.",
+            detail: Some(VerbDetail {
+                usage: "resh mail://config action=list|get|set|delete|activate|get_active\n  \
+                    [profile=<name>] [smtp_host=<host>] [smtp_port=<n>]\n  \
+                    [use_tls=none|starttls|tls] [smtp_username=<user>] [smtp_password=<pass>]\n  \
+                    [from=<addr>] [reply_to=<addr>] [description=<text>]\n  \
+                    [is_default=true|false] [tls_accept_invalid_certs=true|false]\n  \
+                    [format_output=json|text]",
+                example: "resh mail://config action=list",
+                example_output: Some(
+                    r#"{
+  "active_profile": "work",
+  "error": null,
+  "ok": true,
+  "profiles": [
+    {
+      "description": "Office relay",
+      "from": "alice@example.com",
+      "has_password": true,
+      "is_active": true,
+      "name": "work",
+      "reply_to": null,
+      "smtp_host": "smtp.example.com",
+      "smtp_port": 587,
+      "tls_accept_invalid_certs": false,
+      "use_tls": "starttls"
+    }
+  ],
+  "query": {
+    "action": "list"
+  },
+  "timestamp_unix_ms": 1792141964512,
+  "warnings": []
+}
+
+profile is required for get, set, delete, and activate. mail prints sorted,
+indented JSON without --json-pretty."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "send",
+            definition: "Sends an email over SMTP and reports the server, attempt count, and \
+                message ID as JSON.",
+            detail: Some(VerbDetail {
+                usage: "resh mail://send to=<addr,...> subject=<text> text_body=<text>\n  \
+                    [html_body=<html>] [cc=<addr,...>] [bcc=<addr,...>] [from=<addr>]\n  \
+                    [reply_to=<addr>] [attachments=<json-array>] [smtp_host=<host>]\n  \
+                    [smtp_port=<n>] [use_tls=none|starttls|tls] [smtp_username=<user>]\n  \
+                    [smtp_password=<pass>] [header_<name>=<value>] [<option>=<value> ...]",
+                example: "resh mail://send to=alice@example.com subject=Backup \
+                    'text_body=Backup done'",
+                example_output: Some(
+                    r#"{
+  "error": null,
+  "ok": true,
+  "query": {
+    "bcc": [],
+    "cc": [],
+    "from": null,
+    "max_retry": 0,
+    "subject": "Backup",
+    "timeout_ms": 10000,
+    "to": [
+      "alice@example.com"
+    ],
+    "use_tls": "starttls"
+  },
+  "result": {
+    "attempts": 1,
+    "last_response": "Response { code: Code { .. }, message: [\"Ok\"] }",
+    "message_id": "<1792141964.resh@localhost>",
+    "smtp_host": "smtp.example.com",
+    "smtp_port": 587
+  },
+  "timestamp_unix_ms": 1792141964512,
+  "warnings": []
+}
+
+Shown with MAIL_SMTP_HOST and MAIL_FROM set in the environment, which
+query.from does not reflect. last_response is the SMTP reply in Rust debug
+form, shortened here. mail prints sorted, indented JSON itself."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "send_template",
+            definition: "Renders a built-in template (welcome or password_reset) with vars and \
+                sends it the same way as send, or only previews it when dry_run=true.",
+            detail: Some(VerbDetail {
+                usage: "resh mail://send_template template=<name> to=<addr,...>\n  \
+                    [vars=<json-object>] [locale=<code>] [strict_vars=true|false]\n  \
+                    [dry_run=true|false] [from=<addr>] [cc=<addr,...>] [bcc=<addr,...>]\n  \
+                    [smtp_host=<host>] [smtp_port=<n>] [use_tls=none|starttls|tls]\n  \
+                    [<option>=<value> ...]",
+                example: "resh mail://send_template template=welcome to=bob@example.com \
+                    dry_run=true",
+                example_output: Some(
+                    r#"{
+  "error": null,
+  "ok": true,
+  "query": {
+    "dry_run": true,
+    "locale": null,
+    "strict_vars": false,
+    "template": "welcome",
+    "to": [
+      "bob@example.com"
+    ]
+  },
+  "rendered": {
+    "html_body": "<p>Hi <strong></strong>,</p><p>Welcome to .</p>",
+    "subject": "Welcome to , !",
+    "text_body": "Hi ,\n\nWelcome to .\n"
+  },
+  "send_result": null,
+  "timestamp_unix_ms": 1792141964512,
+  "warnings": [
+    "Dry run: email was not sent."
+  ]
+}
+
+Variables missing from vars render as empty strings unless strict_vars=true;
+fill them with 'vars={"user_name":"Bob","app_name":"Acme"}'. mail prints
+sorted, indented JSON without --json-pretty."#,
+                ),
+            }),
+        },
+    ],
 };
 
 // Error code constants
@@ -77,865 +272,6 @@ pub const MAIL_CONFIG_STORE_READ_ERROR: &str = "mail.config_store_read_error";
 pub const MAIL_CONFIG_STORE_WRITE_ERROR: &str = "mail.config_store_write_error";
 pub const MAIL_CONFIG_STORE_PARSE_ERROR: &str = "mail.config_store_parse_error";
 pub const MAIL_CONFIG_INTERNAL_ERROR: &str = "mail.config_internal_error";
-
-// Complete help text for mail handle
-const MAIL_HELP_TEXT: &str = r#"RESOURCE SHELL - MAIL HANDLE
-============================
-
-USAGE:
-  mail://VERB arguments
-  mail://VERB(arguments)  [traditional function-call syntax]
-
-DESCRIPTION:
-  The mail handle allows you to send emails, test SMTP connections, manage
-  email profiles, and send template-based emails. Supports SMTP authentication,
-  TLS/STARTTLS encryption, retry logic, attachments, custom headers, and
-  profile-based configuration management. Perfect for notifications, alerts,
-  automated reports, and application integration.
-
-URL FORMAT:
-  mail://VERB arguments              [shell-friendly syntax - recommended]
-  mail://VERB(arguments)              [traditional function-call syntax]
-
-VERBS (4 total):
-
-  Email Operations:
-    send            Send an email message with custom content
-    send_template   Send an email using a predefined template
-
-  Configuration & Testing:
-    test            Test SMTP connection and optionally send test email
-    config          Manage SMTP profile configurations
-
-EXAMPLES:
-
-  Send Simple Email:
-    # Basic email (shell-friendly syntax)
-    mail://send to="user@example.com" subject="Test" text_body="Hello"
-
-    # With sender address
-    mail://send to="user@example.com" subject="Test" text_body="Hello" from="sender@example.com"
-
-    # Multiple recipients (comma-separated)
-    mail://send to="alice@example.com,bob@example.com" subject="Team Update" text_body="Weekly update"
-
-    # With CC and BCC
-    mail://send to="user@example.com" cc="manager@example.com" bcc="archive@example.com" subject="Report" text_body="Monthly report attached"
-
-    # HTML email
-    mail://send to="user@example.com" subject="Welcome" html_body="<h1>Welcome!</h1><p>Thanks for signing up.</p>"
-
-    # Both text and HTML bodies
-    mail://send to="user@example.com" subject="Newsletter" text_body="Plain text version" html_body="<h1>HTML version</h1>"
-
-  Send with SMTP Configuration:
-    # With explicit SMTP settings
-    mail://send to="user@example.com" subject="Test" text_body="Hello" smtp_host="smtp.gmail.com" smtp_port=587 smtp_username="sender@gmail.com" smtp_password="app_password" use_tls="starttls"
-
-    # Local SMTP server (no TLS)
-    mail://send to="user@example.com" subject="Test" text_body="Hello" smtp_host="localhost" smtp_port=25 use_tls="none"
-
-    # With TLS from start
-    mail://send to="user@example.com" subject="Secure" text_body="Encrypted email" smtp_host="smtp.example.com" smtp_port=465 use_tls="tls"
-
-    # Accept invalid certificates (testing only)
-    mail://send to="user@example.com" subject="Test" text_body="Hello" smtp_host="localhost" smtp_port=587 use_tls="starttls" tls_accept_invalid_certs=true
-
-  Send with Advanced Options:
-    # With reply-to address
-    mail://send to="user@example.com" subject="Support Request" text_body="How can we help?" from="noreply@example.com" reply_to="support@example.com"
-
-    # With custom headers
-    mail://send to="user@example.com" subject="Test" text_body="Hello" headers='{"X-Priority":"1","X-Mailer":"ResourceShell"}'
-
-    # With attachments
-    mail://send to="user@example.com" subject="Documents" text_body="Please find attached" attachments='["/path/to/file1.pdf","/path/to/file2.txt"]'
-
-    # With timeout and retry
-    mail://send to="user@example.com" subject="Important" text_body="Critical update" timeout_ms=5000 max_retry=3 retry_backoff_ms=2000
-
-    # JSON output format
-    mail://send to="user@example.com" subject="Test" text_body="Hello" format_output="json"
-
-    # Text output format
-    mail://send to="user@example.com" subject="Test" text_body="Hello" format_output="text"
-
-  Template-Based Emails:
-    # Simple template without variables
-    mail://send_template template="welcome" to="user@example.com"
-
-    # Template with variables
-    mail://send_template template="welcome" to="user@example.com" vars='{"user_name":"Alice","app_name":"MyApp"}'
-
-    # Template with locale
-    mail://send_template template="newsletter" to="user@example.com" vars='{"name":"Bob"}' locale="en_US"
-
-    # Template with version
-    mail://send_template template="invoice" to="customer@example.com" vars='{"invoice_id":"12345"}' version="v2"
-
-    # Dry run (test without sending)
-    mail://send_template template="welcome" to="user@example.com" vars='{"user_name":"Alice"}' dry_run=true
-
-    # Strict variable checking
-    mail://send_template template="report" to="user@example.com" vars='{"month":"January"}' strict_vars=true
-
-    # Template with attachments
-    mail://send_template template="invoice" to="customer@example.com" vars='{"invoice_id":"12345"}' attachments='["/path/to/invoice.pdf"]'
-
-    # Template with CC recipients
-    mail://send_template template="report" to="manager@example.com" cc="team@example.com" vars='{"quarter":"Q1"}'
-
-  Test SMTP Connection:
-    # Connection test only
-    mail://test smtp_host="smtp.gmail.com" smtp_port=587 use_tls="starttls" connection_only=true
-
-    # Test with authentication
-    mail://test smtp_host="smtp.gmail.com" smtp_port=587 use_tls="starttls" smtp_username="user@gmail.com" smtp_password="app_password"
-
-    # Send test email
-    mail://test smtp_host="smtp.gmail.com" smtp_port=587 use_tls="starttls" smtp_username="user@gmail.com" smtp_password="app_password" send_test_email=true to="test@example.com" from="sender@gmail.com"
-
-    # Test local server
-    mail://test smtp_host="localhost" smtp_port=25 use_tls="none" connection_only=true
-
-    # Test with custom test email content
-    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" send_test_email=true to="admin@example.com" from="test@example.com" subject="SMTP Test" text_body="This is a test message"
-
-    # Test with retry logic
-    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" max_retry=2 retry_backoff_ms=500
-
-    # Test with timeout
-    mail://test smtp_host="slow-smtp.example.com" smtp_port=587 timeout_ms=30000
-
-    # Test with text output
-    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" format_output="text"
-
-  Profile Management:
-    # List all profiles
-    mail://config action="list"
-
-    # Get specific profile
-    mail://config action="get" profile="production"
-
-    # Create/update profile
-    mail://config action="set" profile="production" smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" smtp_username="user@example.com" smtp_password="password" from="noreply@example.com"
-
-    # Create profile with description
-    mail://config action="set" profile="staging" smtp_host="smtp-staging.example.com" smtp_port=587 use_tls="starttls" description="Staging environment SMTP" from="staging@example.com"
-
-    # Set as default profile
-    mail://config action="set" profile="production" smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" is_default=true
-
-    # Activate profile
-    mail://config action="activate" profile="production"
-
-    # Get active profile
-    mail://config action="get_active"
-
-    # Delete profile
-    mail://config action="delete" profile="old_profile"
-
-    # Profile with reply-to
-    mail://config action="set" profile="support" smtp_host="smtp.example.com" smtp_port=587 from="noreply@example.com" reply_to="support@example.com"
-
-    # Profile accepting invalid certs (dev only)
-    mail://config action="set" profile="dev" smtp_host="localhost" smtp_port=587 use_tls="starttls" tls_accept_invalid_certs=true
-
-  Traditional Function-Call Syntax:
-    # Send email
-    mail://send(to=["user@example.com"],subject="Test",text_body="Hello")
-
-    # Multiple recipients
-    mail://send(to=["alice@example.com","bob@example.com"],subject="Update",text_body="Team update")
-
-    # With SMTP config
-    mail://send(to=["user@example.com"],subject="Test",text_body="Hello",smtp_host="smtp.gmail.com",smtp_port=587,use_tls="starttls")
-
-    # Send template
-    mail://send_template(template="welcome",to=["user@example.com"],vars={"user_name":"Alice"})
-
-    # Test connection
-    mail://test(smtp_host="smtp.example.com",smtp_port=587,use_tls="starttls",connection_only=true)
-
-    # Config management
-    mail://config(action="list")
-
-SEND ARGUMENTS:
-  to=RECIPIENTS          Recipient email addresses (required)
-                         Shell: "user@example.com" or "user1@example.com,user2@example.com"
-                         Function: ["user@example.com"] or ["user1@example.com","user2@example.com"]
-  subject=TEXT           Email subject line (required)
-  text_body=TEXT         Plain text email body (required if html_body not provided)
-  html_body=HTML         HTML email body (required if text_body not provided)
-  from=ADDRESS           Sender email address (optional, uses profile default)
-  cc=RECIPIENTS          CC recipient addresses (optional)
-                         Format: same as 'to' parameter
-  bcc=RECIPIENTS         BCC recipient addresses (optional)
-                         Format: same as 'to' parameter
-  reply_to=ADDRESS       Reply-to email address (optional)
-  attachments=PATHS      File paths to attach (optional)
-                         Format: JSON array ["path1","path2"]
-  headers=OBJECT         Custom email headers (optional)
-                         Format: JSON object {"Header-Name":"value"}
-  smtp_host=HOST         SMTP server hostname (optional, uses profile)
-  smtp_port=NUMBER       SMTP server port (default: 587)
-  smtp_username=USER     SMTP authentication username (optional)
-  smtp_password=PASS     SMTP authentication password (optional)
-  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
-  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
-  timeout_ms=NUMBER      Connection timeout in milliseconds (default: 10000)
-  max_retry=NUMBER       Maximum retry attempts (default: 0)
-  retry_backoff_ms=NUMBER  Retry delay in milliseconds (default: 1000)
-  format_output=FORMAT   Output format: json, text (default: json)
-
-SEND_TEMPLATE ARGUMENTS:
-  template=NAME          Template name (required)
-  to=RECIPIENTS          Recipient email addresses (required)
-                         Format: same as 'send' verb
-  vars=OBJECT            Template variables (optional)
-                         Format: JSON object {"var_name":"value"}
-  locale=LOCALE          Template locale/language (optional)
-  version=VERSION        Template version (optional)
-  from=ADDRESS           Sender email address (optional)
-  cc=RECIPIENTS          CC recipient addresses (optional)
-  bcc=RECIPIENTS         BCC recipient addresses (optional)
-  reply_to=ADDRESS       Reply-to email address (optional)
-  attachments=PATHS      File paths to attach (optional)
-  headers=OBJECT         Custom email headers (optional)
-  smtp_host=HOST         SMTP server hostname (optional)
-  smtp_port=NUMBER       SMTP server port (default: 587)
-  smtp_username=USER     SMTP authentication username (optional)
-  smtp_password=PASS     SMTP authentication password (optional)
-  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
-  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
-  timeout_ms=NUMBER      Connection timeout (default: 10000)
-  max_retry=NUMBER       Maximum retry attempts (default: 0)
-  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
-  strict_vars=BOOL       Require all template variables (default: false)
-  dry_run=BOOL           Test rendering without sending (default: false)
-  format_output=FORMAT   Output format: json, text (default: json)
-
-TEST ARGUMENTS:
-  smtp_host=HOST         SMTP server hostname (required)
-  smtp_port=NUMBER       SMTP server port (required)
-  smtp_username=USER     SMTP authentication username (optional)
-  smtp_password=PASS     SMTP authentication password (optional)
-  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
-  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
-  connection_only=BOOL   Only test connection (default: false)
-  send_test_email=BOOL   Send a test email (default: false)
-  to=RECIPIENTS          Recipients (required if send_test_email=true)
-  from=ADDRESS           Sender (required if send_test_email=true)
-  subject=TEXT           Test email subject (optional)
-  text_body=TEXT         Test email body (optional)
-  html_body=HTML         Test email HTML body (optional)
-  timeout_ms=NUMBER      Connection timeout (default: 10000)
-  max_retry=NUMBER       Maximum retry attempts (default: 0)
-  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
-  format_output=FORMAT   Output format: json, text (default: json)
-
-CONFIG ARGUMENTS:
-  action=ACTION          Configuration action (required)
-                         Values: list, get, set, delete, activate, get_active
-  profile=NAME           Profile name (required for get, set, delete, activate)
-  smtp_host=HOST         SMTP server hostname (for set action)
-  smtp_port=NUMBER       SMTP server port (for set action)
-  smtp_username=USER     SMTP username (for set action)
-  smtp_password=PASS     SMTP password (for set action)
-  use_tls=MODE           TLS mode (for set action)
-  tls_accept_invalid_certs=BOOL  Accept invalid certs (for set action)
-  from=ADDRESS           Default sender address (for set action)
-  reply_to=ADDRESS       Default reply-to address (for set action)
-  description=TEXT       Profile description (for set action)
-  is_default=BOOL        Set as default profile (for set action)
-  format_output=FORMAT   Output format: json, text (default: json)
-
-RECIPIENT FORMATS:
-
-  Shell-friendly syntax (recommended for command line):
-    Single recipient:
-      to="user@example.com"
-
-    Multiple recipients (comma-separated):
-      to="user1@example.com,user2@example.com,user3@example.com"
-
-    With CC and BCC:
-      to="user@example.com" cc="manager@example.com" bcc="archive@example.com"
-
-  Traditional function-call syntax:
-    Single recipient:
-      to=["user@example.com"]
-
-    Multiple recipients:
-      to=["user1@example.com","user2@example.com","user3@example.com"]
-
-    With CC and BCC:
-      to=["user@example.com"],cc=["manager@example.com"],bcc=["archive@example.com"]
-
-TLS MODES:
-
-  none                   No encryption (not recommended for production)
-                         Use for local SMTP servers or testing
-                         Port: typically 25 or 2525
-
-  starttls               Start with unencrypted, upgrade to TLS (recommended)
-                         Most common for modern SMTP
-                         Port: typically 587
-
-  tls                    Use TLS from connection start (implicit TLS)
-                         Also called SMTPS
-                         Port: typically 465
-
-  Selection guide:
-    Gmail/Google Workspace      use_tls="starttls" port=587
-    Office 365/Outlook          use_tls="starttls" port=587
-    SendGrid                    use_tls="starttls" port=587
-    Mailgun                     use_tls="starttls" port=587
-    Local development           use_tls="none" port=25 or 2525
-    Legacy servers              use_tls="tls" port=465
-
-TLS CERTIFICATE VALIDATION:
-
-  By default, TLS certificates are validated for security.
-
-  Production (strict validation):
-    tls_accept_invalid_certs=false    Default, validates certificates
-
-  Development/Testing only:
-    tls_accept_invalid_certs=true     Accepts self-signed/invalid certificates
-
-  Never use tls_accept_invalid_certs=true in production!
-
-  Certificate issues:
-    • Self-signed certificates (common in development)
-    • Expired certificates
-    • Hostname mismatch
-    • Untrusted certificate authority
-
-  Solution for production:
-    • Use valid certificates (free from Let's Encrypt)
-    • Configure proper DNS
-    • Use trusted SMTP providers
-
-SMTP AUTHENTICATION:
-
-  Authentication methods:
-    • Username/password (most common)
-    • App-specific passwords (Gmail, Yahoo)
-    • API tokens (SendGrid, Mailgun)
-
-  Gmail example:
-    smtp_host="smtp.gmail.com"
-    smtp_port=587
-    use_tls="starttls"
-    smtp_username="your-email@gmail.com"
-    smtp_password="your-app-password"    # Not your regular password!
-
-  Office 365 example:
-    smtp_host="smtp.office365.com"
-    smtp_port=587
-    use_tls="starttls"
-    smtp_username="your-email@company.com"
-    smtp_password="your-password"
-
-  SendGrid example:
-    smtp_host="smtp.sendgrid.net"
-    smtp_port=587
-    use_tls="starttls"
-    smtp_username="apikey"               # Literal string "apikey"
-    smtp_password="your-sendgrid-api-key"
-
-  No authentication (local server):
-    smtp_host="localhost"
-    smtp_port=25
-    use_tls="none"
-    # No username/password needed
-
-PROFILE MANAGEMENT:
-
-  Profiles store reusable SMTP configurations.
-
-  Benefits:
-    • Store credentials securely
-    • Switch between environments easily
-    • Avoid repeating configuration
-    • Manage multiple SMTP servers
-
-  Profile workflow:
-    1. Create profile:
-       mail://config action="set" profile="production" smtp_host="..." smtp_port=587 ...
-
-    2. Activate profile:
-       mail://config action="activate" profile="production"
-
-    3. Send email (uses active profile):
-       mail://send to="user@example.com" subject="Test" text_body="Hello"
-
-  Profile precedence:
-    • Command-line SMTP args override profile settings
-    • Active profile used if no SMTP args provided
-    • Error if no profile and no SMTP args
-
-  Multiple profiles:
-    production     Primary SMTP for production
-    staging        Testing SMTP for staging
-    dev            Local SMTP for development
-    backup         Backup SMTP provider
-
-EMAIL TEMPLATES:
-
-  Templates allow variable substitution and reusable content.
-
-  Template location:
-    • Stored in application template directory
-    • Typically: /etc/resh/templates/ or ~/.config/resh/templates/
-
-  Template structure:
-    welcome.txt          Plain text template
-    welcome.html         HTML template
-    welcome.json         Template metadata (subject, variables)
-
-  Variable syntax:
-    Text: {{user_name}}
-    HTML: <p>Hello {{user_name}}!</p>
-
-  Template rendering:
-    • Variables replaced with provided values
-    • Missing variables: error (strict_vars=true) or empty (strict_vars=false)
-    • Subject and body rendered separately
-
-  Dry run testing:
-    mail://send_template template="welcome" to="user@example.com" vars='{"user_name":"Alice"}' dry_run=true
-    # Shows rendered content without sending
-
-  Locale support:
-    welcome_en_US.txt    English (US)
-    welcome_es_ES.txt    Spanish (Spain)
-    welcome_fr_FR.txt    French (France)
-
-RETRY LOGIC:
-
-  Configure retry behavior for failed sends:
-
-  Parameters:
-    max_retry=NUMBER           Maximum retry attempts (0 = no retry)
-    retry_backoff_ms=NUMBER    Delay between retries in milliseconds
-
-  Retry scenarios:
-    • Temporary network errors
-    • SMTP server temporarily unavailable
-    • Connection timeouts
-    • Transient server errors (4xx codes)
-
-  Not retried:
-    • Authentication failures (permanent)
-    • Invalid email addresses (permanent)
-    • Message rejected by server (permanent)
-    • Configuration errors
-
-  Example configurations:
-    max_retry=0              No retry (default, fail fast)
-    max_retry=3 retry_backoff_ms=1000   Retry 3 times, 1 second delay
-    max_retry=5 retry_backoff_ms=2000   Retry 5 times, 2 second delay
-
-  Exponential backoff (not automatic):
-    • Implement in shell scripts if needed
-    • Increase delay between retry attempts
-
-ATTACHMENTS:
-
-  Attach files to emails:
-
-  Format:
-    attachments='["/path/to/file1.pdf","/path/to/file2.txt"]'
-
-  Requirements:
-    • Files must exist
-    • Files must be readable
-    • Full paths or relative to current directory
-
-  Examples:
-    # Single attachment
-    attachments='["/path/to/document.pdf"]'
-
-    # Multiple attachments
-    attachments='["/path/to/report.pdf","/path/to/data.csv","/path/to/image.png"]'
-
-  File types:
-    • PDFs, images, text files, spreadsheets
-    • Binary files supported
-    • Filename preserved in email
-
-  Size considerations:
-    • Check SMTP server limits (typically 10-25 MB)
-    • Large files may timeout
-    • Consider compression for multiple files
-
-CUSTOM HEADERS:
-
-  Add custom email headers:
-
-  Format:
-    headers='{"X-Priority":"1","X-Mailer":"ResourceShell","X-Custom":"value"}'
-
-  Common custom headers:
-    X-Priority             Email priority (1=high, 3=normal, 5=low)
-    X-Mailer               Client application name
-    X-Request-ID           Request tracking ID
-    X-Campaign-ID          Marketing campaign ID
-    Reply-To               Reply address (prefer reply_to parameter)
-    List-Unsubscribe       Unsubscribe URL for mailing lists
-
-  Restricted headers:
-    • Cannot override: From, To, Subject, Date, Message-ID
-    • Use dedicated parameters instead
-
-  Security note:
-    • Headers can be used for tracking
-    • Be cautious with sensitive information
-
-OUTPUT FORMATS:
-
-  json (default):
-    Structured JSON output with detailed information
-    {
-      "ok": true,
-      "timestamp_unix_ms": 1672531200000,
-      "query": {...},
-      "result": {...},
-      "error": null,
-      "warnings": []
-    }
-
-  text:
-    Human-readable text output
-    Email sent successfully
-    Message ID: 12345
-    SMTP: smtp.example.com:587
-
-EXIT CODES:
-  0                      Success
-  1                      General error (invalid arguments, file not found)
-  2                      SMTP connection error (cannot connect to server)
-  3                      SMTP authentication error (invalid credentials)
-  4                      Email rejected (by server or invalid recipient)
-  5                      Template error (not found or rendering failed)
-  6                      Configuration error (profile not found, invalid config)
-
-ERROR CODES:
-
-  Send verb errors:
-    mail.send_missing_recipients       No recipients specified
-    mail.send_missing_subject          Subject line not provided
-    mail.send_missing_body             Neither text_body nor html_body provided
-    mail.send_invalid_address          Invalid email address format
-    mail.send_header_conflict          Header conflicts with built-in headers
-    mail.send_smtp_not_configured      SMTP configuration missing
-    mail.send_smtp_connection_failed   Failed to connect to SMTP server
-    mail.send_smtp_auth_failed         SMTP authentication failed
-    mail.send_smtp_rejected            Email rejected by SMTP server
-
-  Test verb errors:
-    mail.test_smtp_not_configured      SMTP host not specified
-    mail.test_connection_failed        Unable to connect to SMTP server
-    mail.test_auth_failed              SMTP authentication failed
-    mail.test_send_rejected            Test email rejected by server
-    mail.test_invalid_timeout          Invalid timeout value
-    mail.test_send_email_missing_recipients  Recipients required
-    mail.test_invalid_address          Invalid email address format
-
-  Config verb errors:
-    mail.config_invalid_action         Invalid action specified
-    mail.config_profile_required       Profile name required
-    mail.config_profile_not_found      Profile does not exist
-    mail.config_no_active_profile      No active profile configured
-    mail.config_invalid_smtp_host      Invalid SMTP host
-    mail.config_invalid_smtp_port      Invalid SMTP port
-
-  Template verb errors:
-    mail.send_template_not_found       Template file not found
-    mail.send_template_missing_var     Required variable missing
-    mail.send_template_empty_subject   Rendered subject is empty
-    mail.send_template_empty_body      Rendered body is empty
-    mail.send_template_render_error    Template rendering failed
-    mail.send_template_header_conflict Cannot override core headers
-
-COMMON WORKFLOWS:
-
-  Application notifications:
-    # Send alert email
-    mail://send to="admin@example.com" subject="[ALERT] Server Down" text_body="Production server is not responding" from="alerts@example.com"
-
-    # Using template
-    mail://send_template template="alert" to="admin@example.com" vars='{"severity":"high","service":"web-server","message":"Not responding"}'
-
-  User registration:
-    # Welcome email
-    mail://send_template template="welcome" to="newuser@example.com" vars='{"user_name":"Alice","activation_link":"https://example.com/activate?token=xyz"}'
-
-  Password reset:
-    # Reset email
-    mail://send_template template="password-reset" to="user@example.com" vars='{"reset_link":"https://example.com/reset?token=abc","expiry_minutes":"30"}'
-
-  Daily reports:
-    # Automated report with attachment
-    mail://send to="manager@example.com" subject="Daily Sales Report" text_body="Please find attached today's sales report" attachments='["/reports/daily-sales-2025-02-07.pdf"]' from="reports@example.com"
-
-  Testing SMTP before deployment:
-    # Test connection
-    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" smtp_username="user" smtp_password="pass" connection_only=true
-
-    # Send test email
-    mail://test smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" smtp_username="user" smtp_password="pass" send_test_email=true to="test@example.com" from="test@example.com"
-
-  Multi-environment setup:
-    # Create profiles
-    mail://config action="set" profile="production" smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" from="noreply@example.com"
-    mail://config action="set" profile="staging" smtp_host="smtp-staging.example.com" smtp_port=587 use_tls="starttls" from="staging@example.com"
-    mail://config action="set" profile="dev" smtp_host="localhost" smtp_port=2525 use_tls="none" from="dev@localhost"
-
-    # Switch environments
-    mail://config action="activate" profile="production"
-    mail://send to="customer@example.com" subject="Order Confirmation" text_body="Your order has been confirmed"
-
-  Bulk email (with rate limiting):
-    # Send to multiple users with delay
-    for email in user1@example.com user2@example.com user3@example.com; do
-      mail://send to="$email" subject="Newsletter" text_body="Monthly update"
-      sleep 1  # Rate limit: 1 email per second
-    done
-
-  Email with template testing:
-    # Test template rendering
-    mail://send_template template="invoice" to="test@example.com" vars='{"invoice_id":"12345","amount":"99.99"}' dry_run=true
-
-    # Review output, then send for real
-    mail://send_template template="invoice" to="customer@example.com" vars='{"invoice_id":"12345","amount":"99.99"}'
-
-  Marketing campaign:
-    # Send with custom headers for tracking
-    mail://send_template template="campaign-2025-02" to="subscriber@example.com" vars='{"name":"Alice"}' headers='{"X-Campaign-ID":"2025-02-promo","X-Unsubscribe":"https://example.com/unsubscribe?token=xyz"}'
-
-BEST PRACTICES:
-  • Always use TLS (starttls or tls) in production
-  • Never hardcode passwords in scripts (use environment variables)
-  • Use profiles for managing different environments
-  • Test SMTP configuration with 'test' verb before sending
-  • Use templates for repeated email patterns
-  • Use dry_run to test templates before sending
-  • Set appropriate timeouts for your network conditions
-  • Implement retry logic for important emails
-  • Use meaningful subjects and clear text bodies
-  • Always provide both text_body and html_body when possible
-  • Validate email addresses before sending
-  • Use reply_to for emails that need responses
-  • Monitor SMTP server rate limits
-  • Log email sending for auditing
-  • Use BCC for privacy when emailing multiple recipients
-  • Avoid sending sensitive data in email headers
-  • Compress large attachments before sending
-  • Check attachment file sizes against SMTP limits
-  • Use proper authentication (app passwords for Gmail)
-  • Don't use tls_accept_invalid_certs in production
-  • Keep templates version-controlled
-  • Use locale for internationalization
-  • Implement unsubscribe links for marketing emails
-  • Monitor bounced emails
-  • Use custom headers for tracking and debugging
-  • Set X-Priority for urgent emails
-  • Use consistent from addresses for better deliverability
-  • Implement proper error handling in scripts
-  • Test templates with various data inputs
-  • Use format_output="json" for programmatic parsing
-  • Store SMTP credentials securely
-  • Rotate SMTP passwords regularly
-  • Use separate SMTP accounts for different purposes
-  • Monitor email delivery rates
-  • Implement exponential backoff for retries
-
-SECURITY CONSIDERATIONS:
-  • Never log or expose SMTP passwords
-  • Use TLS/STARTTLS for encryption in transit
-  • Use app-specific passwords instead of account passwords
-  • Validate and sanitize email addresses
-  • Be cautious with user-provided email content
-  • Implement rate limiting to prevent abuse
-  • Use SPF, DKIM, and DMARC for email authentication
-  • Monitor for unauthorized email sending
-  • Use separate SMTP credentials for different applications
-  • Implement proper access controls for profile management
-  • Don't send sensitive data in email unless encrypted
-  • Use secure storage for profile passwords
-  • Audit email sending logs regularly
-  • Implement email content filtering for user input
-  • Use allowlists for recipient domains when appropriate
-  • Be careful with attachments from untrusted sources
-  • Validate file paths before attaching
-  • Set appropriate file size limits
-  • Use virus scanning for attachments when possible
-  • Implement CAPTCHA for user-facing email forms
-
-SMTP PROVIDER NOTES:
-
-  Gmail:
-    • Requires app-specific password (not account password)
-    • Enable "Less secure app access" or use OAuth2
-    • Rate limit: ~100-500 emails/day for free accounts
-    • smtp_host="smtp.gmail.com"
-    • smtp_port=587
-    • use_tls="starttls"
-
-  Office 365:
-    • Use account credentials
-    • May require modern auth
-    • Rate limit: varies by subscription
-    • smtp_host="smtp.office365.com"
-    • smtp_port=587
-    • use_tls="starttls"
-
-  SendGrid:
-    • Use API key as password
-    • Username is literally "apikey"
-    • High rate limits with paid plans
-    • smtp_host="smtp.sendgrid.net"
-    • smtp_port=587
-    • use_tls="starttls"
-
-  Mailgun:
-    • Use SMTP credentials from dashboard
-    • Sandbox domain for testing
-    • smtp_host="smtp.mailgun.org"
-    • smtp_port=587
-    • use_tls="starttls"
-
-  Amazon SES:
-    • Use SMTP credentials (not AWS keys)
-    • Verify sender addresses or domains
-    • smtp_host="email-smtp.{region}.amazonaws.com"
-    • smtp_port=587
-    • use_tls="starttls"
-
-TEMPLATE BEST PRACTICES:
-  • Use clear, descriptive template names
-  • Version templates for compatibility
-  • Provide both text and HTML versions
-  • Document required variables
-  • Use default values for optional variables
-  • Test templates with various inputs
-  • Use dry_run for template validation
-  • Implement proper variable escaping
-  • Use locale for multi-language support
-  • Keep templates simple and maintainable
-  • Version control template files
-  • Use consistent variable naming
-  • Provide example variable values
-  • Validate variable types in templates
-  • Use strict_vars during development
-
-DEBUGGING:
-  Test connection first:
-    mail://test smtp_host="..." smtp_port=... connection_only=true
-
-  Check authentication:
-    mail://test smtp_host="..." smtp_port=... smtp_username="..." smtp_password="..."
-
-  Send test email:
-    mail://test ... send_test_email=true to="test@example.com" from="test@example.com"
-
-  Use text output for readability:
-    mail://send ... format_output="text"
-
-  Test templates with dry_run:
-    mail://send_template template="..." dry_run=true
-
-  Check active profile:
-    mail://config action="get_active"
-
-  List all profiles:
-    mail://config action="list"
-
-  Common issues:
-    • Wrong port (587 for STARTTLS, 465 for TLS, 25 for none)
-    • Wrong TLS mode (match port with TLS mode)
-    • Invalid credentials (use app passwords for Gmail)
-    • Firewall blocking (ensure outbound SMTP allowed)
-    • Invalid email addresses (check formatting)
-    • Missing profile (activate or provide SMTP args)
-    • Template not found (check template path)
-    • Certificate errors (use tls_accept_invalid_certs for testing only)
-
-PERFORMANCE CONSIDERATIONS:
-  • Sending emails is I/O bound (network dependent)
-  • Use connection pooling for bulk sends (not directly supported)
-  • Implement rate limiting for bulk operations
-  • Use async/parallel sending in scripts when appropriate
-  • Set reasonable timeouts (default 10 seconds)
-  • Monitor SMTP server performance
-  • Use local SMTP relay for high-volume sending
-  • Cache profile configurations
-  • Minimize attachment sizes
-  • Use compression for large attachments
-  • Batch emails when possible with provider-specific tools
-
-LIMITATIONS:
-  • No built-in HTML template engine (use external tools)
-  • No automatic retry with exponential backoff
-  • No connection pooling
-  • No read receipt support
-  • No delivery status notifications (DSN)
-  • No email queuing (send immediately)
-  • No S/MIME or PGP encryption
-  • No OAuth2 support (use app passwords)
-  • No attachment size validation (relies on SMTP server)
-  • Template system is basic (external templating recommended for complex needs)
-  • No built-in unsubscribe management
-  • No bounce handling
-  • No email validation beyond basic format
-
-INTEGRATION WITH OTHER HANDLES:
-
-  With event handle:
-    # Trigger email on event
-    event://subscribe(topic="alerts.*")
-    mail://send to="admin@example.com" subject="Alert" text_body="Event received"
-
-  With log handle:
-    # Email log excerpts
-    mail://send to="admin@example.com" subject="Error Log" text_body="$(log://./app.log.tail(lines=50))"
-
-  With config handle:
-    # Store email preferences
-    config://app/email_from.set(value="noreply@example.com")
-    config://app/email_admin.get
-
-  With file handle:
-    # Email file contents
-    mail://send to="user@example.com" subject="Report" text_body="$(file:///path/to/report.txt.read)"
-
-  With backup handle:
-    # Email backup completion
-    backup://mybackup.create
-    mail://send to="admin@example.com" subject="Backup Complete" text_body="Daily backup completed successfully"
-
-MORE INFO:
-  For complete documentation of mail handle operations:
-  https://github.com/[your-org]/resource-shell/docs/Network_RemoteOperations/mail.md
-
-  SMTP specifications:
-  https://www.rfc-editor.org/rfc/rfc5321 (SMTP Protocol)
-  https://www.rfc-editor.org/rfc/rfc3207 (STARTTLS)
-  https://www.rfc-editor.org/rfc/rfc4954 (SMTP Auth)
-
-  Email message format:
-  https://www.rfc-editor.org/rfc/rfc5322 (Internet Message Format)
-
-  Email best practices:
-  https://www.rfc-editor.org/rfc/rfc6376 (DKIM)
-  https://www.rfc-editor.org/rfc/rfc7208 (SPF)
-  https://www.rfc-editor.org/rfc/rfc7489 (DMARC)
-
-  Use 'mail:// --help=VERB' for detailed help on a specific verb.
-"#;
 
 #[derive(Clone, Debug)]
 pub enum TlsMode {
@@ -4631,275 +3967,20 @@ impl MailHandle {
         Self { _url: url }
     }
 
-    /// Check if this is a help request and display help if so
-    fn check_and_display_help(verb: &str, io: &mut IoStreams) -> Result<Option<Status>> {
-        // Check for help verbs
-        if verb == "--help" || verb == "-h" || verb == "help" {
-            write!(io.stdout, "{}", MAIL_HELP_TEXT)?;
-            return Ok(Some(Status::ok()));
-        }
-
-        // Check for verb-specific help
-        if verb.starts_with("--help=") {
-            let help_verb = verb.strip_prefix("--help=").unwrap_or("");
-            Self::display_verb_help(help_verb, io)?;
-            return Ok(Some(Status::ok()));
-        }
-
-        Ok(None)
-    }
-
-    /// Display help for a specific verb
-    fn display_verb_help(verb: &str, io: &mut IoStreams) -> Result<Status> {
-        match verb {
-            "send" => {
-                write!(
-                    io.stdout,
-                    r#"SEND VERB - MAIL HANDLE
-====================
-
-DESCRIPTION:
-  Send an email message with custom content, attachments, and SMTP configuration.
-  Supports both plain text and HTML bodies, multiple recipients, custom headers,
-  and flexible authentication modes.
-
-SYNTAX:
-  mail://send [arguments]
-  mail://send([arguments])
-
-REQUIRED ARGUMENTS:
-  to=RECIPIENTS          Email addresses to send to
-  subject=TEXT           Email subject line
-  text_body=TEXT         Plain text body (required if no html_body)
-  html_body=HTML         HTML email body (required if no text_body)
-
-OPTIONAL ARGUMENTS:
-  from=ADDRESS           Sender address (uses profile default if not specified)
-  cc=RECIPIENTS          Carbon copy recipients
-  bcc=RECIPIENTS         Blind carbon copy recipients
-  reply_to=ADDRESS       Reply-to address
-  attachments=PATHS      File paths to attach (JSON array format)
-  headers=OBJECT         Custom headers (JSON object format)
-  smtp_host=HOST         SMTP server hostname
-  smtp_port=NUMBER       SMTP server port (default: 587)
-  smtp_username=USER     SMTP authentication username
-  smtp_password=PASS     SMTP authentication password
-  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
-  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
-  timeout_ms=NUMBER      Connection timeout (default: 10000)
-  max_retry=NUMBER       Maximum retry attempts (default: 0)
-  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
-  format_output=FORMAT   Output format: json, text (default: json)
-
-RECIPIENT FORMATS:
-  Single:    to="user@example.com"
-  Multiple:  to="user1@example.com,user2@example.com"
-  Function:  to=["user1@example.com","user2@example.com"]
-
-EXAMPLES:
-  # Basic email
-  mail://send to="user@example.com" subject="Hello" text_body="World"
-
-  # With HTML and attachments
-  mail://send to="user@example.com" subject="Report" html_body="<h1>Report</h1>" attachments='["/path/to/file.pdf"]'
-
-  # Multiple recipients with CC
-  mail://send to="team@example.com" cc="manager@example.com" subject="Update" text_body="Weekly update"
-
-Use 'mail:// --help' for complete documentation.
-"#
-                )?;
-                Ok(Status::ok())
-            }
-            "send_template" => {
-                write!(
-                    io.stdout,
-                    r#"SEND_TEMPLATE VERB - MAIL HANDLE
-===========================
-
-DESCRIPTION:
-  Send an email using a predefined template with variable substitution.
-  Supports template versioning, localization, dry-run testing, and all
-  standard email features like attachments and custom headers.
-
-SYNTAX:
-  mail://send_template [arguments]
-  mail://send_template([arguments])
-
-REQUIRED ARGUMENTS:
-  template=NAME          Template name to use
-  to=RECIPIENTS          Email addresses to send to
-
-OPTIONAL ARGUMENTS:
-  vars=OBJECT            Template variables (JSON object format)
-  locale=LOCALE          Template locale/language
-  version=VERSION        Template version
-  from=ADDRESS           Sender address (uses profile default if not specified)
-  cc=RECIPIENTS          Carbon copy recipients
-  bcc=RECIPIENTS         Blind carbon copy recipients
-  reply_to=ADDRESS       Reply-to address
-  attachments=PATHS      File paths to attach (JSON array format)
-  headers=OBJECT         Custom headers (JSON object format)
-  smtp_host=HOST         SMTP server hostname
-  smtp_port=NUMBER       SMTP server port (default: 587)
-  smtp_username=USER     SMTP authentication username
-  smtp_password=PASS     SMTP authentication password
-  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
-  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
-  timeout_ms=NUMBER      Connection timeout (default: 10000)
-  max_retry=NUMBER       Maximum retry attempts (default: 0)
-  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
-  strict_vars=BOOL       Require all template variables (default: false)
-  dry_run=BOOL           Test rendering without sending (default: false)
-  format_output=FORMAT   Output format: json, text (default: json)
-
-TEMPLATE VARIABLES:
-  Simple replacement: {{variable_name}}
-  JSON format: vars='JSON_OBJECT_HERE'
-
-EXAMPLES:
-  # Basic template
-  mail://send_template template="welcome" to="user@example.com" vars='JSON_HERE'
-
-  # With locale and version
-  mail://send_template template="invoice" to="customer@example.com" vars='JSON_HERE' locale="en_US" version="v2"
-
-  # Dry run for testing
-  mail://send_template template="welcome" to="test@example.com" vars='JSON_HERE' dry_run=true
-
-Use 'mail:// --help' for complete documentation.
-"#
-                )?;
-                Ok(Status::ok())
-            }
-            "test" => {
-                write!(
-                    io.stdout,
-                    r#"TEST VERB - MAIL HANDLE
-===================
-
-DESCRIPTION:
-  Test SMTP connection and optionally send a test email. Useful for validating
-  SMTP configuration, authentication, and server connectivity before sending
-  real emails.
-
-SYNTAX:
-  mail://test [arguments]
-  mail://test([arguments])
-
-REQUIRED ARGUMENTS:
-  smtp_host=HOST         SMTP server hostname
-  smtp_port=NUMBER       SMTP server port
-
-OPTIONAL ARGUMENTS:
-  smtp_username=USER     SMTP authentication username
-  smtp_password=PASS     SMTP authentication password
-  use_tls=MODE           TLS mode: none, starttls, tls (default: starttls)
-  tls_accept_invalid_certs=BOOL  Accept invalid certificates (default: false)
-  connection_only=BOOL   Only test connection (default: false)
-  send_test_email=BOOL   Send a test email (default: false)
-  to=RECIPIENTS          Recipients (required if send_test_email=true)
-  from=ADDRESS           Sender (required if send_test_email=true)
-  subject=TEXT           Test email subject (optional)
-  text_body=TEXT         Test email body (optional)
-  html_body=HTML         Test email HTML body (optional)
-  timeout_ms=NUMBER      Connection timeout (default: 10000)
-  max_retry=NUMBER       Maximum retry attempts (default: 0)
-  retry_backoff_ms=NUMBER  Retry delay (default: 1000)
-  format_output=FORMAT   Output format: json, text (default: json)
-
-TEST MODES:
-  Connection only:  connection_only=true (default)
-  With test email:  send_test_email=true
-
-EXAMPLES:
-  # Test connection only
-  mail://test smtp_host="smtp.gmail.com" smtp_port=587 use_tls="starttls"
-
-  # Test with authentication
-  mail://test smtp_host="smtp.gmail.com" smtp_port=587 smtp_username="user@gmail.com" smtp_password="app_password"
-
-  # Send test email
-  mail://test smtp_host="smtp.gmail.com" smtp_port=587 smtp_username="user@gmail.com" smtp_password="app_password" send_test_email=true to="test@example.com" from="sender@gmail.com"
-
-Use 'mail:// --help' for complete documentation.
-"#
-                )?;
-                Ok(Status::ok())
-            }
-            "config" => {
-                write!(
-                    io.stdout,
-                    r#"CONFIG VERB - MAIL HANDLE
-=====================
-
-DESCRIPTION:
-  Manage SMTP profile configurations for reusable settings. Profiles allow
-  you to store SMTP credentials and settings for different environments
-  and switch between them easily.
-
-SYNTAX:
-  mail://config [arguments]
-  mail://config([arguments])
-
-REQUIRED ARGUMENTS:
-  action=ACTION          Configuration action
-
-ACTIONS:
-  list                   List all profiles
-  get                    Get specific profile (requires profile=NAME)
-  set                    Create/update profile (requires profile=NAME and SMTP settings)
-  delete                 Delete profile (requires profile=NAME)
-  activate               Activate profile (requires profile=NAME)
-  get_active             Get currently active profile
-
-PROFILE SETTINGS (for 'set' action):
-  profile=NAME           Profile name
-  smtp_host=HOST         SMTP server hostname
-  smtp_port=NUMBER       SMTP server port
-  smtp_username=USER     SMTP username
-  smtp_password=PASS     SMTP password
-  use_tls=MODE           TLS mode (none, starttls, tls)
-  tls_accept_invalid_certs=BOOL  Accept invalid certs
-  from=ADDRESS           Default sender address
-  reply_to=ADDRESS       Default reply-to address
-  description=TEXT       Profile description
-  is_default=BOOL        Set as default profile
-
-OPTIONAL ARGUMENTS:
-  format_output=FORMAT   Output format: json, text (default: json)
-
-EXAMPLES:
-  # List all profiles
-  mail://config action="list"
-
-  # Create production profile
-  mail://config action="set" profile="production" smtp_host="smtp.example.com" smtp_port=587 use_tls="starttls" from="noreply@example.com"
-
-  # Activate profile
-  mail://config action="activate" profile="production"
-
-  # Get active profile
-  mail://config action="get_active"
-
-Use 'mail:// --help' for complete documentation.
-"#
-                )?;
-                Ok(Status::ok())
-            }
-            _ => {
-                writeln!(
-                    io.stderr,
-                    "Unknown verb: {}. Available verbs: send, send_template, test, config",
-                    verb
-                )?;
-                writeln!(
-                    io.stderr,
-                    "Use 'mail:// --help' for complete documentation."
-                )?;
-                Ok(Status::err(1, format!("Unknown verb: {}", verb)))
-            }
-        }
+    /// Handle the in-URL help forms (`mail://--help`, `mail://-h`, the `help`
+    /// verb, and `mail://--help=VERB`) by printing the handle help metadata.
+    /// The parser turns `mail://--help=VERB` into the `help` verb with verb=VERB.
+    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+        let requested = if verb == "help" || crate::core::help::is_help_flag(verb) {
+            args.get("verb").map(|v| v.as_str())
+        } else if let Some(v) = verb.strip_prefix("--help=") {
+            Some(v)
+        } else {
+            return Ok(None);
+        };
+        let text = crate::core::help::render_legacy("mail", &MAIL_HELP, self.verbs(), requested);
+        write!(io.stdout, "{}", text)?;
+        Ok(Some(Status::ok()))
     }
 
     fn verb_send(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -5060,9 +4141,13 @@ impl Handle for MailHandle {
         &["send", "send_template", "test", "config"]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&MAIL_HELP)
+    }
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Check for help requests first
-        if let Some(status) = Self::check_and_display_help(verb, io)? {
+        if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
 
@@ -5079,4 +4164,47 @@ impl Handle for MailHandle {
 // Registry function
 pub fn register(registry: &mut crate::core::Registry) {
     registry.register_scheme("mail", |url| Ok(Box::new(MailHandle::new(url.clone()))));
+}
+
+#[cfg(test)]
+mod mail_help_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn call_help(verb: &str) -> (String, Status) {
+        call_help_with(verb, Args::new())
+    }
+
+    fn call_help_with(verb: &str, args: Args) -> (String, Status) {
+        let handle = MailHandle::new(Url::parse("mail://send").unwrap());
+        let mut stdin = Cursor::new(Vec::new());
+        let mut stdout = Cursor::new(Vec::new());
+        let mut stderr = Cursor::new(Vec::new());
+        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        let status = handle.call(verb, &args, &mut io).unwrap();
+        (String::from_utf8(stdout.into_inner()).unwrap(), status)
+    }
+
+    #[test]
+    fn in_url_help_renders_metadata() {
+        for verb in ["--help", "-h", "help"] {
+            let (out, status) = call_help(verb);
+            assert!(status.ok);
+            assert!(out.starts_with("Handle: mail"), "{}", out);
+        }
+    }
+
+    #[test]
+    fn in_url_verb_help_renders_verb_metadata() {
+        let (out, status) = call_help("--help=send");
+        assert!(status.ok);
+        assert!(out.contains("Verb: send"), "{}", out);
+        assert!(!out.contains("RESOURCE SHELL"));
+
+        // mail://--help=test reaches the handle as the help verb with verb=test
+        let mut args = Args::new();
+        args.insert("verb".to_string(), "test".to_string());
+        let (out, _status) = call_help_with("help", args);
+        assert!(out.contains("Verb: test"), "{}", out);
+    }
 }

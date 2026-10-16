@@ -1,0 +1,29 @@
+Handle: svc
+Verb: status
+Definition: Reports the current state of a service, such as whether it is
+  running and its main process ID, as a JSON object.
+
+Usage:
+  resh svc://<service-name>.status
+
+Example:
+  resh svc://nginx.status
+
+Example Output:
+  {
+    "active_state": "active",
+    "backend": "systemd",
+    "description": "A high performance web server and a reverse proxy server",
+    "exit_status": 0,
+    "name": "nginx.service",
+    "pid": 1234,
+    "sub_state": "running",
+    "timestamps": {
+      "active_enter": "2026-10-16T09:12:44.512309+00:00",
+      "active_exit": "",
+      "inactive_enter": ""
+    }
+  }
+
+  Shown for a systemd host with --json-pretty. OpenRC hosts report the
+  fields name, backend, state, pid, exit_status, raw, and timestamps.

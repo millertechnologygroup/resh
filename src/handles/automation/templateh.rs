@@ -10,6 +10,7 @@ use std::path::{Component, PathBuf};
 use url::Url;
 
 use crate::core::{
+    help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
@@ -120,364 +121,120 @@ pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("template", |u| Ok(Box::new(TemplateHandle::from_url(u.clone())?)));
 }
 
-// Help text constants
-const TEMPLATE_HELP_TEXT: &str = r#"RESOURCE SHELL - TEMPLATE HANDLE
-================================
-
-USAGE:
-  template://path/to/file.ext.VERB(arguments)
-  template://inline.VERB(arguments)
-
-DESCRIPTION:
-  The template handle provides template rendering, validation, and testing
-  using the Tera template engine. It supports both file-based and inline
-  templates with dynamic data injection.
-
-TEMPLATE ENGINE:
-  Tera - Powerful template engine with:
-  • Variable substitution: {{ variable }}
-  • Control structures: {% if %}, {% for %}, {% block %}
-  • Filters and functions: {{ name | upper }}
-  • Template inheritance
-  • Strict or permissive variable handling
-  • Comments: {# This is a comment #}
-
-VERBS:
-  render          Render a template with provided data
-  validate        Validate template syntax and data requirements
-  test            Run automated tests against templates
-
-EXAMPLES:
-
-  Inline template rendering:
-    template://inline.render(template="Hello {{ name }}", context="{\"name\":\"world\"}")
-
-  File template rendering:
-    template://greeting.html.render()
-
-  File template with context file:
-    template://greeting.html.render(context_file="/data/context.json")
-
-  File template with inline context:
-    template://config.yaml.render(context="{\"port\":8080,\"host\":\"localhost\"}")
-
-  JSON output format:
-    template://config.json.render(context="{\"port\":8080}", format="json")
-
-  HTML output format:
-    template://email.html.render(context_file="user-data.json", format="html")
-
-  Basic syntax validation:
-    template://welcome.html.validate()
-
-  Validate with context data:
-    template://user-profile.html.validate(context="{\"user\":{\"name\":\"alice\"}}")
-
-  Non-strict validation (warnings instead of errors):
-    template://partial.html.validate(context="{}", strict="false")
-
-  Validate inline template:
-    template://inline.validate(template="Hello {{ name }}", context="{\"name\":\"test\"}")
-
-  Run default tests (looks for template.tests.json):
-    template://hello.html.test()
-
-  Run tests with inline cases:
-    template://greeting.html.test(cases="[{\"name\":\"basic\",\"context\":{\"user\":\"alice\"},\"expected\":\"Hello alice!\"}]")
-
-  Run tests from external file:
-    template://complex.html.test(cases_file="test-cases.json")
-
-  Stop on first test failure:
-    template://complex.html.test(stop_on_first_fail="true", capture_output="full")
-
-  Configuration file generation:
-    template://config.yaml.render(context_file="/deployment/vars.json")
-
-  Email template processing:
-    template://welcome-email.html.render(context="{\"user\":{\"name\":\"John\",\"email\":\"john@example.com\"}}", format="html")
-
-RENDER ARGUMENTS:
-  template=TEXT          Inline template content (alternative to file path)
-  context=JSON           JSON string containing template variables
-  context_file=PATH      Path to JSON file containing template variables
-  format=FORMAT          Output format: text, html, json, bytes (default: text)
-
-VALIDATE ARGUMENTS:
-  template=TEXT          Inline template content (alternative to file path)
-  context=JSON           JSON string containing template variables for validation
-  strict=BOOL            Treat missing variables as errors (default: true)
-
-TEST ARGUMENTS:
-  cases=JSON             JSON array of test cases inline
-  cases_file=PATH        Path to JSON file containing test cases
-  stop_on_first_fail=BOOL Stop testing on first failure (default: false)
-  capture_output=MODE    Output capture mode: none, summary, full (default: summary)
-
-DATA SOURCES (in order of precedence):
-  1. Inline context       context parameter (highest priority)
-  2. Context file         context_file parameter
-  3. URL parameters       Individual parameters from the URL
-
-OUTPUT FORMATS:
-  text (default)         Plain text output
-  html                   HTML content (semantically labeled)
-  json                   Parses rendered output as JSON, returns structured data
-  bytes                  Returns base64-encoded binary data
-
-TEST CASE FORMAT:
-  Test cases are JSON arrays containing objects with:
-  • name              Test case name (required)
-  • context           Variables to use for rendering (required)
-  • expected          Exact expected output (optional)
-  • contains          String that must be present in output (optional)
-  • not_contains      String that must NOT be present (optional)
-
-  Example test case:
-  [
-    {
-      "name": "basic_greeting",
-      "context": {"user": "Alice"},
-      "expected": "Hello Alice!"
-    },
-    {
-      "name": "contains_username",
-      "context": {"user": "Bob"},
-      "contains": "Bob"
-    },
-    {
-      "name": "no_admin_content",
-      "context": {"user": "guest", "role": "user"},
-      "not_contains": "admin"
+/// Metadata for `resh template --help` and `resh template <verb> --help`.
+static TEMPLATE_HELP: HandleHelp = HandleHelp {
+    description: "The template handle renders, validates, and tests text templates with the \
+        Tera engine and reports every result as a JSON object. The stage URL names a \
+        template file relative to the current directory, such as \
+        template://welcome.txt, or uses template://inline with the template \
+        text passed as an argument. Template variables come from a JSON context argument \
+        or a JSON context file.",
+    usage: "resh template://<path>|inline.<verb>[(key=value,...)]",
+    verbs: &[
+        VerbHelp {
+            name: "render",
+            definition: "Renders a template with a JSON context and reports the rendered body, \
+                the context keys, and template details as a JSON object.",
+            detail: Some(VerbDetail {
+                usage: "resh template://<path>.render [context=<json>] [context_file=<path>]\n  \
+                    [format=text|html|json|bytes] [template=<text>]",
+                example: "resh --json-pretty template://welcome.txt.render \
+                    'context={\"name\":\"alice\"}'",
+                example_output: Some(
+                    r#"{
+  "body": {
+    "type": "text",
+    "value": "Hello, alice!"
+  },
+  "context": {
+    "keys": [
+      "name"
+    ],
+    "raw": {
+      "name": "alice"
     }
-  ]
-
-TEST FILE CONVENTION:
-  For template file "hello.html", default test file is "hello.tests.json"
-
-TEST ASSERTION TYPES:
-  Exact Match            expected: Output must match exactly
-  Contains               contains: Output must include specified string
-  Not Contains           not_contains: Output must NOT include specified string
-
-TERA TEMPLATE SYNTAX:
-  Variables              {{ variable_name }}
-  Conditionals           {% if condition %}...{% endif %}
-  Loops                  {% for item in items %}...{% endfor %}
-  Filters                {{ name | upper }}
-  Comments               {# This is a comment #}
-  Blocks                 {% block name %}...{% endblock %}
-
-  For complete Tera syntax: https://tera.netlify.app/
-
-CONTEXT FILE FORMAT:
-  JSON file containing template variables:
-  {
-    "user": {
-      "name": "Alice",
-      "email": "alice@example.com"
-    },
-    "environment": "production",
-    "features": ["auth", "api", "web"]
+  },
+  "engine": "tera",
+  "errors": [],
+  "ok": true,
+  "template": {
+    "name": "welcome.txt",
+    "path": "welcome.txt",
+    "size": 18,
+    "source": "file"
   }
+}
 
-COMMON WORKFLOWS:
+Shown for a file containing "Hello, {{ name }}!" with --json-pretty. The
+context argument overrides context_file, format=json parses the rendered
+text into body.value, and format=bytes returns body.base64 instead."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "validate",
+            definition: "Checks a template for syntax errors and, using an optional JSON \
+                context, for render errors such as missing variables.",
+            detail: Some(VerbDetail {
+                usage: "resh template://<path>.validate [context=<json>] [strict=true|false]\n  \
+                    [from=<text>] [encoding=utf-8]",
+                example: "resh --json-pretty template://welcome.txt.validate \
+                    'context={\"name\":\"alice\"}'",
+                example_output: Some(
+                    r#"{
+  "errors": [],
+  "ok": true,
+  "strict": true,
+  "template": {
+    "name": "welcome.txt",
+    "path": "welcome.txt",
+    "size": 18,
+    "source": "file"
+  },
+  "warnings": []
+}
 
-  Template development workflow:
-    # 1. Validate syntax
-    template://new-template.html.validate()
-
-    # 2. Test with sample data
-    template://new-template.html.validate(context="{\"test\":\"data\"}")
-
-    # 3. Run automated tests
-    template://new-template.html.test()
-
-    # 4. Render final output
-    template://new-template.html.render(context_file="production-data.json")
-
-  Quick inline testing:
-    template://inline.render(template="Hello {{ name }}", context="{\"name\":\"World\"}")
-
-  Configuration generation:
-    template://app-config.yaml.render(context_file="/config/prod-vars.json")
-
-OUTPUT STRUCTURE:
-  All operations return JSON with the following structure:
-
-  Render success:
-  {
-    "ok": true,
-    "engine": "tera",
-    "template": {"source": "file|inline", "name": "...", "size": N},
-    "context": {"keys": [...], "raw": {...}},
-    "body": {"type": "text|html|json|bytes", "value": "..."},
-    "errors": []
-  }
-
-  Validate success:
-  {
-    "ok": true,
-    "template": {"source": "...", "name": "...", "path": "...", "size": N},
-    "strict": true|false,
-    "errors": [],
-    "warnings": []
-  }
-
-  Test results:
-  {
-    "template": "file.html",
-    "ok": true|false,
-    "total": N,
-    "passed": N,
-    "failed": N,
-    "stop_on_first_fail": false,
-    "cases": [...]
-  }
-
-ERROR TYPES:
-  template_not_found     Template file does not exist
-  context_parse          Invalid JSON in context data
-  syntax                 Template syntax errors
-  missing_variable       Required variables not found in context
-  render                 Template rendering failures
-  json_parse             Invalid JSON in rendered output (format=json)
-
-BEST PRACTICES:
-  • Use validation during development to catch errors early
-  • Write comprehensive tests covering different data scenarios
-  • Use strict mode in production to catch missing variables
-  • Separate complex data into context files for maintainability
-  • Use meaningful test case names for easier debugging
-  • Test edge cases: empty data, missing fields, special characters
-  • Use comments in templates to document expected variables
-  • Leverage Tera filters for data transformation
-  • Keep templates simple and focused on presentation
-
-MORE INFO:
-  For complete documentation of all verbs, template syntax, and
-  testing capabilities, visit:
-  https://github.com/[your-org]/resource-shell/docs/template-handle.md
-
-  For Tera template engine documentation:
-  https://tera.netlify.app/
-
-  Use 'template:// --help=VERB' for detailed help on a specific verb.
-"#;
-
-const RENDER_VERB_HELP: &str = r#"TEMPLATE RENDER VERB
-===================
-
-DESCRIPTION:
-  Renders a template with provided data using the Tera template engine.
-  Supports both file-based and inline templates with various output formats.
-
-SYNTAX:
-  template://path/to/file.ext.render(arguments)
-  template://inline.render(template="content", arguments)
-
-ARGUMENTS:
-  template=TEXT          Inline template content (alternative to file path)
-  context=JSON           JSON string containing template variables
-  context_file=PATH      Path to JSON file containing template variables  
-  format=FORMAT          Output format: text, html, json, bytes (default: text)
-  encoding=ENCODING      Character encoding (currently only utf-8 supported)
-
-EXAMPLES:
-  template://greeting.html.render()
-  template://config.yaml.render(context="{\"port\":8080}")
-  template://inline.render(template="Hello {{ name }}", context="{\"name\":\"World\"}")
-  template://email.html.render(context_file="user-data.json", format="html")
-
-OUTPUT STRUCTURE:
-  {
-    "ok": true,
-    "engine": "tera",
-    "template": {"source": "file|inline", "name": "...", "size": N},
-    "context": {"keys": [...], "raw": {...}},
-    "body": {"type": "text|html|json|bytes", "value": "..."},
-    "errors": []
-  }
-"#;
-
-const VALIDATE_VERB_HELP: &str = r#"TEMPLATE VALIDATE VERB
-=====================
-
-DESCRIPTION:
-  Validates template syntax and checks for missing variables.
-  Can operate in strict mode (errors) or permissive mode (warnings).
-
-SYNTAX:
-  template://path/to/file.ext.validate(arguments)
-  template://inline.validate(template="content", arguments)
-
-ARGUMENTS:
-  template=TEXT          Inline template content (alternative to file path)
-  context=JSON           JSON string containing template variables for validation
-  strict=BOOL            Treat missing variables as errors (default: true)
-
-EXAMPLES:
-  template://welcome.html.validate()
-  template://user-profile.html.validate(context="{\"user\":{\"name\":\"alice\"}}")
-  template://partial.html.validate(context="{}", strict="false")
-  template://inline.validate(template="Hello {{ name }}", context="{\"name\":\"test\"}")
-
-OUTPUT STRUCTURE:
-  {
-    "ok": true,
-    "template": {"source": "...", "name": "...", "path": "...", "size": N},
-    "strict": true|false,
-    "errors": [],
-    "warnings": []
-  }
-"#;
-
-const TEST_VERB_HELP: &str = r#"TEMPLATE TEST VERB
-=================
-
-DESCRIPTION:
-  Runs automated tests against templates using defined test cases.
-  Supports exact matching, contains, and not-contains assertions.
-
-SYNTAX:
-  template://path/to/file.ext.test(arguments)
-  template://inline.test(template="content", arguments)
-
-ARGUMENTS:
-  template=TEXT              Inline template content (alternative to file path)
-  cases=JSON                 JSON array of test cases inline
-  cases_file=PATH            Path to JSON file containing test cases
-  stop_on_first_fail=BOOL    Stop testing on first failure (default: false)
-  capture_output=MODE        Output capture mode: none, summary, full (default: summary)
-
-TEST CASE FORMAT:
-  [
+Shown with --json-pretty. Problems are reported in errors as objects with
+kind and message fields, and the command exits with status 1. With
+strict=false, missing variables are reported in warnings instead and the
+command succeeds."#,
+                ),
+            }),
+        },
+        VerbHelp {
+            name: "test",
+            definition: "Renders a template once per test case and checks each result against \
+                the case's expected, contains, and not_contains values.",
+            detail: Some(VerbDetail {
+                usage: "resh template://<path>.test [cases=<json>] [cases_file=<path>]\n  \
+                    [stop_on_first_fail=true|false] [capture_output=none|summary|full]\n  \
+                    [template=<text>]",
+                example: "resh --json-pretty template://welcome.txt.test",
+                example_output: Some(
+                    r#"{
+  "cases": [
     {
-      "name": "test_name",
-      "context": {"variable": "value"},
-      "expected": "exact output"           // Optional: exact match
-      "contains": "substring"              // Optional: must contain
-      "not_contains": "forbidden string"   // Optional: must not contain
+      "expected": "Hello, alice!",
+      "name": "alice",
+      "ok": true
     }
-  ]
+  ],
+  "failed": 0,
+  "ok": true,
+  "passed": 1,
+  "stop_on_first_fail": false,
+  "template": "welcome.txt",
+  "total": 1
+}
 
-EXAMPLES:
-  template://hello.html.test()
-  template://greeting.html.test(cases="[{\"name\":\"basic\",\"context\":{\"user\":\"alice\"},\"expected\":\"Hello alice!\"}]")
-  template://complex.html.test(cases_file="test-cases.json")
-  template://complex.html.test(stop_on_first_fail="true", capture_output="full")
-
-OUTPUT STRUCTURE:
-  {
-    "template": "file.html",
-    "ok": true|false,
-    "total": N,
-    "passed": N,
-    "failed": N,
-    "stop_on_first_fail": false,
-    "cases": [...]
-  }
-"#;
+Shown with --json-pretty. Without cases or cases_file, the cases are read
+from the file next to the template with the extension .tests.json, here
+welcome.tests.json."#,
+                ),
+            }),
+        },
+    ],
+};
 
 pub struct TemplateHandle {
     template_path: Option<PathBuf>,
@@ -532,6 +289,20 @@ fn normalize_path(p: &PathBuf) -> PathBuf {
     } else {
         out
     }
+}
+
+/// Returns the "Variable ... not found" message if any error in `e`'s
+/// source chain reports a missing variable.
+fn missing_variable_message(e: &tera::Error) -> Option<String> {
+    let mut cur: Option<&dyn std::error::Error> = Some(e);
+    while let Some(err) = cur {
+        let msg = err.to_string();
+        if msg.contains("Variable") && (msg.contains("not found") || msg.contains("doesn't exist")) {
+            return Some(msg);
+        }
+        cur = err.source();
+    }
+    None
 }
 
 impl TemplateHandle {
@@ -946,13 +717,12 @@ impl TemplateHandle {
                 result.ok = true;
             }
             Err(e) => {
-                let error_msg = e.to_string();
-                
-                // Check if it's a missing variable error
-                if error_msg.contains("Variable") && (error_msg.contains("not found") || error_msg.contains("doesn't exist")) {
+                // Check if it's a missing variable error. Tera's top-level
+                // message is generic; the detail is in the source chain.
+                if let Some(detail) = missing_variable_message(&e) {
                     let validation_error = ValidationError {
                         kind: "missing_variable".to_string(),
-                        message: format!("Missing variable: {}", e),
+                        message: format!("Missing variable: {}", detail),
                         line: None,
                         column: None,
                     };
@@ -1452,33 +1222,23 @@ impl TemplateHandle {
         (true, None, None)
     }
 
-    /// Display general help for the template handle
-    fn display_help(&self, io: &mut IoStreams) -> Result<Status> {
-        writeln!(io.stdout, "{}", TEMPLATE_HELP_TEXT)?;
-        Ok(Status {
-            ok: true,
-            code: Some(0),
-            reason: None,
-        })
-    }
-
-    /// Display verb-specific help
-    fn display_verb_help(&self, verb: &str, io: &mut IoStreams) -> Result<Status> {
-        let help_text = match verb {
-            "render" => RENDER_VERB_HELP,
-            "validate" => VALIDATE_VERB_HELP,
-            "test" => TEST_VERB_HELP,
-            _ => {
-                writeln!(io.stderr, "Unknown verb: {}. Use --help for full list.", verb)?;
+    /// Writes the approved help, for the whole handle or for one verb.
+    fn display_help(&self, verb: Option<&str>, io: &mut IoStreams) -> Result<Status> {
+        if let Some(v) = verb {
+            if !self.verbs().contains(&v) {
+                writeln!(io.stderr, "Unknown verb: {}. Use --help for full list.", v)?;
                 return Ok(Status {
                     ok: false,
                     code: Some(1),
                     reason: Some("unknown_verb".to_string()),
                 });
             }
-        };
-        
-        writeln!(io.stdout, "{}", help_text)?;
+        }
+        write!(
+            io.stdout,
+            "{}",
+            crate::core::help::render_legacy("template", &TEMPLATE_HELP, self.verbs(), verb)
+        )?;
         Ok(Status {
             ok: true,
             code: Some(0),
@@ -1492,16 +1252,14 @@ impl Handle for TemplateHandle {
         &["render", "validate", "test"]
     }
 
+    fn help(&self) -> Option<&'static HandleHelp> {
+        Some(&TEMPLATE_HELP)
+    }
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Check if this is a help request
         if self.is_help_request {
-            if let Some(ref help_verb) = self.help_verb {
-                // Verb-specific help requested
-                return self.display_verb_help(help_verb, io);
-            } else {
-                // General help requested
-                return self.display_help(io);
-            }
+            return self.display_help(self.help_verb.as_deref(), io);
         }
 
         // Normal operation - dispatch to appropriate verb
@@ -1692,7 +1450,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("welcome.tera");
         let mut template_file = File::create(&template_path).unwrap();
-        write!(template_file, "Hi {{ user }} from {{ env }}").unwrap();
+        template_file.write_all(b"Hi {{ user }} from {{ env }}").unwrap();
 
         let handle = TemplateHandle {
             template_path: Some(template_path),
@@ -2294,7 +2052,7 @@ mod tests {
         assert_eq!(result.code, Some(0));
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
-        assert!(output.contains("RESOURCE SHELL - TEMPLATE HANDLE"));
+        assert!(output.starts_with("Handle: template"));
         
         Ok(())
     }
@@ -2321,7 +2079,7 @@ mod tests {
         assert_eq!(result.code, Some(0));
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
-        assert!(output.contains("RESOURCE SHELL - TEMPLATE HANDLE"));
+        assert!(output.starts_with("Handle: template"));
         
         Ok(())
     }
@@ -2365,11 +2123,9 @@ mod tests {
         handle.call("dummy_verb", &args, &mut io)?;
         let output = String::from_utf8(stdout.into_inner()).unwrap();
 
-        // Check for Tera syntax examples
-        assert!(output.contains("{{"));
-        assert!(output.contains("{%"));
-        assert!(output.contains("{#"));
-        assert!(output.contains("variable_name"));
+        // Approved help describes the engine and the inline form
+        assert!(output.contains("Tera"));
+        assert!(output.contains("template://inline"));
 
         Ok(())
     }
@@ -2390,22 +2146,18 @@ mod tests {
         handle.call("dummy_verb", &args, &mut io)?;
         let output = String::from_utf8(stdout.into_inner()).unwrap();
 
-        // Count occurrences of "template://" to verify we have enough examples
-        let example_count = output.matches("template://").count();
-        assert!(example_count >= 15, "Help text should contain at least 15 examples, found {}", example_count);
-
-        // Verify specific examples are present
-        assert!(output.contains("inline.render"));
-        assert!(output.contains("greeting.html.render"));
+        // Every verb is listed with its definition
+        assert!(output.contains("render"));
         assert!(output.contains("validate"));
         assert!(output.contains("test"));
+        assert!(output.contains("resh template://<path>|inline.<verb>"));
 
         Ok(())
     }
 
     #[test]
     fn test_help_contains_output_formats() -> Result<()> {
-        let url = Url::parse("template://--help")?;
+        let url = Url::parse("template://--help?help=render")?;
         let handle = TemplateHandle::from_url(url)?;
 
         let args = HashMap::new();
@@ -2448,8 +2200,8 @@ mod tests {
         assert!(result.ok);
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
-        assert!(output.contains("TEMPLATE RENDER VERB"));
-        assert!(output.contains("Renders a template with provided data"));
+        assert!(output.starts_with("Handle: template"));
+        assert!(output.contains("resh template://<path>.render"));
 
         Ok(())
     }
@@ -2475,8 +2227,8 @@ mod tests {
         assert!(result.ok);
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
-        assert!(output.contains("TEMPLATE VALIDATE VERB"));
-        assert!(output.contains("Validates template syntax"));
+        assert!(output.starts_with("Handle: template"));
+        assert!(output.contains("resh template://<path>.validate"));
 
         Ok(())
     }
@@ -2502,8 +2254,8 @@ mod tests {
         assert!(result.ok);
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
-        assert!(output.contains("TEMPLATE TEST VERB"));
-        assert!(output.contains("Runs automated tests"));
+        assert!(output.starts_with("Handle: template"));
+        assert!(output.contains("resh template://<path>.test"));
 
         Ok(())
     }
@@ -2610,14 +2362,11 @@ mod tests {
         handle.call("dummy_verb", &args, &mut io)?;
         let output = String::from_utf8(stdout.into_inner()).unwrap();
 
-        // Check for section headers (using = characters)
-        assert!(output.contains("="));
-        
-        // Check for consistent formatting
-        assert!(output.contains("USAGE:"));
-        assert!(output.contains("DESCRIPTION:"));
-        assert!(output.contains("VERBS:"));
-        assert!(output.contains("EXAMPLES:"));
+        // Check for the approved help sections
+        assert!(output.starts_with("Handle: template"));
+        assert!(output.contains("Description:"));
+        assert!(output.contains("Available Verbs:"));
+        assert!(output.contains("Usage:"));
 
         Ok(())
     }

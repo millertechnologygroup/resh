@@ -270,6 +270,7 @@ plugin://available.list()
 plugin://available.search(q="monitoring")
 plugin://aws.install()
 plugin://aws.update()
+plugin://aws.enable()
 plugin://installed.list()
 plugin://aws.remove()
 ```
