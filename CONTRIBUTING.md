@@ -417,7 +417,7 @@ When we begin accepting PRs with v1.0 stable (Q2 2026), this will be the process
 **All PRs must:**
 - Include tests that cover the changes
 - Update relevant documentation
-- Pass the CI gates in `.gitlab-ci.yml`: locked build on Rust 1.88, the test
+- Pass the CI gates in `.github/workflows/ci.yml`: locked build on Rust 1.88, the test
   suite (including `tests/doc_examples.rs`, which checks every `resh` example
   in the docs), formatting and `cargo audit`. Clippy runs as an advisory job
   against the baseline in `docs/reviews/resh-cli-lint-baseline.md`; do not

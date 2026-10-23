@@ -161,6 +161,6 @@ Stage 4 verification found defects whose code fix changed the documented behavio
 3. **One example needs manual review:** `docs/Data_StateManagement/db.md:135` uses `$1` inside a SQL string. It was reviewed and is correct.
 4. **Two README references are pending:**
    - `git checkout v1.0.2-beta` and the download link point to a tag that does not exist yet (only `v1.0.0-beta` and `v1.0.1-beta` exist). Tag at release time, or change the instruction.
-   - The repository URLs point to GitHub, while the CI added in Stage 4 is GitLab CI. Owner decision.
+   - The repository URLs point to GitHub, and the CI is GitHub Actions (`.github/workflows/ci.yml`), as the owner decided.
 5. **Some behaviour is documented from code reading only,** because exercising it would need a real system, root, or a remote service. That covers firewall mutations, user mutations, svc start/stop on systemd, real SMTP, real SSH, and DNS against a real server. The handle pages say where this applies.
 6. **Several code defects found during the audit were documented as limitations rather than fixed,** because they are not release-blocking. They are listed in `docs/known_issues.md` and in the Stage 4 assessment.

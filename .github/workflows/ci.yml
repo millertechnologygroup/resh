@@ -1,0 +1,190 @@
+# Minimal CI for resh (Resource Shell).
+#
+# Every job runs inside a standard Rust container (which runs as root inside
+# the container; no privileged mode, host mounts or Docker socket are needed)
+# and only builds and tests the crate. No job touches real services,
+# packages, users, firewall rules, databases, or plugin registries: the
+# default test suite is hermetic (system commands are stubbed or mocked under
+# cfg(test)), and the tests that need real infrastructure are #[ignore]d and
+# run only in the manual `test-infrastructure` job below, against disposable
+# services you provide.
+#
+# Gates (must pass): build-msrv, test-msrv, test-stable,
+# test-security-regression, fmt, audit.
+# Advisory (reported, never fails the workflow): clippy. See
+# docs/reviews/resh-cli-lint-baseline.md.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      infrastructure:
+        description: "Also run the #[ignore]d infrastructure tests (needs the TEST_* secrets pointing at DISPOSABLE services)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  build-msrv:
+    runs-on: ubuntu-latest
+    # Minimum supported Rust version (Cargo.toml rust-version).
+    container: rust:1.88.0-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/cargo/registry/index/
+            /usr/local/cargo/registry/cache/
+            target/
+          key: build-msrv-${{ hashFiles('Cargo.lock') }}
+      - run: rustc --version && cargo --version
+      # Fails if Cargo.lock is missing or would have to change.
+      - run: cargo metadata --locked --format-version 1 > /dev/null
+      - run: cargo build --locked --all-targets
+      - run: cargo build --locked --release
+
+  test-msrv:
+    runs-on: ubuntu-latest
+    container: rust:1.88.0-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/cargo/registry/index/
+            /usr/local/cargo/registry/cache/
+            target/
+          key: test-msrv-${{ hashFiles('Cargo.lock') }}
+      # Includes the help-system, documentation-example and CLI tests.
+      - run: cargo test --locked --no-fail-fast
+
+  test-stable:
+    runs-on: ubuntu-latest
+    # The newer toolchain the release was verified with.
+    container: rust:1.98.1-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/cargo/registry/index/
+            /usr/local/cargo/registry/cache/
+            target/
+          key: test-stable-${{ hashFiles('Cargo.lock') }}
+      - run: cargo test --locked --no-fail-fast
+
+  # The Stage 1-4 security and correctness regression tests, run by name so a
+  # failure is visible on its own. They are also part of test-msrv.
+  test-security-regression:
+    runs-on: ubuntu-latest
+    container: rust:1.88.0-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/cargo/registry/index/
+            /usr/local/cargo/registry/cache/
+            target/
+          key: test-security-${{ hashFiles('Cargo.lock') }}
+      - run: >
+          cargo test --locked --lib --
+          archiveh::extract_safety_tests archiveh::zip_password_tests
+          archiveh::tests::test_password_support archiveh::tests::test_path_sanitization
+          plugin::store::tests plugin::engine::tests plugin::engine::artifact_security_tests
+          pluginh::dry_run_tests
+          proch::tests::pid proch::tests::proc_url proch::tests::resolve_pid proch::tests::kill_stage
+          pkgh::cmdline_safety_tests pkgh::result_status_tests
+          lenient::tests parse:: core::tests core::status::tests
+          cronh::dry_run_tests cronh::tests userh::dry_run_tests userh::tests::test_unlock
+          firewallh::dry_run_tests firewallh::backup_tests firewallh::timeout_tests
+          sshh::tests::exec gith::sync_correctness_tests gith::timeout_rejection_tests
+          svch::tests backuph::timeout_tests backuph::profile_tests
+          fileh::relative_dir_tests snapshot::diff_by_name_tests
+          httph::allow_insecure_tests dbh::tests::failed_ping
+          backuph::dry_run_tests mailh::send_dry_run_tests mailh::private_file_tests
+          fsh::stage4_tests archiveh::zstd_rewrite_tests archiveh::zip_add_metadata_tests
+      - run: cargo test --locked --test stage4_regressions
+
+  # Run from the Actions tab (Run workflow, tick "infrastructure"), with the
+  # repository secrets pointing at DISPOSABLE services: a throwaway bare git
+  # repository and PostgreSQL / MySQL-or-MariaDB databases that may be
+  # modified. Never point these at production systems.
+  test-infrastructure:
+    if: github.event_name == 'workflow_dispatch' && inputs.infrastructure
+    runs-on: ubuntu-latest
+    container: rust:1.88.0-bookworm
+    continue-on-error: true
+    env:
+      TEST_POSTGRES_DSN: ${{ secrets.TEST_POSTGRES_DSN }}
+      TEST_MYSQL_DSN: ${{ secrets.TEST_MYSQL_DSN }}
+      TEST_GIT_CLONE_HTTPS_URL: ${{ secrets.TEST_GIT_CLONE_HTTPS_URL }}
+      TEST_GIT_PULL_HTTPS_URL: ${{ secrets.TEST_GIT_PULL_HTTPS_URL }}
+      TEST_GIT_PULL_TEMP_DIR: /tmp/resh-git-pull
+      TEST_GIT_PUSH_HTTPS_URL: ${{ secrets.TEST_GIT_PUSH_HTTPS_URL }}
+      TEST_GIT_PUSH_TEMP_DIR: /tmp/resh-git-push
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --locked --lib -- --ignored
+
+  fmt:
+    runs-on: ubuntu-latest
+    container: rust:1.98.1-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    container: rust:1.98.1-bookworm
+    # Pre-existing lint debt (docs/reviews/resh-cli-lint-baseline.md) makes
+    # this job fail today. It is reported, not hidden, and does not fail the
+    # workflow.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/cargo/registry/index/
+            /usr/local/cargo/registry/cache/
+            target/
+          key: clippy-${{ hashFiles('Cargo.lock') }}
+      - run: rustup component add clippy
+      - run: cargo clippy --locked --workspace --all-targets > clippy.txt 2>&1 || { tail -n 200 clippy.txt; exit 1; }
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-report
+          path: clippy.txt
+          retention-days: 30
+
+  # Fails on any RustSec vulnerability advisory that is not listed, with its
+  # assessment, in .cargo/audit.toml.
+  audit:
+    runs-on: ubuntu-latest
+    container: rust:1.98.1-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: /usr/local/cargo/bin/cargo-audit
+          key: cargo-audit-0.22.2
+      - run: test -x /usr/local/cargo/bin/cargo-audit || cargo install cargo-audit --locked --version 0.22.2
+      - run: cargo audit
