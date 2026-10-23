@@ -196,13 +196,13 @@ The handle and verb registration, the `Handle` trait, the dispatcher, the CLI gr
 | RUSTSEC-2026-0037/-0185/-0338/-0339/-0340/-0342 (quinn-proto) | In `Cargo.lock` only. HTTP/3 is not enabled, so it is not compiled (`cargo tree -e all --target all` has no quinn). |
 | RUSTSEC-2025-0009 (ring 0.16.20, via rcgen 0.12 / x509-parser 0.15) | A panic in AES with overflow checks on. resh does not use ring 0.16 AES, and release builds have no overflow checks. |
 | RUSTSEC-2023-0071 (rsa 0.9.9, Marvin) | No fix exists. resh generates keys and signs; it exposes no RSA decryption oracle. sqlx-mysql only encrypts to the server key. |
-| RUSTSEC-2026-0245 (sevenz-rust 0.5.4) | Path traversal, no fix. The crate is declared but never referenced from `src/`. **Recommend removing the dependency** (owner approval; it changes `Cargo.toml` and the lockfile). |
+| RUSTSEC-2026-0245 (sevenz-rust 0.5.4) | **Resolved after owner approval:** the unused dependency was removed from `Cargo.toml`. Only `sevenz-rust`, `lzma-rust`, `nt-time` and `filetime_creation` left the lockfile (618 crates); nothing was added or upgraded. The advisory and its `.cargo/audit.toml` entry are gone. |
 | RUSTSEC-2026-0009 (time 0.3.44) | RFC 2822 *parsing* only. resh and its dependencies only *format* RFC 2822 (`x509-parser::to_rfc2822`). The fix needs a new `num-conv` major. |
 | RUSTSEC-2026-0367/-0368/-0369 (zip 0.6.6) | `ZipArchive::extract` / `ZipStreamReader::extract` are never called. resh's own extractor writes regular files with `create_new`. The fix is zip ≥ 9, a major API migration. |
 
 **Informational warnings** (unmaintained or unsound, not vulnerabilities; listed, not gated):
 
-- unmaintained: async-std, derivative, instant, ring 0.16, sevenz-rust, trust-dns-proto, unsafe-libyaml, zbus_names / zvariant(_derive);
+- unmaintained: async-std, derivative, instant, ring 0.16, trust-dns-proto, unsafe-libyaml, zbus_names / zvariant(_derive);
 - unsound: anyhow 1.0.100 (`downcast_mut` after `context`; not used in `src/`), event-listener, git2 0.18.3 (3), rand 0.8.5/0.9.2 (custom logger case);
 - yanked: spin 0.9.8.
 
@@ -490,7 +490,7 @@ Each finding was reassessed against the current code, the final test suite and, 
      - `resh` with no stage exits 2;
      - ext resize sizes change (they are now correct).
 4. **Version and tag:** README references `v1.0.2-beta`, which does not exist yet.
-5. **Remove the unused `sevenz-rust` dependency.** It has an unfixed path-traversal advisory and is unreachable.
+5. ~~Remove the unused `sevenz-rust` dependency.~~ **Done** after owner approval.
 6. **Verification gaps:** systemd hosts, real root, brew, Oracle MySQL, HTTPS/SSH git remotes, real SMTP/SSH/DNS servers, aarch64, and container (root) execution of the CI jobs.
 
 ### Deferred maintenance (non-blocking, documented)
