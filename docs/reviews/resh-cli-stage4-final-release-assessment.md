@@ -64,13 +64,13 @@
 - 609 documented examples are machine-checked and **all parse to registered verbs**, down from 145 failures.
 - Unsupported and stub behavior is stated plainly.
 
-**CI is configured but has not run.** `.gitlab-ci.yml` defines:
+**CI is configured but has not run.** `.github/workflows/ci.yml` (GitHub Actions) defines:
 
 - **Gates:** locked MSRV build, tests on 1.88.0 and 1.98.1, a named security-regression job, fmt, and `cargo audit`.
 - **Advisory:** Clippy.
 - **Manual:** the infrastructure-test job.
 
-It was validated locally; no GitLab runner was used. The local `origin` remote is GitHub, so the CI platform needs an owner decision.
+It was validated locally (`actionlint`, plus the same commands run locally). Nothing was pushed, so it has not run on GitHub.
 
 **Lint debt is documented and does not block.**
 
@@ -81,7 +81,7 @@ It was validated locally; no GitLab runner was used. The local `origin` remote i
 
 - verification gaps: systemd hosts, brew, root on a real host, non-x86_64, macOS;
 - the CI platform choice and a first real pipeline run;
-- the formatting commit;
+- the formatting commit (done after approval: `8f9ed39`);
 - owner sign-off on several documented compatibility changes and residual Medium risks (listed below).
 
 No known exploitable Critical or High defect remains open in supported use.
@@ -120,7 +120,7 @@ The attribution below comes from the Stage 1-3 reports and today's changes. Ever
 
 | File | Why |
 |---|---|
-| `.gitlab-ci.yml` | RC-05: minimal GitLab CI (see [CI Readiness](#ci-readiness)). |
+| `.github/workflows/ci.yml` | RC-05: minimal CI, GitHub Actions (see [CI Readiness](#ci-readiness)). |
 | `.cargo/audit.toml` | RC-02: the `cargo audit` ignore list. Each ignored advisory is listed with its reachability assessment, so any *new* advisory fails CI. |
 | `tests/doc_examples.rs` | RC-03: the documentation example validator. It parses every `resh` example in the docs against the real parser and registry, and executes nothing. |
 | `tests/stage4_regressions.rs` | RC-06/07: CLI-level regression tests (11) that run the real binary in a temporary working directory with redirected HOME/XDG paths. |
@@ -153,7 +153,7 @@ The attribution below comes from the Stage 1-3 reports and today's changes. Ever
 
 ### Modified: CI and documentation
 
-- **`.gitlab-ci.yml` / CONTRIBUTING:** describe the gates.
+- **`.github/workflows/ci.yml` / CONTRIBUTING:** describe the gates.
 - **Documentation:** README.md, CONTRIBUTING.md, CHANGELOG.md, and all of `docs/*/` plus `docs/resh_overview.md`, `docs/cli_help_format.md` and `docs/known_issues.md`. Details are in the documentation audit.
 
 The handle and verb registration, the `Handle` trait, the dispatcher, the CLI grammar, the provider architecture and the help format are unchanged. No dependency was added; `tempfile` and `libc` were already dependencies.
@@ -262,8 +262,8 @@ TEST_POSTGRES_DSN=postgres://resh_test@127.0.0.1:55432/postgres \
 TEST_MYSQL_DSN=mysql://root@127.0.0.1:53306/resh_test \
   cargo test --locked --lib -- --ignored --nocapture
 
-# CI security-regression job, run locally exactly as written in .gitlab-ci.yml
-cargo test --locked --lib -- <39 module filters>   ;  cargo test --locked --test stage4_regressions
+# CI security-regression job, run locally exactly as written in .github/workflows/ci.yml
+cargo test --locked --lib -- <41 module filters>   ;  cargo test --locked --test stage4_regressions
 ```
 
 ### Results (final tree)
@@ -278,7 +278,7 @@ cargo test --locked --lib -- <39 module filters>   ;  cargo test --locked --test
 | `tests/stage4_regressions.rs` (new) | — | **11** | **11** |
 | Doc tests | 0 | 0 | 0 |
 | Ignored infrastructure tests (`--ignored`) | 11 (Stage 3: passed) | **11 passed**; output checked for silent skips | — |
-| CI security-regression job | — | **174 + 11 passed** | — |
+| CI security-regression job | — | **176 + 11 passed** | — |
 | Formatted copy (rustfmt patch applied) | — | identical counts (1181/1185/2/16/2/11) | — |
 
 **New tests:** 10 unit tests (core dispatcher 1, pkg 1, backup 2, mail 2, fs 2, archive 2), 2 validator tests and 11 CLI tests. One existing test that asserted the defective behaviour was updated to the corrected contract: `bare_dry_run_cli_word_is_kept` previously asserted that unknown bare words are silently ignored.
@@ -385,36 +385,42 @@ Each finding was reassessed against the current code, the final test suite and, 
 
 ## CI Readiness
 
-**File:** `.gitlab-ci.yml`. The brief names GitLab, and no other CI configuration existed.
+**File:** `.github/workflows/ci.yml` (GitHub Actions).
 
-| Job | Stage | Image | Commands | Gate |
-|---|---|---|---|---|
-| `build:msrv` | build | `rust:1.88.0-bookworm` | `cargo metadata --locked`, `cargo build --locked --all-targets`, `cargo build --locked --release` | enforced |
-| `test:msrv` | test | 1.88.0 | `cargo test --locked --no-fail-fast` (includes the help, doc-example and CLI suites) | enforced |
-| `test:stable` | test | `rust:1.98.1-bookworm` | same | enforced |
-| `test:security-regression` | test | 1.88.0 | 39 named Stage 1-4 security/correctness test modules, plus `--test stage4_regressions` | enforced |
-| `test:infrastructure` | test | 1.88.0 | `cargo test --locked --lib -- --ignored` | **manual, allow_failure**. Needs the TEST_* variables pointing at **disposable** services. |
-| `fmt` | lint | 1.98.1 | `cargo fmt --all -- --check` | enforced. **Fails until the formatting commit lands.** |
-| `clippy` | lint | 1.98.1 | `cargo clippy --locked --workspace --all-targets`; report kept as an artifact | advisory (`allow_failure: true`) |
-| `audit` | lint | 1.98.1 | `cargo install cargo-audit --locked --version 0.22.2` (cached), `cargo audit` with `.cargo/audit.toml` | enforced |
+- The owner chose GitHub as the CI platform after this assessment was first presented.
+- The GitLab file written earlier in Stage 4 was replaced by an equivalent workflow, with the same gates, images and commands.
+- Triggers: `push`, `pull_request`, and manual `workflow_dispatch`.
+- Permissions: `contents: read`, with no secrets except in the manual infrastructure job.
+
+| Job | Container | Commands | Gate |
+|---|---|---|---|
+| `build-msrv` | `rust:1.88.0-bookworm` | `cargo metadata --locked`, `cargo build --locked --all-targets`, `cargo build --locked --release` | enforced |
+| `test-msrv` | 1.88.0 | `cargo test --locked --no-fail-fast` (includes the help, doc-example and CLI suites) | enforced |
+| `test-stable` | `rust:1.98.1-bookworm` | same | enforced |
+| `test-security-regression` | 1.88.0 | 41 named Stage 1-4 security/correctness test modules, plus `--test stage4_regressions` | enforced |
+| `test-infrastructure` | 1.88.0 | `cargo test --locked --lib -- --ignored` | **manual only** (`workflow_dispatch` with `infrastructure` ticked), `continue-on-error`. Uses the `TEST_*` repository secrets, which must point at **disposable** services. |
+| `fmt` | 1.98.1 | `cargo fmt --all -- --check` | enforced (clean since the formatting commit) |
+| `clippy` | 1.98.1 | `cargo clippy --locked --workspace --all-targets`; report uploaded as an artifact | advisory (`continue-on-error: true`) |
+| `audit` | 1.98.1 | `cargo install cargo-audit --locked --version 0.22.2` (cached), `cargo audit` with `.cargo/audit.toml` | enforced |
 
 **Safety:**
 
 - Every job only builds and tests inside a container.
 - The default suite is hermetic: system commands are stubbed or mocked under `cfg(test)`, and the infrastructure tests are `#[ignore]`d.
-- The `TEST_*` and `MAIL_SMTP_*` variables are explicitly unset for the default suites.
+- The `TEST_*` variables are set only in the manual job.
 - No job installs packages on a host, changes users, the firewall or services, or contacts a database or plugin registry. The one exception is the manual job, against services you provide.
+- Third-party actions: only the official `actions/checkout@v4`, `actions/cache@v4` and `actions/upload-artifact@v4`.
 
 **What was verified, and what was not:**
 
 | Check | Status |
 |---|---|
-| YAML syntax and structure | **Validated locally** with two parsers (PyYAML 6.0.3, Ruby Psych). Every job has a stage and a script; every `extends` target exists. |
+| Workflow syntax | **Validated locally** with `actionlint` 1.7.12 (release checksum verified): no findings. PyYAML also parses it. |
+| Test filters | Each of the 41 filters matches at least one test. |
 | Image tags | `rust:1.88.0-bookworm` and `rust:1.98.1-bookworm` exist (Docker Hub registry API, HTTP 200). |
-| Job commands | **Executed locally** with the same commands: the MSRV build and tests on 1.88.0 (clean export), stable tests on 1.98.1, the security-regression job (174 + 11 passed), `cargo audit` (exit 0), `cargo fmt --check` (fails as expected: pre-existing debt), Clippy (exit 101 as expected; advisory). |
-| GitLab CI lint API / a real runner | **Not executed.** No GitLab project or runner was available, and nothing was pushed. **The pipeline has never run on GitLab.** |
-| Container execution | Not possible on this host: the Docker daemon cannot start containers, as Stage 3 also found. The CI images were not run locally. Behaviour as root inside a container is untested: the suite has one test that skips as root, and the rest are expected to pass. |
-| Platform mismatch | The local `origin` is **GitHub**. If the canonical repository is GitHub, this file does nothing there; an equivalent GitHub Actions workflow would be needed. **Owner decision.** |
+| Job commands | **Executed locally** with the same commands: the MSRV build and tests on 1.88.0 (clean export), stable tests on 1.98.1, the security-regression job (176 + 11 passed), `cargo audit` (exit 0), `cargo fmt --check` (clean), Clippy (exit 101 as expected; advisory). |
+| A real GitHub Actions run | **Not executed.** Nothing was pushed. **The workflow has never run on GitHub.** |
+| Container execution | Not possible on this host: the Docker daemon cannot start containers, as Stage 3 also found. Behaviour as root inside a container is untested: the suite has one test that skips as root, and the rest are expected to pass. |
 
 ## Release Artifact Verification
 
@@ -479,8 +485,8 @@ Each finding was reassessed against the current code, the final test suite and, 
 
 ### Owner decisions and verification gaps (conditions)
 
-1. **CI platform and a first real pipeline run.** GitLab CI is configured, but `origin` is GitHub; the pipeline has never run.
-2. **Formatting commit** (prepared and verified) before the `fmt` gate can pass.
+1. **A first real CI run.** GitHub Actions is configured (owner decision: GitHub); the workflow has never run.
+2. ~~**Formatting commit** (prepared and verified) before the `fmt` gate can pass.~~ **Done** after approval (`8f9ed39`).
 3. **Compatibility changes users will notice**, to acknowledge in the release notes:
    - **Stages 1-3:** zip `password=` refused; git `timeout_ms` refused; `http://` plugin registries refused; plugin artifacts with links refused; `source=url` needs `verify=none`; malformed booleans are errors; firewall backups now live in `/var/backups/firewall`; ssh exec exits with the remote code.
    - **Stage 4:**
@@ -565,7 +571,7 @@ Include these files in the eventual release commit, and stage nothing else. Noth
 
 **New (12):**
 
-- `Cargo.lock`, `.gitlab-ci.yml`, `.cargo/audit.toml`
+- `Cargo.lock`, `.github/workflows/ci.yml` (originally `.gitlab-ci.yml`; replaced after the owner chose GitHub), `.cargo/audit.toml`
 - `tests/doc_examples.rs`, `tests/stage4_regressions.rs`
 - `docs/reviews/`: `resh-cli-final-verification.md`, `resh-cli-stage1-security-remediation.md`, `resh-cli-stage2-functional-remediation.md`, `resh-cli-stage3-build-test-security.md`, `resh-cli-documentation-audit.md`, `resh-cli-lint-baseline.md`, `resh-cli-stage4-final-release-assessment.md`
 
@@ -581,7 +587,7 @@ Include these files in the eventual release commit, and stage nothing else. Noth
 
 ```
 git add .gitignore Cargo.toml Cargo.lock README.md CONTRIBUTING.md CHANGELOG.md \
-        .gitlab-ci.yml .cargo/audit.toml docs src tests
+        .github/workflows/ci.yml .cargo/audit.toml docs src tests
 git status --short | grep '^?? .claude/' && echo ".claude/ correctly left untracked"
 ```
 
@@ -674,11 +680,32 @@ The dry-run parsing gap was the A1/A2 class above, now closed. The predictable-`
 
 **Conditions (owner decisions and verification gaps, none a known defect):**
 
-1. **CI has never run.** `origin` is GitHub while the pipeline is GitLab CI. Choose the platform, push, and confirm that every gate except the advisory `clippy` is green after the formatting commit.
-2. **Apply the formatting commit** separately, after the release commit.
+1. **CI has never run.** Push to GitHub and confirm that every gate except the advisory `clippy` is green.
+2. ~~**Apply the formatting commit** separately, after the release commit.~~ **Done** (`8f9ed39`).
 3. **Accept the compatibility changes** listed under Outstanding Technical Debt in the release notes. The dispatcher-level dry-run refusal is the most visible: `dry_run=true` on a verb without a dry-run mode now exits 2 instead of running.
-4. **Version and tag decision:** README references the non-existent `v1.0.2-beta` tag.
+4. ~~**Version and tag decision.**~~ **Decided:** release as `v1.0.2-beta` (local tag; see Post-approval actions).
 5. **Verification gaps to accept or close:** systemd hosts, real root, brew, Oracle MySQL, HTTPS/SSH git remotes, real SMTP/SSH/DNS servers, aarch64, and CI container (root) execution.
 6. **Independent re-review of the last dispatcher change:** the removal of the help-argument skip was verified by tests and reproduction, not by the independent reviewer.
 
 Nothing was committed, pushed, tagged or published. Stage 5 has not been started. **Awaiting project-owner approval.**
+
+## Post-approval actions (2026-10-23)
+
+The project owner approved this assessment and then decided the open points. These changes were made locally. **Nothing was pushed, and no artifact was published.**
+
+| Commit / tag | Change | Verification |
+|---|---|---|
+| `a54ba13` | Release commit: the 85-file release set. `.claude/` was excluded. | Full suite green |
+| `8f9ed39` | `cargo fmt --all` as a separate formatting-only commit | Tree byte-identical to the AST-verified formatted copy; `cargo fmt --check` clean; full suite green (1181 / 1185 / 2 / 16 / 2 / 11) |
+| `eabce5d` | Removed the unused `sevenz-rust` dependency and its `cargo audit` exception. `Cargo.lock` lost 4 packages; nothing was added or upgraded. | `cargo metadata --locked` OK; `cargo audit` exit 0 (618 crates); full suite green; locked build on 1.88.0 |
+| `c647b53` | **CI platform is GitHub** (owner decision): `.gitlab-ci.yml` replaced by the equivalent `.github/workflows/ci.yml`. Docs updated. | `actionlint` 1.7.12 clean; 41 test filters match; security-regression job 176 + 11 passed locally |
+| next commit + tag `v1.0.2-beta` | **Version:** `v1.0.2-beta` was never tagged (existing tags are `v1.0.0-beta` and `v1.0.1-beta`), so this release is `v1.0.2-beta`; `Cargo.toml` already says so. CHANGELOG `[1.0.2-beta]` is dated 2026-10-23 and includes the stabilization notes. Local annotated tag. | `resh --version` → `resh 1.0.2-beta` |
+| — | glibc: unchanged for now (owner decision). The binary built on this host needs glibc ≥ 2.39. | — |
+
+**Still open:**
+
+- push the branch and tag;
+- the first GitHub Actions run;
+- publishing release artifacts;
+- the remaining verification gaps listed above.
+
