@@ -7,12 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Release-candidate stabilization (not yet versioned)
+### Planned for v1.1 (March 2026)
+- webhook:// handle - Webhook receiver for event-driven automation
+- lock:// handle - Distributed locking mechanisms (Redis, etcd, Consul)
+- Enhanced integration test suite (85%+ coverage)
+- Performance optimization and benchmarking
+- Shell completion scripts (bash, zsh, fish)
+- Improved error messages with actionable suggestions
 
-Security, correctness and documentation fixes on top of 1.0.2-beta. Details
-and evidence: `docs/reviews/`.
+### Planned for v1.0 Stable (Q2 2026)
+- API stability guarantee (semver compliance)
+- Complete test coverage (95%+)
+- Binary releases for major distributions
+- Production hardening and security audit
+- Comprehensive documentation polish
+- Community infrastructure (Discord, Discussions)
 
-#### Security
+---
+
+## [1.0.2-beta] - 2026-10-23
+
+Release-candidate stabilization: security, correctness and documentation
+fixes on top of the help-system work below. Details and evidence:
+`docs/reviews/`.
+
+### Security
 - archive: extraction can no longer write outside the destination
   (symlinks, hard links, absolute and `..` paths, device nodes); an unsafe
   entry fails the extraction.
@@ -30,7 +49,7 @@ and evidence: `docs/reviews/`.
   1.0.10, bytes 1.11.1, h2 0.4.16, tar 0.4.45 (security patches).
   `Cargo.lock` is now tracked; minimum Rust version is 1.88.
 
-#### Fixed
+### Fixed (stabilization)
 - Failures always exit non-zero and print a reason on stderr.
 - firewall enable/disable write a real backup before changing rules;
   firewall `timeout_ms` is enforced.
@@ -61,33 +80,19 @@ and evidence: `docs/reviews/`.
   `/tmp` file; `fs resize` runs LVM tools without a shell; `resh` with no
   stage exits 2 instead of panicking.
 
-#### Changed (compatibility)
+### Changed (compatibility)
 - A zip `password=` is refused (encrypted creation is not supported).
 - git `timeout_ms` is refused (git steps cannot be interrupted).
 - `http://` plugin registries and plugin artifacts containing links are
   refused.
 - The documentation under `docs/` was rewritten against the code; every
   `resh` example is checked by `tests/doc_examples.rs`.
-
-### Planned for v1.1 (March 2026)
-- webhook:// handle - Webhook receiver for event-driven automation
-- lock:// handle - Distributed locking mechanisms (Redis, etcd, Consul)
-- Enhanced integration test suite (85%+ coverage)
-- Performance optimization and benchmarking
-- Shell completion scripts (bash, zsh, fish)
-- Improved error messages with actionable suggestions
-
-### Planned for v1.0 Stable (Q2 2026)
-- API stability guarantee (semver compliance)
-- Complete test coverage (95%+)
-- Binary releases for major distributions
-- Production hardening and security audit
-- Comprehensive documentation polish
-- Community infrastructure (Discord, Discussions)
-
----
-
-## [1.0.2-beta] - 2026-10-16
+- The unused `sevenz-rust` dependency is removed (it carried an unfixed
+  path-traversal advisory).
+- CI: GitHub Actions workflow (`.github/workflows/ci.yml`): locked MSRV
+  build, tests on Rust 1.88 and 1.98.1, security-regression tests, rustfmt
+  and `cargo audit` gates, advisory Clippy. The code base is now
+  rustfmt-formatted.
 
 ### Added
 - Contextual help for every handle and verb: `resh <handle> --help` and
