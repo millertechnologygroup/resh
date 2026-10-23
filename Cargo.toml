@@ -89,7 +89,6 @@ glob = "0.3"
 # Archive handling
 tar = "0.4"
 zip = "0.6"
-sevenz-rust = "0.5"
 
 # Compression  
 flate2 = "1.0"

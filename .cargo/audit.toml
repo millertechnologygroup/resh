@@ -43,10 +43,6 @@ ignore = [
     # release exists. resh generates keys and signs; it exposes no RSA
     # decryption oracle (sqlx-mysql only encrypts with the server key).
     "RUSTSEC-2023-0071",
-    # sevenz-rust 0.5.4: path traversal in decompress_impl, no fix. Declared
-    # in Cargo.toml but never referenced from src/, so no 7z data reaches it.
-    # Removing the unused dependency is recommended.
-    "RUSTSEC-2026-0245",
     # time 0.3.44: stack exhaustion when PARSING RFC 2822. resh and its
     # dependencies only FORMAT RFC 2822 (x509-parser to_rfc2822).
     "RUSTSEC-2026-0009",
