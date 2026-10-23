@@ -154,14 +154,13 @@ impl SecretHandle {
                 .is_some_and(|(_, last)| help::is_help_flag(last));
 
         // Extract verb-specific help if provided (e.g., --help=get)
-        let help_verb = u.query_pairs()
-            .find_map(|(k, v)| {
-                if k == "help" || (k == "--help" && !v.is_empty()) {
-                    Some(v.to_string())
-                } else {
-                    None
-                }
-            });
+        let help_verb = u.query_pairs().find_map(|(k, v)| {
+            if k == "help" || (k == "--help" && !v.is_empty()) {
+                Some(v.to_string())
+            } else {
+                None
+            }
+        });
 
         // If this is a help request, return early with minimal validation
         if is_help_request || help_verb.is_some() {
@@ -197,8 +196,11 @@ impl SecretHandle {
 
         // Validate scope
         match scope.as_str() {
-            "local" | "env" | "vault" => {},
-            _ => bail!("unsupported scope '{}'; supported scopes: local, env, vault", scope),
+            "local" | "env" | "vault" => {}
+            _ => bail!(
+                "unsupported scope '{}'; supported scopes: local, env, vault",
+                scope
+            ),
         }
 
         Ok(SecretHandle {
@@ -248,7 +250,7 @@ impl SecretHandle {
         }
 
         let redact = args.get("redact").map(|s| s.as_str()).unwrap_or("false") == "true";
-        
+
         let (exists, value) = match self.scope.as_str() {
             "local" => {
                 let keystore = Self::load_keystore().map_err(|e| {
@@ -259,17 +261,15 @@ impl SecretHandle {
                     Some(v) => (true, Some(v.clone())),
                     None => (false, None),
                 }
-            },
-            "env" => {
-                match std::env::var(&self.key_path) {
-                    Ok(v) => (true, Some(v)),
-                    Err(_) => (false, None),
-                }
+            }
+            "env" => match std::env::var(&self.key_path) {
+                Ok(v) => (true, Some(v)),
+                Err(_) => (false, None),
             },
             "vault" => {
                 self.write_error_json(io, "vault backend not implemented yet")?;
                 return Ok(Status::err(2, "vault backend not implemented yet"));
-            },
+            }
             _ => unreachable!(),
         };
 
@@ -305,14 +305,14 @@ impl SecretHandle {
             "env" => {
                 self.write_error_json(io, "env backend is read-only")?;
                 return Ok(Status::err(1, "env backend is read-only"));
-            },
+            }
             "vault" => {
                 self.write_error_json(io, "vault backend not implemented yet")?;
                 return Ok(Status::err(2, "vault backend not implemented yet"));
-            },
+            }
             "local" => {
                 // Continue with local implementation
-            },
+            }
             _ => unreachable!(),
         }
 
@@ -323,7 +323,10 @@ impl SecretHandle {
             match std::env::var(env_name) {
                 Ok(value) => (value, "env"),
                 Err(_) => {
-                    self.write_error_json(io, &format!("environment variable '{}' not found", env_name))?;
+                    self.write_error_json(
+                        io,
+                        &format!("environment variable '{}' not found", env_name),
+                    )?;
                     return Ok(Status::err(1, "environment variable not found"));
                 }
             }
@@ -367,14 +370,14 @@ impl SecretHandle {
             "env" => {
                 self.write_error_json(io, "env backend is read-only")?;
                 return Ok(Status::err(1, "env backend is read-only"));
-            },
+            }
             "vault" => {
                 self.write_error_json(io, "vault backend not implemented yet")?;
                 return Ok(Status::err(2, "vault backend not implemented yet"));
-            },
+            }
             "local" => {
                 // Continue with local implementation
-            },
+            }
             _ => unreachable!(),
         }
 
@@ -408,9 +411,10 @@ impl SecretHandle {
                     let _ = self.write_error_json(io, &format!("failed to load keystore: {}", e));
                     e
                 })?;
-                
+
                 let prefix = &self.key_path;
-                let mut matching_keys: Vec<String> = keystore.keys()
+                let mut matching_keys: Vec<String> = keystore
+                    .keys()
                     .filter(|k| {
                         if prefix.is_empty() {
                             true // List all keys
@@ -422,7 +426,7 @@ impl SecretHandle {
                     .collect();
                 matching_keys.sort();
                 matching_keys
-            },
+            }
             "env" => {
                 let prefix = &self.key_path;
                 let mut matching_keys: Vec<String> = std::env::vars()
@@ -437,11 +441,11 @@ impl SecretHandle {
                     .collect();
                 matching_keys.sort();
                 matching_keys
-            },
+            }
             "vault" => {
                 self.write_error_json(io, "vault backend not implemented yet")?;
                 return Ok(Status::err(2, "vault backend not implemented yet"));
-            },
+            }
             _ => unreachable!(),
         };
 
@@ -482,7 +486,10 @@ impl Handle for SecretHandle {
         // In-URL help: secret://--help, secret://--help=get (the parser
         // passes the verb as verb=get), ?help=get, or a help verb.
         if self.is_help_request || help::HELP_ALIASES.contains(&verb) {
-            let wanted = self.help_verb.as_deref().or(args.get("verb").map(String::as_str));
+            let wanted = self
+                .help_verb
+                .as_deref()
+                .or(args.get("verb").map(String::as_str));
             return self.display_help(wanted, io);
         }
 
@@ -502,7 +509,7 @@ impl Handle for SecretHandle {
                 });
                 write!(io.stdout, "{}", response)?;
                 Ok(Status::err(2, "rotate operation not implemented yet"))
-            },
+            }
             _ => bail!("unknown verb for secret://: {}", verb),
         }
     }
@@ -577,7 +584,12 @@ fn save_keystore_to(path: &Path, keystore: &HashMap<String, String>) -> Result<(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    let temp_path = dir.join(format!(".{}.{}.{}.tmp", file_name, std::process::id(), nanos));
+    let temp_path = dir.join(format!(
+        ".{}.{}.{}.tmp",
+        file_name,
+        std::process::id(),
+        nanos
+    ));
 
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -605,7 +617,11 @@ fn save_keystore_to(path: &Path, keystore: &HashMap<String, String>) -> Result<(
             .with_context(|| format!("failed to sync temp file {}", temp_path.display()))?;
         drop(file);
         fs::rename(&temp_path, path).with_context(|| {
-            format!("failed to rename {} to {}", temp_path.display(), path.display())
+            format!(
+                "failed to rename {} to {}",
+                temp_path.display(),
+                path.display()
+            )
         })?;
         Ok(())
     })();
@@ -681,7 +697,11 @@ mod tests {
     #[test]
     fn load_missing_store_is_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(load_keystore_from(&keystore_path_in(tmp.path())).unwrap().is_empty());
+        assert!(
+            load_keystore_from(&keystore_path_in(tmp.path()))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -696,11 +716,20 @@ mod tests {
 
     #[test]
     fn help_text_does_not_claim_encryption() {
-        let text = help::render_legacy("secret", &SECRET_HELP, &["get", "set", "rm", "ls", "rotate"], None);
+        let text = help::render_legacy(
+            "secret",
+            &SECRET_HELP,
+            &["get", "set", "rm", "ls", "rotate"],
+            None,
+        );
         assert!(text.starts_with("Handle: secret"));
         assert!(!text.to_lowercase().contains(" encrypted "));
         for v in SECRET_HELP.verbs {
-            let d = v.detail.as_ref().and_then(|d| d.example_output).unwrap_or("");
+            let d = v
+                .detail
+                .as_ref()
+                .and_then(|d| d.example_output)
+                .unwrap_or("");
             assert!(!d.contains("is encrypted"));
         }
     }
@@ -728,7 +757,11 @@ mod tests {
         let mut err = Vec::new();
         {
             let mut stdin = std::io::empty();
-            let mut io = IoStreams { stdin: &mut stdin, stdout: &mut out, stderr: &mut err };
+            let mut io = IoStreams {
+                stdin: &mut stdin,
+                stdout: &mut out,
+                stderr: &mut err,
+            };
             let st = h.call("get", &Args::new(), &mut io).unwrap();
             assert!(st.ok);
         }
@@ -739,7 +772,11 @@ mod tests {
         let mut out = Vec::new();
         {
             let mut stdin = std::io::empty();
-            let mut io = IoStreams { stdin: &mut stdin, stdout: &mut out, stderr: &mut err };
+            let mut io = IoStreams {
+                stdin: &mut stdin,
+                stdout: &mut out,
+                stderr: &mut err,
+            };
             h.call("get", &Args::new(), &mut io).unwrap();
         }
         let text = String::from_utf8(out).unwrap();
@@ -752,7 +789,11 @@ mod tests {
         let mut out = Vec::new();
         {
             let mut stdin = std::io::empty();
-            let mut io = IoStreams { stdin: &mut stdin, stdout: &mut out, stderr: &mut err };
+            let mut io = IoStreams {
+                stdin: &mut stdin,
+                stdout: &mut out,
+                stderr: &mut err,
+            };
             h.call("help", &args, &mut io).unwrap();
         }
         let text = String::from_utf8(out).unwrap();

@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -15,9 +15,9 @@ use crate::core::{
 };
 
 use lettre::{
+    Message, SmtpTransport, Transport,
     message::Mailbox,
     transport::smtp::{authentication::Credentials, client::Tls},
-    Message, SmtpTransport, Transport,
 };
 
 /// Metadata for `resh mail --help` and `resh mail <verb> --help`.
@@ -334,7 +334,10 @@ impl MailConfigAction {
             "delete" => Ok(MailConfigAction::Delete),
             "activate" => Ok(MailConfigAction::Activate),
             "get_active" => Ok(MailConfigAction::GetActive),
-            _ => bail!("Invalid config action '{}'. Supported: list, get, set, delete, activate, get_active", s),
+            _ => bail!(
+                "Invalid config action '{}'. Supported: list, get, set, delete, activate, get_active",
+                s
+            ),
         }
     }
 
@@ -883,8 +886,11 @@ fn validate_profile_name(name: &str) -> Result<()> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
     {
-        bail!("[{}] Profile name '{}' contains invalid characters. Only alphanumeric, '_', '-', and '.' are allowed", 
-              MAIL_CONFIG_INVALID_PROFILE_NAME, name);
+        bail!(
+            "[{}] Profile name '{}' contains invalid characters. Only alphanumeric, '_', '-', and '.' are allowed",
+            MAIL_CONFIG_INVALID_PROFILE_NAME,
+            name
+        );
     }
 
     Ok(())
@@ -3997,7 +4003,12 @@ impl MailHandle {
     /// Handle the in-URL help forms (`mail://--help`, `mail://-h`, the `help`
     /// verb, and `mail://--help=VERB`) by printing the handle help metadata.
     /// The parser turns `mail://--help=VERB` into the `help` verb with verb=VERB.
-    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+    fn check_and_display_help(
+        &self,
+        verb: &str,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<Option<Status>> {
         let requested = if verb == "help" || crate::core::help::is_help_flag(verb) {
             args.get("verb").map(|v| v.as_str())
         } else if let Some(v) = verb.strip_prefix("--help=") {
@@ -4221,11 +4232,17 @@ mod private_file_tests {
         let dir = tempfile::TempDir::new().unwrap();
         let p = dir.path().join("smtp_profiles.json.tmp");
         write_private_file(&p, b"one").unwrap();
-        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
         write_private_file(&p, b"two").unwrap();
         assert_eq!(fs::read(&p).unwrap(), b"two");
-        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
 
         let target = dir.path().join("victim");
         fs::write(&target, b"keep").unwrap();
@@ -4250,15 +4267,24 @@ mod send_dry_run_tests {
         let h = MailHandle::new(Url::parse("mail://send").unwrap());
         for v in ["true", "1", "yes", "ON", "maybe"] {
             let args: Args = [
-                ("to", "[\"a@example.com\"]"), ("subject", "s"), ("text_body", "b"),
-                ("from", "f@example.com"), ("smtp_host", "127.0.0.1"), ("smtp_port", port.as_str()),
-                ("use_tls", "none"), ("dry_run", v),
+                ("to", "[\"a@example.com\"]"),
+                ("subject", "s"),
+                ("text_body", "b"),
+                ("from", "f@example.com"),
+                ("smtp_host", "127.0.0.1"),
+                ("smtp_port", port.as_str()),
+                ("use_tls", "none"),
+                ("dry_run", v),
             ]
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
             let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
             let st = h.call("send", &args, &mut io).unwrap();
             assert!(!st.ok, "dry_run={v} must fail");
             let err = String::from_utf8_lossy(&e).to_string();
@@ -4287,7 +4313,11 @@ mod mail_help_tests {
         let mut stdin = Cursor::new(Vec::new());
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
-        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
         let status = handle.call(verb, &args, &mut io).unwrap();
         (String::from_utf8(stdout.into_inner()).unwrap(), status)
     }

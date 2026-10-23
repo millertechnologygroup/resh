@@ -69,9 +69,18 @@ fn handle_help_matches_golden() {
 fn handle_help_names_handle_and_has_description() {
     let (_, out, _) = run(&["svc", "--help"]);
     assert!(out.starts_with("Handle: svc\n"));
-    let desc = out.split("Description:\n").nth(1).unwrap().split("\n\n").next().unwrap();
+    let desc = out
+        .split("Description:\n")
+        .nth(1)
+        .unwrap()
+        .split("\n\n")
+        .next()
+        .unwrap();
     assert!(desc.lines().all(|l| l.starts_with("  ")));
-    assert!(desc.matches(". ").count() >= 1, "description should be a paragraph");
+    assert!(
+        desc.matches(". ").count() >= 1,
+        "description should be a paragraph"
+    );
     assert!(out.contains("Usage:\n  resh svc://<service-name>.<verb>"));
     assert!(out.contains("For help with a specific verb:\n  resh svc <verb> --help\n"));
 }
@@ -80,12 +89,18 @@ fn handle_help_names_handle_and_has_description() {
 fn handle_help_lists_exactly_the_registered_verbs() {
     let (_, out, _) = run(&["svc", "--help"]);
     let mut listed = listed_verbs(&out);
-    let mut registered: Vec<String> = svc_registered_verbs().iter().map(|s| s.to_string()).collect();
+    let mut registered: Vec<String> = svc_registered_verbs()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     listed.sort();
     registered.sort();
     assert_eq!(listed, registered);
     for absent in ["list", "invalidverb", "help", "--help", "-h"] {
-        assert!(!listed.iter().any(|v| v == absent), "{absent} should not be listed");
+        assert!(
+            !listed.iter().any(|v| v == absent),
+            "{absent} should not be listed"
+        );
     }
 }
 
@@ -114,8 +129,17 @@ fn verb_help_has_labels_in_order() {
 #[test]
 fn verb_help_example_is_a_valid_stage() {
     let (_, out, _) = run(&["svc", "status", "--help"]);
-    let example = out.split("Example:\n").nth(1).unwrap().lines().next().unwrap().trim();
-    let stage = example.strip_prefix("resh ").expect("example should start with resh");
+    let example = out
+        .split("Example:\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .trim();
+    let stage = example
+        .strip_prefix("resh ")
+        .expect("example should start with resh");
     let parsed = parse_stage(stage).unwrap();
     assert_eq!(parsed.verb, "status");
     assert!(parsed.args.is_empty());
@@ -144,9 +168,23 @@ fn verb_help_example_output_matches_systemd_status_shape() {
     keys.sort();
     assert_eq!(
         keys,
-        ["active_state", "backend", "description", "exit_status", "name", "pid", "sub_state", "timestamps"]
+        [
+            "active_state",
+            "backend",
+            "description",
+            "exit_status",
+            "name",
+            "pid",
+            "sub_state",
+            "timestamps"
+        ]
     );
-    let mut ts: Vec<&str> = v["timestamps"].as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    let mut ts: Vec<&str> = v["timestamps"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_str())
+        .collect();
     ts.sort();
     assert_eq!(ts, ["active_enter", "active_exit", "inactive_enter"]);
     assert_eq!(v["backend"], "systemd");
@@ -165,7 +203,10 @@ fn help_does_not_execute_or_need_external_tools() {
     let empty = tempfile::tempdir().unwrap();
     for (args, golden) in [
         (&["svc", "--help"][..], include_str!("golden/svc_help.txt")),
-        (&["svc", "status", "--help"][..], include_str!("golden/svc_status_help.txt")),
+        (
+            &["svc", "status", "--help"][..],
+            include_str!("golden/svc_status_help.txt"),
+        ),
     ] {
         let out = resh()
             .args(args)
@@ -241,7 +282,10 @@ fn normal_status_execution_unchanged() {
     // on stderr, instead of exit 0.
     let (code, out, err) = run(&["svc://resh-help-test-nonexistent.status"]);
     assert_eq!(code, 1);
-    assert!(err.starts_with("Error: svc status resh-help-test-nonexistent"), "{err}");
+    assert!(
+        err.starts_with("Error: svc status resh-help-test-nonexistent"),
+        "{err}"
+    );
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(v.get("name").is_some());
     assert!(v.get("backend").is_some());

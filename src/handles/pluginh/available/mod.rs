@@ -1,7 +1,7 @@
+pub mod helpers;
 pub mod index;
 pub mod model;
-pub mod helpers;
 
+pub use helpers::*;
 pub use index::*;
 pub use model::*;
-pub use helpers::*;

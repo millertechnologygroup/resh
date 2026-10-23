@@ -1,12 +1,12 @@
 use anyhow::{Context, Result, bail};
 use base64::prelude::*;
+use rand;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::time::{Duration, Instant};
-use url::Url;
-use serde::{Serialize, Deserialize};
 use thiserror::Error;
-use rand;
+use url::Url;
 
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
@@ -446,7 +446,7 @@ needs local_dest_host and local_dest_port."#,
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SshAuthMethod {
-    Auto,    // Automatically detect and try available methods
+    Auto, // Automatically detect and try available methods
     Agent,
     Key,
     Password,
@@ -810,19 +810,41 @@ impl Default for SshExecOptions {
 }
 
 // Default value functions
-fn default_port() -> u16 { 22 }
-fn default_connect_timeout() -> u64 { 10_000 }
-fn default_command_timeout() -> u64 { 60_000 }
-fn default_max_output() -> usize { 1_048_576 } // 1 MiB
-fn default_trim_newlines() -> bool { true }
-fn default_capture_output() -> bool { true }
-fn default_local_bind_host() -> String { "127.0.0.1".to_string() }
-fn default_remote_bind_host() -> String { "127.0.0.1".to_string() }
-fn default_idle_timeout() -> Option<u64> { Some(300_000) } // 5 minutes
+fn default_port() -> u16 {
+    22
+}
+fn default_connect_timeout() -> u64 {
+    10_000
+}
+fn default_command_timeout() -> u64 {
+    60_000
+}
+fn default_max_output() -> usize {
+    1_048_576
+} // 1 MiB
+fn default_trim_newlines() -> bool {
+    true
+}
+fn default_capture_output() -> bool {
+    true
+}
+fn default_local_bind_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_remote_bind_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_idle_timeout() -> Option<u64> {
+    Some(300_000)
+} // 5 minutes
 
 // Upload-specific default value functions
-fn default_max_size_bytes() -> u64 { 104_857_600 } // 100 MiB
-fn default_transfer_timeout() -> u64 { 600_000 } // 10 minutes
+fn default_max_size_bytes() -> u64 {
+    104_857_600
+} // 100 MiB
+fn default_transfer_timeout() -> u64 {
+    600_000
+} // 10 minutes
 
 /// SSH upload options structure
 #[derive(Debug, Clone, Deserialize)]
@@ -926,12 +948,20 @@ impl Default for SshUploadOptions {
 }
 
 // Upload-specific default functions
-fn default_atomic() -> bool { true }
-fn default_mkdir_parents() -> bool { true }
-fn default_checksum_algorithm() -> String { "sha256".to_string() }
+fn default_atomic() -> bool {
+    true
+}
+fn default_mkdir_parents() -> bool {
+    true
+}
+fn default_checksum_algorithm() -> String {
+    "sha256".to_string()
+}
 
 // Download-specific default functions
-fn default_return_content() -> bool { true }
+fn default_return_content() -> bool {
+    true
+}
 
 /// SSH download options structure
 #[derive(Debug, Clone, Deserialize)]
@@ -1080,22 +1110,42 @@ fn exec_failure(result: &SshExecResult) -> Option<SshErrorDetails> {
     let (code, message) = if result.timed_out {
         ("EXEC_TIMEOUT", "remote command timed out".to_string())
     } else if let Some(signal) = &result.signal {
-        ("EXEC_SIGNALED", format!("remote command was terminated by signal {}", signal))
+        (
+            "EXEC_SIGNALED",
+            format!("remote command was terminated by signal {}", signal),
+        )
     } else {
         match result.exit_code {
             Some(0) => return None,
             Some(255) => {
-                let detail = result.stderr.as_deref().map(str::trim).filter(|s| !s.is_empty());
-                ("SSH_FAILED", match detail {
-                    Some(d) => format!("ssh failed (exit code 255): {}", d),
-                    None => "ssh failed (exit code 255)".to_string(),
-                })
+                let detail = result
+                    .stderr
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                (
+                    "SSH_FAILED",
+                    match detail {
+                        Some(d) => format!("ssh failed (exit code 255): {}", d),
+                        None => "ssh failed (exit code 255)".to_string(),
+                    },
+                )
             }
-            Some(c) => ("REMOTE_EXIT_NONZERO", format!("remote command exited with code {}", c)),
-            None => ("EXEC_NO_EXIT_CODE", "remote command ended without an exit code".to_string()),
+            Some(c) => (
+                "REMOTE_EXIT_NONZERO",
+                format!("remote command exited with code {}", c),
+            ),
+            None => (
+                "EXEC_NO_EXIT_CODE",
+                "remote command ended without an exit code".to_string(),
+            ),
         }
     };
-    Some(SshErrorDetails { code: code.to_string(), message, details: HashMap::new() })
+    Some(SshErrorDetails {
+        code: code.to_string(),
+        message,
+        details: HashMap::new(),
+    })
 }
 
 /// Complete SSH exec response
@@ -1357,12 +1407,24 @@ fn default_key_types() -> Vec<String> {
         "dsa".to_string(),
     ]
 }
-fn default_fingerprint_algorithm() -> String { "sha256".to_string() }
-fn default_include_options() -> bool { true }
-fn default_include_raw_key() -> bool { true }
-fn default_max_keys() -> usize { 1024 }
-fn default_max_bytes_keys() -> usize { 1_048_576 } // 1 MiB
-fn default_read_timeout() -> u64 { 10_000 }
+fn default_fingerprint_algorithm() -> String {
+    "sha256".to_string()
+}
+fn default_include_options() -> bool {
+    true
+}
+fn default_include_raw_key() -> bool {
+    true
+}
+fn default_max_keys() -> usize {
+    1024
+}
+fn default_max_bytes_keys() -> usize {
+    1_048_576
+} // 1 MiB
+fn default_read_timeout() -> u64 {
+    10_000
+}
 
 /// Information about a single SSH key
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1583,19 +1645,35 @@ impl Default for SshKeyAddOptions {
 }
 
 // key.add default value functions
-fn default_create_if_missing() -> bool { true }
-fn default_backup_existing() -> bool { true }
-fn default_backup_suffix() -> String { ".bak".to_string() }
-fn default_ensure_permissions() -> bool { true }
-fn default_file_mode() -> String { "0600".to_string() }
-fn default_dir_mode() -> String { "0700".to_string() }
-fn default_max_file_bytes() -> usize { 1_048_576 } // 1 MiB
-fn default_write_timeout() -> u64 { 10_000 }
+fn default_create_if_missing() -> bool {
+    true
+}
+fn default_backup_existing() -> bool {
+    true
+}
+fn default_backup_suffix() -> String {
+    ".bak".to_string()
+}
+fn default_ensure_permissions() -> bool {
+    true
+}
+fn default_file_mode() -> String {
+    "0600".to_string()
+}
+fn default_dir_mode() -> String {
+    "0700".to_string()
+}
+fn default_max_file_bytes() -> usize {
+    1_048_576
+} // 1 MiB
+fn default_write_timeout() -> u64 {
+    10_000
+}
 
 /// Operation summary for key.add
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshKeyAddOperation {
-    pub status: String,  // "added", "already_present", "replaced", "dry_run"
+    pub status: String, // "added", "already_present", "replaced", "dry_run"
     pub on_duplicate: OnDuplicate,
     pub duplicates_found: usize,
     pub created_file: bool,
@@ -1928,7 +2006,11 @@ impl SshTarget {
     /// Parse SSH target from URL
     pub fn from_url(url: &Url) -> Self {
         // The URL keeps user info percent-encoded (p%40ss for p@ss).
-        let decode = |s: &str| percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned();
+        let decode = |s: &str| {
+            percent_encoding::percent_decode_str(s)
+                .decode_utf8_lossy()
+                .into_owned()
+        };
         let host = if url.host_str().unwrap_or("").is_empty() {
             None
         } else {
@@ -1995,7 +2077,7 @@ pub enum SshError {
     IoError(String),
     #[error("Internal error: {0}")]
     InternalError(String),
-    
+
     // Upload-specific errors
     #[error("Source is missing")]
     UploadSourceMissing,
@@ -2252,7 +2334,7 @@ impl SshError {
                 format!("Internal error: {}", msg),
                 HashMap::new(),
             ),
-            
+
             // Upload-specific errors
             SshError::UploadSourceMissing => (
                 "ssh.upload_source_missing".to_string(),
@@ -2336,7 +2418,10 @@ impl SshError {
             ),
             SshError::DownloadTooLarge(size, limit) => (
                 "ssh.download_too_large".to_string(),
-                format!("Download too large: {} bytes exceeds limit of {} bytes", size, limit),
+                format!(
+                    "Download too large: {} bytes exceeds limit of {} bytes",
+                    size, limit
+                ),
                 HashMap::from([
                     ("size_bytes".to_string(), size.to_string()),
                     ("max_size_bytes".to_string(), limit.to_string()),
@@ -2404,7 +2489,8 @@ impl SshError {
             ),
             SshError::TunnelWildcardBindForbidden => (
                 "ssh.tunnel_wildcard_bind_forbidden".to_string(),
-                "Wildcard binds are forbidden (set allow_wildcard_binds=true to override)".to_string(),
+                "Wildcard binds are forbidden (set allow_wildcard_binds=true to override)"
+                    .to_string(),
                 HashMap::new(),
             ),
             SshError::TunnelBindFailed(port, host, reason) => (
@@ -2508,12 +2594,18 @@ impl SshError {
             ),
             SshError::KeyAddTargetMissing(path) => (
                 "ssh.key_add_target_missing".to_string(),
-                format!("Target file does not exist and create_if_missing=false: {}", path),
+                format!(
+                    "Target file does not exist and create_if_missing=false: {}",
+                    path
+                ),
                 HashMap::from([("path".to_string(), path.clone())]),
             ),
             SshError::KeyAddFileTooLarge(size, limit) => (
                 "ssh.key_add_file_too_large".to_string(),
-                format!("File too large: {} bytes exceeds max_file_bytes limit of {} bytes", size, limit),
+                format!(
+                    "File too large: {} bytes exceeds max_file_bytes limit of {} bytes",
+                    size, limit
+                ),
                 HashMap::from([
                     ("size_bytes".to_string(), size.to_string()),
                     ("limit_bytes".to_string(), limit.to_string()),
@@ -2738,12 +2830,19 @@ pub(crate) fn build_ssh_command_line(spec: &SshConnSpec, remote_command: &str) -
     }
 
     if spec.connect_timeout_ms > 0 {
-        opt(&mut args, format!("ConnectTimeout={}", spec.connect_timeout_ms.div_ceil(1000)));
+        opt(
+            &mut args,
+            format!("ConnectTimeout={}", spec.connect_timeout_ms.div_ceil(1000)),
+        );
     }
 
     args.push(if spec.allocate_pty { "-t" } else { "-T" }.into());
 
-    let batch = if matches!(spec.auth_method, SshAuthMethod::Password) { "no" } else { "yes" };
+    let batch = if matches!(spec.auth_method, SshAuthMethod::Password) {
+        "no"
+    } else {
+        "yes"
+    };
     opt(&mut args, format!("BatchMode={}", batch));
 
     args.push("--".into());
@@ -2760,9 +2859,17 @@ pub(crate) fn build_ssh_command_line(spec: &SshConnSpec, remote_command: &str) -
             env.push(("SSHPASS".to_string(), password.to_string()));
             let mut sshpass_args = vec!["-e".to_string(), "ssh".to_string()];
             sshpass_args.extend(args);
-            SshCommandLine { program: "sshpass".into(), args: sshpass_args, env }
+            SshCommandLine {
+                program: "sshpass".into(),
+                args: sshpass_args,
+                env,
+            }
         }
-        _ => SshCommandLine { program: "ssh".into(), args, env },
+        _ => SshCommandLine {
+            program: "ssh".into(),
+            args,
+            env,
+        },
     }
 }
 
@@ -2816,7 +2923,10 @@ pub(crate) fn remote_checksum_tool(algorithm: &str) -> Result<&'static str> {
         "sha256" => Ok("sha256sum"),
         "sha1" => Ok("sha1sum"),
         "md5" => Ok("md5sum"),
-        _ => Err(SshError::InternalError(format!("Unsupported checksum algorithm: {}", algorithm)).into()),
+        _ => Err(
+            SshError::InternalError(format!("Unsupported checksum algorithm: {}", algorithm))
+                .into(),
+        ),
     }
 }
 
@@ -2849,7 +2959,10 @@ pub(crate) fn build_upload_script(
     let q_dest = quote_remote_path(dest);
     let mut parts: Vec<String> = Vec::new();
 
-    if let Some(parent) = std::path::Path::new(dest).parent().map(|p| p.to_string_lossy().to_string()) {
+    if let Some(parent) = std::path::Path::new(dest)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+    {
         if !parent.is_empty() {
             let q_parent = quote_remote_path(&parent);
             if options.mkdir_parents {
@@ -2955,7 +3068,9 @@ impl RunError {
                     SshError::InternalError(format!("'{}' was not found on PATH", program))
                 }
             }
-            RunError::Spawn(program, e) => SshError::IoError(format!("failed to start {}: {}", program, e)),
+            RunError::Spawn(program, e) => {
+                SshError::IoError(format!("failed to start {}: {}", program, e))
+            }
             RunError::Io(msg) => SshError::IoError(msg),
         }
     }
@@ -2976,7 +3091,9 @@ fn error_details(e: &anyhow::Error, fallback_code: &str) -> SshErrorDetails {
 /// Map a failed ssh run (exit 255 or host key trouble) to a connection error.
 fn connection_error(output: &ProcessOutput) -> Option<SshError> {
     let stderr = output.stderr_text();
-    if stderr.contains("Host key verification failed") || stderr.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+    if stderr.contains("Host key verification failed")
+        || stderr.contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
+    {
         return Some(SshError::HostKeyVerificationFailed(stderr));
     }
     if output.exit_code == Some(255) {
@@ -2986,7 +3103,8 @@ fn connection_error(output: &ProcessOutput) -> Option<SshError> {
 }
 
 #[cfg(test)]
-type MockSshRunner = Box<dyn FnMut(&SshCommandLine, Option<&[u8]>) -> Result<ProcessOutput, RunError>>;
+type MockSshRunner =
+    Box<dyn FnMut(&SshCommandLine, Option<&[u8]>) -> Result<ProcessOutput, RunError>>;
 
 #[cfg(test)]
 thread_local! {
@@ -3007,7 +3125,9 @@ pub(crate) fn run_ssh_process(
         let _ = timeout;
         let mut out = MOCK_SSH.with(|m| match m.borrow_mut().as_mut() {
             Some(f) => f(cmd, stdin),
-            None => Err(RunError::Io("real ssh is disabled in unit tests".to_string())),
+            None => Err(RunError::Io(
+                "real ssh is disabled in unit tests".to_string(),
+            )),
         })?;
         if let Some(max) = max_stdout {
             out.stdout.truncate((max + 1) as usize);
@@ -3035,11 +3155,17 @@ fn run_real_process(
     for (k, v) in &cmd.env {
         command.env(k, v);
     }
-    command.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
+    command.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
-    let mut child = command.spawn().map_err(|e| RunError::Spawn(cmd.program.clone(), e))?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| RunError::Spawn(cmd.program.clone(), e))?;
 
     let writer = match (stdin, child.stdin.take()) {
         (Some(data), Some(mut pipe)) => {
@@ -3051,7 +3177,10 @@ fn run_real_process(
         _ => None,
     };
 
-    let mut out_pipe = child.stdout.take().ok_or_else(|| RunError::Io("no stdout pipe".into()))?;
+    let mut out_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| RunError::Io("no stdout pipe".into()))?;
     let out_thread = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
         let mut buf = Vec::new();
         match max_stdout {
@@ -3065,7 +3194,10 @@ fn run_real_process(
         Ok(buf)
     });
 
-    let mut err_pipe = child.stderr.take().ok_or_else(|| RunError::Io("no stderr pipe".into()))?;
+    let mut err_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| RunError::Io("no stderr pipe".into()))?;
     let err_thread = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = err_pipe.read_to_end(&mut buf);
@@ -3107,7 +3239,12 @@ fn run_real_process(
     #[cfg(not(unix))]
     let signal = None;
 
-    Ok(ProcessOutput { exit_code: status.code(), signal, stdout, stderr })
+    Ok(ProcessOutput {
+        exit_code: status.code(),
+        signal,
+        stdout,
+        stderr,
+    })
 }
 
 impl SshHandle {
@@ -3120,7 +3257,12 @@ impl SshHandle {
     /// Handle the in-URL help forms (`ssh://--help`, `ssh://-h`, the `help`
     /// verb, and `ssh://--help=VERB`) by printing the handle help metadata.
     /// The parser turns `ssh://--help=VERB` into the `help` verb with verb=VERB.
-    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+    fn check_and_display_help(
+        &self,
+        verb: &str,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<Option<Status>> {
         let requested = if verb == "help" || crate::core::help::is_help_flag(verb) {
             args.get("verb").map(|v| v.as_str())
         } else if let Some(v) = verb.strip_prefix("--help=") {
@@ -3207,13 +3349,14 @@ impl SshHandle {
             options.host = Some(host.clone());
         }
         if let Some(port_str) = args.get("port") {
-            options.port = port_str.parse::<u16>()
+            options.port = port_str
+                .parse::<u16>()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
         }
         if let Some(username) = args.get("username") {
             options.username = Some(username.clone());
         }
-        
+
         // Set defaults from target URL
         if options.host.is_none() {
             options.host = target.host.clone();
@@ -3235,7 +3378,7 @@ impl SshHandle {
                 _ => return Err(SshError::AuthMethodUnsupported(auth_method.clone()).into()),
             };
         }
-        
+
         options.password = args.get("password").cloned();
         // Use password from URL if not provided in args
         if options.password.is_none() {
@@ -3262,7 +3405,7 @@ impl SshHandle {
         if let Some(args_str) = args.get("command_args") {
             options.command_args = Self::parse_command_args(args_str);
         }
-        
+
         if let Some(shell_mode) = args.get("shell_mode") {
             options.shell_mode = match shell_mode.as_str() {
                 "none" => ShellMode::None,
@@ -3278,22 +3421,25 @@ impl SshHandle {
             options.env = Self::parse_env_vars(env_str)?;
         }
         options.cwd = args.get("cwd").cloned();
-        
+
         if let Some(pty_str) = args.get("allocate_pty") {
             options.allocate_pty = pty_str.parse::<bool>().unwrap_or(false);
         }
 
         // Parse timeouts and limits
         if let Some(timeout_str) = args.get("connect_timeout_ms") {
-            options.connect_timeout_ms = timeout_str.parse::<u64>()
+            options.connect_timeout_ms = timeout_str
+                .parse::<u64>()
                 .with_context(|| format!("Invalid connect timeout: {}", timeout_str))?;
         }
         if let Some(timeout_str) = args.get("command_timeout_ms") {
-            options.command_timeout_ms = timeout_str.parse::<u64>()
+            options.command_timeout_ms = timeout_str
+                .parse::<u64>()
                 .with_context(|| format!("Invalid command timeout: {}", timeout_str))?;
         }
         if let Some(max_str) = args.get("max_output_bytes") {
-            options.max_output_bytes = max_str.parse::<usize>()
+            options.max_output_bytes = max_str
+                .parse::<usize>()
                 .with_context(|| format!("Invalid max output bytes: {}", max_str))?;
         }
         if let Some(trim_str) = args.get("trim_trailing_newlines") {
@@ -3331,7 +3477,8 @@ impl SshHandle {
     /// Parse command arguments from string
     fn parse_command_args(args_str: &str) -> Vec<String> {
         // Simple split by commas for now - could be enhanced for quoted strings
-        args_str.split(',')
+        args_str
+            .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect()
@@ -3365,7 +3512,8 @@ impl SshHandle {
             options.host = Some(host.clone());
         }
         if let Some(port_str) = args.get("port") {
-            options.port = port_str.parse::<u16>()
+            options.port = port_str
+                .parse::<u16>()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
         }
         if let Some(username) = args.get("username") {
@@ -3382,7 +3530,7 @@ impl SshHandle {
                 _ => return Err(SshError::AuthMethodUnsupported(auth_method.clone()).into()),
             };
         }
-        
+
         options.password = args.get("password").cloned();
         // Use password from URL if not provided in args
         if options.password.is_none() {
@@ -3440,22 +3588,29 @@ impl SshHandle {
             options.preserve_times = preserve_str.parse::<bool>().unwrap_or(false);
         }
         if let Some(mtime_str) = args.get("mtime_epoch_ms") {
-            options.mtime_epoch_ms = Some(mtime_str.parse::<i64>()
-                .with_context(|| format!("Invalid mtime_epoch_ms: {}", mtime_str))?);
+            options.mtime_epoch_ms = Some(
+                mtime_str
+                    .parse::<i64>()
+                    .with_context(|| format!("Invalid mtime_epoch_ms: {}", mtime_str))?,
+            );
         }
 
         // Parse limits and timeouts
         if let Some(max_size_str) = args.get("max_size_bytes") {
-            options.max_size_bytes = max_size_str.parse::<u64>()
+            options.max_size_bytes = max_size_str
+                .parse::<u64>()
                 .with_context(|| format!("Invalid max_size_bytes: {}", max_size_str))?;
         }
         if let Some(connect_timeout_str) = args.get("connect_timeout_ms") {
-            options.connect_timeout_ms = connect_timeout_str.parse::<u64>()
+            options.connect_timeout_ms = connect_timeout_str
+                .parse::<u64>()
                 .with_context(|| format!("Invalid connect_timeout_ms: {}", connect_timeout_str))?;
         }
         if let Some(transfer_timeout_str) = args.get("transfer_timeout_ms") {
-            options.transfer_timeout_ms = transfer_timeout_str.parse::<u64>()
-                .with_context(|| format!("Invalid transfer_timeout_ms: {}", transfer_timeout_str))?;
+            options.transfer_timeout_ms =
+                transfer_timeout_str.parse::<u64>().with_context(|| {
+                    format!("Invalid transfer_timeout_ms: {}", transfer_timeout_str)
+                })?;
         }
 
         // Parse behavior & output
@@ -3483,7 +3638,11 @@ impl SshHandle {
     }
 
     /// Parse arguments into SshDownloadOptions
-    fn parse_download_options(&self, args: &Args, target: &SshTarget) -> Result<SshDownloadOptions> {
+    fn parse_download_options(
+        &self,
+        args: &Args,
+        target: &SshTarget,
+    ) -> Result<SshDownloadOptions> {
         let mut options = SshDownloadOptions::default();
 
         // Parse connection parameters
@@ -3491,7 +3650,8 @@ impl SshHandle {
             options.host = Some(host.clone());
         }
         if let Some(port_str) = args.get("port") {
-            options.port = port_str.parse::<u16>()
+            options.port = port_str
+                .parse::<u16>()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
         }
         if let Some(username) = args.get("username") {
@@ -3563,16 +3723,20 @@ impl SshHandle {
 
         // Parse limits and timeouts
         if let Some(max_size_str) = args.get("max_size_bytes") {
-            options.max_size_bytes = max_size_str.parse::<u64>()
+            options.max_size_bytes = max_size_str
+                .parse::<u64>()
                 .with_context(|| format!("Invalid max_size_bytes: {}", max_size_str))?;
         }
         if let Some(connect_timeout_str) = args.get("connect_timeout_ms") {
-            options.connect_timeout_ms = connect_timeout_str.parse::<u64>()
+            options.connect_timeout_ms = connect_timeout_str
+                .parse::<u64>()
                 .with_context(|| format!("Invalid connect_timeout_ms: {}", connect_timeout_str))?;
         }
         if let Some(transfer_timeout_str) = args.get("transfer_timeout_ms") {
-            options.transfer_timeout_ms = transfer_timeout_str.parse::<u64>()
-                .with_context(|| format!("Invalid transfer_timeout_ms: {}", transfer_timeout_str))?;
+            options.transfer_timeout_ms =
+                transfer_timeout_str.parse::<u64>().with_context(|| {
+                    format!("Invalid transfer_timeout_ms: {}", transfer_timeout_str)
+                })?;
         }
 
         // Parse checksum parameters
@@ -3603,8 +3767,11 @@ impl SshHandle {
 
     /// Resolve source data based on source mode and encoding
     fn resolve_source_data(&self, options: &SshUploadOptions) -> Result<(Vec<u8>, Option<String>)> {
-        let source = options.source.as_ref().ok_or(SshError::UploadSourceMissing)?;
-        
+        let source = options
+            .source
+            .as_ref()
+            .ok_or(SshError::UploadSourceMissing)?;
+
         match options.source_mode {
             SourceMode::File => {
                 // Handle file:// URLs and regular paths
@@ -3613,73 +3780,81 @@ impl SshHandle {
                 } else {
                     source
                 };
-                
+
                 // Check if file exists
                 if !std::path::Path::new(path).exists() {
                     return Err(SshError::UploadSourceNotFound(path.to_string()).into());
                 }
-                
+
                 // Check file size before reading
-                let metadata = std::fs::metadata(path)
-                    .map_err(|e| SshError::UploadSourceReadError(format!("Failed to get file metadata: {}", e)))?;
-                
+                let metadata = std::fs::metadata(path).map_err(|e| {
+                    SshError::UploadSourceReadError(format!("Failed to get file metadata: {}", e))
+                })?;
+
                 let file_size = metadata.len();
                 if file_size > options.max_size_bytes {
                     return Err(SshError::UploadTooLarge(file_size).into());
                 }
-                
+
                 // Read file contents
-                let data = std::fs::read(path)
-                    .map_err(|e| SshError::UploadSourceReadError(format!("Failed to read file: {}", e)))?;
-                
+                let data = std::fs::read(path).map_err(|e| {
+                    SshError::UploadSourceReadError(format!("Failed to read file: {}", e))
+                })?;
+
                 Ok((data, Some(path.to_string())))
-            },
-            SourceMode::Inline => {
-                match options.source_encoding {
-                    SourceEncoding::Utf8 => {
-                        let data = source.as_bytes().to_vec();
-                        if data.len() as u64 > options.max_size_bytes {
-                            return Err(SshError::UploadTooLarge(data.len() as u64).into());
-                        }
-                        Ok((data, None))
-                    },
-                    SourceEncoding::Base64 => {
-                        let data = BASE64_STANDARD.decode(source)
-                            .map_err(|e| SshError::UploadInvalidSourceEncoding(format!("Invalid base64: {}", e)))?;
-                        if data.len() as u64 > options.max_size_bytes {
-                            return Err(SshError::UploadTooLarge(data.len() as u64).into());
-                        }
-                        Ok((data, None))
-                    },
+            }
+            SourceMode::Inline => match options.source_encoding {
+                SourceEncoding::Utf8 => {
+                    let data = source.as_bytes().to_vec();
+                    if data.len() as u64 > options.max_size_bytes {
+                        return Err(SshError::UploadTooLarge(data.len() as u64).into());
+                    }
+                    Ok((data, None))
+                }
+                SourceEncoding::Base64 => {
+                    let data = BASE64_STANDARD.decode(source).map_err(|e| {
+                        SshError::UploadInvalidSourceEncoding(format!("Invalid base64: {}", e))
+                    })?;
+                    if data.len() as u64 > options.max_size_bytes {
+                        return Err(SshError::UploadTooLarge(data.len() as u64).into());
+                    }
+                    Ok((data, None))
                 }
             },
         }
     }
 
     /// Resolve upload connection parameters (similar to exec but for upload options)
-    fn resolve_upload_connection_params(&self, options: &SshUploadOptions) -> Result<(String, u16, String)> {
+    fn resolve_upload_connection_params(
+        &self,
+        options: &SshUploadOptions,
+    ) -> Result<(String, u16, String)> {
         // Resolve host
         let host = match (&self.target.host, &options.host) {
             (Some(target_host), Some(option_host)) => {
                 if target_host != option_host {
-                    return Err(SshError::TargetConflict(
-                        format!("Host mismatch: target={}, option={}", target_host, option_host)
-                    ).into());
+                    return Err(SshError::TargetConflict(format!(
+                        "Host mismatch: target={}, option={}",
+                        target_host, option_host
+                    ))
+                    .into());
                 }
                 target_host.clone()
-            },
+            }
             (Some(host), None) | (None, Some(host)) => host.clone(),
             (None, None) => {
                 return Err(SshError::HostRequired.into());
-            },
+            }
         };
 
         // Resolve port
         let port = if let Some(target_port) = self.target.port {
             if target_port != options.port {
-                return Err(SshError::TargetConflict(
-                    format!("Port mismatch: target={}, option={}", target_port, options.port)
-                ).into());
+                return Err(SshError::TargetConflict(format!(
+                    "Port mismatch: target={}, option={}",
+                    target_port, options.port
+                ))
+                .into());
             }
             target_port
         } else {
@@ -3690,19 +3865,21 @@ impl SshHandle {
         let username = match (&self.target.username, &options.username) {
             (Some(target_user), Some(option_user)) => {
                 if target_user != option_user {
-                    return Err(SshError::TargetConflict(
-                        format!("Username mismatch: target={}, option={}", target_user, option_user)
-                    ).into());
+                    return Err(SshError::TargetConflict(format!(
+                        "Username mismatch: target={}, option={}",
+                        target_user, option_user
+                    ))
+                    .into());
                 }
                 target_user.clone()
-            },
+            }
             (Some(user), None) | (None, Some(user)) => user.clone(),
             (None, None) => {
                 // Try to get current OS user as fallback
                 std::env::var("USER")
                     .or_else(|_| std::env::var("USERNAME"))
                     .unwrap_or_else(|_| "root".to_string())
-            },
+            }
         };
 
         Ok((host, port, username))
@@ -3724,32 +3901,38 @@ impl SshHandle {
         match options.auth_method {
             SshAuthMethod::Auto => {
                 // Auto auth doesn't need validation here - will be resolved at execution time
-            },
+            }
             SshAuthMethod::Password => {
                 if options.password.is_none() {
                     return Err(SshError::AuthMissingPassword.into());
                 }
-            },
+            }
             SshAuthMethod::Key => {
                 // Allow key auth even without explicit paths for SSH default behavior
-            },
+            }
             SshAuthMethod::Agent => {
                 // Skip agent validation in test mode for now
                 #[cfg(not(test))]
                 if options.agent_socket.is_none() && std::env::var("SSH_AUTH_SOCK").is_err() {
                     return Err(SshError::AgentUnavailable.into());
                 }
-            },
+            }
         }
 
         // Validate file mode format if provided
         if let Some(mode_str) = &options.file_mode {
             if !mode_str.starts_with('0') || mode_str.len() != 4 {
-                return Err(SshError::InternalError("Invalid file mode format, expected 4-digit octal (e.g., 0644)".to_string()).into());
+                return Err(SshError::InternalError(
+                    "Invalid file mode format, expected 4-digit octal (e.g., 0644)".to_string(),
+                )
+                .into());
             }
             // Try to parse as octal
             if u32::from_str_radix(&mode_str[1..], 8).is_err() {
-                return Err(SshError::InternalError("Invalid file mode, must be valid octal".to_string()).into());
+                return Err(SshError::InternalError(
+                    "Invalid file mode, must be valid octal".to_string(),
+                )
+                .into());
             }
         }
 
@@ -3764,7 +3947,10 @@ impl SshHandle {
         }
         if options.preserve_times {
             let modified = std::fs::metadata(source_path?).ok()?.modified().ok()?;
-            let secs = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+            let secs = modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
             return i64::try_from(secs).ok();
         }
         None
@@ -3843,7 +4029,9 @@ impl SshHandle {
         let checksum_verified = match local_checksum {
             Some(local) => {
                 let remote = parse_checksum_output(&output.stdout).ok_or_else(|| {
-                    SshError::UploadRemoteWriteFailed("could not read the remote checksum".to_string())
+                    SshError::UploadRemoteWriteFailed(
+                        "could not read the remote checksum".to_string(),
+                    )
                 })?;
                 if remote != local {
                     return Err(SshError::UploadChecksumMismatch(local, remote).into());
@@ -3871,23 +4059,27 @@ impl SshHandle {
     fn compute_checksum(&self, data: &[u8], algorithm: &str) -> Result<String> {
         match algorithm.to_lowercase().as_str() {
             "sha256" => {
-                use sha2::{Sha256, Digest};
+                use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
                 hasher.update(data);
                 Ok(format!("{:x}", hasher.finalize()))
-            },
+            }
             "sha1" => {
-                use sha1::{Sha1, Digest};
+                use sha1::{Digest, Sha1};
                 let mut hasher = Sha1::new();
                 hasher.update(data);
                 Ok(format!("{:x}", hasher.finalize()))
-            },
+            }
             "md5" => {
                 let mut hasher = md5::Context::new();
                 hasher.consume(data);
                 Ok(format!("{:x}", hasher.compute()))
-            },
-            _ => Err(SshError::InternalError(format!("Unsupported checksum algorithm: {}", algorithm)).into()),
+            }
+            _ => Err(SshError::InternalError(format!(
+                "Unsupported checksum algorithm: {}",
+                algorithm
+            ))
+            .into()),
         }
     }
 
@@ -3917,7 +4109,7 @@ impl SshHandle {
                     }),
                     warnings: vec![],
                 };
-                
+
                 let default_options = SshUploadOptions::default();
                 self.write_upload_response(&error_response, &default_options, io)?;
                 return Ok(Status::err(1, e.to_string()));
@@ -3930,9 +4122,15 @@ impl SshHandle {
                 ok: false,
                 dry_run: false,
                 connection: SshConnectionInfo {
-                    host: options.host.clone().unwrap_or_else(|| "unknown".to_string()),
+                    host: options
+                        .host
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
                     port: options.port,
-                    username: options.username.clone().unwrap_or_else(|| "unknown".to_string()),
+                    username: options
+                        .username
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
                     backend: "system".to_string(),
                 },
                 source: None,
@@ -3949,7 +4147,7 @@ impl SshHandle {
                 }),
                 warnings: vec![],
             };
-            
+
             self.write_upload_response(&error_response, &options, io)?;
             return Ok(Status::err(1, e.to_string()));
         }
@@ -3962,9 +4160,15 @@ impl SshHandle {
                     ok: false,
                     dry_run: false,
                     connection: SshConnectionInfo {
-                        host: options.host.clone().unwrap_or_else(|| "unknown".to_string()),
+                        host: options
+                            .host
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
                         port: options.port,
-                        username: options.username.clone().unwrap_or_else(|| "unknown".to_string()),
+                        username: options
+                            .username
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
                         backend: "system".to_string(),
                     },
                     source: None,
@@ -3981,7 +4185,7 @@ impl SshHandle {
                     }),
                     warnings: vec![],
                 };
-                
+
                 self.write_upload_response(&error_response, &options, io)?;
                 return Ok(Status::err(1, e.to_string()));
             }
@@ -4019,7 +4223,7 @@ impl SshHandle {
                     }),
                     warnings: vec![],
                 };
-                
+
                 self.write_upload_response(&error_response, &options, io)?;
                 return Ok(Status::err(1, e.to_string()));
             }
@@ -4041,7 +4245,10 @@ impl SshHandle {
         };
 
         let dest_info = SshUploadDestInfo {
-            path: options.dest.clone().unwrap_or_else(|| "unknown".to_string()),
+            path: options
+                .dest
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
             overwrite: options.overwrite,
             atomic: options.atomic,
             mkdir_parents: options.mkdir_parents,
@@ -4066,7 +4273,9 @@ impl SshHandle {
                 }),
                 timing: None,
                 error: None,
-                warnings: vec!["Dry run: no SSH connection was made and no file was uploaded.".to_string()],
+                warnings: vec![
+                    "Dry run: no SSH connection was made and no file was uploaded.".to_string(),
+                ],
             };
 
             self.write_upload_response(&response, &options, io)?;
@@ -4076,7 +4285,15 @@ impl SshHandle {
         // Execute the SSH upload
         let dest_path = options.dest.as_ref().unwrap();
         let local_source = source_info.path.clone();
-        match self.execute_ssh_upload(&host, port, &username, &data, dest_path, local_source.as_deref(), &options) {
+        match self.execute_ssh_upload(
+            &host,
+            port,
+            &username,
+            &data,
+            dest_path,
+            local_source.as_deref(),
+            &options,
+        ) {
             Ok((result, timing)) => {
                 let response = SshUploadResponse {
                     ok: true,
@@ -4092,7 +4309,7 @@ impl SshHandle {
 
                 self.write_upload_response(&response, &options, io)?;
                 Ok(Status::success())
-            },
+            }
             Err(e) => {
                 let ssh_error = match e.downcast_ref::<SshError>() {
                     Some(ssh_err) => (*ssh_err).clone(),
@@ -4113,19 +4330,24 @@ impl SshHandle {
 
                 self.write_upload_response(&response, &options, io)?;
                 Ok(Status::err(1, ssh_error.to_string()))
-            },
+            }
         }
     }
 
     /// Write upload response based on format
-    fn write_upload_response(&self, response: &SshUploadResponse, options: &SshUploadOptions, io: &mut IoStreams) -> Result<()> {
+    fn write_upload_response(
+        &self,
+        response: &SshUploadResponse,
+        options: &SshUploadOptions,
+        io: &mut IoStreams,
+    ) -> Result<()> {
         match options.format {
             OutputFormat::Json => {
                 writeln!(io.stdout, "{}", serde_json::to_string_pretty(response)?)?;
-            },
+            }
             OutputFormat::Text => {
                 write!(io.stdout, "{}", self.format_upload_text_response(response))?;
-            },
+            }
         }
         Ok(())
     }
@@ -4133,7 +4355,7 @@ impl SshHandle {
     /// Format upload response as text
     fn format_upload_text_response(&self, response: &SshUploadResponse) -> String {
         let mut output = String::new();
-        
+
         output.push_str("SSH Upload\n");
         output.push_str("==========\n\n");
         output.push_str(&format!("Host    : {}\n", response.connection.host));
@@ -4167,14 +4389,23 @@ impl SshHandle {
 
         if let Some(result) = &response.result {
             output.push_str("Result  :\n");
-            output.push_str(&format!("  Uploaded   : {}\n", if result.uploaded { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "  Uploaded   : {}\n",
+                if result.uploaded { "yes" } else { "no" }
+            ));
             if result.planned {
                 output.push_str("  Planned    : yes\n");
             }
             if result.verify_checksum {
-                output.push_str(&format!("  Checksum   : {} ({})\n", 
-                    if result.checksum_verified == Some(true) { "verified" } else { "failed" },
-                    result.checksum_algorithm));
+                output.push_str(&format!(
+                    "  Checksum   : {} ({})\n",
+                    if result.checksum_verified == Some(true) {
+                        "verified"
+                    } else {
+                        "failed"
+                    },
+                    result.checksum_algorithm
+                ));
             } else {
                 output.push_str("  Checksum   : disabled\n");
             }
@@ -4250,9 +4481,15 @@ impl SshHandle {
                 ok: false,
                 dry_run: false,
                 connection: SshConnectionInfo {
-                    host: options.host.clone().unwrap_or_else(|| "unknown".to_string()),
+                    host: options
+                        .host
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
                     port: options.port,
-                    username: options.username.clone().unwrap_or_else(|| "unknown".to_string()),
+                    username: options
+                        .username
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
                     backend: "system".to_string(),
                 },
                 source: None,
@@ -4282,9 +4519,15 @@ impl SshHandle {
                     ok: false,
                     dry_run: false,
                     connection: SshConnectionInfo {
-                        host: options.host.clone().unwrap_or_else(|| "unknown".to_string()),
+                        host: options
+                            .host
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
                         port: options.port,
-                        username: options.username.clone().unwrap_or_else(|| "unknown".to_string()),
+                        username: options
+                            .username
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
                         backend: "system".to_string(),
                     },
                     source: None,
@@ -4315,7 +4558,10 @@ impl SshHandle {
             backend: "system".to_string(),
         };
 
-        let source_path = options.source.clone().unwrap_or_else(|| "unknown".to_string());
+        let source_path = options
+            .source
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
         let dest_mode_str = format!("{:?}", options.dest_mode).to_lowercase();
 
         // Handle dry run
@@ -4349,7 +4595,9 @@ impl SshHandle {
                 }),
                 timing: None,
                 error: None,
-                warnings: vec!["Dry run: no SSH connection was made and no file was downloaded.".to_string()],
+                warnings: vec![
+                    "Dry run: no SSH connection was made and no file was downloaded.".to_string(),
+                ],
             };
 
             self.write_download_response(&response, &options, io)?;
@@ -4373,7 +4621,7 @@ impl SshHandle {
 
                 self.write_download_response(&response, &options, io)?;
                 Ok(Status::success())
-            },
+            }
             Err(e) => {
                 let ssh_error = match e.downcast_ref::<SshError>() {
                     Some(ssh_err) => (*ssh_err).clone(),
@@ -4405,19 +4653,28 @@ impl SshHandle {
 
                 self.write_download_response(&response, &options, io)?;
                 Ok(Status::err(1, ssh_error.to_string()))
-            },
+            }
         }
     }
 
     /// Write download response based on format
-    fn write_download_response(&self, response: &SshDownloadResponse, options: &SshDownloadOptions, io: &mut IoStreams) -> Result<()> {
+    fn write_download_response(
+        &self,
+        response: &SshDownloadResponse,
+        options: &SshDownloadOptions,
+        io: &mut IoStreams,
+    ) -> Result<()> {
         match options.format {
             OutputFormat::Json => {
                 writeln!(io.stdout, "{}", serde_json::to_string_pretty(response)?)?;
-            },
+            }
             OutputFormat::Text => {
-                write!(io.stdout, "{}", self.format_download_text_response(response))?;
-            },
+                write!(
+                    io.stdout,
+                    "{}",
+                    self.format_download_text_response(response)
+                )?;
+            }
         }
         Ok(())
     }
@@ -4464,21 +4721,28 @@ impl SshHandle {
 
         if let Some(result) = &response.result {
             output.push_str("Result  :\n");
-            output.push_str(&format!("  Downloaded : {}\n", if result.downloaded { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "  Downloaded : {}\n",
+                if result.downloaded { "yes" } else { "no" }
+            ));
             if result.planned {
                 output.push_str("  Planned    : yes\n");
             }
-            output.push_str(&format!("  Returned   : {} ({})\n",
+            output.push_str(&format!(
+                "  Returned   : {} ({})\n",
                 if result.return_content { "yes" } else { "no" },
-                result.return_encoding));
+                result.return_encoding
+            ));
             if result.verify_checksum {
-                output.push_str(&format!("  Checksum   : {} ({})\n",
+                output.push_str(&format!(
+                    "  Checksum   : {} ({})\n",
                     match result.checksum_verified {
                         Some(true) => "verified",
                         Some(false) => "failed",
                         None => "not checked",
                     },
-                    result.checksum_algorithm));
+                    result.checksum_algorithm
+                ));
             } else {
                 output.push_str("  Checksum   : disabled\n");
             }
@@ -4540,36 +4804,41 @@ impl SshHandle {
         match options.auth_method {
             SshAuthMethod::Auto => {
                 // Auto auth doesn't need validation here - will be resolved at execution time
-            },
+            }
             SshAuthMethod::Password => {
                 if options.password.is_none() {
                     return Err(SshError::AuthMissingPassword.into());
                 }
-            },
+            }
             SshAuthMethod::Key => {
                 // Allow key auth even without explicit paths for SSH default behavior
-            },
+            }
             SshAuthMethod::Agent => {
                 if options.agent_socket.is_none() && std::env::var("SSH_AUTH_SOCK").is_err() {
                     return Err(SshError::AgentUnavailable.into());
                 }
-            },
+            }
         }
         Ok(())
     }
 
     /// Resolve download connection parameters
-    fn resolve_download_connection_params(&self, options: &SshDownloadOptions) -> Result<(String, u16, String)> {
+    fn resolve_download_connection_params(
+        &self,
+        options: &SshDownloadOptions,
+    ) -> Result<(String, u16, String)> {
         // Resolve host
         let host = match (&self.target.host, &options.host) {
             (Some(target_host), Some(option_host)) => {
                 if target_host != option_host {
-                    return Err(SshError::TargetConflict(
-                        format!("Host mismatch: target={}, option={}", target_host, option_host)
-                    ).into());
+                    return Err(SshError::TargetConflict(format!(
+                        "Host mismatch: target={}, option={}",
+                        target_host, option_host
+                    ))
+                    .into());
                 }
                 target_host.clone()
-            },
+            }
             (Some(host), None) | (None, Some(host)) => host.clone(),
             (None, None) => return Err(SshError::HostRequired.into()),
         };
@@ -4577,9 +4846,11 @@ impl SshHandle {
         // Resolve port
         let port = if let Some(target_port) = self.target.port {
             if options.port != 22 && options.port != target_port {
-                return Err(SshError::TargetConflict(
-                    format!("Port mismatch: target={}, option={}", target_port, options.port)
-                ).into());
+                return Err(SshError::TargetConflict(format!(
+                    "Port mismatch: target={}, option={}",
+                    target_port, options.port
+                ))
+                .into());
             }
             target_port
         } else {
@@ -4590,19 +4861,21 @@ impl SshHandle {
         let username = match (&self.target.username, &options.username) {
             (Some(target_user), Some(option_user)) => {
                 if target_user != option_user {
-                    return Err(SshError::TargetConflict(
-                        format!("Username mismatch: target={}, option={}", target_user, option_user)
-                    ).into());
+                    return Err(SshError::TargetConflict(format!(
+                        "Username mismatch: target={}, option={}",
+                        target_user, option_user
+                    ))
+                    .into());
                 }
                 target_user.clone()
-            },
+            }
             (Some(user), None) | (None, Some(user)) => user.clone(),
             (None, None) => {
                 // Try to get current OS user as fallback
                 std::env::var("USER")
                     .or_else(|_| std::env::var("USERNAME"))
                     .unwrap_or_else(|_| "root".to_string())
-            },
+            }
         };
 
         Ok((host, port, username))
@@ -4673,7 +4946,12 @@ impl SshHandle {
         username: &str,
         source: &str,
         options: &SshDownloadOptions,
-    ) -> Result<(SshDownloadSourceInfo, SshDownloadDestInfo, SshDownloadResult, SshDownloadTimingInfo)> {
+    ) -> Result<(
+        SshDownloadSourceInfo,
+        SshDownloadDestInfo,
+        SshDownloadResult,
+        SshDownloadTimingInfo,
+    )> {
         let auth = resolve_auth_method(
             &options.auth_method,
             options.password.as_deref(),
@@ -4695,7 +4973,9 @@ impl SshHandle {
             }
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 if !parent.exists() && !options.mkdir_parents {
-                    return Err(SshError::DownloadLocalDirMissing(parent.display().to_string()).into());
+                    return Err(
+                        SshError::DownloadLocalDirMissing(parent.display().to_string()).into(),
+                    );
                 }
             }
             Some(dest.clone())
@@ -4709,13 +4989,21 @@ impl SshHandle {
 
         let transfer_start = Instant::now();
         let cmd = Self::transfer_command_line(
-            host, port, username, &auth, Self::download_conn(options),
+            host,
+            port,
+            username,
+            &auth,
+            Self::download_conn(options),
             &format!("cat -- {}", remote_path),
         );
         let output = run_ssh_process(&cmd, None, Some(options.max_size_bytes), timeout)
             .map_err(|e| e.into_ssh_error(SshError::DownloadTimeout))?;
         if output.stdout.len() as u64 > options.max_size_bytes {
-            return Err(SshError::DownloadTooLarge(output.stdout.len() as u64, options.max_size_bytes).into());
+            return Err(SshError::DownloadTooLarge(
+                output.stdout.len() as u64,
+                options.max_size_bytes,
+            )
+            .into());
         }
         if !output.success() {
             return Err(Self::download_read_error(source, &output).into());
@@ -4726,7 +5014,11 @@ impl SshHandle {
         let checksum_verified = match checksum_tool {
             Some(tool) => {
                 let cmd = Self::transfer_command_line(
-                    host, port, username, &auth, Self::download_conn(options),
+                    host,
+                    port,
+                    username,
+                    &auth,
+                    Self::download_conn(options),
                     &format!("{} -- {}", tool, remote_path),
                 );
                 let out = run_ssh_process(&cmd, None, Some(65_536), timeout)
@@ -4810,14 +5102,19 @@ impl SshHandle {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| SshError::DownloadLocalWriteFailed(e.to_string()))?;
                 } else {
-                    return Err(SshError::DownloadLocalDirMissing(parent.display().to_string()).into());
+                    return Err(
+                        SshError::DownloadLocalDirMissing(parent.display().to_string()).into(),
+                    );
                 }
             }
         }
 
         let temp_path = format!("{}.resh.tmp.{}", dest, rand::random::<u32>());
         let write = || -> std::io::Result<()> {
-            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp_path)?;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)?;
             f.write_all(data)?;
             f.sync_all()
         };
@@ -4842,12 +5139,14 @@ impl SshHandle {
         let host = match (&self.target.host, &options.host) {
             (Some(target_host), Some(option_host)) => {
                 if target_host != option_host {
-                    return Err(SshError::TargetConflict(
-                        format!("Host mismatch: target={}, option={}", target_host, option_host)
-                    ).into());
+                    return Err(SshError::TargetConflict(format!(
+                        "Host mismatch: target={}, option={}",
+                        target_host, option_host
+                    ))
+                    .into());
                 }
                 target_host.clone()
-            },
+            }
             (Some(host), None) | (None, Some(host)) => host.clone(),
             (None, None) => return Err(SshError::HostRequired.into()),
         };
@@ -4855,9 +5154,11 @@ impl SshHandle {
         // Resolve port
         let port = if let Some(target_port) = self.target.port {
             if options.port != 22 && options.port != target_port {
-                return Err(SshError::TargetConflict(
-                    format!("Port mismatch: target={}, option={}", target_port, options.port)
-                ).into());
+                return Err(SshError::TargetConflict(format!(
+                    "Port mismatch: target={}, option={}",
+                    target_port, options.port
+                ))
+                .into());
             }
             target_port
         } else {
@@ -4868,19 +5169,21 @@ impl SshHandle {
         let username = match (&self.target.username, &options.username) {
             (Some(target_user), Some(option_user)) => {
                 if target_user != option_user {
-                    return Err(SshError::TargetConflict(
-                        format!("Username mismatch: target={}, option={}", target_user, option_user)
-                    ).into());
+                    return Err(SshError::TargetConflict(format!(
+                        "Username mismatch: target={}, option={}",
+                        target_user, option_user
+                    ))
+                    .into());
                 }
                 target_user.clone()
-            },
+            }
             (Some(user), None) | (None, Some(user)) => user.clone(),
             (None, None) => {
                 // Try to get current OS user as fallback
                 std::env::var("USER")
                     .or_else(|_| std::env::var("USERNAME"))
                     .unwrap_or_else(|_| "root".to_string())
-            },
+            }
         };
 
         Ok((host, port, username))
@@ -4891,7 +5194,7 @@ impl SshHandle {
         if options.password.is_none() {
             return Err(SshError::AuthMissingPassword.into());
         }
-        
+
         // Check if sshpass is available when testing
         #[cfg(not(test))]
         {
@@ -4914,49 +5217,48 @@ impl SshHandle {
             SshAuthMethod::Auto => {
                 // Try to determine the best available authentication method
                 // Priority: Explicit credentials (Password/Key) -> SSH Agent -> Default SSH behavior
-                
+
                 // Check if password authentication is explicitly provided
                 if options.password.is_some() {
                     Self::validate_password_auth(options)?;
                     return Ok(SshAuthMethod::Password);
                 }
-                
+
                 // Check if key authentication is explicitly provided
                 if options.identity_path.is_some() || options.identity_data.is_some() {
                     return Ok(SshAuthMethod::Key);
                 }
-                
+
                 // Check if SSH agent is available as fallback
                 if options.agent_socket.is_some() || std::env::var("SSH_AUTH_SOCK").is_ok() {
                     return Ok(SshAuthMethod::Agent);
                 }
-                
+
                 // If no explicit credentials provided, try default SSH behavior (key-based)
                 // which relies on SSH's default key lookup in ~/.ssh/
                 Ok(SshAuthMethod::Key)
-            },
+            }
             SshAuthMethod::Password => {
                 Self::validate_password_auth(options)?;
                 Ok(SshAuthMethod::Password)
-            },
+            }
             SshAuthMethod::Key => {
                 // Allow key authentication even without explicit paths
                 // SSH will try default locations like ~/.ssh/id_rsa, ~/.ssh/id_ed25519, etc.
                 Ok(SshAuthMethod::Key)
-            },
+            }
             SshAuthMethod::Agent => {
                 if options.agent_socket.is_none() && std::env::var("SSH_AUTH_SOCK").is_err() {
                     return Err(SshError::AgentUnavailable.into());
                 }
                 Ok(SshAuthMethod::Agent)
-            },
+            }
         }
     }
 
     /// Build final command string based on shell mode
     fn build_command(&self, options: &SshExecOptions) -> Result<String> {
-        let base_command = options.command.as_ref()
-            .ok_or(SshError::CommandRequired)?;
+        let base_command = options.command.as_ref().ok_or(SshError::CommandRequired)?;
 
         match options.shell_mode {
             ShellMode::None => {
@@ -4964,13 +5266,21 @@ impl SshHandle {
                     Ok(base_command.clone())
                 } else {
                     // Simple concatenation for direct execution
-                    Ok(format!("{} {}", base_command, options.command_args.join(" ")))
+                    Ok(format!(
+                        "{} {}",
+                        base_command,
+                        options.command_args.join(" ")
+                    ))
                 }
-            },
+            }
             ShellMode::Sh | ShellMode::Bash => {
-                let shell = if options.shell_mode == ShellMode::Bash { "bash" } else { "sh" };
+                let shell = if options.shell_mode == ShellMode::Bash {
+                    "bash"
+                } else {
+                    "sh"
+                };
                 let mut cmd = base_command.clone();
-                
+
                 // Add arguments with basic shell escaping
                 for arg in &options.command_args {
                     cmd.push(' ');
@@ -4987,33 +5297,36 @@ impl SshHandle {
                     None => cmd,
                 };
                 Ok(format!("{} -c {}", shell, Self::shell_escape(&script)))
-            },
+            }
             ShellMode::Cmd => {
                 let mut cmd = base_command.clone();
                 for arg in &options.command_args {
                     cmd.push(' ');
                     cmd.push_str(arg);
                 }
-                
+
                 if let Some(cwd) = &options.cwd {
                     Ok(format!("cmd /c \"cd /d {} && {}\"", cwd, cmd))
                 } else {
                     Ok(format!("cmd /c \"{}\"", cmd))
                 }
-            },
+            }
             ShellMode::Powershell => {
                 let mut cmd = base_command.clone();
                 for arg in &options.command_args {
                     cmd.push(' ');
                     cmd.push_str(arg);
                 }
-                
+
                 if let Some(cwd) = &options.cwd {
-                    Ok(format!("powershell -Command \"Set-Location '{}'; {}\"", cwd, cmd))
+                    Ok(format!(
+                        "powershell -Command \"Set-Location '{}'; {}\"",
+                        cwd, cmd
+                    ))
                 } else {
                     Ok(format!("powershell -Command \"{}\"", cmd))
                 }
-            },
+            }
         }
     }
 
@@ -5047,7 +5360,8 @@ impl SshHandle {
         // Options contain '=' or are specific keywords
         if !parts[idx].starts_with("ssh-")
             && !parts[idx].starts_with("ecdsa-")
-            && !parts[idx].starts_with("sk-") {
+            && !parts[idx].starts_with("sk-")
+        {
             // This is likely options - parse them
             let opts_str = parts[idx];
             for opt in opts_str.split(',') {
@@ -5120,7 +5434,7 @@ impl SshHandle {
     pub fn compute_fingerprint(blob_bytes: &[u8], algorithm: &str) -> Result<String> {
         match algorithm {
             "sha256" => {
-                use sha2::{Sha256, Digest};
+                use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
                 hasher.update(blob_bytes);
                 let result = hasher.finalize();
@@ -5134,7 +5448,11 @@ impl SshHandle {
     }
 
     /// Parse arguments into SshKeysListOptions
-    pub fn parse_keys_list_options(&self, args: &Args, target: &SshTarget) -> Result<SshKeysListOptions> {
+    pub fn parse_keys_list_options(
+        &self,
+        args: &Args,
+        target: &SshTarget,
+    ) -> Result<SshKeysListOptions> {
         let mut options = SshKeysListOptions::default();
 
         // Parse connection parameters
@@ -5142,7 +5460,8 @@ impl SshHandle {
             options.host = Some(host.clone());
         }
         if let Some(port_str) = args.get("port") {
-            options.port = port_str.parse::<u16>()
+            options.port = port_str
+                .parse::<u16>()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
         }
         if let Some(username) = args.get("username") {
@@ -5194,63 +5513,64 @@ impl SshHandle {
         options.authorized_user = args.get("authorized_user").cloned();
 
         if let Some(paths_str) = args.get("authorized_paths") {
-            options.authorized_paths = Some(
-                paths_str.split(',').map(|s| s.trim().to_string()).collect()
-            );
+            options.authorized_paths =
+                Some(paths_str.split(',').map(|s| s.trim().to_string()).collect());
         }
 
         if let Some(paths_str) = args.get("host_key_paths") {
-            options.host_key_paths = Some(
-                paths_str.split(',').map(|s| s.trim().to_string()).collect()
-            );
+            options.host_key_paths =
+                Some(paths_str.split(',').map(|s| s.trim().to_string()).collect());
         }
 
         if let Some(paths_str) = args.get("custom_paths") {
-            options.custom_paths = Some(
-                paths_str.split(',').map(|s| s.trim().to_string()).collect()
-            );
+            options.custom_paths =
+                Some(paths_str.split(',').map(|s| s.trim().to_string()).collect());
         }
 
         // Parse filtering
         if let Some(types_str) = args.get("key_types") {
-            options.key_types = types_str.split(',')
+            options.key_types = types_str
+                .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
         }
 
-        options.fingerprint_algorithm = args.get("fingerprint_algorithm")
+        options.fingerprint_algorithm = args
+            .get("fingerprint_algorithm")
             .cloned()
             .unwrap_or_else(default_fingerprint_algorithm);
 
         if let Some(val_str) = args.get("include_options") {
-            options.include_options = val_str.parse::<bool>()
-                .unwrap_or(default_include_options());
+            options.include_options = val_str.parse::<bool>().unwrap_or(default_include_options());
         }
 
         if let Some(val_str) = args.get("include_raw_key") {
-            options.include_raw_key = val_str.parse::<bool>()
-                .unwrap_or(default_include_raw_key());
+            options.include_raw_key = val_str.parse::<bool>().unwrap_or(default_include_raw_key());
         }
 
         // Parse limits and timeouts
         if let Some(val_str) = args.get("max_keys") {
-            options.max_keys = val_str.parse::<usize>()
+            options.max_keys = val_str
+                .parse::<usize>()
                 .with_context(|| format!("Invalid max_keys: {}", val_str))?;
         }
 
         if let Some(val_str) = args.get("max_bytes") {
-            options.max_bytes = val_str.parse::<usize>()
+            options.max_bytes = val_str
+                .parse::<usize>()
                 .with_context(|| format!("Invalid max_bytes: {}", val_str))?;
         }
 
         if let Some(val_str) = args.get("connect_timeout_ms") {
-            options.connect_timeout_ms = val_str.parse::<u64>()
+            options.connect_timeout_ms = val_str
+                .parse::<u64>()
                 .with_context(|| format!("Invalid connect_timeout_ms: {}", val_str))?;
         }
 
         if let Some(val_str) = args.get("read_timeout_ms") {
-            options.read_timeout_ms = val_str.parse::<u64>()
+            options.read_timeout_ms = val_str
+                .parse::<u64>()
                 .with_context(|| format!("Invalid read_timeout_ms: {}", val_str))?;
         }
 
@@ -5297,7 +5617,7 @@ impl SshHandle {
                     }),
                     warnings: vec![],
                 };
-                
+
                 let json = serde_json::to_string(&error_response).unwrap();
                 writeln!(io.stdout, "{}", json)?;
                 return Ok(Status::err(1, e.to_string()));
@@ -5312,9 +5632,15 @@ impl SshHandle {
                     ok: false,
                     dry_run: false,
                     connection: SshConnectionInfo {
-                        host: options.host.clone().unwrap_or_else(|| "unknown".to_string()),
+                        host: options
+                            .host
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
                         port: options.port,
-                        username: options.username.clone().unwrap_or_else(|| "unknown".to_string()),
+                        username: options
+                            .username
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string()),
                         backend: "system".to_string(),
                     },
                     command: None,
@@ -5323,7 +5649,7 @@ impl SshHandle {
                     error: Some(error_details(&e, "CONNECTION_ERROR")),
                     warnings: vec![],
                 };
-                
+
                 let json = serde_json::to_string(&error_response).unwrap();
                 writeln!(io.stdout, "{}", json)?;
                 return Ok(Status::err(1, e.to_string()));
@@ -5349,13 +5675,13 @@ impl SshHandle {
                     error: Some(error_details(&e, "AUTH_ERROR")),
                     warnings: vec![],
                 };
-                
+
                 let json = serde_json::to_string(&error_response).unwrap();
                 writeln!(io.stdout, "{}", json)?;
                 return Ok(Status::err(1, e.to_string()));
             }
         };
-        
+
         // Create a modified options struct with the effective auth method
         let mut effective_options = options.clone();
         effective_options.auth_method = effective_auth_method;
@@ -5379,7 +5705,7 @@ impl SshHandle {
                     error: Some(error_details(&e, "COMMAND_ERROR")),
                     warnings: vec![],
                 };
-                
+
                 let json = serde_json::to_string(&error_response).unwrap();
                 writeln!(io.stdout, "{}", json)?;
                 return Ok(Status::err(1, e.to_string()));
@@ -5449,7 +5775,7 @@ impl SshHandle {
                     None => Ok(Status::success()),
                     Some(f) => Ok(Status::err(result.exit_code.unwrap_or(1), f.message)),
                 }
-            },
+            }
             Err(e) => {
                 let ssh_error = match e.downcast_ref::<SshError>() {
                     Some(ssh_err) => (*ssh_err).clone(),
@@ -5469,7 +5795,7 @@ impl SshHandle {
 
                 self.write_response(&response, &options, io)?;
                 Ok(Status::err(1, ssh_error.to_string()))
-            },
+            }
         }
     }
 
@@ -5477,7 +5803,9 @@ impl SshHandle {
     /// `cd`; the other shell modes already apply cwd in `build_command`.
     fn exec_remote_command(options: &SshExecOptions, command: &str) -> String {
         match (&options.cwd, &options.shell_mode) {
-            (Some(cwd), ShellMode::None) => format!("cd {} && {}", Self::shell_escape(cwd), command),
+            (Some(cwd), ShellMode::None) => {
+                format!("cd {} && {}", Self::shell_escape(cwd), command)
+            }
             _ => command.to_string(),
         }
     }
@@ -5505,7 +5833,11 @@ impl SshHandle {
             allocate_pty: options.allocate_pty,
         };
         let mut cmd = build_ssh_command_line(&spec, &Self::exec_remote_command(options, command));
-        let mut env: Vec<_> = options.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut env: Vec<_> = options
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         env.sort();
         cmd.env.extend(env);
         cmd
@@ -5543,20 +5875,20 @@ impl SshHandle {
         options: &SshExecOptions,
     ) -> Result<SshExecResult> {
         let exit_code = output.exit_code;
-        
+
         // Apply output size limits
         let stdout_bytes = &output.stdout;
         let stderr_bytes = &output.stderr;
-        
+
         let stdout_truncated = stdout_bytes.len() > options.max_output_bytes;
         let stderr_truncated = stderr_bytes.len() > options.max_output_bytes;
-        
+
         let stdout_limited = if stdout_truncated {
             &stdout_bytes[..options.max_output_bytes]
         } else {
             stdout_bytes
         };
-        
+
         let stderr_limited = if stderr_truncated {
             &stderr_bytes[..options.max_output_bytes]
         } else {
@@ -5613,14 +5945,19 @@ impl SshHandle {
     }
 
     /// Write response based on format
-    fn write_response(&self, response: &SshExecResponse, options: &SshExecOptions, io: &mut IoStreams) -> Result<()> {
+    fn write_response(
+        &self,
+        response: &SshExecResponse,
+        options: &SshExecOptions,
+        io: &mut IoStreams,
+    ) -> Result<()> {
         match options.format {
             OutputFormat::Json => {
                 writeln!(io.stdout, "{}", serde_json::to_string_pretty(response)?)?;
-            },
+            }
             OutputFormat::Text => {
                 write!(io.stdout, "{}", self.format_text_response(response))?;
-            },
+            }
         }
         Ok(())
     }
@@ -5628,7 +5965,7 @@ impl SshHandle {
     /// Format response as text
     fn format_text_response(&self, response: &SshExecResponse) -> String {
         let mut output = String::new();
-        
+
         output.push_str("SSH Exec\n");
         output.push_str("========\n");
         output.push_str(&format!("Host     : {}\n", response.connection.host));
@@ -5647,8 +5984,14 @@ impl SshHandle {
             } else {
                 output.push_str("Exit Code: (none)\n");
             }
-            output.push_str(&format!("Timed Out: {}\n", if result.timed_out { "yes" } else { "no" }));
-            output.push_str(&format!("Truncated: {}\n", if result.output_truncated { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "Timed Out: {}\n",
+                if result.timed_out { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "Truncated: {}\n",
+                if result.output_truncated { "yes" } else { "no" }
+            ));
             output.push('\n');
 
             output.push_str("STDOUT:\n");
@@ -5741,7 +6084,8 @@ impl SshHandle {
             options.host = Some(host.clone());
         }
         if let Some(port_str) = args.get("port") {
-            options.port = port_str.parse::<u16>()
+            options.port = port_str
+                .parse::<u16>()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
         }
         if let Some(username) = args.get("username") {
@@ -5791,27 +6135,35 @@ impl SshHandle {
             options.local_bind_host = host.clone();
         }
         if let Some(port_str) = args.get("local_bind_port") {
-            options.local_bind_port = port_str.parse::<u16>()
+            options.local_bind_port = port_str
+                .parse::<u16>()
                 .with_context(|| format!("Invalid local_bind_port: {}", port_str))?;
         }
         if let Some(host) = args.get("remote_bind_host") {
             options.remote_bind_host = host.clone();
         }
         if let Some(port_str) = args.get("remote_bind_port") {
-            options.remote_bind_port = port_str.parse::<u16>()
+            options.remote_bind_port = port_str
+                .parse::<u16>()
                 .with_context(|| format!("Invalid remote_bind_port: {}", port_str))?;
         }
 
         // Parse destinations
         options.remote_dest_host = args.get("remote_dest_host").cloned();
         if let Some(port_str) = args.get("remote_dest_port") {
-            options.remote_dest_port = Some(port_str.parse::<u16>()
-                .with_context(|| format!("Invalid remote_dest_port: {}", port_str))?);
+            options.remote_dest_port = Some(
+                port_str
+                    .parse::<u16>()
+                    .with_context(|| format!("Invalid remote_dest_port: {}", port_str))?,
+            );
         }
         options.local_dest_host = args.get("local_dest_host").cloned();
         if let Some(port_str) = args.get("local_dest_port") {
-            options.local_dest_port = Some(port_str.parse::<u16>()
-                .with_context(|| format!("Invalid local_dest_port: {}", port_str))?);
+            options.local_dest_port = Some(
+                port_str
+                    .parse::<u16>()
+                    .with_context(|| format!("Invalid local_dest_port: {}", port_str))?,
+            );
         }
 
         // Parse SOCKS version
@@ -5825,28 +6177,44 @@ impl SshHandle {
 
         // Parse timeouts and limits
         if let Some(timeout_str) = args.get("connect_timeout_ms") {
-            options.connect_timeout_ms = timeout_str.parse::<u64>()
+            options.connect_timeout_ms = timeout_str
+                .parse::<u64>()
                 .with_context(|| format!("Invalid connect timeout: {}", timeout_str))?;
         }
         if let Some(timeout_str) = args.get("tunnel_timeout_ms") {
-            options.tunnel_timeout_ms = Some(timeout_str.parse::<u64>()
-                .with_context(|| format!("Invalid tunnel timeout: {}", timeout_str))?);
+            options.tunnel_timeout_ms = Some(
+                timeout_str
+                    .parse::<u64>()
+                    .with_context(|| format!("Invalid tunnel timeout: {}", timeout_str))?,
+            );
         }
         if let Some(timeout_str) = args.get("idle_timeout_ms") {
-            options.idle_timeout_ms = Some(timeout_str.parse::<u64>()
-                .with_context(|| format!("Invalid idle timeout: {}", timeout_str))?);
+            options.idle_timeout_ms = Some(
+                timeout_str
+                    .parse::<u64>()
+                    .with_context(|| format!("Invalid idle timeout: {}", timeout_str))?,
+            );
         }
         if let Some(max_str) = args.get("max_connections") {
-            options.max_connections = Some(max_str.parse::<u64>()
-                .with_context(|| format!("Invalid max_connections: {}", max_str))?);
+            options.max_connections = Some(
+                max_str
+                    .parse::<u64>()
+                    .with_context(|| format!("Invalid max_connections: {}", max_str))?,
+            );
         }
         if let Some(max_str) = args.get("max_bytes_in") {
-            options.max_bytes_in = Some(max_str.parse::<u64>()
-                .with_context(|| format!("Invalid max_bytes_in: {}", max_str))?);
+            options.max_bytes_in = Some(
+                max_str
+                    .parse::<u64>()
+                    .with_context(|| format!("Invalid max_bytes_in: {}", max_str))?,
+            );
         }
         if let Some(max_str) = args.get("max_bytes_out") {
-            options.max_bytes_out = Some(max_str.parse::<u64>()
-                .with_context(|| format!("Invalid max_bytes_out: {}", max_str))?);
+            options.max_bytes_out = Some(
+                max_str
+                    .parse::<u64>()
+                    .with_context(|| format!("Invalid max_bytes_out: {}", max_str))?,
+            );
         }
 
         // Parse behavior
@@ -5883,37 +6251,44 @@ impl SshHandle {
                 if options.remote_dest_host.is_none() || options.remote_dest_port.is_none() {
                     return Err(SshError::TunnelMissingRemoteDest.into());
                 }
-            },
+            }
             TunnelMode::Remote => {
                 if options.local_dest_host.is_none() || options.local_dest_port.is_none() {
                     return Err(SshError::TunnelMissingLocalDest.into());
                 }
-            },
+            }
             TunnelMode::Dynamic => {
                 // No specific destination required for dynamic mode
-            },
+            }
         }
 
         // Wildcard bind check for local
         if matches!(mode, TunnelMode::Local | TunnelMode::Dynamic) {
             if (options.local_bind_host == "0.0.0.0" || options.local_bind_host == "::")
-                && !options.allow_wildcard_binds {
+                && !options.allow_wildcard_binds
+            {
                 return Err(SshError::TunnelWildcardBindForbidden.into());
             }
             if (options.local_bind_host == "0.0.0.0" || options.local_bind_host == "::")
-                && options.allow_wildcard_binds {
-                warnings.push(format!("WARNING: Binding to {} exposes the tunnel to all network interfaces", options.local_bind_host));
+                && options.allow_wildcard_binds
+            {
+                warnings.push(format!(
+                    "WARNING: Binding to {} exposes the tunnel to all network interfaces",
+                    options.local_bind_host
+                ));
             }
         }
 
         // Wildcard bind check for remote
         if matches!(mode, TunnelMode::Remote) {
             if (options.remote_bind_host == "0.0.0.0" || options.remote_bind_host == "::")
-                && !options.allow_wildcard_binds {
+                && !options.allow_wildcard_binds
+            {
                 return Err(SshError::TunnelWildcardBindForbidden.into());
             }
             if (options.remote_bind_host == "0.0.0.0" || options.remote_bind_host == "::")
-                && options.allow_wildcard_binds {
+                && options.allow_wildcard_binds
+            {
                 warnings.push(format!("WARNING: Binding to {} on remote server exposes the tunnel to all network interfaces", options.remote_bind_host));
             }
         }
@@ -5947,7 +6322,11 @@ impl SshHandle {
                     warnings: vec![],
                 };
                 // Write JSON response directly since we don't have options yet
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&error_response)?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&error_response)?
+                )?;
                 return Ok(Status::err(1, "Failed to parse tunnel options"));
             }
         };
@@ -5956,7 +6335,8 @@ impl SshHandle {
         let mut warnings = match self.validate_tunnel_options(&options) {
             Ok(w) => w,
             Err(e) => {
-                let ssh_error = e.downcast_ref::<SshError>()
+                let ssh_error = e
+                    .downcast_ref::<SshError>()
                     .map(|se| se.to_json())
                     .unwrap_or_else(|| SshErrorDetails {
                         code: "ssh.validation_error".to_string(),
@@ -6040,7 +6420,8 @@ impl SshHandle {
                 uptime_ms: 0,
             };
 
-            warnings.push("Dry run: no SSH connection was made and no tunnel was created.".to_string());
+            warnings
+                .push("Dry run: no SSH connection was made and no tunnel was created.".to_string());
 
             let response = SshTunnelResponse {
                 ok: true,
@@ -6061,7 +6442,8 @@ impl SshHandle {
         match self.execute_tunnel(&options, &host, port, &username) {
             Ok((stats, closed_reason)) => {
                 let tunnel_info = self.build_tunnel_info(&options);
-                let lifetime_config = self.build_lifetime_config(&options, Some(closed_reason.clone()));
+                let lifetime_config =
+                    self.build_lifetime_config(&options, Some(closed_reason.clone()));
 
                 let response = SshTunnelResponse {
                     ok: true,
@@ -6076,9 +6458,10 @@ impl SshHandle {
 
                 self.write_tunnel_response(&response, &options, io)?;
                 Ok(Status::success())
-            },
+            }
             Err(e) => {
-                let ssh_error = e.downcast_ref::<SshError>()
+                let ssh_error = e
+                    .downcast_ref::<SshError>()
                     .map(|se| se.to_json())
                     .unwrap_or_else(|| SshErrorDetails {
                         code: "ssh.tunnel_error".to_string(),
@@ -6105,20 +6488,31 @@ impl SshHandle {
 
     /// Build tunnel info from options
     fn build_tunnel_info(&self, options: &SshTunnelOptions) -> SshTunnelInfo {
-        let mode = options.mode.as_ref().map(|m| match m {
-            TunnelMode::Local => "local",
-            TunnelMode::Remote => "remote",
-            TunnelMode::Dynamic => "dynamic",
-        }).unwrap_or("unknown").to_string();
+        let mode = options
+            .mode
+            .as_ref()
+            .map(|m| match m {
+                TunnelMode::Local => "local",
+                TunnelMode::Remote => "remote",
+                TunnelMode::Dynamic => "dynamic",
+            })
+            .unwrap_or("unknown")
+            .to_string();
 
         SshTunnelInfo {
             mode,
-            local_bind_host: if matches!(options.mode, Some(TunnelMode::Local | TunnelMode::Dynamic)) {
+            local_bind_host: if matches!(
+                options.mode,
+                Some(TunnelMode::Local | TunnelMode::Dynamic)
+            ) {
                 Some(options.local_bind_host.clone())
             } else {
                 None
             },
-            local_bind_port: if matches!(options.mode, Some(TunnelMode::Local | TunnelMode::Dynamic)) {
+            local_bind_port: if matches!(
+                options.mode,
+                Some(TunnelMode::Local | TunnelMode::Dynamic)
+            ) {
                 Some(options.local_bind_port)
             } else {
                 None
@@ -6138,10 +6532,13 @@ impl SshHandle {
             local_dest_host: options.local_dest_host.clone(),
             local_dest_port: options.local_dest_port,
             socks_version: if matches!(options.mode, Some(TunnelMode::Dynamic)) {
-                Some(match options.socks_version {
-                    SocksVersion::Socks5 => "socks5",
-                    SocksVersion::Socks4 => "socks4",
-                }.to_string())
+                Some(
+                    match options.socks_version {
+                        SocksVersion::Socks5 => "socks5",
+                        SocksVersion::Socks4 => "socks4",
+                    }
+                    .to_string(),
+                )
             } else {
                 None
             },
@@ -6149,7 +6546,11 @@ impl SshHandle {
     }
 
     /// Build lifetime config from options
-    fn build_lifetime_config(&self, options: &SshTunnelOptions, closed_reason: Option<String>) -> SshTunnelLifetimeConfig {
+    fn build_lifetime_config(
+        &self,
+        options: &SshTunnelOptions,
+        closed_reason: Option<String>,
+    ) -> SshTunnelLifetimeConfig {
         SshTunnelLifetimeConfig {
             connect_timeout_ms: options.connect_timeout_ms,
             tunnel_timeout_ms: options.tunnel_timeout_ms,
@@ -6162,7 +6563,13 @@ impl SshHandle {
     }
 
     /// Execute the SSH tunnel
-    fn execute_tunnel(&self, options: &SshTunnelOptions, host: &str, port: u16, username: &str) -> Result<(SshTunnelStats, String)> {
+    fn execute_tunnel(
+        &self,
+        options: &SshTunnelOptions,
+        host: &str,
+        port: u16,
+        username: &str,
+    ) -> Result<(SshTunnelStats, String)> {
         // This is a placeholder implementation that would use openssh crate or spawn ssh process
         // For now, return a mock result indicating the tunnel would run
 
@@ -6177,14 +6584,19 @@ impl SshHandle {
     }
 
     /// Write tunnel response based on format
-    fn write_tunnel_response(&self, response: &SshTunnelResponse, options: &SshTunnelOptions, io: &mut IoStreams) -> Result<()> {
+    fn write_tunnel_response(
+        &self,
+        response: &SshTunnelResponse,
+        options: &SshTunnelOptions,
+        io: &mut IoStreams,
+    ) -> Result<()> {
         match options.format {
             OutputFormat::Json => {
                 writeln!(io.stdout, "{}", serde_json::to_string_pretty(response)?)?;
-            },
+            }
             OutputFormat::Text => {
                 write!(io.stdout, "{}", self.format_tunnel_text_response(response))?;
-            },
+            }
         }
         Ok(())
     }
@@ -6206,16 +6618,32 @@ impl SshHandle {
         if let Some(tunnel) = &response.tunnel {
             output.push_str(&format!("Mode     : {}\n", tunnel.mode));
             if let Some(host) = &tunnel.local_bind_host {
-                output.push_str(&format!("Local    : {}:{}\n", host, tunnel.local_bind_port.unwrap_or(0)));
+                output.push_str(&format!(
+                    "Local    : {}:{}\n",
+                    host,
+                    tunnel.local_bind_port.unwrap_or(0)
+                ));
             }
             if let Some(host) = &tunnel.remote_bind_host {
-                output.push_str(&format!("Remote Bind : {}:{}\n", host, tunnel.remote_bind_port.unwrap_or(0)));
+                output.push_str(&format!(
+                    "Remote Bind : {}:{}\n",
+                    host,
+                    tunnel.remote_bind_port.unwrap_or(0)
+                ));
             }
             if let Some(host) = &tunnel.remote_dest_host {
-                output.push_str(&format!("Remote Dest : {}:{}\n", host, tunnel.remote_dest_port.unwrap_or(0)));
+                output.push_str(&format!(
+                    "Remote Dest : {}:{}\n",
+                    host,
+                    tunnel.remote_dest_port.unwrap_or(0)
+                ));
             }
             if let Some(host) = &tunnel.local_dest_host {
-                output.push_str(&format!("Local Dest  : {}:{}\n", host, tunnel.local_dest_port.unwrap_or(0)));
+                output.push_str(&format!(
+                    "Local Dest  : {}:{}\n",
+                    host,
+                    tunnel.local_dest_port.unwrap_or(0)
+                ));
             }
             if let Some(socks) = &tunnel.socks_version {
                 output.push_str(&format!("SOCKS    : {}\n", socks));
@@ -6225,7 +6653,10 @@ impl SshHandle {
 
         if let Some(lifetime) = &response.lifetime {
             output.push_str("Lifetime :\n");
-            output.push_str(&format!("  Connect Timeout : {} ms\n", lifetime.connect_timeout_ms));
+            output.push_str(&format!(
+                "  Connect Timeout : {} ms\n",
+                lifetime.connect_timeout_ms
+            ));
             if let Some(timeout) = lifetime.tunnel_timeout_ms {
                 output.push_str(&format!("  Tunnel Timeout  : {} ms\n", timeout));
             } else {
@@ -6316,7 +6747,11 @@ impl SshHandle {
             }
         }
 
-        Ok(if response.ok { Status::success() } else { Status::err(1, "keys.list operation failed".to_string()) })
+        Ok(if response.ok {
+            Status::success()
+        } else {
+            Status::err(1, "keys.list operation failed".to_string())
+        })
     }
 
     /// Core keys.list implementation
@@ -6333,14 +6768,18 @@ impl SshHandle {
                         files: None,
                         planned_files: None,
                         summary: None,
-                        error: Some(SshError::TargetConflict(
-                            format!("Host mismatch: target={}, option={}", target_host, option_host)
-                        ).to_json()),
+                        error: Some(
+                            SshError::TargetConflict(format!(
+                                "Host mismatch: target={}, option={}",
+                                target_host, option_host
+                            ))
+                            .to_json(),
+                        ),
                         warnings: vec![],
                     };
                 }
                 target_host.clone()
-            },
+            }
             (Some(host), None) | (None, Some(host)) => host.clone(),
             (None, None) => {
                 return SshKeysListResponse {
@@ -6354,7 +6793,7 @@ impl SshHandle {
                     error: Some(SshError::HostRequired.to_json()),
                     warnings: vec![],
                 };
-            },
+            }
         };
 
         // Resolve port
@@ -6368,9 +6807,13 @@ impl SshHandle {
                     files: None,
                     planned_files: None,
                     summary: None,
-                    error: Some(SshError::TargetConflict(
-                        format!("Port mismatch: target={}, option={}", target_port, options.port)
-                    ).to_json()),
+                    error: Some(
+                        SshError::TargetConflict(format!(
+                            "Port mismatch: target={}, option={}",
+                            target_port, options.port
+                        ))
+                        .to_json(),
+                    ),
                     warnings: vec![],
                 };
             }
@@ -6391,14 +6834,18 @@ impl SshHandle {
                         files: None,
                         planned_files: None,
                         summary: None,
-                        error: Some(SshError::TargetConflict(
-                            format!("Username mismatch: target={}, option={}", target_user, option_user)
-                        ).to_json()),
+                        error: Some(
+                            SshError::TargetConflict(format!(
+                                "Username mismatch: target={}, option={}",
+                                target_user, option_user
+                            ))
+                            .to_json(),
+                        ),
                         warnings: vec![],
                     };
                 }
                 target_user.clone()
-            },
+            }
             (Some(user), None) | (None, Some(user)) => user.clone(),
             (None, None) => {
                 return SshKeysListResponse {
@@ -6412,14 +6859,15 @@ impl SshHandle {
                     error: Some(SshError::UsernameRequired.to_json()),
                     warnings: vec![],
                 };
-            },
+            }
         };
 
         let mut warnings = Vec::new();
 
         // Warn for insecure mode
         if matches!(options.known_hosts_mode, KnownHostsMode::Insecure) {
-            warnings.push("known_hosts_mode=insecure: host key verification is disabled".to_string());
+            warnings
+                .push("known_hosts_mode=insecure: host key verification is disabled".to_string());
         }
 
         // Validate scope
@@ -6484,7 +6932,8 @@ impl SshHandle {
 
         // Real execution - would require SSH connection
         // For now, return a placeholder error indicating SSH operations need to be implemented
-        warnings.push("SSH connection and remote file reading not yet fully implemented".to_string());
+        warnings
+            .push("SSH connection and remote file reading not yet fully implemented".to_string());
 
         SshKeysListResponse {
             ok: false,
@@ -6504,7 +6953,11 @@ impl SshHandle {
     }
 
     /// Resolve key file paths based on scope
-    fn resolve_key_file_paths(&self, options: &SshKeysListOptions, username: &str) -> Result<Vec<String>, SshError> {
+    fn resolve_key_file_paths(
+        &self,
+        options: &SshKeysListOptions,
+        username: &str,
+    ) -> Result<Vec<String>, SshError> {
         match options.scope {
             KeysScope::Authorized => {
                 if let Some(paths) = &options.authorized_paths {
@@ -6529,11 +6982,10 @@ impl SshHandle {
                     ])
                 }
             }
-            KeysScope::Custom => {
-                options.custom_paths
-                    .clone()
-                    .ok_or(SshError::KeysListCustomPathsRequired)
-            }
+            KeysScope::Custom => options
+                .custom_paths
+                .clone()
+                .ok_or(SshError::KeysListCustomPathsRequired),
         }
     }
 
@@ -6544,8 +6996,14 @@ impl SshHandle {
         output.push_str("SSH Keys List\n");
         output.push_str("=============\n\n");
 
-        output.push_str(&format!("OK       : {}\n", if response.ok { "true" } else { "false" }));
-        output.push_str(&format!("Dry Run  : {}\n", if response.dry_run { "true" } else { "false" }));
+        output.push_str(&format!(
+            "OK       : {}\n",
+            if response.ok { "true" } else { "false" }
+        ));
+        output.push_str(&format!(
+            "Dry Run  : {}\n",
+            if response.dry_run { "true" } else { "false" }
+        ));
         output.push_str(&format!("Scope    : {:?}\n\n", response.scope));
 
         if let Some(conn) = &response.connection {
@@ -6583,17 +7041,16 @@ impl SshHandle {
                 }
 
                 for key in &file_report.keys {
-                    output.push_str(&format!("      [{}] {} ({}) - {}\n",
-                        key.index,
-                        key.type_normalized,
-                        key.type_raw,
-                        key.fingerprint
+                    output.push_str(&format!(
+                        "      [{}] {} ({}) - {}\n",
+                        key.index, key.type_normalized, key.type_raw, key.fingerprint
                     ));
                     if let Some(comment) = &key.comment {
                         output.push_str(&format!("          Comment: {}\n", comment));
                     }
                     if !key.options.is_empty() {
-                        output.push_str(&format!("          Options: {}\n", key.options.join(", ")));
+                        output
+                            .push_str(&format!("          Options: {}\n", key.options.join(", ")));
                     }
                 }
                 output.push('\n');
@@ -6629,23 +7086,24 @@ impl SshHandle {
     /// Load and validate public key from options
     fn load_public_key(&self, options: &SshKeyAddOptions) -> Result<String, SshError> {
         match options.public_key_source {
-            PublicKeySource::Inline => {
-                options.public_key.clone()
-                    .ok_or(SshError::KeyAddMissingPublicKey)
-            }
+            PublicKeySource::Inline => options
+                .public_key
+                .clone()
+                .ok_or(SshError::KeyAddMissingPublicKey),
             PublicKeySource::File => {
-                let path = options.public_key_path.as_ref()
+                let path = options
+                    .public_key_path
+                    .as_ref()
                     .ok_or(SshError::KeyAddMissingPublicKey)?;
 
                 // Read from local file
-                let content = std::fs::read_to_string(path)
-                    .map_err(|e| {
-                        if e.kind() == std::io::ErrorKind::NotFound {
-                            SshError::KeyAddPublicKeyFileNotFound(path.clone())
-                        } else {
-                            SshError::KeyAddPublicKeyFileReadFailed(e.to_string())
-                        }
-                    })?;
+                let content = std::fs::read_to_string(path).map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        SshError::KeyAddPublicKeyFileNotFound(path.clone())
+                    } else {
+                        SshError::KeyAddPublicKeyFileReadFailed(e.to_string())
+                    }
+                })?;
 
                 // Find first non-empty, non-comment line
                 for line in content.lines() {
@@ -6655,24 +7113,31 @@ impl SshHandle {
                     }
                 }
 
-                Err(SshError::KeyAddInvalidPublicKey("No valid key line found in file".to_string()))
+                Err(SshError::KeyAddInvalidPublicKey(
+                    "No valid key line found in file".to_string(),
+                ))
             }
         }
     }
 
     /// Validate and parse public key, returning (type_raw, blob_bytes, comment, fingerprint)
-    fn validate_public_key(&self, key_line: &str) -> Result<(String, Vec<u8>, Option<String>, String), SshError> {
+    fn validate_public_key(
+        &self,
+        key_line: &str,
+    ) -> Result<(String, Vec<u8>, Option<String>, String), SshError> {
         // Use existing parse_ssh_key_line function
         let (type_raw, base64_blob, comment, _options) = Self::parse_ssh_key_line(key_line)
             .map_err(|e| SshError::KeyAddInvalidPublicKey(e.to_string()))?;
 
         // Decode base64 blob
-        let blob_bytes = BASE64_STANDARD.decode(&base64_blob)
+        let blob_bytes = BASE64_STANDARD
+            .decode(&base64_blob)
             .map_err(|e| SshError::KeyAddInvalidPublicKey(format!("Invalid base64: {}", e)))?;
 
         // Compute fingerprint
-        let fingerprint = Self::compute_fingerprint(&blob_bytes, "sha256")
-            .map_err(|e| SshError::KeyAddInvalidPublicKey(format!("Failed to compute fingerprint: {}", e)))?;
+        let fingerprint = Self::compute_fingerprint(&blob_bytes, "sha256").map_err(|e| {
+            SshError::KeyAddInvalidPublicKey(format!("Failed to compute fingerprint: {}", e))
+        })?;
 
         Ok((type_raw, blob_bytes, comment, fingerprint))
     }
@@ -6689,7 +7154,9 @@ impl SshHandle {
             }
 
             // Try to parse existing key
-            if let Ok((_type_raw, existing_blob_b64, _comment, _options)) = Self::parse_ssh_key_line(line) {
+            if let Ok((_type_raw, existing_blob_b64, _comment, _options)) =
+                Self::parse_ssh_key_line(line)
+            {
                 if let Ok(existing_blob) = BASE64_STANDARD.decode(&existing_blob_b64) {
                     if existing_blob == key_blob {
                         duplicate_indices.push(idx);
@@ -6702,7 +7169,11 @@ impl SshHandle {
     }
 
     /// Resolve target file path(s) based on scope
-    fn resolve_key_add_target_paths(&self, options: &SshKeyAddOptions, username: &str) -> Result<Vec<String>, SshError> {
+    fn resolve_key_add_target_paths(
+        &self,
+        options: &SshKeyAddOptions,
+        username: &str,
+    ) -> Result<Vec<String>, SshError> {
         match options.scope {
             KeyAddScope::Authorized => {
                 if let Some(ref paths) = options.authorized_paths {
@@ -6716,10 +7187,10 @@ impl SshHandle {
                     Ok(vec![format!("/home/{}/.ssh/authorized_keys", user)])
                 }
             }
-            KeyAddScope::Custom => {
-                options.custom_paths.clone()
-                    .ok_or(SshError::KeyAddCustomPathsRequired)
-            }
+            KeyAddScope::Custom => options
+                .custom_paths
+                .clone()
+                .ok_or(SshError::KeyAddCustomPathsRequired),
         }
     }
 
@@ -6754,7 +7225,10 @@ impl SshHandle {
 
         if let Some(key) = &response.key {
             output.push_str("Key:\n");
-            output.push_str(&format!("  Type       : {} ({})\n", key.type_normalized, key.type_raw));
+            output.push_str(&format!(
+                "  Type       : {} ({})\n",
+                key.type_normalized, key.type_raw
+            ));
             output.push_str(&format!("  Fingerprint: {}\n", key.fingerprint));
             if let Some(comment) = &key.comment {
                 output.push_str(&format!("  Comment    : {}\n", comment));
@@ -6767,8 +7241,14 @@ impl SshHandle {
             output.push_str(&format!("  Status         : {}\n", op.status));
             output.push_str(&format!("  On Duplicate   : {:?}\n", op.on_duplicate));
             output.push_str(&format!("  Duplicates     : {}\n", op.duplicates_found));
-            output.push_str(&format!("  File Created   : {}\n", if op.created_file { "yes" } else { "no" }));
-            output.push_str(&format!("  Backup Created : {}\n\n", if op.backup_created { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "  File Created   : {}\n",
+                if op.created_file { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Backup Created : {}\n\n",
+                if op.backup_created { "yes" } else { "no" }
+            ));
         }
 
         if let Some(error) = &response.error {
@@ -6790,7 +7270,11 @@ impl SshHandle {
     }
 
     /// Parse arguments into SshKeyAddOptions
-    pub fn parse_key_add_options(&self, args: &Args, target: &SshTarget) -> Result<SshKeyAddOptions> {
+    pub fn parse_key_add_options(
+        &self,
+        args: &Args,
+        target: &SshTarget,
+    ) -> Result<SshKeyAddOptions> {
         let mut options = SshKeyAddOptions::default();
 
         // Parse connection parameters
@@ -6798,7 +7282,8 @@ impl SshHandle {
             options.host = Some(host.clone());
         }
         if let Some(port_str) = args.get("port") {
-            options.port = port_str.parse::<u16>()
+            options.port = port_str
+                .parse::<u16>()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
         }
         if let Some(username) = args.get("username") {
@@ -6843,10 +7328,12 @@ impl SshHandle {
         }
         options.authorized_user = args.get("authorized_user").cloned();
         if let Some(paths_str) = args.get("authorized_paths") {
-            options.authorized_paths = Some(paths_str.split(',').map(|s| s.trim().to_string()).collect());
+            options.authorized_paths =
+                Some(paths_str.split(',').map(|s| s.trim().to_string()).collect());
         }
         if let Some(paths_str) = args.get("custom_paths") {
-            options.custom_paths = Some(paths_str.split(',').map(|s| s.trim().to_string()).collect());
+            options.custom_paths =
+                Some(paths_str.split(',').map(|s| s.trim().to_string()).collect());
         }
 
         // Parse public key input
@@ -6857,7 +7344,10 @@ impl SshHandle {
         }
         options.public_key_path = args.get("public_key_path").cloned();
         // public_key_path alone implies public_key_source=file
-        if args.get("public_key_source").is_none() && options.public_key.is_none() && options.public_key_path.is_some() {
+        if args.get("public_key_source").is_none()
+            && options.public_key.is_none()
+            && options.public_key_path.is_some()
+        {
             options.public_key_source = PublicKeySource::File;
         }
 
@@ -6869,36 +7359,52 @@ impl SshHandle {
 
         // Parse file behavior
         if let Some(val) = args.get("create_if_missing") {
-            options.create_if_missing = val.parse::<bool>()
+            options.create_if_missing = val
+                .parse::<bool>()
                 .with_context(|| format!("Invalid create_if_missing: {}", val))?;
         }
         if let Some(val) = args.get("backup_existing") {
-            options.backup_existing = val.parse::<bool>()
+            options.backup_existing = val
+                .parse::<bool>()
                 .with_context(|| format!("Invalid backup_existing: {}", val))?;
         }
-        options.backup_suffix = args.get("backup_suffix").cloned().unwrap_or_else(default_backup_suffix);
+        options.backup_suffix = args
+            .get("backup_suffix")
+            .cloned()
+            .unwrap_or_else(default_backup_suffix);
         if let Some(val) = args.get("ensure_permissions") {
-            options.ensure_permissions = val.parse::<bool>()
+            options.ensure_permissions = val
+                .parse::<bool>()
                 .with_context(|| format!("Invalid ensure_permissions: {}", val))?;
         }
-        options.file_mode = args.get("file_mode").cloned().unwrap_or_else(default_file_mode);
-        options.dir_mode = args.get("dir_mode").cloned().unwrap_or_else(default_dir_mode);
+        options.file_mode = args
+            .get("file_mode")
+            .cloned()
+            .unwrap_or_else(default_file_mode);
+        options.dir_mode = args
+            .get("dir_mode")
+            .cloned()
+            .unwrap_or_else(default_dir_mode);
 
         // Parse limits
         if let Some(val) = args.get("max_file_bytes") {
-            options.max_file_bytes = val.parse::<usize>()
+            options.max_file_bytes = val
+                .parse::<usize>()
                 .with_context(|| format!("Invalid max_file_bytes: {}", val))?;
         }
         if let Some(val) = args.get("connect_timeout_ms") {
-            options.connect_timeout_ms = val.parse::<u64>()
+            options.connect_timeout_ms = val
+                .parse::<u64>()
                 .with_context(|| format!("Invalid connect_timeout_ms: {}", val))?;
         }
         if let Some(val) = args.get("read_timeout_ms") {
-            options.read_timeout_ms = val.parse::<u64>()
+            options.read_timeout_ms = val
+                .parse::<u64>()
                 .with_context(|| format!("Invalid read_timeout_ms: {}", val))?;
         }
         if let Some(val) = args.get("write_timeout_ms") {
-            options.write_timeout_ms = val.parse::<u64>()
+            options.write_timeout_ms = val
+                .parse::<u64>()
                 .with_context(|| format!("Invalid write_timeout_ms: {}", val))?;
         }
 
@@ -6934,7 +7440,11 @@ impl SshHandle {
                 // Default to JSON format on parse error since we can't access options
                 let output = serde_json::to_string_pretty(&response)?;
                 write!(io.stdout, "{}", output)?;
-                return Ok(Status { ok: false, code: Some(1), reason: Some("Parse error".to_string()) });
+                return Ok(Status {
+                    ok: false,
+                    code: Some(1),
+                    reason: Some("Parse error".to_string()),
+                });
             }
         };
 
@@ -6959,7 +7469,11 @@ impl SshHandle {
                     serde_json::to_string_pretty(&response)?
                 };
                 write!(io.stdout, "{}", output)?;
-                return Ok(Status { ok: false, code: Some(1), reason: Some("Host required".to_string()) });
+                return Ok(Status {
+                    ok: false,
+                    code: Some(1),
+                    reason: Some("Host required".to_string()),
+                });
             }
         };
 
@@ -6983,14 +7497,18 @@ impl SshHandle {
                     serde_json::to_string_pretty(&response)?
                 };
                 write!(io.stdout, "{}", output)?;
-                return Ok(Status { ok: false, code: Some(1), reason: Some("Username required".to_string()) });
+                return Ok(Status {
+                    ok: false,
+                    code: Some(1),
+                    reason: Some("Username required".to_string()),
+                });
             }
         };
 
         // Load and validate public key
-        let (key_line, type_raw, key_blob, comment, fingerprint) = match self.load_public_key(&options) {
-            Ok(line) => {
-                match self.validate_public_key(&line) {
+        let (key_line, type_raw, key_blob, comment, fingerprint) =
+            match self.load_public_key(&options) {
+                Ok(line) => match self.validate_public_key(&line) {
                     Ok((t, blob, c, fp)) => (line, t, blob, c, fp),
                     Err(e) => {
                         let response = SshKeyAddResponse {
@@ -7015,36 +7533,43 @@ impl SshHandle {
                             serde_json::to_string_pretty(&response)?
                         };
                         write!(io.stdout, "{}", output)?;
-                        return Ok(Status { ok: false, code: Some(1), reason: Some("Invalid public key".to_string()) });
+                        return Ok(Status {
+                            ok: false,
+                            code: Some(1),
+                            reason: Some("Invalid public key".to_string()),
+                        });
                     }
+                },
+                Err(e) => {
+                    let response = SshKeyAddResponse {
+                        ok: false,
+                        dry_run: options.dry_run,
+                        connection: Some(SshConnectionInfo {
+                            host: host.clone(),
+                            port: options.port,
+                            username: username.clone(),
+                            backend: "system".to_string(),
+                        }),
+                        scope: options.scope.clone(),
+                        target_file: None,
+                        operation: None,
+                        key: None,
+                        error: Some(e.to_json()),
+                        warnings: vec![],
+                    };
+                    let output = if options.format == OutputFormat::Text {
+                        self.format_key_add_text_output(&response)
+                    } else {
+                        serde_json::to_string_pretty(&response)?
+                    };
+                    write!(io.stdout, "{}", output)?;
+                    return Ok(Status {
+                        ok: false,
+                        code: Some(1),
+                        reason: Some("Failed to load public key".to_string()),
+                    });
                 }
-            }
-            Err(e) => {
-                let response = SshKeyAddResponse {
-                    ok: false,
-                    dry_run: options.dry_run,
-                    connection: Some(SshConnectionInfo {
-                        host: host.clone(),
-                        port: options.port,
-                        username: username.clone(),
-                        backend: "system".to_string(),
-                    }),
-                    scope: options.scope.clone(),
-                    target_file: None,
-                    operation: None,
-                    key: None,
-                    error: Some(e.to_json()),
-                    warnings: vec![],
-                };
-                let output = if options.format == OutputFormat::Text {
-                    self.format_key_add_text_output(&response)
-                } else {
-                    serde_json::to_string_pretty(&response)?
-                };
-                write!(io.stdout, "{}", output)?;
-                return Ok(Status { ok: false, code: Some(1), reason: Some("Failed to load public key".to_string()) });
-            }
-        };
+            };
 
         // Resolve target file paths
         let target_paths = match self.resolve_key_add_target_paths(&options, &username) {
@@ -7078,7 +7603,11 @@ impl SshHandle {
                     serde_json::to_string_pretty(&response)?
                 };
                 write!(io.stdout, "{}", output)?;
-                return Ok(Status { ok: false, code: Some(1), reason: Some("Failed to resolve target paths".to_string()) });
+                return Ok(Status {
+                    ok: false,
+                    code: Some(1),
+                    reason: Some("Failed to resolve target paths".to_string()),
+                });
             }
         };
 
@@ -7124,7 +7653,11 @@ impl SshHandle {
                 serde_json::to_string_pretty(&response)?
             };
             write!(io.stdout, "{}", output)?;
-            return Ok(Status { ok: true, code: Some(0), reason: None });
+            return Ok(Status {
+                ok: true,
+                code: Some(0),
+                reason: None,
+            });
         }
 
         // Writing authorized_keys on the remote host is not implemented yet.
@@ -7164,7 +7697,10 @@ impl SshHandle {
             serde_json::to_string_pretty(&response)?
         };
         write!(io.stdout, "{}", output)?;
-        Ok(Status::err(1, "key.add is not implemented: nothing was written".to_string()))
+        Ok(Status::err(
+            1,
+            "key.add is not implemented: nothing was written".to_string(),
+        ))
     }
 
     // ========== End key.add implementation ==========
@@ -7216,15 +7752,18 @@ impl SshHandle {
 
         // Limits
         if let Some(max_bytes) = args.get("max_config_bytes") {
-            options.max_config_bytes = max_bytes.parse::<usize>()
+            options.max_config_bytes = max_bytes
+                .parse::<usize>()
                 .with_context(|| format!("Invalid max_config_bytes: {}", max_bytes))?;
         }
         if let Some(max_includes) = args.get("max_includes") {
-            options.max_includes = max_includes.parse::<usize>()
+            options.max_includes = max_includes
+                .parse::<usize>()
                 .with_context(|| format!("Invalid max_includes: {}", max_includes))?;
         }
         if let Some(max_hosts) = args.get("max_hosts") {
-            options.max_hosts = max_hosts.parse::<usize>()
+            options.max_hosts = max_hosts
+                .parse::<usize>()
                 .with_context(|| format!("Invalid max_hosts: {}", max_hosts))?;
         }
 
@@ -7394,11 +7933,8 @@ impl SshHandle {
         }
 
         // Resolve effective configuration for the target host
-        let (effective, matched_blocks) = self.resolve_effective_config(
-            &options.host,
-            &raw_entries,
-            options.include_origin,
-        );
+        let (effective, matched_blocks) =
+            self.resolve_effective_config(&options.host, &raw_entries, options.include_origin);
 
         let summary = SshConfigSummary {
             total_files: config_files.len(),
@@ -7458,11 +7994,7 @@ impl SshHandle {
             }
 
             let keyword = parts[0];
-            let value = if parts.len() > 1 {
-                parts[1].trim()
-            } else {
-                ""
-            };
+            let value = if parts.len() > 1 { parts[1].trim() } else { "" };
 
             // Handle Host and Match blocks
             if keyword.eq_ignore_ascii_case("Host") {
@@ -7496,7 +8028,10 @@ impl SshHandle {
                             expand_path,
                             warnings,
                         ) {
-                            warnings.push(format!("Failed to parse included file {}: {}", include_path, e));
+                            warnings.push(format!(
+                                "Failed to parse included file {}: {}",
+                                include_path, e
+                            ));
                         }
                     }
                 }
@@ -7523,7 +8058,10 @@ impl SshHandle {
         target_host: &str,
         raw_entries: &[SshConfigRawEntry],
         include_origin: bool,
-    ) -> (std::collections::BTreeMap<String, SshConfigSetting>, Vec<String>) {
+    ) -> (
+        std::collections::BTreeMap<String, SshConfigSetting>,
+        Vec<String>,
+    ) {
         use std::collections::BTreeMap;
 
         let mut effective: BTreeMap<String, SshConfigSetting> = BTreeMap::new();
@@ -7552,7 +8090,10 @@ impl SshHandle {
             if matches {
                 // Track matched blocks
                 let block_desc = if let Some(ref pattern) = entry.block_pattern {
-                    format!("{} {} ({}:{})", entry.block_type, pattern, entry.file, entry.line)
+                    format!(
+                        "{} {} ({}:{})",
+                        entry.block_type, pattern, entry.file, entry.line
+                    )
                 } else {
                     format!("{} ({}:{})", entry.block_type, entry.file, entry.line)
                 };
@@ -7565,7 +8106,9 @@ impl SshHandle {
                     Some(SshConfigSettingOrigin {
                         file: Some(entry.file.clone()),
                         line: Some(entry.line),
-                        block: entry.block_pattern.clone()
+                        block: entry
+                            .block_pattern
+                            .clone()
                             .map(|p| format!("{} {}", entry.block_type, p))
                             .or_else(|| Some(entry.block_type.clone())),
                     })
@@ -7684,7 +8227,11 @@ impl SshHandle {
         if let Some(user) = response.sources.get("user_config_path") {
             output.push_str(&format!("  User  : {}\n", user.as_str().unwrap_or("")));
         }
-        if let Some(extra_arr) = response.sources.get("extra_config_paths").and_then(|v| v.as_array()) {
+        if let Some(extra_arr) = response
+            .sources
+            .get("extra_config_paths")
+            .and_then(|v| v.as_array())
+        {
             if extra_arr.is_empty() {
                 output.push_str("  Extra : (none)\n");
             } else {
@@ -7694,7 +8241,12 @@ impl SshHandle {
             }
         }
         output.push_str("  Includes: ");
-        if response.sources.get("follow_includes").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if response
+            .sources
+            .get("follow_includes")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             output.push_str("followed\n\n");
         } else {
             output.push_str("ignored\n\n");
@@ -7704,7 +8256,9 @@ impl SshHandle {
             output.push_str("Effective Settings:\n");
             for (key, setting) in effective {
                 let origin_str = if let Some(origin) = &setting.origin {
-                    if let (Some(file), Some(line), Some(block)) = (&origin.file, origin.line.as_ref(), &origin.block) {
+                    if let (Some(file), Some(line), Some(block)) =
+                        (&origin.file, origin.line.as_ref(), &origin.block)
+                    {
                         format!(" (from {}:{}, {})", file, line, block)
                     } else {
                         " (default)".to_string()
@@ -7712,7 +8266,10 @@ impl SshHandle {
                 } else {
                     "".to_string()
                 };
-                output.push_str(&format!("  {:<20} = {:<30}{}\n", key, setting.value, origin_str));
+                output.push_str(&format!(
+                    "  {:<20} = {:<30}{}\n",
+                    key, setting.value, origin_str
+                ));
             }
             output.push('\n');
         }
@@ -7801,7 +8358,8 @@ impl SshHandle {
             options.host = Some(host.clone());
         }
         if let Some(port_str) = args.get("port") {
-            options.port = port_str.parse::<u16>()
+            options.port = port_str
+                .parse::<u16>()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
         }
         if let Some(username) = args.get("username") {
@@ -7849,9 +8407,7 @@ impl SshHandle {
 
         // Parse tests to run
         if let Some(tests_str) = args.get("tests") {
-            options.tests = tests_str.split(',')
-                .map(|s| s.trim().to_string())
-                .collect();
+            options.tests = tests_str.split(',').map(|s| s.trim().to_string()).collect();
         }
         if let Some(exec_command) = args.get("exec_command") {
             options.exec_command = exec_command.clone();
@@ -7882,7 +8438,8 @@ impl SshHandle {
             options.dry_run = dry_run_str;
         }
         if let Some(allow_insecure_str) = args.get("allow_insecure_hostkey") {
-            options.allow_insecure_hostkey = allow_insecure_str.parse::<bool>()
+            options.allow_insecure_hostkey = allow_insecure_str
+                .parse::<bool>()
                 .unwrap_or_else(|_| allow_insecure_str.eq_ignore_ascii_case("true"));
         }
 
@@ -8052,7 +8609,10 @@ impl SshHandle {
 
         // Dry run mode
         if options.dry_run {
-            warnings.push("Dry run: no network connections were made and no SSH tests were executed.".to_string());
+            warnings.push(
+                "Dry run: no network connections were made and no SSH tests were executed."
+                    .to_string(),
+            );
 
             for test_name in &options.tests {
                 test_results.push(SshSingleTestResult {
@@ -8118,7 +8678,12 @@ impl SshHandle {
                             status: TestStatus::Skipped,
                             duration_ms: None,
                             details: None,
-                            error: Some(SshError::TestDependencyFailed("connect test did not pass".to_string()).to_json()),
+                            error: Some(
+                                SshError::TestDependencyFailed(
+                                    "connect test did not pass".to_string(),
+                                )
+                                .to_json(),
+                            ),
                         });
                     } else {
                         let result = self.test_auth(options);
@@ -8133,7 +8698,12 @@ impl SshHandle {
                             status: TestStatus::Skipped,
                             duration_ms: None,
                             details: None,
-                            error: Some(SshError::TestDependencyFailed("auth test did not pass".to_string()).to_json()),
+                            error: Some(
+                                SshError::TestDependencyFailed(
+                                    "auth test did not pass".to_string(),
+                                )
+                                .to_json(),
+                            ),
                         });
                     } else {
                         let result = self.test_sftp(options);
@@ -8147,7 +8717,12 @@ impl SshHandle {
                             status: TestStatus::Skipped,
                             duration_ms: None,
                             details: None,
-                            error: Some(SshError::TestDependencyFailed("auth test did not pass".to_string()).to_json()),
+                            error: Some(
+                                SshError::TestDependencyFailed(
+                                    "auth test did not pass".to_string(),
+                                )
+                                .to_json(),
+                            ),
                         });
                     } else {
                         let result = self.test_exec(options);
@@ -8172,16 +8747,20 @@ impl SshHandle {
         }
 
         // Calculate summary
-        let tests_run = test_results.iter()
+        let tests_run = test_results
+            .iter()
             .filter(|t| t.status != TestStatus::Planned && t.status != TestStatus::Skipped)
             .count();
-        let tests_passed = test_results.iter()
+        let tests_passed = test_results
+            .iter()
             .filter(|t| t.status == TestStatus::Passed)
             .count();
-        let tests_failed = test_results.iter()
+        let tests_failed = test_results
+            .iter()
             .filter(|t| t.status == TestStatus::Failed)
             .count();
-        let tests_skipped = test_results.iter()
+        let tests_skipped = test_results
+            .iter()
             .filter(|t| t.status == TestStatus::Skipped)
             .count();
 
@@ -8254,13 +8833,23 @@ impl SshHandle {
         };
         let cmd = build_ssh_command_line(&spec, remote_command);
         let timeout = (timeout_ms > 0).then(|| Duration::from_millis(timeout_ms));
-        run_ssh_process(&cmd, None, Some(65_536), timeout).map_err(|e| e.into_ssh_error(timeout_error))
+        run_ssh_process(&cmd, None, Some(65_536), timeout)
+            .map_err(|e| e.into_ssh_error(timeout_error))
     }
 
-    fn test_result(name: &str, start: Instant, error: Option<SshError>, details: Option<serde_json::Value>) -> SshSingleTestResult {
+    fn test_result(
+        name: &str,
+        start: Instant,
+        error: Option<SshError>,
+        details: Option<serde_json::Value>,
+    ) -> SshSingleTestResult {
         SshSingleTestResult {
             name: name.to_string(),
-            status: if error.is_none() { TestStatus::Passed } else { TestStatus::Failed },
+            status: if error.is_none() {
+                TestStatus::Passed
+            } else {
+                TestStatus::Failed
+            },
             duration_ms: Some(start.elapsed().as_millis() as u64),
             details,
             error: error.map(|e| e.to_json()),
@@ -8276,11 +8865,18 @@ impl SshHandle {
     /// Connect test: the server must be reachable and its host key accepted.
     fn test_connect(&self, options: &SshTestOptions) -> SshSingleTestResult {
         let start = Instant::now();
-        let error = match self.run_test_probe(options, "true", options.connect_timeout_ms + options.auth_timeout_ms, SshError::TestConnectTimeout) {
+        let error = match self.run_test_probe(
+            options,
+            "true",
+            options.connect_timeout_ms + options.auth_timeout_ms,
+            SshError::TestConnectTimeout,
+        ) {
             Err(e) => Some(e),
             Ok(out) if out.success() || Self::is_auth_rejection(&out) => None,
             Ok(out) => match connection_error(&out) {
-                Some(SshError::HostKeyVerificationFailed(msg)) => Some(SshError::TestHostkeyFailed(msg)),
+                Some(SshError::HostKeyVerificationFailed(msg)) => {
+                    Some(SshError::TestHostkeyFailed(msg))
+                }
                 Some(_) => Some(SshError::TestConnectFailed(out.stderr_text())),
                 None => None,
             },
@@ -8291,9 +8887,16 @@ impl SshHandle {
     /// Auth test: a login with the given credentials must succeed.
     fn test_auth(&self, options: &SshTestOptions) -> SshSingleTestResult {
         let start = Instant::now();
-        let error = match self.run_test_probe(options, "true", options.connect_timeout_ms + options.auth_timeout_ms, SshError::TestAuthTimeout) {
+        let error = match self.run_test_probe(
+            options,
+            "true",
+            options.connect_timeout_ms + options.auth_timeout_ms,
+            SshError::TestAuthTimeout,
+        ) {
             Err(e) => Some(e),
-            Ok(out) if out.exit_code == Some(255) => Some(SshError::TestAuthFailed(out.stderr_text())),
+            Ok(out) if out.exit_code == Some(255) => {
+                Some(SshError::TestAuthFailed(out.stderr_text()))
+            }
             Ok(_) => None,
         };
         Self::test_result("auth", start, error, None)
@@ -8305,7 +8908,9 @@ impl SshHandle {
         Self::test_result(
             "sftp",
             start,
-            Some(SshError::TestSftpFailed("the sftp test is not implemented".to_string())),
+            Some(SshError::TestSftpFailed(
+                "the sftp test is not implemented".to_string(),
+            )),
             None,
         )
     }
@@ -8314,11 +8919,22 @@ impl SshHandle {
     fn test_exec(&self, options: &SshTestOptions) -> SshSingleTestResult {
         let start = Instant::now();
         let mut details = serde_json::Map::new();
-        details.insert("command".to_string(), serde_json::Value::String(options.exec_command.clone()));
-        let error = match self.run_test_probe(options, &options.exec_command, options.connect_timeout_ms + options.exec_timeout_ms, SshError::TestExecTimeout) {
+        details.insert(
+            "command".to_string(),
+            serde_json::Value::String(options.exec_command.clone()),
+        );
+        let error = match self.run_test_probe(
+            options,
+            &options.exec_command,
+            options.connect_timeout_ms + options.exec_timeout_ms,
+            SshError::TestExecTimeout,
+        ) {
             Err(e) => Some(e),
             Ok(out) => {
-                details.insert("exit_status".to_string(), out.exit_code.map_or(serde_json::Value::Null, |c| c.into()));
+                details.insert(
+                    "exit_status".to_string(),
+                    out.exit_code.map_or(serde_json::Value::Null, |c| c.into()),
+                );
                 if out.success() {
                     None
                 } else {
@@ -8330,7 +8946,12 @@ impl SshHandle {
                 }
             }
         };
-        Self::test_result("exec", start, error, Some(serde_json::Value::Object(details)))
+        Self::test_result(
+            "exec",
+            start,
+            error,
+            Some(serde_json::Value::Object(details)),
+        )
     }
 
     /// Host key test: not implemented, so it always fails rather than pass
@@ -8340,7 +8961,9 @@ impl SshHandle {
         Self::test_result(
             "hostkey",
             start,
-            Some(SshError::TestHostkeyFailed("the hostkey test is not implemented".to_string())),
+            Some(SshError::TestHostkeyFailed(
+                "the hostkey test is not implemented".to_string(),
+            )),
             None,
         )
     }
@@ -8377,7 +9000,10 @@ impl SshHandle {
 
         if let Some(security) = &response.security {
             output.push_str("Security :\n");
-            output.push_str(&format!("  KnownHostsMode : {}\n", security.known_hosts_mode));
+            output.push_str(&format!(
+                "  KnownHostsMode : {}\n",
+                security.known_hosts_mode
+            ));
             if let Some(path) = &security.known_hosts_path {
                 output.push_str(&format!("  KnownHostsPath : {}\n", path));
             }
@@ -8406,9 +9032,8 @@ impl SshHandle {
 
             let details_str = if let Some(details) = &test.details {
                 if let Some(obj) = details.as_object() {
-                    let parts: Vec<String> = obj.iter()
-                        .map(|(k, v)| format!("{}={}", k, v))
-                        .collect();
+                    let parts: Vec<String> =
+                        obj.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
                     if !parts.is_empty() {
                         format!(" {}", parts.join(" "))
                     } else {
@@ -8421,7 +9046,10 @@ impl SshHandle {
                 String::new()
             };
 
-            output.push_str(&format!("  - {} : {}{}{}\n", test.name, status_str, duration_str, details_str));
+            output.push_str(&format!(
+                "  - {} : {}{}{}\n",
+                test.name, status_str, duration_str, details_str
+            ));
 
             if let Some(error) = &test.error {
                 output.push_str(&format!("      Error: {}\n", error.message));
@@ -8429,12 +9057,27 @@ impl SshHandle {
         }
 
         output.push_str("\nSummary:\n");
-        output.push_str(&format!("  Requested : {}\n", response.summary.tests_requested.join(", ")));
+        output.push_str(&format!(
+            "  Requested : {}\n",
+            response.summary.tests_requested.join(", ")
+        ));
         output.push_str(&format!("  Run       : {}\n", response.summary.tests_run));
-        output.push_str(&format!("  Passed    : {}\n", response.summary.tests_passed));
-        output.push_str(&format!("  Failed    : {}\n", response.summary.tests_failed));
-        output.push_str(&format!("  Skipped   : {}\n", response.summary.tests_skipped));
-        output.push_str(&format!("  Duration  : {} ms\n", response.summary.overall_duration_ms));
+        output.push_str(&format!(
+            "  Passed    : {}\n",
+            response.summary.tests_passed
+        ));
+        output.push_str(&format!(
+            "  Failed    : {}\n",
+            response.summary.tests_failed
+        ));
+        output.push_str(&format!(
+            "  Skipped   : {}\n",
+            response.summary.tests_skipped
+        ));
+        output.push_str(&format!(
+            "  Duration  : {} ms\n",
+            response.summary.overall_duration_ms
+        ));
 
         if !response.warnings.is_empty() {
             output.push_str("\nWarnings:\n");
@@ -8457,7 +9100,19 @@ impl SshHandle {
 
 impl Handle for SshHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["exec", "upload", "download", "tunnel", "keys.list", "key.add", "config.get", "test", "help", "--help", "-h"]
+        &[
+            "exec",
+            "upload",
+            "download",
+            "tunnel",
+            "keys.list",
+            "key.add",
+            "config.get",
+            "test",
+            "help",
+            "--help",
+            "-h",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -8499,15 +9154,30 @@ mod tests {
     const FAKE_REMOTE_FILE: &[u8] = b"key: value\ndata: test\n";
 
     fn ok_output(stdout: &[u8]) -> ProcessOutput {
-        ProcessOutput { exit_code: Some(0), stdout: stdout.to_vec(), ..Default::default() }
+        ProcessOutput {
+            exit_code: Some(0),
+            stdout: stdout.to_vec(),
+            ..Default::default()
+        }
     }
 
     fn failed_output(code: i32, stderr: &str) -> ProcessOutput {
-        ProcessOutput { exit_code: Some(code), stderr: stderr.as_bytes().to_vec(), ..Default::default() }
+        ProcessOutput {
+            exit_code: Some(code),
+            stderr: stderr.as_bytes().to_vec(),
+            ..Default::default()
+        }
     }
 
     fn checksum_line(data: &[u8], algorithm: &str) -> Vec<u8> {
-        let handle = SshHandle { target: SshTarget { host: None, port: None, username: None, password: None } };
+        let handle = SshHandle {
+            target: SshTarget {
+                host: None,
+                port: None,
+                username: None,
+                password: None,
+            },
+        };
         format!("{}  -\n", handle.compute_checksum(data, algorithm).unwrap()).into_bytes()
     }
 
@@ -8519,11 +9189,18 @@ mod tests {
     /// Default fake ssh: never contacts a host. `cat` returns FAKE_REMOTE_FILE,
     /// checksum tools hash it, upload scripts accept stdin (and print its
     /// checksum when asked), `false` exits 1, `echo X` prints X.
-    fn fake_remote(cmd: &SshCommandLine, stdin: Option<&[u8]>) -> std::result::Result<ProcessOutput, RunError> {
+    fn fake_remote(
+        cmd: &SshCommandLine,
+        stdin: Option<&[u8]>,
+    ) -> std::result::Result<ProcessOutput, RunError> {
         let remote = remote_of(cmd).to_string();
-        let algo = ["sha256", "sha1", "md5"].into_iter().find(|a| remote.contains(&format!("{}sum -- ", a)));
+        let algo = ["sha256", "sha1", "md5"]
+            .into_iter()
+            .find(|a| remote.contains(&format!("{}sum -- ", a)));
         if let Some(data) = stdin {
-            return Ok(ok_output(&algo.map(|a| checksum_line(data, a)).unwrap_or_default()));
+            return Ok(ok_output(
+                &algo.map(|a| checksum_line(data, a)).unwrap_or_default(),
+            ));
         }
         if remote.starts_with("cat -- ") {
             return Ok(ok_output(FAKE_REMOTE_FILE));
@@ -8546,21 +9223,29 @@ mod tests {
     /// Install a fake ssh runner on this thread and record every call.
     fn mock_ssh<F>(mut reply: F) -> Calls
     where
-        F: FnMut(&SshCommandLine, Option<&[u8]>) -> std::result::Result<ProcessOutput, RunError> + 'static,
+        F: FnMut(&SshCommandLine, Option<&[u8]>) -> std::result::Result<ProcessOutput, RunError>
+            + 'static,
     {
         let calls: Calls = Default::default();
         let rec = calls.clone();
         MOCK_SSH.with(|m| {
-            *m.borrow_mut() = Some(Box::new(move |cmd: &SshCommandLine, stdin: Option<&[u8]>| {
-                rec.borrow_mut().push((cmd.clone(), stdin.map(|d| d.to_vec())));
-                reply(cmd, stdin)
-            }))
+            *m.borrow_mut() = Some(Box::new(
+                move |cmd: &SshCommandLine, stdin: Option<&[u8]>| {
+                    rec.borrow_mut()
+                        .push((cmd.clone(), stdin.map(|d| d.to_vec())));
+                    reply(cmd, stdin)
+                },
+            ))
         });
         calls
     }
 
     /// Helper to create test SSH handle (installs the fake remote host)
-    fn create_test_handle(host: Option<&str>, port: Option<u16>, username: Option<&str>) -> SshHandle {
+    fn create_test_handle(
+        host: Option<&str>,
+        port: Option<u16>,
+        username: Option<&str>,
+    ) -> SshHandle {
         mock_ssh(fake_remote);
         let target = SshTarget {
             host: host.map(|s| s.to_string()),
@@ -8596,10 +9281,10 @@ mod tests {
         };
 
         let status = f(&mut io).unwrap();
-        
+
         let stdout_str = String::from_utf8(stdout.into_inner()).unwrap();
         let stderr_str = String::from_utf8(stderr.into_inner()).unwrap();
-        
+
         (stdout_str, stderr_str, status)
     }
 
@@ -8640,7 +9325,7 @@ mod tests {
     fn test_resolve_connection_params_from_target() {
         let handle = create_test_handle(Some("host.com"), Some(2222), Some("user"));
         let options = SshExecOptions::default();
-        
+
         let (host, port, username) = handle.resolve_connection_params(&options).unwrap();
         assert_eq!(host, "host.com");
         assert_eq!(port, 2222);
@@ -8654,7 +9339,7 @@ mod tests {
         options.host = Some("host.com".to_string());
         options.port = 2222;
         options.username = Some("user".to_string());
-        
+
         let (host, port, username) = handle.resolve_connection_params(&options).unwrap();
         assert_eq!(host, "host.com");
         assert_eq!(port, 2222);
@@ -8666,7 +9351,7 @@ mod tests {
         let handle = create_test_handle(Some("host1.com"), Some(2222), Some("user1"));
         let mut options = SshExecOptions::default();
         options.host = Some("host2.com".to_string());
-        
+
         let result = handle.resolve_connection_params(&options);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Host mismatch"));
@@ -8676,7 +9361,7 @@ mod tests {
     fn test_resolve_connection_params_missing_host() {
         let handle = create_test_handle(None, None, None);
         let options = SshExecOptions::default();
-        
+
         let result = handle.resolve_connection_params(&options);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Host is required"));
@@ -8688,7 +9373,7 @@ mod tests {
         let mut options = SshExecOptions::default();
         options.auth_method = SshAuthMethod::Password;
         options.password = Some("secret".to_string());
-        
+
         assert!(handle.validate_auth_options(&options).is_ok());
     }
 
@@ -8697,10 +9382,15 @@ mod tests {
         let handle = create_test_handle(Some("host.com"), None, None);
         let mut options = SshExecOptions::default();
         options.auth_method = SshAuthMethod::Password;
-        
+
         let result = handle.validate_auth_options(&options);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Password is required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Password is required")
+        );
     }
 
     #[test]
@@ -8709,7 +9399,7 @@ mod tests {
         let mut options = SshExecOptions::default();
         options.auth_method = SshAuthMethod::Key;
         options.identity_path = Some("/path/to/key".to_string());
-        
+
         assert!(handle.validate_auth_options(&options).is_ok());
     }
 
@@ -8718,7 +9408,7 @@ mod tests {
         let handle = create_test_handle(Some("host.com"), None, None);
         let mut options = SshExecOptions::default();
         options.auth_method = SshAuthMethod::Key;
-        
+
         // Key auth should now succeed even without explicit paths (uses SSH defaults)
         let result = handle.validate_auth_options(&options);
         assert!(result.is_ok());
@@ -8731,7 +9421,7 @@ mod tests {
         let mut options = SshExecOptions::default();
         options.auth_method = SshAuthMethod::Auto;
         options.agent_socket = Some("/tmp/ssh-agent".to_string());
-        
+
         let result = handle.validate_auth_options(&options);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SshAuthMethod::Agent);
@@ -8743,7 +9433,7 @@ mod tests {
         let mut options = SshExecOptions::default();
         options.auth_method = SshAuthMethod::Auto;
         options.identity_path = Some("/path/to/key".to_string());
-        
+
         let result = handle.validate_auth_options(&options);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SshAuthMethod::Key);
@@ -8755,7 +9445,7 @@ mod tests {
         let mut options = SshExecOptions::default();
         options.auth_method = SshAuthMethod::Auto;
         options.password = Some("secret".to_string());
-        
+
         let result = handle.validate_auth_options(&options);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SshAuthMethod::Password);
@@ -8767,7 +9457,7 @@ mod tests {
         let mut options = SshExecOptions::default();
         options.auth_method = SshAuthMethod::Auto;
         // No explicit credentials - should fallback to key auth
-        
+
         let result = handle.validate_auth_options(&options);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SshAuthMethod::Key);
@@ -8778,7 +9468,7 @@ mod tests {
         let handle = create_test_handle(Some("host.com"), None, None);
         let mut options = SshExecOptions::default();
         options.command = Some("echo hello".to_string());
-        
+
         let command = handle.build_command(&options).unwrap();
         assert_eq!(command, "echo hello");
     }
@@ -8789,7 +9479,7 @@ mod tests {
         let mut options = SshExecOptions::default();
         options.command = Some("echo".to_string());
         options.command_args = vec!["hello".to_string(), "world".to_string()];
-        
+
         let command = handle.build_command(&options).unwrap();
         assert_eq!(command, "echo hello world");
     }
@@ -8800,7 +9490,7 @@ mod tests {
         let mut options = SshExecOptions::default();
         options.command = Some("echo hello".to_string());
         options.shell_mode = ShellMode::Bash;
-        
+
         let command = handle.build_command(&options).unwrap();
         assert_eq!(command, "bash -c 'echo hello'");
     }
@@ -8812,7 +9502,7 @@ mod tests {
         options.command = Some("pwd".to_string());
         options.shell_mode = ShellMode::Bash;
         options.cwd = Some("/tmp".to_string());
-        
+
         let command = handle.build_command(&options).unwrap();
         assert_eq!(command, "bash -c 'cd '\"'\"'/tmp'\"'\"' && pwd'");
     }
@@ -8821,10 +9511,15 @@ mod tests {
     fn test_build_command_missing() {
         let handle = create_test_handle(Some("host.com"), None, None);
         let options = SshExecOptions::default();
-        
+
         let result = handle.build_command(&options);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Command is required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Command is required")
+        );
     }
 
     #[test]
@@ -8836,7 +9531,7 @@ mod tests {
             ("username", "user"),
             ("command", "echo hello"),
         ]);
-        
+
         let options = handle.parse_exec_options(&args, &handle.target).unwrap();
         assert_eq!(options.host, Some("host.com".to_string()));
         assert_eq!(options.port, 2222);
@@ -8847,11 +9542,8 @@ mod tests {
     #[test]
     fn test_parse_exec_options_auth_method() {
         let handle = create_test_handle(None, None, None);
-        let args = args_from_pairs(&[
-            ("auth_method", "password"),
-            ("password", "secret"),
-        ]);
-        
+        let args = args_from_pairs(&[("auth_method", "password"), ("password", "secret")]);
+
         let options = handle.parse_exec_options(&args, &handle.target).unwrap();
         assert_eq!(options.auth_method, SshAuthMethod::Password);
         assert_eq!(options.password, Some("secret".to_string()));
@@ -8865,7 +9557,7 @@ mod tests {
             ("command_timeout_ms", "30000"),
             ("max_output_bytes", "2048"),
         ]);
-        
+
         let options = handle.parse_exec_options(&args, &handle.target).unwrap();
         assert_eq!(options.connect_timeout_ms, 5000);
         assert_eq!(options.command_timeout_ms, 30000);
@@ -8875,22 +9567,21 @@ mod tests {
     #[test]
     fn test_dry_run_execution() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("command", "echo hello"),
-            ("dry_run", "true"),
-        ]);
+        let args = args_from_pairs(&[("command", "echo hello"), ("dry_run", "true")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
         assert!(response.dry_run);
-        assert!(response.warnings.contains(&"Dry run: command was not executed.".to_string()));
+        assert!(
+            response
+                .warnings
+                .contains(&"Dry run: command was not executed.".to_string())
+        );
         assert_eq!(response.result.as_ref().unwrap().executed, false);
         assert!(response.result.as_ref().unwrap().exit_code.is_none());
     }
@@ -8902,7 +9593,8 @@ mod tests {
         for v in ["true", "1", "yes", "on", "YES"] {
             let handle = create_test_handle(Some("host.com"), None, Some("user"));
             let calls = mock_ssh(fake_remote);
-            let args = args_from_pairs(&[("command", "touch /tmp/should-not-exist"), ("dry_run", v)]);
+            let args =
+                args_from_pairs(&[("command", "touch /tmp/should-not-exist"), ("dry_run", v)]);
             let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
             assert_eq!(status.code, Some(0), "dry_run={v}");
             let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
@@ -8912,11 +9604,19 @@ mod tests {
         for v in ["maybe", "", "2"] {
             let handle = create_test_handle(Some("host.com"), None, Some("user"));
             let calls = mock_ssh(fake_remote);
-            let args = args_from_pairs(&[("command", "touch /tmp/should-not-exist"), ("dry_run", v)]);
+            let args =
+                args_from_pairs(&[("command", "touch /tmp/should-not-exist"), ("dry_run", v)]);
             let mut stdin = Cursor::new(Vec::new());
             let (mut out, mut err) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()));
-            let mut io = IoStreams { stdin: &mut stdin, stdout: &mut out, stderr: &mut err };
-            let ok = handle.verb_exec(&args, &mut io).map(|s| s.ok).unwrap_or(false);
+            let mut io = IoStreams {
+                stdin: &mut stdin,
+                stdout: &mut out,
+                stderr: &mut err,
+            };
+            let ok = handle
+                .verb_exec(&args, &mut io)
+                .map(|s| s.ok)
+                .unwrap_or(false);
             assert!(!ok, "dry_run={v:?} accepted");
             assert!(calls.borrow().is_empty(), "dry_run={v:?} invoked ssh");
         }
@@ -8933,17 +9633,42 @@ mod tests {
     fn every_ssh_parser_reads_dry_run_the_same_way() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let t = handle.target.clone();
-        let base = [("command", "true"), ("source", "/etc/hosts"), ("dest", "/tmp/x"), ("key", "ssh-ed25519 AAAA test"),
-                    ("local_port", "8080"), ("remote_port", "80"), ("host", "host.com")];
+        let base = [
+            ("command", "true"),
+            ("source", "/etc/hosts"),
+            ("dest", "/tmp/x"),
+            ("key", "ssh-ed25519 AAAA test"),
+            ("local_port", "8080"),
+            ("remote_port", "80"),
+            ("host", "host.com"),
+        ];
         let parse = |a: &Args| -> Vec<(&str, Result<bool>)> {
             vec![
                 ("exec", handle.parse_exec_options(a, &t).map(|o| o.dry_run)),
-                ("upload", handle.parse_upload_options(a, &t).map(|o| o.dry_run)),
-                ("download", handle.parse_download_options(a, &t).map(|o| o.dry_run)),
-                ("keys.list", handle.parse_keys_list_options(a, &t).map(|o| o.dry_run)),
-                ("tunnel", handle.parse_tunnel_options(a, &t).map(|o| o.dry_run)),
-                ("key.add", handle.parse_key_add_options(a, &t).map(|o| o.dry_run)),
-                ("config.get", handle.parse_config_get_options(a).map(|o| o.dry_run)),
+                (
+                    "upload",
+                    handle.parse_upload_options(a, &t).map(|o| o.dry_run),
+                ),
+                (
+                    "download",
+                    handle.parse_download_options(a, &t).map(|o| o.dry_run),
+                ),
+                (
+                    "keys.list",
+                    handle.parse_keys_list_options(a, &t).map(|o| o.dry_run),
+                ),
+                (
+                    "tunnel",
+                    handle.parse_tunnel_options(a, &t).map(|o| o.dry_run),
+                ),
+                (
+                    "key.add",
+                    handle.parse_key_add_options(a, &t).map(|o| o.dry_run),
+                ),
+                (
+                    "config.get",
+                    handle.parse_config_get_options(a).map(|o| o.dry_run),
+                ),
                 ("test", handle.parse_test_options(a, &t).map(|o| o.dry_run)),
             ]
         };
@@ -8951,7 +9676,11 @@ mod tests {
             let mut a = args_from_pairs(&base);
             a.insert("dry_run".into(), v.into());
             for (verb, r) in parse(&a) {
-                assert!(r.as_ref().map(|d| *d).unwrap_or(false), "{verb} dry_run={v}: {:?}", r.err());
+                assert!(
+                    r.as_ref().map(|d| *d).unwrap_or(false),
+                    "{verb} dry_run={v}: {:?}",
+                    r.err()
+                );
             }
         }
         for v in ["maybe", "", "tru"] {
@@ -8966,16 +9695,12 @@ mod tests {
     #[test]
     fn test_successful_execution() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("command", "echo hello"),
-        ]);
+        let args = args_from_pairs(&[("command", "echo hello")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
@@ -8988,14 +9713,9 @@ mod tests {
     #[test]
     fn test_text_format_output() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("command", "echo hello"),
-            ("format", "text"),
-        ]);
+        let args = args_from_pairs(&[("command", "echo hello"), ("format", "text")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         assert_eq!(status.code, Some(0));
         assert!(stdout.contains("SSH Exec"));
@@ -9007,21 +9727,19 @@ mod tests {
     #[test]
     fn test_auth_missing_password_error() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("command", "echo hello"),
-            ("auth_method", "password"),
-        ]);
+        let args = args_from_pairs(&[("command", "echo hello"), ("auth_method", "password")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         assert_eq!(status.code, Some(1));
-        
+
         // Parse JSON response
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.auth_missing_password");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.auth_missing_password"
+        );
     }
 
     #[test]
@@ -9030,14 +9748,9 @@ mod tests {
         // default keys (~/.ssh/id_*), so no -i option is passed.
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let calls = mock_ssh(fake_remote);
-        let args = args_from_pairs(&[
-            ("command", "echo hello"),
-            ("auth_method", "key"),
-        ]);
+        let args = args_from_pairs(&[("command", "echo hello"), ("auth_method", "key")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         assert_eq!(status.code, Some(0));
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
@@ -9050,16 +9763,12 @@ mod tests {
     #[test]
     fn test_missing_host_error() {
         let handle = create_test_handle(None, None, None);
-        let args = args_from_pairs(&[
-            ("command", "echo hello"),
-        ]);
+        let args = args_from_pairs(&[("command", "echo hello")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         assert_eq!(status.code, Some(1));
-        
+
         // Parse JSON response
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
@@ -9071,36 +9780,32 @@ mod tests {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let args = args_from_pairs(&[]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         assert_eq!(status.code, Some(1));
-        
+
         // Parse JSON response
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.command_required");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.command_required"
+        );
     }
 
     #[test]
     fn test_base64_output_encoding() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("command", "echo hello"),
-            ("output_encoding", "base64"),
-        ]);
+        let args = args_from_pairs(&[("command", "echo hello"), ("output_encoding", "base64")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
-        
+
         let stdout_output = response.result.as_ref().unwrap().stdout.as_ref().unwrap();
         // Should be base64 encoded
         assert!(BASE64_STANDARD.decode(stdout_output).is_ok());
@@ -9118,7 +9823,7 @@ mod tests {
     fn test_parse_env_vars() {
         let env_str = "FOO=bar,BAZ=qux,EMPTY=";
         let env_vars = SshHandle::parse_env_vars(env_str).unwrap();
-        
+
         assert_eq!(env_vars.len(), 3);
         assert_eq!(env_vars.get("FOO"), Some(&"bar".to_string()));
         assert_eq!(env_vars.get("BAZ"), Some(&"qux".to_string()));
@@ -9129,7 +9834,7 @@ mod tests {
     fn test_parse_command_args() {
         let args_str = "arg1,arg2,arg with spaces";
         let args = SshHandle::parse_command_args(args_str);
-        
+
         assert_eq!(args.len(), 3);
         assert_eq!(args[0], "arg1");
         assert_eq!(args[1], "arg2");
@@ -9140,9 +9845,12 @@ mod tests {
     fn test_ssh_error_json_serialization() {
         let error = SshError::AuthMissingPassword;
         let json = error.to_json();
-        
+
         assert_eq!(json.code, "ssh.auth_missing_password");
-        assert_eq!(json.message, "Password is required for password authentication");
+        assert_eq!(
+            json.message,
+            "Password is required for password authentication"
+        );
     }
 
     #[test]
@@ -9153,7 +9861,11 @@ mod tests {
         let mut stdin = Cursor::new(Vec::new());
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
-        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
         let result = handle.call("unknown_verb", &args, &mut io);
 
         assert!(result.unwrap_err().to_string().contains("unknown verb"));
@@ -9163,27 +9875,37 @@ mod tests {
     fn test_verbs_list() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let verbs = handle.verbs();
-        assert_eq!(verbs, &["exec", "upload", "download", "tunnel", "keys.list", "key.add", "config.get", "test", "help", "--help", "-h"]);
+        assert_eq!(
+            verbs,
+            &[
+                "exec",
+                "upload",
+                "download",
+                "tunnel",
+                "keys.list",
+                "key.add",
+                "config.get",
+                "test",
+                "help",
+                "--help",
+                "-h"
+            ]
+        );
     }
 
     #[test]
     fn test_capture_output_disabled() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("command", "echo hello"),
-            ("capture_output", "false"),
-        ]);
+        let args = args_from_pairs(&[("command", "echo hello"), ("capture_output", "false")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
-        
+
         let result = response.result.as_ref().unwrap();
         assert!(result.stdout.is_none());
         assert!(result.stderr.is_none());
@@ -9192,21 +9914,17 @@ mod tests {
     #[test]
     fn test_command_with_different_exit_codes() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        
-        // Test command that should return exit code 1
-        let args = args_from_pairs(&[
-            ("command", "false"),
-        ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_exec(&args, io)
-        });
+        // Test command that should return exit code 1
+        let args = args_from_pairs(&[("command", "false")]);
+
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
 
         // FUNC-02: a non-zero remote exit is a failure, and the process
         // exit status carries the remote code.
         assert!(!status.ok);
         assert_eq!(status.code, Some(1));
-        
+
         // Parse JSON response: ok agrees with the exit status
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
@@ -9218,17 +9936,36 @@ mod tests {
     #[test]
     fn exec_failure_classification() {
         let base = SshExecResult {
-            executed: true, exit_code: Some(0), signal: None, timed_out: false,
-            output_truncated: false, stdout: None, stderr: None,
+            executed: true,
+            exit_code: Some(0),
+            signal: None,
+            timed_out: false,
+            output_truncated: false,
+            stdout: None,
+            stderr: None,
         };
         assert!(exec_failure(&base).is_none());
-        let with = |f: &dyn Fn(&mut SshExecResult)| { let mut r = base.clone(); f(&mut r); exec_failure(&r).unwrap() };
+        let with = |f: &dyn Fn(&mut SshExecResult)| {
+            let mut r = base.clone();
+            f(&mut r);
+            exec_failure(&r).unwrap()
+        };
         assert_eq!(with(&|r| r.exit_code = Some(2)).code, "REMOTE_EXIT_NONZERO");
-        let e = with(&|r| { r.exit_code = Some(255); r.stderr = Some("ssh: connect to host h port 22: Connection refused\n".into()) });
+        let e = with(&|r| {
+            r.exit_code = Some(255);
+            r.stderr = Some("ssh: connect to host h port 22: Connection refused\n".into())
+        });
         assert_eq!(e.code, "SSH_FAILED");
         assert!(e.message.contains("Connection refused"));
         assert_eq!(with(&|r| r.timed_out = true).code, "EXEC_TIMEOUT");
-        assert_eq!(with(&|r| { r.exit_code = None; r.signal = Some("KILL".into()) }).code, "EXEC_SIGNALED");
+        assert_eq!(
+            with(&|r| {
+                r.exit_code = None;
+                r.signal = Some("KILL".into())
+            })
+            .code,
+            "EXEC_SIGNALED"
+        );
         assert_eq!(with(&|r| r.exit_code = None).code, "EXEC_NO_EXIT_CODE");
     }
 
@@ -9243,12 +9980,10 @@ mod tests {
             ("overwrite", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
@@ -9270,12 +10005,10 @@ mod tests {
             ("dry_run", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
@@ -9289,46 +10022,44 @@ mod tests {
     #[test]
     fn test_upload_verb_source_missing() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("dest", "/tmp/test.txt"),
-        ]);
+        let args = args_from_pairs(&[("dest", "/tmp/test.txt")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_ne!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.upload_source_missing");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.upload_source_missing"
+        );
     }
 
     #[test]
     fn test_upload_verb_dest_missing() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("source", "test data"),
-            ("source_mode", "inline"),
-        ]);
+        let args = args_from_pairs(&[("source", "test data"), ("source_mode", "inline")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_ne!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.upload_dest_missing");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.upload_dest_missing"
+        );
     }
 
     #[test]
     fn test_upload_verb_file_source() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let source_file = std::env::temp_dir().join(format!("resh_ssh_upload_src_{}.txt", rand::random::<u32>()));
+        let source_file =
+            std::env::temp_dir().join(format!("resh_ssh_upload_src_{}.txt", rand::random::<u32>()));
         std::fs::write(&source_file, b"file contents\n").unwrap();
         let calls = mock_ssh(fake_remote);
         let args = args_from_pairs(&[
@@ -9338,12 +10069,10 @@ mod tests {
             ("overwrite", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
@@ -9351,7 +10080,10 @@ mod tests {
         assert_eq!(response.source.as_ref().unwrap().size_bytes, Some(14));
         assert!(response.result.as_ref().unwrap().uploaded);
         // The file's bytes are piped to the remote script on stdin
-        assert_eq!(calls.borrow()[0].1.as_deref(), Some(&b"file contents\n"[..]));
+        assert_eq!(
+            calls.borrow()[0].1.as_deref(),
+            Some(&b"file contents\n"[..])
+        );
         let _ = std::fs::remove_file(source_file);
     }
 
@@ -9368,12 +10100,10 @@ mod tests {
             ("overwrite", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
@@ -9390,18 +10120,24 @@ mod tests {
             ("dest", "/tmp/existing_file.txt"),
             ("overwrite", "false"),
         ]);
-        let calls = mock_ssh(|_, _| Ok(failed_output(UPLOAD_EXIT_DEST_EXISTS, "resh: remote file exists")));
-
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
+        let calls = mock_ssh(|_, _| {
+            Ok(failed_output(
+                UPLOAD_EXIT_DEST_EXISTS,
+                "resh: remote file exists",
+            ))
         });
 
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
+
         assert_ne!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.upload_dest_exists");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.upload_dest_exists"
+        );
         assert!(remote_of(&calls.borrow()[0].0).contains("if [ -e '/tmp/existing_file.txt' ]"));
     }
 
@@ -9416,18 +10152,22 @@ mod tests {
             ("checksum_algorithm", "sha256"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
         assert!(response.result.as_ref().unwrap().verify_checksum);
-        assert_eq!(response.result.as_ref().unwrap().checksum_algorithm, "sha256");
-        assert_eq!(response.result.as_ref().unwrap().checksum_verified, Some(true));
+        assert_eq!(
+            response.result.as_ref().unwrap().checksum_algorithm,
+            "sha256"
+        );
+        assert_eq!(
+            response.result.as_ref().unwrap().checksum_verified,
+            Some(true)
+        );
     }
 
     #[test]
@@ -9441,16 +10181,17 @@ mod tests {
         ]);
         mock_ssh(|_, _| Ok(ok_output(b"deadbeef  /tmp/checksum_mismatch.txt\n")));
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_ne!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.upload_checksum_mismatch");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.upload_checksum_mismatch"
+        );
     }
 
     #[test]
@@ -9464,12 +10205,10 @@ mod tests {
             ("overwrite", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
@@ -9487,12 +10226,10 @@ mod tests {
             ("format", "text"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_eq!(status.code, Some(0));
-        
+
         // Check text output format
         assert!(stdout.contains("SSH Upload"));
         assert!(stdout.contains("Host    : host.com"));
@@ -9510,18 +10247,24 @@ mod tests {
             ("source_mode", "inline"),
             ("dest", "/tmp/permission_denied.txt"),
         ]);
-        mock_ssh(|_, _| Ok(failed_output(UPLOAD_EXIT_WRITE_FAILED, "sh: /tmp/permission_denied.txt: Permission denied")));
-
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
+        mock_ssh(|_, _| {
+            Ok(failed_output(
+                UPLOAD_EXIT_WRITE_FAILED,
+                "sh: /tmp/permission_denied.txt: Permission denied",
+            ))
         });
 
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
+
         assert_ne!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.upload_remote_write_failed");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.upload_remote_write_failed"
+        );
     }
 
     #[test]
@@ -9534,12 +10277,10 @@ mod tests {
         ]);
         mock_ssh(|_, _| Err(RunError::Timeout));
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_upload(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
 
         assert_ne!(status.code, Some(0));
-        
+
         // Parse JSON response
         let response: SshUploadResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
@@ -9550,7 +10291,22 @@ mod tests {
     fn test_upload_verbs_list() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let verbs = handle.verbs();
-        assert_eq!(verbs, &["exec", "upload", "download", "tunnel", "keys.list", "key.add", "config.get", "test", "help", "--help", "-h"]);
+        assert_eq!(
+            verbs,
+            &[
+                "exec",
+                "upload",
+                "download",
+                "tunnel",
+                "keys.list",
+                "key.add",
+                "config.get",
+                "test",
+                "help",
+                "--help",
+                "-h"
+            ]
+        );
     }
 
     #[test]
@@ -9558,11 +10314,15 @@ mod tests {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let args = args_from_pairs(&[]);
 
-        let result = handle.call("unknown_verb", &args, &mut IoStreams {
-            stdin: &mut std::io::Cursor::new(Vec::new()),
-            stdout: &mut std::io::Cursor::new(Vec::new()),
-            stderr: &mut std::io::Cursor::new(Vec::new()),
-        });
+        let result = handle.call(
+            "unknown_verb",
+            &args,
+            &mut IoStreams {
+                stdin: &mut std::io::Cursor::new(Vec::new()),
+                stdout: &mut std::io::Cursor::new(Vec::new()),
+                stderr: &mut std::io::Cursor::new(Vec::new()),
+            },
+        );
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unknown verb"));
@@ -9715,10 +10475,7 @@ mod tests {
     fn test_download_missing_source() {
         let handle = create_test_handle(Some("example.com"), Some(22), Some("deploy"));
 
-        let args = args_from_pairs(&[
-            ("dest", "/tmp/output.txt"),
-            ("format", "json"),
-        ]);
+        let args = args_from_pairs(&[("dest", "/tmp/output.txt"), ("format", "json")]);
 
         let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
 
@@ -9756,7 +10513,10 @@ mod tests {
     fn test_download_dest_exists_no_overwrite() {
         let handle = create_test_handle(Some("example.com"), Some(22), Some("deploy"));
         let temp_dir = std::env::temp_dir();
-        let dest_path = temp_dir.join(format!("test_download_exists_{}.txt", rand::random::<u32>()));
+        let dest_path = temp_dir.join(format!(
+            "test_download_exists_{}.txt",
+            rand::random::<u32>()
+        ));
 
         // Create existing file
         std::fs::write(&dest_path, b"existing content").unwrap();
@@ -9788,7 +10548,10 @@ mod tests {
     fn test_download_dest_exists_with_overwrite() {
         let handle = create_test_handle(Some("example.com"), Some(22), Some("deploy"));
         let temp_dir = std::env::temp_dir();
-        let dest_path = temp_dir.join(format!("test_download_overwrite_{}.txt", rand::random::<u32>()));
+        let dest_path = temp_dir.join(format!(
+            "test_download_overwrite_{}.txt",
+            rand::random::<u32>()
+        ));
 
         // Create existing file
         std::fs::write(&dest_path, b"existing content").unwrap();
@@ -9911,7 +10674,10 @@ mod tests {
     fn test_download_return_content_false() {
         let handle = create_test_handle(Some("example.com"), Some(22), Some("deploy"));
         let temp_dir = std::env::temp_dir();
-        let dest_path = temp_dir.join(format!("test_download_no_content_{}.txt", rand::random::<u32>()));
+        let dest_path = temp_dir.join(format!(
+            "test_download_no_content_{}.txt",
+            rand::random::<u32>()
+        ));
 
         let args = args_from_pairs(&[
             ("source", "/etc/config.yaml"),
@@ -10050,9 +10816,7 @@ mod tests {
             ("dry_run", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_eq!(status.code, Some(0));
 
@@ -10079,9 +10843,7 @@ mod tests {
             ("dry_run", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_eq!(status.code, Some(0));
 
@@ -10106,9 +10868,7 @@ mod tests {
             ("dry_run", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_eq!(status.code, Some(0));
 
@@ -10130,53 +10890,50 @@ mod tests {
             ("remote_dest_port", "5432"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_ne!(status.code, Some(0));
 
         let response: SshTunnelResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.tunnel_mode_required");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.tunnel_mode_required"
+        );
     }
 
     #[test]
     fn test_tunnel_local_missing_remote_dest() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("mode", "local"),
-            ("local_bind_port", "5433"),
-        ]);
+        let args = args_from_pairs(&[("mode", "local"), ("local_bind_port", "5433")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_ne!(status.code, Some(0));
 
         let response: SshTunnelResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.tunnel_missing_remote_dest");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.tunnel_missing_remote_dest"
+        );
     }
 
     #[test]
     fn test_tunnel_remote_missing_local_dest() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
-        let args = args_from_pairs(&[
-            ("mode", "remote"),
-            ("remote_bind_port", "9090"),
-        ]);
+        let args = args_from_pairs(&[("mode", "remote"), ("remote_bind_port", "9090")]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_ne!(status.code, Some(0));
 
         let response: SshTunnelResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.tunnel_missing_local_dest");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.tunnel_missing_local_dest"
+        );
     }
 
     #[test]
@@ -10191,15 +10948,16 @@ mod tests {
             ("allow_wildcard_binds", "false"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_ne!(status.code, Some(0));
 
         let response: SshTunnelResponse = serde_json::from_str(&stdout).unwrap();
         assert!(!response.ok);
-        assert_eq!(response.error.as_ref().unwrap().code, "ssh.tunnel_wildcard_bind_forbidden");
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "ssh.tunnel_wildcard_bind_forbidden"
+        );
     }
 
     #[test]
@@ -10215,15 +10973,18 @@ mod tests {
             ("dry_run", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_eq!(status.code, Some(0));
 
         let response: SshTunnelResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
-        assert!(response.warnings.iter().any(|w| w.contains("exposes the tunnel")));
+        assert!(
+            response
+                .warnings
+                .iter()
+                .any(|w| w.contains("exposes the tunnel"))
+        );
     }
 
     #[test]
@@ -10238,9 +10999,7 @@ mod tests {
             ("format", "text"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_eq!(status.code, Some(0));
         assert!(stdout.contains("SSH Tunnel"));
@@ -10264,9 +11023,7 @@ mod tests {
             ("dry_run", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_eq!(status.code, Some(0));
 
@@ -10292,9 +11049,7 @@ mod tests {
             ("dry_run", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_ne!(status.code, Some(0));
 
@@ -10315,22 +11070,25 @@ mod tests {
             ("dry_run", "true"),
         ]);
 
-        let (stdout, _stderr, status) = capture_output(|io| {
-            handle.verb_tunnel(&args, io)
-        });
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_tunnel(&args, io));
 
         assert_eq!(status.code, Some(0));
 
         let response: SshTunnelResponse = serde_json::from_str(&stdout).unwrap();
         assert!(response.ok);
-        assert!(response.warnings.iter().any(|w| w.contains("Host key verification disabled")));
+        assert!(
+            response
+                .warnings
+                .iter()
+                .any(|w| w.contains("Host key verification disabled"))
+        );
     }
 
-    #[test] 
+    #[test]
     fn test_ssh_target_from_url_with_password() {
         let url = url::Url::parse("ssh://user:pass@example.com:2222/").unwrap();
         let target = SshTarget::from_url(&url);
-        
+
         assert_eq!(target.username, Some("user".to_string()));
         assert_eq!(target.password, Some("pass".to_string()));
         assert_eq!(target.host, Some("example.com".to_string()));
@@ -10341,7 +11099,7 @@ mod tests {
     fn test_ssh_target_from_url_encoded_password() {
         let url = url::Url::parse("ssh://user:p%40ss%21@example.com/").unwrap();
         let target = SshTarget::from_url(&url);
-        
+
         assert_eq!(target.username, Some("user".to_string()));
         assert_eq!(target.password, Some("p@ss!".to_string()));
         assert_eq!(target.host, Some("example.com".to_string()));
@@ -10349,9 +11107,9 @@ mod tests {
 
     #[test]
     fn test_ssh_target_from_url_without_password() {
-        let url = url::Url::parse("ssh://user@example.com/").unwrap(); 
+        let url = url::Url::parse("ssh://user@example.com/").unwrap();
         let target = SshTarget::from_url(&url);
-        
+
         assert_eq!(target.username, Some("user".to_string()));
         assert_eq!(target.password, None);
         assert_eq!(target.host, Some("example.com".to_string()));
@@ -10366,14 +11124,14 @@ mod tests {
             auth_method: SshAuthMethod::Password,
             ..Default::default()
         };
-        
+
         let handle = create_test_handle(Some("host"), None, Some("user"));
         let result = handle.validate_auth_options(&options);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), SshAuthMethod::Password);
     }
 
-    #[test] 
+    #[test]
     fn test_validate_password_auth_missing_password() {
         let options = SshExecOptions {
             username: Some("user".to_string()),
@@ -10382,7 +11140,7 @@ mod tests {
             auth_method: SshAuthMethod::Password,
             ..Default::default()
         };
-        
+
         let handle = create_test_handle(Some("host"), None, Some("user"));
         let result = handle.validate_auth_options(&options);
         assert!(result.is_err());
@@ -10397,7 +11155,7 @@ mod tests {
             auth_method: SshAuthMethod::Auto,
             ..Default::default()
         };
-        
+
         let handle = create_test_handle(Some("host"), None, Some("user"));
         let result = handle.validate_auth_options(&options);
         assert!(result.is_ok());
@@ -10457,7 +11215,11 @@ mod tests {
 
     // ===== Command construction and real transfer paths (fake ssh) =====
 
-    fn spec_for<'a>(auth: &'a SshAuthMethod, khm: &'a KnownHostsMode, password: Option<&'a str>) -> SshConnSpec<'a> {
+    fn spec_for<'a>(
+        auth: &'a SshAuthMethod,
+        khm: &'a KnownHostsMode,
+        password: Option<&'a str>,
+    ) -> SshConnSpec<'a> {
         SshConnSpec {
             host: "web01",
             port: 2222,
@@ -10475,13 +11237,28 @@ mod tests {
 
     #[test]
     fn test_build_ssh_command_line_key() {
-        let cmd = build_ssh_command_line(&spec_for(&SshAuthMethod::Key, &KnownHostsMode::Strict, None), "uptime");
+        let cmd = build_ssh_command_line(
+            &spec_for(&SshAuthMethod::Key, &KnownHostsMode::Strict, None),
+            "uptime",
+        );
         assert_eq!(cmd.program, "ssh");
         assert_eq!(
             cmd.args,
             vec![
-                "-p", "2222", "-i", "/k/id", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=2",
-                "-T", "-o", "BatchMode=yes", "--", "alice@web01", "uptime",
+                "-p",
+                "2222",
+                "-i",
+                "/k/id",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "ConnectTimeout=2",
+                "-T",
+                "-o",
+                "BatchMode=yes",
+                "--",
+                "alice@web01",
+                "uptime",
             ]
         );
         assert!(cmd.env.is_empty());
@@ -10490,14 +11267,21 @@ mod tests {
     #[test]
     fn test_build_ssh_command_line_password_uses_env() {
         let cmd = build_ssh_command_line(
-            &spec_for(&SshAuthMethod::Password, &KnownHostsMode::AcceptNew, Some("s3cret")),
+            &spec_for(
+                &SshAuthMethod::Password,
+                &KnownHostsMode::AcceptNew,
+                Some("s3cret"),
+            ),
             "uptime",
         );
         assert_eq!(cmd.program, "sshpass");
         assert_eq!(&cmd.args[..2], &["-e", "ssh"]);
         assert!(!cmd.args.iter().any(|a| a.contains("s3cret")));
         assert_eq!(cmd.env, vec![("SSHPASS".to_string(), "s3cret".to_string())]);
-        assert!(cmd.args.contains(&"StrictHostKeyChecking=accept-new".to_string()));
+        assert!(
+            cmd.args
+                .contains(&"StrictHostKeyChecking=accept-new".to_string())
+        );
         assert!(cmd.args.contains(&"BatchMode=no".to_string()));
     }
 
@@ -10540,7 +11324,12 @@ mod tests {
     fn test_exec_runs_through_runner() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let calls = mock_ssh(fake_remote);
-        let args = args_from_pairs(&[("command", "echo hi"), ("cwd", "/tmp"), ("auth_method", "password"), ("password", "pw")]);
+        let args = args_from_pairs(&[
+            ("command", "echo hi"),
+            ("cwd", "/tmp"),
+            ("auth_method", "password"),
+            ("password", "pw"),
+        ]);
         let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
         assert_eq!(status.code, Some(0));
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
@@ -10588,8 +11377,11 @@ mod tests {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
         let calls = mock_ssh(fake_remote);
         let args = args_from_pairs(&[
-            ("source", "abc"), ("source_mode", "inline"), ("dest", "/tmp/x"),
-            ("verify_checksum", "true"), ("checksum_algorithm", "md5"),
+            ("source", "abc"),
+            ("source_mode", "inline"),
+            ("dest", "/tmp/x"),
+            ("verify_checksum", "true"),
+            ("checksum_algorithm", "md5"),
         ]);
         let (stdout, _stderr, status) = capture_output(|io| handle.verb_upload(&args, io));
         assert_eq!(status.code, Some(0));
@@ -10610,15 +11402,21 @@ mod tests {
         let calls = mock_ssh(fake_remote);
 
         let args = args_from_pairs(&[
-            ("source", "/etc/hosts"), ("dest", dest.to_str().unwrap()), ("overwrite", "true"),
-            ("verify_checksum", "true"), ("return_content", "false"),
+            ("source", "/etc/hosts"),
+            ("dest", dest.to_str().unwrap()),
+            ("overwrite", "true"),
+            ("verify_checksum", "true"),
+            ("return_content", "false"),
         ]);
         let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
         assert_eq!(status.code, Some(0), "{}", stdout);
         let response: SshDownloadResponse = serde_json::from_str(&stdout).unwrap();
         let result = response.result.unwrap();
         assert_eq!(result.checksum_verified, Some(true));
-        assert_eq!(response.source.unwrap().size_bytes, Some(FAKE_REMOTE_FILE.len() as u64));
+        assert_eq!(
+            response.source.unwrap().size_bytes,
+            Some(FAKE_REMOTE_FILE.len() as u64)
+        );
         assert_eq!(std::fs::read(&dest).unwrap(), FAKE_REMOTE_FILE);
         // Only dest remains: the temporary file was renamed into place
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
@@ -10638,24 +11436,41 @@ mod tests {
 
         // Remote file missing
         mock_ssh(|_, _| Ok(failed_output(1, "cat: /nope: No such file or directory")));
-        let args = args_from_pairs(&[("source", "/nope"), ("dest", dest.to_str().unwrap()), ("overwrite", "true")]);
-        let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
-        assert_eq!(status.code, Some(1));
-        let response: SshDownloadResponse = serde_json::from_str(&stdout).unwrap();
-        assert_eq!(response.error.unwrap().code, "ssh.download_source_not_found");
-        assert_eq!(std::fs::read(&dest).unwrap(), b"original\n");
-
-        // Checksum mismatch
-        mock_ssh(|cmd, _| {
-            if remote_of(cmd).starts_with("cat") { Ok(ok_output(b"data")) } else { Ok(ok_output(b"0000  /x\n")) }
-        });
         let args = args_from_pairs(&[
-            ("source", "/x"), ("dest", dest.to_str().unwrap()), ("overwrite", "true"), ("verify_checksum", "true"),
+            ("source", "/nope"),
+            ("dest", dest.to_str().unwrap()),
+            ("overwrite", "true"),
         ]);
         let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
         assert_eq!(status.code, Some(1));
         let response: SshDownloadResponse = serde_json::from_str(&stdout).unwrap();
-        assert_eq!(response.error.unwrap().code, "ssh.download_checksum_mismatch");
+        assert_eq!(
+            response.error.unwrap().code,
+            "ssh.download_source_not_found"
+        );
+        assert_eq!(std::fs::read(&dest).unwrap(), b"original\n");
+
+        // Checksum mismatch
+        mock_ssh(|cmd, _| {
+            if remote_of(cmd).starts_with("cat") {
+                Ok(ok_output(b"data"))
+            } else {
+                Ok(ok_output(b"0000  /x\n"))
+            }
+        });
+        let args = args_from_pairs(&[
+            ("source", "/x"),
+            ("dest", dest.to_str().unwrap()),
+            ("overwrite", "true"),
+            ("verify_checksum", "true"),
+        ]);
+        let (stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
+        assert_eq!(status.code, Some(1));
+        let response: SshDownloadResponse = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            response.error.unwrap().code,
+            "ssh.download_checksum_mismatch"
+        );
         assert_eq!(std::fs::read(&dest).unwrap(), b"original\n");
 
         // overwrite=false: refused before connecting
@@ -10674,7 +11489,11 @@ mod tests {
         let handle = create_test_handle(Some("example.com"), None, Some("deploy"));
         let calls = mock_ssh(fake_remote);
         let dest = std::env::temp_dir().join(format!("resh_ssh_dry_{}", rand::random::<u32>()));
-        let args = args_from_pairs(&[("source", "/etc/hosts"), ("dest", dest.to_str().unwrap()), ("dry_run", "true")]);
+        let args = args_from_pairs(&[
+            ("source", "/etc/hosts"),
+            ("dest", dest.to_str().unwrap()),
+            ("dry_run", "true"),
+        ]);
         let (_stdout, _stderr, status) = capture_output(|io| handle.verb_download(&args, io));
         assert_eq!(status.code, Some(0));
         assert!(calls.borrow().is_empty());
@@ -10699,7 +11518,12 @@ mod tests {
     #[test]
     fn test_test_verb_uses_real_probe() {
         let handle = create_test_handle(Some("web01"), None, Some("alice"));
-        mock_ssh(|_, _| Ok(failed_output(255, "alice@web01: Permission denied (publickey).")));
+        mock_ssh(|_, _| {
+            Ok(failed_output(
+                255,
+                "alice@web01: Permission denied (publickey).",
+            ))
+        });
         let args = args_from_pairs(&[("tests", "connect,auth,sftp")]);
         let (stdout, _stderr, status) = capture_output(|io| handle.verb_test(&args, io));
         assert_eq!(status.code, Some(1));
@@ -10731,7 +11555,8 @@ mod tests {
             assert_eq!(status.code, Some(0));
             assert!(stdout.starts_with("Handle: ssh"), "{}", stdout);
         }
-        let (stdout, _stderr, _status) = capture_output(|io| handle.call("--help=download", &args, io));
+        let (stdout, _stderr, _status) =
+            capture_output(|io| handle.call("--help=download", &args, io));
         assert!(stdout.contains("Verb: download"), "{}", stdout);
         assert!(!stdout.contains("placeholder"));
         // ssh://--help=download reaches the handle as the help verb with verb=download

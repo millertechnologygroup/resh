@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
 
-use super::model::*;
 use super::helpers::{CacheHelper, SelectionHelper, SystemHelper};
+use super::model::*;
 
 /// Index manager for fetching and caching plugin indexes
 pub struct IndexManager {
@@ -21,7 +21,7 @@ impl IndexManager {
     /// Create new index manager
     pub fn new() -> Result<Self> {
         let cache_dir = CacheHelper::get_cache_dir()?;
-        
+
         let http_client = reqwest::Client::builder()
             .user_agent("resh-plugin-client/0.7.0")
             .build()
@@ -46,7 +46,10 @@ impl IndexManager {
 
         for source_config in sources {
             let config_id = source_config.id.clone(); // Clone the ID before moving
-            match self.load_single_index(source_config, channel, timeout_ms, offline).await {
+            match self
+                .load_single_index(source_config, channel, timeout_ms, offline)
+                .await
+            {
                 Ok(index) => indexes.push(index),
                 Err(e) => {
                     // For now, log and continue. In a real implementation,
@@ -99,7 +102,10 @@ impl IndexManager {
                 Err(fetch_err) => {
                     // Try cache as fallback
                     if let Ok(cached) = self.load_from_cache(&cache_path) {
-                        eprintln!("Warning: Network fetch failed, using cached data: {}", fetch_err);
+                        eprintln!(
+                            "Warning: Network fetch failed, using cached data: {}",
+                            fetch_err
+                        );
                         return Ok(cached);
                     }
                     return Err(fetch_err);
@@ -124,7 +130,7 @@ impl IndexManager {
         };
 
         let timeout_duration = Duration::from_millis(timeout_ms as u64);
-        
+
         let response = timeout(timeout_duration, self.http_client.get(&url).send())
             .await
             .context("Request timed out")?
@@ -139,20 +145,19 @@ impl IndexManager {
             .context("Response read timed out")?
             .context("Failed to read response")?;
 
-        let raw_index: RawIndexData = serde_json::from_str(&text)
-            .context("Failed to parse index JSON")?;
+        let raw_index: RawIndexData =
+            serde_json::from_str(&text).context("Failed to parse index JSON")?;
 
         self.convert_raw_index(source, raw_index)
     }
 
     /// Load index from cache
     fn load_from_cache(&self, cache_path: &PathBuf) -> Result<IndexSnapshot> {
-        let content = fs::read_to_string(cache_path)
-            .context("Failed to read cache file")?;
-        
-        let index: IndexSnapshot = serde_json::from_str(&content)
-            .context("Failed to parse cached index")?;
-        
+        let content = fs::read_to_string(cache_path).context("Failed to read cache file")?;
+
+        let index: IndexSnapshot =
+            serde_json::from_str(&content).context("Failed to parse cached index")?;
+
         Ok(index)
     }
 
@@ -173,9 +178,12 @@ impl IndexManager {
 
         for raw_plugin in raw.plugins {
             let plugin_info = self.convert_raw_plugin(raw_plugin)?;
-            
+
             // Group by plugin name/id
-            if let Some(existing) = plugins.iter_mut().find(|p: &&mut IndexPluginEntry| p.id == plugin_info.id) {
+            if let Some(existing) = plugins
+                .iter_mut()
+                .find(|p: &&mut IndexPluginEntry| p.id == plugin_info.id)
+            {
                 existing.versions.push(PluginVersion {
                     version: plugin_info.version.clone(),
                     channel: plugin_info.channel.clone(),
@@ -196,9 +204,9 @@ impl IndexManager {
 
         // Sort versions within each plugin
         for plugin in &mut plugins {
-            plugin.versions.sort_by(|a, b| {
-                SelectionHelper::compare_versions(&b.version, &a.version)
-            });
+            plugin
+                .versions
+                .sort_by(|a, b| SelectionHelper::compare_versions(&b.version, &a.version));
         }
 
         Ok(IndexSnapshot {
@@ -232,8 +240,10 @@ impl IndexManager {
             }
         }
 
-        // Convert dependencies  
-        let dependencies = raw.dependencies.unwrap_or_default()
+        // Convert dependencies
+        let dependencies = raw
+            .dependencies
+            .unwrap_or_default()
             .into_iter()
             .map(|d| DependencyInfo {
                 name: d.name,
@@ -256,10 +266,10 @@ impl IndexManager {
         // Sort arrays for deterministic output
         let mut authors = raw.authors.unwrap_or_default();
         authors.sort();
-        
+
         let mut keywords = raw.keywords.unwrap_or_default();
         keywords.sort();
-        
+
         let mut handles = raw.handles.unwrap_or_default();
         handles.sort();
 
@@ -308,10 +318,7 @@ impl IndexManager {
 
     /// Get default index sources (official + community)
     fn get_default_sources(&self) -> Vec<IndexSourceConfig> {
-        vec![
-            self.get_official_source(),
-            self.get_community_source(),
-        ]
+        vec![self.get_official_source(), self.get_community_source()]
     }
 
     /// Get official index source
@@ -320,7 +327,7 @@ impl IndexManager {
             id: "official".to_string(),
             kind: IndexKind::Official,
             url: Some("https://plugins.reshshell.dev".to_string()), // Placeholder URL
-            ttl_seconds: 3600, // 1 hour
+            ttl_seconds: 3600,                                      // 1 hour
         }
     }
 
@@ -330,7 +337,7 @@ impl IndexManager {
             id: "community".to_string(),
             kind: IndexKind::Community,
             url: Some("https://community-plugins.reshshell.dev".to_string()), // Placeholder URL
-            ttl_seconds: 1800, // 30 minutes
+            ttl_seconds: 1800,                                                // 30 minutes
         }
     }
 
@@ -426,10 +433,7 @@ struct RawReleaseInfo {
 
 impl PluginSelector {
     /// Select a plugin from loaded indexes
-    pub fn select_plugin(
-        &self,
-        indexes: &[IndexSnapshot],
-    ) -> Result<PluginResolved> {
+    pub fn select_plugin(&self, indexes: &[IndexSnapshot]) -> Result<PluginResolved> {
         let mut candidates = Vec::new();
 
         // Find all matching plugins across indexes
@@ -450,13 +454,11 @@ impl PluginSelector {
         }
 
         // Sort candidates by preference (index priority, then version)
-        candidates.sort_by(|a, b| {
-            match a.0.kind.priority().cmp(&b.0.kind.priority()) {
-                std::cmp::Ordering::Equal => {
-                    SelectionHelper::compare_versions(&b.1.version, &a.1.version)
-                }
-                other => other,
+        candidates.sort_by(|a, b| match a.0.kind.priority().cmp(&b.0.kind.priority()) {
+            std::cmp::Ordering::Equal => {
+                SelectionHelper::compare_versions(&b.1.version, &a.1.version)
             }
+            other => other,
         });
 
         let (index, version) = candidates[0];
@@ -503,24 +505,32 @@ impl PluginSelector {
     /// Check if plugin version is compatible with current system
     pub fn is_compatible(&self, version: &PluginVersion) -> bool {
         let plugin = &version.plugin_info;
-        
+
         // Check OS compatibility
         let current_os = SystemHelper::current_os();
         let target_os = self.os.as_deref().unwrap_or(&current_os);
-        if !plugin.compatibility.os.is_empty() && !plugin.compatibility.os.contains(&target_os.to_string()) {
+        if !plugin.compatibility.os.is_empty()
+            && !plugin.compatibility.os.contains(&target_os.to_string())
+        {
             return false;
         }
 
-        // Check architecture compatibility  
+        // Check architecture compatibility
         let current_arch = SystemHelper::current_arch();
         let target_arch = self.arch.as_deref().unwrap_or(&current_arch);
-        if !plugin.compatibility.arch.is_empty() && !plugin.compatibility.arch.contains(&target_arch.to_string()) {
+        if !plugin.compatibility.arch.is_empty()
+            && !plugin.compatibility.arch.contains(&target_arch.to_string())
+        {
             return false;
         }
 
         // Check resh version compatibility
         let current_version = SystemHelper::current_resh_version();
-        if !self.is_version_compatible(&current_version, &plugin.compatibility.resh_min, plugin.compatibility.resh_max.as_deref()) {
+        if !self.is_version_compatible(
+            &current_version,
+            &plugin.compatibility.resh_min,
+            plugin.compatibility.resh_max.as_deref(),
+        ) {
             return false;
         }
 
@@ -535,7 +545,9 @@ impl PluginSelector {
         }
 
         if let Some(max_version) = max {
-            if SelectionHelper::compare_versions(current, max_version) == std::cmp::Ordering::Greater {
+            if SelectionHelper::compare_versions(current, max_version)
+                == std::cmp::Ordering::Greater
+            {
                 return false;
             }
         }

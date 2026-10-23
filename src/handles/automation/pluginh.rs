@@ -1,12 +1,12 @@
-use anyhow::{anyhow, bail, Result};
-use std::io::Write;
-use url::Url;
-use serde::{Serialize, Deserialize};
-use serde_json::json;
+use anyhow::{Result, anyhow, bail};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
+use url::Url;
 
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
@@ -15,13 +15,12 @@ use crate::core::{
 };
 
 use crate::handles::pluginh::available::{
-    AvailableInfoArgs, AvailableInfoEnvelope, AvailableInfoResult, AvailableInfoErrorCode,
-    IndexManager, PluginSelector, ArgsHelper, EnvelopeHelper,
-    ActionRecord, ErrorInfo,
+    ActionRecord, ArgsHelper, AvailableInfoArgs, AvailableInfoEnvelope, AvailableInfoErrorCode,
+    AvailableInfoResult, EnvelopeHelper, ErrorInfo, IndexManager, PluginSelector,
 };
 use crate::handles::pluginh::{
-    ExecutionEngine, Mode, PluginOpArgs, RequestedVersion, SourceSpec, VerifyMode,
-    PluginStateManager, SetEnabledOptions, Scope,
+    ExecutionEngine, Mode, PluginOpArgs, PluginStateManager, RequestedVersion, Scope,
+    SetEnabledOptions, SourceSpec, VerifyMode,
 };
 
 /// Metadata for `resh plugin --help` and `resh plugin <verb> --help`.
@@ -401,14 +400,14 @@ impl PluginHandle {
     /// Create new plugin handle from URL
     pub fn new(url: &Url) -> Result<Self> {
         let target = url.to_string();
-        
+
         // Extract plugin ID from host + path as per spec. The ID may be
         // empty for catalog verbs such as plugin://available.list; verbs
         // that act on one plugin check for an ID themselves.
         let host = url.host_str().unwrap_or("");
-        
+
         let path = url.path().trim_start_matches('/');
-        
+
         // Combine host and path to form plugin_id
         let plugin_id = if path.is_empty() {
             host.to_string()
@@ -418,10 +417,7 @@ impl PluginHandle {
             format!("{}/{}", host, path)
         };
 
-        Ok(Self {
-            plugin_id,
-            target,
-        })
+        Ok(Self { plugin_id, target })
     }
 
     /// Execute install verb
@@ -429,21 +425,26 @@ impl PluginHandle {
         let plugin_args = self.parse_install_args(args)?;
         let mut engine = ExecutionEngine::new(plugin_args.timeout_ms)?;
         let envelope = engine.run_plugin_op(plugin_args);
-        
+
         // Output JSON envelope as per specification
-        let json_output = if args.get("json_pretty").map(|s| s == "true").unwrap_or(false) {
+        let json_output = if args
+            .get("json_pretty")
+            .map(|s| s == "true")
+            .unwrap_or(false)
+        {
             serde_json::to_string_pretty(&envelope)?
         } else {
             serde_json::to_string(&envelope)?
         };
-        
+
         writeln!(io.stdout, "{}", json_output)?;
-        
+
         // Return status based on envelope
         if envelope.ok {
             Ok(Status::ok())
         } else {
-            let error_message = envelope.error
+            let error_message = envelope
+                .error
                 .map(|e| e.message)
                 .unwrap_or_else(|| "Unknown error".to_string());
             Ok(Status::err(envelope.code, &error_message))
@@ -455,21 +456,26 @@ impl PluginHandle {
         let plugin_args = self.parse_update_args(args)?;
         let mut engine = ExecutionEngine::new(plugin_args.timeout_ms)?;
         let envelope = engine.run_plugin_op(plugin_args);
-        
-        // Output JSON envelope as per specification  
-        let json_output = if args.get("json_pretty").map(|s| s == "true").unwrap_or(false) {
+
+        // Output JSON envelope as per specification
+        let json_output = if args
+            .get("json_pretty")
+            .map(|s| s == "true")
+            .unwrap_or(false)
+        {
             serde_json::to_string_pretty(&envelope)?
         } else {
             serde_json::to_string(&envelope)?
         };
-        
+
         writeln!(io.stdout, "{}", json_output)?;
-        
+
         // Return status based on envelope
         if envelope.ok {
             Ok(Status::ok())
         } else {
-            let error_message = envelope.error
+            let error_message = envelope
+                .error
                 .map(|e| e.message)
                 .unwrap_or_else(|| "Unknown error".to_string());
             Ok(Status::err(envelope.code, &error_message))
@@ -481,21 +487,26 @@ impl PluginHandle {
         let plugin_args = self.parse_remove_args(args)?;
         let mut engine = ExecutionEngine::new(plugin_args.timeout_ms)?;
         let envelope = engine.run_plugin_op(plugin_args);
-        
-        // Output JSON envelope as per specification  
-        let json_output = if args.get("json_pretty").map(|s| s == "true").unwrap_or(false) {
+
+        // Output JSON envelope as per specification
+        let json_output = if args
+            .get("json_pretty")
+            .map(|s| s == "true")
+            .unwrap_or(false)
+        {
             serde_json::to_string_pretty(&envelope)?
         } else {
             serde_json::to_string(&envelope)?
         };
-        
+
         writeln!(io.stdout, "{}", json_output)?;
-        
+
         // Return status based on envelope
         if envelope.ok {
             Ok(Status::ok())
         } else {
-            let error_message = envelope.error
+            let error_message = envelope
+                .error
                 .map(|e| e.message)
                 .unwrap_or_else(|| "Unknown error".to_string());
             Ok(Status::err(envelope.code, &error_message))
@@ -506,22 +517,28 @@ impl PluginHandle {
     pub fn enable(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let opts = self.parse_enable_disable_args(args)?;
         let mut state_manager = PluginStateManager::new()?;
-        let envelope = state_manager.set_enabled_state(&self.plugin_id, opts.scope.clone(), true, opts)?;
-        
+        let envelope =
+            state_manager.set_enabled_state(&self.plugin_id, opts.scope.clone(), true, opts)?;
+
         // Output JSON envelope as per specification
-        let json_output = if args.get("json_pretty").map(|s| s == "true").unwrap_or(false) {
+        let json_output = if args
+            .get("json_pretty")
+            .map(|s| s == "true")
+            .unwrap_or(false)
+        {
             serde_json::to_string_pretty(&envelope)?
         } else {
             serde_json::to_string(&envelope)?
         };
-        
+
         writeln!(io.stdout, "{}", json_output)?;
-        
+
         // Return status based on envelope
         if envelope.ok {
             Ok(Status::ok())
         } else {
-            let error_message = envelope.error
+            let error_message = envelope
+                .error
                 .map(|e| e.message)
                 .unwrap_or_else(|| "Unknown error".to_string());
             Ok(Status::err(envelope.code, &error_message))
@@ -532,22 +549,28 @@ impl PluginHandle {
     pub fn disable(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let opts = self.parse_enable_disable_args(args)?;
         let mut state_manager = PluginStateManager::new()?;
-        let envelope = state_manager.set_enabled_state(&self.plugin_id, opts.scope.clone(), false, opts)?;
-        
+        let envelope =
+            state_manager.set_enabled_state(&self.plugin_id, opts.scope.clone(), false, opts)?;
+
         // Output JSON envelope as per specification
-        let json_output = if args.get("json_pretty").map(|s| s == "true").unwrap_or(false) {
+        let json_output = if args
+            .get("json_pretty")
+            .map(|s| s == "true")
+            .unwrap_or(false)
+        {
             serde_json::to_string_pretty(&envelope)?
         } else {
             serde_json::to_string(&envelope)?
         };
-        
+
         writeln!(io.stdout, "{}", json_output)?;
-        
+
         // Return status based on envelope
         if envelope.ok {
             Ok(Status::ok())
         } else {
-            let error_message = envelope.error
+            let error_message = envelope
+                .error
                 .map(|e| e.message)
                 .unwrap_or_else(|| "Unknown error".to_string());
             Ok(Status::err(envelope.code, &error_message))
@@ -559,15 +582,18 @@ impl PluginHandle {
         // plugin://available.list or plugin://available.available.list
         if !catalog_target_ok(&self.plugin_id, "available.list", &["available"]) {
             let envelope = create_error_envelope(
-                "plugin.available.list", 
-                &self.target, 
-                args, 
-                5, 
+                "plugin.available.list",
+                &self.target,
+                args,
+                5,
                 "unsupported_target",
-                "The 'available.list' verb is only supported as plugin://available.list"
+                "The 'available.list' verb is only supported as plugin://available.list",
             );
             output_envelope(&envelope, args, io)?;
-            return Ok(Status::err(5, "The 'available.list' verb is only supported as plugin://available.list"));
+            return Ok(Status::err(
+                5,
+                "The 'available.list' verb is only supported as plugin://available.list",
+            ));
         }
 
         // Parse available.list arguments
@@ -579,8 +605,8 @@ impl PluginHandle {
                     &self.target,
                     args,
                     2,
-                    "invalid_arguments", 
-                    &e.to_string()
+                    "invalid_arguments",
+                    &e.to_string(),
                 );
                 output_envelope(&envelope, args, io)?;
                 return Ok(Status::err(2, &e.to_string()));
@@ -599,7 +625,7 @@ impl PluginHandle {
                 };
                 let kind = match code {
                     3 => "catalog.not_found",
-                    4 => "catalog.parse_error", 
+                    4 => "catalog.parse_error",
                     13 => "permission_denied",
                     _ => "internal_error",
                 };
@@ -609,7 +635,7 @@ impl PluginHandle {
                     args,
                     code,
                     kind,
-                    &e.to_string()
+                    &e.to_string(),
                 );
                 output_envelope(&envelope, args, io)?;
                 return Ok(Status::err(code, &e.to_string()));
@@ -639,7 +665,7 @@ impl PluginHandle {
                 "type": "filter.apply",
                 "query": options.query,
                 "tags": options.tags
-            })
+            }),
         ];
 
         let envelope = json!({
@@ -664,15 +690,18 @@ impl PluginHandle {
         // or the older plugin://available.search.available.search
         if !catalog_target_ok(&self.plugin_id, "available.search", &["available"]) {
             let envelope = create_error_envelope(
-                "plugin.available.search", 
-                &self.target, 
-                args, 
-                5, 
+                "plugin.available.search",
+                &self.target,
+                args,
+                5,
                 "PLUGIN_INVALID_ARGS",
-                "The 'available.search' verb is only supported as plugin://available.search"
+                "The 'available.search' verb is only supported as plugin://available.search",
             );
             output_envelope(&envelope, args, io)?;
-            return Ok(Status::err(5, "The 'available.search' verb is only supported as plugin://available.search"));
+            return Ok(Status::err(
+                5,
+                "The 'available.search' verb is only supported as plugin://available.search",
+            ));
         }
 
         // Parse available.search arguments with timeout handling
@@ -683,8 +712,8 @@ impl PluginHandle {
                 let envelope = create_search_error_envelope(
                     &self.target,
                     args,
-                    "PLUGIN_INVALID_ARGS", 
-                    &e.to_string()
+                    "PLUGIN_INVALID_ARGS",
+                    &e.to_string(),
                 );
                 output_envelope(&envelope, args, io)?;
                 return Ok(Status::err(2, &e.to_string()));
@@ -698,7 +727,7 @@ impl PluginHandle {
                 &self.target,
                 args,
                 "PLUGIN_TIMEOUT",
-                "Operation timed out during argument parsing"
+                "Operation timed out during argument parsing",
             );
             output_envelope(&envelope, args, io)?;
             return Ok(Status::err(124, "Operation timed out"));
@@ -709,21 +738,26 @@ impl PluginHandle {
         let (catalog, catalog_source) = match catalog_result {
             Ok((cat, source)) => (cat, source),
             Err(e) => {
-                let code = if e.to_string().contains("timeout") { "PLUGIN_TIMEOUT" } 
-                    else if e.to_string().contains("network") || e.to_string().contains("fetch") { "PLUGIN_NETWORK_ERROR" }
-                    else if e.to_string().contains("parse") || e.to_string().contains("JSON") { "PLUGIN_CATALOG_PARSE_FAILED" }
-                    else if e.to_string().contains("unavailable") || e.to_string().contains("not found") { "PLUGIN_CATALOG_UNAVAILABLE" }
-                    else if e.to_string().contains("permission") || e.to_string().contains("access") { "PLUGIN_IO_ERROR" }
-                    else { "PLUGIN_INTERNAL" };
-                
-                let envelope = create_search_error_envelope(
-                    &self.target,
-                    args,
-                    code,
-                    &e.to_string()
-                );
+                let code = if e.to_string().contains("timeout") {
+                    "PLUGIN_TIMEOUT"
+                } else if e.to_string().contains("network") || e.to_string().contains("fetch") {
+                    "PLUGIN_NETWORK_ERROR"
+                } else if e.to_string().contains("parse") || e.to_string().contains("JSON") {
+                    "PLUGIN_CATALOG_PARSE_FAILED"
+                } else if e.to_string().contains("unavailable")
+                    || e.to_string().contains("not found")
+                {
+                    "PLUGIN_CATALOG_UNAVAILABLE"
+                } else if e.to_string().contains("permission") || e.to_string().contains("access") {
+                    "PLUGIN_IO_ERROR"
+                } else {
+                    "PLUGIN_INTERNAL"
+                };
+
+                let envelope =
+                    create_search_error_envelope(&self.target, args, code, &e.to_string());
                 output_envelope(&envelope, args, io)?;
-                
+
                 let exit_code = match code {
                     "PLUGIN_TIMEOUT" => 124,
                     "PLUGIN_INVALID_ARGS" => 2,
@@ -739,7 +773,7 @@ impl PluginHandle {
                 &self.target,
                 args,
                 "PLUGIN_TIMEOUT",
-                "Operation timed out during catalog loading"
+                "Operation timed out during catalog loading",
             );
             output_envelope(&envelope, args, io)?;
             return Ok(Status::err(124, "Operation timed out"));
@@ -771,10 +805,10 @@ impl PluginHandle {
                 "mode": catalog_source.get("mode").unwrap_or(&json!("unknown"))
             }),
             json!({
-                "type": "search.execute", 
+                "type": "search.execute",
                 "query": search_options.q,
                 "filters_applied": true
-            })
+            }),
         ];
 
         let envelope = json!({
@@ -804,7 +838,10 @@ impl PluginHandle {
                 serde_json::json!({"unsupported_target": self.plugin_id}),
             );
             self.output_available_info_envelope(&error_envelope, args, io)?;
-            return Ok(Status::err(AvailableInfoErrorCode::InvalidArg.exit_code(), "Unsupported target"));
+            return Ok(Status::err(
+                AvailableInfoErrorCode::InvalidArg.exit_code(),
+                "Unsupported target",
+            ));
         }
 
         // Parse and validate arguments
@@ -820,7 +857,10 @@ impl PluginHandle {
                     serde_json::json!({"validation_error": format!("{}", e)}),
                 );
                 self.output_available_info_envelope(&error_envelope, args, io)?;
-                return Ok(Status::err(AvailableInfoErrorCode::InvalidArg.exit_code(), &format!("{}", e)));
+                return Ok(Status::err(
+                    AvailableInfoErrorCode::InvalidArg.exit_code(),
+                    &format!("{}", e),
+                ));
             }
         };
 
@@ -840,7 +880,10 @@ impl PluginHandle {
                     serde_json::json!({"error": e.to_string()}),
                 );
                 self.output_available_info_envelope(&error_envelope, args, io)?;
-                return Ok(Status::err(AvailableInfoErrorCode::Io.exit_code(), "Runtime error"));
+                return Ok(Status::err(
+                    AvailableInfoErrorCode::Io.exit_code(),
+                    "Runtime error",
+                ));
             }
         };
 
@@ -848,12 +891,23 @@ impl PluginHandle {
             let index_manager: IndexManager = match IndexManager::new() {
                 Ok(manager) => manager,
                 Err(e) => {
-                    return Err((AvailableInfoErrorCode::Io, format!("Failed to initialize index manager: {}", e)));
+                    return Err((
+                        AvailableInfoErrorCode::Io,
+                        format!("Failed to initialize index manager: {}", e),
+                    ));
                 }
             };
 
             // Load indexes
-            let indexes = match index_manager.load_indexes(&parsed_args.source, &parsed_args.channel, parsed_args.timeout_ms, parsed_args.offline).await {
+            let indexes = match index_manager
+                .load_indexes(
+                    &parsed_args.source,
+                    &parsed_args.channel,
+                    parsed_args.timeout_ms,
+                    parsed_args.offline,
+                )
+                .await
+            {
                 Ok(indexes) => {
                     actions.push(ActionRecord {
                         r#type: "fetch".to_string(),
@@ -872,7 +926,7 @@ impl PluginHandle {
                         detail: format!("{}", e),
                         meta: serde_json::json!({}),
                     });
-                    
+
                     let error_code = if format!("{}", e).contains("timeout") {
                         AvailableInfoErrorCode::Timeout
                     } else if format!("{}", e).contains("No indexes available") {
@@ -880,7 +934,7 @@ impl PluginHandle {
                     } else {
                         AvailableInfoErrorCode::Io
                     };
-                    
+
                     return Err((error_code, e.to_string()));
                 }
             };
@@ -902,7 +956,10 @@ impl PluginHandle {
                         r#type: "select".to_string(),
                         id: "select.plugin".to_string(),
                         ok: true,
-                        detail: format!("resolved plugin {} version {}", resolved.plugin.name, resolved.plugin.version),
+                        detail: format!(
+                            "resolved plugin {} version {}",
+                            resolved.plugin.name, resolved.plugin.version
+                        ),
                         meta: serde_json::json!({"source_index": resolved.source_index}),
                     });
 
@@ -953,13 +1010,22 @@ impl PluginHandle {
     }
 
     /// Output available.info envelope with proper formatting
-    fn output_available_info_envelope(&self, envelope: &AvailableInfoEnvelope, args: &Args, io: &mut IoStreams) -> Result<()> {
-        let json_output = if args.get("json_pretty").map(|s| s == "true").unwrap_or(false) {
+    fn output_available_info_envelope(
+        &self,
+        envelope: &AvailableInfoEnvelope,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<()> {
+        let json_output = if args
+            .get("json_pretty")
+            .map(|s| s == "true")
+            .unwrap_or(false)
+        {
             serde_json::to_string_pretty(envelope)?
         } else {
             serde_json::to_string(envelope)?
         };
-        
+
         writeln!(io.stdout, "{}", json_output)?;
         Ok(())
     }
@@ -975,10 +1041,13 @@ impl PluginHandle {
                 vec![],
                 2,
                 "invalid_target",
-                "The 'installed.list' verb is only supported as plugin://installed.list"
+                "The 'installed.list' verb is only supported as plugin://installed.list",
             );
             output_installed_envelope(&envelope, args, io)?;
-            return Ok(Status::err(2, "The 'installed.list' verb is only supported as plugin://installed.list"));
+            return Ok(Status::err(
+                2,
+                "The 'installed.list' verb is only supported as plugin://installed.list",
+            ));
         }
 
         // Parse and validate arguments
@@ -992,7 +1061,7 @@ impl PluginHandle {
                     vec![],
                     2,
                     "invalid_arguments",
-                    &e.to_string()
+                    &e.to_string(),
                 );
                 output_installed_envelope(&envelope, args, io)?;
                 return Ok(Status::err(2, &e.to_string()));
@@ -1002,17 +1071,16 @@ impl PluginHandle {
         // Execute installed.list operation
         let envelope = execute_installed_list(&self.target, parsed_args);
         output_installed_envelope(&envelope, args, io)?;
-        
+
         if envelope["ok"].as_bool().unwrap_or(false) {
             Ok(Status::ok())
         } else {
-            let error_message = envelope.get("error")
+            let error_message = envelope
+                .get("error")
                 .and_then(|e| e.get("message"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown error");
-            let code = envelope.get("code")
-                .and_then(|c| c.as_i64())
-                .unwrap_or(70) as i32;
+            let code = envelope.get("code").and_then(|c| c.as_i64()).unwrap_or(70) as i32;
             Ok(Status::err(code, error_message))
         }
     }
@@ -1022,7 +1090,7 @@ impl PluginHandle {
         let source = self.parse_source(args)?;
         let requested_version = self.parse_requested_version(args);
         let verify = self.parse_verify_mode(args)?;
-        
+
         Ok(PluginOpArgs {
             mode: Mode::Install,
             plugin_id: self.plugin_id.clone(),
@@ -1030,11 +1098,13 @@ impl PluginHandle {
             requested_version,
             verify,
             force: crate::core::lenient::bool_arg(args, "force")?.unwrap_or(false),
-            allow_downgrade: crate::core::lenient::bool_arg(args, "allow_downgrade")?.unwrap_or(false),
+            allow_downgrade: crate::core::lenient::bool_arg(args, "allow_downgrade")?
+                .unwrap_or(false),
             dry_run: crate::core::lenient::dry_run(args)?,
             strict: false, // Only used for update
-            purge: false, // Not applicable to install
-            timeout_ms: args.get("timeout_ms")
+            purge: false,  // Not applicable to install
+            timeout_ms: args
+                .get("timeout_ms")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(300000), // Default 5 minutes
         })
@@ -1046,27 +1116,29 @@ impl PluginHandle {
         let source = if let Some(url) = args.get("url") {
             SourceSpec::Url { url: url.clone() }
         } else {
-            let registry_url = args.get("registry")
+            let registry_url = args
+                .get("registry")
                 .unwrap_or(&"https://plugins.reshshell.dev".to_string())
                 .clone();
             SourceSpec::Registry { url: registry_url }
         };
-        
+
         let requested_version = RequestedVersion::Latest; // Update always gets latest
         let verify = self.parse_verify_mode(args)?;
-        
+
         Ok(PluginOpArgs {
             mode: Mode::Update,
             plugin_id: self.plugin_id.clone(),
             source,
             requested_version,
             verify,
-            force: false, // Force not applicable to update
+            force: false,           // Force not applicable to update
             allow_downgrade: false, // Allow downgrade not applicable to update
             dry_run: crate::core::lenient::dry_run(args)?,
             strict: crate::core::lenient::bool_arg(args, "strict")?.unwrap_or(false),
             purge: false, // Not applicable to update
-            timeout_ms: args.get("timeout_ms")
+            timeout_ms: args
+                .get("timeout_ms")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(300000), // Default 5 minutes
         })
@@ -1085,18 +1157,24 @@ impl PluginHandle {
         } else {
             RequestedVersion::Latest
         };
-        
+
         // Extract clean plugin_id (without version)
         let clean_plugin_id = if self.plugin_id.contains('@') {
-            self.plugin_id.split('@').next().unwrap_or(&self.plugin_id).to_string()
+            self.plugin_id
+                .split('@')
+                .next()
+                .unwrap_or(&self.plugin_id)
+                .to_string()
         } else {
             self.plugin_id.clone()
         };
-        
+
         Ok(PluginOpArgs {
             mode: Mode::Remove,
             plugin_id: clean_plugin_id,
-            source: SourceSpec::Registry { url: "local".to_string() }, // Not used for remove
+            source: SourceSpec::Registry {
+                url: "local".to_string(),
+            }, // Not used for remove
             requested_version,
             verify: VerifyMode::None, // Not needed for remove
             force: crate::core::lenient::bool_arg(args, "force")?.unwrap_or(false),
@@ -1104,7 +1182,8 @@ impl PluginHandle {
             dry_run: crate::core::lenient::dry_run(args)?,
             strict: false, // Not applicable to remove
             purge: crate::core::lenient::bool_arg(args, "purge")?.unwrap_or(false),
-            timeout_ms: args.get("timeout_ms")
+            timeout_ms: args
+                .get("timeout_ms")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(30000), // Default 30 seconds for remove
         })
@@ -1119,26 +1198,27 @@ impl PluginHandle {
             "system" => Scope::System,
             _ => bail!("Invalid scope: {}. Must be 'user' or 'system'", scope_str),
         };
-        
+
         // Parse force flag
         let force = crate::core::lenient::bool_arg(args, "force")?.unwrap_or(false);
-        
+
         // Parse timeout with bounds checking
-        let timeout_ms = args.get("timeout_ms")
+        let timeout_ms = args
+            .get("timeout_ms")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(15000); // Default 15 seconds per spec
-        
+
         let timeout_ms = timeout_ms.clamp(1000, 120000); // Clamp to 1-120 seconds per spec
-        
+
         // Parse dry_run flag
         let dry_run = crate::core::lenient::dry_run(args)?;
-        
+
         // Parse reason with length validation
         let reason = args.get("reason").unwrap_or(&String::new()).clone();
         if reason.len() > 200 {
             bail!("Reason too long (max 200 characters)");
         }
-        
+
         Ok(SetEnabledOptions {
             scope,
             force,
@@ -1152,29 +1232,32 @@ impl PluginHandle {
     fn parse_source(&self, args: &Args) -> Result<SourceSpec> {
         let default_registry = "registry".to_string();
         let source_type = args.get("source").unwrap_or(&default_registry);
-        
+
         match source_type.as_str() {
             "registry" => {
                 let default_url = "https://plugins.reshshell.dev".to_string();
-                let url = args.get("registry")
-                    .unwrap_or(&default_url)
-                    .clone();
+                let url = args.get("registry").unwrap_or(&default_url).clone();
                 Ok(SourceSpec::Registry { url })
             }
             "url" => {
-                let url = args.get("url")
+                let url = args
+                    .get("url")
                     .ok_or_else(|| anyhow::anyhow!("URL required when source=url"))?
                     .clone();
                 Ok(SourceSpec::Url { url })
             }
             "file" => {
-                let path = args.get("path")
+                let path = args
+                    .get("path")
                     .ok_or_else(|| anyhow::anyhow!("Path required when source=file"))?
                     .clone();
                 Ok(SourceSpec::File { path })
             }
             _ => {
-                bail!("Invalid source type: {}. Must be 'registry', 'url', or 'file'", source_type);
+                bail!(
+                    "Invalid source type: {}. Must be 'registry', 'url', or 'file'",
+                    source_type
+                );
             }
         }
     }
@@ -1193,7 +1276,10 @@ impl PluginHandle {
         match args.get("verify").map(|s| s.as_str()) {
             Some("none") => Ok(VerifyMode::None),
             Some("sha256") | None => Ok(VerifyMode::Sha256), // Default to sha256
-            Some(other) => bail!("Invalid verify mode: {:?}. Must be 'sha256' or 'none'", other),
+            Some(other) => bail!(
+                "Invalid verify mode: {:?}. Must be 'sha256' or 'none'",
+                other
+            ),
         }
     }
 }
@@ -1223,31 +1309,49 @@ impl PluginHandle {
 
 impl Handle for PluginHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["install", "update", "remove", "enable", "disable", "available.list", "available.search", "available.info", "installed.list", "--help", "-h", "help"]
+        &[
+            "install",
+            "update",
+            "remove",
+            "enable",
+            "disable",
+            "available.list",
+            "available.search",
+            "available.info",
+            "installed.list",
+            "--help",
+            "-h",
+            "help",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
         Some(&PLUGIN_HELP)
     }
-    
+
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Check for help requests before normal verb processing
         if self.should_show_help(verb, args) {
             // Extract verb name for specific help if requested
             fn named(v: Option<&String>) -> Option<&str> {
-                v.map(|s| s.as_str()).filter(|s| !s.is_empty() && *s != "true")
+                v.map(|s| s.as_str())
+                    .filter(|s| !s.is_empty() && *s != "true")
             }
             let verb_specific = if let Some(v) = verb.strip_prefix("--help=") {
                 // Format: --help=install
                 Some(v)
-            } else if self.verbs().contains(&verb) && !crate::core::help::HELP_ALIASES.contains(&verb) {
+            } else if self.verbs().contains(&verb)
+                && !crate::core::help::HELP_ALIASES.contains(&verb)
+            {
                 // Format: plugin://aws.install(help=true)
-                named(args.get("verb")).or(named(args.get("help"))).or(Some(verb))
+                named(args.get("verb"))
+                    .or(named(args.get("help")))
+                    .or(Some(verb))
             } else {
                 // Check if help is requested for a specific verb via arguments
                 named(args.get("verb")).or(named(args.get("help")))
             };
-            
+
             return self.display_help(io, verb_specific);
         }
 
@@ -1272,8 +1376,11 @@ impl Handle for PluginHandle {
                 // Handle help verbs - look for specific verb in arguments
                 let verb_specific = args.get("verb").map(|s| s.as_str());
                 self.display_help(io, verb_specific)
-            },
-            _ => bail!("Unknown verb: {}. Supported verbs: install, update, remove, enable, disable, available.list, available.search, available.info, installed.list", verb),
+            }
+            _ => bail!(
+                "Unknown verb: {}. Supported verbs: install, update, remove, enable, disable, available.list, available.search, available.info, installed.list",
+                verb
+            ),
         }
     }
 }
@@ -1367,15 +1474,15 @@ pub struct InstalledListArgs {
     pub prefix: Option<String>,
     pub tag: Option<String>,
     pub source: Option<String>,
-    
+
     // Pagination
     pub limit: i32,
     pub offset: i32,
-    
+
     // Sorting
     pub sort: String,
     pub order: String,
-    
+
     // Output shaping
     pub format: String,
 }
@@ -1486,7 +1593,7 @@ struct CatalogSourceInfo {
 fn parse_available_search_args(args: &Args) -> Result<AvailableSearchOptions> {
     // Parse free-text query
     let q = args.get("q").cloned();
-    
+
     // Parse and normalize tags (semicolon-separated, sorted for determinism)
     let tags = if let Some(tags_str) = args.get("tags") {
         let mut parsed_tags: Vec<String> = tags_str
@@ -1503,7 +1610,7 @@ fn parse_available_search_args(args: &Args) -> Result<AvailableSearchOptions> {
     // Parse owner filter
     let owner = args.get("owner").cloned();
 
-    // Parse name filter  
+    // Parse name filter
     let name = args.get("name").cloned();
 
     // Parse min_version filter
@@ -1511,7 +1618,8 @@ fn parse_available_search_args(args: &Args) -> Result<AvailableSearchOptions> {
 
     // Parse max_results with bounds checking
     let max_results = if let Some(max_str) = args.get("max_results") {
-        let max: usize = max_str.parse()
+        let max: usize = max_str
+            .parse()
             .map_err(|_| anyhow::anyhow!("Invalid max_results: must be an integer"))?;
         if max < 1 || max > 200 {
             bail!("max_results must be between 1 and 200, got {}", max);
@@ -1522,11 +1630,15 @@ fn parse_available_search_args(args: &Args) -> Result<AvailableSearchOptions> {
     };
 
     // Parse source
-    let source = args.get("source").cloned().unwrap_or_else(|| "default".to_string());
-    
+    let source = args
+        .get("source")
+        .cloned()
+        .unwrap_or_else(|| "default".to_string());
+
     // Parse timeout with bounds checking
     let timeout_ms = if let Some(timeout_str) = args.get("timeout_ms") {
-        let timeout: u64 = timeout_str.parse()
+        let timeout: u64 = timeout_str
+            .parse()
             .map_err(|_| anyhow::anyhow!("Invalid timeout_ms: must be an integer"))?;
         if timeout < 100 || timeout > 60000 {
             bail!("timeout_ms must be between 100 and 60000, got {}", timeout);
@@ -1559,8 +1671,11 @@ fn parse_available_search_args(args: &Args) -> Result<AvailableSearchOptions> {
 /// Parse arguments for available.list verb
 fn parse_available_list_args(args: &Args) -> Result<AvailableListOptions> {
     // Parse source
-    let source = args.get("source").cloned().unwrap_or_else(|| "default".to_string());
-    
+    let source = args
+        .get("source")
+        .cloned()
+        .unwrap_or_else(|| "default".to_string());
+
     // Validate and parse source
     let source = if source == "default" {
         source
@@ -1577,7 +1692,11 @@ fn parse_available_list_args(args: &Args) -> Result<AvailableListOptions> {
 
     // Parse tags
     let tags = if let Some(tags_str) = args.get("tags") {
-        tags_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        tags_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     } else {
         Vec::new()
     };
@@ -1593,13 +1712,15 @@ fn parse_available_list_args(args: &Args) -> Result<AvailableListOptions> {
     });
 
     // Parse include_prerelease
-    let include_prerelease = args.get("include_prerelease")
+    let include_prerelease = args
+        .get("include_prerelease")
         .map(|s| s == "true")
         .unwrap_or(false);
 
     // Parse limit
     let limit = if let Some(limit_str) = args.get("limit") {
-        let limit: usize = limit_str.parse()
+        let limit: usize = limit_str
+            .parse()
             .map_err(|_| anyhow::anyhow!("Invalid limit: must be an integer"))?;
         if limit > 1000 {
             bail!("Limit too high: maximum 1000");
@@ -1614,14 +1735,18 @@ fn parse_available_list_args(args: &Args) -> Result<AvailableListOptions> {
 
     // Parse offset
     let offset = if let Some(offset_str) = args.get("offset") {
-        offset_str.parse()
+        offset_str
+            .parse()
             .map_err(|_| anyhow::anyhow!("Invalid offset: must be an integer"))?
     } else {
         0
     };
 
     // Parse format
-    let format = args.get("format").cloned().unwrap_or_else(|| "summary".to_string());
+    let format = args
+        .get("format")
+        .cloned()
+        .unwrap_or_else(|| "summary".to_string());
     if format != "summary" && format != "full" {
         bail!("Invalid format: must be 'summary' or 'full'");
     }
@@ -1643,11 +1768,15 @@ fn parse_available_list_args(args: &Args) -> Result<AvailableListOptions> {
 fn load_catalog(source: &str) -> Result<Catalog> {
     let content = if source == "default" {
         // Load from built-in catalog
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .unwrap_or_else(|_| ".".to_string());
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         let catalog_path = PathBuf::from(manifest_dir).join("assets/plugins/catalog.json");
-        fs::read_to_string(&catalog_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load default catalog at {}: {}", catalog_path.display(), e))?
+        fs::read_to_string(&catalog_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to load default catalog at {}: {}",
+                catalog_path.display(),
+                e
+            )
+        })?
     } else if source.starts_with("file:") {
         let path = source.strip_prefix("file:").unwrap();
         fs::read_to_string(path)
@@ -1658,15 +1787,15 @@ fn load_catalog(source: &str) -> Result<Catalog> {
 
     let catalog: Catalog = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse catalog JSON: {}", e))?;
-    
+
     Ok(catalog)
 }
 
 /// Load catalog for search with caching and network support
 fn load_search_catalog(
-    options: &AvailableSearchOptions, 
+    options: &AvailableSearchOptions,
     start_time: SystemTime,
-    timeout: Duration
+    timeout: Duration,
 ) -> Result<(SearchCatalog, serde_json::Value)> {
     // Check if we should use offline mode
     if options.offline {
@@ -1682,7 +1811,7 @@ fn load_search_catalog(
     // Try to load from cache first, then network if refresh=true or cache is stale
     let cache_path = get_cache_path(&options.source)?;
     let use_cache = !options.refresh && cache_path.exists();
-    
+
     if use_cache {
         match load_cached_catalog(options) {
             Ok((catalog, source)) => return Ok((catalog, source)),
@@ -1720,61 +1849,76 @@ fn get_cache_path(source: &str) -> Result<PathBuf> {
         // Fallback for tests or unusual environments
         std::env::temp_dir().join("resh-test-state")
     };
-    
+
     let cache_dir = state_dir.join("resh/plugins");
-    fs::create_dir_all(&cache_dir).map_err(|e| anyhow::anyhow!("Failed to create cache directory: {}", e))?;
-    
+    fs::create_dir_all(&cache_dir)
+        .map_err(|e| anyhow::anyhow!("Failed to create cache directory: {}", e))?;
+
     let cache_file = if source == "default" {
         cache_dir.join("index-cache.json")
     } else {
         // Create a safe filename from the source URL
-        let safe_name = source.chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        let safe_name = source
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect::<String>();
         cache_dir.join(format!("cache-{}.json", safe_name))
     };
-    
+
     Ok(cache_file)
 }
 
 /// Load catalog from cache
-fn load_cached_catalog(options: &AvailableSearchOptions) -> Result<(SearchCatalog, serde_json::Value)> {
+fn load_cached_catalog(
+    options: &AvailableSearchOptions,
+) -> Result<(SearchCatalog, serde_json::Value)> {
     // For testing/offline mode, first try fixture data if available
     if options.offline {
         if let Ok(result) = load_fixture_catalog(options) {
             return Ok(result);
         }
     }
-    
+
     // Fall back to normal cache behavior
     let cache_path = get_cache_path(&options.source)?;
-    
+
     if !cache_path.exists() {
         bail!("No cached catalog found at {}", cache_path.display());
     }
 
     let cache_content = fs::read_to_string(&cache_path)
         .map_err(|e| anyhow::anyhow!("Failed to read cache: {}", e))?;
-    
+
     let cache_data: CacheData = serde_json::from_str(&cache_content)
         .map_err(|e| anyhow::anyhow!("Failed to parse cache: {}", e))?;
-    
+
     // Convert to search format
     let catalog = SearchCatalog {
-        plugins: cache_data.catalog.plugins.into_iter().map(|p| SearchPluginEntry {
-            id: p.id,
-            display_name: p.name,
-            description: p.description,
-            version: p.version,
-            publisher: p.publisher,
-            tags: p.tags,
-            license: Some(p.license),
-            homepage: Some(p.homepage),
-            repo: Some(p.repo),
-            artifact: json!({"type": "crate", "ref": p.entrypoint}), // Simplified
-            sha256: Some(p.sha256),
-            platforms: Some(p.platforms),
-        }).collect(),
+        plugins: cache_data
+            .catalog
+            .plugins
+            .into_iter()
+            .map(|p| SearchPluginEntry {
+                id: p.id,
+                display_name: p.name,
+                description: p.description,
+                version: p.version,
+                publisher: p.publisher,
+                tags: p.tags,
+                license: Some(p.license),
+                homepage: Some(p.homepage),
+                repo: Some(p.repo),
+                artifact: json!({"type": "crate", "ref": p.entrypoint}), // Simplified
+                sha256: Some(p.sha256),
+                platforms: Some(p.platforms),
+            })
+            .collect(),
     };
 
     let source_info = json!({
@@ -1788,32 +1932,35 @@ fn load_cached_catalog(options: &AvailableSearchOptions) -> Result<(SearchCatalo
 }
 
 /// Load catalog from test fixture
-fn load_fixture_catalog(options: &AvailableSearchOptions) -> Result<(SearchCatalog, serde_json::Value)> {
+fn load_fixture_catalog(
+    options: &AvailableSearchOptions,
+) -> Result<(SearchCatalog, serde_json::Value)> {
     // Try multiple possible paths for the fixture file
     let fixture_paths = [
         "tests/fixtures/plugins-index.json",
-        "../tests/fixtures/plugins-index.json", 
+        "../tests/fixtures/plugins-index.json",
         "../../tests/fixtures/plugins-index.json",
     ];
-    
-    let test_fixture_path = fixture_paths.iter()
+
+    let test_fixture_path = fixture_paths
+        .iter()
         .map(|p| std::path::Path::new(p))
         .find(|p| p.exists())
         .ok_or_else(|| anyhow::anyhow!("No test fixture found in any of: {:?}", fixture_paths))?;
 
     let content = fs::read_to_string(test_fixture_path)
         .map_err(|e| anyhow::anyhow!("Failed to read test fixture: {}", e))?;
-    
+
     let catalog: SearchCatalog = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse test fixture: {}", e))?;
-    
+
     let source_info = json!({
         "id": options.source,
         "mode": "fixture",
         "ref": test_fixture_path.to_string_lossy(),
         "fetched_at": chrono::Utc::now().to_rfc3339()
     });
-    
+
     Ok((catalog, source_info))
 }
 
@@ -1821,7 +1968,7 @@ fn load_fixture_catalog(options: &AvailableSearchOptions) -> Result<(SearchCatal
 fn fetch_and_cache_catalog(
     options: &AvailableSearchOptions,
     start_time: SystemTime,
-    timeout: Duration
+    timeout: Duration,
 ) -> Result<(SearchCatalog, serde_json::Value)> {
     // Check timeout
     if start_time.elapsed().unwrap_or(Duration::ZERO) > timeout {
@@ -1836,7 +1983,8 @@ fn fetch_and_cache_catalog(
 
     // Calculate remaining timeout for network request
     let elapsed = start_time.elapsed().unwrap_or(Duration::ZERO);
-    let remaining_timeout = timeout.checked_sub(elapsed)
+    let remaining_timeout = timeout
+        .checked_sub(elapsed)
         .ok_or_else(|| anyhow::anyhow!("Timeout exceeded before network request"))?;
 
     // Use reqwest blocking client with timeout
@@ -1845,14 +1993,17 @@ fn fetch_and_cache_catalog(
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {}", e))?;
 
-    let response = client.get(&url).send()
+    let response = client
+        .get(&url)
+        .send()
         .map_err(|e| anyhow::anyhow!("Network fetch failed: {}", e))?;
 
     if !response.status().is_success() {
         bail!("HTTP error {}: {}", response.status(), url);
     }
 
-    let content = response.text()
+    let content = response
+        .text()
         .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
 
     // Parse the catalog
@@ -1871,21 +2022,25 @@ fn fetch_and_cache_catalog(
         catalog: Catalog {
             version: 1,
             generated_at: Utc::now().to_rfc3339(),
-            plugins: catalog.plugins.iter().map(|p| PluginRecord {
-                id: p.id.clone(),
-                name: p.display_name.clone(),
-                description: p.description.clone(),
-                version: p.version.clone(),
-                publisher: p.publisher.clone(),
-                license: p.license.clone().unwrap_or_else(|| "Unknown".to_string()),
-                tags: p.tags.clone(),
-                platforms: p.platforms.clone().unwrap_or_default(),
-                entrypoint: "resh-plugin".to_string(), // Default
-                homepage: p.homepage.clone().unwrap_or_default(),
-                repo: p.repo.clone().unwrap_or_default(),
-                sha256: p.sha256.clone().unwrap_or_default(),
-                artifacts: None,
-            }).collect(),
+            plugins: catalog
+                .plugins
+                .iter()
+                .map(|p| PluginRecord {
+                    id: p.id.clone(),
+                    name: p.display_name.clone(),
+                    description: p.description.clone(),
+                    version: p.version.clone(),
+                    publisher: p.publisher.clone(),
+                    license: p.license.clone().unwrap_or_else(|| "Unknown".to_string()),
+                    tags: p.tags.clone(),
+                    platforms: p.platforms.clone().unwrap_or_default(),
+                    entrypoint: "resh-plugin".to_string(), // Default
+                    homepage: p.homepage.clone().unwrap_or_default(),
+                    repo: p.repo.clone().unwrap_or_default(),
+                    sha256: p.sha256.clone().unwrap_or_default(),
+                    artifacts: None,
+                })
+                .collect(),
         },
     };
 
@@ -1927,8 +2082,12 @@ struct RawSearchCatalog {
 }
 
 /// Perform plugin search with scoring and filtering
-fn perform_plugin_search(plugins: &[SearchPluginEntry], options: &AvailableSearchOptions) -> Vec<SearchResult> {
-    let mut results: Vec<SearchResult> = plugins.iter()
+fn perform_plugin_search(
+    plugins: &[SearchPluginEntry],
+    options: &AvailableSearchOptions,
+) -> Vec<SearchResult> {
+    let mut results: Vec<SearchResult> = plugins
+        .iter()
         .filter_map(|plugin| {
             // Apply filters
             if let Some(ref owner) = options.owner {
@@ -1951,11 +2110,13 @@ fn perform_plugin_search(plugins: &[SearchPluginEntry], options: &AvailableSearc
 
             if !options.tags.is_empty() {
                 // All specified tags must be present (AND semantics)
-                let plugin_tags_lower: Vec<String> = plugin.tags.iter()
-                    .map(|t| t.to_lowercase())
-                    .collect();
+                let plugin_tags_lower: Vec<String> =
+                    plugin.tags.iter().map(|t| t.to_lowercase()).collect();
                 for required_tag in &options.tags {
-                    if !plugin_tags_lower.iter().any(|t| t == &required_tag.to_lowercase()) {
+                    if !plugin_tags_lower
+                        .iter()
+                        .any(|t| t == &required_tag.to_lowercase())
+                    {
                         return None;
                     }
                 }
@@ -2008,7 +2169,10 @@ fn perform_plugin_search(plugins: &[SearchPluginEntry], options: &AvailableSearc
 }
 
 /// Calculate search score and highlights for a plugin
-fn calculate_search_score(plugin: &SearchPluginEntry, query: &Option<String>) -> (f64, Vec<String>) {
+fn calculate_search_score(
+    plugin: &SearchPluginEntry,
+    query: &Option<String>,
+) -> (f64, Vec<String>) {
     let Some(q) = query else {
         // No query means all results have same score
         return (1.0, vec![]);
@@ -2083,7 +2247,10 @@ fn parse_semver(version: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// Filter and sort plugins based on options
-fn filter_and_sort_plugins(plugins: &[PluginRecord], options: &AvailableListOptions) -> Vec<serde_json::Value> {
+fn filter_and_sort_plugins(
+    plugins: &[PluginRecord],
+    options: &AvailableListOptions,
+) -> Vec<serde_json::Value> {
     // Apply filtering
     let mut filtered: Vec<&PluginRecord> = plugins.iter().collect();
 
@@ -2091,11 +2258,14 @@ fn filter_and_sort_plugins(plugins: &[PluginRecord], options: &AvailableListOpti
     if let Some(ref query) = options.query {
         let query_lower = query.to_lowercase();
         filtered.retain(|plugin| {
-            plugin.id.to_lowercase().contains(&query_lower) ||
-            plugin.name.to_lowercase().contains(&query_lower) ||
-            plugin.description.to_lowercase().contains(&query_lower) ||
-            plugin.publisher.to_lowercase().contains(&query_lower) ||
-            plugin.tags.iter().any(|tag| tag.to_lowercase().contains(&query_lower))
+            plugin.id.to_lowercase().contains(&query_lower)
+                || plugin.name.to_lowercase().contains(&query_lower)
+                || plugin.description.to_lowercase().contains(&query_lower)
+                || plugin.publisher.to_lowercase().contains(&query_lower)
+                || plugin
+                    .tags
+                    .iter()
+                    .any(|tag| tag.to_lowercase().contains(&query_lower))
         });
     }
 
@@ -2103,7 +2273,10 @@ fn filter_and_sort_plugins(plugins: &[PluginRecord], options: &AvailableListOpti
     if !options.tags.is_empty() {
         filtered.retain(|plugin| {
             options.tags.iter().all(|tag| {
-                plugin.tags.iter().any(|plugin_tag| plugin_tag.to_lowercase() == tag.to_lowercase())
+                plugin
+                    .tags
+                    .iter()
+                    .any(|plugin_tag| plugin_tag.to_lowercase() == tag.to_lowercase())
             })
         });
     }
@@ -2116,13 +2289,17 @@ fn filter_and_sort_plugins(plugins: &[PluginRecord], options: &AvailableListOpti
 
     // Filter by platform
     filtered.retain(|plugin| {
-        plugin.platforms.contains(&options.platform) ||
-        plugin.artifacts.as_ref().map_or(false, |artifacts| {
-            let parts: Vec<&str> = options.platform.split('-').collect();
-            if parts.len() != 2 { return false; }
-            let (os, arch) = (parts[0], parts[1]);
-            artifacts.iter().any(|artifact| artifact.os == os && artifact.arch == arch)
-        })
+        plugin.platforms.contains(&options.platform)
+            || plugin.artifacts.as_ref().map_or(false, |artifacts| {
+                let parts: Vec<&str> = options.platform.split('-').collect();
+                if parts.len() != 2 {
+                    return false;
+                }
+                let (os, arch) = (parts[0], parts[1]);
+                artifacts
+                    .iter()
+                    .any(|artifact| artifact.os == os && artifact.arch == arch)
+            })
     });
 
     // Filter by prerelease
@@ -2133,7 +2310,7 @@ fn filter_and_sort_plugins(plugins: &[PluginRecord], options: &AvailableListOpti
     // Sort deterministically: id ASC, then version DESC (semver-aware), then publisher ASC
     filtered.sort_by(|a, b| {
         use std::cmp::Ordering;
-        
+
         // First sort by id
         match a.id.cmp(&b.id) {
             Ordering::Equal => {
@@ -2160,45 +2337,48 @@ fn filter_and_sort_plugins(plugins: &[PluginRecord], options: &AvailableListOpti
     };
 
     // Convert to JSON format based on format option
-    paginated.iter().map(|plugin| {
-        if options.format == "full" {
-            serde_json::to_value(plugin).unwrap()
-        } else {
-            // Summary format - omit large fields
-            json!({
-                "id": plugin.id,
-                "name": plugin.name,
-                "version": plugin.version,
-                "description": plugin.description,
-                "publisher": plugin.publisher,
-                "tags": plugin.tags,
-                "platforms": plugin.platforms,
-                "homepage": plugin.homepage,
-                "repo": plugin.repo,
-                "license": plugin.license
-            })
-        }
-    }).collect()
+    paginated
+        .iter()
+        .map(|plugin| {
+            if options.format == "full" {
+                serde_json::to_value(plugin).unwrap()
+            } else {
+                // Summary format - omit large fields
+                json!({
+                    "id": plugin.id,
+                    "name": plugin.name,
+                    "version": plugin.version,
+                    "description": plugin.description,
+                    "publisher": plugin.publisher,
+                    "tags": plugin.tags,
+                    "platforms": plugin.platforms,
+                    "homepage": plugin.homepage,
+                    "repo": plugin.repo,
+                    "license": plugin.license
+                })
+            }
+        })
+        .collect()
 }
 
 /// Compare semantic versions for sorting (returns std::cmp::Ordering)
 fn compare_semver(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
-    
+
     // Try to parse as semver
     let parse_semver = |v: &str| -> Option<(u32, u32, u32, String)> {
         let mut parts = v.split('-');
         let version_part = parts.next()?;
         let prerelease_part = parts.collect::<Vec<_>>().join("-");
-        
+
         let mut version_nums = version_part.split('.');
         let major: u32 = version_nums.next()?.parse().ok()?;
         let minor: u32 = version_nums.next().unwrap_or("0").parse().ok()?;
         let patch: u32 = version_nums.next().unwrap_or("0").parse().ok()?;
-        
+
         Some((major, minor, patch, prerelease_part))
     };
-    
+
     match (parse_semver(a), parse_semver(b)) {
         (Some((maj_a, min_a, pat_a, pre_a)), Some((maj_b, min_b, pat_b, pre_b))) => {
             match maj_a.cmp(&maj_b) {
@@ -2213,9 +2393,9 @@ fn compare_semver(a: &str, b: &str) -> std::cmp::Ordering {
                             }
                         }
                         other => other,
-                    }
+                    },
                     other => other,
-                }
+                },
                 other => other,
             }
         }
@@ -2229,7 +2409,7 @@ fn compare_semver(a: &str, b: &str) -> std::cmp::Ordering {
 /// Create error envelope
 fn create_error_envelope(
     op: &str,
-    target: &str, 
+    target: &str,
     args: &Args,
     code: i32,
     kind: &str,
@@ -2259,9 +2439,15 @@ fn create_search_error_envelope(
     message: &str,
 ) -> serde_json::Value {
     let details = match code {
-        "PLUGIN_CATALOG_UNAVAILABLE" => json!({"source": args.get("source").unwrap_or(&"default".to_string())}),
-        "PLUGIN_NETWORK_ERROR" => json!({"source": args.get("source").unwrap_or(&"default".to_string())}),
-        "PLUGIN_TIMEOUT" => json!({"timeout_ms": args.get("timeout_ms").unwrap_or(&"5000".to_string())}),
+        "PLUGIN_CATALOG_UNAVAILABLE" => {
+            json!({"source": args.get("source").unwrap_or(&"default".to_string())})
+        }
+        "PLUGIN_NETWORK_ERROR" => {
+            json!({"source": args.get("source").unwrap_or(&"default".to_string())})
+        }
+        "PLUGIN_TIMEOUT" => {
+            json!({"timeout_ms": args.get("timeout_ms").unwrap_or(&"5000".to_string())})
+        }
         _ => json!({}),
     };
 
@@ -2328,12 +2514,16 @@ fn normalize_args_from_raw(args: &Args) -> serde_json::Value {
 
 /// Output envelope with json_pretty support
 fn output_envelope(envelope: &serde_json::Value, args: &Args, io: &mut IoStreams) -> Result<()> {
-    let json_output = if args.get("json_pretty").map(|s| s == "true").unwrap_or(false) {
+    let json_output = if args
+        .get("json_pretty")
+        .map(|s| s == "true")
+        .unwrap_or(false)
+    {
         serde_json::to_string_pretty(envelope)?
     } else {
         serde_json::to_string(envelope)?
     };
-    
+
     writeln!(io.stdout, "{}", json_output)?;
     Ok(())
 }
@@ -2350,9 +2540,7 @@ fn catalog_target_ok(plugin_id: &str, verb: &str, names: &[&str]) -> bool {
 
 /// Error for a plugin verb used without a plugin ID, such as plugin://install.
 fn missing_plugin_id(verb: &str) -> anyhow::Error {
-    anyhow!(
-        "plugin.{verb} requires a plugin ID, for example plugin://<plugin-id>.{verb}"
-    )
+    anyhow!("plugin.{verb} requires a plugin ID, for example plugin://<plugin-id>.{verb}")
 }
 
 pub fn register(reg: &mut crate::core::Registry) {
@@ -2370,7 +2558,10 @@ fn parse_installed_list_args(args: &Args) -> Result<InstalledListArgs> {
         parsed.enabled = match enabled_str.as_str() {
             "true" => Some(true),
             "false" => Some(false),
-            _ => bail!("Invalid enabled value: {}. Must be 'true' or 'false'", enabled_str),
+            _ => bail!(
+                "Invalid enabled value: {}. Must be 'true' or 'false'",
+                enabled_str
+            ),
         };
     }
 
@@ -2382,7 +2573,8 @@ fn parse_installed_list_args(args: &Args) -> Result<InstalledListArgs> {
 
     // Parse pagination
     if let Some(limit_str) = args.get("limit") {
-        parsed.limit = limit_str.parse::<i32>()
+        parsed.limit = limit_str
+            .parse::<i32>()
             .map_err(|_| anyhow!("Invalid limit: {}", limit_str))?;
         if parsed.limit < 1 || parsed.limit > 500 {
             bail!("Invalid limit: {}. Must be between 1 and 500", parsed.limit);
@@ -2390,7 +2582,8 @@ fn parse_installed_list_args(args: &Args) -> Result<InstalledListArgs> {
     }
 
     if let Some(offset_str) = args.get("offset") {
-        parsed.offset = offset_str.parse::<i32>()
+        parsed.offset = offset_str
+            .parse::<i32>()
             .map_err(|_| anyhow!("Invalid offset: {}", offset_str))?;
         if parsed.offset < 0 {
             bail!("Invalid offset: {}. Must be >= 0", parsed.offset);
@@ -2401,7 +2594,10 @@ fn parse_installed_list_args(args: &Args) -> Result<InstalledListArgs> {
     if let Some(sort_str) = args.get("sort") {
         parsed.sort = match sort_str.as_str() {
             "name" | "installed_at" | "updated_at" => sort_str.clone(),
-            _ => bail!("Invalid sort: {}. Must be one of: name, installed_at, updated_at", sort_str),
+            _ => bail!(
+                "Invalid sort: {}. Must be one of: name, installed_at, updated_at",
+                sort_str
+            ),
         };
     }
 
@@ -2416,7 +2612,10 @@ fn parse_installed_list_args(args: &Args) -> Result<InstalledListArgs> {
     if let Some(format_str) = args.get("format") {
         parsed.format = match format_str.as_str() {
             "full" | "summary" | "names" => format_str.clone(),
-            _ => bail!("Invalid format: {}. Must be one of: full, summary, names", format_str),
+            _ => bail!(
+                "Invalid format: {}. Must be one of: full, summary, names",
+                format_str
+            ),
         };
     }
 
@@ -2442,32 +2641,51 @@ fn execute_installed_list(target: &str, args: InstalledListArgs) -> serde_json::
                 actions,
                 13,
                 "permission_denied",
-                &format!("Cannot read installed plugins directory: {}", e)
+                &format!("Cannot read installed plugins directory: {}", e),
             );
         }
     };
 
     // Record action: scan installed directory
-    let install_dir = crate::handles::pluginh::plugin::store::PluginStore::default_plugins_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp/resh-plugins"));
-    add_installed_action(&mut actions, "scan", "installed_dir", true, Some(serde_json::json!({
-        "path": install_dir.to_string_lossy(),
-        "duration_ms": start_time.elapsed().as_millis() as u64
-    })));
+    let install_dir = crate::handles::pluginh::plugin::store::PluginStore::default_plugins_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/resh-plugins"));
+    add_installed_action(
+        &mut actions,
+        "scan",
+        "installed_dir",
+        true,
+        Some(serde_json::json!({
+            "path": install_dir.to_string_lossy(),
+            "duration_ms": start_time.elapsed().as_millis() as u64
+        })),
+    );
 
     // Step 2: Get all installed plugins
     let all_plugins = match get_all_installed_plugins(&store) {
         Ok(plugins) => {
-            add_installed_action(&mut actions, "read", "manifests", true, Some(serde_json::json!({
-                "count": plugins.len(),
-                "duration_ms": start_time.elapsed().as_millis() as u64
-            })));
+            add_installed_action(
+                &mut actions,
+                "read",
+                "manifests",
+                true,
+                Some(serde_json::json!({
+                    "count": plugins.len(),
+                    "duration_ms": start_time.elapsed().as_millis() as u64
+                })),
+            );
             plugins
         }
         Err(e) => {
-            add_installed_action(&mut actions, "read", "manifests", false, Some(serde_json::json!({
-                "error": e.to_string(),
-                "duration_ms": start_time.elapsed().as_millis() as u64
-            })));
+            add_installed_action(
+                &mut actions,
+                "read",
+                "manifests",
+                false,
+                Some(serde_json::json!({
+                    "error": e.to_string(),
+                    "duration_ms": start_time.elapsed().as_millis() as u64
+                })),
+            );
             return create_installed_error_envelope(
                 "plugin.installed.list",
                 target,
@@ -2475,7 +2693,7 @@ fn execute_installed_list(target: &str, args: InstalledListArgs) -> serde_json::
                 actions,
                 20,
                 "plugin_store_corrupted",
-                &format!("Plugin store corrupted: {}", e)
+                &format!("Plugin store corrupted: {}", e),
             );
         }
     };
@@ -2483,51 +2701,84 @@ fn execute_installed_list(target: &str, args: InstalledListArgs) -> serde_json::
     // Step 3: Read enabled registry
     let enabled_plugins = match get_enabled_plugins() {
         Ok(enabled) => {
-            add_installed_action(&mut actions, "read", "enabled_registry", true, Some(serde_json::json!({
-                "count": enabled.len(),
-                "duration_ms": start_time.elapsed().as_millis() as u64
-            })));
+            add_installed_action(
+                &mut actions,
+                "read",
+                "enabled_registry",
+                true,
+                Some(serde_json::json!({
+                    "count": enabled.len(),
+                    "duration_ms": start_time.elapsed().as_millis() as u64
+                })),
+            );
             enabled
         }
         Err(e) => {
-            add_installed_action(&mut actions, "read", "enabled_registry", false, Some(serde_json::json!({
-                "error": e.to_string(),
-                "duration_ms": start_time.elapsed().as_millis() as u64
-            })));
+            add_installed_action(
+                &mut actions,
+                "read",
+                "enabled_registry",
+                false,
+                Some(serde_json::json!({
+                    "error": e.to_string(),
+                    "duration_ms": start_time.elapsed().as_millis() as u64
+                })),
+            );
             std::collections::HashMap::new() // Default to all disabled
         }
     };
 
     // Step 4: Convert to PluginInstalledItem format and apply filters
-    let mut plugin_items: Vec<PluginInstalledItem> = all_plugins.into_iter().map(|(name, metadata)| {
-        let enabled = enabled_plugins.get(&name).copied().unwrap_or(false);
-        convert_to_plugin_item(name, metadata, enabled)
-    }).collect();
+    let mut plugin_items: Vec<PluginInstalledItem> = all_plugins
+        .into_iter()
+        .map(|(name, metadata)| {
+            let enabled = enabled_plugins.get(&name).copied().unwrap_or(false);
+            convert_to_plugin_item(name, metadata, enabled)
+        })
+        .collect();
 
     // Step 5: Apply filters
     plugin_items = apply_filters(plugin_items, &args);
-    add_installed_action(&mut actions, "filter", "apply", true, Some(serde_json::json!({
-        "count": plugin_items.len(),
-        "duration_ms": start_time.elapsed().as_millis() as u64
-    })));
+    add_installed_action(
+        &mut actions,
+        "filter",
+        "apply",
+        true,
+        Some(serde_json::json!({
+            "count": plugin_items.len(),
+            "duration_ms": start_time.elapsed().as_millis() as u64
+        })),
+    );
 
     // Step 6: Apply deterministic sorting
     apply_sorting(&mut plugin_items, &args);
-    add_installed_action(&mut actions, "sort", "apply", true, Some(serde_json::json!({
-        "sort": args.sort,
-        "order": args.order,
-        "duration_ms": start_time.elapsed().as_millis() as u64
-    })));
+    add_installed_action(
+        &mut actions,
+        "sort",
+        "apply",
+        true,
+        Some(serde_json::json!({
+            "sort": args.sort,
+            "order": args.order,
+            "duration_ms": start_time.elapsed().as_millis() as u64
+        })),
+    );
 
     let total = plugin_items.len() as i32;
 
     // Step 7: Apply pagination
     let paginated_items = apply_pagination(&plugin_items, &args);
-    add_installed_action(&mut actions, "paginate", "apply", true, Some(serde_json::json!({
-        "offset": args.offset,
-        "limit": args.limit,
-        "duration_ms": start_time.elapsed().as_millis() as u64
-    })));
+    add_installed_action(
+        &mut actions,
+        "paginate",
+        "apply",
+        true,
+        Some(serde_json::json!({
+            "offset": args.offset,
+            "limit": args.limit,
+            "duration_ms": start_time.elapsed().as_millis() as u64
+        })),
+    );
 
     // Step 8: Format output
     let formatted_items = format_output(&paginated_items, &args);
@@ -2537,14 +2788,21 @@ fn execute_installed_list(target: &str, args: InstalledListArgs) -> serde_json::
 }
 
 /// Get all installed plugins from the plugin store
-fn get_all_installed_plugins(store: &crate::handles::pluginh::plugin::store::PluginStore) -> Result<std::collections::HashMap<String, crate::handles::pluginh::plugin::types::InstalledPlugin>> {
+fn get_all_installed_plugins(
+    store: &crate::handles::pluginh::plugin::store::PluginStore,
+) -> Result<
+    std::collections::HashMap<String, crate::handles::pluginh::plugin::types::InstalledPlugin>,
+> {
     use std::fs;
 
     let mut plugins = std::collections::HashMap::new();
-    
+
     // Use environment variable for test, otherwise use store's default
     let plugins_dir = if let Some(test_dir) = std::env::var_os("RESH_STATE_DIR") {
-        std::path::PathBuf::from(test_dir).join("resh").join("plugins").join("installed")
+        std::path::PathBuf::from(test_dir)
+            .join("resh")
+            .join("plugins")
+            .join("installed")
     } else {
         crate::handles::pluginh::plugin::store::PluginStore::default_plugins_dir()?
     };
@@ -2558,13 +2816,17 @@ fn get_all_installed_plugins(store: &crate::handles::pluginh::plugin::store::Plu
         let entry = entry?;
         if entry.file_type()?.is_dir() {
             let plugin_name = entry.file_name().to_string_lossy().to_string();
-            
+
             // Get current version (follow symlink if exists)
             let current_link = plugins_dir.join(&plugin_name).join("current");
             let version_dir = if current_link.exists() && current_link.is_symlink() {
                 match fs::read_link(&current_link) {
                     Ok(target) => {
-                        let version = target.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        let version = target
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
                         Some(version)
                     }
                     Err(_) => None,
@@ -2593,43 +2855,51 @@ fn get_all_installed_plugins(store: &crate::handles::pluginh::plugin::store::Plu
                 }
             };
 
-            // Load metadata from version directory 
-            let version_dir = plugins_dir.join(&plugin_name).join("versions").join(&version);
+            // Load metadata from version directory
+            let version_dir = plugins_dir
+                .join(&plugin_name)
+                .join("versions")
+                .join(&version);
             let metadata_file = version_dir.join("metadata.json");
-            
+
             if metadata_file.exists() {
                 match fs::read_to_string(&metadata_file) {
                     Ok(content) => {
-                        match serde_json::from_str::<crate::handles::pluginh::plugin::types::InstalledPlugin>(&content) {
+                        match serde_json::from_str::<
+                            crate::handles::pluginh::plugin::types::InstalledPlugin,
+                        >(&content)
+                        {
                             Ok(metadata) => {
                                 plugins.insert(plugin_name, metadata);
                             }
                             Err(_) => {
                                 // Create broken plugin metadata
-                                let broken_metadata = crate::handles::pluginh::plugin::types::InstalledPlugin {
-                                    plugin_id: plugin_name.clone(),
-                                    version,
-                                    install_path: version_dir.to_string_lossy().to_string(),
-                                    bin_path: None,
-                                    installed_at: chrono::Utc::now().to_rfc3339(),
-                                    source: "unknown".to_string(),
-                                    sha256: Some("unknown".to_string()),
-                                };
+                                let broken_metadata =
+                                    crate::handles::pluginh::plugin::types::InstalledPlugin {
+                                        plugin_id: plugin_name.clone(),
+                                        version,
+                                        install_path: version_dir.to_string_lossy().to_string(),
+                                        bin_path: None,
+                                        installed_at: chrono::Utc::now().to_rfc3339(),
+                                        source: "unknown".to_string(),
+                                        sha256: Some("unknown".to_string()),
+                                    };
                                 plugins.insert(plugin_name, broken_metadata);
                             }
                         }
                     }
                     Err(_) => {
                         // Create broken plugin metadata
-                        let broken_metadata = crate::handles::pluginh::plugin::types::InstalledPlugin {
-                            plugin_id: plugin_name.clone(),
-                            version,
-                            install_path: version_dir.to_string_lossy().to_string(),
-                            bin_path: None,
-                            installed_at: chrono::Utc::now().to_rfc3339(),
-                            source: "unknown".to_string(),
-                            sha256: Some("unknown".to_string()),
-                        };
+                        let broken_metadata =
+                            crate::handles::pluginh::plugin::types::InstalledPlugin {
+                                plugin_id: plugin_name.clone(),
+                                version,
+                                install_path: version_dir.to_string_lossy().to_string(),
+                                bin_path: None,
+                                installed_at: chrono::Utc::now().to_rfc3339(),
+                                source: "unknown".to_string(),
+                                sha256: Some("unknown".to_string()),
+                            };
                         plugins.insert(plugin_name, broken_metadata);
                     }
                 }
@@ -2654,8 +2924,8 @@ fn get_all_installed_plugins(store: &crate::handles::pluginh::plugin::store::Plu
 
 /// Get enabled plugins from state manager
 fn get_enabled_plugins() -> Result<std::collections::HashMap<String, bool>> {
-    use std::path::PathBuf;
     use std::fs;
+    use std::path::PathBuf;
 
     // Check for test environment variable first
     let state_dir = if let Some(test_dir) = std::env::var_os("RESH_STATE_DIR") {
@@ -2665,15 +2935,15 @@ fn get_enabled_plugins() -> Result<std::collections::HashMap<String, bool>> {
             .or_else(|| dirs::data_local_dir())
             .unwrap_or_else(|| PathBuf::from("/tmp"))
     };
-    
+
     let enabled_file = state_dir.join("resh").join("plugins").join("enabled.json");
-    
+
     if !enabled_file.exists() {
         return Ok(std::collections::HashMap::new());
     }
 
     let content = fs::read_to_string(&enabled_file)?;
-    
+
     // First try to parse as EnabledRegistry format (proper format)
     if let Ok(registry) = serde_json::from_str::<serde_json::Value>(&content) {
         if let Some(enabled_array) = registry.get("enabled").and_then(|v| v.as_array()) {
@@ -2681,7 +2951,7 @@ fn get_enabled_plugins() -> Result<std::collections::HashMap<String, bool>> {
             for entry in enabled_array {
                 if let (Some(id), Some(_version)) = (
                     entry.get("id").and_then(|v| v.as_str()),
-                    entry.get("version").and_then(|v| v.as_str())
+                    entry.get("version").and_then(|v| v.as_str()),
                 ) {
                     result.insert(id.to_string(), true);
                 }
@@ -2689,16 +2959,20 @@ fn get_enabled_plugins() -> Result<std::collections::HashMap<String, bool>> {
             return Ok(result);
         }
     }
-    
+
     // Fall back to legacy simple HashMap format
-    let enabled: std::collections::HashMap<String, bool> = serde_json::from_str(&content)
-        .unwrap_or_else(|_| std::collections::HashMap::new());
-    
+    let enabled: std::collections::HashMap<String, bool> =
+        serde_json::from_str(&content).unwrap_or_else(|_| std::collections::HashMap::new());
+
     Ok(enabled)
 }
 
 /// Convert plugin metadata to PluginInstalledItem
-fn convert_to_plugin_item(name: String, metadata: crate::handles::pluginh::plugin::types::InstalledPlugin, enabled: bool) -> PluginInstalledItem {
+fn convert_to_plugin_item(
+    name: String,
+    metadata: crate::handles::pluginh::plugin::types::InstalledPlugin,
+    enabled: bool,
+) -> PluginInstalledItem {
     let health = if metadata.version == "unknown" || metadata.source == "unknown" {
         "broken".to_string()
     } else {
@@ -2706,8 +2980,16 @@ fn convert_to_plugin_item(name: String, metadata: crate::handles::pluginh::plugi
     };
 
     let source = PluginSource {
-        source_type: if metadata.source == "unknown" { "unknown".to_string() } else { "registry".to_string() },
-        r#ref: if metadata.source != "unknown" { Some(metadata.source.clone()) } else { None },
+        source_type: if metadata.source == "unknown" {
+            "unknown".to_string()
+        } else {
+            "registry".to_string()
+        },
+        r#ref: if metadata.source != "unknown" {
+            Some(metadata.source.clone())
+        } else {
+            None
+        },
         url: None,
     };
 
@@ -2738,31 +3020,40 @@ fn convert_to_plugin_item(name: String, metadata: crate::handles::pluginh::plugi
 
 /// Read plugin manifest from install directory
 fn read_plugin_manifest(install_path: &str) -> Option<PluginManifestSummary> {
-    use std::path::Path;
     use std::fs;
+    use std::path::Path;
 
     let install_dir = Path::new(install_path);
-    
+
     // Try manifest.json first
     let manifest_json = install_dir.join("manifest.json");
     if manifest_json.exists() {
         if let Ok(content) = fs::read_to_string(&manifest_json) {
             if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&content) {
                 return Some(PluginManifestSummary {
-                    description: manifest.get("description").and_then(|v| v.as_str()).map(String::from),
-                    tags: manifest.get("tags")
+                    description: manifest
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    tags: manifest
+                        .get("tags")
                         .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter()
-                            .filter_map(|v| v.as_str())
-                            .map(String::from)
-                            .collect())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(String::from)
+                                .collect()
+                        })
                         .unwrap_or_default(),
-                    capabilities: manifest.get("capabilities")
+                    capabilities: manifest
+                        .get("capabilities")
                         .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter()
-                            .filter_map(|v| v.as_str())
-                            .map(String::from)
-                            .collect())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(String::from)
+                                .collect()
+                        })
                         .unwrap_or_default(),
                 });
             }
@@ -2784,7 +3075,10 @@ fn read_plugin_manifest(install_path: &str) -> Option<PluginManifestSummary> {
 }
 
 /// Apply filters to plugin list
-fn apply_filters(mut plugins: Vec<PluginInstalledItem>, args: &InstalledListArgs) -> Vec<PluginInstalledItem> {
+fn apply_filters(
+    mut plugins: Vec<PluginInstalledItem>,
+    args: &InstalledListArgs,
+) -> Vec<PluginInstalledItem> {
     plugins.retain(|plugin| {
         // Filter by enabled
         if let Some(enabled) = args.enabled {
@@ -2844,14 +3138,16 @@ fn apply_sorting(plugins: &mut Vec<PluginInstalledItem>, args: &InstalledListArg
                     other => other,
                 }
             }
-            "installed_at" => {
-                a.installed_at.as_ref().unwrap_or(&String::new())
-                    .cmp(b.installed_at.as_ref().unwrap_or(&String::new()))
-            }
-            "updated_at" => {
-                a.updated_at.as_ref().unwrap_or(&String::new())
-                    .cmp(b.updated_at.as_ref().unwrap_or(&String::new()))
-            }
+            "installed_at" => a
+                .installed_at
+                .as_ref()
+                .unwrap_or(&String::new())
+                .cmp(b.installed_at.as_ref().unwrap_or(&String::new())),
+            "updated_at" => a
+                .updated_at
+                .as_ref()
+                .unwrap_or(&String::new())
+                .cmp(b.updated_at.as_ref().unwrap_or(&String::new())),
             _ => std::cmp::Ordering::Equal,
         };
 
@@ -2864,10 +3160,13 @@ fn apply_sorting(plugins: &mut Vec<PluginInstalledItem>, args: &InstalledListArg
 }
 
 /// Apply pagination to plugin list
-fn apply_pagination(plugins: &[PluginInstalledItem], args: &InstalledListArgs) -> Vec<PluginInstalledItem> {
+fn apply_pagination(
+    plugins: &[PluginInstalledItem],
+    args: &InstalledListArgs,
+) -> Vec<PluginInstalledItem> {
     let start = args.offset as usize;
     let end = start + (args.limit as usize);
-    
+
     if start >= plugins.len() {
         vec![]
     } else {
@@ -2883,20 +3182,21 @@ fn format_output(plugins: &[PluginInstalledItem], args: &InstalledListArgs) -> s
             serde_json::json!(names)
         }
         "summary" => {
-            let summary: Vec<serde_json::Value> = plugins.iter().map(|p| {
-                serde_json::json!({
-                    "name": p.name,
-                    "version": p.version,
-                    "enabled": p.enabled,
-                    "source": p.source,
-                    "health": p.health
+            let summary: Vec<serde_json::Value> = plugins
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "name": p.name,
+                        "version": p.version,
+                        "enabled": p.enabled,
+                        "source": p.source,
+                        "health": p.health
+                    })
                 })
-            }).collect();
+                .collect();
             serde_json::json!(summary)
         }
-        "full" | _ => {
-            serde_json::to_value(plugins).unwrap_or(serde_json::json!([]))
-        }
+        "full" | _ => serde_json::to_value(plugins).unwrap_or(serde_json::json!([])),
     }
 }
 
@@ -2906,7 +3206,7 @@ fn create_installed_success_envelope(
     args: &InstalledListArgs,
     actions: Vec<serde_json::Value>,
     total: i32,
-    items: &serde_json::Value
+    items: &serde_json::Value,
 ) -> serde_json::Value {
     let count = match items {
         serde_json::Value::Array(arr) => arr.len() as i32,
@@ -2955,7 +3255,7 @@ fn create_installed_error_envelope(
     actions: Vec<serde_json::Value>,
     code: i32,
     kind: &str,
-    message: &str
+    message: &str,
 ) -> serde_json::Value {
     let normalized_args = serde_json::json!({
         "enabled": args.enabled,
@@ -2995,7 +3295,7 @@ fn add_installed_action(
     action_type: &str,
     target: &str,
     ok: bool,
-    detail: Option<serde_json::Value>
+    detail: Option<serde_json::Value>,
 ) {
     actions.push(serde_json::json!({
         "type": format!("{}.{}", action_type, target),
@@ -3006,13 +3306,21 @@ fn add_installed_action(
 }
 
 /// Output envelope to IO streams
-fn output_installed_envelope(envelope: &serde_json::Value, args: &Args, io: &mut IoStreams) -> Result<()> {
-    let json_output = if args.get("json_pretty").map(|s| s == "true").unwrap_or(false) {
+fn output_installed_envelope(
+    envelope: &serde_json::Value,
+    args: &Args,
+    io: &mut IoStreams,
+) -> Result<()> {
+    let json_output = if args
+        .get("json_pretty")
+        .map(|s| s == "true")
+        .unwrap_or(false)
+    {
         serde_json::to_string_pretty(envelope)?
     } else {
         serde_json::to_string(envelope)?
     };
-    
+
     writeln!(io.stdout, "{}", json_output)?;
     Ok(())
 }
@@ -3020,11 +3328,11 @@ fn output_installed_envelope(envelope: &serde_json::Value, args: &Args, io: &mut
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::registry::{Args, IoStreams};
     use std::collections::HashMap;
     use std::io::Cursor;
     use tempfile::TempDir;
     use url::Url;
-    use crate::core::registry::{Args, IoStreams};
 
     fn create_test_handle(plugin_id: &str) -> PluginHandle {
         PluginHandle {
@@ -3072,13 +3380,20 @@ mod tests {
     #[test]
     fn test_lifecycle_verbs_require_plugin_id() {
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
-        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
         for verb in ["install", "update", "remove", "enable", "disable"] {
             // plugin:// (empty ID) and plugin://<verb> (verb parsed as host)
             for id in ["", verb] {
                 let handle = create_test_handle(id);
                 let err = handle.call(verb, &HashMap::new(), &mut io).unwrap_err();
-                assert!(err.to_string().contains("requires a plugin ID"), "{verb} with id {id:?}: {err}");
+                assert!(
+                    err.to_string().contains("requires a plugin ID"),
+                    "{verb} with id {id:?}: {err}"
+                );
             }
         }
     }
@@ -3087,17 +3402,49 @@ mod tests {
     fn test_catalog_target_forms() {
         // Documented forms
         assert!(catalog_target_ok("", "available.list", &["available"]));
-        assert!(catalog_target_ok("available.list", "available.list", &["available"]));
-        assert!(catalog_target_ok("available.search", "available.search", &["available"]));
-        assert!(catalog_target_ok("available.info", "available.info", &["available"]));
-        assert!(catalog_target_ok("installed.list", "installed.list", &["installed"]));
+        assert!(catalog_target_ok(
+            "available.list",
+            "available.list",
+            &["available"]
+        ));
+        assert!(catalog_target_ok(
+            "available.search",
+            "available.search",
+            &["available"]
+        ));
+        assert!(catalog_target_ok(
+            "available.info",
+            "available.info",
+            &["available"]
+        ));
+        assert!(catalog_target_ok(
+            "installed.list",
+            "installed.list",
+            &["installed"]
+        ));
         // Older doubled forms
-        assert!(catalog_target_ok("available", "available.list", &["available"]));
-        assert!(catalog_target_ok("available", "available.search", &["available"]));
-        assert!(catalog_target_ok("installed", "installed.list", &["installed"]));
+        assert!(catalog_target_ok(
+            "available",
+            "available.list",
+            &["available"]
+        ));
+        assert!(catalog_target_ok(
+            "available",
+            "available.search",
+            &["available"]
+        ));
+        assert!(catalog_target_ok(
+            "installed",
+            "installed.list",
+            &["installed"]
+        ));
         // A plugin ID is not a catalog target
         assert!(!catalog_target_ok("aws", "available.list", &["available"]));
-        assert!(!catalog_target_ok("available", "installed.list", &["installed"]));
+        assert!(!catalog_target_ok(
+            "available",
+            "installed.list",
+            &["installed"]
+        ));
     }
 
     #[test]
@@ -3107,7 +3454,11 @@ mod tests {
         // Invalid sort fails argument parsing, after the target check passed
         args.insert("sort".to_string(), "bogus".to_string());
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
-        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
         handle.call("installed.list", &args, &mut io).unwrap();
         let out = String::from_utf8(stdout.into_inner()).unwrap();
         assert!(!out.contains("invalid_target"), "{out}");
@@ -3130,7 +3481,11 @@ mod tests {
     fn test_help_output_uses_approved_metadata() {
         let handle = create_test_handle("--help");
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
-        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
         handle.call("--help", &HashMap::new(), &mut io).unwrap();
         let out = String::from_utf8(stdout.into_inner()).unwrap();
         assert!(out.starts_with("Handle: plugin"), "{out}");
@@ -3138,7 +3493,11 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("verb".to_string(), "install".to_string());
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
-        let mut io = IoStreams { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        let mut io = IoStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+        };
         handle.call("--help", &args, &mut io).unwrap();
         let out = String::from_utf8(stdout.into_inner()).unwrap();
         assert!(out.contains("Verb: install"), "{out}");
@@ -3150,8 +3509,20 @@ mod tests {
         let verbs = handle.verbs();
         assert_eq!(
             verbs,
-            &["install", "update", "remove", "enable", "disable", "available.list",
-              "available.search", "available.info", "installed.list", "--help", "-h", "help"]
+            &[
+                "install",
+                "update",
+                "remove",
+                "enable",
+                "disable",
+                "available.list",
+                "available.search",
+                "available.info",
+                "installed.list",
+                "--help",
+                "-h",
+                "help"
+            ]
         );
     }
 
@@ -3160,7 +3531,7 @@ mod tests {
         let handle = create_test_handle("test");
         let args = create_test_args(HashMap::new());
         let opts = handle.parse_enable_disable_args(&args).unwrap();
-        
+
         assert_eq!(opts.scope, Scope::User);
         assert!(!opts.force);
         assert!(!opts.dry_run);
@@ -3175,7 +3546,7 @@ mod tests {
         args_map.insert("scope".to_string(), "system".to_string());
         let args = create_test_args(args_map);
         let opts = handle.parse_enable_disable_args(&args).unwrap();
-        
+
         assert_eq!(opts.scope, Scope::System);
     }
 
@@ -3186,7 +3557,7 @@ mod tests {
         args_map.insert("force".to_string(), "true".to_string());
         let args = create_test_args(args_map);
         let opts = handle.parse_enable_disable_args(&args).unwrap();
-        
+
         assert!(opts.force);
     }
 
@@ -3197,7 +3568,7 @@ mod tests {
         args_map.insert("dry_run".to_string(), "true".to_string());
         let args = create_test_args(args_map);
         let opts = handle.parse_enable_disable_args(&args).unwrap();
-        
+
         assert!(opts.dry_run);
     }
 
@@ -3208,7 +3579,7 @@ mod tests {
         args_map.insert("timeout_ms".to_string(), "30000".to_string());
         let args = create_test_args(args_map);
         let opts = handle.parse_enable_disable_args(&args).unwrap();
-        
+
         assert_eq!(opts.timeout_ms, 30000);
     }
 
@@ -3216,13 +3587,13 @@ mod tests {
     fn test_parse_enable_disable_args_timeout_clamping() {
         let handle = create_test_handle("test");
         let mut args_map = HashMap::new();
-        
+
         // Test lower bound
         args_map.insert("timeout_ms".to_string(), "500".to_string());
         let args = create_test_args(args_map.clone());
         let opts = handle.parse_enable_disable_args(&args).unwrap();
         assert_eq!(opts.timeout_ms, 1000);
-        
+
         // Test upper bound
         args_map.insert("timeout_ms".to_string(), "200000".to_string());
         let args = create_test_args(args_map);
@@ -3237,7 +3608,7 @@ mod tests {
         args_map.insert("reason".to_string(), "Testing disable".to_string());
         let args = create_test_args(args_map);
         let opts = handle.parse_enable_disable_args(&args).unwrap();
-        
+
         assert_eq!(opts.reason, "Testing disable");
     }
 
@@ -3248,9 +3619,14 @@ mod tests {
         args_map.insert("scope".to_string(), "invalid".to_string());
         let args = create_test_args(args_map);
         let result = handle.parse_enable_disable_args(&args);
-        
+
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid scope: invalid"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid scope: invalid")
+        );
     }
 
     #[test]
@@ -3261,7 +3637,7 @@ mod tests {
         args_map.insert("reason".to_string(), long_reason);
         let args = create_test_args(args_map);
         let result = handle.parse_enable_disable_args(&args);
-        
+
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Reason too long"));
     }
@@ -3270,17 +3646,22 @@ mod tests {
     fn test_unknown_verb() {
         let handle = create_test_handle("test");
         let args = create_test_args(HashMap::new());
-        
+
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.call("unknown", &args, &mut io);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown verb: unknown"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown verb: unknown")
+        );
     }
 
     #[test]
@@ -3293,22 +3674,35 @@ mod tests {
 
         let handle = create_test_handle("test");
         let args = create_test_args(HashMap::new());
-        
+
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         // This should return Ok with an error status since plugin isn't installed
         let result = handle.call("disable", &args, &mut io);
         assert!(result.is_ok());
         let status = result.unwrap();
         assert!(!status.ok); // Should be an error status
         // Should not be an "unknown verb" error
-        assert!(status.reason.as_ref().map_or(true, |r| !r.contains("Unknown verb")));
-        assert!(status.reason.as_deref().unwrap_or("").contains("not installed"), "{:?}", status.reason);
+        assert!(
+            status
+                .reason
+                .as_ref()
+                .map_or(true, |r| !r.contains("Unknown verb"))
+        );
+        assert!(
+            status
+                .reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("not installed"),
+            "{:?}",
+            status.reason
+        );
         // The (only) store that was used is the temporary one
         assert!(store_dir.is_dir());
     }
@@ -3317,7 +3711,7 @@ mod tests {
     fn test_parse_available_list_args_defaults() {
         let args = create_test_args(HashMap::new());
         let options = parse_available_list_args(&args).unwrap();
-        
+
         assert_eq!(options.source, "default");
         assert_eq!(options.query, None);
         assert_eq!(options.tags, Vec::<String>::new());
@@ -3341,10 +3735,13 @@ mod tests {
         args_map.insert("format".to_string(), "full".to_string());
         let args = create_test_args(args_map);
         let options = parse_available_list_args(&args).unwrap();
-        
+
         assert_eq!(options.source, "file:/tmp/catalog.json");
         assert_eq!(options.query, Some("docker".to_string()));
-        assert_eq!(options.tags, vec!["container".to_string(), "cloud".to_string()]);
+        assert_eq!(
+            options.tags,
+            vec!["container".to_string(), "cloud".to_string()]
+        );
         assert_eq!(options.publisher, Some("resh-community".to_string()));
         assert!(options.include_prerelease);
         assert_eq!(options.limit, 50);
@@ -3358,7 +3755,7 @@ mod tests {
         args_map.insert("limit".to_string(), "2000".to_string());
         let args = create_test_args(args_map);
         let result = parse_available_list_args(&args);
-        
+
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Limit too high"));
     }
@@ -3369,7 +3766,7 @@ mod tests {
         args_map.insert("format".to_string(), "invalid".to_string());
         let args = create_test_args(args_map);
         let result = parse_available_list_args(&args);
-        
+
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid format"));
     }
@@ -3377,27 +3774,33 @@ mod tests {
     #[test]
     fn test_compare_semver() {
         use std::cmp::Ordering;
-        
+
         // Test major version differences
         assert_eq!(compare_semver("2.0.0", "1.0.0"), Ordering::Greater);
         assert_eq!(compare_semver("1.0.0", "2.0.0"), Ordering::Less);
-        
+
         // Test minor version differences
         assert_eq!(compare_semver("1.2.0", "1.1.0"), Ordering::Greater);
         assert_eq!(compare_semver("1.1.0", "1.2.0"), Ordering::Less);
-        
+
         // Test patch version differences
         assert_eq!(compare_semver("1.0.2", "1.0.1"), Ordering::Greater);
         assert_eq!(compare_semver("1.0.1", "1.0.2"), Ordering::Less);
-        
+
         // Test prerelease versions
         assert_eq!(compare_semver("1.0.0", "1.0.0-beta.1"), Ordering::Greater);
         assert_eq!(compare_semver("1.0.0-beta.1", "1.0.0"), Ordering::Less);
-        assert_eq!(compare_semver("1.0.0-beta.2", "1.0.0-beta.1"), Ordering::Greater);
-        
+        assert_eq!(
+            compare_semver("1.0.0-beta.2", "1.0.0-beta.1"),
+            Ordering::Greater
+        );
+
         // Test equal versions
         assert_eq!(compare_semver("1.0.0", "1.0.0"), Ordering::Equal);
-        assert_eq!(compare_semver("1.0.0-beta.1", "1.0.0-beta.1"), Ordering::Equal);
+        assert_eq!(
+            compare_semver("1.0.0-beta.1", "1.0.0-beta.1"),
+            Ordering::Equal
+        );
     }
 
     #[test]
@@ -3414,7 +3817,7 @@ mod tests {
             offset: 0,
             format: "summary".to_string(),
         };
-        
+
         let result = filter_and_sort_plugins(&plugins, &options);
         assert_eq!(result.len(), 0);
     }
@@ -3453,7 +3856,7 @@ mod tests {
                 artifacts: None,
             },
         ];
-        
+
         let options = AvailableListOptions {
             source: "default".to_string(),
             query: Some("docker".to_string()),
@@ -3465,7 +3868,7 @@ mod tests {
             offset: 0,
             format: "summary".to_string(),
         };
-        
+
         let result = filter_and_sort_plugins(&plugins, &options);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0]["id"], "resh.docker");
@@ -3505,7 +3908,7 @@ mod tests {
                 artifacts: None,
             },
         ];
-        
+
         let options = AvailableListOptions {
             source: "default".to_string(),
             query: None,
@@ -3517,7 +3920,7 @@ mod tests {
             offset: 0,
             format: "summary".to_string(),
         };
-        
+
         // Should be sorted by id in ascending order
         let result = filter_and_sort_plugins(&plugins, &options);
         assert_eq!(result.len(), 2);
@@ -3529,14 +3932,14 @@ mod tests {
     fn test_available_list_wrong_target() {
         let handle = create_test_handle("something-else");
         let args = create_test_args(HashMap::new());
-        
+
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.available_list(&args, &mut io);
         assert!(result.is_ok());
         let status = result.unwrap();
@@ -3544,7 +3947,7 @@ mod tests {
         assert_eq!(status.code, Some(5));
     }
 
-    #[test] 
+    #[test]
     fn test_available_list_verbs() {
         let handle = create_test_handle("available");
         let verbs = handle.verbs();
@@ -3557,7 +3960,7 @@ mod tests {
     fn test_parse_installed_list_args_defaults() {
         let args = create_test_args(HashMap::new());
         let result = parse_installed_list_args(&args).unwrap();
-        
+
         assert_eq!(result.enabled, None);
         assert_eq!(result.name, None);
         assert_eq!(result.limit, 200);
@@ -3580,10 +3983,10 @@ mod tests {
         params.insert("sort".to_string(), "installed_at".to_string());
         params.insert("order".to_string(), "desc".to_string());
         params.insert("format".to_string(), "summary".to_string());
-        
+
         let args = create_test_args(params);
         let result = parse_installed_list_args(&args).unwrap();
-        
+
         assert_eq!(result.enabled, Some(true));
         assert_eq!(result.name, Some("test-plugin".to_string()));
         assert_eq!(result.prefix, Some("test-".to_string()));
@@ -3601,10 +4004,15 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("enabled".to_string(), "maybe".to_string());
         let args = create_test_args(params);
-        
+
         let result = parse_installed_list_args(&args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid enabled value"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid enabled value")
+        );
     }
 
     #[test]
@@ -3612,7 +4020,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("limit".to_string(), "1000".to_string());
         let args = create_test_args(params);
-        
+
         let result = parse_installed_list_args(&args);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid limit"));
@@ -3623,7 +4031,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("sort".to_string(), "invalid".to_string());
         let args = create_test_args(params);
-        
+
         let result = parse_installed_list_args(&args);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid sort"));
@@ -3634,7 +4042,7 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("format".to_string(), "invalid".to_string());
         let args = create_test_args(params);
-        
+
         let result = parse_installed_list_args(&args);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid format"));
@@ -3647,10 +4055,10 @@ mod tests {
             create_test_plugin_item("plugin2", false),
             create_test_plugin_item("plugin3", true),
         ];
-        
+
         let mut args = InstalledListArgs::default();
         args.enabled = Some(true);
-        
+
         let filtered = apply_filters(plugins, &args);
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].name, "plugin1");
@@ -3664,10 +4072,10 @@ mod tests {
             create_test_plugin_item("aws-s3", true),
             create_test_plugin_item("azure", true),
         ];
-        
+
         let mut args = InstalledListArgs::default();
         args.name = Some("aws".to_string());
-        
+
         let filtered = apply_filters(plugins, &args);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "aws");
@@ -3680,10 +4088,10 @@ mod tests {
             create_test_plugin_item("aws-s3", true),
             create_test_plugin_item("azure", true),
         ];
-        
+
         let mut args = InstalledListArgs::default();
         args.prefix = Some("aws".to_string());
-        
+
         let filtered = apply_filters(plugins, &args);
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].name, "aws");
@@ -3697,15 +4105,15 @@ mod tests {
             create_test_plugin_item("Alpha", true),
             create_test_plugin_item("beta", true),
         ];
-        
+
         let args = InstalledListArgs {
             sort: "name".to_string(),
             order: "asc".to_string(),
             ..Default::default()
         };
-        
+
         apply_sorting(&mut plugins, &args);
-        
+
         // Should be case-insensitive sort: Alpha, beta, zebra
         assert_eq!(plugins[0].name, "Alpha");
         assert_eq!(plugins[1].name, "beta");
@@ -3719,15 +4127,15 @@ mod tests {
             create_test_plugin_item("beta", true),
             create_test_plugin_item("zebra", true),
         ];
-        
+
         let args = InstalledListArgs {
             sort: "name".to_string(),
             order: "desc".to_string(),
             ..Default::default()
         };
-        
+
         apply_sorting(&mut plugins, &args);
-        
+
         assert_eq!(plugins[0].name, "zebra");
         assert_eq!(plugins[1].name, "beta");
         assert_eq!(plugins[2].name, "alpha");
@@ -3742,13 +4150,13 @@ mod tests {
             create_test_plugin_item("plugin4", true),
             create_test_plugin_item("plugin5", true),
         ];
-        
+
         let args = InstalledListArgs {
             limit: 2,
             offset: 1,
             ..Default::default()
         };
-        
+
         let paginated = apply_pagination(&plugins, &args);
         assert_eq!(paginated.len(), 2);
         assert_eq!(paginated[0].name, "plugin2");
@@ -3757,16 +4165,14 @@ mod tests {
 
     #[test]
     fn test_apply_pagination_empty_result() {
-        let plugins = vec![
-            create_test_plugin_item("plugin1", true),
-        ];
-        
+        let plugins = vec![create_test_plugin_item("plugin1", true)];
+
         let args = InstalledListArgs {
             limit: 2,
             offset: 10,
             ..Default::default()
         };
-        
+
         let paginated = apply_pagination(&plugins, &args);
         assert_eq!(paginated.len(), 0);
     }
@@ -3777,12 +4183,12 @@ mod tests {
             create_test_plugin_item("plugin1", true),
             create_test_plugin_item("plugin2", false),
         ];
-        
+
         let args = InstalledListArgs {
             format: "names".to_string(),
             ..Default::default()
         };
-        
+
         let result = format_output(&plugins, &args);
         let names = result.as_array().unwrap();
         assert_eq!(names.len(), 2);
@@ -3792,25 +4198,23 @@ mod tests {
 
     #[test]
     fn test_format_output_summary() {
-        let plugins = vec![
-            create_test_plugin_item("plugin1", true),
-        ];
-        
+        let plugins = vec![create_test_plugin_item("plugin1", true)];
+
         let args = InstalledListArgs {
             format: "summary".to_string(),
             ..Default::default()
         };
-        
+
         let result = format_output(&plugins, &args);
         let items = result.as_array().unwrap();
         assert_eq!(items.len(), 1);
-        
+
         let item = &items[0];
         assert_eq!(item["name"].as_str().unwrap(), "plugin1");
         assert_eq!(item["version"].as_str().unwrap(), "1.0.0");
         assert_eq!(item["enabled"].as_bool().unwrap(), true);
         assert_eq!(item["health"].as_str().unwrap(), "ok");
-        
+
         // Should not include manifest, paths, installed_at, updated_at
         assert!(item.get("manifest").is_none());
         assert!(item.get("paths").is_none());
@@ -3818,25 +4222,23 @@ mod tests {
 
     #[test]
     fn test_format_output_full() {
-        let plugins = vec![
-            create_test_plugin_item("plugin1", true),
-        ];
-        
+        let plugins = vec![create_test_plugin_item("plugin1", true)];
+
         let args = InstalledListArgs {
             format: "full".to_string(),
             ..Default::default()
         };
-        
+
         let result = format_output(&plugins, &args);
         let items = result.as_array().unwrap();
         assert_eq!(items.len(), 1);
-        
+
         let item = &items[0];
         assert_eq!(item["name"].as_str().unwrap(), "plugin1");
         assert_eq!(item["version"].as_str().unwrap(), "1.0.0");
         assert_eq!(item["enabled"].as_bool().unwrap(), true);
         assert_eq!(item["health"].as_str().unwrap(), "ok");
-        
+
         // Should include all fields
         assert!(item.get("manifest").is_some());
         assert!(item.get("paths").is_some());
@@ -3848,14 +4250,14 @@ mod tests {
     fn test_installed_list_wrong_target() {
         let handle = create_test_handle("something-else");
         let args = create_test_args(HashMap::new());
-        
+
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.installed_list(&args, &mut io);
         assert!(result.is_ok());
         let status = result.unwrap();
@@ -3901,7 +4303,10 @@ mod dry_run_tests {
     use tempfile::TempDir;
 
     fn args(pairs: &[(&str, &str)]) -> Args {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn handle() -> PluginHandle {
@@ -3913,27 +4318,64 @@ mod dry_run_tests {
     #[test]
     fn verify_mode_and_switches_parse_strictly() {
         let h = handle();
-        assert!(matches!(h.parse_install_args(&args(&[])).unwrap().verify, VerifyMode::Sha256));
-        assert!(matches!(h.parse_install_args(&args(&[("verify", "sha256")])).unwrap().verify, VerifyMode::Sha256));
-        assert!(matches!(h.parse_install_args(&args(&[("verify", "none")])).unwrap().verify, VerifyMode::None));
+        assert!(matches!(
+            h.parse_install_args(&args(&[])).unwrap().verify,
+            VerifyMode::Sha256
+        ));
+        assert!(matches!(
+            h.parse_install_args(&args(&[("verify", "sha256")]))
+                .unwrap()
+                .verify,
+            VerifyMode::Sha256
+        ));
+        assert!(matches!(
+            h.parse_install_args(&args(&[("verify", "none")]))
+                .unwrap()
+                .verify,
+            VerifyMode::None
+        ));
         for bad in ["sha265", "md5", "", "NONE", "off"] {
-            assert!(h.parse_install_args(&args(&[("verify", bad)])).is_err(), "verify={bad:?} accepted");
-            assert!(h.parse_update_args(&args(&[("verify", bad)])).is_err(), "verify={bad:?} accepted");
+            assert!(
+                h.parse_install_args(&args(&[("verify", bad)])).is_err(),
+                "verify={bad:?} accepted"
+            );
+            assert!(
+                h.parse_update_args(&args(&[("verify", bad)])).is_err(),
+                "verify={bad:?} accepted"
+            );
         }
         for v in ["true", "1", "yes", "on"] {
-            let i = h.parse_install_args(&args(&[("force", v), ("allow_downgrade", v)])).unwrap();
+            let i = h
+                .parse_install_args(&args(&[("force", v), ("allow_downgrade", v)]))
+                .unwrap();
             assert!(i.force && i.allow_downgrade, "{v}");
-            assert!(h.parse_update_args(&args(&[("strict", v)])).unwrap().strict, "{v}");
-            let r = h.parse_remove_args(&args(&[("force", v), ("purge", v)])).unwrap();
+            assert!(
+                h.parse_update_args(&args(&[("strict", v)])).unwrap().strict,
+                "{v}"
+            );
+            let r = h
+                .parse_remove_args(&args(&[("force", v), ("purge", v)]))
+                .unwrap();
             assert!(r.force && r.purge, "{v}");
-            assert!(h.parse_enable_disable_args(&args(&[("force", v)])).unwrap().force, "{v}");
+            assert!(
+                h.parse_enable_disable_args(&args(&[("force", v)]))
+                    .unwrap()
+                    .force,
+                "{v}"
+            );
         }
         assert!(h.parse_install_args(&args(&[("force", "maybe")])).is_err());
-        assert!(h.parse_install_args(&args(&[("allow_downgrade", "2")])).is_err());
+        assert!(
+            h.parse_install_args(&args(&[("allow_downgrade", "2")]))
+                .is_err()
+        );
         assert!(h.parse_remove_args(&args(&[("force", "maybe")])).is_err());
         assert!(h.parse_remove_args(&args(&[("purge", "y")])).is_err());
         assert!(h.parse_update_args(&args(&[("strict", "sure")])).is_err());
-        assert!(h.parse_enable_disable_args(&args(&[("force", "")])).is_err());
+        assert!(
+            h.parse_enable_disable_args(&args(&[("force", "")]))
+                .is_err()
+        );
     }
 
     #[test]
@@ -3965,20 +4407,36 @@ mod dry_run_tests {
         for v in ["1", "yes", "on", "true"] {
             let store_dir = dir.path().join(format!("plugins-{v}"));
             let op = handle()
-                .parse_install_args(&args(&[("source", "file"), ("path", &path), ("verify", "none"), ("dry_run", v)]))
+                .parse_install_args(&args(&[
+                    ("source", "file"),
+                    ("path", &path),
+                    ("verify", "none"),
+                    ("dry_run", v),
+                ]))
                 .unwrap();
-            let mut engine = ExecutionEngine::with_store(1000, PluginStore::with_dir(&store_dir).unwrap()).unwrap();
+            let mut engine =
+                ExecutionEngine::with_store(1000, PluginStore::with_dir(&store_dir).unwrap())
+                    .unwrap();
             let env = engine.run_plugin_op(op);
             assert!(env.ok, "{v}: {:?}", env.error.map(|e| e.message));
             assert_eq!(env.result.installed, Some(false), "{v}");
-            assert!(!store_dir.join("demo").join("versions").exists(), "dry_run={v} installed");
+            assert!(
+                !store_dir.join("demo").join("versions").exists(),
+                "dry_run={v} installed"
+            );
         }
         // dry_run=false installs into the temporary store.
         let store_dir = dir.path().join("plugins-real");
         let op = handle()
-            .parse_install_args(&args(&[("source", "file"), ("path", &path), ("verify", "none"), ("dry_run", "false")]))
+            .parse_install_args(&args(&[
+                ("source", "file"),
+                ("path", &path),
+                ("verify", "none"),
+                ("dry_run", "false"),
+            ]))
             .unwrap();
-        let mut engine = ExecutionEngine::with_store(1000, PluginStore::with_dir(&store_dir).unwrap()).unwrap();
+        let mut engine =
+            ExecutionEngine::with_store(1000, PluginStore::with_dir(&store_dir).unwrap()).unwrap();
         assert!(engine.run_plugin_op(op).ok);
         assert!(store_dir.join("demo/versions/local").is_dir());
     }

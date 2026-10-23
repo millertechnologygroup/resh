@@ -1,8 +1,8 @@
-use anyhow::{Result, bail, Context};
+use anyhow::{Context, Result, bail};
 use base64::engine::Engine;
 use dashmap::DashMap;
-use serde_json::{json, Value};
-use sqlx::{Pool, Postgres, MySql, Sqlite, Row, Column, TypeInfo, ValueRef};
+use serde_json::{Value, json};
+use sqlx::{Column, MySql, Pool, Postgres, Row, Sqlite, TypeInfo, ValueRef};
 use std::io::Write;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -329,7 +329,8 @@ pub struct QueryConfig {
 
 impl QueryConfig {
     fn from_args(args: &Value) -> Result<Self> {
-        let sql = args.get("sql")
+        let sql = args
+            .get("sql")
             .and_then(|v| v.as_str())
             .context("missing required 'sql' field")?
             .to_string();
@@ -350,18 +351,19 @@ impl QueryConfig {
             Some(_) => bail!("params must be an array or object"),
         };
 
-        let mode_str = args.get("mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("rows");
+        let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("rows");
         let mode = QueryMode::from_str(mode_str)?;
 
-        let timeout_ms = typed_u64(args, "timeout_ms").map_err(anyhow::Error::msg)?
+        let timeout_ms = typed_u64(args, "timeout_ms")
+            .map_err(anyhow::Error::msg)?
             .unwrap_or(5000);
 
-        let max_rows = typed_u64(args, "max_rows").map_err(anyhow::Error::msg)?
+        let max_rows = typed_u64(args, "max_rows")
+            .map_err(anyhow::Error::msg)?
             .unwrap_or(1000);
 
-        let tx_id = args.get("tx_id")
+        let tx_id = args
+            .get("tx_id")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
@@ -400,16 +402,17 @@ pub struct ExecConfig {
 
 impl ExecConfig {
     fn from_args(args: &Value) -> Result<Self, DbError> {
-        let sql = args.get("sql")
+        let sql = args
+            .get("sql")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| DbError::InvalidExecConfig { 
-                message: "missing required 'sql' field".to_string() 
+            .ok_or_else(|| DbError::InvalidExecConfig {
+                message: "missing required 'sql' field".to_string(),
             })?
             .to_string();
 
         if sql.trim().is_empty() {
-            return Err(DbError::InvalidExecConfig { 
-                message: "sql cannot be empty".to_string() 
+            return Err(DbError::InvalidExecConfig {
+                message: "sql cannot be empty".to_string(),
             });
         }
 
@@ -420,33 +423,38 @@ impl ExecConfig {
         let params = match args.get("params") {
             Some(Value::Array(arr)) => arr.clone(),
             Some(Value::Object(_obj)) => {
-                return Err(DbError::InvalidExecConfig { 
-                    message: "named parameters not yet supported, use positional parameters as array".to_string()
+                return Err(DbError::InvalidExecConfig {
+                    message:
+                        "named parameters not yet supported, use positional parameters as array"
+                            .to_string(),
                 });
             }
             Some(Value::Null) | None => Vec::new(),
             Some(_) => {
-                return Err(DbError::InvalidExecConfig { 
-                    message: "params must be an array or object".to_string() 
+                return Err(DbError::InvalidExecConfig {
+                    message: "params must be an array or object".to_string(),
                 });
             }
         };
 
-        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidExecConfig { message: m })?
+        let timeout_ms = typed_u64(args, "timeout_ms")
+            .map_err(|m| DbError::InvalidExecConfig { message: m })?
             .unwrap_or(5000);
 
-        let return_last_insert_id = typed_bool(args, "return_last_insert_id").map_err(|m| DbError::InvalidExecConfig { message: m })?
+        let return_last_insert_id = typed_bool(args, "return_last_insert_id")
+            .map_err(|m| DbError::InvalidExecConfig { message: m })?
             .unwrap_or(false);
 
-        let tx_id = args.get("tx_id")
+        let tx_id = args
+            .get("tx_id")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
         // Validation
         if timeout_ms == 0 {
-            return Err(DbError::InvalidExecConfig { 
-                message: "timeout_ms must be greater than 0".to_string() 
+            return Err(DbError::InvalidExecConfig {
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
@@ -481,8 +489,9 @@ impl ExecConfig {
                     semicolon_count += 1;
                     // Allow one semicolon at the end
                     if semicolon_count > 1 {
-                        return Err(DbError::InvalidExecConfig { 
-                            message: "multiple statements detected (semicolons outside quotes)".to_string() 
+                        return Err(DbError::InvalidExecConfig {
+                            message: "multiple statements detected (semicolons outside quotes)"
+                                .to_string(),
                         });
                     }
                 }
@@ -494,8 +503,8 @@ impl ExecConfig {
         if semicolon_count == 1 {
             let trimmed = sql.trim_end();
             if !trimmed.ends_with(';') {
-                return Err(DbError::InvalidExecConfig { 
-                    message: "multiple statements detected (semicolons outside quotes)".to_string() 
+                return Err(DbError::InvalidExecConfig {
+                    message: "multiple statements detected (semicolons outside quotes)".to_string(),
                 });
             }
         }
@@ -517,37 +526,43 @@ pub struct TablesConfig {
 
 impl TablesConfig {
     fn from_args(args: &Value) -> Result<Self, DbError> {
-        let table = args.get("table")
+        let table = args
+            .get("table")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string());
 
-        let schema = args.get("schema")
+        let schema = args
+            .get("schema")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let include_views = typed_bool(args, "include_views").map_err(|m| DbError::InvalidTablesConfig { message: m })?
+        let include_views = typed_bool(args, "include_views")
+            .map_err(|m| DbError::InvalidTablesConfig { message: m })?
             .unwrap_or(false);
 
-        let include_system = typed_bool(args, "include_system").map_err(|m| DbError::InvalidTablesConfig { message: m })?
+        let include_system = typed_bool(args, "include_system")
+            .map_err(|m| DbError::InvalidTablesConfig { message: m })?
             .unwrap_or(false);
 
-        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidTablesConfig { message: m })?
+        let timeout_ms = typed_u64(args, "timeout_ms")
+            .map_err(|m| DbError::InvalidTablesConfig { message: m })?
             .unwrap_or(5000);
 
-        let max_tables = typed_u64(args, "max_tables").map_err(|m| DbError::InvalidTablesConfig { message: m })?
+        let max_tables = typed_u64(args, "max_tables")
+            .map_err(|m| DbError::InvalidTablesConfig { message: m })?
             .unwrap_or(1000);
 
         // Validation
         if timeout_ms == 0 {
             return Err(DbError::InvalidTablesConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
         if max_tables == 0 {
             return Err(DbError::InvalidTablesConfig {
-                message: "max_tables must be greater than 0".to_string()
+                message: "max_tables must be greater than 0".to_string(),
             });
         }
 
@@ -555,7 +570,7 @@ impl TablesConfig {
         if let Some(ref table_name) = table {
             if table_name.trim().is_empty() {
                 return Err(DbError::InvalidTablesConfig {
-                    message: "table name cannot be empty or whitespace".to_string()
+                    message: "table name cannot be empty or whitespace".to_string(),
                 });
             }
         }
@@ -587,46 +602,54 @@ pub struct SchemaConfig {
 impl SchemaConfig {
     fn from_args(args: &Value) -> Result<Self, DbError> {
         // table is required
-        let table = args.get("table")
+        let table = args
+            .get("table")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .ok_or_else(|| DbError::InvalidSchemaConfig {
-                message: "table is required".to_string()
+                message: "table is required".to_string(),
             })?;
 
         if table.is_empty() {
             return Err(DbError::InvalidSchemaConfig {
-                message: "table cannot be empty".to_string()
+                message: "table cannot be empty".to_string(),
             });
         }
 
-        let schema = args.get("schema")
+        let schema = args
+            .get("schema")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let include_indexes = typed_bool(args, "include_indexes").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
+        let include_indexes = typed_bool(args, "include_indexes")
+            .map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(true);
 
-        let include_foreign_keys = typed_bool(args, "include_foreign_keys").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
+        let include_foreign_keys = typed_bool(args, "include_foreign_keys")
+            .map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(true);
 
-        let include_unique_constraints = typed_bool(args, "include_unique_constraints").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
+        let include_unique_constraints = typed_bool(args, "include_unique_constraints")
+            .map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(true);
 
-        let include_checks = typed_bool(args, "include_checks").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
+        let include_checks = typed_bool(args, "include_checks")
+            .map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(false);
 
-        let include_triggers = typed_bool(args, "include_triggers").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
+        let include_triggers = typed_bool(args, "include_triggers")
+            .map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(false);
 
-        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidSchemaConfig { message: m })?
+        let timeout_ms = typed_u64(args, "timeout_ms")
+            .map_err(|m| DbError::InvalidSchemaConfig { message: m })?
             .unwrap_or(5000);
 
         // Validation
         if timeout_ms == 0 {
             return Err(DbError::InvalidSchemaConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
@@ -654,29 +677,33 @@ pub struct PingConfig {
 
 impl PingConfig {
     fn from_args(args: &Value) -> Result<Self, DbError> {
-        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidPingConfig { message: m })?
+        let timeout_ms = typed_u64(args, "timeout_ms")
+            .map_err(|m| DbError::InvalidPingConfig { message: m })?
             .unwrap_or(1000);
 
-        let retries = typed_u64(args, "retries").map_err(|m| DbError::InvalidPingConfig { message: m })?
+        let retries = typed_u64(args, "retries")
+            .map_err(|m| DbError::InvalidPingConfig { message: m })?
             .map(|v| v.min(u32::MAX as u64) as u32)
             .unwrap_or(0);
 
-        let backoff_ms = typed_u64(args, "backoff_ms").map_err(|m| DbError::InvalidPingConfig { message: m })?
+        let backoff_ms = typed_u64(args, "backoff_ms")
+            .map_err(|m| DbError::InvalidPingConfig { message: m })?
             .unwrap_or(100);
 
-        let detailed = typed_bool(args, "detailed").map_err(|m| DbError::InvalidPingConfig { message: m })?
+        let detailed = typed_bool(args, "detailed")
+            .map_err(|m| DbError::InvalidPingConfig { message: m })?
             .unwrap_or(false);
 
         // Validation
         if timeout_ms == 0 {
             return Err(DbError::InvalidPingConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
         if retries > 10 {
             return Err(DbError::InvalidPingConfig {
-                message: "retries cannot exceed 10".to_string()
+                message: "retries cannot exceed 10".to_string(),
             });
         }
 
@@ -710,7 +737,7 @@ impl DbDriver {
     fn as_str(&self) -> &'static str {
         match self {
             DbDriver::Postgres => "postgres",
-            DbDriver::Mysql => "mysql", 
+            DbDriver::Mysql => "mysql",
             DbDriver::Sqlite => "sqlite",
         }
     }
@@ -728,24 +755,18 @@ impl DbPool {
     /// Get current pool statistics
     pub fn stats(&self) -> PoolStats {
         match self {
-            DbPool::Postgres(pool) => {
-                PoolStats {
-                    size: pool.size(),
-                    num_idle: pool.num_idle(),
-                }
-            }
-            DbPool::Mysql(pool) => {
-                PoolStats {
-                    size: pool.size(),
-                    num_idle: pool.num_idle(),
-                }
-            }
-            DbPool::Sqlite(pool) => {
-                PoolStats {
-                    size: pool.size(),
-                    num_idle: pool.num_idle(),
-                }
-            }
+            DbPool::Postgres(pool) => PoolStats {
+                size: pool.size(),
+                num_idle: pool.num_idle(),
+            },
+            DbPool::Mysql(pool) => PoolStats {
+                size: pool.size(),
+                num_idle: pool.num_idle(),
+            },
+            DbPool::Sqlite(pool) => PoolStats {
+                size: pool.size(),
+                num_idle: pool.num_idle(),
+            },
         }
     }
 }
@@ -836,7 +857,7 @@ impl Default for DbConfig {
             max_connections: 10,
             min_connections: 1,
             connect_timeout_ms: 5000,
-            idle_timeout_ms: 600_000, // 10 minutes
+            idle_timeout_ms: 600_000,   // 10 minutes
             max_lifetime_ms: 1_800_000, // 30 minutes
             tls_mode: None,
             log_queries: false,
@@ -847,7 +868,7 @@ impl Default for DbConfig {
 /// Connection registry for reusing pools
 type ConnectionRegistry = DashMap<(DbDriver, String), Arc<DbConnectionHandle>>;
 
-/// Global connection registry 
+/// Global connection registry
 static CONNECTION_REGISTRY: LazyLock<ConnectionRegistry> = LazyLock::new(|| DashMap::new());
 
 /// Transaction action type
@@ -868,7 +889,10 @@ impl TransactionAction {
             "rollback" => Ok(TransactionAction::Rollback),
             "run" => Ok(TransactionAction::Run),
             _ => Err(DbError::InvalidTransactionConfig {
-                message: format!("invalid action: {}. Valid actions: run, begin, commit, rollback", s)
+                message: format!(
+                    "invalid action: {}. Valid actions: run, begin, commit, rollback",
+                    s
+                ),
             }),
         }
     }
@@ -902,7 +926,10 @@ impl TransactionIsolation {
             "repeatable_read" => Ok(TransactionIsolation::RepeatableRead),
             "serializable" => Ok(TransactionIsolation::Serializable),
             _ => Err(DbError::InvalidTransactionConfig {
-                message: format!("invalid isolation level: {}. Valid levels: default, read_uncommitted, read_committed, repeatable_read, serializable", s)
+                message: format!(
+                    "invalid isolation level: {}. Valid levels: default, read_uncommitted, read_committed, repeatable_read, serializable",
+                    s
+                ),
             }),
         }
     }
@@ -939,18 +966,22 @@ impl TransactionConfig {
             (TransactionAction::Run, Some(list)) => list,
             (TransactionAction::Run, None) => {
                 return Err(DbError::InvalidTransactionConfig {
-                    message: "statements is required for 'run' action".to_string()
-                })
+                    message: "statements is required for 'run' action".to_string(),
+                });
             }
             (_, Some(_)) => {
                 return Err(DbError::InvalidTransactionConfig {
-                    message: format!("statements is only valid with action=run, not '{}'", action.as_str())
-                })
+                    message: format!(
+                        "statements is only valid with action=run, not '{}'",
+                        action.as_str()
+                    ),
+                });
             }
             (_, None) => Vec::new(),
         };
 
-        let tx_id = args.get("tx_id")
+        let tx_id = args
+            .get("tx_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -960,7 +991,10 @@ impl TransactionConfig {
                 // tx_id should NOT be provided for begin or run
                 if tx_id.is_some() {
                     return Err(DbError::InvalidTransactionConfig {
-                        message: format!("tx_id must not be provided for '{}' action", action.as_str())
+                        message: format!(
+                            "tx_id must not be provided for '{}' action",
+                            action.as_str()
+                        ),
                     });
                 }
             }
@@ -968,13 +1002,13 @@ impl TransactionConfig {
                 // tx_id is required for commit/rollback
                 if tx_id.is_none() {
                     return Err(DbError::InvalidTransactionConfig {
-                        message: format!("tx_id is required for '{}' action", action.as_str())
+                        message: format!("tx_id is required for '{}' action", action.as_str()),
                     });
                 }
                 if let Some(ref id) = tx_id {
                     if id.trim().is_empty() {
                         return Err(DbError::InvalidTransactionConfig {
-                            message: "tx_id cannot be empty".to_string()
+                            message: "tx_id cannot be empty".to_string(),
                         });
                     }
                 }
@@ -992,19 +1026,21 @@ impl TransactionConfig {
         };
 
         let read_only = if starts_tx {
-            typed_bool(args, "read_only").map_err(|m| DbError::InvalidTransactionConfig { message: m })?
+            typed_bool(args, "read_only")
+                .map_err(|m| DbError::InvalidTransactionConfig { message: m })?
                 .unwrap_or(false)
         } else {
             false // Ignore read_only for commit/rollback
         };
 
-        let timeout_ms = typed_u64(args, "timeout_ms").map_err(|m| DbError::InvalidTransactionConfig { message: m })?
+        let timeout_ms = typed_u64(args, "timeout_ms")
+            .map_err(|m| DbError::InvalidTransactionConfig { message: m })?
             .unwrap_or(5000);
 
         // Validation
         if timeout_ms == 0 {
             return Err(DbError::InvalidTransactionConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
@@ -1038,7 +1074,10 @@ impl TxStatement {
             Some(Value::Array(items)) => items,
             Some(Value::String(text)) => {
                 parsed = serde_json::from_str::<Value>(text).map_err(|e| {
-                    invalid(format!("statements must be a JSON array of SQL strings: {}", e))
+                    invalid(format!(
+                        "statements must be a JSON array of SQL strings: {}",
+                        e
+                    ))
                 })?;
                 match &parsed {
                     Value::Array(items) => items,
@@ -1056,13 +1095,19 @@ impl TxStatement {
                 Value::String(sql) => (sql.clone(), Vec::new()),
                 Value::Object(obj) => {
                     let sql = obj.get("sql").and_then(|v| v.as_str()).ok_or_else(|| {
-                        invalid(format!("statements[{}] must have a string 'sql' field", index))
+                        invalid(format!(
+                            "statements[{}] must have a string 'sql' field",
+                            index
+                        ))
                     })?;
                     let params = match obj.get("params") {
                         None | Some(Value::Null) => Vec::new(),
                         Some(Value::Array(p)) => p.clone(),
                         Some(_) => {
-                            return Err(invalid(format!("statements[{}].params must be an array", index)))
+                            return Err(invalid(format!(
+                                "statements[{}].params must be an array",
+                                index
+                            )));
                         }
                     };
                     (sql.to_string(), params)
@@ -1071,14 +1116,17 @@ impl TxStatement {
                     return Err(invalid(format!(
                         "statements[{}] must be a SQL string or an object with sql and params",
                         index
-                    )))
+                    )));
                 }
             };
             if sql.trim().is_empty() {
                 return Err(invalid(format!("statements[{}] cannot be empty", index)));
             }
             ExecConfig::validate_single_statement(&sql).map_err(|_| {
-                invalid(format!("statements[{}] must be a single SQL statement", index))
+                invalid(format!(
+                    "statements[{}] must be a single SQL statement",
+                    index
+                ))
             })?;
             out.push(TxStatement { sql, params });
         }
@@ -1139,14 +1187,21 @@ impl DbHandle {
     /// arguments contain a bare `help`/`--help`/`-h` flag. The topic is the
     /// verb whose help was asked for, if any.
     fn help_topic<'a>(&self, verb: &'a str, args: &'a Args) -> Option<Option<&'a str>> {
-        let from_args = || args.get("verb").map(|s| s.as_str()).filter(|s| !s.is_empty());
+        let from_args = || {
+            args.get("verb")
+                .map(|s| s.as_str())
+                .filter(|s| !s.is_empty())
+        };
         if verb == "help" || crate::core::help::is_help_flag(verb) || self.driver_str == "help" {
             return Some(from_args());
         }
         if let Some(v) = verb.strip_prefix("--help=") {
             return Some(Some(v).filter(|s| !s.is_empty()));
         }
-        if ["help", "h", "--help", "-h"].iter().any(|k| args.contains_key(*k)) {
+        if ["help", "h", "--help", "-h"]
+            .iter()
+            .any(|k| args.contains_key(*k))
+        {
             return Some(Some(verb));
         }
         None
@@ -1170,7 +1225,7 @@ impl DbHandle {
         // Check for help flags in URL path or host early
         let path = url.path();
         let host = url.host_str().unwrap_or("");
-        
+
         // Special handling for help requests at URL level (exact match, so
         // aliases such as db://sqlite/my-hosts are not treated as help)
         if crate::core::help::is_help_flag(host) || crate::core::help::is_help_flag(path) {
@@ -1181,11 +1236,12 @@ impl DbHandle {
                 alias: "help".to_string(),
             });
         }
-        
+
         // Parse URL format: db://<driver>/<alias>
-        let host = url.host_str()
+        let host = url
+            .host_str()
             .context("db:// URL must have driver as host")?;
-        
+
         // Extract alias from path, removing leading slash
         let path = url.path();
         let alias = if path.starts_with('/') {
@@ -1193,15 +1249,15 @@ impl DbHandle {
         } else {
             path
         };
-        
+
         if alias.is_empty() {
             bail!("db:// URL must specify alias in path");
         }
 
         // Parse driver - fail for unsupported drivers
-        let driver = DbDriver::from_str(host)
-            .with_context(|| format!("unsupported driver: {}", host))?;
-        
+        let driver =
+            DbDriver::from_str(host).with_context(|| format!("unsupported driver: {}", host))?;
+
         Ok(Self {
             driver,
             driver_str: host.to_string(),
@@ -1215,15 +1271,16 @@ impl DbHandle {
         if DbDriver::from_str(&self.driver_str).is_err() {
             return Err(DbError::UnsupportedDriver {
                 driver: self.driver_str.clone(),
-            }.into());
+            }
+            .into());
         }
-        
+
         // Parse and validate configuration
         let config = self.parse_config(&args)?;
-        
+
         // Get or resolve DSN
         let dsn = self.resolve_dsn(&args)?;
-        
+
         // Create DSN hash for alias conflict detection
         let dsn_hash = {
             use std::collections::hash_map::DefaultHasher;
@@ -1235,16 +1292,17 @@ impl DbHandle {
 
         // Check for existing connection in registry
         let cache_key = (self.driver.clone(), self.alias.clone());
-        
+
         if let Some(existing_handle) = CONNECTION_REGISTRY.get(&cache_key) {
             // Check for alias conflict (same alias with different DSN)
             if existing_handle.dsn_hash != dsn_hash {
                 return Err(DbError::AliasConflict {
                     driver: self.driver.as_str().to_string(),
                     alias: self.alias.clone(),
-                }.into());
+                }
+                .into());
             }
-            
+
             // Return existing connection
             let stats = existing_handle.pool.stats();
             return Ok(json!({
@@ -1263,7 +1321,7 @@ impl DbHandle {
 
         // Create new connection pool
         let pool = self.create_pool(&dsn, &config).await?;
-        
+
         let connection_handle = Arc::new(DbConnectionHandle {
             driver: self.driver.clone(),
             alias: self.alias.clone(),
@@ -1274,7 +1332,7 @@ impl DbHandle {
 
         // Store in registry
         CONNECTION_REGISTRY.insert(cache_key, connection_handle);
-        
+
         let stats = pool.stats();
         Ok(json!({
             "type": "db_connection",
@@ -1309,7 +1367,9 @@ impl DbHandle {
     /// resh invocation.
     async fn resolve_connection(&self, args: &Value) -> Result<Arc<DbConnectionHandle>> {
         let cache_key = (self.driver.clone(), self.alias.clone());
-        let existing = CONNECTION_REGISTRY.get(&cache_key).map(|r| Arc::clone(r.value()));
+        let existing = CONNECTION_REGISTRY
+            .get(&cache_key)
+            .map(|r| Arc::clone(r.value()));
         if let Some(handle) = existing {
             return Ok(handle);
         }
@@ -1337,9 +1397,15 @@ impl DbHandle {
             .into());
         }
 
-        log::debug!("Auto-connecting driver='{}' alias='{}'", self.driver.as_str(), self.alias);
+        log::debug!(
+            "Auto-connecting driver='{}' alias='{}'",
+            self.driver.as_str(),
+            self.alias
+        );
         self.connect(connect_args).await?;
-        let connected = CONNECTION_REGISTRY.get(&cache_key).map(|r| Arc::clone(r.value()));
+        let connected = CONNECTION_REGISTRY
+            .get(&cache_key)
+            .map(|r| Arc::clone(r.value()));
         connected.ok_or_else(|| {
             DbError::ConnectionNotFound {
                 driver: self.driver.as_str().to_string(),
@@ -1354,27 +1420,32 @@ impl DbHandle {
         let mut config = DbConfig::default();
 
         if let Some(max_conn_str) = args.get("max_connections") {
-            config.max_connections = max_conn_str.parse()
+            config.max_connections = max_conn_str
+                .parse()
                 .context("max_connections must be a positive integer")?;
         }
 
         if let Some(min_conn_str) = args.get("min_connections") {
-            config.min_connections = min_conn_str.parse()
+            config.min_connections = min_conn_str
+                .parse()
                 .context("min_connections must be a positive integer")?;
         }
 
         if let Some(timeout_str) = args.get("connect_timeout_ms") {
-            config.connect_timeout_ms = timeout_str.parse()
+            config.connect_timeout_ms = timeout_str
+                .parse()
                 .context("connect_timeout_ms must be a positive integer")?;
         }
 
         if let Some(idle_str) = args.get("idle_timeout_ms") {
-            config.idle_timeout_ms = idle_str.parse()
+            config.idle_timeout_ms = idle_str
+                .parse()
                 .context("idle_timeout_ms must be a positive integer")?;
         }
 
         if let Some(lifetime_str) = args.get("max_lifetime_ms") {
-            config.max_lifetime_ms = lifetime_str.parse()
+            config.max_lifetime_ms = lifetime_str
+                .parse()
                 .context("max_lifetime_ms must be a positive integer")?;
         }
 
@@ -1383,16 +1454,17 @@ impl DbHandle {
         }
 
         if let Some(log_queries_str) = args.get("log_queries") {
-            config.log_queries = crate::core::lenient::from_value::<bool>(Value::String(log_queries_str.clone()))
-                .map_err(|_| DbError::InvalidConfig {
-                    field: "log_queries".to_string(),
-                    message: format!("must be true or false, got '{}'", log_queries_str),
-                })?;
+            config.log_queries =
+                crate::core::lenient::from_value::<bool>(Value::String(log_queries_str.clone()))
+                    .map_err(|_| DbError::InvalidConfig {
+                        field: "log_queries".to_string(),
+                        message: format!("must be true or false, got '{}'", log_queries_str),
+                    })?;
         }
 
         // Validate configuration
         self.validate_config(&config)?;
-        
+
         Ok(config)
     }
 
@@ -1402,42 +1474,48 @@ impl DbHandle {
             return Err(DbError::InvalidConfig {
                 field: "max_connections".to_string(),
                 message: "must be greater than 0".to_string(),
-            }.into());
+            }
+            .into());
         }
 
         if config.min_connections == 0 {
             return Err(DbError::InvalidConfig {
-                field: "min_connections".to_string(), 
+                field: "min_connections".to_string(),
                 message: "must be greater than 0".to_string(),
-            }.into());
+            }
+            .into());
         }
 
         if config.max_connections < config.min_connections {
             return Err(DbError::InvalidConfig {
                 field: "connections".to_string(),
                 message: "max_connections must be >= min_connections".to_string(),
-            }.into());
+            }
+            .into());
         }
 
         if config.connect_timeout_ms == 0 {
             return Err(DbError::InvalidConfig {
                 field: "connect_timeout_ms".to_string(),
-                message: "must be greater than 0".to_string(), 
-            }.into());
+                message: "must be greater than 0".to_string(),
+            }
+            .into());
         }
 
         if config.idle_timeout_ms == 0 {
             return Err(DbError::InvalidConfig {
                 field: "idle_timeout_ms".to_string(),
                 message: "must be greater than 0".to_string(),
-            }.into());
+            }
+            .into());
         }
 
         if config.max_lifetime_ms == 0 {
             return Err(DbError::InvalidConfig {
                 field: "max_lifetime_ms".to_string(),
                 message: "must be greater than 0".to_string(),
-            }.into());
+            }
+            .into());
         }
 
         // Validate TLS mode against what the driver supports
@@ -1455,7 +1533,11 @@ impl DbHandle {
             Some(raw) => raw,
         };
         let invalid = |message: String| -> anyhow::Error {
-            DbError::InvalidConfig { field: "tls_mode".to_string(), message }.into()
+            DbError::InvalidConfig {
+                field: "tls_mode".to_string(),
+                message,
+            }
+            .into()
         };
         let mode = TlsMode::parse(raw).ok_or_else(|| {
             invalid(format!(
@@ -1495,7 +1577,8 @@ impl DbHandle {
         Err(DbError::MissingDsn {
             alias: self.alias.clone(),
             env_var,
-        }.into())
+        }
+        .into())
     }
 
     /// Normalize and validate DSN, providing helpful error messages
@@ -1506,60 +1589,76 @@ impl DbHandle {
                 // Validate the scheme matches the driver
                 let expected_scheme = match self.driver {
                     DbDriver::Postgres => "postgresql",
-                    DbDriver::Mysql => "mysql", 
+                    DbDriver::Mysql => "mysql",
                     DbDriver::Sqlite => "sqlite",
                 };
-                
-                if url.scheme() != expected_scheme && !(url.scheme() == "postgres" && expected_scheme == "postgresql") {
+
+                if url.scheme() != expected_scheme
+                    && !(url.scheme() == "postgres" && expected_scheme == "postgresql")
+                {
                     return Err(DbError::InvalidDsn {
                         dsn: dsn.to_string(),
-                        message: format!("DSN scheme '{}' does not match driver '{}'. Expected scheme: '{}'", 
-                                       url.scheme(), self.driver.as_str(), expected_scheme),
-                    }.into());
+                        message: format!(
+                            "DSN scheme '{}' does not match driver '{}'. Expected scheme: '{}'",
+                            url.scheme(),
+                            self.driver.as_str(),
+                            expected_scheme
+                        ),
+                    }
+                    .into());
                 }
-                
+
                 return Ok(dsn.to_string());
             }
             Err(parse_error) => {
                 // Check for common issues and provide helpful suggestions
                 let mut suggestions = Vec::new();
-                
+
                 // Check for shell variable expansion issues (missing @ after password)
                 if dsn.contains("://") && !dsn.contains("@") && dsn.matches(":").count() >= 2 {
                     // Pattern like mysql://user:password192.168.1.1:3306/db suggests $@ was consumed by shell
                     suggestions.push("Password may contain special characters that were interpreted by shell. Use single quotes around DSN or URL-encode special characters ($ becomes %24)".to_string());
                 }
-                
+
                 // Check for unencoded special characters in password/username
-                if dsn.contains("$") || dsn.contains("#") || dsn.contains("%") || dsn.contains("&") {
-                    if !dsn.contains("%") {  // Only suggest if no percent-encoding detected
+                if dsn.contains("$") || dsn.contains("#") || dsn.contains("%") || dsn.contains("&")
+                {
+                    if !dsn.contains("%") {
+                        // Only suggest if no percent-encoding detected
                         suggestions.push("Special characters in username/password need URL encoding (e.g., $ becomes %24, @ becomes %40)".to_string());
                     }
                 }
-                
+
                 // Check for missing port
                 if dsn.contains("://") && !dsn.matches(":").collect::<Vec<_>>().len() >= 2 {
-                    suggestions.push("Missing port number in DSN (e.g., mysql://user:pass@host:3306/db)".to_string());
+                    suggestions.push(
+                        "Missing port number in DSN (e.g., mysql://user:pass@host:3306/db)"
+                            .to_string(),
+                    );
                 }
-                
+
                 // Check for missing database name
                 if dsn.contains("://") {
                     let scheme_pos = dsn.find("://").unwrap() + 3;
                     if !dsn[scheme_pos..].contains("/") {
-                        suggestions.push("Missing database name in DSN (add /database_name at the end)".to_string());
+                        suggestions.push(
+                            "Missing database name in DSN (add /database_name at the end)"
+                                .to_string(),
+                        );
                     }
                 }
-                
+
                 let suggestion_text = if suggestions.is_empty() {
                     "".to_string()
                 } else {
                     format!(" Suggestions: {}", suggestions.join("; "))
                 };
-                
+
                 return Err(DbError::InvalidDsn {
                     dsn: dsn.to_string(),
                     message: format!("Invalid DSN format: {}.{}", parse_error, suggestion_text),
-                }.into());
+                }
+                .into());
             }
         }
     }
@@ -1586,7 +1685,8 @@ impl DbHandle {
 
         match self.driver {
             DbDriver::Postgres => {
-                let mut opts = sqlx::postgres::PgConnectOptions::from_str(dsn).map_err(invalid_dsn)?;
+                let mut opts =
+                    sqlx::postgres::PgConnectOptions::from_str(dsn).map_err(invalid_dsn)?;
                 if let Some(mode) = tls {
                     opts = opts.ssl_mode(mode.postgres());
                 }
@@ -1599,11 +1699,14 @@ impl DbHandle {
                     .max_lifetime(Some(Duration::from_millis(config.max_lifetime_ms)))
                     .connect_with(opts)
                     .await
-                    .map_err(|e| DbError::ConnectFailed { message: format!("PostgreSQL connection failed: {}", e) })?;
+                    .map_err(|e| DbError::ConnectFailed {
+                        message: format!("PostgreSQL connection failed: {}", e),
+                    })?;
                 Ok(DbPool::Postgres(pool))
             }
             DbDriver::Mysql => {
-                let mut opts = sqlx::mysql::MySqlConnectOptions::from_str(dsn).map_err(invalid_dsn)?;
+                let mut opts =
+                    sqlx::mysql::MySqlConnectOptions::from_str(dsn).map_err(invalid_dsn)?;
                 if let Some(mode) = tls {
                     opts = opts.ssl_mode(mode.mysql());
                 }
@@ -1616,11 +1719,14 @@ impl DbHandle {
                     .max_lifetime(Some(Duration::from_millis(config.max_lifetime_ms)))
                     .connect_with(opts)
                     .await
-                    .map_err(|e| DbError::ConnectFailed { message: format!("MySQL connection failed: {}", e) })?;
+                    .map_err(|e| DbError::ConnectFailed {
+                        message: format!("MySQL connection failed: {}", e),
+                    })?;
                 Ok(DbPool::Mysql(pool))
             }
             DbDriver::Sqlite => {
-                let opts = sqlx::sqlite::SqliteConnectOptions::from_str(dsn).map_err(invalid_dsn)?;
+                let opts =
+                    sqlx::sqlite::SqliteConnectOptions::from_str(dsn).map_err(invalid_dsn)?;
                 let opts = logging(opts, config.log_queries);
                 let pool = sqlx::sqlite::SqlitePoolOptions::new()
                     .max_connections(config.max_connections)
@@ -1630,7 +1736,9 @@ impl DbHandle {
                     .max_lifetime(Some(Duration::from_millis(config.max_lifetime_ms)))
                     .connect_with(opts)
                     .await
-                    .map_err(|e| DbError::ConnectFailed { message: format!("SQLite connection failed: {}", e) })?;
+                    .map_err(|e| DbError::ConnectFailed {
+                        message: format!("SQLite connection failed: {}", e),
+                    })?;
                 Ok(DbPool::Sqlite(pool))
             }
         }
@@ -1639,12 +1747,18 @@ impl DbHandle {
     /// Query verb implementation
     pub async fn query(&self, args: Value) -> Result<Value> {
         // Parse configuration
-        let config = QueryConfig::from_args(&args)
-            .map_err(|e| DbError::InvalidQueryConfig { message: e.to_string() })?;
+        let config = QueryConfig::from_args(&args).map_err(|e| DbError::InvalidQueryConfig {
+            message: e.to_string(),
+        })?;
 
         // Log the query (without parameters for security)
-        log::debug!("Executing query for driver='{}' alias='{}' sql='{}' tx_id={:?}", 
-                   self.driver.as_str(), self.alias, config.sql, config.tx_id);
+        log::debug!(
+            "Executing query for driver='{}' alias='{}' sql='{}' tx_id={:?}",
+            self.driver.as_str(),
+            self.alias,
+            config.sql,
+            config.tx_id
+        );
 
         // Check if this should run in a transaction
         if let Some(ref tx_id) = config.tx_id {
@@ -1664,25 +1778,32 @@ impl DbHandle {
         // Execute query with timeout
         let result = tokio::time::timeout(
             Duration::from_millis(config.timeout_ms),
-            self.execute_query(&handle.pool, config)
-        ).await;
+            self.execute_query(&handle.pool, config),
+        )
+        .await;
 
         match result {
             Ok(query_result) => query_result,
-            Err(_) => Err(DbError::QueryTimeout { 
-                timeout_ms: config.timeout_ms 
-            }.into()),
+            Err(_) => Err(DbError::QueryTimeout {
+                timeout_ms: config.timeout_ms,
+            }
+            .into()),
         }
     }
 
     /// Execute query within a transaction
-    async fn execute_query_in_transaction(&self, tx_id: &str, config: &QueryConfig) -> Result<Value> {
+    async fn execute_query_in_transaction(
+        &self,
+        tx_id: &str,
+        config: &QueryConfig,
+    ) -> Result<Value> {
         // Get transaction handle
-        let tx_handle = TRANSACTION_REGISTRY
-            .get(tx_id)
-            .ok_or_else(|| DbError::TransactionNotFound {
-                tx_id: tx_id.to_string(),
-            })?;
+        let tx_handle =
+            TRANSACTION_REGISTRY
+                .get(tx_id)
+                .ok_or_else(|| DbError::TransactionNotFound {
+                    tx_id: tx_id.to_string(),
+                })?;
 
         // Verify driver/alias match
         let expected = format!("{}:{}", self.driver.as_str(), self.alias);
@@ -1698,39 +1819,40 @@ impl DbHandle {
         // Execute query with timeout
         let result = tokio::time::timeout(
             Duration::from_millis(config.timeout_ms),
-            self.execute_query_on_transaction(&*tx_handle, config)
-        ).await;
+            self.execute_query_on_transaction(&*tx_handle, config),
+        )
+        .await;
 
         match result {
             Ok(query_result) => query_result,
-            Err(_) => Err(DbError::QueryTimeout { 
-                timeout_ms: config.timeout_ms 
-            }.into()),
+            Err(_) => Err(DbError::QueryTimeout {
+                timeout_ms: config.timeout_ms,
+            }
+            .into()),
         }
     }
 
     /// Execute query on a transaction handle
-    async fn execute_query_on_transaction(&self, tx_handle: &DbTransactionHandle, config: &QueryConfig) -> Result<Value> {
+    async fn execute_query_on_transaction(
+        &self,
+        tx_handle: &DbTransactionHandle,
+        config: &QueryConfig,
+    ) -> Result<Value> {
         // This is tricky because we need mutable access to the transaction
         // We'll use a different approach: create helper methods that work with the transaction mutex
         let tx_mutex = &tx_handle.tx;
         let mut tx_guard = tx_mutex.lock().unwrap();
-        
-        let tx = tx_guard.as_mut()
+
+        let tx = tx_guard
+            .as_mut()
             .ok_or_else(|| DbError::TransactionClosed {
                 tx_id: tx_handle.tx_id.clone(),
             })?;
 
         match tx {
-            DbTransaction::Postgres(tx) => {
-                self.execute_postgres_query_on_tx(tx, config).await
-            }
-            DbTransaction::Mysql(tx) => {
-                self.execute_mysql_query_on_tx(tx, config).await
-            }
-            DbTransaction::Sqlite(tx) => {
-                self.execute_sqlite_query_on_tx(tx, config).await
-            }
+            DbTransaction::Postgres(tx) => self.execute_postgres_query_on_tx(tx, config).await,
+            DbTransaction::Mysql(tx) => self.execute_mysql_query_on_tx(tx, config).await,
+            DbTransaction::Sqlite(tx) => self.execute_sqlite_query_on_tx(tx, config).await,
         }
     }
 
@@ -1740,8 +1862,13 @@ impl DbHandle {
         let config = ExecConfig::from_args(&args)?;
 
         // Log the exec (without parameters for security)
-        log::debug!("Executing exec for driver='{}' alias='{}' sql='{}' tx_id={:?}", 
-                   self.driver.as_str(), self.alias, config.sql, config.tx_id);
+        log::debug!(
+            "Executing exec for driver='{}' alias='{}' sql='{}' tx_id={:?}",
+            self.driver.as_str(),
+            self.alias,
+            config.sql,
+            config.tx_id
+        );
 
         // Check if this should run in a transaction
         if let Some(ref tx_id) = config.tx_id {
@@ -1761,25 +1888,28 @@ impl DbHandle {
         // Execute with timeout
         let result = tokio::time::timeout(
             Duration::from_millis(config.timeout_ms),
-            self.execute_exec_statement(&handle.pool, config)
-        ).await;
+            self.execute_exec_statement(&handle.pool, config),
+        )
+        .await;
 
         match result {
             Ok(exec_result) => exec_result,
-            Err(_) => Err(DbError::ExecTimeout { 
-                timeout_ms: config.timeout_ms 
-            }.into()),
+            Err(_) => Err(DbError::ExecTimeout {
+                timeout_ms: config.timeout_ms,
+            }
+            .into()),
         }
     }
 
     /// Execute exec within a transaction
     async fn execute_exec_in_transaction(&self, tx_id: &str, config: &ExecConfig) -> Result<Value> {
         // Get transaction handle
-        let tx_handle = TRANSACTION_REGISTRY
-            .get(tx_id)
-            .ok_or_else(|| DbError::TransactionNotFound {
-                tx_id: tx_id.to_string(),
-            })?;
+        let tx_handle =
+            TRANSACTION_REGISTRY
+                .get(tx_id)
+                .ok_or_else(|| DbError::TransactionNotFound {
+                    tx_id: tx_id.to_string(),
+                })?;
 
         // Verify driver/alias match
         let expected = format!("{}:{}", self.driver.as_str(), self.alias);
@@ -1795,37 +1925,38 @@ impl DbHandle {
         // Execute exec with timeout
         let result = tokio::time::timeout(
             Duration::from_millis(config.timeout_ms),
-            self.execute_exec_on_transaction(&*tx_handle, config)
-        ).await;
+            self.execute_exec_on_transaction(&*tx_handle, config),
+        )
+        .await;
 
         match result {
             Ok(exec_result) => exec_result,
-            Err(_) => Err(DbError::ExecTimeout { 
-                timeout_ms: config.timeout_ms 
-            }.into()),
+            Err(_) => Err(DbError::ExecTimeout {
+                timeout_ms: config.timeout_ms,
+            }
+            .into()),
         }
     }
 
     /// Execute exec on a transaction handle
-    async fn execute_exec_on_transaction(&self, tx_handle: &DbTransactionHandle, config: &ExecConfig) -> Result<Value> {
+    async fn execute_exec_on_transaction(
+        &self,
+        tx_handle: &DbTransactionHandle,
+        config: &ExecConfig,
+    ) -> Result<Value> {
         let tx_mutex = &tx_handle.tx;
         let mut tx_guard = tx_mutex.lock().unwrap();
-        
-        let tx = tx_guard.as_mut()
+
+        let tx = tx_guard
+            .as_mut()
             .ok_or_else(|| DbError::TransactionClosed {
                 tx_id: tx_handle.tx_id.clone(),
             })?;
 
         match tx {
-            DbTransaction::Postgres(tx) => {
-                self.execute_postgres_exec_on_tx(tx, config).await
-            }
-            DbTransaction::Mysql(tx) => {
-                self.execute_mysql_exec_on_tx(tx, config).await
-            }
-            DbTransaction::Sqlite(tx) => {
-                self.execute_sqlite_exec_on_tx(tx, config).await
-            }
+            DbTransaction::Postgres(tx) => self.execute_postgres_exec_on_tx(tx, config).await,
+            DbTransaction::Mysql(tx) => self.execute_mysql_exec_on_tx(tx, config).await,
+            DbTransaction::Sqlite(tx) => self.execute_sqlite_exec_on_tx(tx, config).await,
         }
     }
 
@@ -1837,9 +1968,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param(query, param)?;
                 }
-                
-                let result = query.execute(p).await
-                    .map_err(|e| DbError::ExecFailed { message: e.to_string() })?;
+
+                let result = query.execute(p).await.map_err(|e| DbError::ExecFailed {
+                    message: e.to_string(),
+                })?;
 
                 let mut response = json!({
                     "rows_affected": result.rows_affected()
@@ -1858,9 +1990,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_mysql(query, param)?;
                 }
-                
-                let result = query.execute(p).await
-                    .map_err(|e| DbError::ExecFailed { message: e.to_string() })?;
+
+                let result = query.execute(p).await.map_err(|e| DbError::ExecFailed {
+                    message: e.to_string(),
+                })?;
 
                 let mut response = json!({
                     "rows_affected": result.rows_affected()
@@ -1877,9 +2010,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_sqlite(query, param)?;
                 }
-                
-                let result = query.execute(p).await
-                    .map_err(|e| DbError::ExecFailed { message: e.to_string() })?;
+
+                let result = query.execute(p).await.map_err(|e| DbError::ExecFailed {
+                    message: e.to_string(),
+                })?;
 
                 let mut response = json!({
                     "rows_affected": result.rows_affected()
@@ -1888,9 +2022,10 @@ impl DbHandle {
                 if config.return_last_insert_id {
                     // Get last insert rowid for SQLite
                     let last_id_query = sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-                        .fetch_one(p).await
-                        .map_err(|e| DbError::ExecFailed { 
-                            message: format!("Failed to get last_insert_rowid: {}", e) 
+                        .fetch_one(p)
+                        .await
+                        .map_err(|e| DbError::ExecFailed {
+                            message: format!("Failed to get last_insert_rowid: {}", e),
                         })?;
                     response["last_insert_id"] = json!(last_id_query);
                 }
@@ -1906,8 +2041,13 @@ impl DbHandle {
         let config = TablesConfig::from_args(&args)?;
 
         // Log the operation
-        log::debug!("Executing tables for driver='{}' alias='{}' table={:?} schema={:?}", 
-                   self.driver.as_str(), self.alias, config.table, config.schema);
+        log::debug!(
+            "Executing tables for driver='{}' alias='{}' table={:?} schema={:?}",
+            self.driver.as_str(),
+            self.alias,
+            config.table,
+            config.schema
+        );
 
         // Look up connection handle, connecting on demand when dsn= is given
         let handle = self.resolve_connection(&args).await?;
@@ -1915,24 +2055,32 @@ impl DbHandle {
         // Execute with timeout
         let result = tokio::time::timeout(
             Duration::from_millis(config.timeout_ms),
-            self.execute_tables_operation(&handle.pool, &config)
-        ).await;
+            self.execute_tables_operation(&handle.pool, &config),
+        )
+        .await;
 
         match result {
             Ok(tables_result) => tables_result,
-            Err(_) => Err(DbError::TablesTimeout { 
-                timeout_ms: config.timeout_ms 
-            }.into()),
+            Err(_) => Err(DbError::TablesTimeout {
+                timeout_ms: config.timeout_ms,
+            }
+            .into()),
         }
     }
 
     /// Execute the actual tables operation against the database pool
-    async fn execute_tables_operation(&self, pool: &DbPool, config: &TablesConfig) -> Result<Value> {
+    async fn execute_tables_operation(
+        &self,
+        pool: &DbPool,
+        config: &TablesConfig,
+    ) -> Result<Value> {
         match &config.table {
             None => {
                 // List mode
                 match pool {
-                    DbPool::Postgres(p) => list_tables_postgres(p, config).await.map_err(|e| e.into()),
+                    DbPool::Postgres(p) => {
+                        list_tables_postgres(p, config).await.map_err(|e| e.into())
+                    }
                     DbPool::Mysql(p) => list_tables_mysql(p, config).await.map_err(|e| e.into()),
                     DbPool::Sqlite(p) => list_tables_sqlite(p, config).await.map_err(|e| e.into()),
                 }
@@ -1940,9 +2088,15 @@ impl DbHandle {
             Some(table_name) => {
                 // Describe mode
                 match pool {
-                    DbPool::Postgres(p) => describe_table_postgres(p, config, table_name).await.map_err(|e| e.into()),
-                    DbPool::Mysql(p) => describe_table_mysql(p, config, table_name).await.map_err(|e| e.into()),
-                    DbPool::Sqlite(p) => describe_table_sqlite(p, config, table_name).await.map_err(|e| e.into()),
+                    DbPool::Postgres(p) => describe_table_postgres(p, config, table_name)
+                        .await
+                        .map_err(|e| e.into()),
+                    DbPool::Mysql(p) => describe_table_mysql(p, config, table_name)
+                        .await
+                        .map_err(|e| e.into()),
+                    DbPool::Sqlite(p) => describe_table_sqlite(p, config, table_name)
+                        .await
+                        .map_err(|e| e.into()),
                 }
             }
         }
@@ -1954,8 +2108,13 @@ impl DbHandle {
         let config = SchemaConfig::from_args(&args)?;
 
         // Log the operation
-        log::debug!("Executing schema for driver='{}' alias='{}' table='{}' schema={:?}", 
-                   self.driver.as_str(), self.alias, config.table, config.schema);
+        log::debug!(
+            "Executing schema for driver='{}' alias='{}' table='{}' schema={:?}",
+            self.driver.as_str(),
+            self.alias,
+            config.table,
+            config.schema
+        );
 
         // Look up connection handle, connecting on demand when dsn= is given
         let handle = self.resolve_connection(&args).await?;
@@ -1963,19 +2122,25 @@ impl DbHandle {
         // Execute with timeout
         let result = tokio::time::timeout(
             Duration::from_millis(config.timeout_ms),
-            self.execute_schema_operation(&handle.pool, &config)
-        ).await;
+            self.execute_schema_operation(&handle.pool, &config),
+        )
+        .await;
 
         match result {
             Ok(schema_result) => schema_result,
-            Err(_) => Err(DbError::SchemaTimeout { 
-                timeout_ms: config.timeout_ms 
-            }.into()),
+            Err(_) => Err(DbError::SchemaTimeout {
+                timeout_ms: config.timeout_ms,
+            }
+            .into()),
         }
     }
 
     /// Execute the actual schema operation against the database pool
-    async fn execute_schema_operation(&self, pool: &DbPool, config: &SchemaConfig) -> Result<Value> {
+    async fn execute_schema_operation(
+        &self,
+        pool: &DbPool,
+        config: &SchemaConfig,
+    ) -> Result<Value> {
         match pool {
             DbPool::Postgres(p) => schema_postgres(p, config).await,
             DbPool::Mysql(p) => schema_mysql(p, config).await,
@@ -1984,16 +2149,24 @@ impl DbHandle {
     }
 
     /// Execute PostgreSQL query on transaction
-    async fn execute_postgres_query_on_tx(&self, tx: &mut sqlx::Transaction<'static, sqlx::Postgres>, config: &QueryConfig) -> Result<Value> {
+    async fn execute_postgres_query_on_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+        config: &QueryConfig,
+    ) -> Result<Value> {
         match config.mode {
             QueryMode::Rows => {
                 let mut query = sqlx::query(&config.sql);
                 for param in &config.params {
                     query = bind_param(query, param)?;
                 }
-                
-                let rows = query.fetch_all(&mut **tx).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let rows = query
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(|e| DbError::QueryFailed {
+                        message: e.to_string(),
+                    })?;
 
                 let mut results = Vec::new();
                 for row in &rows[..config.max_rows.min(rows.len() as u64) as usize] {
@@ -2016,9 +2189,14 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param(query, param)?;
                 }
-                
-                let row = query.fetch_optional(&mut **tx).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let row =
+                    query
+                        .fetch_optional(&mut **tx)
+                        .await
+                        .map_err(|e| DbError::QueryFailed {
+                            message: e.to_string(),
+                        })?;
 
                 let value = if let Some(row) = row {
                     convert_postgres_value(&row, 0)
@@ -2033,9 +2211,13 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param(query, param)?;
                 }
-                
-                let result = query.execute(&mut **tx).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let result = query
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| DbError::QueryFailed {
+                        message: e.to_string(),
+                    })?;
 
                 Ok(json!({ "rows_affected": result.rows_affected() }))
             }
@@ -2043,16 +2225,24 @@ impl DbHandle {
     }
 
     /// Execute MySQL query on transaction
-    async fn execute_mysql_query_on_tx(&self, tx: &mut sqlx::Transaction<'static, sqlx::MySql>, config: &QueryConfig) -> Result<Value> {
+    async fn execute_mysql_query_on_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'static, sqlx::MySql>,
+        config: &QueryConfig,
+    ) -> Result<Value> {
         match config.mode {
             QueryMode::Rows => {
                 let mut query = sqlx::query(&config.sql);
                 for param in &config.params {
                     query = bind_param_mysql(query, param)?;
                 }
-                
-                let rows = query.fetch_all(&mut **tx).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let rows = query
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(|e| DbError::QueryFailed {
+                        message: e.to_string(),
+                    })?;
 
                 let mut results = Vec::new();
                 for row in &rows[..config.max_rows.min(rows.len() as u64) as usize] {
@@ -2075,9 +2265,14 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_mysql(query, param)?;
                 }
-                
-                let row = query.fetch_optional(&mut **tx).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let row =
+                    query
+                        .fetch_optional(&mut **tx)
+                        .await
+                        .map_err(|e| DbError::QueryFailed {
+                            message: e.to_string(),
+                        })?;
 
                 let value = if let Some(row) = row {
                     convert_mysql_value(&row, 0)
@@ -2092,9 +2287,13 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_mysql(query, param)?;
                 }
-                
-                let result = query.execute(&mut **tx).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let result = query
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| DbError::QueryFailed {
+                        message: e.to_string(),
+                    })?;
 
                 Ok(json!({ "rows_affected": result.rows_affected() }))
             }
@@ -2102,16 +2301,24 @@ impl DbHandle {
     }
 
     /// Execute SQLite query on transaction
-    async fn execute_sqlite_query_on_tx(&self, tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>, config: &QueryConfig) -> Result<Value> {
+    async fn execute_sqlite_query_on_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
+        config: &QueryConfig,
+    ) -> Result<Value> {
         match config.mode {
             QueryMode::Rows => {
                 let mut query = sqlx::query(&config.sql);
                 for param in &config.params {
                     query = bind_param_sqlite(query, param)?;
                 }
-                
-                let rows = query.fetch_all(&mut **tx).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let rows = query
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(|e| DbError::QueryFailed {
+                        message: e.to_string(),
+                    })?;
 
                 let mut results = Vec::new();
                 for row in &rows[..config.max_rows.min(rows.len() as u64) as usize] {
@@ -2134,9 +2341,14 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_sqlite(query, param)?;
                 }
-                
-                let row = query.fetch_optional(&mut **tx).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let row =
+                    query
+                        .fetch_optional(&mut **tx)
+                        .await
+                        .map_err(|e| DbError::QueryFailed {
+                            message: e.to_string(),
+                        })?;
 
                 let value = if let Some(row) = row {
                     convert_sqlite_value(&row, 0)
@@ -2151,9 +2363,13 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_sqlite(query, param)?;
                 }
-                
-                let result = query.execute(&mut **tx).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let result = query
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|e| DbError::QueryFailed {
+                        message: e.to_string(),
+                    })?;
 
                 Ok(json!({ "rows_affected": result.rows_affected() }))
             }
@@ -2161,14 +2377,22 @@ impl DbHandle {
     }
 
     /// Execute PostgreSQL exec on transaction
-    async fn execute_postgres_exec_on_tx(&self, tx: &mut sqlx::Transaction<'static, sqlx::Postgres>, config: &ExecConfig) -> Result<Value> {
+    async fn execute_postgres_exec_on_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+        config: &ExecConfig,
+    ) -> Result<Value> {
         let mut query = sqlx::query(&config.sql);
         for param in &config.params {
             query = bind_param(query, param)?;
         }
-        
-        let result = query.execute(&mut **tx).await
-            .map_err(|e| DbError::ExecFailed { message: e.to_string() })?;
+
+        let result = query
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| DbError::ExecFailed {
+                message: e.to_string(),
+            })?;
 
         let mut response = json!({
             "rows_affected": result.rows_affected()
@@ -2183,14 +2407,22 @@ impl DbHandle {
     }
 
     /// Execute MySQL exec on transaction
-    async fn execute_mysql_exec_on_tx(&self, tx: &mut sqlx::Transaction<'static, sqlx::MySql>, config: &ExecConfig) -> Result<Value> {
+    async fn execute_mysql_exec_on_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'static, sqlx::MySql>,
+        config: &ExecConfig,
+    ) -> Result<Value> {
         let mut query = sqlx::query(&config.sql);
         for param in &config.params {
             query = bind_param_mysql(query, param)?;
         }
-        
-        let result = query.execute(&mut **tx).await
-            .map_err(|e| DbError::ExecFailed { message: e.to_string() })?;
+
+        let result = query
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| DbError::ExecFailed {
+                message: e.to_string(),
+            })?;
 
         let mut response = json!({
             "rows_affected": result.rows_affected()
@@ -2205,14 +2437,22 @@ impl DbHandle {
     }
 
     /// Execute SQLite exec on transaction
-    async fn execute_sqlite_exec_on_tx(&self, tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>, config: &ExecConfig) -> Result<Value> {
+    async fn execute_sqlite_exec_on_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
+        config: &ExecConfig,
+    ) -> Result<Value> {
         let mut query = sqlx::query(&config.sql);
         for param in &config.params {
             query = bind_param_sqlite(query, param)?;
         }
-        
-        let result = query.execute(&mut **tx).await
-            .map_err(|e| DbError::ExecFailed { message: e.to_string() })?;
+
+        let result = query
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| DbError::ExecFailed {
+                message: e.to_string(),
+            })?;
 
         let mut response = json!({
             "rows_affected": result.rows_affected()
@@ -2221,9 +2461,10 @@ impl DbHandle {
         if config.return_last_insert_id {
             // Get last insert rowid for SQLite
             let last_id_query = sqlx::query_scalar::<_, i64>("SELECT last_insert_rowid()")
-                .fetch_one(&mut **tx).await
-                .map_err(|e| DbError::ExecFailed { 
-                    message: format!("Failed to get last_insert_rowid: {}", e) 
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(|e| DbError::ExecFailed {
+                    message: format!("Failed to get last_insert_rowid: {}", e),
                 })?;
             response["last_insert_id"] = json!(last_id_query);
         }
@@ -2248,9 +2489,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param(query, param)?;
                 }
-                
-                let rows = query.fetch_all(p).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let rows = query.fetch_all(p).await.map_err(|e| DbError::QueryFailed {
+                    message: e.to_string(),
+                })?;
 
                 let mut json_rows = Vec::new();
                 let mut columns = Vec::new();
@@ -2291,9 +2533,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_mysql(query, param)?;
                 }
-                
-                let rows = query.fetch_all(p).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let rows = query.fetch_all(p).await.map_err(|e| DbError::QueryFailed {
+                    message: e.to_string(),
+                })?;
 
                 let mut json_rows = Vec::new();
                 let mut columns = Vec::new();
@@ -2334,9 +2577,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_sqlite(query, param)?;
                 }
-                
-                let rows = query.fetch_all(p).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let rows = query.fetch_all(p).await.map_err(|e| DbError::QueryFailed {
+                    message: e.to_string(),
+                })?;
 
                 let mut json_rows = Vec::new();
                 let mut columns = Vec::new();
@@ -2383,9 +2627,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param(query, param)?;
                 }
-                
-                let rows = query.fetch_all(p).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let rows = query.fetch_all(p).await.map_err(|e| DbError::QueryFailed {
+                    message: e.to_string(),
+                })?;
 
                 let row_count = rows.len();
                 let mut columns = Vec::new();
@@ -2397,7 +2642,7 @@ impl DbHandle {
                             "type": column.type_info().name()
                         }));
                     }
-                    
+
                     let json_row = row_to_json_postgres(first_row)?;
                     let value = if let Value::Object(obj) = json_row {
                         obj.values().next().cloned().unwrap_or(Value::Null)
@@ -2427,9 +2672,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_mysql(query, param)?;
                 }
-                
-                let rows = query.fetch_all(p).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let rows = query.fetch_all(p).await.map_err(|e| DbError::QueryFailed {
+                    message: e.to_string(),
+                })?;
 
                 let row_count = rows.len();
                 let mut columns = Vec::new();
@@ -2441,7 +2687,7 @@ impl DbHandle {
                             "type": column.type_info().name()
                         }));
                     }
-                    
+
                     let json_row = row_to_json_mysql(first_row)?;
                     let value = if let Value::Object(obj) = json_row {
                         obj.values().next().cloned().unwrap_or(Value::Null)
@@ -2471,9 +2717,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_sqlite(query, param)?;
                 }
-                
-                let rows = query.fetch_all(p).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let rows = query.fetch_all(p).await.map_err(|e| DbError::QueryFailed {
+                    message: e.to_string(),
+                })?;
 
                 let row_count = rows.len();
                 let mut columns = Vec::new();
@@ -2485,7 +2732,7 @@ impl DbHandle {
                             "type": column.type_info().name()
                         }));
                     }
-                    
+
                     let json_row = row_to_json_sqlite(first_row)?;
                     let value = if let Value::Object(obj) = json_row {
                         obj.values().next().cloned().unwrap_or(Value::Null)
@@ -2521,9 +2768,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param(query, param)?;
                 }
-                
-                let result = query.execute(p).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let result = query.execute(p).await.map_err(|e| DbError::QueryFailed {
+                    message: e.to_string(),
+                })?;
 
                 Ok(json!({
                     "rows_affected": result.rows_affected()
@@ -2534,9 +2782,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_mysql(query, param)?;
                 }
-                
-                let result = query.execute(p).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let result = query.execute(p).await.map_err(|e| DbError::QueryFailed {
+                    message: e.to_string(),
+                })?;
 
                 Ok(json!({
                     "rows_affected": result.rows_affected()
@@ -2547,9 +2796,10 @@ impl DbHandle {
                 for param in &config.params {
                     query = bind_param_sqlite(query, param)?;
                 }
-                
-                let result = query.execute(p).await
-                    .map_err(|e| DbError::QueryFailed { message: e.to_string() })?;
+
+                let result = query.execute(p).await.map_err(|e| DbError::QueryFailed {
+                    message: e.to_string(),
+                })?;
 
                 Ok(json!({
                     "rows_affected": result.rows_affected()
@@ -2566,31 +2816,42 @@ impl DbHandle {
         let config = PingConfig::from_args(&args)?;
 
         // Log the operation
-        log::debug!("Executing ping for driver='{}' alias='{}' timeout_ms={} retries={}", 
-                   self.driver.as_str(), self.alias, config.timeout_ms, config.retries);
+        log::debug!(
+            "Executing ping for driver='{}' alias='{}' timeout_ms={} retries={}",
+            self.driver.as_str(),
+            self.alias,
+            config.timeout_ms,
+            config.retries
+        );
 
         // Look up connection handle, connecting on demand when dsn= is given
         let handle = self.resolve_connection(&args).await?;
 
         // Perform ping with retry logic
         let mut last_error: Option<String> = None;
-        
+
         for attempt in 1..=(1 + config.retries) {
             let start = Instant::now();
-            
+
             // Perform a single ping attempt with timeout
             let ping_result = tokio::time::timeout(
                 Duration::from_millis(config.timeout_ms),
-                self.execute_ping_operation(&handle.pool)
-            ).await;
+                self.execute_ping_operation(&handle.pool),
+            )
+            .await;
 
             match ping_result {
                 Ok(Ok(())) => {
                     // Success! Calculate latency and return
                     let latency_ms = start.elapsed().as_millis() as u64;
-                    log::info!("Ping successful for driver='{}' alias='{}' attempt={} latency_ms={}",
-                              self.driver.as_str(), self.alias, attempt, latency_ms);
-                    
+                    log::info!(
+                        "Ping successful for driver='{}' alias='{}' attempt={} latency_ms={}",
+                        self.driver.as_str(),
+                        self.alias,
+                        attempt,
+                        latency_ms
+                    );
+
                     let result = json!({
                         "status": "ok",
                         "driver": self.driver.as_str(),
@@ -2604,14 +2865,24 @@ impl DbHandle {
                 Ok(Err(e)) => {
                     // Database error
                     last_error = Some(e.to_string());
-                    log::warn!("Ping failed for driver='{}' alias='{}' attempt={} error='{}'",
-                              self.driver.as_str(), self.alias, attempt, e);
+                    log::warn!(
+                        "Ping failed for driver='{}' alias='{}' attempt={} error='{}'",
+                        self.driver.as_str(),
+                        self.alias,
+                        attempt,
+                        e
+                    );
                 }
                 Err(_) => {
                     // Timeout error
                     last_error = Some(format!("timeout after {}ms", config.timeout_ms));
-                    log::warn!("Ping timeout for driver='{}' alias='{}' attempt={} timeout_ms={}",
-                              self.driver.as_str(), self.alias, attempt, config.timeout_ms);
+                    log::warn!(
+                        "Ping timeout for driver='{}' alias='{}' attempt={} timeout_ms={}",
+                        self.driver.as_str(),
+                        self.alias,
+                        attempt,
+                        config.timeout_ms
+                    );
                 }
             }
 
@@ -2623,8 +2894,12 @@ impl DbHandle {
 
         // All attempts failed - determine error type and return failure response
         let total_attempts = 1 + config.retries;
-        log::error!("Ping failed for driver='{}' alias='{}' after {} attempts",
-                   self.driver.as_str(), self.alias, total_attempts);
+        log::error!(
+            "Ping failed for driver='{}' alias='{}' after {} attempts",
+            self.driver.as_str(),
+            self.alias,
+            total_attempts
+        );
 
         let error_json = json!({
             "status": "error",
@@ -2673,7 +2948,7 @@ impl DbHandle {
     /// Handle transaction operations (begin, commit, rollback)
     pub async fn transaction(&self, args: Value) -> Result<Value> {
         let config = TransactionConfig::from_args(&args)?;
-        
+
         match config.action {
             TransactionAction::Run => self.transaction_run(config, &args).await,
             TransactionAction::Begin => self.transaction_begin(config, &args).await,
@@ -2691,23 +2966,32 @@ impl DbHandle {
 
         // Start transaction with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        
+
         let tx_result = tokio::time::timeout(timeout_duration, async {
             self.begin_transaction_with_options(pool, &config).await
-        }).await;
+        })
+        .await;
 
         let tx = match tx_result {
             Ok(Ok(tx)) => tx,
             Ok(Err(e)) => {
-                log::error!("Transaction begin failed for driver='{}' alias='{}': {}",
-                          self.driver.as_str(), self.alias, e);
+                log::error!(
+                    "Transaction begin failed for driver='{}' alias='{}': {}",
+                    self.driver.as_str(),
+                    self.alias,
+                    e
+                );
                 return Err(DbError::TransactionBeginFailed {
                     message: e.to_string(),
                 })?;
             }
             Err(_) => {
-                log::warn!("Transaction begin timeout for driver='{}' alias='{}' timeout_ms={}",
-                          self.driver.as_str(), self.alias, config.timeout_ms);
+                log::warn!(
+                    "Transaction begin timeout for driver='{}' alias='{}' timeout_ms={}",
+                    self.driver.as_str(),
+                    self.alias,
+                    config.timeout_ms
+                );
                 return Err(DbError::TransactionTimeout {
                     timeout_ms: config.timeout_ms,
                 })?;
@@ -2728,8 +3012,12 @@ impl DbHandle {
         // Register transaction
         TRANSACTION_REGISTRY.insert(tx_id.clone(), tx_handle);
 
-        log::info!("Transaction began for driver='{}' alias='{}' tx_id='{}'",
-                  self.driver.as_str(), self.alias, tx_id);
+        log::info!(
+            "Transaction began for driver='{}' alias='{}' tx_id='{}'",
+            self.driver.as_str(),
+            self.alias,
+            tx_id
+        );
 
         Ok(json!({
             "status": "ok",
@@ -2753,7 +3041,9 @@ impl DbHandle {
             let mut tx = self
                 .begin_transaction_with_options(pool, &config)
                 .await
-                .map_err(|e| DbError::TransactionBeginFailed { message: e.to_string() })?;
+                .map_err(|e| DbError::TransactionBeginFailed {
+                    message: e.to_string(),
+                })?;
 
             let mut results = Vec::with_capacity(config.statements.len());
             for (index, stmt) in config.statements.iter().enumerate() {
@@ -2787,7 +3077,9 @@ impl DbHandle {
 
             self.commit_transaction(tx)
                 .await
-                .map_err(|e| DbError::TransactionCommitFailed { message: e.to_string() })?;
+                .map_err(|e| DbError::TransactionCommitFailed {
+                    message: e.to_string(),
+                })?;
             Ok::<_, DbError>(results)
         };
 
@@ -2796,8 +3088,12 @@ impl DbHandle {
             .await
             .map_err(|_| DbError::TransactionTimeout { timeout_ms })??;
 
-        log::info!("Transaction run committed for driver='{}' alias='{}' statements={}",
-                  self.driver.as_str(), self.alias, results.len());
+        log::info!(
+            "Transaction run committed for driver='{}' alias='{}' statements={}",
+            self.driver.as_str(),
+            self.alias,
+            results.len()
+        );
 
         Ok(json!({
             "action": "run",
@@ -2810,12 +3106,17 @@ impl DbHandle {
     }
 
     /// Begin transaction with driver-specific options
-    async fn begin_transaction_with_options(&self, pool: &DbPool, config: &TransactionConfig) -> Result<DbTransaction> {
+    async fn begin_transaction_with_options(
+        &self,
+        pool: &DbPool,
+        config: &TransactionConfig,
+    ) -> Result<DbTransaction> {
         match pool {
             DbPool::Postgres(p) => {
                 // For PostgreSQL, we can use transaction options
-                let mut tx = p.begin().await
-                    .map_err(|e| anyhow::anyhow!("Failed to begin PostgreSQL transaction: {}", e))?;
+                let mut tx = p.begin().await.map_err(|e| {
+                    anyhow::anyhow!("Failed to begin PostgreSQL transaction: {}", e)
+                })?;
 
                 // Apply isolation level if specified
                 if let Some(ref isolation) = config.isolation {
@@ -2847,7 +3148,9 @@ impl DbHandle {
             }
             DbPool::Mysql(p) => {
                 // For MySQL, we can apply some transaction options
-                let mut tx = p.begin().await
+                let mut tx = p
+                    .begin()
+                    .await
                     .map_err(|e| anyhow::anyhow!("Failed to begin MySQL transaction: {}", e))?;
 
                 // Apply isolation level if specified
@@ -2875,7 +3178,9 @@ impl DbHandle {
             }
             DbPool::Sqlite(p) => {
                 // For SQLite, transaction options are more limited
-                let tx = p.begin().await
+                let tx = p
+                    .begin()
+                    .await
                     .map_err(|e| anyhow::anyhow!("Failed to begin SQLite transaction: {}", e))?;
 
                 // SQLite has limited isolation level support - we'll just use default
@@ -2891,11 +3196,12 @@ impl DbHandle {
         let tx_id = config.tx_id.as_ref().unwrap(); // Already validated in TransactionConfig::from_args
 
         // Get transaction handle
-        let tx_handle = TRANSACTION_REGISTRY
-            .get(tx_id)
-            .ok_or_else(|| DbError::TransactionNotFound {
-                tx_id: tx_id.clone(),
-            })?;
+        let tx_handle =
+            TRANSACTION_REGISTRY
+                .get(tx_id)
+                .ok_or_else(|| DbError::TransactionNotFound {
+                    tx_id: tx_id.clone(),
+                })?;
 
         // Verify driver/alias match
         let expected = format!("{}:{}", self.driver.as_str(), self.alias);
@@ -2909,7 +3215,8 @@ impl DbHandle {
         }
 
         // Take transaction out of handle
-        let tx = tx_handle.take_transaction()
+        let tx = tx_handle
+            .take_transaction()
             .ok_or_else(|| DbError::TransactionClosed {
                 tx_id: tx_id.clone(),
             })?;
@@ -2918,16 +3225,21 @@ impl DbHandle {
         let timeout_duration = Duration::from_millis(config.timeout_ms);
         let commit_result = tokio::time::timeout(timeout_duration, async {
             self.commit_transaction(tx).await
-        }).await;
+        })
+        .await;
 
         // Remove from registry regardless of commit result to prevent leaks
         TRANSACTION_REGISTRY.remove(tx_id);
 
         match commit_result {
             Ok(Ok(())) => {
-                log::info!("Transaction committed for driver='{}' alias='{}' tx_id='{}'",
-                          self.driver.as_str(), self.alias, tx_id);
-                
+                log::info!(
+                    "Transaction committed for driver='{}' alias='{}' tx_id='{}'",
+                    self.driver.as_str(),
+                    self.alias,
+                    tx_id
+                );
+
                 Ok(json!({
                     "status": "ok",
                     "driver": self.driver.as_str(),
@@ -2937,15 +3249,25 @@ impl DbHandle {
                 }))
             }
             Ok(Err(e)) => {
-                log::error!("Transaction commit failed for driver='{}' alias='{}' tx_id='{}': {}",
-                          self.driver.as_str(), self.alias, tx_id, e);
+                log::error!(
+                    "Transaction commit failed for driver='{}' alias='{}' tx_id='{}': {}",
+                    self.driver.as_str(),
+                    self.alias,
+                    tx_id,
+                    e
+                );
                 Err(DbError::TransactionCommitFailed {
                     message: e.to_string(),
                 })?
             }
             Err(_) => {
-                log::warn!("Transaction commit timeout for driver='{}' alias='{}' tx_id='{}' timeout_ms={}",
-                          self.driver.as_str(), self.alias, tx_id, config.timeout_ms);
+                log::warn!(
+                    "Transaction commit timeout for driver='{}' alias='{}' tx_id='{}' timeout_ms={}",
+                    self.driver.as_str(),
+                    self.alias,
+                    tx_id,
+                    config.timeout_ms
+                );
                 Err(DbError::TransactionTimeout {
                     timeout_ms: config.timeout_ms,
                 })?
@@ -2957,15 +3279,18 @@ impl DbHandle {
     async fn commit_transaction(&self, tx: DbTransaction) -> Result<()> {
         match tx {
             DbTransaction::Postgres(tx) => {
-                tx.commit().await
+                tx.commit()
+                    .await
                     .map_err(|e| anyhow::anyhow!("PostgreSQL commit failed: {}", e))?;
             }
             DbTransaction::Mysql(tx) => {
-                tx.commit().await
+                tx.commit()
+                    .await
                     .map_err(|e| anyhow::anyhow!("MySQL commit failed: {}", e))?;
             }
             DbTransaction::Sqlite(tx) => {
-                tx.commit().await
+                tx.commit()
+                    .await
                     .map_err(|e| anyhow::anyhow!("SQLite commit failed: {}", e))?;
             }
         }
@@ -2977,11 +3302,12 @@ impl DbHandle {
         let tx_id = config.tx_id.as_ref().unwrap(); // Already validated in TransactionConfig::from_args
 
         // Get transaction handle
-        let tx_handle = TRANSACTION_REGISTRY
-            .get(tx_id)
-            .ok_or_else(|| DbError::TransactionNotFound {
-                tx_id: tx_id.clone(),
-            })?;
+        let tx_handle =
+            TRANSACTION_REGISTRY
+                .get(tx_id)
+                .ok_or_else(|| DbError::TransactionNotFound {
+                    tx_id: tx_id.clone(),
+                })?;
 
         // Verify driver/alias match
         let expected = format!("{}:{}", self.driver.as_str(), self.alias);
@@ -2995,7 +3321,8 @@ impl DbHandle {
         }
 
         // Take transaction out of handle
-        let tx = tx_handle.take_transaction()
+        let tx = tx_handle
+            .take_transaction()
             .ok_or_else(|| DbError::TransactionClosed {
                 tx_id: tx_id.clone(),
             })?;
@@ -3004,16 +3331,21 @@ impl DbHandle {
         let timeout_duration = Duration::from_millis(config.timeout_ms);
         let rollback_result = tokio::time::timeout(timeout_duration, async {
             self.rollback_transaction(tx).await
-        }).await;
+        })
+        .await;
 
         // Remove from registry regardless of rollback result to prevent leaks
         TRANSACTION_REGISTRY.remove(tx_id);
 
         match rollback_result {
             Ok(Ok(())) => {
-                log::info!("Transaction rolled back for driver='{}' alias='{}' tx_id='{}'",
-                          self.driver.as_str(), self.alias, tx_id);
-                
+                log::info!(
+                    "Transaction rolled back for driver='{}' alias='{}' tx_id='{}'",
+                    self.driver.as_str(),
+                    self.alias,
+                    tx_id
+                );
+
                 Ok(json!({
                     "status": "ok",
                     "driver": self.driver.as_str(),
@@ -3023,15 +3355,25 @@ impl DbHandle {
                 }))
             }
             Ok(Err(e)) => {
-                log::error!("Transaction rollback failed for driver='{}' alias='{}' tx_id='{}': {}",
-                          self.driver.as_str(), self.alias, tx_id, e);
+                log::error!(
+                    "Transaction rollback failed for driver='{}' alias='{}' tx_id='{}': {}",
+                    self.driver.as_str(),
+                    self.alias,
+                    tx_id,
+                    e
+                );
                 Err(DbError::TransactionRollbackFailed {
                     message: e.to_string(),
                 })?
             }
             Err(_) => {
-                log::warn!("Transaction rollback timeout for driver='{}' alias='{}' tx_id='{}' timeout_ms={}",
-                          self.driver.as_str(), self.alias, tx_id, config.timeout_ms);
+                log::warn!(
+                    "Transaction rollback timeout for driver='{}' alias='{}' tx_id='{}' timeout_ms={}",
+                    self.driver.as_str(),
+                    self.alias,
+                    tx_id,
+                    config.timeout_ms
+                );
                 Err(DbError::TransactionTimeout {
                     timeout_ms: config.timeout_ms,
                 })?
@@ -3043,15 +3385,18 @@ impl DbHandle {
     async fn rollback_transaction(&self, tx: DbTransaction) -> Result<()> {
         match tx {
             DbTransaction::Postgres(tx) => {
-                tx.rollback().await
+                tx.rollback()
+                    .await
                     .map_err(|e| anyhow::anyhow!("PostgreSQL rollback failed: {}", e))?;
             }
             DbTransaction::Mysql(tx) => {
-                tx.rollback().await
+                tx.rollback()
+                    .await
                     .map_err(|e| anyhow::anyhow!("MySQL rollback failed: {}", e))?;
             }
             DbTransaction::Sqlite(tx) => {
-                tx.rollback().await
+                tx.rollback()
+                    .await
                     .map_err(|e| anyhow::anyhow!("SQLite rollback failed: {}", e))?;
             }
         }
@@ -3064,22 +3409,24 @@ impl DbHandle {
 pub enum DbError {
     #[error("unsupported driver: {driver}")]
     UnsupportedDriver { driver: String },
-    
-    #[error("missing DSN for alias '{alias}'. Provide 'dsn' argument or set environment variable {env_var}")]
+
+    #[error(
+        "missing DSN for alias '{alias}'. Provide 'dsn' argument or set environment variable {env_var}"
+    )]
     MissingDsn { alias: String, env_var: String },
-    
+
     #[error("invalid DSN '{dsn}': {message}")]
     InvalidDsn { dsn: String, message: String },
-    
+
     #[error("invalid configuration for field '{field}': {message}")]
     InvalidConfig { field: String, message: String },
-    
+
     #[error("connection failed: {message}")]
     ConnectFailed { message: String },
-    
+
     #[error("TLS error: {message}")]
     TlsError { message: String },
-    
+
     #[error("alias conflict: driver '{driver}' alias '{alias}' already exists with different DSN")]
     AliasConflict { driver: String, alias: String },
 
@@ -3150,7 +3497,11 @@ pub enum DbError {
     TransactionCommitFailed { message: String },
 
     #[error("transaction statement {index} failed: {message}")]
-    TransactionStatementFailed { index: usize, message: String, rolled_back: bool },
+    TransactionStatementFailed {
+        index: usize,
+        message: String,
+        rolled_back: bool,
+    },
 
     #[error("transaction rollback failed: {message}")]
     TransactionRollbackFailed { message: String },
@@ -3158,8 +3509,14 @@ pub enum DbError {
     #[error("transaction '{tx_id}' not found")]
     TransactionNotFound { tx_id: String },
 
-    #[error("transaction '{tx_id}' belongs to different driver/alias: expected {expected}, got {actual}")]
-    TransactionAliasMismatch { tx_id: String, expected: String, actual: String },
+    #[error(
+        "transaction '{tx_id}' belongs to different driver/alias: expected {expected}, got {actual}"
+    )]
+    TransactionAliasMismatch {
+        tx_id: String,
+        expected: String,
+        actual: String,
+    },
 
     #[error("transaction '{tx_id}' is closed")]
     TransactionClosed { tx_id: String },
@@ -3180,7 +3537,7 @@ impl DbError {
             }),
             DbError::MissingDsn { alias, env_var } => json!({
                 "error": {
-                    "code": "db.missing_dsn", 
+                    "code": "db.missing_dsn",
                     "message": self.to_string(),
                     "details": {
                         "alias": alias,
@@ -3435,7 +3792,11 @@ impl DbError {
                     }
                 }
             }),
-            DbError::TransactionStatementFailed { index, message, rolled_back } => json!({
+            DbError::TransactionStatementFailed {
+                index,
+                message,
+                rolled_back,
+            } => json!({
                 "error": {
                     "code": "db.transaction_statement_failed",
                     "message": self.to_string(),
@@ -3464,7 +3825,11 @@ impl DbError {
                     }
                 }
             }),
-            DbError::TransactionAliasMismatch { tx_id, expected, actual } => json!({
+            DbError::TransactionAliasMismatch {
+                tx_id,
+                expected,
+                actual,
+            } => json!({
                 "error": {
                     "code": "db.transaction_alias_mismatch",
                     "message": self.to_string(),
@@ -3489,7 +3854,10 @@ impl DbError {
 }
 
 /// Helper function to bind JSON Value to sqlx query
-fn bind_param<'q>(query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, value: &Value) -> Result<sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, DbError> {
+fn bind_param<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    value: &Value,
+) -> Result<sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, DbError> {
     match value {
         Value::Null => Ok(query.bind(None::<String>)),
         Value::Bool(b) => Ok(query.bind(*b)),
@@ -3505,16 +3873,17 @@ fn bind_param<'q>(query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::
             }
         }
         Value::String(s) => Ok(query.bind(s.clone())),
-        Value::Array(_) | Value::Object(_) => {
-            Err(DbError::UnsupportedParamType {
-                type_name: "array/object".to_string(),
-            })
-        }
+        Value::Array(_) | Value::Object(_) => Err(DbError::UnsupportedParamType {
+            type_name: "array/object".to_string(),
+        }),
     }
 }
 
 /// Helper function to bind JSON Value to sqlx query for MySQL
-fn bind_param_mysql<'q>(query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>, value: &Value) -> Result<sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>, DbError> {
+fn bind_param_mysql<'q>(
+    query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+    value: &Value,
+) -> Result<sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>, DbError> {
     match value {
         Value::Null => Ok(query.bind(None::<String>)),
         Value::Bool(b) => Ok(query.bind(*b)),
@@ -3530,16 +3899,17 @@ fn bind_param_mysql<'q>(query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::
             }
         }
         Value::String(s) => Ok(query.bind(s.clone())),
-        Value::Array(_) | Value::Object(_) => {
-            Err(DbError::UnsupportedParamType {
-                type_name: "array/object".to_string(),
-            })
-        }
+        Value::Array(_) | Value::Object(_) => Err(DbError::UnsupportedParamType {
+            type_name: "array/object".to_string(),
+        }),
     }
 }
 
 /// Helper function to bind JSON Value to sqlx query for SQLite
-fn bind_param_sqlite<'q>(query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>, value: &Value) -> Result<sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>, DbError> {
+fn bind_param_sqlite<'q>(
+    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    value: &Value,
+) -> Result<sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>, DbError> {
     match value {
         Value::Null => Ok(query.bind(None::<String>)),
         Value::Bool(b) => Ok(query.bind(*b)),
@@ -3555,11 +3925,9 @@ fn bind_param_sqlite<'q>(query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlit
             }
         }
         Value::String(s) => Ok(query.bind(s.clone())),
-        Value::Array(_) | Value::Object(_) => {
-            Err(DbError::UnsupportedParamType {
-                type_name: "array/object".to_string(),
-            })
-        }
+        Value::Array(_) | Value::Object(_) => Err(DbError::UnsupportedParamType {
+            type_name: "array/object".to_string(),
+        }),
     }
 }
 
@@ -3593,150 +3961,202 @@ fn pg_get_float<I: sqlx::ColumnIndex<sqlx::postgres::PgRow>>(
 /// Helper function to convert database row to JSON
 fn row_to_json_postgres(row: &sqlx::postgres::PgRow) -> Result<Value, DbError> {
     let mut json_row = serde_json::Map::new();
-    
+
     for column in row.columns() {
         let column_name = column.name();
         let type_info = column.type_info();
-        
+
         let value = match type_info.name() {
             "BOOL" => {
-                let val: Option<bool> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get bool column {}: {}", column_name, e) })?;
+                let val: Option<bool> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get bool column {}: {}", column_name, e),
+                    })?;
                 val.map(Value::Bool).unwrap_or(Value::Null)
             }
             "INT2" | "INT4" | "INT8" => {
-                let val = pg_get_int(row, column_name, type_info.name())
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get int column {}: {}", column_name, e) })?;
+                let val = pg_get_int(row, column_name, type_info.name()).map_err(|e| {
+                    DbError::QueryFailed {
+                        message: format!("Failed to get int column {}: {}", column_name, e),
+                    }
+                })?;
                 val.map(|v| json!(v)).unwrap_or(Value::Null)
             }
             "FLOAT4" | "FLOAT8" | "NUMERIC" => {
-                let val = pg_get_float(row, column_name, type_info.name())
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get float column {}: {}", column_name, e) })?;
+                let val = pg_get_float(row, column_name, type_info.name()).map_err(|e| {
+                    DbError::QueryFailed {
+                        message: format!("Failed to get float column {}: {}", column_name, e),
+                    }
+                })?;
                 val.map(|v| json!(v)).unwrap_or(Value::Null)
             }
             "VARCHAR" | "TEXT" | "CHAR" => {
-                let val: Option<String> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get text column {}: {}", column_name, e) })?;
+                let val: Option<String> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get text column {}: {}", column_name, e),
+                    })?;
                 val.map(Value::String).unwrap_or(Value::Null)
             }
             "TIMESTAMP" | "TIMESTAMPTZ" | "DATE" | "TIME" => {
                 // Just try to get as string - most robust approach
-                let val: Option<String> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get timestamp column {}: {}", column_name, e) })?;
+                let val: Option<String> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get timestamp column {}: {}", column_name, e),
+                    })?;
                 val.map(Value::String).unwrap_or(Value::Null)
             }
             "BYTEA" => {
-                let val: Option<Vec<u8>> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get bytes column {}: {}", column_name, e) })?;
-                val.map(|bytes| Value::String(format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
-                   .unwrap_or(Value::Null)
+                let val: Option<Vec<u8>> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get bytes column {}: {}", column_name, e),
+                    })?;
+                val.map(|bytes| {
+                    Value::String(format!(
+                        "base64:{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    ))
+                })
+                .unwrap_or(Value::Null)
             }
             "JSON" | "JSONB" => {
-                let val: Option<serde_json::Value> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get json column {}: {}", column_name, e) })?;
+                let val: Option<serde_json::Value> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get json column {}: {}", column_name, e),
+                    })?;
                 val.unwrap_or(Value::Null)
             }
             _ => {
                 // Fallback to string representation
-                let val: Option<String> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get column {} as string: {}", column_name, e) })?;
+                let val: Option<String> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get column {} as string: {}", column_name, e),
+                    })?;
                 val.map(Value::String).unwrap_or(Value::Null)
             }
         };
-        
+
         json_row.insert(column_name.to_string(), value);
     }
-    
+
     Ok(Value::Object(json_row))
 }
 
 /// Helper function to convert MySQL row to JSON
 fn row_to_json_mysql(row: &sqlx::mysql::MySqlRow) -> Result<Value, DbError> {
     let mut json_row = serde_json::Map::new();
-    
+
     for column in row.columns() {
         let column_name = column.name();
         let type_info = column.type_info();
-        
+
         let value = match type_info.name() {
             "TINYINT(1)" => {
-                let val: Option<bool> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get bool column {}: {}", column_name, e) })?;
+                let val: Option<bool> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get bool column {}: {}", column_name, e),
+                    })?;
                 val.map(Value::Bool).unwrap_or(Value::Null)
             }
             "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "BIGINT" => {
-                let val: Option<i64> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get int column {}: {}", column_name, e) })?;
+                let val: Option<i64> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get int column {}: {}", column_name, e),
+                    })?;
                 val.map(|v| json!(v)).unwrap_or(Value::Null)
             }
             "FLOAT" | "DOUBLE" | "DECIMAL" => {
-                let val: Option<f64> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get float column {}: {}", column_name, e) })?;
+                let val: Option<f64> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get float column {}: {}", column_name, e),
+                    })?;
                 val.map(|v| json!(v)).unwrap_or(Value::Null)
             }
             "VARCHAR" | "TEXT" | "CHAR" | "LONGTEXT" => {
-                let val: Option<String> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get text column {}: {}", column_name, e) })?;
+                let val: Option<String> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get text column {}: {}", column_name, e),
+                    })?;
                 val.map(Value::String).unwrap_or(Value::Null)
             }
             "TIMESTAMP" | "DATETIME" | "DATE" | "TIME" => {
                 // Just try to get as string - most robust approach
-                let val: Option<String> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get timestamp column {}: {}", column_name, e) })?;
+                let val: Option<String> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get timestamp column {}: {}", column_name, e),
+                    })?;
                 val.map(Value::String).unwrap_or(Value::Null)
             }
             "VARBINARY" | "BINARY" | "BLOB" => {
-                let val: Option<Vec<u8>> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get bytes column {}: {}", column_name, e) })?;
-                val.map(|bytes| Value::String(format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
-                   .unwrap_or(Value::Null)
+                let val: Option<Vec<u8>> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get bytes column {}: {}", column_name, e),
+                    })?;
+                val.map(|bytes| {
+                    Value::String(format!(
+                        "base64:{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    ))
+                })
+                .unwrap_or(Value::Null)
             }
             "JSON" => {
-                let val: Option<serde_json::Value> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get json column {}: {}", column_name, e) })?;
+                let val: Option<serde_json::Value> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get json column {}: {}", column_name, e),
+                    })?;
                 val.unwrap_or(Value::Null)
             }
             _ => {
                 // Fallback to string representation
-                let val: Option<String> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get column {} as string: {}", column_name, e) })?;
+                let val: Option<String> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get column {} as string: {}", column_name, e),
+                    })?;
                 val.map(Value::String).unwrap_or(Value::Null)
             }
         };
-        
+
         json_row.insert(column_name.to_string(), value);
     }
-    
+
     Ok(Value::Object(json_row))
 }
 
 /// Helper function to convert SQLite row to JSON
 fn row_to_json_sqlite(row: &sqlx::sqlite::SqliteRow) -> Result<Value, DbError> {
     let mut json_row = serde_json::Map::new();
-    
+
     for column in row.columns() {
         let column_name = column.name();
         let type_info = column.type_info();
-        
+
         let value = match type_info.name() {
             "BOOLEAN" => {
-                let val: Option<bool> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get bool column {}: {}", column_name, e) })?;
+                let val: Option<bool> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get bool column {}: {}", column_name, e),
+                    })?;
                 val.map(Value::Bool).unwrap_or(Value::Null)
             }
             "INTEGER" => {
-                let val: Option<i64> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get int column {}: {}", column_name, e) })?;
+                let val: Option<i64> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get int column {}: {}", column_name, e),
+                    })?;
                 val.map(|v| json!(v)).unwrap_or(Value::Null)
             }
             "REAL" => {
-                let val: Option<f64> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get float column {}: {}", column_name, e) })?;
+                let val: Option<f64> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get float column {}: {}", column_name, e),
+                    })?;
                 val.map(|v| json!(v)).unwrap_or(Value::Null)
             }
             "TEXT" => {
-                let val: Option<String> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get text column {}: {}", column_name, e) })?;
+                let val: Option<String> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get text column {}: {}", column_name, e),
+                    })?;
                 val.map(Value::String).unwrap_or(Value::Null)
             }
             "TIMESTAMP" | "DATETIME" | "DATE" | "TIME" => {
@@ -3748,10 +4168,17 @@ fn row_to_json_sqlite(row: &sqlx::sqlite::SqliteRow) -> Result<Value, DbError> {
                 }
             }
             "BLOB" => {
-                let val: Option<Vec<u8>> = row.try_get(column_name)
-                    .map_err(|e| DbError::QueryFailed { message: format!("Failed to get blob column {}: {}", column_name, e) })?;
-                val.map(|bytes| Value::String(format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
-                   .unwrap_or(Value::Null)
+                let val: Option<Vec<u8>> =
+                    row.try_get(column_name).map_err(|e| DbError::QueryFailed {
+                        message: format!("Failed to get blob column {}: {}", column_name, e),
+                    })?;
+                val.map(|bytes| {
+                    Value::String(format!(
+                        "base64:{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    ))
+                })
+                .unwrap_or(Value::Null)
             }
             _ => {
                 // Try different types in order of preference
@@ -3769,10 +4196,10 @@ fn row_to_json_sqlite(row: &sqlx::sqlite::SqliteRow) -> Result<Value, DbError> {
                 }
             }
         };
-        
+
         json_row.insert(column_name.to_string(), value);
     }
-    
+
     Ok(Value::Object(json_row))
 }
 
@@ -3781,169 +4208,161 @@ fn convert_postgres_value(row: &sqlx::postgres::PgRow, col_index: usize) -> Valu
     let column = &row.columns()[col_index];
     let column_name = column.name();
     let type_info = column.type_info();
-    
+
     match type_info.name() {
-        "BOOL" => {
-            row.try_get::<Option<bool>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::Bool)
-                .unwrap_or(Value::Null)
-        }
-        "INT2" | "INT4" | "INT8" => {
-            pg_get_int(row, col_index, type_info.name())
-                .ok()
-                .flatten()
-                .map(|v| json!(v))
-                .unwrap_or(Value::Null)
-        }
-        "FLOAT4" | "FLOAT8" | "NUMERIC" => {
-            pg_get_float(row, col_index, type_info.name())
-                .ok()
-                .flatten()
-                .map(|v| json!(v))
-                .unwrap_or(Value::Null)
-        }
-        "VARCHAR" | "TEXT" | "CHAR" => {
-            row.try_get::<Option<String>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::String)
-                .unwrap_or(Value::Null)
-        }
-        "TIMESTAMP" | "TIMESTAMPTZ" | "DATE" | "TIME" => {
-            row.try_get::<Option<String>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::String)
-                .unwrap_or(Value::Null)
-        }
-        "BYTEA" => {
-            row.try_get::<Option<Vec<u8>>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(|bytes| Value::String(format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
-                .unwrap_or(Value::Null)
-        }
-        "JSON" | "JSONB" => {
-            row.try_get::<Option<serde_json::Value>, _>(col_index)
-                .ok()
-                .flatten()
-                .unwrap_or(Value::Null)
-        }
-        _ => {
-            row.try_get::<Option<String>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::String)
-                .unwrap_or(Value::Null)
-        }
+        "BOOL" => row
+            .try_get::<Option<bool>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::Bool)
+            .unwrap_or(Value::Null),
+        "INT2" | "INT4" | "INT8" => pg_get_int(row, col_index, type_info.name())
+            .ok()
+            .flatten()
+            .map(|v| json!(v))
+            .unwrap_or(Value::Null),
+        "FLOAT4" | "FLOAT8" | "NUMERIC" => pg_get_float(row, col_index, type_info.name())
+            .ok()
+            .flatten()
+            .map(|v| json!(v))
+            .unwrap_or(Value::Null),
+        "VARCHAR" | "TEXT" | "CHAR" => row
+            .try_get::<Option<String>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        "TIMESTAMP" | "TIMESTAMPTZ" | "DATE" | "TIME" => row
+            .try_get::<Option<String>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        "BYTEA" => row
+            .try_get::<Option<Vec<u8>>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                Value::String(format!(
+                    "base64:{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                ))
+            })
+            .unwrap_or(Value::Null),
+        "JSON" | "JSONB" => row
+            .try_get::<Option<serde_json::Value>, _>(col_index)
+            .ok()
+            .flatten()
+            .unwrap_or(Value::Null),
+        _ => row
+            .try_get::<Option<String>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
     }
 }
 
 fn convert_mysql_value(row: &sqlx::mysql::MySqlRow, col_index: usize) -> Value {
     let column = &row.columns()[col_index];
     let type_info = column.type_info();
-    
+
     match type_info.name() {
-        "BOOLEAN" | "TINYINT(1)" => {
-            row.try_get::<Option<bool>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::Bool)
-                .unwrap_or(Value::Null)
-        }
-        "TINYINT" | "SMALLINT" | "INT" | "MEDIUMINT" | "BIGINT" => {
-            row.try_get::<Option<i64>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(|v| json!(v))
-                .unwrap_or(Value::Null)
-        }
-        "FLOAT" | "DOUBLE" | "DECIMAL" => {
-            row.try_get::<Option<f64>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(|v| json!(v))
-                .unwrap_or(Value::Null)
-        }
-        "VARCHAR" | "TEXT" | "CHAR" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => {
-            row.try_get::<Option<String>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::String)
-                .unwrap_or(Value::Null)
-        }
-        "TIMESTAMP" | "DATETIME" | "DATE" | "TIME" => {
-            row.try_get::<Option<String>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::String)
-                .unwrap_or(Value::Null)
-        }
-        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
-            row.try_get::<Option<Vec<u8>>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(|bytes| Value::String(format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
-                .unwrap_or(Value::Null)
-        }
-        "JSON" => {
-            row.try_get::<Option<serde_json::Value>, _>(col_index)
-                .ok()
-                .flatten()
-                .unwrap_or(Value::Null)
-        }
-        _ => {
-            row.try_get::<Option<String>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::String)
-                .unwrap_or(Value::Null)
-        }
+        "BOOLEAN" | "TINYINT(1)" => row
+            .try_get::<Option<bool>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::Bool)
+            .unwrap_or(Value::Null),
+        "TINYINT" | "SMALLINT" | "INT" | "MEDIUMINT" | "BIGINT" => row
+            .try_get::<Option<i64>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(|v| json!(v))
+            .unwrap_or(Value::Null),
+        "FLOAT" | "DOUBLE" | "DECIMAL" => row
+            .try_get::<Option<f64>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(|v| json!(v))
+            .unwrap_or(Value::Null),
+        "VARCHAR" | "TEXT" | "CHAR" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => row
+            .try_get::<Option<String>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        "TIMESTAMP" | "DATETIME" | "DATE" | "TIME" => row
+            .try_get::<Option<String>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => row
+            .try_get::<Option<Vec<u8>>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                Value::String(format!(
+                    "base64:{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                ))
+            })
+            .unwrap_or(Value::Null),
+        "JSON" => row
+            .try_get::<Option<serde_json::Value>, _>(col_index)
+            .ok()
+            .flatten()
+            .unwrap_or(Value::Null),
+        _ => row
+            .try_get::<Option<String>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
     }
 }
 
 fn convert_sqlite_value(row: &sqlx::sqlite::SqliteRow, col_index: usize) -> Value {
     let column = &row.columns()[col_index];
     let type_info = column.type_info();
-    
+
     match type_info.name() {
-        "BOOLEAN" => {
-            row.try_get::<Option<bool>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::Bool)
-                .unwrap_or(Value::Null)
-        }
-        "INTEGER" => {
-            row.try_get::<Option<i64>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(|v| json!(v))
-                .unwrap_or(Value::Null)
-        }
-        "REAL" => {
-            row.try_get::<Option<f64>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(|v| json!(v))
-                .unwrap_or(Value::Null)
-        }
-        "TEXT" => {
-            row.try_get::<Option<String>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(Value::String)
-                .unwrap_or(Value::Null)
-        }
-        "BLOB" => {
-            row.try_get::<Option<Vec<u8>>, _>(col_index)
-                .ok()
-                .flatten()
-                .map(|bytes| Value::String(format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
-                .unwrap_or(Value::Null)
-        }
+        "BOOLEAN" => row
+            .try_get::<Option<bool>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::Bool)
+            .unwrap_or(Value::Null),
+        "INTEGER" => row
+            .try_get::<Option<i64>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(|v| json!(v))
+            .unwrap_or(Value::Null),
+        "REAL" => row
+            .try_get::<Option<f64>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(|v| json!(v))
+            .unwrap_or(Value::Null),
+        "TEXT" => row
+            .try_get::<Option<String>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        "BLOB" => row
+            .try_get::<Option<Vec<u8>>, _>(col_index)
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                Value::String(format!(
+                    "base64:{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                ))
+            })
+            .unwrap_or(Value::Null),
         _ => {
             // Try different types in order of preference
             if let Ok(Some(val)) = row.try_get::<Option<i64>, _>(col_index) {
@@ -3963,26 +4382,29 @@ fn convert_sqlite_value(row: &sqlx::sqlite::SqliteRow, col_index: usize) -> Valu
 
 /// Database introspection functions for listing and describing tables
 
-/// List tables for PostgreSQL 
-async fn list_tables_postgres(pool: &Pool<Postgres>, config: &TablesConfig) -> Result<Value, DbError> {
+/// List tables for PostgreSQL
+async fn list_tables_postgres(
+    pool: &Pool<Postgres>,
+    config: &TablesConfig,
+) -> Result<Value, DbError> {
     let mut table_types = vec!["'BASE TABLE'"];
     if config.include_views {
         table_types.push("'VIEW'");
     }
-    
+
     let table_type_filter = format!("table_type IN ({})", table_types.join(", "));
-    
+
     let mut system_filter = "table_schema NOT IN ('pg_catalog', 'information_schema')";
     if config.include_system {
         system_filter = "1=1";
     }
-    
+
     let schema_filter = if config.schema.is_some() {
         "table_schema = $1"
     } else {
         "1=1"
     };
-    
+
     let sql = format!(
         r#"
         SELECT table_schema, table_name, table_type
@@ -3998,20 +4420,26 @@ async fn list_tables_postgres(pool: &Pool<Postgres>, config: &TablesConfig) -> R
     );
 
     let query = if let Some(ref schema) = config.schema {
-        sqlx::query(&sql).bind(schema).bind(config.max_tables as i64)
+        sqlx::query(&sql)
+            .bind(schema)
+            .bind(config.max_tables as i64)
     } else {
         sqlx::query(&sql).bind(config.max_tables as i64)
     };
 
-    let rows = query.fetch_all(pool).await
-        .map_err(|e| DbError::TablesFailed { message: e.to_string() })?;
+    let rows = query
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DbError::TablesFailed {
+            message: e.to_string(),
+        })?;
 
     let mut tables = Vec::new();
     for row in &rows {
         let schema: String = row.get(0);
         let name: String = row.get(1);
         let table_type: String = row.get(2);
-        
+
         tables.push(json!({
             "name": name,
             "schema": schema,
@@ -4031,7 +4459,11 @@ async fn list_tables_postgres(pool: &Pool<Postgres>, config: &TablesConfig) -> R
 }
 
 /// Describe table for PostgreSQL
-async fn describe_table_postgres(pool: &Pool<Postgres>, config: &TablesConfig, table_name: &str) -> Result<Value, DbError> {
+async fn describe_table_postgres(
+    pool: &Pool<Postgres>,
+    config: &TablesConfig,
+    table_name: &str,
+) -> Result<Value, DbError> {
     // First, check if table exists and get basic info
     let table_info_sql = if let Some(ref schema) = config.schema {
         r#"
@@ -4051,17 +4483,25 @@ async fn describe_table_postgres(pool: &Pool<Postgres>, config: &TablesConfig, t
         sqlx::query(table_info_sql)
             .bind(table_name)
             .bind(schema)
-            .fetch_all(pool).await
-            .map_err(|e| DbError::TablesFailed { message: e.to_string() })?
+            .fetch_all(pool)
+            .await
+            .map_err(|e| DbError::TablesFailed {
+                message: e.to_string(),
+            })?
     } else {
         sqlx::query(table_info_sql)
             .bind(table_name)
-            .fetch_all(pool).await
-            .map_err(|e| DbError::TablesFailed { message: e.to_string() })?
+            .fetch_all(pool)
+            .await
+            .map_err(|e| DbError::TablesFailed {
+                message: e.to_string(),
+            })?
     };
 
     if table_info_rows.is_empty() {
-        return Err(DbError::TableNotFound { table: table_name.to_string() });
+        return Err(DbError::TableNotFound {
+            table: table_name.to_string(),
+        });
     }
 
     let table_info = &table_info_rows[0];
@@ -4085,8 +4525,11 @@ async fn describe_table_postgres(pool: &Pool<Postgres>, config: &TablesConfig, t
     let column_rows = sqlx::query(columns_sql)
         .bind(&name)
         .bind(&schema)
-        .fetch_all(pool).await
-        .map_err(|e| DbError::TablesFailed { message: e.to_string() })?;
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DbError::TablesFailed {
+            message: e.to_string(),
+        })?;
 
     // Get primary key information
     let pk_sql = r#"
@@ -4103,13 +4546,14 @@ async fn describe_table_postgres(pool: &Pool<Postgres>, config: &TablesConfig, t
     let pk_rows = sqlx::query(pk_sql)
         .bind(&name)
         .bind(&schema)
-        .fetch_all(pool).await
-        .map_err(|e| DbError::TablesFailed { message: e.to_string() })?;
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DbError::TablesFailed {
+            message: e.to_string(),
+        })?;
 
-    let pk_columns: std::collections::HashSet<String> = pk_rows
-        .iter()
-        .map(|row| row.get::<String, _>(0))
-        .collect();
+    let pk_columns: std::collections::HashSet<String> =
+        pk_rows.iter().map(|row| row.get::<String, _>(0)).collect();
 
     let mut columns = Vec::new();
     for row in column_rows {
@@ -4145,15 +4589,15 @@ async fn list_tables_mysql(pool: &Pool<MySql>, config: &TablesConfig) -> Result<
     if config.include_views {
         table_types.push("'VIEW'");
     }
-    
+
     let table_type_filter = format!("table_type IN ({})", table_types.join(", "));
-    
+
     let schema_part = if let Some(ref schema) = config.schema {
         format!("table_schema = '{}'", schema)
     } else {
         "table_schema = DATABASE()".to_string()
     };
-    
+
     let sql = format!(
         r#"
         SELECT table_schema, table_name, table_type
@@ -4162,21 +4606,22 @@ async fn list_tables_mysql(pool: &Pool<MySql>, config: &TablesConfig) -> Result<
         ORDER BY table_schema, table_name
         LIMIT {}
         "#,
-        table_type_filter,
-        schema_part,
-        config.max_tables
+        table_type_filter, schema_part, config.max_tables
     );
 
     let rows = sqlx::query(&sql)
-        .fetch_all(pool).await
-        .map_err(|e| DbError::TablesFailed { message: e.to_string() })?;
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DbError::TablesFailed {
+            message: e.to_string(),
+        })?;
 
     let mut tables = Vec::new();
     for row in &rows {
         let schema: String = row.get(0);
         let name: String = row.get(1);
         let table_type: String = row.get(2);
-        
+
         tables.push(json!({
             "name": name,
             "schema": schema,
@@ -4196,7 +4641,11 @@ async fn list_tables_mysql(pool: &Pool<MySql>, config: &TablesConfig) -> Result<
 }
 
 /// Describe table for MySQL
-async fn describe_table_mysql(pool: &Pool<MySql>, config: &TablesConfig, table_name: &str) -> Result<Value, DbError> {
+async fn describe_table_mysql(
+    pool: &Pool<MySql>,
+    config: &TablesConfig,
+    table_name: &str,
+) -> Result<Value, DbError> {
     let schema_clause = if let Some(ref schema) = config.schema {
         format!("c.table_schema = '{}'", schema)
     } else {
@@ -4224,11 +4673,16 @@ async fn describe_table_mysql(pool: &Pool<MySql>, config: &TablesConfig, table_n
     );
 
     let rows = sqlx::query(&sql)
-        .fetch_all(pool).await
-        .map_err(|e| DbError::TablesFailed { message: e.to_string() })?;
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DbError::TablesFailed {
+            message: e.to_string(),
+        })?;
 
     if rows.is_empty() {
-        return Err(DbError::TableNotFound { table: table_name.to_string() });
+        return Err(DbError::TableNotFound {
+            table: table_name.to_string(),
+        });
     }
 
     let first_row = &rows[0];
@@ -4273,15 +4727,15 @@ async fn list_tables_sqlite(pool: &Pool<Sqlite>, config: &TablesConfig) -> Resul
     if config.include_views {
         type_filter.push("'view'");
     }
-    
+
     let type_clause = format!("type IN ({})", type_filter.join(", "));
-    
+
     let system_clause = if config.include_system {
         "1=1"
     } else {
         "name NOT LIKE 'sqlite_%'"
     };
-    
+
     let sql = format!(
         r#"
         SELECT name, type
@@ -4294,15 +4748,22 @@ async fn list_tables_sqlite(pool: &Pool<Sqlite>, config: &TablesConfig) -> Resul
     );
 
     let rows = sqlx::query(&sql)
-        .fetch_all(pool).await
-        .map_err(|e| DbError::TablesFailed { message: e.to_string() })?;
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DbError::TablesFailed {
+            message: e.to_string(),
+        })?;
 
     let mut tables = Vec::new();
     for row in &rows {
         let name: String = row.get(0);
         let sqlite_type: String = row.get(1);
-        let table_type = if sqlite_type == "table" { "BASE TABLE" } else { "VIEW" };
-        
+        let table_type = if sqlite_type == "table" {
+            "BASE TABLE"
+        } else {
+            "VIEW"
+        };
+
         tables.push(json!({
             "name": name,
             "schema": null,  // SQLite doesn't have schemas
@@ -4322,26 +4783,42 @@ async fn list_tables_sqlite(pool: &Pool<Sqlite>, config: &TablesConfig) -> Resul
 }
 
 /// Describe table for SQLite
-async fn describe_table_sqlite(pool: &Pool<Sqlite>, _config: &TablesConfig, table_name: &str) -> Result<Value, DbError> {
+async fn describe_table_sqlite(
+    pool: &Pool<Sqlite>,
+    _config: &TablesConfig,
+    table_name: &str,
+) -> Result<Value, DbError> {
     // First check if table exists
     let exists_sql = "SELECT type FROM sqlite_schema WHERE name = ? AND type IN ('table', 'view')";
     let exists_rows = sqlx::query(exists_sql)
         .bind(table_name)
-        .fetch_all(pool).await
-        .map_err(|e| DbError::TablesFailed { message: e.to_string() })?;
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DbError::TablesFailed {
+            message: e.to_string(),
+        })?;
 
     if exists_rows.is_empty() {
-        return Err(DbError::TableNotFound { table: table_name.to_string() });
+        return Err(DbError::TableNotFound {
+            table: table_name.to_string(),
+        });
     }
 
     let sqlite_type: String = exists_rows[0].get(0);
-    let table_type = if sqlite_type == "table" { "BASE TABLE" } else { "VIEW" };
+    let table_type = if sqlite_type == "table" {
+        "BASE TABLE"
+    } else {
+        "VIEW"
+    };
 
     // Get table info using PRAGMA
     let pragma_sql = format!("PRAGMA table_info('{}')", table_name);
     let rows = sqlx::query(&pragma_sql)
-        .fetch_all(pool).await
-        .map_err(|e| DbError::TablesFailed { message: e.to_string() })?;
+        .fetch_all(pool)
+        .await
+        .map_err(|e| DbError::TablesFailed {
+            message: e.to_string(),
+        })?;
 
     let mut columns = Vec::new();
     for row in rows {
@@ -4387,16 +4864,21 @@ async fn schema_postgres(pool: &Pool<Postgres>, config: &SchemaConfig) -> Result
                       WHERE table_name = $1
                         AND (table_schema = $2 OR $2 IS NULL)
                       LIMIT 1";
-    
+
     let exists_rows = sqlx::query(exists_sql)
         .bind(&config.table)
         .bind(&config.schema)
         .fetch_all(pool)
         .await
-        .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+        .map_err(|e| DbError::SchemaFailed {
+            message: e.to_string(),
+        })?;
 
     if exists_rows.is_empty() {
-        return Err(DbError::TableNotFound { table: config.table.clone() }.into());
+        return Err(DbError::TableNotFound {
+            table: config.table.clone(),
+        }
+        .into());
     }
 
     let table_schema: String = exists_rows[0].get(0);
@@ -4422,7 +4904,9 @@ async fn schema_postgres(pool: &Pool<Postgres>, config: &SchemaConfig) -> Result
         .bind(&config.schema)
         .fetch_all(pool)
         .await
-        .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+        .map_err(|e| DbError::SchemaFailed {
+            message: e.to_string(),
+        })?;
 
     let mut columns = Vec::new();
     let mut pk_columns = Vec::new();
@@ -4462,7 +4946,9 @@ async fn schema_postgres(pool: &Pool<Postgres>, config: &SchemaConfig) -> Result
         .bind(&config.schema)
         .fetch_all(pool)
         .await
-        .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+        .map_err(|e| DbError::SchemaFailed {
+            message: e.to_string(),
+        })?;
 
     let mut primary_key = None;
     if !pk_rows.is_empty() {
@@ -4530,16 +5016,21 @@ async fn schema_mysql(pool: &Pool<MySql>, config: &SchemaConfig) -> Result<Value
                       WHERE table_name = ?
                         AND table_schema = COALESCE(?, DATABASE())
                       LIMIT 1";
-    
+
     let exists_rows = sqlx::query(exists_sql)
         .bind(&config.table)
         .bind(&config.schema)
         .fetch_all(pool)
         .await
-        .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+        .map_err(|e| DbError::SchemaFailed {
+            message: e.to_string(),
+        })?;
 
     if exists_rows.is_empty() {
-        return Err(DbError::TableNotFound { table: config.table.clone() }.into());
+        return Err(DbError::TableNotFound {
+            table: config.table.clone(),
+        }
+        .into());
     }
 
     let table_schema: String = exists_rows[0].get(0);
@@ -4567,7 +5058,9 @@ async fn schema_mysql(pool: &Pool<MySql>, config: &SchemaConfig) -> Result<Value
         .bind(&config.schema)
         .fetch_all(pool)
         .await
-        .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+        .map_err(|e| DbError::SchemaFailed {
+            message: e.to_string(),
+        })?;
 
     let mut columns = Vec::new();
     let mut pk_columns = Vec::new();
@@ -4639,27 +5132,39 @@ async fn schema_mysql(pool: &Pool<MySql>, config: &SchemaConfig) -> Result<Value
 /// Schema introspection for SQLite
 async fn schema_sqlite(pool: &Pool<Sqlite>, config: &SchemaConfig) -> Result<Value> {
     // First check if table exists
-    let exists_sql = "SELECT name, type FROM sqlite_schema WHERE name = ? AND type IN ('table', 'view')";
+    let exists_sql =
+        "SELECT name, type FROM sqlite_schema WHERE name = ? AND type IN ('table', 'view')";
     let exists_rows = sqlx::query(exists_sql)
         .bind(&config.table)
         .fetch_all(pool)
         .await
-        .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+        .map_err(|e| DbError::SchemaFailed {
+            message: e.to_string(),
+        })?;
 
     if exists_rows.is_empty() {
-        return Err(DbError::TableNotFound { table: config.table.clone() }.into());
+        return Err(DbError::TableNotFound {
+            table: config.table.clone(),
+        }
+        .into());
     }
 
     let table_name: String = exists_rows[0].get(0);
     let sqlite_type: String = exists_rows[0].get(1);
-    let table_type = if sqlite_type == "table" { "BASE TABLE" } else { "VIEW" };
+    let table_type = if sqlite_type == "table" {
+        "BASE TABLE"
+    } else {
+        "VIEW"
+    };
 
     // Get table info using PRAGMA
     let pragma_sql = format!("PRAGMA table_info('{}')", table_name);
     let rows = sqlx::query(&pragma_sql)
         .fetch_all(pool)
         .await
-        .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+        .map_err(|e| DbError::SchemaFailed {
+            message: e.to_string(),
+        })?;
 
     let mut columns = Vec::new();
     let mut pk_columns = Vec::new();
@@ -4714,22 +5219,27 @@ async fn schema_sqlite(pool: &Pool<Sqlite>, config: &SchemaConfig) -> Result<Val
     if config.include_indexes {
         // Get index list using PRAGMA
         let index_sql = format!("PRAGMA index_list('{}')", table_name);
-        let index_rows = sqlx::query(&index_sql)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+        let index_rows =
+            sqlx::query(&index_sql)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| DbError::SchemaFailed {
+                    message: e.to_string(),
+                })?;
 
         let mut indexes = Vec::new();
         for index_row in index_rows {
             let index_name: String = index_row.get(1);
             let is_unique: bool = index_row.get(2);
-            
+
             // Get index columns
             let index_info_sql = format!("PRAGMA index_info('{}')", index_name);
             let info_rows = sqlx::query(&index_info_sql)
                 .fetch_all(pool)
                 .await
-                .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+                .map_err(|e| DbError::SchemaFailed {
+                    message: e.to_string(),
+                })?;
 
             let mut index_columns = Vec::new();
             for info_row in info_rows {
@@ -4750,10 +5260,13 @@ async fn schema_sqlite(pool: &Pool<Sqlite>, config: &SchemaConfig) -> Result<Val
     if config.include_foreign_keys {
         // Get foreign keys using PRAGMA
         let fk_sql = format!("PRAGMA foreign_key_list('{}')", table_name);
-        let fk_rows = sqlx::query(&fk_sql)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| DbError::SchemaFailed { message: e.to_string() })?;
+        let fk_rows =
+            sqlx::query(&fk_sql)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| DbError::SchemaFailed {
+                    message: e.to_string(),
+                })?;
 
         let mut foreign_keys = Vec::new();
         for fk_row in fk_rows {
@@ -4797,7 +5310,15 @@ async fn schema_sqlite(pool: &Pool<Sqlite>, config: &SchemaConfig) -> Result<Val
 
 impl Handle for DbHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["connect", "query", "exec", "tables", "schema", "ping", "transaction"]
+        &[
+            "connect",
+            "query",
+            "exec",
+            "tables",
+            "schema",
+            "ping",
+            "transaction",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -4938,13 +5459,16 @@ mod tests {
     fn test_driver_string_conversion() {
         // Test valid drivers
         assert_eq!(DbDriver::from_str("postgres").unwrap(), DbDriver::Postgres);
-        assert_eq!(DbDriver::from_str("postgresql").unwrap(), DbDriver::Postgres);
+        assert_eq!(
+            DbDriver::from_str("postgresql").unwrap(),
+            DbDriver::Postgres
+        );
         assert_eq!(DbDriver::from_str("POSTGRES").unwrap(), DbDriver::Postgres);
         assert_eq!(DbDriver::from_str("mysql").unwrap(), DbDriver::Mysql);
         assert_eq!(DbDriver::from_str("MySQL").unwrap(), DbDriver::Mysql);
         assert_eq!(DbDriver::from_str("sqlite").unwrap(), DbDriver::Sqlite);
         assert_eq!(DbDriver::from_str("SQLite").unwrap(), DbDriver::Sqlite);
-        
+
         // Test invalid drivers
         assert!(DbDriver::from_str("oracle").is_err());
         assert!(DbDriver::from_str("mssql").is_err());
@@ -4962,16 +5486,16 @@ mod tests {
     fn test_url_parsing() {
         let url = Url::parse("db://postgres/main").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         assert_eq!(handle.driver, DbDriver::Postgres);
         assert_eq!(handle.alias, "main");
     }
 
-    #[test] 
+    #[test]
     fn test_url_parsing_sqlite() {
         let url = Url::parse("db://sqlite/local").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         assert_eq!(handle.driver, DbDriver::Sqlite);
         assert_eq!(handle.alias, "local");
     }
@@ -4980,25 +5504,35 @@ mod tests {
     fn test_invalid_driver() {
         let url = Url::parse("db://oracle/test").unwrap();
         let result = DbHandle::from_url(url);
-        
+
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unsupported driver"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported driver")
+        );
     }
 
     #[test]
     fn test_missing_alias() {
         let url = Url::parse("db://postgres/").unwrap();
         let result = DbHandle::from_url(url);
-        
+
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must specify alias"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must specify alias")
+        );
     }
 
     #[test]
     fn test_config_validation_valid() {
         let url = Url::parse("db://postgres/test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let config = DbConfig {
             max_connections: 10,
             min_connections: 5,
@@ -5016,7 +5550,7 @@ mod tests {
     fn test_config_validation_invalid_connections() {
         let url = Url::parse("db://sqlite/test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let config = DbConfig {
             max_connections: 5,
             min_connections: 10, // Invalid: min > max
@@ -5030,7 +5564,7 @@ mod tests {
     fn test_config_validation_zero_connections() {
         let url = Url::parse("db://sqlite/test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let config = DbConfig {
             max_connections: 0, // Invalid
             ..Default::default()
@@ -5043,7 +5577,7 @@ mod tests {
     fn test_config_validation_invalid_tls_mode() {
         let url = Url::parse("db://postgres/test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let config = DbConfig {
             tls_mode: Some("invalid_mode".to_string()),
             ..Default::default()
@@ -5056,10 +5590,10 @@ mod tests {
     fn test_dsn_resolution_from_args() {
         let url = Url::parse("db://sqlite/test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let args = create_test_args();
         let dsn = handle.resolve_dsn(&args).unwrap();
-        
+
         assert_eq!(dsn, "sqlite::memory:");
     }
 
@@ -5067,10 +5601,10 @@ mod tests {
     fn test_dsn_resolution_missing() {
         let url = Url::parse("db://sqlite/test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let args = HashMap::new();
         let result = handle.resolve_dsn(&args);
-        
+
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(error.to_string().contains("missing DSN"));
@@ -5081,7 +5615,7 @@ mod tests {
         let error = DbError::UnsupportedDriver {
             driver: "oracle".to_string(),
         };
-        
+
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "db.unsupported_driver");
         assert_eq!(json["error"]["details"]["driver"], "oracle");
@@ -5091,10 +5625,10 @@ mod tests {
     async fn test_sqlite_memory_connection() {
         let url = Url::parse("db://sqlite/test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let args = create_test_args();
         let result = handle.connect(args).await;
-        
+
         assert!(result.is_ok());
         let json = result.unwrap();
         assert_eq!(json["type"], "db_connection");
@@ -5106,13 +5640,13 @@ mod tests {
     async fn test_alias_conflict_detection() {
         let url = Url::parse("db://sqlite/conflict_test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // First connection
         let mut args1 = HashMap::new();
         args1.insert("dsn".to_string(), "sqlite::memory:".to_string());
         let result1 = handle.connect(args1).await;
         assert!(result1.is_ok());
-        
+
         // Second connection with different DSN should fail
         let mut args2 = HashMap::new();
         args2.insert("dsn".to_string(), "sqlite:///different/path.db".to_string());
@@ -5125,15 +5659,15 @@ mod tests {
     async fn test_connection_reuse() {
         let url = Url::parse("db://sqlite/reuse_test").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let args = create_test_args();
-        
+
         // First connection
         let result1 = handle.connect(args.clone()).await;
         assert!(result1.is_ok());
         let json1 = result1.unwrap();
         assert_eq!(json1["reused"], false);
-        
+
         // Second connection should be reused
         let result2 = handle.connect(args).await;
         assert!(result2.is_ok());
@@ -5149,7 +5683,7 @@ mod tests {
         assert_eq!(QueryMode::from_str("ROWS").unwrap(), QueryMode::Rows);
         assert_eq!(QueryMode::from_str("scalar").unwrap(), QueryMode::Scalar);
         assert_eq!(QueryMode::from_str("exec").unwrap(), QueryMode::Exec);
-        
+
         assert!(QueryMode::from_str("invalid").is_err());
         assert!(QueryMode::from_str("").is_err());
     }
@@ -5163,7 +5697,7 @@ mod tests {
             "timeout_ms": 1000,
             "max_rows": 100
         });
-        
+
         let config = QueryConfig::from_args(&args).unwrap();
         assert_eq!(config.sql, "SELECT * FROM users WHERE id = ?");
         assert_eq!(config.params.len(), 1);
@@ -5177,7 +5711,7 @@ mod tests {
         let args = json!({
             "sql": "SELECT COUNT(*) FROM users"
         });
-        
+
         let config = QueryConfig::from_args(&args).unwrap();
         assert_eq!(config.sql, "SELECT COUNT(*) FROM users");
         assert_eq!(config.params.len(), 0);
@@ -5191,10 +5725,15 @@ mod tests {
         let args = json!({
             "params": []
         });
-        
+
         let result = QueryConfig::from_args(&args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("missing required 'sql' field"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing required 'sql' field")
+        );
     }
 
     #[test]
@@ -5202,10 +5741,15 @@ mod tests {
         let args = json!({
             "sql": "   "
         });
-        
+
         let result = QueryConfig::from_args(&args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("sql cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("sql cannot be empty")
+        );
     }
 
     #[test]
@@ -5214,10 +5758,15 @@ mod tests {
             "sql": "SELECT 1",
             "timeout_ms": 0
         });
-        
+
         let result = QueryConfig::from_args(&args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("timeout_ms must be greater than 0"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("timeout_ms must be greater than 0")
+        );
     }
 
     #[test]
@@ -5226,10 +5775,15 @@ mod tests {
             "sql": "SELECT 1",
             "max_rows": 0
         });
-        
+
         let result = QueryConfig::from_args(&args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("max_rows must be greater than 0"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("max_rows must be greater than 0")
+        );
     }
 
     #[test]
@@ -5238,10 +5792,15 @@ mod tests {
             "sql": "SELECT 1",
             "max_rows": 2000000
         });
-        
+
         let result = QueryConfig::from_args(&args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("max_rows cannot exceed 1,000,000"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("max_rows cannot exceed 1,000,000")
+        );
     }
 
     #[test]
@@ -5250,24 +5809,29 @@ mod tests {
             "sql": "SELECT * FROM users WHERE id = :id",
             "params": {"id": 1}
         });
-        
+
         let result = QueryConfig::from_args(&args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("named parameters not yet supported"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("named parameters not yet supported")
+        );
     }
 
     #[tokio::test]
     async fn test_query_connection_not_found() {
         let url = Url::parse("db://sqlite/nonexistent").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let args = json!({
             "sql": "SELECT 1"
         });
-        
+
         let result = handle.query(args).await;
         assert!(result.is_err());
-        
+
         let error = result.unwrap_err();
         if let Some(db_error) = error.downcast_ref::<DbError>() {
             match db_error {
@@ -5300,7 +5864,10 @@ mod tests {
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "db.invalid_query_config");
-        assert_eq!(json["error"]["details"]["validation_error"], "invalid timeout");
+        assert_eq!(
+            json["error"]["details"]["validation_error"],
+            "invalid timeout"
+        );
 
         // Test UnsupportedParamType
         let error = DbError::UnsupportedParamType {
@@ -5311,9 +5878,7 @@ mod tests {
         assert_eq!(json["error"]["details"]["type_name"], "array");
 
         // Test QueryTimeout
-        let error = DbError::QueryTimeout {
-            timeout_ms: 5000,
-        };
+        let error = DbError::QueryTimeout { timeout_ms: 5000 };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "db.query_timeout");
         assert_eq!(json["error"]["details"]["timeout_ms"], 5000);
@@ -5451,8 +6016,8 @@ mod tests {
             "INSERT INTO users (name) VALUES ('Alice')",
             "CREATE TABLE test (id INT)",
             "UPDATE users SET name = 'Bob; Charlie' WHERE id = 1", // semicolon in string
-            "INSERT INTO users (name) VALUES ('test;data')", // semicolon in string
-            "UPDATE users SET active = 1;", // trailing semicolon is allowed
+            "INSERT INTO users (name) VALUES ('test;data')",       // semicolon in string
+            "UPDATE users SET active = 1;",                        // trailing semicolon is allowed
         ];
 
         for sql in valid_sqls {
@@ -5474,8 +6039,11 @@ mod tests {
             assert!(result.is_err(), "Should be invalid SQL: {}", sql);
             match result.unwrap_err() {
                 DbError::InvalidExecConfig { message } => {
-                    assert!(message.contains("multiple statements detected"), 
-                           "Wrong error message for: {}", sql);
+                    assert!(
+                        message.contains("multiple statements detected"),
+                        "Wrong error message for: {}",
+                        sql
+                    );
                 }
                 _ => panic!("Expected InvalidExecConfig for: {}", sql),
             }
@@ -5486,14 +6054,14 @@ mod tests {
     async fn test_exec_connection_not_found() {
         let url = Url::parse("db://sqlite/nonexistent_exec").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let args = json!({
             "sql": "UPDATE users SET active = 1"
         });
-        
+
         let result = handle.exec(args).await;
         assert!(result.is_err());
-        
+
         let error = result.unwrap_err();
         if let Some(db_error) = error.downcast_ref::<DbError>() {
             match db_error {
@@ -5516,12 +6084,13 @@ mod tests {
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "db.invalid_exec_config");
-        assert_eq!(json["error"]["details"]["validation_error"], "test validation error");
+        assert_eq!(
+            json["error"]["details"]["validation_error"],
+            "test validation error"
+        );
 
         // Test ExecTimeout
-        let error = DbError::ExecTimeout {
-            timeout_ms: 3000,
-        };
+        let error = DbError::ExecTimeout { timeout_ms: 3000 };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "db.exec_timeout");
         assert_eq!(json["error"]["details"]["timeout_ms"], 3000);
@@ -5532,7 +6101,10 @@ mod tests {
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "db.exec_failed");
-        assert_eq!(json["error"]["details"]["underlying_error"], "SQL syntax error");
+        assert_eq!(
+            json["error"]["details"]["underlying_error"],
+            "SQL syntax error"
+        );
     }
 
     // SQLite Integration Tests
@@ -5540,20 +6112,20 @@ mod tests {
     async fn setup_test_database(alias: &str) -> Result<DbHandle> {
         let url = Url::parse(&format!("db://sqlite/{}", alias))?;
         let handle = DbHandle::from_url(url)?;
-        
+
         let mut args = std::collections::HashMap::new();
         args.insert("dsn".to_string(), "sqlite::memory:".to_string());
-        
+
         // Connect to database
         handle.connect(args).await?;
-        
+
         // Setup test schema
         let setup_args = json!({
             "sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, active BOOLEAN)",
             "mode": "exec"
         });
         handle.query(setup_args).await?;
-        
+
         // Insert test data
         let insert_args = json!({
             "sql": "INSERT INTO users (email, active) VALUES (?, ?), (?, ?), (?, ?)",
@@ -5561,26 +6133,26 @@ mod tests {
             "mode": "exec"
         });
         handle.query(insert_args).await?;
-        
+
         Ok(handle)
     }
 
     #[tokio::test]
     async fn test_sqlite_query_rows_mode() {
         let handle = setup_test_database("test_rows").await.unwrap();
-        
+
         let args = json!({
             "sql": "SELECT id, email FROM users WHERE active = ?",
             "params": [true],
             "mode": "rows"
         });
-        
+
         let result = handle.query(args).await.unwrap();
-        
+
         assert_eq!(result["rows"].as_array().unwrap().len(), 2);
         assert_eq!(result["meta"]["row_count"], 2);
         assert_eq!(result["meta"]["truncated"], false);
-        
+
         let columns = result["meta"]["columns"].as_array().unwrap();
         assert_eq!(columns.len(), 2);
         assert_eq!(columns[0]["name"], "id");
@@ -5590,15 +6162,15 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_query_scalar_mode() {
         let handle = setup_test_database("test_scalar").await.unwrap();
-        
+
         let args = json!({
             "sql": "SELECT COUNT(*) FROM users WHERE active = ?",
             "params": [true],
             "mode": "scalar"
         });
-        
+
         let result = handle.query(args).await.unwrap();
-        
+
         assert_eq!(result["value"], 2);
         assert_eq!(result["meta"]["row_count"], 1);
     }
@@ -5606,29 +6178,29 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_query_exec_mode() {
         let handle = setup_test_database("test_exec").await.unwrap();
-        
+
         let args = json!({
             "sql": "UPDATE users SET active = 0 WHERE active = 1",
             "mode": "exec"
         });
-        
+
         let result = handle.query(args).await.unwrap();
-        
+
         assert_eq!(result["rows_affected"], 2);
     }
 
     #[tokio::test]
     async fn test_sqlite_query_max_rows_truncation() {
         let handle = setup_test_database("test_truncate").await.unwrap();
-        
+
         let args = json!({
             "sql": "SELECT id FROM users",
             "mode": "rows",
             "max_rows": 2
         });
-        
+
         let result = handle.query(args).await.unwrap();
-        
+
         assert_eq!(result["rows"].as_array().unwrap().len(), 2);
         assert_eq!(result["meta"]["row_count"], 3);
         assert_eq!(result["meta"]["truncated"], true);
@@ -5637,15 +6209,15 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_query_no_results() {
         let handle = setup_test_database("test_empty").await.unwrap();
-        
+
         let args = json!({
             "sql": "SELECT id FROM users WHERE id = ?",
             "params": [999],
             "mode": "scalar"
         });
-        
+
         let result = handle.query(args).await.unwrap();
-        
+
         assert_eq!(result["value"], Value::Null);
         assert_eq!(result["meta"]["row_count"], 0);
     }
@@ -5653,15 +6225,15 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_query_syntax_error() {
         let handle = setup_test_database("test_error").await.unwrap();
-        
+
         let args = json!({
             "sql": "SELECT * FROMM users",  // Intentional syntax error
             "mode": "rows"
         });
-        
+
         let result = handle.query(args).await;
         assert!(result.is_err());
-        
+
         let error = result.unwrap_err();
         if let Some(db_error) = error.downcast_ref::<DbError>() {
             match db_error {
@@ -5679,16 +6251,16 @@ mod tests {
     async fn test_sqlite_exec_create_table() {
         let url = Url::parse("db://sqlite/test_exec_create").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect to database
         let connect_args = create_test_args();
         handle.connect(connect_args).await.unwrap();
-        
+
         // Create table with exec
         let exec_args = json!({
             "sql": "CREATE TABLE exec_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, active BOOLEAN)"
         });
-        
+
         let result = handle.exec(exec_args).await.unwrap();
         assert_eq!(result["rows_affected"], 0); // DDL statements typically return 0
     }
@@ -5697,20 +6269,20 @@ mod tests {
     async fn test_sqlite_exec_insert_with_last_insert_id() {
         let url = Url::parse("db://sqlite/test_exec_insert").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup
         handle.connect(create_test_args()).await.unwrap();
         handle.exec(json!({
             "sql": "CREATE TABLE exec_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, active BOOLEAN)"
         })).await.unwrap();
-        
+
         // Insert with last_insert_id
         let exec_args = json!({
             "sql": "INSERT INTO exec_test (name, active) VALUES (?, ?)",
             "params": ["Alice", true],
             "return_last_insert_id": true
         });
-        
+
         let result = handle.exec(exec_args).await.unwrap();
         assert_eq!(result["rows_affected"], 1);
         assert!(result["last_insert_id"].is_number());
@@ -5718,27 +6290,34 @@ mod tests {
         // if the INSERT and the rowid query happen on different connections.
         // This is expected behavior and shows the functionality works correctly.
         let last_id = result["last_insert_id"].as_i64().unwrap();
-        assert!(last_id >= 0, "Expected last_insert_id >= 0, got {}", last_id);
+        assert!(
+            last_id >= 0,
+            "Expected last_insert_id >= 0, got {}",
+            last_id
+        );
     }
 
     #[tokio::test]
     async fn test_sqlite_exec_insert_without_last_insert_id() {
         let url = Url::parse("db://sqlite/test_exec_insert_no_id").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup
         handle.connect(create_test_args()).await.unwrap();
-        handle.exec(json!({
-            "sql": "CREATE TABLE exec_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"
-        })).await.unwrap();
-        
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE exec_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"
+            }))
+            .await
+            .unwrap();
+
         // Insert without last_insert_id
         let exec_args = json!({
             "sql": "INSERT INTO exec_test (name) VALUES (?)",
             "params": ["Bob"],
             "return_last_insert_id": false
         });
-        
+
         let result = handle.exec(exec_args).await.unwrap();
         assert_eq!(result["rows_affected"], 1);
         assert!(!result.as_object().unwrap().contains_key("last_insert_id"));
@@ -5748,23 +6327,29 @@ mod tests {
     async fn test_sqlite_exec_update() {
         let url = Url::parse("db://sqlite/test_exec_update").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup with test data
         handle.connect(create_test_args()).await.unwrap();
-        handle.exec(json!({
-            "sql": "CREATE TABLE exec_test (id INTEGER PRIMARY KEY, name TEXT, active BOOLEAN)"
-        })).await.unwrap();
-        handle.exec(json!({
-            "sql": "INSERT INTO exec_test (name, active) VALUES (?, ?), (?, ?), (?, ?)",
-            "params": ["Alice", true, "Bob", true, "Charlie", false]
-        })).await.unwrap();
-        
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE exec_test (id INTEGER PRIMARY KEY, name TEXT, active BOOLEAN)"
+            }))
+            .await
+            .unwrap();
+        handle
+            .exec(json!({
+                "sql": "INSERT INTO exec_test (name, active) VALUES (?, ?), (?, ?), (?, ?)",
+                "params": ["Alice", true, "Bob", true, "Charlie", false]
+            }))
+            .await
+            .unwrap();
+
         // Update some rows
         let exec_args = json!({
             "sql": "UPDATE exec_test SET active = ? WHERE active = ?",
             "params": [false, true]
         });
-        
+
         let result = handle.exec(exec_args).await.unwrap();
         assert_eq!(result["rows_affected"], 2); // Should update Alice and Bob
     }
@@ -5773,23 +6358,29 @@ mod tests {
     async fn test_sqlite_exec_delete() {
         let url = Url::parse("db://sqlite/test_exec_delete").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup with test data
         handle.connect(create_test_args()).await.unwrap();
-        handle.exec(json!({
-            "sql": "CREATE TABLE exec_test (id INTEGER PRIMARY KEY, name TEXT, active BOOLEAN)"
-        })).await.unwrap();
-        handle.exec(json!({
-            "sql": "INSERT INTO exec_test (name, active) VALUES (?, ?), (?, ?), (?, ?)",
-            "params": ["Alice", true, "Bob", false, "Charlie", true]
-        })).await.unwrap();
-        
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE exec_test (id INTEGER PRIMARY KEY, name TEXT, active BOOLEAN)"
+            }))
+            .await
+            .unwrap();
+        handle
+            .exec(json!({
+                "sql": "INSERT INTO exec_test (name, active) VALUES (?, ?), (?, ?), (?, ?)",
+                "params": ["Alice", true, "Bob", false, "Charlie", true]
+            }))
+            .await
+            .unwrap();
+
         // Delete inactive rows
         let exec_args = json!({
             "sql": "DELETE FROM exec_test WHERE active = ?",
             "params": [false]
         });
-        
+
         let result = handle.exec(exec_args).await.unwrap();
         assert_eq!(result["rows_affected"], 1); // Should delete Bob
     }
@@ -5798,27 +6389,27 @@ mod tests {
     async fn test_sqlite_exec_timeout() {
         let url = Url::parse("db://sqlite/test_exec_timeout").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Use a very small timeout with a simple operation to test timeout behavior
         let exec_args = json!({
             "sql": "CREATE TABLE timeout_test (id INTEGER)",
             "timeout_ms": 1 // Very small timeout
         });
-        
+
         // This may or may not timeout depending on system speed, but should not crash
         let result = handle.exec(exec_args).await;
         // Don't assert specific result since timing is unpredictable in tests
         // Just ensure it doesn't panic
         match result {
-            Ok(_) => {}, // Operation completed within timeout
+            Ok(_) => {} // Operation completed within timeout
             Err(e) => {
                 // Should be ExecTimeout if it timed out
                 if let Some(db_error) = e.downcast_ref::<DbError>() {
                     match db_error {
-                        DbError::ExecTimeout { .. } => {}, // Expected timeout
-                        _ => {}, // Other error is also acceptable
+                        DbError::ExecTimeout { .. } => {} // Expected timeout
+                        _ => {}                           // Other error is also acceptable
                     }
                 }
             }
@@ -5829,21 +6420,21 @@ mod tests {
     async fn test_sqlite_exec_sql_syntax_error() {
         let url = Url::parse("db://sqlite/test_exec_error").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Invalid SQL should return ExecFailed
         let exec_args = json!({
             "sql": "INVALID SQL SYNTAX HERE"
         });
-        
+
         let result = handle.exec(exec_args).await;
         assert!(result.is_err());
-        
+
         let error = result.unwrap_err();
         if let Some(db_error) = error.downcast_ref::<DbError>() {
             match db_error {
-                DbError::ExecFailed { .. } => {}, // Expected
+                DbError::ExecFailed { .. } => {} // Expected
                 _ => panic!("Expected ExecFailed error, got: {:?}", db_error),
             }
         } else {
@@ -5855,28 +6446,28 @@ mod tests {
     async fn test_sqlite_exec_parameter_binding() {
         let url = Url::parse("db://sqlite/test_exec_params").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup
         handle.connect(create_test_args()).await.unwrap();
         handle.exec(json!({
             "sql": "CREATE TABLE param_test (id INTEGER PRIMARY KEY, name TEXT, age INTEGER, active BOOLEAN, score REAL)"
         })).await.unwrap();
-        
+
         // Test various parameter types
         let exec_args = json!({
             "sql": "INSERT INTO param_test (name, age, active, score) VALUES (?, ?, ?, ?)",
             "params": ["Alice", 25, true, 95.5]
         });
-        
+
         let result = handle.exec(exec_args).await.unwrap();
         assert_eq!(result["rows_affected"], 1);
-        
+
         // Test null parameter
         let exec_args_null = json!({
             "sql": "INSERT INTO param_test (name, age, active, score) VALUES (?, ?, ?, ?)",
             "params": ["Bob", null, false, 87.2]
         });
-        
+
         let result_null = handle.exec(exec_args_null).await.unwrap();
         assert_eq!(result_null["rows_affected"], 1);
     }
@@ -5889,20 +6480,20 @@ mod tests {
         if let Ok(dsn) = std::env::var("TEST_POSTGRES_DSN") {
             let url = Url::parse("db://postgres/test_integration").unwrap();
             let handle = DbHandle::from_url(url).unwrap();
-            
+
             let mut args = std::collections::HashMap::new();
             args.insert("dsn".to_string(), dsn);
-            
+
             // Test connection
             let connect_result = handle.connect(args).await;
             assert!(connect_result.is_ok());
-            
+
             // Test simple scalar query
             let query_args = json!({
                 "sql": "SELECT 1 as test_value",
                 "mode": "scalar"
             });
-            
+
             let result = handle.query(query_args).await.unwrap();
             assert_eq!(result["value"], 1);
         }
@@ -5914,20 +6505,20 @@ mod tests {
         if let Ok(dsn) = std::env::var("TEST_MYSQL_DSN") {
             let url = Url::parse("db://mysql/test_integration").unwrap();
             let handle = DbHandle::from_url(url).unwrap();
-            
+
             let mut args = std::collections::HashMap::new();
             args.insert("dsn".to_string(), dsn);
-            
+
             // Test connection
             let connect_result = handle.connect(args).await;
             assert!(connect_result.is_ok());
-            
+
             // Test simple scalar query
             let query_args = json!({
                 "sql": "SELECT 1 as test_value",
                 "mode": "scalar"
             });
-            
+
             let result = handle.query(query_args).await.unwrap();
             assert_eq!(result["value"], 1);
         }
@@ -5941,17 +6532,20 @@ mod tests {
         if let Ok(dsn) = std::env::var("TEST_POSTGRES_DSN") {
             let url = Url::parse("db://postgres/test_exec_integration").unwrap();
             let handle = DbHandle::from_url(url).unwrap();
-            
+
             let mut connect_args = std::collections::HashMap::new();
             connect_args.insert("dsn".to_string(), dsn);
-            
+
             // Test connection
             let connect_result = handle.connect(connect_args).await;
             assert!(connect_result.is_ok());
-            
+
             // A regular table: each exec may use a different pooled connection,
             // so a session-scoped TEMP table would not be visible to later calls.
-            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS exec_test_pg" })).await.unwrap();
+            handle
+                .exec(json!({ "sql": "DROP TABLE IF EXISTS exec_test_pg" }))
+                .await
+                .unwrap();
             // Create table
             let create_args = json!({
                 "sql": "CREATE TABLE exec_test_pg (id SERIAL PRIMARY KEY, name TEXT, active BOOLEAN)"
@@ -6002,17 +6596,20 @@ mod tests {
         if let Ok(dsn) = std::env::var("TEST_MYSQL_DSN") {
             let url = Url::parse("db://mysql/test_exec_integration").unwrap();
             let handle = DbHandle::from_url(url).unwrap();
-            
+
             let mut connect_args = std::collections::HashMap::new();
             connect_args.insert("dsn".to_string(), dsn);
-            
+
             // Test connection
             let connect_result = handle.connect(connect_args).await;
             assert!(connect_result.is_ok());
-            
+
             // A regular table: each exec may use a different pooled connection,
             // so a session-scoped TEMP table would not be visible to later calls.
-            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS exec_test_mysql" })).await.unwrap();
+            handle
+                .exec(json!({ "sql": "DROP TABLE IF EXISTS exec_test_mysql" }))
+                .await
+                .unwrap();
             // Create table
             let create_args = json!({
                 "sql": "CREATE TABLE exec_test_mysql (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), active BOOLEAN)"
@@ -6027,7 +6624,7 @@ mod tests {
             });
             let insert_result = handle.exec(insert_args).await.unwrap();
             assert_eq!(insert_result["rows_affected"], 1);
-            
+
             // Insert with last_insert_id
             let insert_with_id_args = json!({
                 "sql": "INSERT INTO exec_test_mysql (name, active) VALUES (?, ?)",
@@ -6064,42 +6661,46 @@ mod tests {
     async fn test_sqlite_tables_list_mode() {
         let url = Url::parse("db://sqlite/test_tables_list").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Create some test tables
-        handle.exec(json!({
-            "sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"
-        })).await.unwrap();
-        
-        handle.exec(json!({
-            "sql": "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER)"
-        })).await.unwrap();
-        
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"
+            }))
+            .await
+            .unwrap();
+
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER)"
+            }))
+            .await
+            .unwrap();
+
         // Create a view
         handle.exec(json!({
             "sql": "CREATE VIEW user_orders AS SELECT u.name, o.id as order_id FROM users u JOIN orders o ON u.id = o.user_id"
         })).await.unwrap();
-        
+
         // Test list tables (without views)
         let tables_args = json!({});
         let result = handle.tables(tables_args).await.unwrap();
-        
+
         assert!(result["tables"].is_array());
         let tables = result["tables"].as_array().unwrap();
-        
+
         // Should have 2 base tables
         assert!(tables.len() >= 2);
-        let table_names: Vec<&str> = tables.iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
+        let table_names: Vec<&str> = tables.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(table_names.contains(&"users"));
         assert!(table_names.contains(&"orders"));
-        
+
         // Should not contain view by default
         assert!(!table_names.contains(&"user_orders"));
-        
+
         assert_eq!(result["meta"]["truncated"], false);
     }
 
@@ -6107,27 +6708,31 @@ mod tests {
     async fn test_sqlite_tables_list_with_views() {
         let url = Url::parse("db://sqlite/test_tables_views").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup
         handle.connect(create_test_args()).await.unwrap();
-        handle.exec(json!({
-            "sql": "CREATE TABLE test_table (id INTEGER PRIMARY KEY)"
-        })).await.unwrap();
-        handle.exec(json!({
-            "sql": "CREATE VIEW test_view AS SELECT * FROM test_table"
-        })).await.unwrap();
-        
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE test_table (id INTEGER PRIMARY KEY)"
+            }))
+            .await
+            .unwrap();
+        handle
+            .exec(json!({
+                "sql": "CREATE VIEW test_view AS SELECT * FROM test_table"
+            }))
+            .await
+            .unwrap();
+
         // Test with include_views=true
         let tables_args = json!({
             "include_views": true
         });
         let result = handle.tables(tables_args).await.unwrap();
-        
+
         let tables = result["tables"].as_array().unwrap();
-        let table_names: Vec<&str> = tables.iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
-        
+        let table_names: Vec<&str> = tables.iter().map(|t| t["name"].as_str().unwrap()).collect();
+
         // Should contain both table and view
         assert!(table_names.contains(&"test_table"));
         assert!(table_names.contains(&"test_view"));
@@ -6137,30 +6742,30 @@ mod tests {
     async fn test_sqlite_tables_describe_mode() {
         let url = Url::parse("db://sqlite/test_tables_describe").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Create a table with various column types
         handle.exec(json!({
             "sql": "CREATE TABLE test_users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER, score REAL DEFAULT 0.0, active BOOLEAN DEFAULT 1)"
         })).await.unwrap();
-        
+
         // Describe the table
         let describe_args = json!({
             "table": "test_users"
         });
         let result = handle.tables(describe_args).await.unwrap();
-        
+
         // Check table info
         assert_eq!(result["table"]["name"], "test_users");
         assert_eq!(result["table"]["type"], "BASE TABLE");
-        
+
         // Check columns
         assert!(result["columns"].is_array());
         let columns = result["columns"].as_array().unwrap();
         assert_eq!(columns.len(), 5);
-        
+
         // Check first column (id - primary key)
         let id_col = &columns[0];
         assert_eq!(id_col["name"], "id");
@@ -6168,7 +6773,7 @@ mod tests {
         assert_eq!(id_col["is_nullable"], false);
         assert_eq!(id_col["is_primary_key"], true);
         assert_eq!(id_col["ordinal_position"], 1);
-        
+
         // Check name column
         let name_col = &columns[1];
         assert_eq!(name_col["name"], "name");
@@ -6181,31 +6786,31 @@ mod tests {
     async fn test_tables_config_validation() {
         let url = Url::parse("db://sqlite/test_tables_validation").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Test invalid timeout
         let invalid_timeout_args = json!({
             "timeout_ms": 0
         });
         let result = handle.tables(invalid_timeout_args).await;
         assert!(result.is_err());
-        
+
         if let Some(db_error) = result.unwrap_err().downcast_ref::<DbError>() {
             match db_error {
-                DbError::InvalidTablesConfig { .. } => {}, // Expected
+                DbError::InvalidTablesConfig { .. } => {} // Expected
                 _ => panic!("Expected InvalidTablesConfig error, got: {:?}", db_error),
             }
         }
-        
+
         // Test invalid max_tables
         let invalid_max_tables_args = json!({
             "max_tables": 0
         });
         let result = handle.tables(invalid_max_tables_args).await;
         assert!(result.is_err());
-        
+
         // Test empty table name
         let empty_table_args = json!({
             "table": ""
@@ -6218,40 +6823,46 @@ mod tests {
     async fn test_schema_config_validation() {
         let url = Url::parse("db://sqlite/test_schema_validation").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Test missing table parameter
         let missing_table_args = json!({});
         let result = handle.schema(missing_table_args).await;
         assert!(result.is_err());
-        
+
         if let Some(db_error) = result.unwrap_err().downcast_ref::<DbError>() {
             match db_error {
                 DbError::InvalidSchemaConfig { message } => {
                     assert!(message.contains("table is required"));
-                },
-                _ => panic!("Expected InvalidSchemaConfig error for missing table, got: {:?}", db_error),
+                }
+                _ => panic!(
+                    "Expected InvalidSchemaConfig error for missing table, got: {:?}",
+                    db_error
+                ),
             }
         }
-        
+
         // Test empty table name
         let empty_table_args = json!({
             "table": ""
         });
         let result = handle.schema(empty_table_args).await;
         assert!(result.is_err());
-        
+
         if let Some(db_error) = result.unwrap_err().downcast_ref::<DbError>() {
             match db_error {
                 DbError::InvalidSchemaConfig { message } => {
                     assert!(message.contains("table cannot be empty"));
-                },
-                _ => panic!("Expected InvalidSchemaConfig error for empty table, got: {:?}", db_error),
+                }
+                _ => panic!(
+                    "Expected InvalidSchemaConfig error for empty table, got: {:?}",
+                    db_error
+                ),
             }
         }
-        
+
         // Test invalid timeout
         let invalid_timeout_args = json!({
             "table": "test_table",
@@ -6259,13 +6870,16 @@ mod tests {
         });
         let result = handle.schema(invalid_timeout_args).await;
         assert!(result.is_err());
-        
+
         if let Some(db_error) = result.unwrap_err().downcast_ref::<DbError>() {
             match db_error {
                 DbError::InvalidSchemaConfig { message } => {
                     assert!(message.contains("timeout_ms must be greater than 0"));
-                },
-                _ => panic!("Expected InvalidSchemaConfig error for invalid timeout, got: {:?}", db_error),
+                }
+                _ => panic!(
+                    "Expected InvalidSchemaConfig error for invalid timeout, got: {:?}",
+                    db_error
+                ),
             }
         }
     }
@@ -6274,17 +6888,17 @@ mod tests {
     async fn test_schema_connection_not_found() {
         let url = Url::parse("db://sqlite/test_schema_no_connection").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Don't connect - test without connection
         let schema_args = json!({
             "table": "users"
         });
         let result = handle.schema(schema_args).await;
         assert!(result.is_err());
-        
+
         if let Some(db_error) = result.unwrap_err().downcast_ref::<DbError>() {
             match db_error {
-                DbError::ConnectionNotFound { .. } => {}, // Expected
+                DbError::ConnectionNotFound { .. } => {} // Expected
                 _ => panic!("Expected ConnectionNotFound error, got: {:?}", db_error),
             }
         }
@@ -6294,20 +6908,20 @@ mod tests {
     async fn test_schema_table_not_found() {
         let url = Url::parse("db://sqlite/test_schema_table_not_found").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Try to get schema for a non-existent table
         let schema_args = json!({
             "table": "does_not_exist"
         });
         let result = handle.schema(schema_args).await;
         assert!(result.is_err());
-        
+
         if let Some(db_error) = result.unwrap_err().downcast_ref::<DbError>() {
             match db_error {
-                DbError::TableNotFound { .. } => {}, // Expected
+                DbError::TableNotFound { .. } => {} // Expected
                 _ => panic!("Expected TableNotFound error, got: {:?}", db_error),
             }
         }
@@ -6317,20 +6931,20 @@ mod tests {
     async fn test_tables_table_not_found() {
         let url = Url::parse("db://sqlite/test_tables_not_found").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Try to describe a non-existent table
         let describe_args = json!({
             "table": "does_not_exist"
         });
         let result = handle.tables(describe_args).await;
         assert!(result.is_err());
-        
+
         if let Some(db_error) = result.unwrap_err().downcast_ref::<DbError>() {
             match db_error {
-                DbError::TableNotFound { .. } => {}, // Expected
+                DbError::TableNotFound { .. } => {} // Expected
                 _ => panic!("Expected TableNotFound error, got: {:?}", db_error),
             }
         }
@@ -6340,15 +6954,15 @@ mod tests {
     async fn test_tables_connection_not_found() {
         let url = Url::parse("db://sqlite/test_tables_no_connection").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Don't connect - test without connection
         let tables_args = json!({});
         let result = handle.tables(tables_args).await;
         assert!(result.is_err());
-        
+
         if let Some(db_error) = result.unwrap_err().downcast_ref::<DbError>() {
             match db_error {
-                DbError::ConnectionNotFound { .. } => {}, // Expected
+                DbError::ConnectionNotFound { .. } => {} // Expected
                 _ => panic!("Expected ConnectionNotFound error, got: {:?}", db_error),
             }
         }
@@ -6362,33 +6976,42 @@ mod tests {
         if let Ok(dsn) = std::env::var("TEST_POSTGRES_DSN") {
             let url = Url::parse("db://postgres/test_tables_integration").unwrap();
             let handle = DbHandle::from_url(url).unwrap();
-            
+
             let mut connect_args = std::collections::HashMap::new();
             connect_args.insert("dsn".to_string(), dsn);
-            
+
             // Test connection
             handle.connect(connect_args).await.unwrap();
-            
+
             // A regular table: each exec may use a different pooled connection,
             // so a session-scoped TEMP table would not be visible to later calls.
-            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS tables_test_pg" })).await.unwrap();
+            handle
+                .exec(json!({ "sql": "DROP TABLE IF EXISTS tables_test_pg" }))
+                .await
+                .unwrap();
             // Create table
-            handle.exec(json!({
-                "sql": "CREATE TABLE tables_test_pg (id SERIAL PRIMARY KEY, name TEXT NOT NULL)"
-            })).await.unwrap();
-            
+            handle
+                .exec(json!({
+                    "sql": "CREATE TABLE tables_test_pg (id SERIAL PRIMARY KEY, name TEXT NOT NULL)"
+                }))
+                .await
+                .unwrap();
+
             // List tables - should include our temp table in many cases
             let list_result = handle.tables(json!({})).await.unwrap();
             assert!(list_result["tables"].is_array());
-            
+
             // Describe the table if it shows up in the list
             let tables = list_result["tables"].as_array().unwrap();
             let temp_table = tables.iter().find(|t| t["name"] == "tables_test_pg");
             if let Some(_table) = temp_table {
-                let describe_result = handle.tables(json!({
-                    "table": "tables_test_pg"
-                })).await.unwrap();
-                
+                let describe_result = handle
+                    .tables(json!({
+                        "table": "tables_test_pg"
+                    }))
+                    .await
+                    .unwrap();
+
                 assert_eq!(describe_result["table"]["name"], "tables_test_pg");
                 assert!(describe_result["columns"].is_array());
             }
@@ -6401,30 +7024,35 @@ mod tests {
         if let Ok(dsn) = std::env::var("TEST_MYSQL_DSN") {
             let url = Url::parse("db://mysql/test_tables_integration").unwrap();
             let handle = DbHandle::from_url(url).unwrap();
-            
+
             let mut connect_args = std::collections::HashMap::new();
             connect_args.insert("dsn".to_string(), dsn);
-            
+
             // Test connection
             handle.connect(connect_args).await.unwrap();
-            
+
             // A regular table: each exec may use a different pooled connection,
             // so a session-scoped TEMP table would not be visible to later calls.
-            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS tables_test_mysql" })).await.unwrap();
+            handle
+                .exec(json!({ "sql": "DROP TABLE IF EXISTS tables_test_mysql" }))
+                .await
+                .unwrap();
             // Create table
             handle.exec(json!({
                 "sql": "CREATE TABLE tables_test_mysql (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL)"
             })).await.unwrap();
-            
+
             // List tables
             let list_result = handle.tables(json!({})).await.unwrap();
             assert!(list_result["tables"].is_array());
-            
+
             // Try to describe our temp table (may or may not show up in temporary schema)
-            let describe_result = handle.tables(json!({
-                "table": "tables_test_mysql"
-            })).await;
-            
+            let describe_result = handle
+                .tables(json!({
+                    "table": "tables_test_mysql"
+                }))
+                .await;
+
             // Don't assert success since temp tables may not be visible in information_schema
             // This is more of a smoke test to ensure no crashes
             match describe_result {
@@ -6443,13 +7071,14 @@ mod tests {
     async fn test_sqlite_schema_basic_table() {
         let url = Url::parse("db://sqlite/test_sqlite_schema_basic").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Create a test table with various column types
-        handle.exec(json!({
-            "sql": "CREATE TABLE test_users (
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE test_users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT NOT NULL,
                 name TEXT,
@@ -6458,43 +7087,45 @@ mod tests {
                 score REAL DEFAULT 0.0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )"
-        })).await.unwrap();
-        
+            }))
+            .await
+            .unwrap();
+
         // Test basic schema introspection
         let schema_args = json!({
             "table": "test_users"
         });
         let result = handle.schema(schema_args).await.unwrap();
-        
+
         // Check table info
         assert_eq!(result["table"]["name"], "test_users");
         assert_eq!(result["table"]["schema"], "main");
         assert_eq!(result["table"]["type"], "BASE TABLE");
-        
+
         // Check columns
         assert!(result["columns"].is_array());
         let columns = result["columns"].as_array().unwrap();
         assert_eq!(columns.len(), 7);
-        
+
         // Check ID column (primary key)
         let id_col = columns.iter().find(|col| col["name"] == "id").unwrap();
         assert_eq!(id_col["ordinal_position"], 1);
         assert_eq!(id_col["data_type"], "INTEGER");
         assert_eq!(id_col["is_nullable"], false);
         assert_eq!(id_col["is_primary_key"], true);
-        
+
         // Check email column (NOT NULL)
         let email_col = columns.iter().find(|col| col["name"] == "email").unwrap();
         assert_eq!(email_col["data_type"], "TEXT");
         assert_eq!(email_col["is_nullable"], false);
         assert_eq!(email_col["is_primary_key"], false);
-        
+
         // Check name column (nullable)
         let name_col = columns.iter().find(|col| col["name"] == "name").unwrap();
         assert_eq!(name_col["data_type"], "TEXT");
         assert_eq!(name_col["is_nullable"], true);
         assert_eq!(name_col["is_primary_key"], false);
-        
+
         // Check primary key info
         assert!(result["primary_key"].is_object());
         assert_eq!(result["primary_key"]["name"], "test_users_pkey");
@@ -6505,112 +7136,143 @@ mod tests {
     async fn test_sqlite_schema_with_indexes() {
         let url = Url::parse("db://sqlite/test_sqlite_schema_indexes").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Create table
-        handle.exec(json!({
-            "sql": "CREATE TABLE indexed_users (
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE indexed_users (
                 id INTEGER PRIMARY KEY,
                 email TEXT UNIQUE NOT NULL,
                 name TEXT,
                 age INTEGER
             )"
-        })).await.unwrap();
-        
+            }))
+            .await
+            .unwrap();
+
         // Create additional indexes
-        handle.exec(json!({
-            "sql": "CREATE INDEX idx_users_name ON indexed_users(name)"
-        })).await.unwrap();
-        
-        handle.exec(json!({
-            "sql": "CREATE INDEX idx_users_age_name ON indexed_users(age, name)"
-        })).await.unwrap();
-        
+        handle
+            .exec(json!({
+                "sql": "CREATE INDEX idx_users_name ON indexed_users(name)"
+            }))
+            .await
+            .unwrap();
+
+        handle
+            .exec(json!({
+                "sql": "CREATE INDEX idx_users_age_name ON indexed_users(age, name)"
+            }))
+            .await
+            .unwrap();
+
         // Test schema with indexes
         let schema_args = json!({
             "table": "indexed_users",
             "include_indexes": true
         });
         let result = handle.schema(schema_args).await.unwrap();
-        
+
         // Check that indexes are included
         assert!(result["indexes"].is_array());
         let indexes = result["indexes"].as_array().unwrap();
-        
+
         // Should have at least our custom indexes
-        let idx_names: Vec<String> = indexes.iter()
+        let idx_names: Vec<String> = indexes
+            .iter()
             .map(|idx| idx["name"].as_str().unwrap().to_string())
             .collect();
-        
+
         // Look for our created indexes
         // SQLite automatically creates unique indexes for UNIQUE constraints
-        assert!(idx_names.iter().any(|name| name.contains("email") || name.contains("sqlite_autoindex")));
+        assert!(
+            idx_names
+                .iter()
+                .any(|name| name.contains("email") || name.contains("sqlite_autoindex"))
+        );
         assert!(idx_names.iter().any(|name| name == "idx_users_name"));
         assert!(idx_names.iter().any(|name| name == "idx_users_age_name"));
-        
+
         // Check unique index (could be auto-generated with sqlite_autoindex or contain email)
-        let unique_idx = indexes.iter().find(|idx| {
-            let name = idx["name"].as_str().unwrap();
-            name.contains("email") || name.contains("sqlite_autoindex")
-        }).unwrap();
+        let unique_idx = indexes
+            .iter()
+            .find(|idx| {
+                let name = idx["name"].as_str().unwrap();
+                name.contains("email") || name.contains("sqlite_autoindex")
+            })
+            .unwrap();
         assert_eq!(unique_idx["is_unique"], true);
-        
+
         // Check regular index
-        let name_idx = indexes.iter().find(|idx| idx["name"] == "idx_users_name").unwrap();
+        let name_idx = indexes
+            .iter()
+            .find(|idx| idx["name"] == "idx_users_name")
+            .unwrap();
         assert_eq!(name_idx["is_unique"], false);
         assert_eq!(name_idx["columns"], json!(["name"]));
-        
+
         // Check composite index
-        let composite_idx = indexes.iter().find(|idx| idx["name"] == "idx_users_age_name").unwrap();
+        let composite_idx = indexes
+            .iter()
+            .find(|idx| idx["name"] == "idx_users_age_name")
+            .unwrap();
         assert_eq!(composite_idx["is_unique"], false);
         assert_eq!(composite_idx["columns"], json!(["age", "name"]));
     }
 
     #[tokio::test]
     async fn test_sqlite_schema_with_foreign_keys() {
-        
         let url = Url::parse("db://sqlite/test_sqlite_schema_fk").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Enable foreign keys
-        handle.exec(json!({
-            "sql": "PRAGMA foreign_keys = ON"
-        })).await.unwrap();
-        
+        handle
+            .exec(json!({
+                "sql": "PRAGMA foreign_keys = ON"
+            }))
+            .await
+            .unwrap();
+
         // Create parent table
-        handle.exec(json!({
-            "sql": "CREATE TABLE accounts (
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE accounts (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL
             )"
-        })).await.unwrap();
-        
+            }))
+            .await
+            .unwrap();
+
         // Create child table with foreign key
-        handle.exec(json!({
-            "sql": "CREATE TABLE fk_users (
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE fk_users (
                 id INTEGER PRIMARY KEY,
                 email TEXT NOT NULL,
                 account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE ON UPDATE RESTRICT
             )"
-        })).await.unwrap();
-        
+            }))
+            .await
+            .unwrap();
+
         // Test schema with foreign keys
         let schema_args = json!({
             "table": "fk_users",
             "include_foreign_keys": true
         });
         let result = handle.schema(schema_args).await.unwrap();
-        
+
         // Check that foreign keys are included
         assert!(result["foreign_keys"].is_array());
         let foreign_keys = result["foreign_keys"].as_array().unwrap();
         assert!(!foreign_keys.is_empty());
-        
+
         // Check the foreign key details
         let fk = &foreign_keys[0];
         assert!(fk["name"].as_str().unwrap().contains("fk_"));
@@ -6626,23 +7288,29 @@ mod tests {
     async fn test_sqlite_schema_include_flags() {
         let url = Url::parse("db://sqlite/test_sqlite_schema_flags").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Create test table
-        handle.exec(json!({
-            "sql": "CREATE TABLE flag_test (
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE flag_test (
                 id INTEGER PRIMARY KEY,
                 name TEXT UNIQUE
             )"
-        })).await.unwrap();
-        
+            }))
+            .await
+            .unwrap();
+
         // Create index
-        handle.exec(json!({
-            "sql": "CREATE INDEX idx_flag_test_name ON flag_test(name)"
-        })).await.unwrap();
-        
+        handle
+            .exec(json!({
+                "sql": "CREATE INDEX idx_flag_test_name ON flag_test(name)"
+            }))
+            .await
+            .unwrap();
+
         // Test with include_indexes=false
         let schema_args = json!({
             "table": "flag_test",
@@ -6650,11 +7318,16 @@ mod tests {
             "include_foreign_keys": false
         });
         let result = handle.schema(schema_args).await.unwrap();
-        
+
         // Should not include indexes and foreign_keys sections when disabled
         assert!(!result.get("indexes").map(|v| v.is_array()).unwrap_or(false));
-        assert!(!result.get("foreign_keys").map(|v| v.is_array()).unwrap_or(false));
-        
+        assert!(
+            !result
+                .get("foreign_keys")
+                .map(|v| v.is_array())
+                .unwrap_or(false)
+        );
+
         // Test with include_indexes=true
         let schema_args_with_indexes = json!({
             "table": "flag_test",
@@ -6662,46 +7335,57 @@ mod tests {
             "include_foreign_keys": false
         });
         let result_with_indexes = handle.schema(schema_args_with_indexes).await.unwrap();
-        
+
         // Should include indexes when enabled
         assert!(result_with_indexes["indexes"].is_array());
-        assert!(!result_with_indexes["indexes"].as_array().unwrap().is_empty());
+        assert!(
+            !result_with_indexes["indexes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
     async fn test_sqlite_schema_compound_primary_key() {
         let url = Url::parse("db://sqlite/test_sqlite_schema_compound_pk").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Connect and setup
         handle.connect(create_test_args()).await.unwrap();
-        
+
         // Create table with compound primary key
-        handle.exec(json!({
-            "sql": "CREATE TABLE compound_pk (
+        handle
+            .exec(json!({
+                "sql": "CREATE TABLE compound_pk (
                 tenant_id INTEGER,
                 user_id INTEGER,
                 name TEXT,
                 PRIMARY KEY (tenant_id, user_id)
             )"
-        })).await.unwrap();
-        
+            }))
+            .await
+            .unwrap();
+
         // Test schema
         let schema_args = json!({
             "table": "compound_pk"
         });
         let result = handle.schema(schema_args).await.unwrap();
-        
+
         // Check columns are marked as primary key
         let columns = result["columns"].as_array().unwrap();
-        let tenant_col = columns.iter().find(|col| col["name"] == "tenant_id").unwrap();
+        let tenant_col = columns
+            .iter()
+            .find(|col| col["name"] == "tenant_id")
+            .unwrap();
         let user_col = columns.iter().find(|col| col["name"] == "user_id").unwrap();
         let name_col = columns.iter().find(|col| col["name"] == "name").unwrap();
-        
+
         assert_eq!(tenant_col["is_primary_key"], true);
         assert_eq!(user_col["is_primary_key"], true);
         assert_eq!(name_col["is_primary_key"], false);
-        
+
         // Check primary key info
         assert!(result["primary_key"].is_object());
         let pk_columns = result["primary_key"]["columns"].as_array().unwrap();
@@ -6716,56 +7400,70 @@ mod tests {
         if let Ok(dsn) = std::env::var("TEST_POSTGRES_DSN") {
             let url = Url::parse("db://postgres/test_schema_integration").unwrap();
             let handle = DbHandle::from_url(url).unwrap();
-            
+
             let mut connect_args = std::collections::HashMap::new();
             connect_args.insert("dsn".to_string(), dsn);
-            
+
             // Test connection
             handle.connect(connect_args).await.unwrap();
-            
+
             // A regular table: each exec may use a different pooled connection,
             // so a session-scoped TEMP table would not be visible to later calls.
-            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS schema_test_pg" })).await.unwrap();
+            handle
+                .exec(json!({ "sql": "DROP TABLE IF EXISTS schema_test_pg" }))
+                .await
+                .unwrap();
             // Create table with constraints
-            handle.exec(json!({
-                "sql": "CREATE TABLE schema_test_pg (
+            handle
+                .exec(json!({
+                    "sql": "CREATE TABLE schema_test_pg (
                     id SERIAL PRIMARY KEY,
                     email VARCHAR(100) UNIQUE NOT NULL,
                     name TEXT,
                     age INTEGER
                 )"
-            })).await.unwrap();
-            
+                }))
+                .await
+                .unwrap();
+
             // Create index
-            handle.exec(json!({
-                "sql": "CREATE INDEX idx_schema_test_name ON schema_test_pg(name)"
-            })).await.unwrap();
-            
+            handle
+                .exec(json!({
+                    "sql": "CREATE INDEX idx_schema_test_name ON schema_test_pg(name)"
+                }))
+                .await
+                .unwrap();
+
             // Test schema introspection
             let schema_args = json!({
                 "table": "schema_test_pg"
             });
             let result = handle.schema(schema_args).await.unwrap();
-            
+
             // Check basic structure
             assert_eq!(result["table"]["name"], "schema_test_pg");
             assert_eq!(result["table"]["type"], "BASE TABLE");
-            
+
             // Check columns
             assert!(result["columns"].is_array());
             let columns = result["columns"].as_array().unwrap();
             assert!(!columns.is_empty());
-            
+
             // Find ID column
             let id_col = columns.iter().find(|col| col["name"] == "id");
             if let Some(id_col) = id_col {
                 assert_eq!(id_col["is_primary_key"], true);
                 assert_eq!(id_col["is_nullable"], false);
             }
-            
+
             // Check primary key
             if let Some(_pk) = result.get("primary_key") {
-                assert!(result["primary_key"]["columns"].as_array().unwrap().contains(&json!("id")));
+                assert!(
+                    result["primary_key"]["columns"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!("id"))
+                );
             }
         }
     }
@@ -6776,38 +7474,44 @@ mod tests {
         if let Ok(dsn) = std::env::var("TEST_MYSQL_DSN") {
             let url = Url::parse("db://mysql/test_schema_integration").unwrap();
             let handle = DbHandle::from_url(url).unwrap();
-            
+
             let mut connect_args = std::collections::HashMap::new();
             connect_args.insert("dsn".to_string(), dsn);
-            
+
             // Test connection
             handle.connect(connect_args).await.unwrap();
-            
+
             // A regular table: each exec may use a different pooled connection,
             // so a session-scoped TEMP table would not be visible to later calls.
-            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS schema_test_mysql" })).await.unwrap();
+            handle
+                .exec(json!({ "sql": "DROP TABLE IF EXISTS schema_test_mysql" }))
+                .await
+                .unwrap();
             // Create table
-            handle.exec(json!({
-                "sql": "CREATE TABLE schema_test_mysql (
+            handle
+                .exec(json!({
+                    "sql": "CREATE TABLE schema_test_mysql (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     email VARCHAR(100) UNIQUE NOT NULL,
                     name VARCHAR(50),
                     age INT
                 )"
-            })).await.unwrap();
-            
+                }))
+                .await
+                .unwrap();
+
             // Test schema introspection
             let schema_args = json!({
                 "table": "schema_test_mysql"
             });
             let result = handle.schema(schema_args).await;
-            
+
             // Note: temp tables may not be visible in some MySQL configurations
             match result {
                 Ok(result) => {
                     assert_eq!(result["table"]["name"], "schema_test_mysql");
                     assert_eq!(result["table"]["type"], "BASE TABLE");
-                    
+
                     // Check columns if available
                     if result["columns"].is_array() {
                         let columns = result["columns"].as_array().unwrap();
@@ -6845,7 +7549,7 @@ mod tests {
     fn test_ping_config_defaults() {
         let args = json!({});
         let config = PingConfig::from_args(&args).unwrap();
-        
+
         assert_eq!(config.timeout_ms, 1000);
         assert_eq!(config.retries, 0);
         assert_eq!(config.backoff_ms, 100);
@@ -6861,7 +7565,7 @@ mod tests {
             "detailed": true
         });
         let config = PingConfig::from_args(&args).unwrap();
-        
+
         assert_eq!(config.timeout_ms, 2500);
         assert_eq!(config.retries, 3);
         assert_eq!(config.backoff_ms, 200);
@@ -6872,7 +7576,7 @@ mod tests {
     fn test_ping_config_validation_zero_timeout() {
         let args = json!({"timeout_ms": 0});
         let result = PingConfig::from_args(&args);
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             DbError::InvalidPingConfig { message } => {
@@ -6886,7 +7590,7 @@ mod tests {
     fn test_ping_config_validation_too_many_retries() {
         let args = json!({"retries": 15});
         let result = PingConfig::from_args(&args);
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             DbError::InvalidPingConfig { message } => {
@@ -6905,7 +7609,7 @@ mod tests {
             "backoff_ms": 0
         });
         let config = PingConfig::from_args(&args).unwrap();
-        
+
         assert_eq!(config.timeout_ms, 1);
         assert_eq!(config.retries, 10);
         assert_eq!(config.backoff_ms, 0);
@@ -6916,8 +7620,8 @@ mod tests {
         // Test creation from various URL formats
         let test_urls = vec![
             "db://postgres/main",
-            "db://mysql/reporting", 
-            "db://sqlite/local"
+            "db://mysql/reporting",
+            "db://sqlite/local",
         ];
 
         for url_str in test_urls {
@@ -6930,41 +7634,52 @@ mod tests {
     #[test]
     fn test_ping_error_json_formatting() {
         // Test InvalidPingConfig error JSON formatting
-        let error = DbError::InvalidPingConfig { 
-            message: "test error message".to_string() 
+        let error = DbError::InvalidPingConfig {
+            message: "test error message".to_string(),
         };
         let json = error.to_json();
-        
+
         assert_eq!(json["error"]["code"], "db.invalid_ping_config");
-        assert!(json["error"]["message"].as_str().unwrap().contains("test error message"));
-        assert_eq!(json["error"]["details"]["validation_error"], "test error message");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("test error message")
+        );
+        assert_eq!(
+            json["error"]["details"]["validation_error"],
+            "test error message"
+        );
 
         // Test PingTimeout error JSON formatting
         let timeout_error = DbError::PingTimeout { timeout_ms: 1000 };
         let timeout_json = timeout_error.to_json();
-        
+
         assert_eq!(timeout_json["error"]["code"], "db.ping_timeout");
         assert_eq!(timeout_json["error"]["details"]["timeout_ms"], 1000);
 
         // Test PingFailed error JSON formatting
-        let failed_error = DbError::PingFailed { 
-            message: "connection refused".to_string() 
+        let failed_error = DbError::PingFailed {
+            message: "connection refused".to_string(),
         };
         let failed_json = failed_error.to_json();
-        
+
         assert_eq!(failed_json["error"]["code"], "db.ping_failed");
-        assert_eq!(failed_json["error"]["details"]["underlying_error"], "connection refused");
+        assert_eq!(
+            failed_json["error"]["details"]["underlying_error"],
+            "connection refused"
+        );
     }
 
     #[test]
     fn test_connection_not_found_error() {
         // Test ConnectionNotFound error for ping operations
-        let error = DbError::ConnectionNotFound { 
-            driver: "postgres".to_string(), 
-            alias: "nonexistent".to_string() 
+        let error = DbError::ConnectionNotFound {
+            driver: "postgres".to_string(),
+            alias: "nonexistent".to_string(),
         };
         let json = error.to_json();
-        
+
         assert_eq!(json["error"]["code"], "db.connection_not_found");
         assert_eq!(json["error"]["details"]["driver"], "postgres");
         assert_eq!(json["error"]["details"]["alias"], "nonexistent");
@@ -6975,54 +7690,51 @@ mod tests {
         // Create a handle that doesn't have a connection registered
         let url = Url::parse("db://sqlite/nonexistent").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let args = json!({});
         let result = handle.ping(args).await;
-        
+
         // Should return error response, not panic
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_ping_integration_sqlite_success() {
-        
         // Create and register a SQLite connection
         let url = Url::parse("db://sqlite/test_ping").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let connect_args = create_test_args();
         let connect_result = handle.connect(connect_args).await;
         assert!(connect_result.is_ok());
-        
+
         // Now test ping
         let ping_args = json!({});
         let ping_result = handle.ping(ping_args).await;
-        
+
         assert!(ping_result.is_ok());
         let result = ping_result.unwrap();
-        
+
         assert_eq!(result["status"], "ok");
         assert_eq!(result["driver"], "sqlite");
         assert_eq!(result["alias"], "test_ping");
         assert_eq!(result["attempts"], 1);
-        
+
         // Should have measurable latency
         let latency = result["latency_ms"].as_u64().unwrap();
         assert!(latency >= 0);
-        
     }
 
     #[tokio::test]
     async fn test_ping_integration_sqlite_with_custom_config() {
-        
         // Create and register a SQLite connection
         let url = Url::parse("db://sqlite/test_ping_custom").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let connect_args = create_test_args();
         let connect_result = handle.connect(connect_args).await;
         assert!(connect_result.is_ok());
-        
+
         // Test ping with custom configuration
         let ping_args = json!({
             "timeout_ms": 2000,
@@ -7031,49 +7743,46 @@ mod tests {
             "detailed": true
         });
         let ping_result = handle.ping(ping_args).await;
-        
+
         assert!(ping_result.is_ok());
         let result = ping_result.unwrap();
-        
+
         assert_eq!(result["status"], "ok");
         assert_eq!(result["driver"], "sqlite");
         assert_eq!(result["alias"], "test_ping_custom");
         assert_eq!(result["attempts"], 1);
-        
+
         // Should have measurable latency
         let latency = result["latency_ms"].as_u64().unwrap();
         assert!(latency >= 0);
-        
     }
 
     #[tokio::test]
     async fn test_ping_integration_connection_not_found() {
-        
         // Create handle but don't connect
         let url = Url::parse("db://sqlite/nonexistent").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         // Test ping without connection
         let ping_args = json!({});
         let ping_result = handle.ping(ping_args).await;
-        
+
         // Should return an error (not panic)
         assert!(ping_result.is_err());
-        
     }
 
     #[tokio::test]
     async fn test_ping_integration_sqlite_multiple_attempts() {
         // This test verifies the ping mechanism works with a real SQLite connection
-        
+
         // Create and register a SQLite connection
         let url = Url::parse("db://sqlite/test_ping_multi").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let connect_args = create_test_args();
         let connect_result = handle.connect(connect_args).await;
         assert!(connect_result.is_ok(), "Failed to connect to SQLite");
-        
+
         // Test multiple ping calls to ensure consistency
         for i in 1..=3 {
             let ping_args = json!({
@@ -7081,7 +7790,7 @@ mod tests {
                 "detailed": true
             });
             let ping_result = handle.ping(ping_args).await;
-            
+
             // Allow for either success or connection lost after several attempts
             match ping_result {
                 Ok(result) => {
@@ -7089,7 +7798,7 @@ mod tests {
                     assert_eq!(result["driver"], "sqlite");
                     assert_eq!(result["alias"], "test_ping_multi");
                     assert_eq!(result["attempts"], 1);
-                    
+
                     // Should have measurable latency
                     let latency = result["latency_ms"].as_u64().unwrap();
                     assert!(latency >= 0);
@@ -7098,43 +7807,45 @@ mod tests {
                     // If connection is lost, that's acceptable for this test
                     // This can happen with SQLite in-memory databases in test scenarios
                     let error_msg = e.to_string();
-                    assert!(error_msg.contains("connection not found"), 
-                           "Unexpected error: {}", error_msg);
+                    assert!(
+                        error_msg.contains("connection not found"),
+                        "Unexpected error: {}",
+                        error_msg
+                    );
                     break;
                 }
             }
         }
-        
     }
 
     #[tokio::test]
     async fn test_ping_integration_sqlite_very_short_timeout() {
-        // This tests behavior with extremely short timeout 
+        // This tests behavior with extremely short timeout
         // (may timeout depending on system performance)
-        
+
         // Create and register a SQLite connection
         let url = Url::parse("db://sqlite/test_ping_timeout").unwrap();
         let handle = DbHandle::from_url(url).unwrap();
-        
+
         let connect_args = create_test_args();
         let connect_result = handle.connect(connect_args).await;
         assert!(connect_result.is_ok());
-        
+
         // Test ping with very short timeout (may timeout on slow systems)
         let ping_args = json!({
             "timeout_ms": 1,  // 1ms - very short
             "retries": 0
         });
         let ping_result = handle.ping(ping_args).await;
-        
+
         // Result could be success or timeout, both are valid
         assert!(ping_result.is_ok());
         let result = ping_result.unwrap();
-        
+
         // Should be either "ok" or "error" status
         let status = result["status"].as_str().unwrap();
         assert!(status == "ok" || status == "error");
-        
+
         if status == "ok" {
             assert_eq!(result["attempts"], 1);
             // Should have very low latency
@@ -7147,7 +7858,6 @@ mod tests {
             // Could be timeout or other error
             assert!(error["code"] == "db.ping_timeout" || error["code"] == "db.ping_failed");
         }
-        
     }
 
     // ============================================================================
@@ -7159,31 +7869,70 @@ mod tests {
 
         #[test]
         fn test_transaction_action_from_string() {
-            assert_eq!(TransactionAction::from_str("begin").unwrap(), TransactionAction::Begin);
-            assert_eq!(TransactionAction::from_str("commit").unwrap(), TransactionAction::Commit);
-            assert_eq!(TransactionAction::from_str("rollback").unwrap(), TransactionAction::Rollback);
-            
+            assert_eq!(
+                TransactionAction::from_str("begin").unwrap(),
+                TransactionAction::Begin
+            );
+            assert_eq!(
+                TransactionAction::from_str("commit").unwrap(),
+                TransactionAction::Commit
+            );
+            assert_eq!(
+                TransactionAction::from_str("rollback").unwrap(),
+                TransactionAction::Rollback
+            );
+
             // Case insensitive
-            assert_eq!(TransactionAction::from_str("BEGIN").unwrap(), TransactionAction::Begin);
-            assert_eq!(TransactionAction::from_str("Commit").unwrap(), TransactionAction::Commit);
-            assert_eq!(TransactionAction::from_str("ROLLBACK").unwrap(), TransactionAction::Rollback);
-            
+            assert_eq!(
+                TransactionAction::from_str("BEGIN").unwrap(),
+                TransactionAction::Begin
+            );
+            assert_eq!(
+                TransactionAction::from_str("Commit").unwrap(),
+                TransactionAction::Commit
+            );
+            assert_eq!(
+                TransactionAction::from_str("ROLLBACK").unwrap(),
+                TransactionAction::Rollback
+            );
+
             // Invalid action
             assert!(TransactionAction::from_str("invalid").is_err());
         }
 
         #[test]
         fn test_transaction_isolation_from_string() {
-            assert_eq!(TransactionIsolation::from_str("default").unwrap(), TransactionIsolation::Default);
-            assert_eq!(TransactionIsolation::from_str("read_uncommitted").unwrap(), TransactionIsolation::ReadUncommitted);
-            assert_eq!(TransactionIsolation::from_str("read_committed").unwrap(), TransactionIsolation::ReadCommitted);
-            assert_eq!(TransactionIsolation::from_str("repeatable_read").unwrap(), TransactionIsolation::RepeatableRead);
-            assert_eq!(TransactionIsolation::from_str("serializable").unwrap(), TransactionIsolation::Serializable);
-            
+            assert_eq!(
+                TransactionIsolation::from_str("default").unwrap(),
+                TransactionIsolation::Default
+            );
+            assert_eq!(
+                TransactionIsolation::from_str("read_uncommitted").unwrap(),
+                TransactionIsolation::ReadUncommitted
+            );
+            assert_eq!(
+                TransactionIsolation::from_str("read_committed").unwrap(),
+                TransactionIsolation::ReadCommitted
+            );
+            assert_eq!(
+                TransactionIsolation::from_str("repeatable_read").unwrap(),
+                TransactionIsolation::RepeatableRead
+            );
+            assert_eq!(
+                TransactionIsolation::from_str("serializable").unwrap(),
+                TransactionIsolation::Serializable
+            );
+
             // Case insensitive
-            assert_eq!(TransactionIsolation::from_str("DEFAULT").unwrap(), TransactionIsolation::Default);
-            assert_eq!(TransactionIsolation::from_str("SERIALIZABLE").unwrap(), TransactionIsolation::Serializable);
-            
+            assert_eq!(
+                TransactionIsolation::from_str("DEFAULT").unwrap(),
+                TransactionIsolation::Default
+            );
+            assert_eq!(
+                TransactionIsolation::from_str("SERIALIZABLE").unwrap(),
+                TransactionIsolation::Serializable
+            );
+
             // Invalid isolation
             assert!(TransactionIsolation::from_str("invalid").is_err());
         }
@@ -7196,7 +7945,7 @@ mod tests {
                 "read_only": true,
                 "timeout_ms": 10000
             });
-            
+
             let config = TransactionConfig::from_args(&args).unwrap();
             assert_eq!(config.action, TransactionAction::Begin);
             assert_eq!(config.isolation, Some(TransactionIsolation::Serializable));
@@ -7210,7 +7959,7 @@ mod tests {
             let args = json!({
                 "action": "begin"
             });
-            
+
             let config = TransactionConfig::from_args(&args).unwrap();
             assert_eq!(config.action, TransactionAction::Begin);
             assert_eq!(config.isolation, None);
@@ -7226,7 +7975,7 @@ mod tests {
                 "tx_id": "test-tx-123",
                 "timeout_ms": 8000
             });
-            
+
             let config = TransactionConfig::from_args(&args).unwrap();
             assert_eq!(config.action, TransactionAction::Commit);
             assert_eq!(config.tx_id, Some("test-tx-123".to_string()));
@@ -7241,7 +7990,7 @@ mod tests {
                 "action": "rollback",
                 "tx_id": "test-tx-456"
             });
-            
+
             let config = TransactionConfig::from_args(&args).unwrap();
             assert_eq!(config.action, TransactionAction::Rollback);
             assert_eq!(config.tx_id, Some("test-tx-456".to_string()));
@@ -7255,7 +8004,7 @@ mod tests {
             let args = json!({
                 "tx_id": "test-tx-123"
             });
-            
+
             let result = TransactionConfig::from_args(&args);
             assert!(result.is_err());
             match result.unwrap_err() {
@@ -7271,7 +8020,7 @@ mod tests {
             let args = json!({
                 "action": "invalid"
             });
-            
+
             let result = TransactionConfig::from_args(&args);
             assert!(result.is_err());
             match result.unwrap_err() {
@@ -7288,7 +8037,7 @@ mod tests {
                 "action": "begin",
                 "tx_id": "should-not-be-provided"
             });
-            
+
             let result = TransactionConfig::from_args(&args);
             assert!(result.is_err());
             match result.unwrap_err() {
@@ -7304,7 +8053,7 @@ mod tests {
             let args = json!({
                 "action": "commit"
             });
-            
+
             let result = TransactionConfig::from_args(&args);
             assert!(result.is_err());
             match result.unwrap_err() {
@@ -7320,7 +8069,7 @@ mod tests {
             let args = json!({
                 "action": "rollback"
             });
-            
+
             let result = TransactionConfig::from_args(&args);
             assert!(result.is_err());
             match result.unwrap_err() {
@@ -7337,7 +8086,7 @@ mod tests {
                 "action": "commit",
                 "tx_id": "   "
             });
-            
+
             let result = TransactionConfig::from_args(&args);
             assert!(result.is_err());
             match result.unwrap_err() {
@@ -7354,7 +8103,7 @@ mod tests {
                 "action": "begin",
                 "timeout_ms": 0
             });
-            
+
             let result = TransactionConfig::from_args(&args);
             assert!(result.is_err());
             match result.unwrap_err() {
@@ -7371,7 +8120,7 @@ mod tests {
                 "action": "begin",
                 "isolation": "invalid_level"
             });
-            
+
             let result = TransactionConfig::from_args(&args);
             assert!(result.is_err());
             match result.unwrap_err() {
@@ -7388,7 +8137,7 @@ mod tests {
                 "sql": "SELECT * FROM users",
                 "tx_id": "test-tx-123"
             });
-            
+
             let config = QueryConfig::from_args(&args).unwrap();
             assert_eq!(config.sql, "SELECT * FROM users");
             assert_eq!(config.tx_id, Some("test-tx-123".to_string()));
@@ -7399,7 +8148,7 @@ mod tests {
             let args = json!({
                 "sql": "SELECT * FROM users"
             });
-            
+
             let config = QueryConfig::from_args(&args).unwrap();
             assert_eq!(config.sql, "SELECT * FROM users");
             assert_eq!(config.tx_id, None);
@@ -7411,7 +8160,7 @@ mod tests {
                 "sql": "SELECT * FROM users",
                 "tx_id": "   "
             });
-            
+
             let config = QueryConfig::from_args(&args).unwrap();
             assert_eq!(config.sql, "SELECT * FROM users");
             assert_eq!(config.tx_id, None); // Empty strings are filtered out
@@ -7423,7 +8172,7 @@ mod tests {
                 "sql": "INSERT INTO users (name) VALUES ('John')",
                 "tx_id": "test-tx-456"
             });
-            
+
             let config = ExecConfig::from_args(&args).unwrap();
             assert_eq!(config.sql, "INSERT INTO users (name) VALUES ('John')");
             assert_eq!(config.tx_id, Some("test-tx-456".to_string()));
@@ -7434,7 +8183,7 @@ mod tests {
             let args = json!({
                 "sql": "UPDATE users SET active = false"
             });
-            
+
             let config = ExecConfig::from_args(&args).unwrap();
             assert_eq!(config.sql, "UPDATE users SET active = false");
             assert_eq!(config.tx_id, None);
@@ -7442,11 +8191,18 @@ mod tests {
 
         #[test]
         fn test_db_error_transaction_json() {
-            let error = DbError::TransactionNotFound { tx_id: "test-tx-123".to_string() };
+            let error = DbError::TransactionNotFound {
+                tx_id: "test-tx-123".to_string(),
+            };
             let json = error.to_json();
-            
+
             assert_eq!(json["error"]["code"], "db.transaction_not_found");
-            assert!(json["error"]["message"].as_str().unwrap().contains("test-tx-123"));
+            assert!(
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("test-tx-123")
+            );
             assert_eq!(json["error"]["details"]["tx_id"], "test-tx-123");
         }
 
@@ -7454,20 +8210,20 @@ mod tests {
         fn test_db_error_transaction_timeout_json() {
             let error = DbError::TransactionTimeout { timeout_ms: 5000 };
             let json = error.to_json();
-            
+
             assert_eq!(json["error"]["code"], "db.transaction_timeout");
             assert_eq!(json["error"]["details"]["timeout_ms"], 5000);
         }
 
         #[test]
         fn test_db_error_transaction_alias_mismatch_json() {
-            let error = DbError::TransactionAliasMismatch { 
+            let error = DbError::TransactionAliasMismatch {
                 tx_id: "test-tx-123".to_string(),
                 expected: "postgres:main".to_string(),
                 actual: "sqlite:test".to_string(),
             };
             let json = error.to_json();
-            
+
             assert_eq!(json["error"]["code"], "db.transaction_alias_mismatch");
             assert_eq!(json["error"]["details"]["tx_id"], "test-tx-123");
             assert_eq!(json["error"]["details"]["expected"], "postgres:main");
@@ -7479,7 +8235,7 @@ mod tests {
             let driver = DbDriver::Sqlite;
             let alias = "test".to_string();
             let tx_id = "test-tx-123".to_string();
-            
+
             // We can't actually create a real transaction here without a database connection,
             // so this test is limited to the structure validation
             // The actual transaction integration tests will be in the integration test section
@@ -7503,9 +8259,20 @@ mod tests {
         }
 
         fn call_out(h: &DbHandle, verb: &str, args: &[(&str, &str)]) -> (Status, String) {
-            let args: Args = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            let (mut i, mut o, mut e) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()), Cursor::new(Vec::new()));
-            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let args: Args = args
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let (mut i, mut o, mut e) = (
+                Cursor::new(Vec::new()),
+                Cursor::new(Vec::new()),
+                Cursor::new(Vec::new()),
+            );
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
             let st = h.call(verb, &args, &mut io).unwrap();
             (st, String::from_utf8(o.into_inner()).unwrap())
         }
@@ -7517,7 +8284,8 @@ mod tests {
 
         /// A temp-file SQLite DSN unique to one test.
         fn temp_dsn(name: &str) -> (String, std::path::PathBuf) {
-            let path = std::env::temp_dir().join(format!("resh-dbh-{}-{}.db", name, Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("resh-dbh-{}-{}.db", name, Uuid::new_v4()));
             (format!("sqlite://{}?mode=rwc", path.display()), path)
         }
 
@@ -7550,34 +8318,50 @@ mod tests {
 
         #[test]
         fn query_config_accepts_cli_strings() {
-            let c = QueryConfig::from_args(&json!({"sql": "SELECT 1", "timeout_ms": "250", "max_rows": "2"})).unwrap();
+            let c = QueryConfig::from_args(
+                &json!({"sql": "SELECT 1", "timeout_ms": "250", "max_rows": "2"}),
+            )
+            .unwrap();
             assert_eq!(c.timeout_ms, 250);
             assert_eq!(c.max_rows, 2);
-            assert!(QueryConfig::from_args(&json!({"sql": "SELECT 1", "max_rows": "lots"})).is_err());
-            assert!(QueryConfig::from_args(&json!({"sql": "SELECT 1", "timeout_ms": "0"})).is_err());
+            assert!(
+                QueryConfig::from_args(&json!({"sql": "SELECT 1", "max_rows": "lots"})).is_err()
+            );
+            assert!(
+                QueryConfig::from_args(&json!({"sql": "SELECT 1", "timeout_ms": "0"})).is_err()
+            );
         }
 
         #[test]
         fn other_configs_accept_cli_strings() {
-            let t = TablesConfig::from_args(&json!({"include_views": "true", "max_tables": "5"})).unwrap();
+            let t = TablesConfig::from_args(&json!({"include_views": "true", "max_tables": "5"}))
+                .unwrap();
             assert!(t.include_views);
             assert_eq!(t.max_tables, 5);
             let p = PingConfig::from_args(&json!({"retries": "2", "detailed": "yes"})).unwrap();
             assert_eq!(p.retries, 2);
             assert!(p.detailed);
             assert!(PingConfig::from_args(&json!({"detailed": "maybe"})).is_err());
-            let sc = SchemaConfig::from_args(&json!({"table": "t", "include_indexes": "false"})).unwrap();
+            let sc = SchemaConfig::from_args(&json!({"table": "t", "include_indexes": "false"}))
+                .unwrap();
             assert!(!sc.include_indexes);
         }
 
         #[test]
         fn query_max_rows_from_cli_truncates() {
             let h = handle("db://sqlite/cli_fix_max_rows");
-            let out = json_out(&h, "query", &[
-                ("dsn", "sqlite::memory:"),
-                ("sql", "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x < 5) SELECT x FROM n"),
-                ("max_rows", "2"),
-            ]);
+            let out = json_out(
+                &h,
+                "query",
+                &[
+                    ("dsn", "sqlite::memory:"),
+                    (
+                        "sql",
+                        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x < 5) SELECT x FROM n",
+                    ),
+                    ("max_rows", "2"),
+                ],
+            );
             assert_eq!(out["rows"].as_array().unwrap().len(), 2, "{}", out);
             assert_eq!(out["meta"]["truncated"], true);
         }
@@ -7586,25 +8370,46 @@ mod tests {
         fn tables_schema_ping_auto_connect_with_dsn() {
             let (dsn, path) = temp_dsn("auto");
             let setup = handle("db://sqlite/cli_fix_auto_setup");
-            let out = json_out(&setup, "exec", &[
-                ("dsn", dsn.as_str()),
-                ("sql", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"),
-            ]);
+            let out = json_out(
+                &setup,
+                "exec",
+                &[
+                    ("dsn", dsn.as_str()),
+                    (
+                        "sql",
+                        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+                    ),
+                ],
+            );
             assert_eq!(out["rows_affected"], 0, "{}", out);
 
-            let out = json_out(&handle("db://sqlite/cli_fix_auto_tables"), "tables", &[("dsn", dsn.as_str())]);
-            assert!(out["tables"].as_array().unwrap().iter().any(|t| t["name"] == "users"), "{}", out);
+            let out = json_out(
+                &handle("db://sqlite/cli_fix_auto_tables"),
+                "tables",
+                &[("dsn", dsn.as_str())],
+            );
+            assert!(
+                out["tables"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["name"] == "users"),
+                "{}",
+                out
+            );
 
-            let out = json_out(&handle("db://sqlite/cli_fix_auto_schema"), "schema", &[
-                ("dsn", dsn.as_str()),
-                ("table", "users"),
-            ]);
+            let out = json_out(
+                &handle("db://sqlite/cli_fix_auto_schema"),
+                "schema",
+                &[("dsn", dsn.as_str()), ("table", "users")],
+            );
             assert_eq!(out["table"]["name"], "users", "{}", out);
 
-            let out = json_out(&handle("db://sqlite/cli_fix_auto_ping"), "ping", &[
-                ("dsn", dsn.as_str()),
-                ("retries", "1"),
-            ]);
+            let out = json_out(
+                &handle("db://sqlite/cli_fix_auto_ping"),
+                "ping",
+                &[("dsn", dsn.as_str()), ("retries", "1")],
+            );
             assert_eq!(out["status"], "ok", "{}", out);
             let _ = std::fs::remove_file(path);
         }
@@ -7622,16 +8427,27 @@ mod tests {
         fn transaction_run_commits_all_statements() {
             let (dsn, path) = temp_dsn("txrun");
             let h = handle("db://sqlite/cli_fix_tx_commit");
-            let out = json_out(&h, "transaction", &[
-                ("dsn", dsn.as_str()),
-                ("statements", r#"["CREATE TABLE t (v INTEGER)", "INSERT INTO t VALUES (1)", {"sql": "INSERT INTO t VALUES (?)", "params": [2]}]"#),
-            ]);
+            let out = json_out(
+                &h,
+                "transaction",
+                &[
+                    ("dsn", dsn.as_str()),
+                    (
+                        "statements",
+                        r#"["CREATE TABLE t (v INTEGER)", "INSERT INTO t VALUES (1)", {"sql": "INSERT INTO t VALUES (?)", "params": [2]}]"#,
+                    ),
+                ],
+            );
             assert_eq!(out["status"], "ok", "{}", out);
             assert_eq!(out["committed"], true);
             assert_eq!(out["results"].as_array().unwrap().len(), 3);
             assert_eq!(out["results"][1]["rows_affected"], 1);
 
-            let out = json_out(&h, "query", &[("sql", "SELECT COUNT(*) FROM t"), ("mode", "scalar")]);
+            let out = json_out(
+                &h,
+                "query",
+                &[("sql", "SELECT COUNT(*) FROM t"), ("mode", "scalar")],
+            );
             assert_eq!(out["value"], 2, "{}", out);
             let _ = std::fs::remove_file(path);
         }
@@ -7640,18 +8456,40 @@ mod tests {
         fn transaction_run_rolls_back_on_failure() {
             let (dsn, path) = temp_dsn("txfail");
             let h = handle("db://sqlite/cli_fix_tx_rollback");
-            json_out(&h, "exec", &[("dsn", dsn.as_str()), ("sql", "CREATE TABLE t (v INTEGER NOT NULL)")]);
-            let (st, out) = call_out(&h, "transaction", &[
-                ("action", "run"),
-                ("statements", r#"["INSERT INTO t VALUES (1)", "INSERT INTO t VALUES (NULL)"]"#),
-            ]);
+            json_out(
+                &h,
+                "exec",
+                &[
+                    ("dsn", dsn.as_str()),
+                    ("sql", "CREATE TABLE t (v INTEGER NOT NULL)"),
+                ],
+            );
+            let (st, out) = call_out(
+                &h,
+                "transaction",
+                &[
+                    ("action", "run"),
+                    (
+                        "statements",
+                        r#"["INSERT INTO t VALUES (1)", "INSERT INTO t VALUES (NULL)"]"#,
+                    ),
+                ],
+            );
             assert!(!st.ok);
             let v: Value = serde_json::from_str(&out).unwrap();
-            assert_eq!(v["error"]["code"], "db.transaction_statement_failed", "{}", out);
+            assert_eq!(
+                v["error"]["code"], "db.transaction_statement_failed",
+                "{}",
+                out
+            );
             assert_eq!(v["error"]["details"]["index"], 1);
             assert_eq!(v["error"]["details"]["rolled_back"], true);
 
-            let out = json_out(&h, "query", &[("sql", "SELECT COUNT(*) FROM t"), ("mode", "scalar")]);
+            let out = json_out(
+                &h,
+                "query",
+                &[("sql", "SELECT COUNT(*) FROM t"), ("mode", "scalar")],
+            );
             assert_eq!(out["value"], 0, "{}", out);
             let _ = std::fs::remove_file(path);
         }
@@ -7662,18 +8500,41 @@ mod tests {
             assert_eq!(c.action, TransactionAction::Run);
             assert_eq!(c.statements.len(), 1);
             assert!(TransactionConfig::from_args(&json!({"action": "run"})).is_err());
-            assert!(TransactionConfig::from_args(&json!({"action": "begin", "statements": ["SELECT 1"]})).is_err());
+            assert!(
+                TransactionConfig::from_args(
+                    &json!({"action": "begin", "statements": ["SELECT 1"]})
+                )
+                .is_err()
+            );
             assert!(TransactionConfig::from_args(&json!({"statements": "[]"})).is_err());
             assert!(TransactionConfig::from_args(&json!({"statements": "not json"})).is_err());
-            assert!(TransactionConfig::from_args(&json!({"statements": ["SELECT 1; SELECT 2"]})).is_err());
-            assert!(TransactionConfig::from_args(&json!({"action": "begin", "read_only": "true"})).unwrap().read_only);
+            assert!(
+                TransactionConfig::from_args(&json!({"statements": ["SELECT 1; SELECT 2"]}))
+                    .is_err()
+            );
+            assert!(
+                TransactionConfig::from_args(&json!({"action": "begin", "read_only": "true"}))
+                    .unwrap()
+                    .read_only
+            );
         }
 
         #[test]
         fn tls_mode_validation_per_driver() {
-            let cfg = |m: &str| DbConfig { tls_mode: Some(m.to_string()), ..Default::default() };
+            let cfg = |m: &str| DbConfig {
+                tls_mode: Some(m.to_string()),
+                ..Default::default()
+            };
             let pg = handle("db://postgres/cli_fix_tls");
-            for m in ["disable", "allow", "prefer", "preferred", "require", "verify_ca", "verify-full"] {
+            for m in [
+                "disable",
+                "allow",
+                "prefer",
+                "preferred",
+                "require",
+                "verify_ca",
+                "verify-full",
+            ] {
                 assert!(pg.validate_config(&cfg(m)).is_ok(), "{}", m);
             }
             assert!(pg.validate_config(&cfg("sometimes")).is_err());
@@ -7684,20 +8545,38 @@ mod tests {
             assert!(lite.validate_config(&cfg("disable")).is_ok());
             assert!(lite.validate_config(&cfg("require")).is_err());
             assert!(lite.validate_config(&DbConfig::default()).is_ok());
-            assert!(matches!(TlsMode::parse("verify_full").unwrap().postgres(), sqlx::postgres::PgSslMode::VerifyFull));
-            assert!(matches!(TlsMode::parse("verify_full").unwrap().mysql(), sqlx::mysql::MySqlSslMode::VerifyIdentity));
+            assert!(matches!(
+                TlsMode::parse("verify_full").unwrap().postgres(),
+                sqlx::postgres::PgSslMode::VerifyFull
+            ));
+            assert!(matches!(
+                TlsMode::parse("verify_full").unwrap().mysql(),
+                sqlx::mysql::MySqlSslMode::VerifyIdentity
+            ));
         }
 
         #[test]
         fn sqlite_connect_rejects_tls_and_bad_log_queries() {
             let h = handle("db://sqlite/cli_fix_tls_connect");
-            let (st, out) = call_out(&h, "connect", &[("dsn", "sqlite::memory:"), ("tls_mode", "require")]);
+            let (st, out) = call_out(
+                &h,
+                "connect",
+                &[("dsn", "sqlite::memory:"), ("tls_mode", "require")],
+            );
             assert!(!st.ok);
             assert!(out.contains("tls_mode"), "{}", out);
-            let (st, out) = call_out(&h, "connect", &[("dsn", "sqlite::memory:"), ("log_queries", "loud")]);
+            let (st, out) = call_out(
+                &h,
+                "connect",
+                &[("dsn", "sqlite::memory:"), ("log_queries", "loud")],
+            );
             assert!(!st.ok);
             assert!(out.contains("log_queries"), "{}", out);
-            let (st, _) = call_out(&h, "connect", &[("dsn", "sqlite::memory:"), ("log_queries", "true")]);
+            let (st, _) = call_out(
+                &h,
+                "connect",
+                &[("dsn", "sqlite::memory:"), ("log_queries", "true")],
+            );
             assert!(st.ok);
         }
     }

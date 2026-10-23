@@ -1,16 +1,18 @@
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use globset::{Glob, GlobMatcher};
+use notify::{
+    Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+};
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use notify::{Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use url::Url;
 use walkdir::WalkDir;
 
@@ -157,8 +159,10 @@ impl ConfigHandle {
         // Check for help request first
         if Self::should_show_help(u) {
             // For help requests, we create a minimal handle just to display help
-            let config_dir = dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config"));
+            let config_dir = dirs::config_dir().unwrap_or_else(|| {
+                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+                    .join(".config")
+            });
             let base_path = config_dir.join("resh").join("config");
 
             return Ok(Self {
@@ -204,18 +208,25 @@ impl ConfigHandle {
 
         // Sanitize namespace and key to only allow [A-Za-z0-9._-/]
         let sanitized_namespace = Self::sanitize_name(&namespace);
-        let sanitized_key = if key.is_empty() { String::new() } else { Self::sanitize_path(&key) };
+        let sanitized_key = if key.is_empty() {
+            String::new()
+        } else {
+            Self::sanitize_path(&key)
+        };
 
         // Get base config directory using XDG
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config"));
-        
+        let config_dir = dirs::config_dir().unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config")
+        });
+
         let base_path = config_dir.join("resh").join("config");
         let file_path = if sanitized_key.is_empty() {
             // For ls operations on namespaces/directories
             base_path.join(&sanitized_namespace)
         } else {
-            base_path.join(&sanitized_namespace).join(format!("{}.json", sanitized_key))
+            base_path
+                .join(&sanitized_namespace)
+                .join(format!("{}.json", sanitized_key))
         };
 
         Ok(Self {
@@ -263,7 +274,10 @@ impl ConfigHandle {
     fn verb_get(&self, _args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Reject get on empty keys
         if self.key.is_empty() {
-            return Ok(Status::err(1, "Empty key not allowed for get operation".to_string()));
+            return Ok(Status::err(
+                1,
+                "Empty key not allowed for get operation".to_string(),
+            ));
         }
 
         // Ensure base config directory exists
@@ -286,20 +300,20 @@ impl ConfigHandle {
         match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(_) => {
                 // Write the JSON directly to stdout
-                write!(io.stdout, "{}", content)
-                    .with_context(|| "Failed to write to stdout")?;
+                write!(io.stdout, "{}", content).with_context(|| "Failed to write to stdout")?;
                 Ok(Status::ok())
             }
-            Err(_) => {
-                Ok(Status::err(2, "invalid json".to_string()))
-            }
+            Err(_) => Ok(Status::err(2, "invalid json".to_string())),
         }
     }
 
     fn verb_set(&self, args: &Args, _io: &mut IoStreams) -> Result<Status> {
         // Reject set on empty keys
         if self.key.is_empty() {
-            return Ok(Status::err(1, "Empty key not allowed for set operation".to_string()));
+            return Ok(Status::err(
+                1,
+                "Empty key not allowed for set operation".to_string(),
+            ));
         }
 
         // Get the value argument
@@ -334,20 +348,24 @@ impl ConfigHandle {
         self.ensure_base_config_dir()?;
 
         // Perform atomic write using temporary file
-        let temp_path = self.file_path.with_extension(format!("tmp-{}", std::process::id()));
-        
+        let temp_path = self
+            .file_path
+            .with_extension(format!("tmp-{}", std::process::id()));
+
         // Write to temporary file
-        let json_string = serde_json::to_string(&json_value)
-            .with_context(|| "Failed to serialize JSON")?;
-        
+        let json_string =
+            serde_json::to_string(&json_value).with_context(|| "Failed to serialize JSON")?;
+
         {
             let mut temp_file = File::create(&temp_path)
                 .with_context(|| format!("Failed to create temp file: {:?}", temp_path))?;
-            
-            temp_file.write_all(json_string.as_bytes())
+
+            temp_file
+                .write_all(json_string.as_bytes())
                 .with_context(|| "Failed to write to temp file")?;
-            
-            temp_file.sync_all()
+
+            temp_file
+                .sync_all()
                 .with_context(|| "Failed to sync temp file")?;
         }
 
@@ -422,8 +440,7 @@ impl ConfigHandle {
         // Serialize to JSON
         match serde_json::to_string(&response) {
             Ok(json) => {
-                write!(io.stdout, "{}", json)
-                    .with_context(|| "Failed to write JSON to stdout")?;
+                write!(io.stdout, "{}", json).with_context(|| "Failed to write JSON to stdout")?;
                 Ok(Status::ok())
             }
             Err(e) => {
@@ -434,7 +451,11 @@ impl ConfigHandle {
         }
     }
 
-    fn list_config_entries(&self, recursive: bool, glob_matcher: Option<&GlobMatcher>) -> Result<Vec<ConfigEntry>> {
+    fn list_config_entries(
+        &self,
+        recursive: bool,
+        glob_matcher: Option<&GlobMatcher>,
+    ) -> Result<Vec<ConfigEntry>> {
         let mut entries = Vec::new();
         let search_base = if self.prefix.is_empty() {
             self.base_path.clone()
@@ -455,8 +476,13 @@ impl ConfigHandle {
 
         // Collect all entries first
         if recursive {
-            for entry in WalkDir::new(&search_base).into_iter().filter_map(|e| e.ok()) {
-                if let Some(config_entry) = self.path_to_config_entry(&entry.path(), &search_base, recursive)? {
+            for entry in WalkDir::new(&search_base)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if let Some(config_entry) =
+                    self.path_to_config_entry(&entry.path(), &search_base, recursive)?
+                {
                     if self.matches_pattern(&config_entry, glob_matcher) {
                         entries.push(config_entry);
                     }
@@ -465,7 +491,9 @@ impl ConfigHandle {
         } else {
             if let Ok(dir_entries) = fs::read_dir(&search_base) {
                 for entry in dir_entries.filter_map(|e| e.ok()) {
-                    if let Some(config_entry) = self.path_to_config_entry(&entry.path(), &search_base, recursive)? {
+                    if let Some(config_entry) =
+                        self.path_to_config_entry(&entry.path(), &search_base, recursive)?
+                    {
                         if self.matches_pattern(&config_entry, glob_matcher) {
                             entries.push(config_entry);
                         }
@@ -477,9 +505,14 @@ impl ConfigHandle {
         Ok(entries)
     }
 
-    fn path_to_config_entry(&self, path: &Path, search_base: &Path, recursive: bool) -> Result<Option<ConfigEntry>> {
+    fn path_to_config_entry(
+        &self,
+        path: &Path,
+        search_base: &Path,
+        recursive: bool,
+    ) -> Result<Option<ConfigEntry>> {
         let relative_path = path.strip_prefix(search_base).unwrap_or(path);
-        
+
         if path.is_file() {
             // Check if it's a .json file
             if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
@@ -509,7 +542,9 @@ impl ConfigHandle {
 
                     let metadata = fs::metadata(path)?;
                     let size = Some(metadata.len());
-                    let updated_at = metadata.modified().ok()
+                    let updated_at = metadata
+                        .modified()
+                        .ok()
                         .map(|t| DateTime::<Utc>::from(t).to_rfc3339());
 
                     return Ok(Some(ConfigEntry {
@@ -541,15 +576,17 @@ impl ConfigHandle {
             // Check if this directory has any .json files (has_value)
             let has_value = fs::read_dir(path)?
                 .filter_map(|e| e.ok())
-                .any(|e| e.path().is_file() && 
-                    e.file_name().to_string_lossy().ends_with(".json"));
+                .any(|e| e.path().is_file() && e.file_name().to_string_lossy().ends_with(".json"));
 
             return Ok(Some(ConfigEntry {
                 key: dir_name.to_string(),
                 full_key,
                 kind: ConfigEntryKind::Branch,
                 has_value,
-                meta: ConfigMeta { size: None, updated_at: None },
+                meta: ConfigMeta {
+                    size: None,
+                    updated_at: None,
+                },
             }));
         }
 
@@ -588,58 +625,65 @@ impl ConfigHandle {
         // Parse and validate arguments
         let key = args.get("key").cloned();
         let prefix = args.get("prefix").cloned();
-        
+
         // Mutual exclusion check
         if key.is_some() && prefix.is_some() {
             writeln!(io.stderr, "key and prefix cannot be used together")?;
             return Ok(Status::err(1, "key and prefix cannot be used together"));
         }
-        
+
         // Parse timeout_ms with default 0 (no timeout)
-        let timeout_ms = args.get("timeout_ms")
-            .map(|s| s.parse::<u64>().unwrap_or_else(|e| {
-                let _ = writeln!(io.stderr, "Invalid timeout_ms, using 0: {}", e);
-                0
-            }))
+        let timeout_ms = args
+            .get("timeout_ms")
+            .map(|s| {
+                s.parse::<u64>().unwrap_or_else(|e| {
+                    let _ = writeln!(io.stderr, "Invalid timeout_ms, using 0: {}", e);
+                    0
+                })
+            })
             .unwrap_or(0);
-            
+
         // Parse max_events with default 0 (no limit)
-        let max_events = args.get("max_events")
-            .map(|s| s.parse::<u64>().unwrap_or_else(|e| {
-                let _ = writeln!(io.stderr, "Invalid max_events, using 0: {}", e);
-                0
-            }))
+        let max_events = args
+            .get("max_events")
+            .map(|s| {
+                s.parse::<u64>().unwrap_or_else(|e| {
+                    let _ = writeln!(io.stderr, "Invalid max_events, using 0: {}", e);
+                    0
+                })
+            })
             .unwrap_or(0);
-            
+
         // Parse initial with default false
-        let initial = args.get("initial")
+        let initial = args
+            .get("initial")
             .map(|s| s.to_lowercase() == "true")
             .unwrap_or(false);
 
         self.watch_impl(key, prefix, timeout_ms, max_events, initial, io)
     }
-    
+
     fn watch_impl(
-        &self, 
-        key: Option<String>, 
-        prefix: Option<String>, 
-        timeout_ms: u64, 
-        max_events: u64, 
-        initial: bool, 
-        io: &mut IoStreams
+        &self,
+        key: Option<String>,
+        prefix: Option<String>,
+        timeout_ms: u64,
+        max_events: u64,
+        initial: bool,
+        io: &mut IoStreams,
     ) -> Result<Status> {
         let start_time = Instant::now();
         let mut events_emitted = 0u64;
         let mut version_counter = 1u64;
-        
-        // Determine the scope for event emission  
+
+        // Determine the scope for event emission
         let scope = if self.prefix.is_empty() {
             "default".to_string()
         } else {
             self.prefix.clone()
         };
 
-        // Determine watch directory 
+        // Determine watch directory
         let watch_dir = if self.namespace == "default" {
             self.base_path.clone()
         } else {
@@ -668,14 +712,14 @@ impl ConfigHandle {
                         ts: Utc::now().to_rfc3339(),
                         source: "config".to_string(),
                     };
-                    
+
                     let event_json = serde_json::to_string(&event)
                         .with_context(|| "Failed to serialize watch event")?;
                     writeln!(io.stdout, "{}", event_json)?;
-                    
+
                     events_emitted += 1;
                     version_counter += 1;
-                    
+
                     if max_events > 0 && events_emitted >= max_events {
                         return Ok(Status::ok());
                     }
@@ -690,11 +734,13 @@ impl ConfigHandle {
                 if let Ok(event) = res {
                     let _ = tx.send(event);
                 }
-            }, 
-            NotifyConfig::default()
-        ).map_err(|e| anyhow::anyhow!("Failed to create watcher: {}", e))?;
-        
-        watcher.watch(&watch_dir, RecursiveMode::Recursive)
+            },
+            NotifyConfig::default(),
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create watcher: {}", e))?;
+
+        watcher
+            .watch(&watch_dir, RecursiveMode::Recursive)
             .map_err(|e| anyhow::anyhow!("Failed to start watching: {}", e))?;
 
         // Store previous state for change detection
@@ -705,7 +751,7 @@ impl ConfigHandle {
             if timeout_ms > 0 && start_time.elapsed().as_millis() as u64 >= timeout_ms {
                 break;
             }
-            
+
             // Check max events
             if max_events > 0 && events_emitted >= max_events {
                 break;
@@ -735,7 +781,7 @@ impl ConfigHandle {
                 // Load current state and compare with previous
                 let current_state = self.load_current_snapshot(&watch_dir)?;
                 let changes = self.detect_changes(&previous_state, &current_state);
-                
+
                 for change in changes {
                     if self.key_matches_filter(&change.key, &key, &prefix) {
                         let event = WatchEvent {
@@ -747,13 +793,13 @@ impl ConfigHandle {
                             ts: Utc::now().to_rfc3339(),
                             source: "config".to_string(),
                         };
-                        
+
                         match serde_json::to_string(&event) {
                             Ok(event_json) => {
                                 writeln!(io.stdout, "{}", event_json)?;
                                 events_emitted += 1;
                                 version_counter += 1;
-                                
+
                                 if max_events > 0 && events_emitted >= max_events {
                                     return Ok(Status::ok());
                                 }
@@ -765,17 +811,20 @@ impl ConfigHandle {
                         }
                     }
                 }
-                
+
                 previous_state = current_state;
             }
         }
 
         Ok(Status::ok())
     }
-    
-    fn load_current_snapshot(&self, watch_dir: &Path) -> Result<HashMap<String, serde_json::Value>> {
+
+    fn load_current_snapshot(
+        &self,
+        watch_dir: &Path,
+    ) -> Result<HashMap<String, serde_json::Value>> {
         let mut snapshot = HashMap::new();
-        
+
         if !watch_dir.exists() {
             return Ok(snapshot);
         }
@@ -783,14 +832,14 @@ impl ConfigHandle {
         for entry in WalkDir::new(watch_dir) {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.is_file() {
                 if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                     if file_name.ends_with(".json") {
                         // Extract key from path relative to watch directory
                         let relative_path = path.strip_prefix(watch_dir)?;
                         let key = self.path_to_key(relative_path);
-                        
+
                         // Read and parse the JSON content
                         match fs::read_to_string(path) {
                             Ok(content) => {
@@ -813,15 +862,16 @@ impl ConfigHandle {
                 }
             }
         }
-        
+
         Ok(snapshot)
     }
-    
+
     fn path_to_key(&self, relative_path: &Path) -> String {
-        let file_stem = relative_path.file_stem()
+        let file_stem = relative_path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        
+
         if let Some(parent) = relative_path.parent() {
             if parent.as_os_str().is_empty() {
                 file_stem.to_string()
@@ -832,10 +882,14 @@ impl ConfigHandle {
             file_stem.to_string()
         }
     }
-    
-    fn detect_changes(&self, previous: &HashMap<String, serde_json::Value>, current: &HashMap<String, serde_json::Value>) -> Vec<ConfigChange> {
+
+    fn detect_changes(
+        &self,
+        previous: &HashMap<String, serde_json::Value>,
+        current: &HashMap<String, serde_json::Value>,
+    ) -> Vec<ConfigChange> {
         let mut changes = Vec::new();
-        
+
         // Check for new and modified keys
         for (key, current_value) in current {
             match previous.get(key) {
@@ -859,7 +913,7 @@ impl ConfigHandle {
                 }
             }
         }
-        
+
         // Check for deleted keys
         for key in previous.keys() {
             if !current.contains_key(key) {
@@ -870,11 +924,16 @@ impl ConfigHandle {
                 });
             }
         }
-        
+
         changes
     }
-    
-    fn key_matches_filter(&self, key: &str, filter_key: &Option<String>, filter_prefix: &Option<String>) -> bool {
+
+    fn key_matches_filter(
+        &self,
+        key: &str,
+        filter_key: &Option<String>,
+        filter_prefix: &Option<String>,
+    ) -> bool {
         if let Some(exact_key) = filter_key {
             key == exact_key
         } else if let Some(prefix) = filter_prefix {
@@ -905,7 +964,10 @@ impl ConfigHandle {
 
     /// The verb named by `--help=<verb>` or `?help=<verb>`, if any.
     fn extract_help_verb(url: &Url) -> Option<String> {
-        if let Some((_, v)) = url.query_pairs().find(|(k, v)| k == "help" && !v.is_empty()) {
+        if let Some((_, v)) = url
+            .query_pairs()
+            .find(|(k, v)| k == "help" && !v.is_empty())
+        {
             return Some(v.to_string());
         }
         Self::help_flag_token(url)
@@ -933,7 +995,10 @@ impl Handle for ConfigHandle {
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Check if this is a help request
         if help::HELP_ALIASES.contains(&verb) || Self::should_show_help(&self.original_url) {
-            let verb_arg = args.get("verb").cloned().or_else(|| Self::extract_help_verb(&self.original_url));
+            let verb_arg = args
+                .get("verb")
+                .cloned()
+                .or_else(|| Self::extract_help_verb(&self.original_url));
             return self.display_help(verb_arg.as_deref(), io);
         }
 
@@ -957,10 +1022,10 @@ mod tests {
     fn create_test_handle(prefix: &str) -> (ConfigHandle, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let base_path = temp_dir.path().join("resh").join("config");
-        
+
         // Create a mock URL for testing (won't trigger help)
         let mock_url = Url::parse("config://test").unwrap();
-        
+
         let handle = ConfigHandle {
             namespace: "test".to_string(),
             key: "".to_string(),
@@ -969,7 +1034,7 @@ mod tests {
             prefix: prefix.to_string(),
             original_url: mock_url,
         };
-        
+
         (handle, temp_dir)
     }
 
@@ -1001,8 +1066,16 @@ mod tests {
     fn help_verb_renders_approved_help() {
         let (handle, _temp_dir) = create_test_handle("");
         let run = |verb: &str, args: Args| {
-            let (mut i, mut o, mut e) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()), Cursor::new(Vec::new()));
-            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let (mut i, mut o, mut e) = (
+                Cursor::new(Vec::new()),
+                Cursor::new(Vec::new()),
+                Cursor::new(Vec::new()),
+            );
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
             handle.call(verb, &args, &mut io).unwrap();
             String::from_utf8(o.into_inner()).unwrap()
         };
@@ -1016,35 +1089,37 @@ mod tests {
     #[test]
     fn test_ls_root_lists_all_namespaces() {
         let (handle, _temp_dir) = create_test_handle("");
-        
+
         // Create some test config files
         create_config_file(&handle.base_path, "app", "config", r#"{"value": "test"}"#);
         create_config_file(&handle.base_path, "app", "feature_flag", r#"true"#);
         create_config_file(&handle.base_path, "db", "url", r#"{"url": "localhost"}"#);
-        
+
         let args = std::collections::HashMap::new();
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
         let mut stdin = Cursor::new(Vec::new());
-        
+
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(result.ok);
-        
+
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let response: LsResponse = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(response.prefix, "");
         assert_eq!(response.recursive, false);
         assert!(response.entries.len() >= 2);
-        
+
         // Should contain app and db namespaces
-        let namespace_names: Vec<String> = response.entries.iter()
+        let namespace_names: Vec<String> = response
+            .entries
+            .iter()
             .filter(|e| e.kind == ConfigEntryKind::Branch)
             .map(|e| e.key.clone())
             .collect();
@@ -1056,7 +1131,7 @@ mod tests {
     fn test_ls_immediate_children() {
         let (mut handle, _temp_dir) = create_test_handle("app");
         handle.prefix = "app".to_string();
-        
+
         // Create test structure:
         // app/
         //   ├── env/
@@ -1066,79 +1141,90 @@ mod tests {
         //   │   └── cache.json
         //   └── feature_flag.json
         create_config_file(&handle.base_path, "app", "feature_flag", r#"true"#);
-        
+
         // Create subdirectories
         let app_env_db_path = handle.base_path.join("app").join("env").join("db");
         fs::create_dir_all(&app_env_db_path).unwrap();
-        create_config_file(&handle.base_path.join("app"), "env", "cache", r#"{"ttl": 300}"#);
+        create_config_file(
+            &handle.base_path.join("app"),
+            "env",
+            "cache",
+            r#"{"ttl": 300}"#,
+        );
         fs::write(app_env_db_path.join("url.json"), r#"{"url": "localhost"}"#).unwrap();
         fs::write(app_env_db_path.join("user.json"), r#"{"user": "admin"}"#).unwrap();
-        
+
         let args = std::collections::HashMap::new();
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
         let mut stdin = Cursor::new(Vec::new());
-        
+
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(result.ok);
-        
+
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let response: LsResponse = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(response.prefix, "app");
         assert_eq!(response.recursive, false);
-        
+
         // Should contain feature_flag (leaf) and env (branch)
-        let has_feature_flag = response.entries.iter()
+        let has_feature_flag = response
+            .entries
+            .iter()
             .any(|e| e.key == "feature_flag" && e.kind == ConfigEntryKind::Leaf);
-        let has_env_branch = response.entries.iter()
+        let has_env_branch = response
+            .entries
+            .iter()
             .any(|e| e.key == "env" && e.kind == ConfigEntryKind::Branch);
-            
+
         assert!(has_feature_flag);
         assert!(has_env_branch);
     }
 
-    #[test] 
+    #[test]
     fn test_ls_recursive_includes_descendants() {
         let (mut handle, _temp_dir) = create_test_handle("app");
         handle.prefix = "app".to_string();
-        
+
         // Create test structure
         create_config_file(&handle.base_path, "app", "feature_flag", r#"true"#);
-        
+
         let app_env_db_path = handle.base_path.join("app").join("env").join("db");
         fs::create_dir_all(&app_env_db_path).unwrap();
         fs::write(app_env_db_path.join("url.json"), r#"{"url": "localhost"}"#).unwrap();
-        
+
         let mut args = std::collections::HashMap::new();
         args.insert("recursive".to_string(), "true".to_string());
-        
+
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
         let mut stdin = Cursor::new(Vec::new());
-        
+
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(result.ok);
-        
+
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let response: LsResponse = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(response.recursive, true);
-        
+
         // Should contain nested entries like app/env/db/url
-        let has_nested_url = response.entries.iter()
+        let has_nested_url = response
+            .entries
+            .iter()
             .any(|e| e.full_key.ends_with("env/db/url") && e.kind == ConfigEntryKind::Leaf);
         assert!(has_nested_url);
     }
@@ -1147,33 +1233,38 @@ mod tests {
     fn test_ls_pattern_filters_keys() {
         let (mut handle, _temp_dir) = create_test_handle("app");
         handle.prefix = "app".to_string();
-        
+
         // Create test files
-        create_config_file(&handle.base_path, "app", "db_url", r#"{"url": "localhost"}"#);
+        create_config_file(
+            &handle.base_path,
+            "app",
+            "db_url",
+            r#"{"url": "localhost"}"#,
+        );
         create_config_file(&handle.base_path, "app", "db_user", r#"{"user": "admin"}"#);
         create_config_file(&handle.base_path, "app", "cache_ttl", r#"300"#);
-        
+
         let mut args = std::collections::HashMap::new();
         args.insert("pattern".to_string(), "db*".to_string());
-        
+
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
         let mut stdin = Cursor::new(Vec::new());
-        
+
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(result.ok);
-        
+
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let response: LsResponse = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(response.pattern, Some("db*".to_string()));
-        
+
         // Should only contain db_url and db_user, not cache_ttl
         let keys: Vec<String> = response.entries.iter().map(|e| e.key.clone()).collect();
         assert!(keys.contains(&"db_url".to_string()));
@@ -1185,32 +1276,37 @@ mod tests {
     fn test_ls_limit_and_offset() {
         let (mut handle, _temp_dir) = create_test_handle("app");
         handle.prefix = "app".to_string();
-        
+
         // Create multiple test files
         for i in 1..=5 {
-            create_config_file(&handle.base_path, "app", &format!("key{}", i), &format!(r#"{{"value": {}}}"#, i));
+            create_config_file(
+                &handle.base_path,
+                "app",
+                &format!("key{}", i),
+                &format!(r#"{{"value": {}}}"#, i),
+            );
         }
-        
+
         let mut args = std::collections::HashMap::new();
         args.insert("limit".to_string(), "2".to_string());
         args.insert("offset".to_string(), "1".to_string());
-        
+
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
         let mut stdin = Cursor::new(Vec::new());
-        
+
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(result.ok);
-        
+
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let response: LsResponse = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(response.limit, Some(2));
         assert_eq!(response.offset, 1);
         assert_eq!(response.entries.len(), 2);
@@ -1220,44 +1316,44 @@ mod tests {
     fn test_ls_nonexistent_prefix_returns_empty() {
         let (mut handle, _temp_dir) = create_test_handle("does/not/exist");
         handle.prefix = "does/not/exist".to_string();
-        
+
         let args = std::collections::HashMap::new();
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
         let mut stdin = Cursor::new(Vec::new());
-        
+
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(result.ok);
-        
+
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let response: LsResponse = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(response.entries.len(), 0);
     }
 
     #[test]
     fn test_ls_invalid_limit() {
         let (handle, _temp_dir) = create_test_handle("");
-        
+
         let mut args = std::collections::HashMap::new();
         args.insert("limit".to_string(), "abc".to_string());
-        
+
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
         let mut stdin = Cursor::new(Vec::new());
-        
+
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(!result.ok);
         assert_eq!(result.code, Some(2));
@@ -1267,20 +1363,20 @@ mod tests {
     #[test]
     fn test_ls_invalid_offset() {
         let (handle, _temp_dir) = create_test_handle("");
-        
+
         let mut args = std::collections::HashMap::new();
         args.insert("offset".to_string(), "xyz".to_string());
-        
+
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
         let mut stdin = Cursor::new(Vec::new());
-        
+
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(!result.ok);
         assert_eq!(result.code, Some(2));
@@ -1290,20 +1386,20 @@ mod tests {
     #[test]
     fn test_ls_invalid_pattern() {
         let (handle, _temp_dir) = create_test_handle("");
-        
+
         let mut args = std::collections::HashMap::new();
         args.insert("pattern".to_string(), "[".to_string()); // Invalid glob
-        
+
         let mut stdout = Cursor::new(Vec::new());
         let mut stderr = Cursor::new(Vec::new());
         let mut stdin = Cursor::new(Vec::new());
-        
+
         let mut io = IoStreams {
             stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
         };
-        
+
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(!result.ok);
         assert_eq!(result.code, Some(2));

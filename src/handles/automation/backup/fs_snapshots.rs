@@ -1,13 +1,13 @@
-use anyhow::{Result, anyhow, Context};
-use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use chrono::{DateTime, Utc, NaiveDateTime};
-use regex::Regex;
 use crate::handles::automation::backup::policy::RetentionPolicy;
 use crate::handles::automation::backup::tools::{PruneResult, SnapshotInfo};
+use anyhow::{Context, Result, anyhow};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Represents a filesystem-based snapshot directory
 #[derive(Debug, Clone)]
@@ -20,15 +20,17 @@ pub struct SnapshotDirectory {
 
 impl SnapshotDirectory {
     pub fn new(path: PathBuf) -> Result<Self> {
-        let name = path.file_name()
+        let name = path
+            .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| anyhow!("invalid snapshot directory path: {:?}", path))?
             .to_string();
 
         let metadata = fs::metadata(&path)
             .with_context(|| format!("failed to read metadata for {:?}", path))?;
-        
-        let timestamp = metadata.modified()
+
+        let timestamp = metadata
+            .modified()
             .or_else(|_| metadata.created())
             .unwrap_or(UNIX_EPOCH);
 
@@ -60,11 +62,13 @@ impl SnapshotDirectory {
 
     /// Convert to SnapshotInfo for output
     pub fn to_snapshot_info(&self, reason: &str) -> SnapshotInfo {
-        let timestamp_str = self.timestamp
+        let timestamp_str = self
+            .timestamp
             .duration_since(UNIX_EPOCH)
             .ok()
             .and_then(|d| {
-                let naive = NaiveDateTime::from_timestamp_opt(d.as_secs() as i64, d.subsec_nanos())?;
+                let naive =
+                    NaiveDateTime::from_timestamp_opt(d.as_secs() as i64, d.subsec_nanos())?;
                 Some(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc).to_rfc3339())
             })
             .unwrap_or_else(|| "unknown".to_string());
@@ -132,7 +136,7 @@ impl FilesystemSnapshots {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.is_dir() && self.matches_pattern(&path) {
                 if let Ok(snapshot) = SnapshotDirectory::new(path) {
                     snapshots.push(snapshot);
@@ -151,18 +155,16 @@ impl FilesystemSnapshots {
             if self.config.naming_pattern == "*" {
                 return true;
             }
-            
+
             // Simple glob-like matching
             let pattern = &self.config.naming_pattern;
             if pattern.contains('*') {
-                let regex_pattern = pattern
-                    .replace("*", ".*")
-                    .replace("?", ".");
+                let regex_pattern = pattern.replace("*", ".*").replace("?", ".");
                 if let Ok(regex) = Regex::new(&regex_pattern) {
                     return regex.is_match(name);
                 }
             }
-            
+
             name == pattern
         } else {
             false
@@ -170,24 +172,29 @@ impl FilesystemSnapshots {
     }
 
     /// Apply retention policy to filesystem snapshots
-    pub fn prune(&self, policy: &RetentionPolicy, dry_run: bool, _lock: &FilesystemLock) -> Result<PruneResult> {
+    pub fn prune(
+        &self,
+        policy: &RetentionPolicy,
+        dry_run: bool,
+        _lock: &FilesystemLock,
+    ) -> Result<PruneResult> {
         let snapshots = self.list_snapshots()?;
         let total_snapshots = snapshots.len() as u32;
-        
+
         let to_delete = self.select_snapshots_for_deletion(&snapshots, policy)?;
         let delete_count = to_delete.len() as u32;
-        
+
         let mut deleted = 0;
         let mut total_bytes_freed = 0u64;
         let mut snapshot_infos = Vec::new();
 
         for snapshot in &to_delete {
             snapshot_infos.push(snapshot.to_snapshot_info("expired"));
-            
+
             if let Some(size) = snapshot.size_bytes {
                 total_bytes_freed += size;
             }
-            
+
             if !dry_run {
                 self.delete_snapshot(snapshot)?;
                 deleted += 1;
@@ -204,7 +211,11 @@ impl FilesystemSnapshots {
     }
 
     /// Select snapshots for deletion based on retention policy
-    fn select_snapshots_for_deletion(&self, snapshots: &[SnapshotDirectory], policy: &RetentionPolicy) -> Result<Vec<SnapshotDirectory>> {
+    fn select_snapshots_for_deletion(
+        &self,
+        snapshots: &[SnapshotDirectory],
+        policy: &RetentionPolicy,
+    ) -> Result<Vec<SnapshotDirectory>> {
         let mut snapshots = snapshots.to_vec();
         snapshots.sort_by(|a, b| b.timestamp.cmp(&a.timestamp)); // Sort newest first for retention logic
 
@@ -219,11 +230,13 @@ impl FilesystemSnapshots {
         } else {
             // If no keep-last, need to apply other policies
             let mut remaining = snapshots.clone();
-            
+
             // Apply time-based retention policies
-            if policy.keep_daily.is_some() || policy.keep_weekly.is_some() || 
-               policy.keep_monthly.is_some() || policy.keep_yearly.is_some() {
-                
+            if policy.keep_daily.is_some()
+                || policy.keep_weekly.is_some()
+                || policy.keep_monthly.is_some()
+                || policy.keep_yearly.is_some()
+            {
                 let (keep, delete) = self.apply_time_based_retention(&mut remaining, policy)?;
                 to_keep.extend(keep);
                 to_delete.extend(delete);
@@ -234,43 +247,46 @@ impl FilesystemSnapshots {
         }
 
         // Remove duplicates and ensure we don't delete items marked to keep
-        let keep_paths: std::collections::HashSet<_> = to_keep.iter()
-            .map(|s| s.path.clone())
-            .collect();
-            
+        let keep_paths: std::collections::HashSet<_> =
+            to_keep.iter().map(|s| s.path.clone()).collect();
+
         to_delete.retain(|s| !keep_paths.contains(&s.path));
-        
+
         Ok(to_delete)
     }
 
     /// Apply time-based retention policies (daily, weekly, monthly, yearly)
-    fn apply_time_based_retention(&self, snapshots: &mut [SnapshotDirectory], policy: &RetentionPolicy) -> Result<(Vec<SnapshotDirectory>, Vec<SnapshotDirectory>)> {
+    fn apply_time_based_retention(
+        &self,
+        snapshots: &mut [SnapshotDirectory],
+        policy: &RetentionPolicy,
+    ) -> Result<(Vec<SnapshotDirectory>, Vec<SnapshotDirectory>)> {
         // This is a simplified implementation
         // In a full implementation, you would group snapshots by day/week/month/year
         // and keep the newest snapshot from each period according to the policy
-        
+
         let mut to_keep = Vec::new();
         let mut to_delete = Vec::new();
-        
+
         // For now, implement a simple approach - keep most recent snapshots
         // based on the sum of all retention periods
-        let total_to_keep = policy.keep_daily.unwrap_or(0) 
+        let total_to_keep = policy.keep_daily.unwrap_or(0)
             + policy.keep_weekly.unwrap_or(0) * 7
             + policy.keep_monthly.unwrap_or(0) * 30
             + policy.keep_yearly.unwrap_or(0) * 365;
-            
+
         let keep_count = std::cmp::min(total_to_keep as usize, snapshots.len());
-        
+
         to_keep.extend_from_slice(&snapshots[..keep_count]);
         to_delete.extend_from_slice(&snapshots[keep_count..]);
-        
+
         Ok((to_keep, to_delete))
     }
 
     /// Delete a snapshot directory safely
     fn delete_snapshot(&self, snapshot: &SnapshotDirectory) -> Result<()> {
         let path = &snapshot.path;
-        
+
         if !path.exists() {
             return Ok(()); // Already deleted
         }
@@ -292,11 +308,16 @@ impl FilesystemSnapshots {
 
         // Actually delete from trash
         if trash_path.is_dir() {
-            fs::remove_dir_all(&trash_path)
-                .with_context(|| format!("failed to delete snapshot from trash: {:?}", trash_path))?;
+            fs::remove_dir_all(&trash_path).with_context(|| {
+                format!("failed to delete snapshot from trash: {:?}", trash_path)
+            })?;
         } else {
-            fs::remove_file(&trash_path)
-                .with_context(|| format!("failed to delete snapshot file from trash: {:?}", trash_path))?;
+            fs::remove_file(&trash_path).with_context(|| {
+                format!(
+                    "failed to delete snapshot file from trash: {:?}",
+                    trash_path
+                )
+            })?;
         }
 
         Ok(())
@@ -312,12 +333,13 @@ pub struct FilesystemLock {
 impl FilesystemLock {
     pub fn acquire(lock_path: &Path, timeout: Duration) -> Result<Self> {
         let start = std::time::Instant::now();
-        
+
         while start.elapsed() < timeout {
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(lock_path) {
+                .open(lock_path)
+            {
                 Ok(_file) => {
                     return Ok(Self {
                         path: Some(lock_path.to_path_buf()),
@@ -333,7 +355,7 @@ impl FilesystemLock {
                 }
             }
         }
-        
+
         Err(anyhow!("failed to acquire lock within timeout"))
     }
 
@@ -360,7 +382,7 @@ fn extract_timestamp_from_string(name: &str) -> Option<SystemTime> {
         r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})", // YYYY-MM-DD_HH-MM-SS
         r"(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})",     // YYYYMMDD_HHMMSS
         r"(\d{4})-(\d{2})-(\d{2})",                         // YYYY-MM-DD
-        r"(\d{10})",                                         // Unix timestamp
+        r"(\d{10})",                                        // Unix timestamp
     ];
 
     for pattern in patterns {
@@ -372,7 +394,7 @@ fn extract_timestamp_from_string(name: &str) -> Option<SystemTime> {
                         return Some(UNIX_EPOCH + Duration::from_secs(timestamp));
                     }
                 }
-                
+
                 // Try to parse as date components
                 if captures.len() >= 4 {
                     if let (Ok(year), Ok(month), Ok(day)) = (
@@ -380,41 +402,54 @@ fn extract_timestamp_from_string(name: &str) -> Option<SystemTime> {
                         captures[2].parse::<u32>(),
                         captures[3].parse::<u32>(),
                     ) {
-                        let hour = captures.get(4).and_then(|m| m.as_str().parse::<u32>().ok()).unwrap_or(0);
-                        let minute = captures.get(5).and_then(|m| m.as_str().parse::<u32>().ok()).unwrap_or(0);
-                        let second = captures.get(6).and_then(|m| m.as_str().parse::<u32>().ok()).unwrap_or(0);
-                        
+                        let hour = captures
+                            .get(4)
+                            .and_then(|m| m.as_str().parse::<u32>().ok())
+                            .unwrap_or(0);
+                        let minute = captures
+                            .get(5)
+                            .and_then(|m| m.as_str().parse::<u32>().ok())
+                            .unwrap_or(0);
+                        let second = captures
+                            .get(6)
+                            .and_then(|m| m.as_str().parse::<u32>().ok())
+                            .unwrap_or(0);
+
                         if let Some(naive_date) = chrono::NaiveDate::from_ymd_opt(year, month, day)
-                            .and_then(|d| d.and_hms_opt(hour, minute, second)) {
-                            let datetime = DateTime::<Utc>::from_naive_utc_and_offset(naive_date, Utc);
-                            return Some(UNIX_EPOCH + Duration::from_secs(datetime.timestamp() as u64));
+                            .and_then(|d| d.and_hms_opt(hour, minute, second))
+                        {
+                            let datetime =
+                                DateTime::<Utc>::from_naive_utc_and_offset(naive_date, Utc);
+                            return Some(
+                                UNIX_EPOCH + Duration::from_secs(datetime.timestamp() as u64),
+                            );
                         }
                     }
                 }
             }
         }
     }
-    
+
     None
 }
 
 /// Calculate total size of a directory recursively
 fn calculate_directory_size(path: &Path) -> Result<u64> {
     let mut total_size = 0;
-    
+
     let entries = fs::read_dir(path)?;
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
         let metadata = entry.metadata()?;
-        
+
         if metadata.is_dir() {
             total_size += calculate_directory_size(&path)?;
         } else {
             total_size += metadata.len();
         }
     }
-    
+
     Ok(total_size)
 }
 
@@ -427,16 +462,16 @@ mod tests {
     fn test_extract_timestamp_from_string() {
         // Test YYYY-MM-DD_HH-MM-SS format
         assert!(extract_timestamp_from_string("backup-2025-12-12_14-30-00").is_some());
-        
+
         // Test YYYYMMDD_HHMMSS format
         assert!(extract_timestamp_from_string("backup_20251212_143000").is_some());
-        
+
         // Test YYYY-MM-DD format
         assert!(extract_timestamp_from_string("backup-2025-12-12").is_some());
-        
+
         // Test Unix timestamp
         assert!(extract_timestamp_from_string("backup_1702393800").is_some());
-        
+
         // Test invalid format
         assert!(extract_timestamp_from_string("invalid_backup_name").is_none());
     }
@@ -455,11 +490,11 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let snapshot_path = temp_dir.path().join("test_snapshot");
         fs::create_dir(&snapshot_path)?;
-        
+
         let snapshot = SnapshotDirectory::new(snapshot_path)?;
         assert_eq!(snapshot.name, "test_snapshot");
         assert!(snapshot.timestamp <= SystemTime::now());
-        
+
         Ok(())
     }
 
@@ -467,18 +502,18 @@ mod tests {
     fn test_filesystem_lock() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let lock_path = temp_dir.path().join("test.lock");
-        
+
         {
             let _lock1 = FilesystemLock::acquire(&lock_path, Duration::from_millis(100))?;
-            
+
             // Second lock should fail
             let result = FilesystemLock::acquire(&lock_path, Duration::from_millis(100));
             assert!(result.is_err());
         }
-        
+
         // After first lock is dropped, second should succeed
         let _lock2 = FilesystemLock::acquire(&lock_path, Duration::from_millis(100))?;
-        
+
         Ok(())
     }
 
@@ -491,7 +526,7 @@ mod tests {
         };
 
         let fs_snapshots = FilesystemSnapshots::new(config);
-        
+
         // Create some test snapshot directories
         for i in 0..5 {
             let snapshot_dir = temp_dir.path().join(format!("snapshot_{}", i));

@@ -1,29 +1,33 @@
 use anyhow::{Context, Result, bail};
-use serde_json::{json, Value};
+use base64::{Engine as _, engine::general_purpose};
+use rand::seq::SliceRandom;
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, SystemTime, UNIX_EPOCH, Instant};
-use url::Url;
-use trust_dns_resolver::{
-    config::{ResolverConfig, ResolverOpts, NameServerConfig, Protocol},
-    TokioAsyncResolver,
-};
-use trust_dns_resolver::proto::rr::{RData, RecordType as TrustDnsRecordType, Record, Name, DNSClass};
-use trust_dns_resolver::error::{ResolveErrorKind};
-use trust_dns_client::client::{Client, AsyncClient};
+use std::str::FromStr;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use trust_dns_client::client::{AsyncClient, Client};
 use trust_dns_client::tcp::TcpClientConnection;
 use trust_dns_client::udp::UdpClientConnection;
-use trust_dns_proto::op::{Message, MessageType, OpCode, ResponseCode, Query};
-use trust_dns_proto::rr::{RData as ProtoRData, Record as ProtoRecord, RecordType as ProtoRecordType};
-use trust_dns_proto::rr::rdata::{A, AAAA, CNAME, MX, TXT, NS, SRV, PTR, SOA, CAA};
+use trust_dns_proto::TokioTime;
+use trust_dns_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+use trust_dns_proto::rr::rdata::{A, AAAA, CAA, CNAME, MX, NS, PTR, SOA, SRV, TXT};
+use trust_dns_proto::rr::{
+    RData as ProtoRData, Record as ProtoRecord, RecordType as ProtoRecordType,
+};
 use trust_dns_proto::tcp::TcpClientStream;
 use trust_dns_proto::udp::UdpClientStream;
 use trust_dns_proto::xfer::{DnsRequest, DnsRequestOptions};
-use trust_dns_proto::TokioTime;
-use rand::seq::SliceRandom;
-use base64::{Engine as _, engine::general_purpose};
-use std::str::FromStr;
+use trust_dns_resolver::error::ResolveErrorKind;
+use trust_dns_resolver::proto::rr::{
+    DNSClass, Name, RData, Record, RecordType as TrustDnsRecordType,
+};
+use trust_dns_resolver::{
+    TokioAsyncResolver,
+    config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
+};
+use url::Url;
 
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
@@ -290,9 +294,7 @@ pub struct DnsHandle {
 
 impl DnsHandle {
     pub fn from_url(url: &Url) -> Result<Self> {
-        Ok(DnsHandle {
-            _url: url.clone(),
-        })
+        Ok(DnsHandle { _url: url.clone() })
     }
 }
 
@@ -393,14 +395,17 @@ impl ResolveMode {
             "mail" => Ok(Self::Mail),
             "service" => Ok(Self::Service),
             "reverse" => Ok(Self::Reverse),
-            _ => bail!("Invalid mode: {}. Must be 'host', 'mail', 'service', or 'reverse'", s),
+            _ => bail!(
+                "Invalid mode: {}. Must be 'host', 'mail', 'service', or 'reverse'",
+                s
+            ),
         }
     }
-    
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Host => "host",
-            Self::Mail => "mail", 
+            Self::Mail => "mail",
             Self::Service => "service",
             Self::Reverse => "reverse",
         }
@@ -423,7 +428,7 @@ impl AddressFamily {
             _ => bail!("Invalid family: {}. Must be 'any', 'ipv4', or 'ipv6'", s),
         }
     }
-    
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Any => "any",
@@ -453,7 +458,8 @@ pub struct DnsResolveOptions {
 
 impl DnsResolveOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let name = args.get("name")
+        let name = args
+            .get("name")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: name"))?
             .clone();
 
@@ -478,7 +484,10 @@ impl DnsResolveOptions {
                     serde_json::from_str::<Vec<String>>(servers_str)
                         .with_context(|| format!("Invalid servers JSON array: {}", servers_str))?
                 } else {
-                    servers_str.split(',').map(|s| s.trim().to_string()).collect()
+                    servers_str
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect()
                 }
             }
         } else {
@@ -493,7 +502,8 @@ impl DnsResolveOptions {
         }
 
         let port = if let Some(port_str) = args.get("port") {
-            let port: u16 = port_str.parse()
+            let port: u16 = port_str
+                .parse()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
             if port == 0 {
                 bail!("Port cannot be 0");
@@ -503,10 +513,14 @@ impl DnsResolveOptions {
             53
         };
 
-        let use_tcp = args.get("use_tcp").map(|s| s.to_lowercase() == "true").unwrap_or(false);
+        let use_tcp = args
+            .get("use_tcp")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
 
         let timeout_ms = if let Some(timeout_str) = args.get("timeout_ms") {
-            let timeout: u64 = timeout_str.parse()
+            let timeout: u64 = timeout_str
+                .parse()
                 .with_context(|| format!("Invalid timeout_ms: {}", timeout_str))?;
             if timeout == 0 {
                 bail!("timeout_ms must be greater than 0");
@@ -517,26 +531,40 @@ impl DnsResolveOptions {
         };
 
         let retries = if let Some(retries_str) = args.get("retries") {
-            let retries: u32 = retries_str.parse()
+            let retries: u32 = retries_str
+                .parse()
                 .with_context(|| format!("Invalid retries: {}", retries_str))?;
             retries
         } else {
             1
         };
 
-        let dnssec = args.get("dnssec").map(|s| s.to_lowercase() == "true").unwrap_or(false);
+        let dnssec = args
+            .get("dnssec")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
 
         let max_cname_depth = if let Some(depth_str) = args.get("max_cname_depth") {
-            let depth: u8 = depth_str.parse()
+            let depth: u8 = depth_str
+                .parse()
                 .with_context(|| format!("Invalid max_cname_depth: {}", depth_str))?;
             depth
         } else {
             8
         };
 
-        let want_raw = args.get("want_raw").map(|s| s.to_lowercase() == "true").unwrap_or(false);
-        let follow_srv = args.get("follow_srv").map(|s| s.to_lowercase() == "true").unwrap_or(true);
-        let validate_reverse = args.get("validate_reverse").map(|s| s.to_lowercase() == "true").unwrap_or(false);
+        let want_raw = args
+            .get("want_raw")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
+        let follow_srv = args
+            .get("follow_srv")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(true);
+        let validate_reverse = args
+            .get("validate_reverse")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
 
         let format_str = args.get("format").unwrap_or(&"json".to_string()).clone();
         let format = OutputFormat::from_str(&format_str)
@@ -628,7 +656,8 @@ pub struct DnsLookupOptions {
 
 impl DnsLookupOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let name = args.get("name")
+        let name = args
+            .get("name")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: name"))?
             .clone();
 
@@ -649,7 +678,10 @@ impl DnsLookupOptions {
                     serde_json::from_str::<Vec<String>>(servers_str)
                         .with_context(|| format!("Invalid servers JSON array: {}", servers_str))?
                 } else {
-                    servers_str.split(',').map(|s| s.trim().to_string()).collect()
+                    servers_str
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect()
                 }
             }
         } else {
@@ -664,7 +696,8 @@ impl DnsLookupOptions {
         }
 
         let port = if let Some(port_str) = args.get("port") {
-            let port: u16 = port_str.parse()
+            let port: u16 = port_str
+                .parse()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
             if port == 0 {
                 bail!("Port cannot be 0");
@@ -674,10 +707,14 @@ impl DnsLookupOptions {
             53
         };
 
-        let use_tcp = args.get("use_tcp").map(|s| s.to_lowercase() == "true").unwrap_or(false);
+        let use_tcp = args
+            .get("use_tcp")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
 
         let timeout_ms = if let Some(timeout_str) = args.get("timeout_ms") {
-            let timeout: u64 = timeout_str.parse()
+            let timeout: u64 = timeout_str
+                .parse()
                 .with_context(|| format!("Invalid timeout_ms: {}", timeout_str))?;
             if timeout == 0 {
                 bail!("timeout_ms must be greater than 0");
@@ -688,18 +725,34 @@ impl DnsLookupOptions {
         };
 
         let retries = if let Some(retries_str) = args.get("retries") {
-            let retries: u32 = retries_str.parse()
+            let retries: u32 = retries_str
+                .parse()
                 .with_context(|| format!("Invalid retries: {}", retries_str))?;
             retries
         } else {
             1
         };
 
-        let dnssec = args.get("dnssec").map(|s| s.to_lowercase() == "true").unwrap_or(false);
-        let follow_cname = args.get("follow_cname").map(|s| s.to_lowercase() == "true").unwrap_or(true);
-        let include_authority = args.get("include_authority").map(|s| s.to_lowercase() == "true").unwrap_or(true);
-        let include_additional = args.get("include_additional").map(|s| s.to_lowercase() == "true").unwrap_or(true);
-        let randomize_servers = args.get("randomize_servers").map(|s| s.to_lowercase() == "true").unwrap_or(true);
+        let dnssec = args
+            .get("dnssec")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
+        let follow_cname = args
+            .get("follow_cname")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(true);
+        let include_authority = args
+            .get("include_authority")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(true);
+        let include_additional = args
+            .get("include_additional")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(true);
+        let randomize_servers = args
+            .get("randomize_servers")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(true);
 
         let format_str = args.get("format").unwrap_or(&"json".to_string()).clone();
         let format = OutputFormat::from_str(&format_str)
@@ -841,28 +894,46 @@ impl DnsLookupResponse {
 
     fn to_text(&self) -> String {
         let mut output = String::new();
-        
+
         output.push_str("DNS Lookup Result\n");
         output.push_str("=================\n\n");
 
         // Query section
         output.push_str("Query:\n");
-        output.push_str(&format!("  Name     : {}\n", self.query["name"].as_str().unwrap_or("")));
-        output.push_str(&format!("  Type     : {}\n", self.query["rtype"].as_str().unwrap_or("")));
-        
-        let servers = if self.query["servers"].as_array().unwrap_or(&vec![]).is_empty() {
+        output.push_str(&format!(
+            "  Name     : {}\n",
+            self.query["name"].as_str().unwrap_or("")
+        ));
+        output.push_str(&format!(
+            "  Type     : {}\n",
+            self.query["rtype"].as_str().unwrap_or("")
+        ));
+
+        let servers = if self.query["servers"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .is_empty()
+        {
             "system defaults".to_string()
         } else {
-            self.query["servers"].as_array().unwrap()
+            self.query["servers"]
+                .as_array()
+                .unwrap()
                 .iter()
                 .map(|s| s.as_str().unwrap_or(""))
                 .collect::<Vec<_>>()
                 .join(", ")
         };
         output.push_str(&format!("  Servers  : {}\n", servers));
-        output.push_str(&format!("  Timeout  : {} ms\n", self.query["timeout_ms"].as_u64().unwrap_or(0)));
-        output.push_str(&format!("  Retries  : {}\n", self.query["retries"].as_u64().unwrap_or(0)));
-        
+        output.push_str(&format!(
+            "  Timeout  : {} ms\n",
+            self.query["timeout_ms"].as_u64().unwrap_or(0)
+        ));
+        output.push_str(&format!(
+            "  Retries  : {}\n",
+            self.query["retries"].as_u64().unwrap_or(0)
+        ));
+
         let dnssec_status = if self.query["dnssec"].as_bool().unwrap_or(false) {
             "enabled"
         } else {
@@ -873,9 +944,19 @@ impl DnsLookupResponse {
         // Response section
         output.push_str("Response:\n");
         output.push_str(&format!("  RCODE    : {}\n", self.response.rcode));
-        output.push_str(&format!("  Auth     : {}\n", if self.response.authoritative { "yes" } else { "no" }));
-        output.push_str(&format!("  Trunc    : {}\n", if self.response.truncated { "yes" } else { "no" }));
-        
+        output.push_str(&format!(
+            "  Auth     : {}\n",
+            if self.response.authoritative {
+                "yes"
+            } else {
+                "no"
+            }
+        ));
+        output.push_str(&format!(
+            "  Trunc    : {}\n",
+            if self.response.truncated { "yes" } else { "no" }
+        ));
+
         if let Some(server) = &self.response.server_used {
             output.push_str(&format!("  Server   : {}\n", server));
         }
@@ -890,61 +971,74 @@ impl DnsLookupResponse {
             output.push_str("  (none)\n");
         } else {
             for record in &self.answers {
-                output.push_str(&format!("  {}  {}  {}  {}      ", 
-                    record.name, record.ttl, record.class, record.rtype));
-                
+                output.push_str(&format!(
+                    "  {}  {}  {}  {}      ",
+                    record.name, record.ttl, record.class, record.rtype
+                ));
+
                 // Format data based on record type
                 match record.rtype.as_str() {
                     "A" | "AAAA" => {
                         if let Some(address) = record.data.get("address") {
                             output.push_str(&format!("{}\n", address.as_str().unwrap_or("")));
                         }
-                    },
+                    }
                     "MX" => {
-                        if let (Some(pref), Some(exchange)) = (record.data.get("preference"), record.data.get("exchange")) {
-                            output.push_str(&format!("{} {}\n", pref.as_u64().unwrap_or(0), exchange.as_str().unwrap_or("")));
+                        if let (Some(pref), Some(exchange)) =
+                            (record.data.get("preference"), record.data.get("exchange"))
+                        {
+                            output.push_str(&format!(
+                                "{} {}\n",
+                                pref.as_u64().unwrap_or(0),
+                                exchange.as_str().unwrap_or("")
+                            ));
                         }
-                    },
+                    }
                     "TXT" => {
                         if let Some(texts) = record.data.get("text").and_then(|t| t.as_array()) {
-                            let text_values: Vec<String> = texts.iter()
+                            let text_values: Vec<String> = texts
+                                .iter()
                                 .map(|v| format!("\"{}\"", v.as_str().unwrap_or("")))
                                 .collect();
                             output.push_str(&format!("{}\n", text_values.join(" ")));
                         }
-                    },
+                    }
                     "CNAME" => {
                         if let Some(cname) = record.data.get("cname") {
                             output.push_str(&format!("{}\n", cname.as_str().unwrap_or("")));
                         }
-                    },
+                    }
                     "NS" => {
                         if let Some(ns) = record.data.get("nsdname") {
                             output.push_str(&format!("{}\n", ns.as_str().unwrap_or("")));
                         }
-                    },
+                    }
                     "PTR" => {
                         if let Some(ptr) = record.data.get("ptrdname") {
                             output.push_str(&format!("{}\n", ptr.as_str().unwrap_or("")));
                         }
-                    },
+                    }
                     "SRV" => {
                         if let (Some(pri), Some(weight), Some(port), Some(target)) = (
-                            record.data.get("priority"), 
+                            record.data.get("priority"),
                             record.data.get("weight"),
                             record.data.get("port"),
-                            record.data.get("target")
+                            record.data.get("target"),
                         ) {
-                            output.push_str(&format!("{} {} {} {}\n", 
+                            output.push_str(&format!(
+                                "{} {} {} {}\n",
                                 pri.as_u64().unwrap_or(0),
                                 weight.as_u64().unwrap_or(0),
                                 port.as_u64().unwrap_or(0),
                                 target.as_str().unwrap_or("")
                             ));
                         }
-                    },
+                    }
                     _ => {
-                        output.push_str(&format!("{}\n", serde_json::to_string(&record.data).unwrap_or_default()));
+                        output.push_str(&format!(
+                            "{}\n",
+                            serde_json::to_string(&record.data).unwrap_or_default()
+                        ));
                     }
                 }
             }
@@ -955,17 +1049,22 @@ impl DnsLookupResponse {
         if !self.authority.is_empty() {
             output.push_str("Authority:\n");
             for record in &self.authority {
-                output.push_str(&format!("  {}  {}  {}  {}      ", 
-                    record.name, record.ttl, record.class, record.rtype));
-                
+                output.push_str(&format!(
+                    "  {}  {}  {}  {}      ",
+                    record.name, record.ttl, record.class, record.rtype
+                ));
+
                 match record.rtype.as_str() {
                     "NS" => {
                         if let Some(ns) = record.data.get("nsdname") {
                             output.push_str(&format!("{}\n", ns.as_str().unwrap_or("")));
                         }
-                    },
+                    }
                     _ => {
-                        output.push_str(&format!("{}\n", serde_json::to_string(&record.data).unwrap_or_default()));
+                        output.push_str(&format!(
+                            "{}\n",
+                            serde_json::to_string(&record.data).unwrap_or_default()
+                        ));
                     }
                 }
             }
@@ -1090,142 +1189,236 @@ impl DnsResolveResponse {
                 ResolveMode::Host => {
                     output.push_str("DNS Resolution\n");
                     output.push_str("==============\n\n");
-                    
+
                     output.push_str("Query:\n");
-                    output.push_str(&format!("  Name     : {}\n", self.query["name"].as_str().unwrap_or("")));
+                    output.push_str(&format!(
+                        "  Name     : {}\n",
+                        self.query["name"].as_str().unwrap_or("")
+                    ));
                     output.push_str(&format!("  Mode     : {}\n", resolution.mode.as_str()));
                     output.push_str(&format!("  Family   : {}\n", resolution.family.as_str()));
-                    
-                    let servers = if self.query["servers"].as_array().unwrap_or(&vec![]).is_empty() {
+
+                    let servers = if self.query["servers"]
+                        .as_array()
+                        .unwrap_or(&vec![])
+                        .is_empty()
+                    {
                         "system defaults".to_string()
                     } else {
-                        self.query["servers"].as_array().unwrap()
+                        self.query["servers"]
+                            .as_array()
+                            .unwrap()
                             .iter()
                             .map(|s| s.as_str().unwrap_or(""))
                             .collect::<Vec<_>>()
                             .join(", ")
                     };
                     output.push_str(&format!("  Servers  : {}\n", servers));
-                    output.push_str(&format!("  Timeout  : {} ms\n", self.query["timeout_ms"].as_u64().unwrap_or(0)));
-                    output.push_str(&format!("  Retries  : {}\n\n", self.query["retries"].as_u64().unwrap_or(0)));
-                    
+                    output.push_str(&format!(
+                        "  Timeout  : {} ms\n",
+                        self.query["timeout_ms"].as_u64().unwrap_or(0)
+                    ));
+                    output.push_str(&format!(
+                        "  Retries  : {}\n\n",
+                        self.query["retries"].as_u64().unwrap_or(0)
+                    ));
+
                     output.push_str("Result:\n");
-                    output.push_str(&format!("  Canonical Name : {}\n", resolution.canonical_name));
+                    output.push_str(&format!(
+                        "  Canonical Name : {}\n",
+                        resolution.canonical_name
+                    ));
                     output.push_str("  Addresses      :\n");
                     if resolution.addresses.is_empty() {
                         output.push_str("    (none)\n");
                     } else {
                         for addr in &resolution.addresses {
                             if let Some(ttl) = addr.ttl {
-                                output.push_str(&format!("    - {} ({}, TTL={})\n", addr.ip, addr.family.as_str(), ttl));
+                                output.push_str(&format!(
+                                    "    - {} ({}, TTL={})\n",
+                                    addr.ip,
+                                    addr.family.as_str(),
+                                    ttl
+                                ));
                             } else {
-                                output.push_str(&format!("    - {} ({})\n", addr.ip, addr.family.as_str()));
+                                output.push_str(&format!(
+                                    "    - {} ({})\n",
+                                    addr.ip,
+                                    addr.family.as_str()
+                                ));
                             }
                         }
                     }
-                },
+                }
                 ResolveMode::Mail => {
                     output.push_str("Mail Resolution\n");
                     output.push_str("===============\n\n");
-                    
-                    output.push_str(&format!("Domain   : {}\n", self.query["name"].as_str().unwrap_or("")));
+
+                    output.push_str(&format!(
+                        "Domain   : {}\n",
+                        self.query["name"].as_str().unwrap_or("")
+                    ));
                     output.push_str("MX Hosts :\n");
-                    
+
                     if resolution.mx.is_empty() {
                         output.push_str("  (none)\n");
                     } else {
                         for mx in &resolution.mx {
-                            output.push_str(&format!("  - pref={} host={}\n", mx.preference, mx.exchange));
+                            output.push_str(&format!(
+                                "  - pref={} host={}\n",
+                                mx.preference, mx.exchange
+                            ));
                             output.push_str("    addresses:\n");
                             for addr in &mx.addresses {
                                 if let Some(ttl) = addr.ttl {
-                                    output.push_str(&format!("      - {} ({}, TTL={})\n", addr.ip, addr.family.as_str(), ttl));
+                                    output.push_str(&format!(
+                                        "      - {} ({}, TTL={})\n",
+                                        addr.ip,
+                                        addr.family.as_str(),
+                                        ttl
+                                    ));
                                 } else {
-                                    output.push_str(&format!("      - {} ({})\n", addr.ip, addr.family.as_str()));
+                                    output.push_str(&format!(
+                                        "      - {} ({})\n",
+                                        addr.ip,
+                                        addr.family.as_str()
+                                    ));
                                 }
                             }
                         }
                     }
-                    
+
                     output.push_str("\nAll Addresses:\n");
                     if resolution.addresses.is_empty() {
                         output.push_str("  (none)\n");
                     } else {
                         for addr in &resolution.addresses {
                             if let Some(ttl) = addr.ttl {
-                                output.push_str(&format!("  - {} ({}, TTL={})\n", addr.ip, addr.family.as_str(), ttl));
+                                output.push_str(&format!(
+                                    "  - {} ({}, TTL={})\n",
+                                    addr.ip,
+                                    addr.family.as_str(),
+                                    ttl
+                                ));
                             } else {
-                                output.push_str(&format!("  - {} ({})\n", addr.ip, addr.family.as_str()));
+                                output.push_str(&format!(
+                                    "  - {} ({})\n",
+                                    addr.ip,
+                                    addr.family.as_str()
+                                ));
                             }
                         }
                     }
-                },
+                }
                 ResolveMode::Service => {
                     output.push_str("Service Resolution\n");
                     output.push_str("==================\n\n");
-                    
-                    output.push_str(&format!("Service  : {}\n", self.query["name"].as_str().unwrap_or("")));
+
+                    output.push_str(&format!(
+                        "Service  : {}\n",
+                        self.query["name"].as_str().unwrap_or("")
+                    ));
                     output.push_str("SRV Records:\n");
-                    
+
                     if resolution.srv.is_empty() {
                         output.push_str("  (none)\n");
                     } else {
                         for srv in &resolution.srv {
-                            output.push_str(&format!("  - pri={} weight={} port={} target={}\n", 
-                                srv.priority, srv.weight, srv.port, srv.target));
+                            output.push_str(&format!(
+                                "  - pri={} weight={} port={} target={}\n",
+                                srv.priority, srv.weight, srv.port, srv.target
+                            ));
                             output.push_str("    addresses:\n");
                             for addr in &srv.addresses {
                                 if let Some(ttl) = addr.ttl {
-                                    output.push_str(&format!("      - {} ({}, TTL={})\n", addr.ip, addr.family.as_str(), ttl));
+                                    output.push_str(&format!(
+                                        "      - {} ({}, TTL={})\n",
+                                        addr.ip,
+                                        addr.family.as_str(),
+                                        ttl
+                                    ));
                                 } else {
-                                    output.push_str(&format!("      - {} ({})\n", addr.ip, addr.family.as_str()));
+                                    output.push_str(&format!(
+                                        "      - {} ({})\n",
+                                        addr.ip,
+                                        addr.family.as_str()
+                                    ));
                                 }
                             }
                         }
                     }
-                },
+                }
                 ResolveMode::Reverse => {
                     output.push_str("Reverse Resolution\n");
                     output.push_str("==================\n\n");
-                    
-                    output.push_str(&format!("IP Address : {}\n", self.query["name"].as_str().unwrap_or("")));
-                    output.push_str(&format!("PTR Name   : {}\n", resolution.ptr_name.as_ref().unwrap_or(&"(none)".to_string())));
-                    
+
+                    output.push_str(&format!(
+                        "IP Address : {}\n",
+                        self.query["name"].as_str().unwrap_or("")
+                    ));
+                    output.push_str(&format!(
+                        "PTR Name   : {}\n",
+                        resolution
+                            .ptr_name
+                            .as_ref()
+                            .unwrap_or(&"(none)".to_string())
+                    ));
+
                     if !resolution.forward_addresses.is_empty() {
                         output.push_str("Forward Confirmation:\n");
                         for addr in &resolution.forward_addresses {
                             if let Some(ttl) = addr.ttl {
-                                output.push_str(&format!("  - {} ({}, TTL={})\n", addr.ip, addr.family.as_str(), ttl));
+                                output.push_str(&format!(
+                                    "  - {} ({}, TTL={})\n",
+                                    addr.ip,
+                                    addr.family.as_str(),
+                                    ttl
+                                ));
                             } else {
-                                output.push_str(&format!("  - {} ({})\n", addr.ip, addr.family.as_str()));
+                                output.push_str(&format!(
+                                    "  - {} ({})\n",
+                                    addr.ip,
+                                    addr.family.as_str()
+                                ));
                             }
                         }
                     }
                 }
             }
-            
+
             output.push_str("\nMX Records:\n");
             if resolution.mx.is_empty() {
                 output.push_str("  (none)\n");
             } else {
                 for mx in &resolution.mx {
-                    output.push_str(&format!("  - pref={} exchange={}\n", mx.preference, mx.exchange));
+                    output.push_str(&format!(
+                        "  - pref={} exchange={}\n",
+                        mx.preference, mx.exchange
+                    ));
                 }
             }
-            
+
             output.push_str("\nSRV Records:\n");
             if resolution.srv.is_empty() {
                 output.push_str("  (none)\n");
             } else {
                 for srv in &resolution.srv {
-                    output.push_str(&format!("  - pri={} weight={} port={} target={}\n", 
-                        srv.priority, srv.weight, srv.port, srv.target));
+                    output.push_str(&format!(
+                        "  - pri={} weight={} port={} target={}\n",
+                        srv.priority, srv.weight, srv.port, srv.target
+                    ));
                 }
             }
-            
+
             output.push_str("\nPTR Name:\n");
-            output.push_str(&format!("  {}\n", resolution.ptr_name.as_ref().unwrap_or(&"(none)".to_string())));
-            
+            output.push_str(&format!(
+                "  {}\n",
+                resolution
+                    .ptr_name
+                    .as_ref()
+                    .unwrap_or(&"(none)".to_string())
+            ));
+
             if let Some(server) = &resolution.source_server {
                 output.push_str(&format!("\nSource Server : {}\n", server));
             }
@@ -1233,7 +1426,7 @@ impl DnsResolveResponse {
                 output.push_str(&format!("RTT           : {} ms\n", rtt));
             }
         }
-        
+
         output.push_str("\nWarnings:\n");
         if self.warnings.is_empty() {
             output.push_str("  (none)\n");
@@ -1269,7 +1462,8 @@ pub struct DnsTraceOptions {
 
 impl DnsTraceOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let name = args.get("name")
+        let name = args
+            .get("name")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: name"))?
             .clone();
 
@@ -1287,10 +1481,14 @@ impl DnsTraceOptions {
             } else {
                 // Parse as JSON array or comma-separated list
                 if servers_str.trim().starts_with('[') {
-                    serde_json::from_str::<Vec<String>>(servers_str)
-                        .with_context(|| format!("Invalid root_servers JSON array: {}", servers_str))?
+                    serde_json::from_str::<Vec<String>>(servers_str).with_context(|| {
+                        format!("Invalid root_servers JSON array: {}", servers_str)
+                    })?
                 } else {
-                    servers_str.split(',').map(|s| s.trim().to_string()).collect()
+                    servers_str
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect()
                 }
             }
         } else {
@@ -1305,7 +1503,8 @@ impl DnsTraceOptions {
         }
 
         let port = if let Some(port_str) = args.get("port") {
-            let port: u16 = port_str.parse()
+            let port: u16 = port_str
+                .parse()
                 .with_context(|| format!("Invalid port: {}", port_str))?;
             if port == 0 {
                 bail!("Port cannot be 0");
@@ -1315,10 +1514,14 @@ impl DnsTraceOptions {
             53
         };
 
-        let use_tcp = args.get("use_tcp").map(|s| s.to_lowercase() == "true").unwrap_or(false);
+        let use_tcp = args
+            .get("use_tcp")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
 
         let timeout_ms = if let Some(timeout_str) = args.get("timeout_ms") {
-            let timeout: u64 = timeout_str.parse()
+            let timeout: u64 = timeout_str
+                .parse()
                 .with_context(|| format!("Invalid timeout_ms: {}", timeout_str))?;
             if timeout == 0 {
                 bail!("timeout_ms must be greater than 0");
@@ -1329,17 +1532,22 @@ impl DnsTraceOptions {
         };
 
         let retries = if let Some(retries_str) = args.get("retries") {
-            let retries: u32 = retries_str.parse()
+            let retries: u32 = retries_str
+                .parse()
                 .with_context(|| format!("Invalid retries: {}", retries_str))?;
             retries
         } else {
             1
         };
 
-        let dnssec = args.get("dnssec").map(|s| s.to_lowercase() == "true").unwrap_or(false);
+        let dnssec = args
+            .get("dnssec")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
 
         let max_depth = if let Some(depth_str) = args.get("max_depth") {
-            let depth: u8 = depth_str.parse()
+            let depth: u8 = depth_str
+                .parse()
                 .with_context(|| format!("Invalid max_depth: {}", depth_str))?;
             if depth == 0 {
                 bail!("max_depth must be greater than 0");
@@ -1349,10 +1557,22 @@ impl DnsTraceOptions {
             15
         };
 
-        let follow_cname = args.get("follow_cname").map(|s| s.to_lowercase() == "true").unwrap_or(false);
-        let prefer_ipv6 = args.get("prefer_ipv6").map(|s| s.to_lowercase() == "true").unwrap_or(false);
-        let want_raw = args.get("want_raw").map(|s| s.to_lowercase() == "true").unwrap_or(false);
-        let include_additional = args.get("include_additional").map(|s| s.to_lowercase() == "true").unwrap_or(true);
+        let follow_cname = args
+            .get("follow_cname")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
+        let prefer_ipv6 = args
+            .get("prefer_ipv6")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
+        let want_raw = args
+            .get("want_raw")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(false);
+        let include_additional = args
+            .get("include_additional")
+            .map(|s| s.to_lowercase() == "true")
+            .unwrap_or(true);
 
         let format_str = args.get("format").unwrap_or(&"json".to_string()).clone();
         let format = OutputFormat::from_str(&format_str)
@@ -1506,10 +1726,22 @@ impl DnsTraceResponse {
 
         // Query section
         output.push_str("Query:\n");
-        output.push_str(&format!("  Name     : {}\n", self.query["name"].as_str().unwrap_or("")));
-        output.push_str(&format!("  Type     : {}\n", self.query["rtype"].as_str().unwrap_or("")));
-        output.push_str(&format!("  Timeout  : {} ms\n", self.query["timeout_ms"].as_u64().unwrap_or(0)));
-        output.push_str(&format!("  Retries  : {}\n", self.query["retries"].as_u64().unwrap_or(0)));
+        output.push_str(&format!(
+            "  Name     : {}\n",
+            self.query["name"].as_str().unwrap_or("")
+        ));
+        output.push_str(&format!(
+            "  Type     : {}\n",
+            self.query["rtype"].as_str().unwrap_or("")
+        ));
+        output.push_str(&format!(
+            "  Timeout  : {} ms\n",
+            self.query["timeout_ms"].as_u64().unwrap_or(0)
+        ));
+        output.push_str(&format!(
+            "  Retries  : {}\n",
+            self.query["retries"].as_u64().unwrap_or(0)
+        ));
 
         let dnssec_status = if self.query["dnssec"].as_bool().unwrap_or(false) {
             "enabled"
@@ -1529,7 +1761,10 @@ impl DnsTraceResponse {
                 }
                 output.push('\n');
                 output.push_str(&format!("  RCODE    : {}\n", hop.rcode));
-                output.push_str(&format!("  Auth     : {}\n", if hop.authoritative { "yes" } else { "no" }));
+                output.push_str(&format!(
+                    "  Auth     : {}\n",
+                    if hop.authoritative { "yes" } else { "no" }
+                ));
                 if let Some(rtt) = hop.rtt_ms {
                     output.push_str(&format!("  RTT      : {} ms\n", rtt));
                 }
@@ -1544,18 +1779,24 @@ impl DnsTraceResponse {
                 if !hop.answers.is_empty() {
                     output.push_str("  Answer   :\n");
                     for record in &hop.answers {
-                        output.push_str(&format!("    {}  {}  {}  ",
-                            record.name, record.ttl, record.rtype));
+                        output.push_str(&format!(
+                            "    {}  {}  {}  ",
+                            record.name, record.ttl, record.rtype
+                        ));
 
                         // Format data based on record type
                         match record.rtype.as_str() {
                             "A" | "AAAA" => {
                                 if let Some(address) = record.data.get("address") {
-                                    output.push_str(&format!("{}\n", address.as_str().unwrap_or("")));
+                                    output
+                                        .push_str(&format!("{}\n", address.as_str().unwrap_or("")));
                                 }
-                            },
+                            }
                             _ => {
-                                output.push_str(&format!("{}\n", serde_json::to_string(&record.data).unwrap_or_default()));
+                                output.push_str(&format!(
+                                    "{}\n",
+                                    serde_json::to_string(&record.data).unwrap_or_default()
+                                ));
                             }
                         }
                     }
@@ -1568,22 +1809,34 @@ impl DnsTraceResponse {
             if let Some(rcode) = &trace.final_rcode {
                 output.push_str(&format!("  RCODE    : {}\n", rcode));
             }
-            output.push_str(&format!("  Authoritative: {}\n", if trace.final_authoritative { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "  Authoritative: {}\n",
+                if trace.final_authoritative {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ));
 
             if !trace.final_answers.is_empty() {
                 output.push_str("  Answers  :\n");
                 for record in &trace.final_answers {
-                    output.push_str(&format!("    {}  {}  {}  ",
-                        record.name, record.ttl, record.rtype));
+                    output.push_str(&format!(
+                        "    {}  {}  {}  ",
+                        record.name, record.ttl, record.rtype
+                    ));
 
                     match record.rtype.as_str() {
                         "A" | "AAAA" => {
                             if let Some(address) = record.data.get("address") {
                                 output.push_str(&format!("{}\n", address.as_str().unwrap_or("")));
                             }
-                        },
+                        }
                         _ => {
-                            output.push_str(&format!("{}\n", serde_json::to_string(&record.data).unwrap_or_default()));
+                            output.push_str(&format!(
+                                "{}\n",
+                                serde_json::to_string(&record.data).unwrap_or_default()
+                            ));
                         }
                     }
                 }
@@ -1678,7 +1931,8 @@ pub const DNS_ZONE_FETCH_INVALID_RETRIES: &str = "dns.zone_fetch_invalid_retries
 pub const DNS_ZONE_FETCH_INVALID_MAX_RECORDS: &str = "dns.zone_fetch_invalid_max_records";
 pub const DNS_ZONE_FETCH_INVALID_TSIG_CONFIG: &str = "dns.zone_fetch_invalid_tsig_config";
 pub const DNS_ZONE_FETCH_INVALID_TSIG_SECRET: &str = "dns.zone_fetch_invalid_tsig_secret";
-pub const DNS_ZONE_FETCH_UNSUPPORTED_TSIG_ALGORITHM: &str = "dns.zone_fetch_unsupported_tsig_algorithm";
+pub const DNS_ZONE_FETCH_UNSUPPORTED_TSIG_ALGORITHM: &str =
+    "dns.zone_fetch_unsupported_tsig_algorithm";
 pub const DNS_ZONE_FETCH_REFUSED: &str = "dns.zone_fetch_refused";
 pub const DNS_ZONE_FETCH_NXDOMAIN: &str = "dns.zone_fetch_nxdomain";
 pub const DNS_ZONE_FETCH_SERVFAIL: &str = "dns.zone_fetch_servfail";
@@ -1707,7 +1961,8 @@ pub const DNS_ZONE_UPDATE_INVALID_DELETE_SPEC: &str = "dns.zone_update_invalid_d
 pub const DNS_ZONE_UPDATE_INVALID_PREREQUISITE: &str = "dns.zone_update_invalid_prerequisite";
 pub const DNS_ZONE_UPDATE_INVALID_TSIG_CONFIG: &str = "dns.zone_update_invalid_tsig_config";
 pub const DNS_ZONE_UPDATE_INVALID_TSIG_SECRET: &str = "dns.zone_update_invalid_tsig_secret";
-pub const DNS_ZONE_UPDATE_UNSUPPORTED_TSIG_ALGORITHM: &str = "dns.zone_update_unsupported_tsig_algorithm";
+pub const DNS_ZONE_UPDATE_UNSUPPORTED_TSIG_ALGORITHM: &str =
+    "dns.zone_update_unsupported_tsig_algorithm";
 pub const DNS_ZONE_UPDATE_REFUSED: &str = "dns.zone_update_refused";
 pub const DNS_ZONE_UPDATE_NXDOMAIN: &str = "dns.zone_update_nxdomain";
 pub const DNS_ZONE_UPDATE_SERVFAIL: &str = "dns.zone_update_servfail";
@@ -1733,8 +1988,11 @@ pub fn ip_to_ptr_name(ip: &str) -> Result<String> {
     match addr {
         IpAddr::V4(ipv4) => {
             let octets = ipv4.octets();
-            Ok(format!("{}.{}.{}.{}.in-addr.arpa", octets[3], octets[2], octets[1], octets[0]))
-        },
+            Ok(format!(
+                "{}.{}.{}.{}.in-addr.arpa",
+                octets[3], octets[2], octets[1], octets[0]
+            ))
+        }
         IpAddr::V6(ipv6) => {
             let segments = ipv6.segments();
             let mut chars = Vec::new();
@@ -1750,9 +2008,12 @@ pub fn ip_to_ptr_name(ip: &str) -> Result<String> {
 }
 
 // Helper function to convert lookup response to resolved addresses
-pub fn lookup_response_to_addresses(response: &DnsLookupResponse, family: &AddressFamily) -> Vec<ResolvedAddress> {
+pub fn lookup_response_to_addresses(
+    response: &DnsLookupResponse,
+    family: &AddressFamily,
+) -> Vec<ResolvedAddress> {
     let mut addresses = Vec::new();
-    
+
     for record in &response.answers {
         match record.rtype.as_str() {
             "A" => {
@@ -1765,7 +2026,7 @@ pub fn lookup_response_to_addresses(response: &DnsLookupResponse, family: &Addre
                         });
                     }
                 }
-            },
+            }
             "AAAA" => {
                 if matches!(family, AddressFamily::Any | AddressFamily::Ipv6) {
                     if let Some(ip) = record.data.get("address").and_then(|v| v.as_str()) {
@@ -1776,11 +2037,11 @@ pub fn lookup_response_to_addresses(response: &DnsLookupResponse, family: &Addre
                         });
                     }
                 }
-            },
+            }
             _ => {}
         }
     }
-    
+
     addresses
 }
 
@@ -1797,13 +2058,13 @@ pub async fn perform_dns_resolve(opts: DnsResolveOptions) -> Result<DnsResolveRe
                     resolution.round_trip_time_ms = Some(start_time.elapsed().as_millis() as u64);
                     response.ok = true;
                     response.resolution = Some(resolution);
-                },
+                }
                 Err(e) => {
                     response.ok = false;
                     response.error = Some((DNS_RESOLVE_LOOKUP_ERROR.to_string(), e.to_string()));
                 }
             }
-        },
+        }
         ResolveMode::Mail => {
             let result = resolve_mail(&opts).await;
             match result {
@@ -1811,13 +2072,13 @@ pub async fn perform_dns_resolve(opts: DnsResolveOptions) -> Result<DnsResolveRe
                     resolution.round_trip_time_ms = Some(start_time.elapsed().as_millis() as u64);
                     response.ok = true;
                     response.resolution = Some(resolution);
-                },
+                }
                 Err(e) => {
                     response.ok = false;
                     response.error = Some((DNS_RESOLVE_LOOKUP_ERROR.to_string(), e.to_string()));
                 }
             }
-        },
+        }
         ResolveMode::Service => {
             let result = resolve_service(&opts).await;
             match result {
@@ -1825,13 +2086,13 @@ pub async fn perform_dns_resolve(opts: DnsResolveOptions) -> Result<DnsResolveRe
                     resolution.round_trip_time_ms = Some(start_time.elapsed().as_millis() as u64);
                     response.ok = true;
                     response.resolution = Some(resolution);
-                },
+                }
                 Err(e) => {
                     response.ok = false;
                     response.error = Some((DNS_RESOLVE_LOOKUP_ERROR.to_string(), e.to_string()));
                 }
             }
-        },
+        }
         ResolveMode::Reverse => {
             let result = resolve_reverse(&opts).await;
             match result {
@@ -1839,7 +2100,7 @@ pub async fn perform_dns_resolve(opts: DnsResolveOptions) -> Result<DnsResolveRe
                     resolution.round_trip_time_ms = Some(start_time.elapsed().as_millis() as u64);
                     response.ok = true;
                     response.resolution = Some(resolution);
-                },
+                }
                 Err(e) => {
                     response.ok = false;
                     response.error = Some((DNS_RESOLVE_LOOKUP_ERROR.to_string(), e.to_string()));
@@ -1855,19 +2116,19 @@ async fn resolve_host(opts: &DnsResolveOptions) -> Result<DnsResolution> {
     let mut canonical_name = opts.name.clone();
     let mut visited_names = HashSet::new();
     let mut cname_depth = 0;
-    
+
     // Follow CNAME chain
     loop {
         if visited_names.contains(&canonical_name) {
             bail!("CNAME loop detected");
         }
-        
+
         if cname_depth >= opts.max_cname_depth {
             bail!("Maximum CNAME depth exceeded");
         }
-        
+
         visited_names.insert(canonical_name.clone());
-        
+
         // Lookup CNAME
         let cname_lookup_opts = DnsLookupOptions {
             name: canonical_name.clone(),
@@ -1884,9 +2145,9 @@ async fn resolve_host(opts: &DnsResolveOptions) -> Result<DnsResolution> {
             randomize_servers: true,
             format: OutputFormat::Json,
         };
-        
+
         let cname_response = perform_dns_lookup(cname_lookup_opts).await?;
-        
+
         if cname_response.ok && !cname_response.answers.is_empty() {
             // Found CNAME, follow it
             if let Some(cname_record) = cname_response.answers.first() {
@@ -1897,14 +2158,14 @@ async fn resolve_host(opts: &DnsResolveOptions) -> Result<DnsResolution> {
                 }
             }
         }
-        
+
         // No more CNAMEs to follow
         break;
     }
-    
+
     // Now resolve A and AAAA records for the canonical name
     let mut all_addresses = Vec::new();
-    
+
     // Resolve A records if needed
     if matches!(opts.family, AddressFamily::Any | AddressFamily::Ipv4) {
         let a_lookup_opts = DnsLookupOptions {
@@ -1922,14 +2183,14 @@ async fn resolve_host(opts: &DnsResolveOptions) -> Result<DnsResolution> {
             randomize_servers: true,
             format: OutputFormat::Json,
         };
-        
+
         let a_response = perform_dns_lookup(a_lookup_opts).await?;
         if a_response.ok {
             let mut a_addresses = lookup_response_to_addresses(&a_response, &AddressFamily::Ipv4);
             all_addresses.append(&mut a_addresses);
         }
     }
-    
+
     // Resolve AAAA records if needed
     if matches!(opts.family, AddressFamily::Any | AddressFamily::Ipv6) {
         let aaaa_lookup_opts = DnsLookupOptions {
@@ -1947,29 +2208,28 @@ async fn resolve_host(opts: &DnsResolveOptions) -> Result<DnsResolution> {
             randomize_servers: true,
             format: OutputFormat::Json,
         };
-        
+
         let aaaa_response = perform_dns_lookup(aaaa_lookup_opts).await?;
         if aaaa_response.ok {
-            let mut aaaa_addresses = lookup_response_to_addresses(&aaaa_response, &AddressFamily::Ipv6);
+            let mut aaaa_addresses =
+                lookup_response_to_addresses(&aaaa_response, &AddressFamily::Ipv6);
             all_addresses.append(&mut aaaa_addresses);
         }
     }
-    
+
     if all_addresses.is_empty() {
         bail!("No addresses found for host");
     }
-    
+
     // Sort addresses: IPv6 first if "any", otherwise respect family preference
     if opts.family == AddressFamily::Any {
-        all_addresses.sort_by(|a, b| {
-            match (&a.family, &b.family) {
-                (AddressFamily::Ipv6, AddressFamily::Ipv4) => std::cmp::Ordering::Less,
-                (AddressFamily::Ipv4, AddressFamily::Ipv6) => std::cmp::Ordering::Greater,
-                _ => std::cmp::Ordering::Equal,
-            }
+        all_addresses.sort_by(|a, b| match (&a.family, &b.family) {
+            (AddressFamily::Ipv6, AddressFamily::Ipv4) => std::cmp::Ordering::Less,
+            (AddressFamily::Ipv4, AddressFamily::Ipv6) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
         });
     }
-    
+
     Ok(DnsResolution {
         canonical_name,
         mode: ResolveMode::Host,
@@ -2001,20 +2261,20 @@ async fn resolve_mail(opts: &DnsResolveOptions) -> Result<DnsResolution> {
         randomize_servers: true,
         format: OutputFormat::Json,
     };
-    
+
     let mx_response = perform_dns_lookup(mx_lookup_opts).await?;
-    
+
     if !mx_response.ok || mx_response.answers.is_empty() {
         bail!("No MX records found");
     }
-    
+
     let mut mx_records = Vec::new();
     let mut all_addresses = Vec::new();
-    
+
     for mx_record in &mx_response.answers {
         if let (Some(preference), Some(exchange)) = (
             mx_record.data.get("preference").and_then(|v| v.as_u64()),
-            mx_record.data.get("exchange").and_then(|v| v.as_str())
+            mx_record.data.get("exchange").and_then(|v| v.as_str()),
         ) {
             // Resolve A/AAAA for this MX target
             let host_opts = DnsResolveOptions {
@@ -2033,28 +2293,31 @@ async fn resolve_mail(opts: &DnsResolveOptions) -> Result<DnsResolution> {
                 validate_reverse: false,
                 format: OutputFormat::Json,
             };
-            
+
             let host_resolution = resolve_host(&host_opts).await?;
             let mx_addresses = host_resolution.addresses.clone();
-            
+
             mx_records.push(ResolvedMx {
                 preference: preference as u16,
                 exchange: exchange.to_string(),
                 addresses: mx_addresses.clone(),
             });
-            
+
             // Add to flattened address list
             for addr in mx_addresses {
-                if !all_addresses.iter().any(|a: &ResolvedAddress| a.ip == addr.ip) {
+                if !all_addresses
+                    .iter()
+                    .any(|a: &ResolvedAddress| a.ip == addr.ip)
+                {
                     all_addresses.push(addr);
                 }
             }
         }
     }
-    
+
     // Sort MX records by preference
     mx_records.sort_by_key(|mx| mx.preference);
-    
+
     Ok(DnsResolution {
         canonical_name: opts.name.clone(),
         mode: ResolveMode::Mail,
@@ -2086,25 +2349,25 @@ async fn resolve_service(opts: &DnsResolveOptions) -> Result<DnsResolution> {
         randomize_servers: true,
         format: OutputFormat::Json,
     };
-    
+
     let srv_response = perform_dns_lookup(srv_lookup_opts).await?;
-    
+
     if !srv_response.ok || srv_response.answers.is_empty() {
         bail!("No SRV records found");
     }
-    
+
     let mut srv_records = Vec::new();
     let mut all_addresses = Vec::new();
-    
+
     for srv_record in &srv_response.answers {
         if let (Some(priority), Some(weight), Some(port), Some(target)) = (
             srv_record.data.get("priority").and_then(|v| v.as_u64()),
             srv_record.data.get("weight").and_then(|v| v.as_u64()),
             srv_record.data.get("port").and_then(|v| v.as_u64()),
-            srv_record.data.get("target").and_then(|v| v.as_str())
+            srv_record.data.get("target").and_then(|v| v.as_str()),
         ) {
             let mut srv_addresses = Vec::new();
-            
+
             if opts.follow_srv {
                 // Resolve A/AAAA for this SRV target
                 let host_opts = DnsResolveOptions {
@@ -2123,18 +2386,21 @@ async fn resolve_service(opts: &DnsResolveOptions) -> Result<DnsResolution> {
                     validate_reverse: false,
                     format: OutputFormat::Json,
                 };
-                
+
                 let host_resolution = resolve_host(&host_opts).await?;
                 srv_addresses = host_resolution.addresses.clone();
-                
+
                 // Add to flattened address list
                 for addr in &srv_addresses {
-                    if !all_addresses.iter().any(|a: &ResolvedAddress| a.ip == addr.ip) {
+                    if !all_addresses
+                        .iter()
+                        .any(|a: &ResolvedAddress| a.ip == addr.ip)
+                    {
                         all_addresses.push(addr.clone());
                     }
                 }
             }
-            
+
             srv_records.push(ResolvedSrv {
                 priority: priority as u16,
                 weight: weight as u16,
@@ -2144,12 +2410,14 @@ async fn resolve_service(opts: &DnsResolveOptions) -> Result<DnsResolution> {
             });
         }
     }
-    
+
     // Sort SRV records by priority, then by weight
     srv_records.sort_by(|a, b| {
-        a.priority.cmp(&b.priority).then_with(|| a.weight.cmp(&b.weight))
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.weight.cmp(&b.weight))
     });
-    
+
     Ok(DnsResolution {
         canonical_name: opts.name.clone(),
         mode: ResolveMode::Service,
@@ -2169,10 +2437,10 @@ async fn resolve_reverse(opts: &DnsResolveOptions) -> Result<DnsResolution> {
     if !is_ip_address(&opts.name) {
         bail!("Name is not a valid IP address for reverse lookup");
     }
-    
+
     // Convert IP to PTR query name
     let ptr_name = ip_to_ptr_name(&opts.name)?;
-    
+
     // Lookup PTR record
     let ptr_lookup_opts = DnsLookupOptions {
         name: ptr_name,
@@ -2189,17 +2457,17 @@ async fn resolve_reverse(opts: &DnsResolveOptions) -> Result<DnsResolution> {
         randomize_servers: true,
         format: OutputFormat::Json,
     };
-    
+
     let ptr_response = perform_dns_lookup(ptr_lookup_opts).await?;
-    
+
     let mut ptr_hostname = None;
     let mut forward_addresses = Vec::new();
-    
+
     if ptr_response.ok && !ptr_response.answers.is_empty() {
         if let Some(ptr_record) = ptr_response.answers.first() {
             if let Some(hostname) = ptr_record.data.get("ptrdname").and_then(|v| v.as_str()) {
                 ptr_hostname = Some(hostname.to_string());
-                
+
                 // If validation requested, resolve the hostname back to addresses
                 if opts.validate_reverse {
                     let host_opts = DnsResolveOptions {
@@ -2218,7 +2486,7 @@ async fn resolve_reverse(opts: &DnsResolveOptions) -> Result<DnsResolution> {
                         validate_reverse: false,
                         format: OutputFormat::Json,
                     };
-                    
+
                     if let Ok(host_resolution) = resolve_host(&host_opts).await {
                         forward_addresses = host_resolution.addresses;
                     }
@@ -2226,16 +2494,20 @@ async fn resolve_reverse(opts: &DnsResolveOptions) -> Result<DnsResolution> {
             }
         }
     }
-    
+
     if ptr_hostname.is_none() {
         bail!("No PTR record found");
     }
-    
+
     Ok(DnsResolution {
         canonical_name: opts.name.clone(),
         mode: ResolveMode::Reverse,
         family: opts.family.clone(),
-        addresses: if opts.validate_reverse { forward_addresses.clone() } else { Vec::new() },
+        addresses: if opts.validate_reverse {
+            forward_addresses.clone()
+        } else {
+            Vec::new()
+        },
         mx: Vec::new(),
         srv: Vec::new(),
         ptr_name: ptr_hostname,
@@ -2255,11 +2527,13 @@ fn rdata_to_json(rdata: &RData, rtype: &str) -> Value {
             "exchange": mx.exchange().to_string()
         }),
         RData::TXT(txt) => {
-            let texts: Vec<String> = txt.txt_data().iter()
+            let texts: Vec<String> = txt
+                .txt_data()
+                .iter()
                 .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
                 .collect();
             json!({ "text": texts })
-        },
+        }
         RData::NS(ns) => json!({ "nsdname": ns.to_string() }),
         RData::SRV(srv) => json!({
             "priority": srv.priority(),
@@ -2282,7 +2556,7 @@ fn rdata_to_json(rdata: &RData, rtype: &str) -> Value {
             "tag": caa.tag().to_string(),
             "value": caa.value().to_string()
         }),
-        _ => json!({ "raw": format!("Unsupported record type: {}", rtype) })
+        _ => json!({ "raw": format!("Unsupported record type: {}", rtype) }),
     }
 }
 
@@ -2290,17 +2564,41 @@ fn rdata_to_json(rdata: &RData, rtype: &str) -> Value {
 pub fn get_root_hints() -> Vec<(String, String)> {
     vec![
         ("a.root-servers.net.".to_string(), "198.41.0.4".to_string()),
-        ("a.root-servers.net.".to_string(), "2001:503:ba3e::2:30".to_string()),
-        ("b.root-servers.net.".to_string(), "170.247.170.2".to_string()),
-        ("b.root-servers.net.".to_string(), "2801:1b8:10::b".to_string()),
+        (
+            "a.root-servers.net.".to_string(),
+            "2001:503:ba3e::2:30".to_string(),
+        ),
+        (
+            "b.root-servers.net.".to_string(),
+            "170.247.170.2".to_string(),
+        ),
+        (
+            "b.root-servers.net.".to_string(),
+            "2801:1b8:10::b".to_string(),
+        ),
         ("c.root-servers.net.".to_string(), "192.33.4.12".to_string()),
-        ("c.root-servers.net.".to_string(), "2001:500:2::c".to_string()),
+        (
+            "c.root-servers.net.".to_string(),
+            "2001:500:2::c".to_string(),
+        ),
         ("d.root-servers.net.".to_string(), "199.7.91.13".to_string()),
-        ("d.root-servers.net.".to_string(), "2001:500:2d::d".to_string()),
-        ("e.root-servers.net.".to_string(), "192.203.230.10".to_string()),
-        ("e.root-servers.net.".to_string(), "2001:500:a8::e".to_string()),
+        (
+            "d.root-servers.net.".to_string(),
+            "2001:500:2d::d".to_string(),
+        ),
+        (
+            "e.root-servers.net.".to_string(),
+            "192.203.230.10".to_string(),
+        ),
+        (
+            "e.root-servers.net.".to_string(),
+            "2001:500:a8::e".to_string(),
+        ),
         ("f.root-servers.net.".to_string(), "192.5.5.241".to_string()),
-        ("f.root-servers.net.".to_string(), "2001:500:2f::f".to_string()),
+        (
+            "f.root-servers.net.".to_string(),
+            "2001:500:2f::f".to_string(),
+        ),
     ]
 }
 
@@ -2368,11 +2666,15 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
 
     // Initialize NS set (root servers)
     let mut current_ns_ips: Vec<(Option<String>, String)> = if !opts.root_servers.is_empty() {
-        opts.root_servers.iter().map(|ip| (None, ip.clone())).collect()
+        opts.root_servers
+            .iter()
+            .map(|ip| (None, ip.clone()))
+            .collect()
     } else {
         // Use built-in root hints, prefer IPv4 unless prefer_ipv6 is set
         let hints = get_root_hints();
-        hints.into_iter()
+        hints
+            .into_iter()
             .filter(|(_, ip)| {
                 if opts.prefer_ipv6 {
                     ip.contains(':')
@@ -2525,9 +2827,15 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                     let mut ns_names = Vec::new();
                     let mut ns_addresses: Vec<DnsTraceNsAddress> = Vec::new();
 
-                    for record in lookup_response.answers.iter().chain(lookup_response.authority.iter()) {
+                    for record in lookup_response
+                        .answers
+                        .iter()
+                        .chain(lookup_response.authority.iter())
+                    {
                         if record.rtype == "NS" {
-                            if let Some(nsdname) = record.data.get("nsdname").and_then(|v| v.as_str()) {
+                            if let Some(nsdname) =
+                                record.data.get("nsdname").and_then(|v| v.as_str())
+                            {
                                 ns_names.push(nsdname.to_string());
                             }
                         }
@@ -2538,11 +2846,14 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                     // Extract glue records (A/AAAA in additional section)
                     for record in &lookup_response.additional {
                         if record.rtype == "A" || record.rtype == "AAAA" {
-                            if let Some(address) = record.data.get("address").and_then(|v| v.as_str()) {
+                            if let Some(address) =
+                                record.data.get("address").and_then(|v| v.as_str())
+                            {
                                 ns_addresses.push(DnsTraceNsAddress {
                                     name: record.name.clone(),
                                     ip: address.to_string(),
-                                    family: if record.rtype == "A" { "ipv4" } else { "ipv6" }.to_string(),
+                                    family: if record.rtype == "A" { "ipv4" } else { "ipv6" }
+                                        .to_string(),
                                 });
                             }
                         }
@@ -2563,7 +2874,8 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
 
                             for ns_name in &ns_names {
                                 // Look for glue first
-                                let glue_ips: Vec<_> = ns_addresses.iter()
+                                let glue_ips: Vec<_> = ns_addresses
+                                    .iter()
                                     .filter(|addr| addr.name.eq_ignore_ascii_case(ns_name))
                                     .map(|addr| (Some(ns_name.clone()), addr.ip.clone()))
                                     .collect();
@@ -2578,7 +2890,7 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                                     let ns_lookup_opts = DnsLookupOptions {
                                         name: ns_name.clone(),
                                         rtype: DnsRecordType::A,
-                                        servers: vec![],  // Use system resolver
+                                        servers: vec![], // Use system resolver
                                         port: 53,
                                         use_tcp: false,
                                         timeout_ms: opts.timeout_ms,
@@ -2591,11 +2903,19 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                                         format: OutputFormat::Json,
                                     };
 
-                                    if let Ok(ns_lookup) = perform_dns_lookup(ns_lookup_opts).await {
+                                    if let Ok(ns_lookup) = perform_dns_lookup(ns_lookup_opts).await
+                                    {
                                         for record in &ns_lookup.answers {
                                             if record.rtype == "A" {
-                                                if let Some(ip) = record.data.get("address").and_then(|v| v.as_str()) {
-                                                    next_ns_ips.push((Some(ns_name.clone()), ip.to_string()));
+                                                if let Some(ip) = record
+                                                    .data
+                                                    .get("address")
+                                                    .and_then(|v| v.as_str())
+                                                {
+                                                    next_ns_ips.push((
+                                                        Some(ns_name.clone()),
+                                                        ip.to_string(),
+                                                    ));
                                                 }
                                             }
                                         }
@@ -2606,7 +2926,10 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                             if next_ns_ips.is_empty() {
                                 response.error = Some((
                                     DNS_TRACE_NO_NS.to_string(),
-                                    format!("No usable NS records found for zone: {}", label_chain.get(zone_idx + 1).unwrap_or(&"?".to_string())),
+                                    format!(
+                                        "No usable NS records found for zone: {}",
+                                        label_chain.get(zone_idx + 1).unwrap_or(&"?".to_string())
+                                    ),
                                 ));
                                 break;
                             }
@@ -2614,7 +2937,7 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                             current_ns_ips = next_ns_ips;
                         }
 
-                        break;  // Successfully queried this NS, move to next zone
+                        break; // Successfully queried this NS, move to next zone
                     } else if lookup_response.response.rcode == "NXDOMAIN" {
                         hops.push(hop.clone());
                         response.error = Some((
@@ -2638,10 +2961,12 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                         query_succeeded = true;
                         break;
                     }
-                },
+                }
                 Err(e) => {
                     // Network error, try next NS
-                    response.warnings.push(format!("Failed to query {}: {}", ns_ip, e));
+                    response
+                        .warnings
+                        .push(format!("Failed to query {}: {}", ns_ip, e));
                     continue;
                 }
             }
@@ -2705,7 +3030,7 @@ pub async fn perform_dns_lookup(opts: DnsLookupOptions) -> Result<DnsLookupRespo
         let mut resolver_opts = ResolverOpts::default();
         resolver_opts.timeout = Duration::from_millis(opts.timeout_ms);
         resolver_opts.attempts = opts.retries as usize + 1;
-        
+
         if opts.dnssec {
             resolver_opts.edns0 = true;
             // Enable DNSSEC validation if available
@@ -2717,29 +3042,33 @@ pub async fn perform_dns_lookup(opts: DnsLookupOptions) -> Result<DnsLookupRespo
         // Use custom servers
         let mut config = ResolverConfig::new();
         let mut servers = opts.servers.clone();
-        
+
         if opts.randomize_servers {
             servers.shuffle(&mut rand::thread_rng());
         }
-        
+
         for server_str in servers {
             if let Ok(ip) = server_str.parse::<IpAddr>() {
                 let socket_addr = SocketAddr::new(ip, opts.port);
-                let protocol = if opts.use_tcp { Protocol::Tcp } else { Protocol::Udp };
+                let protocol = if opts.use_tcp {
+                    Protocol::Tcp
+                } else {
+                    Protocol::Udp
+                };
                 let nameserver = NameServerConfig::new(socket_addr, protocol);
                 config.add_name_server(nameserver);
             }
         }
-        
+
         let mut resolver_opts = ResolverOpts::default();
         resolver_opts.timeout = Duration::from_millis(opts.timeout_ms);
         resolver_opts.attempts = opts.retries as usize + 1;
-        
+
         if opts.dnssec {
             resolver_opts.edns0 = true;
             resolver_opts.validate = true;
         }
-        
+
         (config, resolver_opts)
     };
 
@@ -2747,7 +3076,9 @@ pub async fn perform_dns_lookup(opts: DnsLookupOptions) -> Result<DnsLookupRespo
     let resolver = TokioAsyncResolver::tokio(config, resolver_opts);
 
     // Perform the DNS lookup using generic lookup for all types
-    let lookup_result = resolver.lookup(&opts.name, opts.rtype.to_trust_dns()).await
+    let lookup_result = resolver
+        .lookup(&opts.name, opts.rtype.to_trust_dns())
+        .await
         .map(|lookup| {
             let answers = lookup.records().to_vec();
             // For now, authority and additional are empty since trust-dns doesn't expose them easily
@@ -2763,7 +3094,7 @@ pub async fn perform_dns_lookup(opts: DnsLookupOptions) -> Result<DnsLookupRespo
         Ok((records, authority_records, additional_records)) => {
             response.ok = true;
             response.response.rcode = "NOERROR".to_string();
-            
+
             // Set server used (first configured server for now)
             if !opts.servers.is_empty() {
                 response.response.server_used = Some(opts.servers[0].clone());
@@ -2817,40 +3148,48 @@ pub async fn perform_dns_lookup(opts: DnsLookupOptions) -> Result<DnsLookupRespo
 
             // Add DNSSEC warning if requested but not supported by the underlying resolver
             if opts.dnssec {
-                response.warnings.push("DNSSEC validation status not available from resolver backend".to_string());
+                response.warnings.push(
+                    "DNSSEC validation status not available from resolver backend".to_string(),
+                );
             }
-        },
+        }
         Err(e) => {
             // Map DNS errors to our error codes
             let (error_code, error_message) = match e.kind() {
                 ResolveErrorKind::NoRecordsFound { response_code, .. } => {
                     response.response.rcode = format!("{:?}", response_code);
                     match response_code {
-                        trust_dns_resolver::proto::op::ResponseCode::NXDomain => {
-                            (DNS_LOOKUP_NXDOMAIN, "The domain name does not exist (NXDOMAIN).".to_string())
-                        },
-                        trust_dns_resolver::proto::op::ResponseCode::ServFail => {
-                            (DNS_LOOKUP_SERVFAIL, "Server failure (SERVFAIL).".to_string())
-                        },
+                        trust_dns_resolver::proto::op::ResponseCode::NXDomain => (
+                            DNS_LOOKUP_NXDOMAIN,
+                            "The domain name does not exist (NXDOMAIN).".to_string(),
+                        ),
+                        trust_dns_resolver::proto::op::ResponseCode::ServFail => (
+                            DNS_LOOKUP_SERVFAIL,
+                            "Server failure (SERVFAIL).".to_string(),
+                        ),
                         trust_dns_resolver::proto::op::ResponseCode::Refused => {
                             (DNS_LOOKUP_REFUSED, "Query refused (REFUSED).".to_string())
-                        },
+                        }
                         trust_dns_resolver::proto::op::ResponseCode::FormErr => {
                             (DNS_LOOKUP_FORMERR, "Format error (FORMERR).".to_string())
-                        },
-                        _ => {
-                            (DNS_LOOKUP_RCODE_ERROR, format!("DNS error: {:?}", response_code))
                         }
+                        _ => (
+                            DNS_LOOKUP_RCODE_ERROR,
+                            format!("DNS error: {:?}", response_code),
+                        ),
                     }
-                },
+                }
                 ResolveErrorKind::Timeout => {
                     (DNS_LOOKUP_TIMEOUT, "DNS query timed out.".to_string())
-                },
+                }
                 _ => {
                     if e.to_string().contains("network") || e.to_string().contains("connection") {
                         (DNS_LOOKUP_NETWORK_ERROR, format!("Network error: {}", e))
                     } else {
-                        (DNS_LOOKUP_ALL_SERVERS_FAILED, format!("All DNS servers failed: {}", e))
+                        (
+                            DNS_LOOKUP_ALL_SERVERS_FAILED,
+                            format!("All DNS servers failed: {}", e),
+                        )
                     }
                 }
             };
@@ -2870,7 +3209,9 @@ impl DnsHandle {
     fn should_show_help(&self, verb: &str, args: &Args) -> bool {
         crate::core::help::HELP_ALIASES.contains(&verb)
             || verb.starts_with("--help=")
-            || ["help", "h", "--help", "-h"].iter().any(|k| args.contains_key(*k))
+            || ["help", "h", "--help", "-h"]
+                .iter()
+                .any(|k| args.contains_key(*k))
     }
 
     /// Display the approved dns help (same text as `resh dns [<verb>] --help`).
@@ -2883,7 +3224,16 @@ impl DnsHandle {
 
 impl Handle for DnsHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["lookup", "resolve", "trace", "zone.fetch", "zone.update", "help", "--help", "-h"]
+        &[
+            "lookup",
+            "resolve",
+            "trace",
+            "zone.fetch",
+            "zone.update",
+            "help",
+            "--help",
+            "-h",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -2900,7 +3250,7 @@ impl Handle for DnsHandle {
                 // Check if help is requested for a specific verb via arguments
                 args.get("verb").map(|s| s.as_str())
             };
-            
+
             return self.display_help(io, verb_specific);
         }
 
@@ -2910,7 +3260,10 @@ impl Handle for DnsHandle {
             "trace" => self.verb_trace(args, io),
             "zone.fetch" => self.verb_zone_fetch(args, io),
             "zone.update" => self.verb_zone_update(args, io),
-            _ => bail!("unknown verb for dns://: {} (available: lookup, resolve, trace, zone.fetch, zone.update, --help, -h, help)", verb),
+            _ => bail!(
+                "unknown verb for dns://: {} (available: lookup, resolve, trace, zone.fetch, zone.update, --help, -h, help)",
+                verb
+            ),
         }
     }
 }
@@ -2942,7 +3295,10 @@ impl DnsHandle {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                let error_msg = format!("[{}] Failed to create async runtime: {}", DNS_LOOKUP_INTERNAL_ERROR, e);
+                let error_msg = format!(
+                    "[{}] Failed to create async runtime: {}",
+                    DNS_LOOKUP_INTERNAL_ERROR, e
+                );
                 return Ok(Status::err(1, error_msg));
             }
         };
@@ -3004,14 +3360,18 @@ impl DnsHandle {
         match opts.mode {
             ResolveMode::Reverse => {
                 if !is_ip_address(&opts.name) {
-                    let error_msg = format!("[{}] Name must be a valid IP address for reverse mode", DNS_RESOLVE_INVALID_NAME);
+                    let error_msg = format!(
+                        "[{}] Name must be a valid IP address for reverse mode",
+                        DNS_RESOLVE_INVALID_NAME
+                    );
                     return Ok(Status::err(1, error_msg));
                 }
-            },
+            }
             _ => {
                 // Basic hostname validation
                 if opts.name.is_empty() || opts.name.contains("..") {
-                    let error_msg = format!("[{}] Invalid hostname format", DNS_RESOLVE_INVALID_NAME);
+                    let error_msg =
+                        format!("[{}] Invalid hostname format", DNS_RESOLVE_INVALID_NAME);
                     return Ok(Status::err(1, error_msg));
                 }
             }
@@ -3021,7 +3381,10 @@ impl DnsHandle {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                let error_msg = format!("[{}] Failed to create async runtime: {}", DNS_RESOLVE_INTERNAL_ERROR, e);
+                let error_msg = format!(
+                    "[{}] Failed to create async runtime: {}",
+                    DNS_RESOLVE_INTERNAL_ERROR, e
+                );
                 return Ok(Status::err(1, error_msg));
             }
         };
@@ -3103,7 +3466,10 @@ impl DnsHandle {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                let error_msg = format!("[{}] Failed to create async runtime: {}", DNS_TRACE_INTERNAL_ERROR, e);
+                let error_msg = format!(
+                    "[{}] Failed to create async runtime: {}",
+                    DNS_TRACE_INTERNAL_ERROR, e
+                );
                 return Ok(Status::err(1, error_msg));
             }
         };
@@ -3189,7 +3555,8 @@ pub struct DnsZoneFetchOptions {
 
 impl DnsZoneFetchOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let zone = args.get("zone")
+        let zone = args
+            .get("zone")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: zone"))?
             .clone();
 
@@ -3198,14 +3565,11 @@ impl DnsZoneFetchOptions {
             bail!("Zone name cannot be empty");
         }
 
-        let transfer_str = args.get("transfer")
-            .map(|s| s.as_str())
-            .unwrap_or("AXFR");
+        let transfer_str = args.get("transfer").map(|s| s.as_str()).unwrap_or("AXFR");
         let transfer = ZoneTransferType::from_str(transfer_str)?;
 
         let serial = if let Some(s) = args.get("serial") {
-            Some(s.parse::<u32>()
-                .context("Invalid serial number")?)
+            Some(s.parse::<u32>().context("Invalid serial number")?)
         } else {
             None
         };
@@ -3223,8 +3587,7 @@ impl DnsZoneFetchOptions {
         };
 
         let port = if let Some(p) = args.get("port") {
-            let port_val = p.parse::<u16>()
-                .context("Invalid port number")?;
+            let port_val = p.parse::<u16>().context("Invalid port number")?;
             if port_val == 0 {
                 bail!("Port must be between 1 and 65535");
             }
@@ -3240,8 +3603,7 @@ impl DnsZoneFetchOptions {
         };
 
         let timeout_ms = if let Some(t) = args.get("timeout_ms") {
-            let timeout = t.parse::<u64>()
-                .context("Invalid timeout_ms")?;
+            let timeout = t.parse::<u64>().context("Invalid timeout_ms")?;
             if timeout == 0 {
                 bail!("timeout_ms must be greater than 0");
             }
@@ -3251,8 +3613,7 @@ impl DnsZoneFetchOptions {
         };
 
         let retries = if let Some(r) = args.get("retries") {
-            let retry_val = r.parse::<u32>()
-                .context("Invalid retries")?;
+            let retry_val = r.parse::<u32>().context("Invalid retries")?;
             if retry_val > 100 {
                 bail!("retries must be <= 100");
             }
@@ -3261,7 +3622,8 @@ impl DnsZoneFetchOptions {
             1
         };
 
-        let dnssec = args.get("dnssec")
+        let dnssec = args
+            .get("dnssec")
             .and_then(|s| s.parse::<bool>().ok())
             .unwrap_or(false);
 
@@ -3270,10 +3632,7 @@ impl DnsZoneFetchOptions {
         let tsig_algorithm = args.get("tsig_algorithm").cloned();
 
         // Validate TSIG config
-        let tsig_fields_set = [
-            tsig_key_name.is_some(),
-            tsig_secret.is_some(),
-        ];
+        let tsig_fields_set = [tsig_key_name.is_some(), tsig_secret.is_some()];
         let tsig_count = tsig_fields_set.iter().filter(|&&x| x).count();
         if tsig_count > 0 && tsig_count < 2 {
             bail!("TSIG requires both tsig_key_name and tsig_secret");
@@ -3281,13 +3640,13 @@ impl DnsZoneFetchOptions {
 
         // Validate TSIG secret is valid base64
         if let Some(ref secret) = tsig_secret {
-            general_purpose::STANDARD.decode(secret)
+            general_purpose::STANDARD
+                .decode(secret)
                 .context("TSIG secret must be valid base64")?;
         }
 
         let max_records = if let Some(m) = args.get("max_records") {
-            let max = m.parse::<u64>()
-                .context("Invalid max_records")?;
+            let max = m.parse::<u64>().context("Invalid max_records")?;
             if max == 0 {
                 bail!("max_records must be greater than 0");
             }
@@ -3296,11 +3655,13 @@ impl DnsZoneFetchOptions {
             1_000_000
         };
 
-        let include_raw = args.get("include_raw")
+        let include_raw = args
+            .get("include_raw")
             .and_then(|s| s.parse::<bool>().ok())
             .unwrap_or(false);
 
-        let prefer_ipv6 = args.get("prefer_ipv6")
+        let prefer_ipv6 = args
+            .get("prefer_ipv6")
             .and_then(|s| s.parse::<bool>().ok())
             .unwrap_or(false);
 
@@ -3443,21 +3804,29 @@ impl DnsZoneFetchResponse {
             output.push_str(&format!("  Minimum : {}\n\n", zone.soa.minimum));
 
             // Show NS records
-            let ns_records: Vec<&ZoneRecord> = zone.records.iter()
-                .filter(|r| r.rtype == "NS")
-                .collect();
+            let ns_records: Vec<&ZoneRecord> =
+                zone.records.iter().filter(|r| r.rtype == "NS").collect();
             if !ns_records.is_empty() {
                 output.push_str("NS Records:\n");
                 for rec in ns_records.iter().take(10) {
-                    output.push_str(&format!("  {}  {} IN {}  {}\n",
-                        rec.name, rec.ttl, rec.rtype,
-                        rec.data.get("nsdname").and_then(|v| v.as_str()).unwrap_or("?")));
+                    output.push_str(&format!(
+                        "  {}  {} IN {}  {}\n",
+                        rec.name,
+                        rec.ttl,
+                        rec.rtype,
+                        rec.data
+                            .get("nsdname")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                    ));
                 }
                 output.push_str("\n");
             }
 
             // Show sample records (first 10 non-SOA, non-NS)
-            let other_records: Vec<&ZoneRecord> = zone.records.iter()
+            let other_records: Vec<&ZoneRecord> = zone
+                .records
+                .iter()
                 .filter(|r| r.rtype != "SOA" && r.rtype != "NS")
                 .take(10)
                 .collect();
@@ -3465,34 +3834,64 @@ impl DnsZoneFetchResponse {
                 output.push_str("Sample Records:\n");
                 for rec in other_records {
                     let data_str = match rec.rtype.as_str() {
-                        "A" => rec.data.get("address").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
-                        "AAAA" => rec.data.get("address").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
-                        "CNAME" => rec.data.get("cname").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+                        "A" => rec
+                            .data
+                            .get("address")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string(),
+                        "AAAA" => rec
+                            .data
+                            .get("address")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string(),
+                        "CNAME" => rec
+                            .data
+                            .get("cname")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string(),
                         "MX" => {
-                            let pref = rec.data.get("preference").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let exch = rec.data.get("exchange").and_then(|v| v.as_str()).unwrap_or("?");
+                            let pref = rec
+                                .data
+                                .get("preference")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let exch = rec
+                                .data
+                                .get("exchange")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
                             format!("{} {}", pref, exch)
-                        },
+                        }
                         "TXT" => {
-                            if let Some(text_arr) = rec.data.get("text").and_then(|v| v.as_array()) {
-                                let texts: Vec<String> = text_arr.iter()
+                            if let Some(text_arr) = rec.data.get("text").and_then(|v| v.as_array())
+                            {
+                                let texts: Vec<String> = text_arr
+                                    .iter()
                                     .filter_map(|v| v.as_str().map(|s| format!("\"{}\"", s)))
                                     .collect();
                                 texts.join(" ")
                             } else {
                                 "?".to_string()
                             }
-                        },
+                        }
                         _ => serde_json::to_string(&rec.data).unwrap_or_else(|_| "?".to_string()),
                     };
-                    output.push_str(&format!("  {}  {} IN {}  {}\n",
-                        rec.name, rec.ttl, rec.rtype, data_str));
+                    output.push_str(&format!(
+                        "  {}  {} IN {}  {}\n",
+                        rec.name, rec.ttl, rec.rtype, data_str
+                    ));
                 }
                 output.push_str("\n");
             }
 
             if let Some(ref changes) = self.changes {
-                output.push_str(&format!("Changes ({} -> {}):\n", changes.old_serial, changes.new_serial));
+                output.push_str(&format!(
+                    "Changes ({} -> {}):\n",
+                    changes.old_serial, changes.new_serial
+                ));
                 output.push_str(&format!("  Deleted: {}\n", changes.deleted.len()));
                 output.push_str(&format!("  Added: {}\n\n", changes.added.len()));
             }
@@ -3546,7 +3945,10 @@ async fn perform_zone_fetch(opts: DnsZoneFetchOptions) -> Result<DnsZoneFetchRes
                 response.ok = false;
                 response.error = Some((
                     DNS_ZONE_FETCH_ALL_SERVERS_FAILED.to_string(),
-                    format!("No authoritative name servers found for zone: {}", zone_fqdn),
+                    format!(
+                        "No authoritative name servers found for zone: {}",
+                        zone_fqdn
+                    ),
                 ));
                 return Ok(response);
             }
@@ -3571,7 +3973,9 @@ async fn perform_zone_fetch(opts: DnsZoneFetchOptions) -> Result<DnsZoneFetchRes
         let ip_addr = match server_ip.parse::<IpAddr>() {
             Ok(ip) => ip,
             Err(_) => {
-                response.warnings.push(format!("Invalid server IP: {}", server_ip));
+                response
+                    .warnings
+                    .push(format!("Invalid server IP: {}", server_ip));
                 continue;
             }
         };
@@ -3579,11 +3983,7 @@ async fn perform_zone_fetch(opts: DnsZoneFetchOptions) -> Result<DnsZoneFetchRes
         let socket_addr = SocketAddr::new(ip_addr, opts.port);
 
         // Attempt zone transfer
-        match perform_zone_transfer_from_server(
-            &zone_fqdn,
-            socket_addr,
-            &opts,
-        ).await {
+        match perform_zone_transfer_from_server(&zone_fqdn, socket_addr, &opts).await {
             Ok((soa, records)) => {
                 // Build zone summary
                 let record_count = records.len() as u64;
@@ -3618,7 +4018,9 @@ async fn perform_zone_fetch(opts: DnsZoneFetchOptions) -> Result<DnsZoneFetchRes
         DNS_ZONE_FETCH_ALL_SERVERS_FAILED.to_string(),
         format!(
             "All servers failed. Last error: {}",
-            last_error.map(|e| e.to_string()).unwrap_or_else(|| "Unknown error".to_string())
+            last_error
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "Unknown error".to_string())
         ),
     ));
 
@@ -3631,7 +4033,9 @@ async fn resolve_authoritative_servers(zone: &str, prefer_ipv6: bool) -> Result<
 
     // Query for NS records
     let zone_name = Name::from_str(zone)?;
-    let ns_lookup = resolver.lookup(zone_name.clone(), TrustDnsRecordType::NS).await?;
+    let ns_lookup = resolver
+        .lookup(zone_name.clone(), TrustDnsRecordType::NS)
+        .await?;
 
     let mut server_ips = Vec::new();
 
@@ -3643,7 +4047,10 @@ async fn resolve_authoritative_servers(zone: &str, prefer_ipv6: bool) -> Result<
 
             // Try A or AAAA lookup based on preference
             if prefer_ipv6 {
-                if let Ok(aaaa_lookup) = resolver.lookup(ns_name_for_lookup.clone(), TrustDnsRecordType::AAAA).await {
+                if let Ok(aaaa_lookup) = resolver
+                    .lookup(ns_name_for_lookup.clone(), TrustDnsRecordType::AAAA)
+                    .await
+                {
                     for aaaa_rec in aaaa_lookup.records() {
                         if let Some(RData::AAAA(ipv6)) = aaaa_rec.data() {
                             server_ips.push(ipv6.to_string());
@@ -3653,7 +4060,10 @@ async fn resolve_authoritative_servers(zone: &str, prefer_ipv6: bool) -> Result<
             }
 
             // Always try A records as fallback or primary
-            if let Ok(a_lookup) = resolver.lookup(ns_name_for_lookup.clone(), TrustDnsRecordType::A).await {
+            if let Ok(a_lookup) = resolver
+                .lookup(ns_name_for_lookup.clone(), TrustDnsRecordType::A)
+                .await
+            {
                 for a_rec in a_lookup.records() {
                     if let Some(RData::A(ipv4)) = a_rec.data() {
                         server_ips.push(ipv4.to_string());
@@ -3673,16 +4083,17 @@ async fn perform_zone_transfer_from_server(
     opts: &DnsZoneFetchOptions,
 ) -> Result<(ZoneSoa, Vec<ZoneRecord>)> {
     use tokio::net::TcpStream;
-    use trust_dns_proto::serialize::binary::{BinEncodable, BinEncoder};
     use trust_dns_proto::serialize::binary::BinDecodable;
+    use trust_dns_proto::serialize::binary::{BinEncodable, BinEncoder};
 
     // Connect to server via TCP
     let tcp_stream = tokio::time::timeout(
         Duration::from_millis(opts.timeout_ms),
-        TcpStream::connect(server)
-    ).await
-        .context("Connection timeout")?
-        .context("Failed to connect to server")?;
+        TcpStream::connect(server),
+    )
+    .await
+    .context("Connection timeout")?
+    .context("Failed to connect to server")?;
 
     // Create AXFR query message
     let zone_name = Name::from_str(zone)?;
@@ -3716,7 +4127,7 @@ async fn perform_zone_transfer_from_server(
     tcp_buffer.extend_from_slice(&msg_len.to_be_bytes());
     tcp_buffer.extend_from_slice(&buffer);
 
-    use tokio::io::{AsyncWriteExt, AsyncReadExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (mut reader, mut writer) = tcp_stream.into_split();
 
     writer.write_all(&tcp_buffer).await?;
@@ -3732,9 +4143,11 @@ async fn perform_zone_transfer_from_server(
         let mut len_bytes = [0u8; 2];
         match tokio::time::timeout(
             Duration::from_millis(opts.timeout_ms),
-            reader.read_exact(&mut len_bytes)
-        ).await {
-            Ok(Ok(_)) => {},
+            reader.read_exact(&mut len_bytes),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Ok(Err(e)) => bail!("Failed to read response length: {}", e),
             Err(_) => bail!("Timeout reading response"),
@@ -3746,15 +4159,16 @@ async fn perform_zone_transfer_from_server(
         let mut msg_buffer = vec![0u8; msg_len];
         tokio::time::timeout(
             Duration::from_millis(opts.timeout_ms),
-            reader.read_exact(&mut msg_buffer)
-        ).await??;
+            reader.read_exact(&mut msg_buffer),
+        )
+        .await??;
 
         // Decode message
         let response_msg = Message::from_bytes(&msg_buffer)?;
 
         // Check RCODE
         match response_msg.response_code() {
-            ResponseCode::NoError => {},
+            ResponseCode::NoError => {}
             ResponseCode::Refused => bail!("Zone transfer refused by server"),
             ResponseCode::NXDomain => bail!("Zone does not exist (NXDOMAIN)"),
             ResponseCode::ServFail => bail!("Server failure (SERVFAIL)"),
@@ -3827,33 +4241,47 @@ fn proto_record_to_zone_record(record: &ProtoRecord) -> Result<ZoneRecord> {
 
 // Extract SOA data from zone record
 fn extract_soa_from_record(record: &ZoneRecord) -> Result<ZoneSoa> {
-    let mname = record.data.get("mname")
+    let mname = record
+        .data
+        .get("mname")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing mname in SOA record"))?
         .to_string();
 
-    let rname = record.data.get("rname")
+    let rname = record
+        .data
+        .get("rname")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing rname in SOA record"))?
         .to_string();
 
-    let serial = record.data.get("serial")
+    let serial = record
+        .data
+        .get("serial")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing serial in SOA record"))? as u32;
 
-    let refresh = record.data.get("refresh")
+    let refresh = record
+        .data
+        .get("refresh")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing refresh in SOA record"))? as u32;
 
-    let retry = record.data.get("retry")
+    let retry = record
+        .data
+        .get("retry")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing retry in SOA record"))? as u32;
 
-    let expire = record.data.get("expire")
+    let expire = record
+        .data
+        .get("expire")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing expire in SOA record"))? as u32;
 
-    let minimum = record.data.get("minimum")
+    let minimum = record
+        .data
+        .get("minimum")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("Missing minimum in SOA record"))? as u32;
 
@@ -3904,15 +4332,15 @@ impl DnsHandle {
         };
 
         // Create async runtime and perform zone fetch
-        let rt = tokio::runtime::Runtime::new()
-            .context("Failed to create async runtime")?;
+        let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
         let result = rt.block_on(perform_zone_fetch(opts.clone()));
 
         let response = match result {
             Ok(resp) => resp,
             Err(e) => {
-                let error_msg = format!("[{}] Internal error: {}", DNS_ZONE_FETCH_INTERNAL_ERROR, e);
+                let error_msg =
+                    format!("[{}] Internal error: {}", DNS_ZONE_FETCH_INTERNAL_ERROR, e);
                 writeln!(io.stderr, "{}", error_msg)?;
                 return Ok(Status::err(1, error_msg));
             }
@@ -4033,7 +4461,8 @@ pub struct DnsZoneUpdateOptions {
 
 impl DnsZoneUpdateOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let zone = args.get("zone")
+        let zone = args
+            .get("zone")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: zone"))?
             .clone();
 
@@ -4057,8 +4486,7 @@ impl DnsZoneUpdateOptions {
         }
 
         let port = if let Some(p) = args.get("port") {
-            let port_val = p.parse::<u16>()
-                .context("Invalid port number")?;
+            let port_val = p.parse::<u16>().context("Invalid port number")?;
             if port_val == 0 {
                 bail!("Port must be between 1 and 65535");
             }
@@ -4074,8 +4502,7 @@ impl DnsZoneUpdateOptions {
         };
 
         let timeout_ms = if let Some(t) = args.get("timeout_ms") {
-            let timeout = t.parse::<u64>()
-                .context("Invalid timeout_ms")?;
+            let timeout = t.parse::<u64>().context("Invalid timeout_ms")?;
             if timeout == 0 {
                 bail!("timeout_ms must be greater than 0");
             }
@@ -4085,8 +4512,7 @@ impl DnsZoneUpdateOptions {
         };
 
         let retries = if let Some(r) = args.get("retries") {
-            let retry_val = r.parse::<u32>()
-                .context("Invalid retries")?;
+            let retry_val = r.parse::<u32>().context("Invalid retries")?;
             if retry_val > 100 {
                 bail!("retries must be <= 100");
             }
@@ -4100,10 +4526,7 @@ impl DnsZoneUpdateOptions {
         let tsig_algorithm = args.get("tsig_algorithm").cloned();
 
         // Validate TSIG config
-        let tsig_fields_set = [
-            tsig_key_name.is_some(),
-            tsig_secret.is_some(),
-        ];
+        let tsig_fields_set = [tsig_key_name.is_some(), tsig_secret.is_some()];
         let tsig_count = tsig_fields_set.iter().filter(|&&x| x).count();
         if tsig_count > 0 && tsig_count < 2 {
             bail!("TSIG requires both tsig_key_name and tsig_secret");
@@ -4111,7 +4534,8 @@ impl DnsZoneUpdateOptions {
 
         // Validate TSIG secret is valid base64
         if let Some(ref secret) = tsig_secret {
-            general_purpose::STANDARD.decode(secret)
+            general_purpose::STANDARD
+                .decode(secret)
                 .context("TSIG secret must be valid base64")?;
         }
 
@@ -4145,8 +4569,7 @@ impl DnsZoneUpdateOptions {
 
         // Parse adds
         let adds = if let Some(adds_str) = args.get("adds") {
-            serde_json::from_str::<Vec<ZoneUpdateAdd>>(adds_str)
-                .context("Invalid adds JSON")?
+            serde_json::from_str::<Vec<ZoneUpdateAdd>>(adds_str).context("Invalid adds JSON")?
         } else {
             vec![]
         };
@@ -4157,8 +4580,7 @@ impl DnsZoneUpdateOptions {
                 bail!("Add record name cannot be empty");
             }
             // Validate record type
-            DnsRecordType::from_str(&add.rtype)
-                .context("Invalid record type in add")?;
+            DnsRecordType::from_str(&add.rtype).context("Invalid record type in add")?;
             // TTL validated by u32 type
         }
 
@@ -4195,14 +4617,12 @@ impl DnsZoneUpdateOptions {
 
             // Validate record type if present
             if let Some(ref rtype) = delete.rtype {
-                DnsRecordType::from_str(rtype)
-                    .context("Invalid record type in delete")?;
+                DnsRecordType::from_str(rtype).context("Invalid record type in delete")?;
             }
         }
 
         let max_changes = if let Some(m) = args.get("max_changes") {
-            let max = m.parse::<u32>()
-                .context("Invalid max_changes")?;
+            let max = m.parse::<u32>().context("Invalid max_changes")?;
             if max == 0 {
                 bail!("max_changes must be greater than 0");
             }
@@ -4214,12 +4634,17 @@ impl DnsZoneUpdateOptions {
         // Check total changes against max_changes
         let total_changes = adds.len() + deletes.len();
         if total_changes > max_changes as usize {
-            bail!("Total changes ({}) exceeds max_changes ({})", total_changes, max_changes);
+            bail!(
+                "Total changes ({}) exceeds max_changes ({})",
+                total_changes,
+                max_changes
+            );
         }
 
         let dry_run = crate::core::lenient::dry_run(args)?;
 
-        let include_raw = args.get("include_raw")
+        let include_raw = args
+            .get("include_raw")
             .and_then(|s| s.parse::<bool>().ok())
             .unwrap_or(false);
 
@@ -4357,7 +4782,10 @@ impl DnsZoneUpdateResponse {
             output.push_str(&format!("RCODE       : {}\n", rcode));
         }
 
-        output.push_str(&format!("TSIG Used   : {}\n", if self.summary.tsig_used { "yes" } else { "no" }));
+        output.push_str(&format!(
+            "TSIG Used   : {}\n",
+            if self.summary.tsig_used { "yes" } else { "no" }
+        ));
         output.push_str(&format!("Adds        : {}\n", self.summary.applied_adds));
         output.push_str(&format!("Deletes     : {}\n", self.summary.applied_deletes));
 
@@ -4404,10 +4832,16 @@ impl DnsZoneUpdateResponse {
                         }
                     }
                     "MX" => {
-                        let pref = add.data.json.get("preference")
+                        let pref = add
+                            .data
+                            .json
+                            .get("preference")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
-                        let exchange = add.data.json.get("exchange")
+                        let exchange = add
+                            .data
+                            .json
+                            .get("exchange")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
                         format!(" {} {}", pref, exchange)
@@ -4415,7 +4849,8 @@ impl DnsZoneUpdateResponse {
                     "TXT" => {
                         if let Some(text_arr) = add.data.json.get("text") {
                             if let Some(texts) = text_arr.as_array() {
-                                let text_strs: Vec<String> = texts.iter()
+                                let text_strs: Vec<String> = texts
+                                    .iter()
                                     .filter_map(|v| v.as_str())
                                     .map(|s| format!("\"{}\"", s))
                                     .collect();
@@ -4434,7 +4869,7 @@ impl DnsZoneUpdateResponse {
                             String::new()
                         }
                     }
-                    _ => String::new()
+                    _ => String::new(),
                 };
 
                 output.push_str(&data_str);
@@ -4468,7 +4903,7 @@ impl DnsZoneUpdateResponse {
                                     String::new()
                                 }
                             }
-                            _ => String::new()
+                            _ => String::new(),
                         };
                         output.push_str(&data_str);
                     }
@@ -4511,7 +4946,7 @@ pub async fn perform_zone_update(opts: DnsZoneUpdateOptions) -> Result<DnsZoneUp
             response.error = Some((e.0, e.1));
             return Ok(response);
         }
-        
+
         response.ok = true;
         response.summary.dry_run = true;
         response.summary.applied_adds = opts.adds.len() as u32;
@@ -4531,7 +4966,10 @@ pub async fn perform_zone_update(opts: DnsZoneUpdateOptions) -> Result<DnsZoneUp
         Ok(servers) => servers,
         Err(e) => {
             response.ok = false;
-            response.error = Some((DNS_ZONE_UPDATE_ALL_SERVERS_FAILED.to_string(), e.to_string()));
+            response.error = Some((
+                DNS_ZONE_UPDATE_ALL_SERVERS_FAILED.to_string(),
+                e.to_string(),
+            ));
             return Ok(response);
         }
     };
@@ -4540,22 +4978,30 @@ pub async fn perform_zone_update(opts: DnsZoneUpdateOptions) -> Result<DnsZoneUp
     let mut last_error = None;
     for server in &servers {
         let start_time = Instant::now();
-        
+
         match attempt_zone_update(&opts, server).await {
             Ok(rcode) => {
                 let rtt = start_time.elapsed().as_millis() as u64;
-                
+
                 response.ok = rcode == ResponseCode::NoError;
                 response.summary.server_used = Some(server.to_string());
                 response.summary.rcode = Some(rcode.to_string());
                 response.summary.round_trip_time_ms = Some(rtt);
-                response.summary.applied_adds = if response.ok { opts.adds.len() as u32 } else { 0 };
-                response.summary.applied_deletes = if response.ok { opts.deletes.len() as u32 } else { 0 };
-                
+                response.summary.applied_adds = if response.ok {
+                    opts.adds.len() as u32
+                } else {
+                    0
+                };
+                response.summary.applied_deletes = if response.ok {
+                    opts.deletes.len() as u32
+                } else {
+                    0
+                };
+
                 if !response.ok {
                     response.error = Some(map_rcode_to_error(rcode));
                 }
-                
+
                 return Ok(response);
             }
             Err(e) => {
@@ -4569,25 +5015,35 @@ pub async fn perform_zone_update(opts: DnsZoneUpdateOptions) -> Result<DnsZoneUp
     response.ok = false;
     response.error = Some((
         DNS_ZONE_UPDATE_ALL_SERVERS_FAILED.to_string(),
-        last_error.map(|e| e.to_string()).unwrap_or_else(|| "All target servers failed".to_string())
+        last_error
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "All target servers failed".to_string()),
     ));
-    
+
     Ok(response)
 }
 
 // Validate zone update options
-fn validate_zone_update_options(opts: &DnsZoneUpdateOptions) -> std::result::Result<(), (String, String)> {
+fn validate_zone_update_options(
+    opts: &DnsZoneUpdateOptions,
+) -> std::result::Result<(), (String, String)> {
     // Validate zone
     if opts.zone.is_empty() {
-        return Err((DNS_ZONE_UPDATE_INVALID_ZONE.to_string(), "Zone name cannot be empty".to_string()));
+        return Err((
+            DNS_ZONE_UPDATE_INVALID_ZONE.to_string(),
+            "Zone name cannot be empty".to_string(),
+        ));
     }
 
     // Validate max changes
     let total_changes = opts.adds.len() + opts.deletes.len();
     if total_changes > opts.max_changes as usize {
         return Err((
-            DNS_ZONE_UPDATE_INVALID_MAX_CHANGES.to_string(), 
-            format!("Total changes ({}) exceeds max_changes ({})", total_changes, opts.max_changes)
+            DNS_ZONE_UPDATE_INVALID_MAX_CHANGES.to_string(),
+            format!(
+                "Total changes ({}) exceeds max_changes ({})",
+                total_changes, opts.max_changes
+            ),
         ));
     }
 
@@ -4596,7 +5052,7 @@ fn validate_zone_update_options(opts: &DnsZoneUpdateOptions) -> std::result::Res
         if opts.tsig_key_name.is_none() || opts.tsig_secret.is_none() {
             return Err((
                 DNS_ZONE_UPDATE_INVALID_TSIG_CONFIG.to_string(),
-                "TSIG requires both key_name and secret".to_string()
+                "TSIG requires both key_name and secret".to_string(),
             ));
         }
 
@@ -4605,7 +5061,7 @@ fn validate_zone_update_options(opts: &DnsZoneUpdateOptions) -> std::result::Res
             if general_purpose::STANDARD.decode(secret).is_err() {
                 return Err((
                     DNS_ZONE_UPDATE_INVALID_TSIG_SECRET.to_string(),
-                    "TSIG secret must be valid base64".to_string()
+                    "TSIG secret must be valid base64".to_string(),
                 ));
             }
         }
@@ -4613,11 +5069,11 @@ fn validate_zone_update_options(opts: &DnsZoneUpdateOptions) -> std::result::Res
         // Validate algorithm
         if let Some(ref alg) = opts.tsig_algorithm {
             match alg.as_str() {
-                "hmac-sha1" | "hmac-sha256" | "hmac-sha512" => {},
+                "hmac-sha1" | "hmac-sha256" | "hmac-sha512" => {}
                 _ => {
                     return Err((
                         DNS_ZONE_UPDATE_UNSUPPORTED_TSIG_ALGORITHM.to_string(),
-                        format!("Unsupported TSIG algorithm: {}", alg)
+                        format!("Unsupported TSIG algorithm: {}", alg),
                     ));
                 }
             }
@@ -4629,7 +5085,7 @@ fn validate_zone_update_options(opts: &DnsZoneUpdateOptions) -> std::result::Res
         if DnsRecordType::from_str(&add.rtype).is_err() {
             return Err((
                 DNS_ZONE_UPDATE_INVALID_RECORD_TYPE.to_string(),
-                format!("Invalid record type: {}", add.rtype)
+                format!("Invalid record type: {}", add.rtype),
             ));
         }
     }
@@ -4652,7 +5108,7 @@ fn validate_zone_update_options(opts: &DnsZoneUpdateOptions) -> std::result::Res
             if DnsRecordType::from_str(rtype).is_err() {
                 return Err((
                     DNS_ZONE_UPDATE_INVALID_RECORD_TYPE.to_string(),
-                    format!("Invalid record type in delete: {}", rtype)
+                    format!("Invalid record type in delete: {}", rtype),
                 ));
             }
         }
@@ -4665,17 +5121,18 @@ fn validate_zone_update_options(opts: &DnsZoneUpdateOptions) -> std::result::Res
             Err(_) => {
                 return Err((
                     DNS_ZONE_UPDATE_INVALID_PREREQUISITE.to_string(),
-                    format!("Invalid prerequisite kind: {}", prereq.kind)
+                    format!("Invalid prerequisite kind: {}", prereq.kind),
                 ));
             }
         };
 
         match kind {
-            ZoneUpdatePrerequisiteKind::RecordExists | ZoneUpdatePrerequisiteKind::RecordNotExists => {
+            ZoneUpdatePrerequisiteKind::RecordExists
+            | ZoneUpdatePrerequisiteKind::RecordNotExists => {
                 if prereq.name.is_none() {
                     return Err((
                         DNS_ZONE_UPDATE_INVALID_PREREQUISITE.to_string(),
-                        format!("Prerequisite {} requires name field", prereq.kind)
+                        format!("Prerequisite {} requires name field", prereq.kind),
                     ));
                 }
             }
@@ -4683,7 +5140,7 @@ fn validate_zone_update_options(opts: &DnsZoneUpdateOptions) -> std::result::Res
                 if prereq.name.is_none() {
                     return Err((
                         DNS_ZONE_UPDATE_INVALID_PREREQUISITE.to_string(),
-                        format!("Prerequisite {} requires name field", prereq.kind)
+                        format!("Prerequisite {} requires name field", prereq.kind),
                     ));
                 }
             }
@@ -4691,7 +5148,7 @@ fn validate_zone_update_options(opts: &DnsZoneUpdateOptions) -> std::result::Res
                 if prereq.serial.is_none() {
                     return Err((
                         DNS_ZONE_UPDATE_INVALID_PREREQUISITE.to_string(),
-                        "Prerequisite zone_serial_at_least requires serial field".to_string()
+                        "Prerequisite zone_serial_at_least requires serial field".to_string(),
                     ));
                 }
             }
@@ -4709,7 +5166,7 @@ async fn resolve_target_servers(opts: &DnsZoneUpdateOptions) -> Result<Vec<Strin
 
     // Auto-discover authoritative nameservers for the zone
     let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
-    
+
     let zone_name = normalize_zone_name(&opts.zone);
     let zone_name = Name::from_str(&zone_name)?;
 
@@ -4720,7 +5177,7 @@ async fn resolve_target_servers(opts: &DnsZoneUpdateOptions) -> Result<Vec<Strin
         // ns_record is of type trust_dns_resolver::proto::rr::rdata::NS
         // Access the domain name directly
         let ns_name = ns_record.0.clone();
-        
+
         // Resolve the NS name to IP addresses
         match resolver.lookup_ip(ns_name.clone()).await {
             Ok(ip_lookup) => {
@@ -4736,7 +5193,10 @@ async fn resolve_target_servers(opts: &DnsZoneUpdateOptions) -> Result<Vec<Strin
     }
 
     if servers.is_empty() {
-        bail!("Could not resolve any authoritative nameservers for zone {}", opts.zone);
+        bail!(
+            "Could not resolve any authoritative nameservers for zone {}",
+            opts.zone
+        );
     }
 
     Ok(servers)
@@ -4751,20 +5211,21 @@ async fn attempt_zone_update(opts: &DnsZoneUpdateOptions, server: &str) -> Resul
         format!("{}:{}", server, opts.port)
     };
 
-    let _socket_addr: SocketAddr = server_addr.parse()
+    let _socket_addr: SocketAddr = server_addr
+        .parse()
         .with_context(|| format!("Invalid server address: {}", server_addr))?;
 
     // For now, we'll simulate the UPDATE operation since the trust-dns client API
     // in version 0.23 has changed significantly and doesn't provide simple UPDATE support
-    
+
     // In a production implementation, this would:
     // 1. Create a proper DNS UPDATE client
     // 2. Build the UPDATE message with prerequisites and changes
     // 3. Send the message and parse the response
-    
+
     // For this implementation, we'll validate the input and return a simulated response
     tokio::time::sleep(Duration::from_millis(10)).await; // Simulate network delay
-    
+
     // Return success for now - in production this would be the actual response
     Ok(ResponseCode::NoError)
 }
@@ -4805,7 +5266,11 @@ fn build_update_message(opts: &DnsZoneUpdateOptions) -> Result<Message> {
 
     // Apply TSIG if configured
     if let (Some(key_name), Some(secret)) = (&opts.tsig_key_name, &opts.tsig_secret) {
-        let algorithm = opts.tsig_algorithm.as_ref().map(|s| s.as_str()).unwrap_or("hmac-sha256");
+        let algorithm = opts
+            .tsig_algorithm
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("hmac-sha256");
         apply_tsig_to_message(&mut message, key_name, secret, algorithm)?;
     }
 
@@ -4813,7 +5278,10 @@ fn build_update_message(opts: &DnsZoneUpdateOptions) -> Result<Message> {
 }
 
 // Build prerequisite record
-fn build_prerequisite_record(prereq: &ZoneUpdatePrerequisite, _zone_name: &Name) -> Result<ProtoRecord> {
+fn build_prerequisite_record(
+    prereq: &ZoneUpdatePrerequisite,
+    _zone_name: &Name,
+) -> Result<ProtoRecord> {
     let kind = ZoneUpdatePrerequisiteKind::from_str(&prereq.kind)?;
 
     match kind {
@@ -4827,7 +5295,10 @@ fn build_prerequisite_record(prereq: &ZoneUpdatePrerequisite, _zone_name: &Name)
 
             if prereq.data.is_some() {
                 // RRset exists (value dependent)
-                let rdata = build_proto_rdata(&prereq.rtype.as_ref().unwrap(), &prereq.data.as_ref().unwrap().json)?;
+                let rdata = build_proto_rdata(
+                    &prereq.rtype.as_ref().unwrap(),
+                    &prereq.data.as_ref().unwrap().json,
+                )?;
                 Ok(ProtoRecord::from_rdata(name, 0, rdata))
             } else {
                 // RRset exists (value independent) - use NULL record
@@ -4909,7 +5380,9 @@ fn build_delete_records(delete: &ZoneUpdateDelete) -> Result<Vec<ProtoRecord>> {
         }
     } else if let Some(ref data) = delete.data {
         // Delete specific record
-        let rtype = delete.rtype.as_ref().ok_or_else(|| anyhow::anyhow!("Delete operation with data must specify record type"))?;
+        let rtype = delete.rtype.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Delete operation with data must specify record type")
+        })?;
         let rdata = build_proto_rdata(rtype, &data.json)?;
         let mut record = ProtoRecord::from_rdata(name, 0, rdata);
         record.set_dns_class(DNSClass::NONE);
@@ -4923,7 +5396,7 @@ fn build_delete_records(delete: &ZoneUpdateDelete) -> Result<Vec<ProtoRecord>> {
 fn build_add_record(add: &ZoneUpdateAdd) -> Result<ProtoRecord> {
     let name = Name::from_str(&normalize_dns_name(&add.name))?;
     let rdata = build_proto_rdata(&add.rtype, &add.data.json)?;
-    
+
     Ok(ProtoRecord::from_rdata(name, add.ttl, rdata))
 }
 
@@ -4931,52 +5404,61 @@ fn build_add_record(add: &ZoneUpdateAdd) -> Result<ProtoRecord> {
 fn build_proto_rdata(rtype: &str, data: &Value) -> Result<ProtoRData> {
     match rtype.to_uppercase().as_str() {
         "A" => {
-            let addr_str = data.get("address")
+            let addr_str = data
+                .get("address")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("A record requires 'address' field"))?;
             let addr: std::net::Ipv4Addr = addr_str.parse()?;
             Ok(ProtoRData::A(A(addr)))
         }
         "AAAA" => {
-            let addr_str = data.get("address")
+            let addr_str = data
+                .get("address")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("AAAA record requires 'address' field"))?;
             let addr: std::net::Ipv6Addr = addr_str.parse()?;
             Ok(ProtoRData::AAAA(AAAA(addr)))
         }
         "CNAME" => {
-            let cname_str = data.get("cname")
+            let cname_str = data
+                .get("cname")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("CNAME record requires 'cname' field"))?;
             let target = Name::from_str(&normalize_dns_name(cname_str))?;
             Ok(ProtoRData::CNAME(CNAME(target)))
         }
         "MX" => {
-            let preference = data.get("preference")
+            let preference = data
+                .get("preference")
                 .and_then(|v| v.as_u64())
-                .ok_or_else(|| anyhow::anyhow!("MX record requires 'preference' field"))? as u16;
-            let exchange_str = data.get("exchange")
+                .ok_or_else(|| anyhow::anyhow!("MX record requires 'preference' field"))?
+                as u16;
+            let exchange_str = data
+                .get("exchange")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("MX record requires 'exchange' field"))?;
             let exchange = Name::from_str(&normalize_dns_name(exchange_str))?;
             Ok(ProtoRData::MX(MX::new(preference, exchange)))
         }
         "TXT" => {
-            let text_array = data.get("text")
+            let text_array = data
+                .get("text")
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| anyhow::anyhow!("TXT record requires 'text' array field"))?;
-            
-            let txt_strings: Result<Vec<String>, _> = text_array.iter()
+
+            let txt_strings: Result<Vec<String>, _> = text_array
+                .iter()
                 .map(|text_val| {
-                    text_val.as_str()
+                    text_val
+                        .as_str()
                         .ok_or_else(|| anyhow::anyhow!("TXT text array elements must be strings"))
                         .map(|s| s.to_string())
                 })
                 .collect();
-            
+
             Ok(ProtoRData::TXT(TXT::new(txt_strings?)))
         }
-        _ => bail!("Unsupported record type for UPDATE: {}", rtype)
+        _ => bail!("Unsupported record type for UPDATE: {}", rtype),
     }
 }
 
@@ -4993,7 +5475,7 @@ fn string_to_proto_record_type(rtype: &str) -> Result<ProtoRecordType> {
         "PTR" => Ok(ProtoRecordType::PTR),
         "SOA" => Ok(ProtoRecordType::SOA),
         "CAA" => Ok(ProtoRecordType::CAA),
-        _ => bail!("Unsupported record type: {}", rtype)
+        _ => bail!("Unsupported record type: {}", rtype),
     }
 }
 
@@ -5007,42 +5489,78 @@ fn normalize_dns_name(name: &str) -> String {
 }
 
 // Apply TSIG authentication to message (simplified implementation)
-fn apply_tsig_to_message(_message: &mut Message, key_name: &str, secret: &str, algorithm: &str) -> Result<()> {
+fn apply_tsig_to_message(
+    _message: &mut Message,
+    key_name: &str,
+    secret: &str,
+    algorithm: &str,
+) -> Result<()> {
     // Note: This is a simplified implementation
     // In a production system, you would use a proper TSIG library or implement RFC 2845
     // For now, we validate the TSIG parameters but don't apply actual signing
-    
-    let _secret_bytes = general_purpose::STANDARD.decode(secret)
+
+    let _secret_bytes = general_purpose::STANDARD
+        .decode(secret)
         .with_context(|| "Invalid base64 TSIG secret")?;
-    
+
     let _key_name = Name::from_str(&normalize_dns_name(key_name))
         .with_context(|| format!("Invalid TSIG key name: {}", key_name))?;
 
     // Validate algorithm
     match algorithm {
-        "hmac-sha1" | "hmac-sha256" | "hmac-sha512" => {},
-        _ => bail!("Unsupported TSIG algorithm: {}", algorithm)
+        "hmac-sha1" | "hmac-sha256" | "hmac-sha512" => {}
+        _ => bail!("Unsupported TSIG algorithm: {}", algorithm),
     };
 
     // TODO: Implement actual TSIG signing with proper RFC 2845 support
     // This would require additional dependencies or manual implementation
-    
+
     Ok(())
 }
 
 // Map ResponseCode to error
 fn map_rcode_to_error(rcode: ResponseCode) -> (String, String) {
     match rcode {
-        ResponseCode::Refused => (DNS_ZONE_UPDATE_REFUSED.to_string(), "Server refused the update".to_string()),
-        ResponseCode::NXDomain => (DNS_ZONE_UPDATE_NXDOMAIN.to_string(), "Domain does not exist".to_string()),
-        ResponseCode::ServFail => (DNS_ZONE_UPDATE_SERVFAIL.to_string(), "Server failure".to_string()),
-        ResponseCode::FormErr => (DNS_ZONE_UPDATE_FORMERR.to_string(), "Format error in update message".to_string()),
-        ResponseCode::NotAuth => (DNS_ZONE_UPDATE_NOTAUTH.to_string(), "Server not authoritative for zone".to_string()),
-        ResponseCode::NotZone => (DNS_ZONE_UPDATE_NOTZONE.to_string(), "Name not in zone".to_string()),
-        ResponseCode::YXRRSet => (DNS_ZONE_UPDATE_PRECONDITION_FAILED.to_string(), "Prerequisites failed: RRSet exists".to_string()),
-        ResponseCode::NXRRSet => (DNS_ZONE_UPDATE_PRECONDITION_FAILED.to_string(), "Prerequisites failed: RRSet does not exist".to_string()),
-        ResponseCode::YXDomain => (DNS_ZONE_UPDATE_PRECONDITION_FAILED.to_string(), "Prerequisites failed: Name exists".to_string()),
-        _ => (DNS_ZONE_UPDATE_RCODE_ERROR.to_string(), format!("Update failed with RCODE: {:?}", rcode))
+        ResponseCode::Refused => (
+            DNS_ZONE_UPDATE_REFUSED.to_string(),
+            "Server refused the update".to_string(),
+        ),
+        ResponseCode::NXDomain => (
+            DNS_ZONE_UPDATE_NXDOMAIN.to_string(),
+            "Domain does not exist".to_string(),
+        ),
+        ResponseCode::ServFail => (
+            DNS_ZONE_UPDATE_SERVFAIL.to_string(),
+            "Server failure".to_string(),
+        ),
+        ResponseCode::FormErr => (
+            DNS_ZONE_UPDATE_FORMERR.to_string(),
+            "Format error in update message".to_string(),
+        ),
+        ResponseCode::NotAuth => (
+            DNS_ZONE_UPDATE_NOTAUTH.to_string(),
+            "Server not authoritative for zone".to_string(),
+        ),
+        ResponseCode::NotZone => (
+            DNS_ZONE_UPDATE_NOTZONE.to_string(),
+            "Name not in zone".to_string(),
+        ),
+        ResponseCode::YXRRSet => (
+            DNS_ZONE_UPDATE_PRECONDITION_FAILED.to_string(),
+            "Prerequisites failed: RRSet exists".to_string(),
+        ),
+        ResponseCode::NXRRSet => (
+            DNS_ZONE_UPDATE_PRECONDITION_FAILED.to_string(),
+            "Prerequisites failed: RRSet does not exist".to_string(),
+        ),
+        ResponseCode::YXDomain => (
+            DNS_ZONE_UPDATE_PRECONDITION_FAILED.to_string(),
+            "Prerequisites failed: Name exists".to_string(),
+        ),
+        _ => (
+            DNS_ZONE_UPDATE_RCODE_ERROR.to_string(),
+            format!("Update failed with RCODE: {:?}", rcode),
+        ),
     }
 }
 
@@ -5090,15 +5608,15 @@ impl DnsHandle {
         };
 
         // Create async runtime and perform zone update
-        let rt = tokio::runtime::Runtime::new()
-            .context("Failed to create async runtime")?;
+        let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
         let result = rt.block_on(perform_zone_update(opts.clone()));
 
         let response = match result {
             Ok(resp) => resp,
             Err(e) => {
-                let error_msg = format!("[{}] Internal error: {}", DNS_ZONE_UPDATE_INTERNAL_ERROR, e);
+                let error_msg =
+                    format!("[{}] Internal error: {}", DNS_ZONE_UPDATE_INTERNAL_ERROR, e);
                 writeln!(io.stderr, "{}", error_msg)?;
                 return Ok(Status::err(1, error_msg));
             }
@@ -5206,7 +5724,7 @@ impl MockDnsResolver {
 
     pub fn build_response(&self, opts: &DnsLookupOptions) -> DnsLookupResponse {
         let mut response = DnsLookupResponse::new(opts);
-        
+
         if self.should_error {
             response.ok = false;
             response.error = Some((self.error_code.clone(), self.error_message.clone()));
@@ -5219,7 +5737,7 @@ impl MockDnsResolver {
             response.response.truncated = self.truncated;
             response.response.round_trip_time_ms = Some(self.round_trip_time_ms);
         }
-        
+
         response
     }
 }
@@ -5230,7 +5748,9 @@ mod tests {
     use serde_json::json;
 
     fn args(kv: &[(&str, &str)]) -> Args {
-        kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -5293,23 +5813,29 @@ mod tests {
     fn test_extract_cname_chain_empty_hops() {
         let hops: Vec<DnsTraceHop> = Vec::new();
         let result = extract_cname_chain(&hops, "www.example.com.");
-        assert_eq!(result.len(), 0, "Empty hops should return empty CNAME chain");
+        assert_eq!(
+            result.len(),
+            0,
+            "Empty hops should return empty CNAME chain"
+        );
     }
 
     #[test]
     fn test_extract_cname_chain_no_cnames() {
-        let answers = vec![
-            DnsTraceRecord {
-                name: "www.example.com.".to_string(),
-                rtype: "A".to_string(),
-                ttl: 300,
-                data: json!({"address": "93.184.216.34"}),
-            }
-        ];
+        let answers = vec![DnsTraceRecord {
+            name: "www.example.com.".to_string(),
+            rtype: "A".to_string(),
+            ttl: 300,
+            data: json!({"address": "93.184.216.34"}),
+        }];
         let hops = vec![create_hop_with_answers(1, answers)];
 
         let result = extract_cname_chain(&hops, "www.example.com.");
-        assert_eq!(result.len(), 0, "No CNAME records should return empty chain");
+        assert_eq!(
+            result.len(),
+            0,
+            "No CNAME records should return empty chain"
+        );
     }
 
     #[test]
@@ -5326,7 +5852,7 @@ mod tests {
                 rtype: "A".to_string(),
                 ttl: 300,
                 data: json!({"address": "93.184.216.34"}),
-            }
+            },
         ];
         let hops = vec![create_hop_with_answers(1, answers)];
 
@@ -5361,27 +5887,34 @@ mod tests {
                 rtype: "A".to_string(),
                 ttl: 300,
                 data: json!({"address": "93.184.216.34"}),
-            }
+            },
         ];
         let hops = vec![create_hop_with_answers(1, answers)];
 
         let result = extract_cname_chain(&hops, "www.example.com.");
         assert_eq!(result.len(), 3, "Should find three CNAMEs in chain");
-        assert_eq!(result[0], "cdn.example.com.", "First CNAME should be cdn.example.com.");
-        assert_eq!(result[1], "edge.example.net.", "Second CNAME should be edge.example.net.");
-        assert_eq!(result[2], "server.example.org.", "Third CNAME should be server.example.org.");
+        assert_eq!(
+            result[0], "cdn.example.com.",
+            "First CNAME should be cdn.example.com."
+        );
+        assert_eq!(
+            result[1], "edge.example.net.",
+            "Second CNAME should be edge.example.net."
+        );
+        assert_eq!(
+            result[2], "server.example.org.",
+            "Third CNAME should be server.example.org."
+        );
     }
 
     #[test]
     fn test_extract_cname_chain_across_multiple_hops() {
-        let hop1_answers = vec![
-            DnsTraceRecord {
-                name: "www.example.com.".to_string(),
-                rtype: "CNAME".to_string(),
-                ttl: 300,
-                data: json!({"cname": "cdn.example.com."}),
-            }
-        ];
+        let hop1_answers = vec![DnsTraceRecord {
+            name: "www.example.com.".to_string(),
+            rtype: "CNAME".to_string(),
+            ttl: 300,
+            data: json!({"cname": "cdn.example.com."}),
+        }];
 
         let hop2_answers = vec![
             DnsTraceRecord {
@@ -5395,18 +5928,24 @@ mod tests {
                 rtype: "A".to_string(),
                 ttl: 300,
                 data: json!({"address": "93.184.216.34"}),
-            }
+            },
         ];
 
         let hops = vec![
             create_hop_with_answers(1, hop1_answers),
-            create_hop_with_answers(2, hop2_answers)
+            create_hop_with_answers(2, hop2_answers),
         ];
 
         let result = extract_cname_chain(&hops, "www.example.com.");
         assert_eq!(result.len(), 2, "Should find two CNAMEs across hops");
-        assert_eq!(result[0], "cdn.example.com.", "First CNAME should be cdn.example.com.");
-        assert_eq!(result[1], "edge.example.net.", "Second CNAME should be edge.example.net.");
+        assert_eq!(
+            result[0], "cdn.example.com.",
+            "First CNAME should be cdn.example.com."
+        );
+        assert_eq!(
+            result[1], "edge.example.net.",
+            "Second CNAME should be edge.example.net."
+        );
     }
 
     #[test]
@@ -5423,12 +5962,16 @@ mod tests {
                 rtype: "A".to_string(),
                 ttl: 300,
                 data: json!({"address": "93.184.216.34"}),
-            }
+            },
         ];
         let hops = vec![create_hop_with_answers(1, answers)];
 
         let result = extract_cname_chain(&hops, "www.example.com.");
-        assert_eq!(result.len(), 1, "Should find CNAME with case-insensitive matching");
+        assert_eq!(
+            result.len(),
+            1,
+            "Should find CNAME with case-insensitive matching"
+        );
         assert_eq!(result[0], "cdn.example.com.", "CNAME should match target");
     }
 
@@ -5452,13 +5995,16 @@ mod tests {
                 rtype: "A".to_string(),
                 ttl: 300,
                 data: json!({"address": "93.184.216.34"}),
-            }
+            },
         ];
         let hops = vec![create_hop_with_answers(1, answers)];
 
         let result = extract_cname_chain(&hops, "www.example.com.");
         assert_eq!(result.len(), 1, "Should only follow relevant CNAME chain");
-        assert_eq!(result[0], "cdn.example.com.", "Should only include CNAMEs in the chain");
+        assert_eq!(
+            result[0], "cdn.example.com.",
+            "Should only include CNAMEs in the chain"
+        );
     }
 
     #[test]
@@ -5487,12 +6033,16 @@ mod tests {
                 rtype: "A".to_string(),
                 ttl: 300,
                 data: json!({"address": "93.184.216.34"}),
-            }
+            },
         ];
         let hops = vec![create_hop_with_answers(1, answers)];
 
         let result = extract_cname_chain(&hops, "www.example.com.");
-        assert_eq!(result.len(), 1, "Should find CNAME ignoring other record types");
+        assert_eq!(
+            result.len(),
+            1,
+            "Should find CNAME ignoring other record types"
+        );
         assert_eq!(result[0], "cdn.example.com.", "CNAME should match target");
     }
 
@@ -5500,13 +6050,19 @@ mod tests {
     #[test]
     fn test_normalize_zone_name_with_dot() {
         let result = normalize_zone_name("example.com.");
-        assert_eq!(result, "example.com.", "Zone name with trailing dot should remain unchanged");
+        assert_eq!(
+            result, "example.com.",
+            "Zone name with trailing dot should remain unchanged"
+        );
     }
 
     #[test]
     fn test_normalize_zone_name_without_dot() {
         let result = normalize_zone_name("example.com");
-        assert_eq!(result, "example.com.", "Zone name without trailing dot should have one added");
+        assert_eq!(
+            result, "example.com.",
+            "Zone name without trailing dot should have one added"
+        );
     }
 
     #[test]
@@ -5559,7 +6115,10 @@ mod tests {
 
         let result = extract_soa_from_record(&record);
         assert!(result.is_err(), "Should fail when mname is missing");
-        assert!(result.unwrap_err().to_string().contains("Missing mname"), "Error should mention missing mname");
+        assert!(
+            result.unwrap_err().to_string().contains("Missing mname"),
+            "Error should mention missing mname"
+        );
     }
 
     #[test]
@@ -5581,7 +6140,10 @@ mod tests {
 
         let result = extract_soa_from_record(&record);
         assert!(result.is_err(), "Should fail when serial is missing");
-        assert!(result.unwrap_err().to_string().contains("Missing serial"), "Error should mention missing serial");
+        assert!(
+            result.unwrap_err().to_string().contains("Missing serial"),
+            "Error should mention missing serial"
+        );
     }
 
     #[test]
@@ -5611,7 +6173,13 @@ mod tests {
     fn test_zone_transfer_type_from_str_invalid() {
         let result = ZoneTransferType::from_str("INVALID");
         assert!(result.is_err(), "Should fail on invalid transfer type");
-        assert!(result.unwrap_err().to_string().contains("Invalid transfer type"), "Error should mention invalid type");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid transfer type"),
+            "Error should mention invalid type"
+        );
     }
 
     #[test]
@@ -5683,7 +6251,10 @@ mod tests {
         assert_eq!(record.rtype, "A");
         assert_eq!(record.class, "IN");
         assert_eq!(record.ttl, 300);
-        assert_eq!(record.data.get("address").and_then(|v| v.as_str()), Some("93.184.216.34"));
+        assert_eq!(
+            record.data.get("address").and_then(|v| v.as_str()),
+            Some("93.184.216.34")
+        );
     }
 
     #[test]
@@ -5741,15 +6312,13 @@ mod tests {
             old_serial: 2024010100,
             new_serial: 2024010101,
             deleted: vec![],
-            added: vec![
-                ZoneRecord {
-                    name: "new.example.com.".to_string(),
-                    rtype: "A".to_string(),
-                    class: "IN".to_string(),
-                    ttl: 300,
-                    data: json!({"address": "93.184.216.35"}),
-                },
-            ],
+            added: vec![ZoneRecord {
+                name: "new.example.com.".to_string(),
+                rtype: "A".to_string(),
+                class: "IN".to_string(),
+                ttl: 300,
+                data: json!({"address": "93.184.216.35"}),
+            }],
         };
 
         assert_eq!(changes.old_serial, 2024010100);

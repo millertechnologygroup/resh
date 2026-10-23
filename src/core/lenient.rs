@@ -50,10 +50,13 @@ pub fn parse_bool(s: &str) -> Option<bool> {
 pub fn bool_arg(args: &crate::core::Args, key: &str) -> anyhow::Result<Option<bool>> {
     match args.get(key) {
         None => Ok(None),
-        Some(v) => parse_bool(v).map(Some).ok_or_else(|| anyhow::anyhow!(
-            "invalid value for {}: {:?} (expected true/false, 1/0, yes/no or on/off)",
-            key, v
-        )),
+        Some(v) => parse_bool(v).map(Some).ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid value for {}: {:?} (expected true/false, 1/0, yes/no or on/off)",
+                key,
+                v
+            )
+        }),
     }
 }
 
@@ -112,7 +115,10 @@ impl<'de> de::Deserializer<'de> for Lenient {
         match self.0 {
             Value::String(s) => match parse_bool(&s) {
                 Some(b) => visitor.visit_bool(b),
-                None => Err(de::Error::invalid_value(de::Unexpected::Str(&s), &"a boolean")),
+                None => Err(de::Error::invalid_value(
+                    de::Unexpected::Str(&s),
+                    &"a boolean",
+                )),
             },
             other => other.deserialize_bool(visitor),
         }
@@ -169,7 +175,10 @@ impl<'de> de::Deserializer<'de> for Lenient {
                 } else if t.is_empty() {
                     visit_array(Vec::new(), visitor)
                 } else {
-                    let items = t.split(',').map(|p| Value::String(p.trim().to_string())).collect();
+                    let items = t
+                        .split(',')
+                        .map(|p| Value::String(p.trim().to_string()))
+                        .collect();
                     visit_array(items, visitor)
                 }
             }
@@ -177,7 +186,11 @@ impl<'de> de::Deserializer<'de> for Lenient {
         }
     }
 
-    fn deserialize_tuple<V: Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_tuple<V: Visitor<'de>>(
+        self,
+        _len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Error> {
         self.deserialize_seq(visitor)
     }
 
@@ -292,7 +305,8 @@ mod tests {
 
     #[test]
     fn typed_values_pass_through() {
-        let v = json!({"name": "x", "dry_run": false, "timeout_ms": 7, "tags": ["t"], "mode": "fast"});
+        let v =
+            json!({"name": "x", "dry_run": false, "timeout_ms": 7, "tags": ["t"], "mode": "fast"});
         let o: Opts = from_value(v).unwrap();
         assert_eq!(o.dry_run, Some(false));
         assert_eq!(o.timeout_ms, Some(7));
@@ -310,18 +324,25 @@ mod tests {
     #[test]
     fn dry_run_spellings() {
         let a = |v: &str| -> crate::core::Args { [("dry_run".to_string(), v.to_string())].into() };
-        for t in ["true", "TRUE", "True", "1", "yes", "YES", "on", "On", " true "] {
+        for t in [
+            "true", "TRUE", "True", "1", "yes", "YES", "on", "On", " true ",
+        ] {
             assert!(dry_run(&a(t)).unwrap(), "{t:?}");
         }
         for f in ["false", "FALSE", "0", "no", "off", "Off"] {
             assert!(!dry_run(&a(f)).unwrap(), "{f:?}");
         }
-        for bad in ["", "maybe", "2", "-1", "truee", "y", "n", "t", "dry_run", "null", "\"true\""] {
+        for bad in [
+            "", "maybe", "2", "-1", "truee", "y", "n", "t", "dry_run", "null", "\"true\"",
+        ] {
             let err = dry_run(&a(bad)).unwrap_err().to_string();
             assert!(err.contains("invalid value for dry_run"), "{bad:?}: {err}");
         }
         assert!(!dry_run(&crate::core::Args::new()).unwrap());
-        assert_eq!(bool_arg(&crate::core::Args::new(), "dry_run").unwrap(), None);
+        assert_eq!(
+            bool_arg(&crate::core::Args::new(), "dry_run").unwrap(),
+            None
+        );
     }
 
     #[test]

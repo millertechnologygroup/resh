@@ -216,7 +216,10 @@ mod tests {
 
     #[test]
     fn parses_handle_and_verb_requests() {
-        assert_eq!(parse_help_request(&args(&["svc", "--help"])), Some(HelpRequest::Handle("svc")));
+        assert_eq!(
+            parse_help_request(&args(&["svc", "--help"])),
+            Some(HelpRequest::Handle("svc"))
+        );
         assert_eq!(
             parse_help_request(&args(&["svc", "status", "--help"])),
             Some(HelpRequest::Verb("svc", "status"))
@@ -228,10 +231,19 @@ mod tests {
         assert_eq!(parse_help_request(&args(&["--help"])), None);
         assert_eq!(parse_help_request(&args(&["svc"])), None);
         assert_eq!(parse_help_request(&args(&["svc://nginx.status"])), None);
-        assert_eq!(parse_help_request(&args(&["svc://nginx.status", "--help"])), None);
+        assert_eq!(
+            parse_help_request(&args(&["svc://nginx.status", "--help"])),
+            None
+        );
         assert_eq!(parse_help_request(&args(&["svc", "-h"])), None);
-        assert_eq!(parse_help_request(&args(&["--json-pretty", "--help"])), None);
-        assert_eq!(parse_help_request(&args(&["svc", "status", "x", "--help"])), None);
+        assert_eq!(
+            parse_help_request(&args(&["--json-pretty", "--help"])),
+            None
+        );
+        assert_eq!(
+            parse_help_request(&args(&["svc", "status", "x", "--help"])),
+            None
+        );
     }
 
     #[test]
@@ -251,9 +263,21 @@ mod tests {
         description: "Test handle.",
         usage: "resh t://<x>.<verb>",
         verbs: &[
-            VerbHelp { name: "a", definition: "Does a.", detail: None },
-            VerbHelp { name: "ghost", definition: "Not registered.", detail: None },
-            VerbHelp { name: "help", definition: "Alias.", detail: None },
+            VerbHelp {
+                name: "a",
+                definition: "Does a.",
+                detail: None,
+            },
+            VerbHelp {
+                name: "ghost",
+                definition: "Not registered.",
+                detail: None,
+            },
+            VerbHelp {
+                name: "help",
+                definition: "Alias.",
+                detail: None,
+            },
         ],
     };
 
@@ -270,7 +294,14 @@ mod tests {
         for s in ["--help", "-h", "/--help", "/-h", ".--help", "//-h"] {
             assert!(is_help_flag(s), "{s}");
         }
-        for s in ["/home/x/my-hosts", "my-httpd", "pre-hotfix", "-help", "--helper", ""] {
+        for s in [
+            "/home/x/my-hosts",
+            "my-httpd",
+            "pre-hotfix",
+            "-help",
+            "--helper",
+            "",
+        ] {
             assert!(!is_help_flag(s), "{s}");
         }
     }

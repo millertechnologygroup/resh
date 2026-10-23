@@ -1,12 +1,11 @@
 use anyhow::{Context, Result};
 use chrono;
 use git2::{
-    CredentialType, Cred, FetchOptions, 
-    RemoteCallbacks, Repository, BranchType, Status as GitStatus, 
-    Index, Signature, Oid, Commit, Time
+    BranchType, Commit, Cred, CredentialType, FetchOptions, Index, Oid, RemoteCallbacks,
+    Repository, Signature, Status as GitStatus, Time,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
@@ -829,7 +828,7 @@ pub struct CommitResult {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DiffLine {
     #[serde(rename = "type")]
-    pub line_type: String,  // "context" | "add" | "delete"
+    pub line_type: String, // "context" | "add" | "delete"
     pub content: String,
 }
 
@@ -848,7 +847,7 @@ pub struct DiffHunk {
 pub struct DiffFile {
     pub old_path: Option<String>,
     pub new_path: Option<String>,
-    pub status: String,  // "added" | "deleted" | "modified" | "renamed" | "copied" | "typechange"
+    pub status: String, // "added" | "deleted" | "modified" | "renamed" | "copied" | "typechange"
     pub is_binary: bool,
     pub hunks: Vec<DiffHunk>,
 }
@@ -1026,7 +1025,7 @@ pub struct BranchOpResult {
 pub struct TagTarget {
     pub oid: String,
     #[serde(rename = "type")]
-    pub object_type: String,  // "commit" | "tag" | "tree" | "blob"
+    pub object_type: String, // "commit" | "tag" | "tree" | "blob"
 }
 
 /// Tag tagger information
@@ -1068,7 +1067,7 @@ pub struct TagCreateResult {
     pub path: String,
     pub action: String,
     pub tag: TagEntry,
-    pub status: String,  // "created" | "overwritten"
+    pub status: String, // "created" | "overwritten"
     pub force: bool,
 }
 
@@ -1113,8 +1112,8 @@ pub struct MergeResult {
     pub action: String,
     pub source: String,
     pub target: String,
-    pub mode: String,      // "fast_forward" | "normal" | "squash" | "up_to_date"
-    pub status: String,    // "merged" | "fast_forward" | "squashed" | "up_to_date"
+    pub mode: String,   // "fast_forward" | "normal" | "squash" | "up_to_date"
+    pub status: String, // "merged" | "fast_forward" | "squashed" | "up_to_date"
     pub ff_only: bool,
     pub no_ff: bool,
     pub squash: bool,
@@ -1898,7 +1897,7 @@ impl From<GitError> for crate::core::status::ShellError {
 impl From<git2::Error> for GitError {
     fn from(err: git2::Error) -> Self {
         GitError::StatusSummaryFailed {
-            message: format!("git operation failed: {}", err)
+            message: format!("git operation failed: {}", err),
         }
     }
 }
@@ -1906,13 +1905,25 @@ impl From<git2::Error> for GitError {
 /// Git connection registry for managing configured aliases
 type GitConnectionRegistry = std::sync::LazyLock<dashmap::DashMap<String, GitConnectionProfile>>;
 
-static GIT_CONNECTIONS: GitConnectionRegistry = std::sync::LazyLock::new(|| dashmap::DashMap::new());
+static GIT_CONNECTIONS: GitConnectionRegistry =
+    std::sync::LazyLock::new(|| dashmap::DashMap::new());
 
 /// Verbs registered by the git handle (shared by `Handle::verbs` and the
 /// in-URL help forms).
 const GIT_VERBS: &[&str] = &[
-    "clone", "pull", "push", "status", "branch", "commit", "diff", "tag", "merge", "rebase",
-    "sync", "status_summary", "status_short",
+    "clone",
+    "pull",
+    "push",
+    "status",
+    "branch",
+    "commit",
+    "diff",
+    "tag",
+    "merge",
+    "rebase",
+    "sync",
+    "status_summary",
+    "status_short",
 ];
 
 /// True for the in-URL help forms `git://--help`, `git://-h` and `git://help`.
@@ -1972,10 +1983,8 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(30000);
         let timeout_duration = Duration::from_millis(timeout_ms as u64);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_clone(&config, &profile)
-        ).await;
+        let result =
+            tokio::time::timeout(timeout_duration, self.execute_clone(&config, &profile)).await;
 
         match result {
             Ok(clone_result) => clone_result,
@@ -1998,10 +2007,8 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(30000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_pull(&config, &profile)
-        ).await;
+        let result =
+            tokio::time::timeout(timeout_duration, self.execute_pull(&config, &profile)).await;
 
         match result {
             Ok(pull_result) => pull_result,
@@ -2024,10 +2031,8 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(30000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_push(&config, &profile)
-        ).await;
+        let result =
+            tokio::time::timeout(timeout_duration, self.execute_push(&config, &profile)).await;
 
         match result {
             Ok(push_result) => push_result,
@@ -2050,10 +2055,7 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(5000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_status(&config)
-        ).await;
+        let result = tokio::time::timeout(timeout_duration, self.execute_status(&config)).await;
 
         match result {
             Ok(status_result) => status_result,
@@ -2076,10 +2078,7 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(5000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_branch(&config)
-        ).await;
+        let result = tokio::time::timeout(timeout_duration, self.execute_branch(&config)).await;
 
         match result {
             Ok(branch_result) => branch_result,
@@ -2102,10 +2101,8 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(5000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_commit(&config, &profile)
-        ).await;
+        let result =
+            tokio::time::timeout(timeout_duration, self.execute_commit(&config, &profile)).await;
 
         match result {
             Ok(commit_result) => commit_result,
@@ -2125,10 +2122,7 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(5000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_diff(&config)
-        ).await;
+        let result = tokio::time::timeout(timeout_duration, self.execute_diff(&config)).await;
 
         match result {
             Ok(diff_result) => diff_result,
@@ -2151,10 +2145,8 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(5000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_tag(&config, &profile)
-        ).await;
+        let result =
+            tokio::time::timeout(timeout_duration, self.execute_tag(&config, &profile)).await;
 
         match result {
             Ok(tag_result) => tag_result,
@@ -2177,10 +2169,8 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(10000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_merge(&config, &profile)
-        ).await;
+        let result =
+            tokio::time::timeout(timeout_duration, self.execute_merge(&config, &profile)).await;
 
         match result {
             Ok(merge_result) => merge_result,
@@ -2203,10 +2193,8 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(10000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_rebase(&config, &profile)
-        ).await;
+        let result =
+            tokio::time::timeout(timeout_duration, self.execute_rebase(&config, &profile)).await;
 
         match result {
             Ok(rebase_result) => rebase_result,
@@ -2216,26 +2204,23 @@ impl GitHandle {
 
     /// Parse clone configuration from arguments
     fn parse_clone_config(&self, args: Value) -> Result<CloneConfig, GitError> {
-        crate::core::lenient::from_value(args)
-            .map_err(|e| GitError::InvalidCloneConfig {
-                message: format!("failed to parse clone config: {}", e),
-            })
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidCloneConfig {
+            message: format!("failed to parse clone config: {}", e),
+        })
     }
 
     /// Parse pull configuration from arguments
     fn parse_pull_config(&self, args: Value) -> Result<PullConfig, GitError> {
-        crate::core::lenient::from_value(args)
-            .map_err(|e| GitError::InvalidPullConfig {
-                message: format!("failed to parse pull config: {}", e),
-            })
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidPullConfig {
+            message: format!("failed to parse pull config: {}", e),
+        })
     }
 
     /// Parse push configuration from arguments
     fn parse_push_config(&self, args: Value) -> Result<PushConfig, GitError> {
-        crate::core::lenient::from_value(args)
-            .map_err(|e| GitError::InvalidPushConfig {
-                message: format!("failed to parse push config: {}", e),
-            })
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidPushConfig {
+            message: format!("failed to parse push config: {}", e),
+        })
     }
 
     /// Validate clone configuration
@@ -2272,10 +2257,11 @@ impl GitHandle {
         }
 
         // Check URL format
-        if !config.url.starts_with("http://") 
-            && !config.url.starts_with("https://") 
-            && !config.url.starts_with("git@") 
-            && !config.url.starts_with("ssh://") {
+        if !config.url.starts_with("http://")
+            && !config.url.starts_with("https://")
+            && !config.url.starts_with("git@")
+            && !config.url.starts_with("ssh://")
+        {
             return Err(GitError::InvalidCloneConfig {
                 message: "url must start with http://, https://, git@, or ssh://".to_string(),
             });
@@ -2456,10 +2442,9 @@ impl GitHandle {
 
     /// Parse status configuration from arguments
     fn parse_status_config(&self, args: Value) -> Result<StatusConfig, GitError> {
-        crate::core::lenient::from_value(args)
-            .map_err(|e| GitError::InvalidStatusConfig {
-                message: format!("failed to parse status config: {}", e),
-            })
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidStatusConfig {
+            message: format!("failed to parse status config: {}", e),
+        })
     }
 
     /// Validate status configuration
@@ -2499,10 +2484,9 @@ impl GitHandle {
 
     /// Parse branch configuration from arguments
     fn parse_branch_config(&self, args: Value) -> Result<BranchConfig, GitError> {
-        crate::core::lenient::from_value(args)
-            .map_err(|e| GitError::InvalidBranchConfig {
-                message: format!("failed to parse branch config: {}", e),
-            })
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidBranchConfig {
+            message: format!("failed to parse branch config: {}", e),
+        })
     }
 
     /// Validate branch configuration
@@ -2534,10 +2518,9 @@ impl GitHandle {
 
             // Exactly one of the following must be true:
             // all == true, OR (local_only == true and remote_only == false), OR (remote_only == true and local_only == false)
-            let valid_combination = all || 
-                (local_only && !remote_only) || 
-                (remote_only && !local_only);
-            
+            let valid_combination =
+                all || (local_only && !remote_only) || (remote_only && !local_only);
+
             if !valid_combination {
                 return Err(GitError::InvalidBranchConfig {
                     message: "invalid list flags combination: exactly one of 'all=true', 'local_only=true', or 'remote_only=true' must be set".to_string(),
@@ -2609,10 +2592,9 @@ impl GitHandle {
 
     /// Parse commit configuration from arguments
     fn parse_commit_config(&self, args: Value) -> Result<CommitConfig, GitError> {
-        crate::core::lenient::from_value(args)
-            .map_err(|e| GitError::InvalidCommitConfig {
-                message: format!("failed to parse commit config: {}", e),
-            })
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidCommitConfig {
+            message: format!("failed to parse commit config: {}", e),
+        })
     }
 
     /// Parse diff configuration from arguments
@@ -2651,9 +2633,11 @@ impl GitHandle {
                                 "commit_vs_commit" => DiffMode::CommitVsCommit,
                                 "commit_vs_workdir" => DiffMode::CommitVsWorkdir,
                                 "commit_vs_index" => DiffMode::CommitVsIndex,
-                                _ => return Err(GitError::InvalidDiffConfig {
-                                    message: format!("invalid mode: {}", mode_str),
-                                }),
+                                _ => {
+                                    return Err(GitError::InvalidDiffConfig {
+                                        message: format!("invalid mode: {}", mode_str),
+                                    });
+                                }
                             };
                             config.mode = Some(mode);
                         }
@@ -2670,99 +2654,99 @@ impl GitHandle {
                     }
                     "unified" => {
                         if let Some(val_str) = value.as_str() {
-                            config.unified = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
+                            config.unified =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
                                     message: format!("invalid unified value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         } else if let Some(val_num) = value.as_i64() {
                             config.unified = Some(val_num as i32);
                         }
                     }
                     "ignore_whitespace" => {
                         if let Some(val_str) = value.as_str() {
-                            config.ignore_whitespace = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
-                                    message: format!("invalid ignore_whitespace value: {}", val_str),
-                                }
-                            })?);
+                            config.ignore_whitespace =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
+                                    message: format!(
+                                        "invalid ignore_whitespace value: {}",
+                                        val_str
+                                    ),
+                                })?);
                         } else if let Some(val_bool) = value.as_bool() {
                             config.ignore_whitespace = Some(val_bool);
                         }
                     }
                     "ignore_whitespace_change" => {
                         if let Some(val_str) = value.as_str() {
-                            config.ignore_whitespace_change = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
-                                    message: format!("invalid ignore_whitespace_change value: {}", val_str),
-                                }
-                            })?);
+                            config.ignore_whitespace_change =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
+                                    message: format!(
+                                        "invalid ignore_whitespace_change value: {}",
+                                        val_str
+                                    ),
+                                })?);
                         } else if let Some(val_bool) = value.as_bool() {
                             config.ignore_whitespace_change = Some(val_bool);
                         }
                     }
                     "ignore_whitespace_eol" => {
                         if let Some(val_str) = value.as_str() {
-                            config.ignore_whitespace_eol = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
-                                    message: format!("invalid ignore_whitespace_eol value: {}", val_str),
-                                }
-                            })?);
+                            config.ignore_whitespace_eol =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
+                                    message: format!(
+                                        "invalid ignore_whitespace_eol value: {}",
+                                        val_str
+                                    ),
+                                })?);
                         } else if let Some(val_bool) = value.as_bool() {
                             config.ignore_whitespace_eol = Some(val_bool);
                         }
                     }
                     "detect_renames" => {
                         if let Some(val_str) = value.as_str() {
-                            config.detect_renames = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
+                            config.detect_renames =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
                                     message: format!("invalid detect_renames value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         } else if let Some(val_bool) = value.as_bool() {
                             config.detect_renames = Some(val_bool);
                         }
                     }
                     "rename_threshold" => {
                         if let Some(val_str) = value.as_str() {
-                            config.rename_threshold = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
+                            config.rename_threshold =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
                                     message: format!("invalid rename_threshold value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         } else if let Some(val_num) = value.as_u64() {
                             config.rename_threshold = Some(val_num as u8);
                         }
                     }
                     "binary" => {
                         if let Some(val_str) = value.as_str() {
-                            config.binary = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
+                            config.binary =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
                                     message: format!("invalid binary value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         } else if let Some(val_bool) = value.as_bool() {
                             config.binary = Some(val_bool);
                         }
                     }
                     "max_files" => {
                         if let Some(val_str) = value.as_str() {
-                            config.max_files = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
+                            config.max_files =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
                                     message: format!("invalid max_files value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         } else if let Some(val_num) = value.as_u64() {
                             config.max_files = Some(val_num as u32);
                         }
                     }
                     "max_hunks" => {
                         if let Some(val_str) = value.as_str() {
-                            config.max_hunks = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
+                            config.max_hunks =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
                                     message: format!("invalid max_hunks value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         } else if let Some(val_num) = value.as_u64() {
                             config.max_hunks = Some(val_num as u32);
                         }
@@ -2788,11 +2772,10 @@ impl GitHandle {
                     }
                     "timeout_ms" => {
                         if let Some(val_str) = value.as_str() {
-                            config.timeout_ms = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidDiffConfig {
+                            config.timeout_ms =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
                                     message: format!("invalid timeout_ms value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         } else if let Some(val_num) = value.as_u64() {
                             config.timeout_ms = Some(val_num);
                         }
@@ -2806,10 +2789,9 @@ impl GitHandle {
             Ok(config)
         } else {
             // Fallback to direct deserialization for backwards compatibility
-            crate::core::lenient::from_value(args)
-                .map_err(|e| GitError::InvalidDiffConfig {
-                    message: format!("failed to parse diff config: {}", e),
-                })
+            crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidDiffConfig {
+                message: format!("failed to parse diff config: {}", e),
+            })
         }
     }
 
@@ -2847,9 +2829,11 @@ impl GitHandle {
                                 "list" => TagAction::List,
                                 "create" => TagAction::Create,
                                 "delete" => TagAction::Delete,
-                                _ => return Err(GitError::InvalidTagConfig {
-                                    message: format!("invalid action: {}", val_str),
-                                }),
+                                _ => {
+                                    return Err(GitError::InvalidTagConfig {
+                                        message: format!("invalid action: {}", val_str),
+                                    });
+                                }
                             });
                         }
                     }
@@ -2860,10 +2844,13 @@ impl GitHandle {
                     }
                     "names" => {
                         if let Some(arr) = value.as_array() {
-                            let names: Result<Vec<_>, _> = arr.iter()
-                                .map(|v| v.as_str().ok_or_else(|| GitError::InvalidTagConfig {
-                                    message: "names array must contain strings".to_string(),
-                                }))
+                            let names: Result<Vec<_>, _> = arr
+                                .iter()
+                                .map(|v| {
+                                    v.as_str().ok_or_else(|| GitError::InvalidTagConfig {
+                                        message: "names array must contain strings".to_string(),
+                                    })
+                                })
                                 .collect::<Result<Vec<_>, _>>()
                                 .map(|vec| vec.into_iter().map(String::from).collect());
                             config.names = Some(names?);
@@ -2881,9 +2868,11 @@ impl GitHandle {
                                 "version" => TagSort::Version,
                                 "taggerdate" => TagSort::TaggerDate,
                                 "committerdate" => TagSort::CommitterDate,
-                                _ => return Err(GitError::InvalidTagConfig {
-                                    message: format!("invalid sort: {}", val_str),
-                                }),
+                                _ => {
+                                    return Err(GitError::InvalidTagConfig {
+                                        message: format!("invalid sort: {}", val_str),
+                                    });
+                                }
                             });
                         }
                     }
@@ -2891,11 +2880,10 @@ impl GitHandle {
                         if let Some(val_bool) = value.as_bool() {
                             config.annotated = Some(val_bool);
                         } else if let Some(val_str) = value.as_str() {
-                            config.annotated = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidTagConfig {
+                            config.annotated =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidTagConfig {
                                     message: format!("invalid annotated value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         }
                     }
                     "message" => {
@@ -2912,11 +2900,10 @@ impl GitHandle {
                         if let Some(val_bool) = value.as_bool() {
                             config.force = Some(val_bool);
                         } else if let Some(val_str) = value.as_str() {
-                            config.force = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidTagConfig {
+                            config.force =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidTagConfig {
                                     message: format!("invalid force value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         }
                     }
                     "author_name" => {
@@ -2938,11 +2925,10 @@ impl GitHandle {
                     }
                     "timeout_ms" => {
                         if let Some(val_str) = value.as_str() {
-                            config.timeout_ms = Some(val_str.parse().map_err(|_| {
-                                GitError::InvalidTagConfig {
+                            config.timeout_ms =
+                                Some(val_str.parse().map_err(|_| GitError::InvalidTagConfig {
                                     message: format!("invalid timeout_ms value: {}", val_str),
-                                }
-                            })?);
+                                })?);
                         } else if let Some(val_num) = value.as_u64() {
                             config.timeout_ms = Some(val_num);
                         }
@@ -2956,10 +2942,9 @@ impl GitHandle {
             Ok(config)
         } else {
             // Fallback to direct deserialization for backwards compatibility
-            crate::core::lenient::from_value(args)
-                .map_err(|e| GitError::InvalidTagConfig {
-                    message: format!("failed to parse tag config: {}", e),
-                })
+            crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidTagConfig {
+                message: format!("failed to parse tag config: {}", e),
+            })
         }
     }
 
@@ -2994,7 +2979,9 @@ impl GitHandle {
                 }
 
                 let annotated = config.annotated.unwrap_or(false);
-                if annotated && (config.message.is_none() || config.message.as_ref().unwrap().is_empty()) {
+                if annotated
+                    && (config.message.is_none() || config.message.as_ref().unwrap().is_empty())
+                {
                     return Err(GitError::InvalidTagConfig {
                         message: "message is required for annotated tags".to_string(),
                     });
@@ -3002,7 +2989,8 @@ impl GitHandle {
             }
             TagAction::Delete => {
                 let has_name = config.name.is_some() && !config.name.as_ref().unwrap().is_empty();
-                let has_names = config.names.is_some() && !config.names.as_ref().unwrap().is_empty();
+                let has_names =
+                    config.names.is_some() && !config.names.as_ref().unwrap().is_empty();
 
                 if !has_name && config.names.as_ref().is_some_and(|n| n.is_empty()) {
                     return Err(GitError::InvalidTagConfig {
@@ -3060,16 +3048,22 @@ impl GitHandle {
                         }
                     }
                     "ff_only" => {
-                        config.ff_only = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
+                        config.ff_only = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
+                        );
                     }
                     "no_ff" => {
-                        config.no_ff = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
+                        config.no_ff = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
+                        );
                     }
                     "squash" => {
-                        config.squash = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
+                        config.squash = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
+                        );
                     }
                     "commit_message" => {
                         if let Some(message_str) = value.as_str() {
@@ -3097,16 +3091,22 @@ impl GitHandle {
                         }
                     }
                     "allow_uncommitted" => {
-                        config.allow_uncommitted = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
+                        config.allow_uncommitted = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
+                        );
                     }
                     "abort_on_conflict" => {
-                        config.abort_on_conflict = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
+                        config.abort_on_conflict = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
+                        );
                     }
                     "timeout_ms" => {
-                        config.timeout_ms = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidMergeConfig { message })?);
+                        config.timeout_ms = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
+                        );
                     }
                     _ => {
                         log::debug!("Unknown merge config key: {}", key);
@@ -3117,10 +3117,9 @@ impl GitHandle {
             Ok(config)
         } else {
             // Try to parse as direct JSON
-            crate::core::lenient::from_value(args)
-                .map_err(|e| GitError::InvalidMergeConfig {
-                    message: format!("failed to parse merge config: {}", e),
-                })
+            crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidMergeConfig {
+                message: format!("failed to parse merge config: {}", e),
+            })
         }
     }
 
@@ -3252,24 +3251,34 @@ impl GitHandle {
                         }
                     }
                     "ff_only" => {
-                        config.ff_only = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
+                        config.ff_only = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
+                        );
                     }
                     "preserve_merges" => {
-                        config.preserve_merges = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
+                        config.preserve_merges = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
+                        );
                     }
                     "autosquash" => {
-                        config.autosquash = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
+                        config.autosquash = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
+                        );
                     }
                     "allow_uncommitted" => {
-                        config.allow_uncommitted = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
+                        config.allow_uncommitted = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
+                        );
                     }
                     "abort_on_conflict" => {
-                        config.abort_on_conflict = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
+                        config.abort_on_conflict = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
+                        );
                     }
                     "author_name" => {
                         if let Some(author_str) = value.as_str() {
@@ -3292,8 +3301,10 @@ impl GitHandle {
                         }
                     }
                     "timeout_ms" => {
-                        config.timeout_ms = Some(lenient_arg(key, value)
-                            .map_err(|message| GitError::InvalidRebaseConfig { message })?);
+                        config.timeout_ms = Some(
+                            lenient_arg(key, value)
+                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
+                        );
                     }
                     _ => {
                         log::debug!("Unknown rebase config key: {}", key);
@@ -3304,10 +3315,9 @@ impl GitHandle {
             Ok(config)
         } else {
             // Try to parse as direct JSON
-            crate::core::lenient::from_value(args)
-                .map_err(|e| GitError::InvalidRebaseConfig {
-                    message: format!("failed to parse rebase config: {}", e),
-                })
+            crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidRebaseConfig {
+                message: format!("failed to parse rebase config: {}", e),
+            })
         }
     }
 
@@ -3396,11 +3406,15 @@ impl GitHandle {
 
         // Warn about unsupported advanced features
         if config.preserve_merges == Some(true) {
-            log::warn!("preserve_merges option is not fully supported by git2, falling back to normal rebase");
+            log::warn!(
+                "preserve_merges option is not fully supported by git2, falling back to normal rebase"
+            );
         }
-        
+
         if config.autosquash == Some(true) {
-            log::warn!("autosquash option is not fully supported by git2, falling back to normal rebase");
+            log::warn!(
+                "autosquash option is not fully supported by git2, falling back to normal rebase"
+            );
         }
 
         Ok(())
@@ -3427,14 +3441,16 @@ impl GitHandle {
         // Check message requirement based on amend and no_edit flags
         let amend = config.amend.unwrap_or(false);
         let no_edit = config.no_edit.unwrap_or(false);
-        
+
         if no_edit && !amend {
             return Err(GitError::InvalidCommitConfig {
                 message: "no_edit can only be used with amend=true".to_string(),
             });
         }
 
-        if !(amend && no_edit) && (config.message.is_none() || config.message.as_ref().unwrap().is_empty()) {
+        if !(amend && no_edit)
+            && (config.message.is_none() || config.message.as_ref().unwrap().is_empty())
+        {
             return Err(GitError::InvalidCommitConfig {
                 message: "message cannot be empty unless amend=true and no_edit=true".to_string(),
             });
@@ -3458,7 +3474,7 @@ impl GitHandle {
                             message: format!("invalid ISO8601 timestamp: {}", iso),
                         });
                     }
-                },
+                }
                 CommitTimestamp::UnixSeconds(_) => {
                     // Unix timestamps are always valid as u64
                 }
@@ -3587,7 +3603,11 @@ impl GitHandle {
     }
 
     /// Stage files based on 'all' flag and 'paths' list
-    fn stage_commit_files(&self, repo: &Repository, config: &CommitConfig) -> Result<usize, GitError> {
+    fn stage_commit_files(
+        &self,
+        repo: &Repository,
+        config: &CommitConfig,
+    ) -> Result<usize, GitError> {
         let mut index = repo.index().map_err(|e| GitError::CommitFailed {
             message: format!("failed to get repository index: {}", e),
         })?;
@@ -3615,7 +3635,11 @@ impl GitHandle {
     }
 
     /// Stage all tracked modified/deleted files (equivalent to git commit -a)
-    fn stage_all_tracked_changes(&self, repo: &Repository, index: &mut Index) -> Result<usize, GitError> {
+    fn stage_all_tracked_changes(
+        &self,
+        repo: &Repository,
+        index: &mut Index,
+    ) -> Result<usize, GitError> {
         let statuses = repo.statuses(None).map_err(|e| GitError::CommitFailed {
             message: format!("failed to get repository status: {}", e),
         })?;
@@ -3632,14 +3656,18 @@ impl GitHandle {
             if status.contains(GitStatus::WT_MODIFIED) || status.contains(GitStatus::WT_DELETED) {
                 if status.contains(GitStatus::WT_DELETED) {
                     // Remove deleted file from index
-                    index.remove_path(Path::new(path)).map_err(|e| GitError::CommitFailed {
-                        message: format!("failed to remove path from index: {}", e),
-                    })?;
+                    index
+                        .remove_path(Path::new(path))
+                        .map_err(|e| GitError::CommitFailed {
+                            message: format!("failed to remove path from index: {}", e),
+                        })?;
                 } else {
                     // Add modified file to index
-                    index.add_path(Path::new(path)).map_err(|e| GitError::CommitFailed {
-                        message: format!("failed to add path to index: {}", e),
-                    })?;
+                    index
+                        .add_path(Path::new(path))
+                        .map_err(|e| GitError::CommitFailed {
+                            message: format!("failed to add path to index: {}", e),
+                        })?;
                 }
                 staged_count += 1;
             }
@@ -3649,7 +3677,12 @@ impl GitHandle {
     }
 
     /// Stage a specific path
-    fn stage_specific_path(&self, repo: &Repository, index: &mut Index, path: &str) -> Result<usize, GitError> {
+    fn stage_specific_path(
+        &self,
+        repo: &Repository,
+        index: &mut Index,
+        path: &str,
+    ) -> Result<usize, GitError> {
         // Index paths are relative to the work tree, so resolve the given path
         // against it rather than the process's current directory. Absolute
         // paths inside the work tree are accepted too.
@@ -3670,9 +3703,11 @@ impl GitHandle {
 
         if workdir.join(&rel_path).exists() {
             // Add the file to index
-            index.add_path(&rel_path).map_err(|e| GitError::CommitFailed {
-                message: format!("failed to add path '{}' to index: {}", path, e),
-            })?;
+            index
+                .add_path(&rel_path)
+                .map_err(|e| GitError::CommitFailed {
+                    message: format!("failed to add path '{}' to index: {}", path, e),
+                })?;
             Ok(1)
         } else {
             // File might be deleted, try to remove from index
@@ -3686,7 +3721,11 @@ impl GitHandle {
     }
 
     /// Check if there are changes to commit by comparing index with HEAD
-    fn has_changes_to_commit(&self, repo: &Repository, allow_empty: bool) -> Result<bool, GitError> {
+    fn has_changes_to_commit(
+        &self,
+        repo: &Repository,
+        allow_empty: bool,
+    ) -> Result<bool, GitError> {
         if allow_empty {
             return Ok(true);
         }
@@ -3704,11 +3743,14 @@ impl GitHandle {
         match repo.head() {
             Ok(head_ref) => {
                 // HEAD exists, compare trees
-                let head_commit = head_ref.peel_to_commit().map_err(|e| GitError::CommitFailed {
-                    message: format!("failed to get HEAD commit: {}", e),
-                })?;
+                let head_commit =
+                    head_ref
+                        .peel_to_commit()
+                        .map_err(|e| GitError::CommitFailed {
+                            message: format!("failed to get HEAD commit: {}", e),
+                        })?;
                 let head_tree_oid = head_commit.tree_id();
-                
+
                 Ok(index_tree_oid != head_tree_oid)
             }
             Err(_) => {
@@ -3719,15 +3761,24 @@ impl GitHandle {
     }
 
     /// Resolve commit author identity with fallback chain
-    fn resolve_commit_author(&self, repo: &Repository, config: &CommitConfig, profile: &GitConnectionProfile) -> Result<(String, String), GitError> {
+    fn resolve_commit_author(
+        &self,
+        repo: &Repository,
+        config: &CommitConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<(String, String), GitError> {
         // Priority: config fields -> alias profile -> git config
-        
-        let name = config.author_name.clone()
+
+        let name = config
+            .author_name
+            .clone()
             .or_else(|| profile.username.clone())
             .or_else(|| self.get_git_config_value(repo, "user.name"))
             .ok_or(GitError::CommitIdentityMissing)?;
-            
-        let email = config.author_email.clone()
+
+        let email = config
+            .author_email
+            .clone()
             .or_else(|| self.get_git_config_value(repo, "user.email"))
             .ok_or(GitError::CommitIdentityMissing)?;
 
@@ -3735,16 +3786,26 @@ impl GitHandle {
     }
 
     /// Resolve commit committer identity with fallback to author
-    fn resolve_commit_committer(&self, repo: &Repository, config: &CommitConfig, profile: &GitConnectionProfile, author: &(String, String)) -> Result<(String, String), GitError> {
+    fn resolve_commit_committer(
+        &self,
+        repo: &Repository,
+        config: &CommitConfig,
+        profile: &GitConnectionProfile,
+        author: &(String, String),
+    ) -> Result<(String, String), GitError> {
         // Priority: config fields -> author identity
-        
-        let name = config.committer_name.clone()
+
+        let name = config
+            .committer_name
+            .clone()
             .or_else(|| config.author_name.clone())
             .or_else(|| profile.username.clone())
             .or_else(|| self.get_git_config_value(repo, "user.name"))
             .unwrap_or_else(|| author.0.clone());
-            
-        let email = config.committer_email.clone()
+
+        let email = config
+            .committer_email
+            .clone()
             .or_else(|| config.author_email.clone())
             .or_else(|| self.get_git_config_value(repo, "user.email"))
             .unwrap_or_else(|| author.1.clone());
@@ -3754,52 +3815,63 @@ impl GitHandle {
 
     /// Get a value from Git configuration
     fn get_git_config_value(&self, repo: &Repository, key: &str) -> Option<String> {
-        repo.config()
-            .and_then(|config| config.get_string(key))
-            .ok()
+        repo.config().and_then(|config| config.get_string(key)).ok()
     }
 
     /// Create a Git signature from name, email and timestamp
-    fn create_signature(&self, name: &str, email: &str, config: &CommitConfig) -> Result<Signature, GitError> {
+    fn create_signature(
+        &self,
+        name: &str,
+        email: &str,
+        config: &CommitConfig,
+    ) -> Result<Signature, GitError> {
         match &config.timestamp {
             Some(CommitTimestamp::Iso8601(iso)) => {
-                let dt = chrono::DateTime::parse_from_rfc3339(iso)
-                    .map_err(|e| GitError::InvalidCommitConfig {
+                let dt = chrono::DateTime::parse_from_rfc3339(iso).map_err(|e| {
+                    GitError::InvalidCommitConfig {
                         message: format!("invalid ISO8601 timestamp: {}", e),
-                    })?;
+                    }
+                })?;
                 let timestamp = dt.timestamp() as i64;
                 let offset = dt.offset().local_minus_utc() / 60; // offset in minutes
 
-                Signature::new(name, email, &Time::new(timestamp, offset))
-                    .map_err(|e| GitError::CommitFailed {
+                Signature::new(name, email, &Time::new(timestamp, offset)).map_err(|e| {
+                    GitError::CommitFailed {
                         message: format!("failed to create signature: {}", e),
-                    })
+                    }
+                })
             }
             Some(CommitTimestamp::UnixSeconds(secs)) => {
                 let timestamp = *secs as i64;
-                Signature::new(name, email, &Time::new(timestamp, 0))
-                    .map_err(|e| GitError::CommitFailed {
+                Signature::new(name, email, &Time::new(timestamp, 0)).map_err(|e| {
+                    GitError::CommitFailed {
                         message: format!("failed to create signature: {}", e),
-                    })
+                    }
+                })
             }
-            None => {
-                Signature::now(name, email)
-                    .map_err(|e| GitError::CommitFailed {
-                        message: format!("failed to create signature: {}", e),
-                    })
-            }
+            None => Signature::now(name, email).map_err(|e| GitError::CommitFailed {
+                message: format!("failed to create signature: {}", e),
+            }),
         }
     }
 
     /// Build final commit message with signoff logic
-    fn build_commit_message(&self, repo: &Repository, config: &CommitConfig, author: &(String, String)) -> Result<String, GitError> {
+    fn build_commit_message(
+        &self,
+        repo: &Repository,
+        config: &CommitConfig,
+        author: &(String, String),
+    ) -> Result<String, GitError> {
         let base_message = if config.amend.unwrap_or(false) && config.no_edit.unwrap_or(false) {
             // Use existing HEAD commit message
             match repo.head() {
                 Ok(head_ref) => {
-                    let head_commit = head_ref.peel_to_commit().map_err(|e| GitError::CommitAmendFailed {
-                        message: format!("failed to get HEAD commit: {}", e),
-                    })?;
+                    let head_commit =
+                        head_ref
+                            .peel_to_commit()
+                            .map_err(|e| GitError::CommitAmendFailed {
+                                message: format!("failed to get HEAD commit: {}", e),
+                            })?;
                     head_commit.message().unwrap_or("").to_string()
                 }
                 Err(_) => return Err(GitError::CommitAmendWithoutHead),
@@ -3813,7 +3885,7 @@ impl GitHandle {
         // Add signoff if requested
         if config.signoff.unwrap_or(false) {
             let signoff_line = format!("Signed-off-by: {} <{}>", author.0, author.1);
-            
+
             // Check if signoff already exists to avoid duplicates
             if !final_message.contains(&signoff_line) {
                 if !final_message.ends_with('\n') {
@@ -3856,9 +3928,15 @@ impl GitHandle {
         let path = Path::new(&config.path);
 
         // Check if target directory exists and is not empty
-        if path.exists() && path.read_dir().map_err(|e| GitError::CloneFailed {
-            message: format!("failed to check target directory: {}", e),
-        })?.next().is_some() {
+        if path.exists()
+            && path
+                .read_dir()
+                .map_err(|e| GitError::CloneFailed {
+                    message: format!("failed to check target directory: {}", e),
+                })?
+                .next()
+                .is_some()
+        {
             return Err(GitError::CloneTargetNotEmpty {
                 path: config.path.clone(),
             });
@@ -3874,7 +3952,7 @@ impl GitHandle {
         // Setup authentication callbacks
         let mut fetch_options = FetchOptions::new();
         let mut callbacks = RemoteCallbacks::new();
-        
+
         self.setup_authentication_callbacks(&mut callbacks, config, profile)?;
         fetch_options.remote_callbacks(callbacks);
 
@@ -3889,7 +3967,10 @@ impl GitHandle {
         if let Some(depth) = config.depth {
             // Git2 doesn't directly support shallow clones, but we can set fetch options
             // This is a limitation of libgit2
-            log::warn!("Shallow clone depth={} requested but not fully supported by libgit2", depth);
+            log::warn!(
+                "Shallow clone depth={} requested but not fully supported by libgit2",
+                depth
+            );
         }
 
         // Execute the clone
@@ -3955,11 +4036,11 @@ impl GitHandle {
             let head = repo.head().map_err(|e| GitError::PullFailed {
                 message: format!("failed to get HEAD: {}", e),
             })?;
-            
+
             if !head.is_branch() {
                 return Err(GitError::PullDetachedHead);
             }
-            
+
             head.shorthand().unwrap_or("main").to_string()
         };
 
@@ -3967,14 +4048,16 @@ impl GitHandle {
         let remote_name = config.remote.as_deref().unwrap_or("origin");
 
         // Verify remote exists
-        let mut remote = repo.find_remote(remote_name).map_err(|_| GitError::RemoteNotFound {
-            remote: remote_name.to_string(),
-        })?;
+        let mut remote = repo
+            .find_remote(remote_name)
+            .map_err(|_| GitError::RemoteNotFound {
+                remote: remote_name.to_string(),
+            })?;
 
         // Setup authentication callbacks for fetch
         let mut fetch_options = FetchOptions::new();
         let mut callbacks = RemoteCallbacks::new();
-        
+
         self.setup_pull_authentication_callbacks(&mut callbacks, config, profile)?;
         fetch_options.remote_callbacks(callbacks);
 
@@ -3985,34 +4068,46 @@ impl GitHandle {
         }
 
         // Fetch from remote
-        log::debug!("Fetching from remote '{}' for branch '{}'", remote_name, target_branch);
-        
-        let refspecs = remote.fetch_refspecs().map_err(|e| GitError::PullFetchFailed {
-            message: format!("failed to get refspecs: {}", e),
-        })?;
-        
+        log::debug!(
+            "Fetching from remote '{}' for branch '{}'",
+            remote_name,
+            target_branch
+        );
+
+        let refspecs = remote
+            .fetch_refspecs()
+            .map_err(|e| GitError::PullFetchFailed {
+                message: format!("failed to get refspecs: {}", e),
+            })?;
+
         // Convert StringArray to Vec<&str> for fetch
         let refspecs_vec: Vec<&str> = refspecs.iter().flatten().collect();
-        
-        remote.fetch(&refspecs_vec, Some(&mut fetch_options), None).map_err(|e| {
-            let message = format!("fetch failed: {}", e);
-            if e.to_string().contains("authentication") {
-                GitError::PullAuthFailed { message }
-            } else {
-                GitError::PullFetchFailed { message }
-            }
-        })?;
+
+        remote
+            .fetch(&refspecs_vec, Some(&mut fetch_options), None)
+            .map_err(|e| {
+                let message = format!("fetch failed: {}", e);
+                if e.to_string().contains("authentication") {
+                    GitError::PullAuthFailed { message }
+                } else {
+                    GitError::PullFetchFailed { message }
+                }
+            })?;
 
         // Find the local and remote tracking branch references
         let local_ref_name = format!("refs/heads/{}", target_branch);
         let remote_ref_name = format!("refs/remotes/{}/{}", remote_name, target_branch);
 
-        let local_ref = repo.find_reference(&local_ref_name).map_err(|_| GitError::PullFailed {
-            message: format!("local branch '{}' not found", target_branch),
-        })?;
+        let local_ref = repo
+            .find_reference(&local_ref_name)
+            .map_err(|_| GitError::PullFailed {
+                message: format!("local branch '{}' not found", target_branch),
+            })?;
 
-        let remote_ref = repo.find_reference(&remote_ref_name).map_err(|_| GitError::PullRemoteBranchNotFound {
-            branch: format!("{}/{}", remote_name, target_branch),
+        let remote_ref = repo.find_reference(&remote_ref_name).map_err(|_| {
+            GitError::PullRemoteBranchNotFound {
+                branch: format!("{}/{}", remote_name, target_branch),
+            }
         })?;
 
         let local_oid = local_ref.target().ok_or_else(|| GitError::PullFailed {
@@ -4043,9 +4138,11 @@ impl GitHandle {
         }
 
         // Compute ahead/behind counts
-        let (ahead, behind) = repo.graph_ahead_behind(local_oid, remote_oid).map_err(|e| GitError::PullFailed {
-            message: format!("failed to compute ahead/behind: {}", e),
-        })?;
+        let (ahead, behind) = repo
+            .graph_ahead_behind(local_oid, remote_oid)
+            .map_err(|e| GitError::PullFailed {
+                message: format!("failed to compute ahead/behind: {}", e),
+            })?;
 
         log::debug!("Local is {} ahead, {} behind remote", ahead, behind);
 
@@ -4090,8 +4187,13 @@ impl GitHandle {
             });
         }
 
-        log::info!("Successfully pulled {} commits from {}/{}", behind, remote_name, target_branch);
-        
+        log::info!(
+            "Successfully pulled {} commits from {}/{}",
+            behind,
+            remote_name,
+            target_branch
+        );
+
         let result = PullResult {
             backend: "git".to_string(),
             alias: self.alias.clone(),
@@ -4117,15 +4219,21 @@ impl GitHandle {
         profile: &GitConnectionProfile,
     ) -> Result<(), GitError> {
         // Clone all auth values for the closure
-        let ssh_key_clone = config.ssh_key.clone().or_else(|| 
-            profile.ssh_key_path.as_ref().map(|p| p.to_string_lossy().to_string())
-        );
+        let ssh_key_clone = config.ssh_key.clone().or_else(|| {
+            profile
+                .ssh_key_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+        });
         let username_clone = config.username.clone().or_else(|| profile.username.clone());
         let password_clone = config.password.clone().or_else(|| profile.password.clone());
         let token_clone = config.token.clone().or_else(|| profile.token.clone());
 
         callbacks.credentials(move |_url, username_from_url, allowed_types| {
-            log::debug!("Git authentication requested for pull, allowed_types: {:?}", allowed_types);
+            log::debug!(
+                "Git authentication requested for pull, allowed_types: {:?}",
+                allowed_types
+            );
 
             if allowed_types.contains(CredentialType::SSH_KEY) {
                 if let Some(ref key_path) = ssh_key_clone {
@@ -4168,13 +4276,17 @@ impl GitHandle {
         branch_name: &str,
     ) -> Result<(), GitError> {
         // Update the local branch reference to point to the remote commit
-        let mut local_ref_mut = repo.find_reference(&local_ref.name().unwrap()).map_err(|e| GitError::PullFailed {
-            message: format!("failed to find local reference: {}", e),
-        })?;
+        let mut local_ref_mut = repo
+            .find_reference(&local_ref.name().unwrap())
+            .map_err(|e| GitError::PullFailed {
+                message: format!("failed to find local reference: {}", e),
+            })?;
 
-        local_ref_mut.set_target(remote_oid, &format!("fast-forward to {}", remote_oid)).map_err(|e| GitError::PullFailed {
-            message: format!("failed to update local branch: {}", e),
-        })?;
+        local_ref_mut
+            .set_target(remote_oid, &format!("fast-forward to {}", remote_oid))
+            .map_err(|e| GitError::PullFailed {
+                message: format!("failed to update local branch: {}", e),
+            })?;
 
         // Update HEAD if we're on this branch
         let head = repo.head().map_err(|e| GitError::PullFailed {
@@ -4183,25 +4295,31 @@ impl GitHandle {
 
         if head.is_branch() && head.shorthand() == Some(branch_name) {
             // Checkout the new commit to update working tree
-            let commit = repo.find_commit(remote_oid).map_err(|e| GitError::PullFailed {
-                message: format!("failed to find commit: {}", e),
-            })?;
+            let commit = repo
+                .find_commit(remote_oid)
+                .map_err(|e| GitError::PullFailed {
+                    message: format!("failed to find commit: {}", e),
+                })?;
 
             let tree = commit.tree().map_err(|e| GitError::PullFailed {
                 message: format!("failed to get tree: {}", e),
             })?;
 
-            repo.checkout_tree(tree.as_object(), Some(
-                git2::build::CheckoutBuilder::new()
-                    .force() // Force checkout to update working tree
-            )).map_err(|e| GitError::PullFailed {
+            repo.checkout_tree(
+                tree.as_object(),
+                Some(
+                    git2::build::CheckoutBuilder::new().force(), // Force checkout to update working tree
+                ),
+            )
+            .map_err(|e| GitError::PullFailed {
                 message: format!("failed to checkout tree: {}", e),
             })?;
 
             // Update HEAD to point to new commit
-            repo.set_head(&format!("refs/heads/{}", branch_name)).map_err(|e| GitError::PullFailed {
-                message: format!("failed to update HEAD: {}", e),
-            })?;
+            repo.set_head(&format!("refs/heads/{}", branch_name))
+                .map_err(|e| GitError::PullFailed {
+                    message: format!("failed to update HEAD: {}", e),
+                })?;
         }
 
         Ok(())
@@ -4215,15 +4333,21 @@ impl GitHandle {
         profile: &GitConnectionProfile,
     ) -> Result<(), GitError> {
         // Clone all auth values for the closure
-        let ssh_key_clone = config.ssh_key.clone().or_else(|| 
-            profile.ssh_key_path.as_ref().map(|p| p.to_string_lossy().to_string())
-        );
+        let ssh_key_clone = config.ssh_key.clone().or_else(|| {
+            profile
+                .ssh_key_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+        });
         let username_clone = config.username.clone().or_else(|| profile.username.clone());
         let password_clone = config.password.clone().or_else(|| profile.password.clone());
         let token_clone = config.token.clone().or_else(|| profile.token.clone());
 
         callbacks.credentials(move |_url, username_from_url, allowed_types| {
-            log::debug!("Git authentication requested, allowed_types: {:?}", allowed_types);
+            log::debug!(
+                "Git authentication requested, allowed_types: {:?}",
+                allowed_types
+            );
 
             if allowed_types.contains(CredentialType::SSH_KEY) {
                 if let Some(ref key_path) = ssh_key_clone {
@@ -4307,9 +4431,11 @@ impl GitHandle {
         let remote_name = config.remote.as_deref().unwrap_or("origin");
 
         // Verify remote exists
-        let mut remote = repo.find_remote(remote_name).map_err(|_| GitError::RemoteNotFound {
-            remote: remote_name.to_string(),
-        })?;
+        let mut remote = repo
+            .find_remote(remote_name)
+            .map_err(|_| GitError::RemoteNotFound {
+                remote: remote_name.to_string(),
+            })?;
 
         // Resolve branches to push
         let branches_to_push = self.resolve_push_branches(&repo, config)?;
@@ -4317,8 +4443,9 @@ impl GitHandle {
         // Compute ahead/behind counts for each branch (for ff_only check and reporting)
         let mut branch_statuses = Vec::new();
         for branch_name in &branches_to_push {
-            let (ahead_by, behind_by) = self.compute_ahead_behind(&repo, branch_name, remote_name)?;
-            
+            let (ahead_by, behind_by) =
+                self.compute_ahead_behind(&repo, branch_name, remote_name)?;
+
             // Check ff_only constraints
             if config.ff_only.unwrap_or(false) && behind_by > 0 {
                 return Err(GitError::PushNonFastForward);
@@ -4334,7 +4461,7 @@ impl GitHandle {
         // Build refspecs for branches
         let mut refspecs = Vec::new();
         let force = config.force.unwrap_or(false);
-        
+
         for branch_name in &branches_to_push {
             let refspec = if force {
                 format!("+refs/heads/{}:refs/heads/{}", branch_name, branch_name)
@@ -4365,19 +4492,27 @@ impl GitHandle {
         push_options.remote_callbacks(callbacks);
 
         // Perform the push
-        log::debug!("Pushing {} branches and tags={} to remote '{}'", 
-                   branches_to_push.len(), tags_pushed, remote_name);
-        
-        remote.push(&refspec_strs, Some(&mut push_options)).map_err(|e| {
-            let message = format!("push failed: {}", e);
-            if e.to_string().contains("authentication") {
-                GitError::PushAuthFailed { message }
-            } else if e.to_string().contains("non-fast-forward") || e.to_string().contains("rejected") {
-                GitError::PushRejected { message }
-            } else {
-                GitError::PushFailed { message }
-            }
-        })?;
+        log::debug!(
+            "Pushing {} branches and tags={} to remote '{}'",
+            branches_to_push.len(),
+            tags_pushed,
+            remote_name
+        );
+
+        remote
+            .push(&refspec_strs, Some(&mut push_options))
+            .map_err(|e| {
+                let message = format!("push failed: {}", e);
+                if e.to_string().contains("authentication") {
+                    GitError::PushAuthFailed { message }
+                } else if e.to_string().contains("non-fast-forward")
+                    || e.to_string().contains("rejected")
+                {
+                    GitError::PushRejected { message }
+                } else {
+                    GitError::PushFailed { message }
+                }
+            })?;
 
         // Set upstream if requested
         if config.set_upstream.unwrap_or(false) {
@@ -4392,7 +4527,7 @@ impl GitHandle {
             } else {
                 "pushed".to_string()
             };
-            
+
             result_branches.push(PushBranchStatus {
                 name: branch_name,
                 status,
@@ -4401,8 +4536,12 @@ impl GitHandle {
             });
         }
 
-        log::info!("Successfully pushed {} branches to {}", result_branches.len(), remote_name);
-        
+        log::info!(
+            "Successfully pushed {} branches to {}",
+            result_branches.len(),
+            remote_name
+        );
+
         let result = PushResult {
             backend: "git".to_string(),
             alias: self.alias.clone(),
@@ -4454,7 +4593,10 @@ impl GitHandle {
             in_progress,
         };
 
-        log::info!("Successfully retrieved status for repository at {}", config.path);
+        log::info!(
+            "Successfully retrieved status for repository at {}",
+            config.path
+        );
         Ok(serde_json::to_value(result).unwrap())
     }
 
@@ -4489,7 +4631,11 @@ impl GitHandle {
     }
 
     /// Execute the actual commit operation
-    async fn execute_commit(&self, config: &CommitConfig, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn execute_commit(
+        &self,
+        config: &CommitConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
 
         // Open the repository
@@ -4568,7 +4714,11 @@ impl GitHandle {
             },
         };
 
-        log::info!("Successfully created commit {} in repository {}", commit_oid, config.path);
+        log::info!(
+            "Successfully created commit {} in repository {}",
+            commit_oid,
+            config.path
+        );
         Ok(serde_json::to_value(result).unwrap())
     }
 
@@ -4680,11 +4830,16 @@ impl GitHandle {
         // Parse diff and build result
         let max_files = config.max_files.unwrap_or(1000);
         let max_hunks = config.max_hunks.unwrap_or(10000);
-        self.parse_diff_to_json(&diff, config, max_files, max_hunks).await
+        self.parse_diff_to_json(&diff, config, max_files, max_hunks)
+            .await
     }
 
     /// Execute tag operations (list, create, delete)
-    async fn execute_tag(&self, config: &TagConfig, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn execute_tag(
+        &self,
+        config: &TagConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
 
         // Open the repository
@@ -4712,11 +4867,13 @@ impl GitHandle {
     /// List tags operation
     async fn list_tags(&self, repo: &Repository, config: &TagConfig) -> Result<Value, GitError> {
         let pattern = config.pattern.as_ref().map(|p| p.as_str());
-        
+
         // Get tag names from repository
-        let tag_names = repo.tag_names(pattern).map_err(|e| GitError::TagListFailed {
-            message: format!("failed to list tags: {}", e),
-        })?;
+        let tag_names = repo
+            .tag_names(pattern)
+            .map_err(|e| GitError::TagListFailed {
+                message: format!("failed to list tags: {}", e),
+            })?;
 
         let mut tags = Vec::new();
 
@@ -4752,7 +4909,12 @@ impl GitHandle {
     }
 
     /// Create tag operation
-    async fn create_tag(&self, repo: &Repository, config: &TagConfig, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn create_tag(
+        &self,
+        repo: &Repository,
+        config: &TagConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         let name = config.name.as_ref().unwrap(); // Already validated
         let default_target = "HEAD".to_string();
         let target_str = config.target.as_ref().unwrap_or(&default_target);
@@ -4760,18 +4922,16 @@ impl GitHandle {
         let annotated = config.annotated.unwrap_or(false);
 
         // Resolve target object
-        let target = repo.revparse_single(target_str).map_err(|_| {
-            GitError::TagTargetNotFound {
+        let target = repo
+            .revparse_single(target_str)
+            .map_err(|_| GitError::TagTargetNotFound {
                 target: target_str.clone(),
-            }
-        })?;
+            })?;
 
         // Check if tag already exists
         if !force {
             if repo.find_reference(&format!("refs/tags/{}", name)).is_ok() {
-                return Err(GitError::TagAlreadyExists {
-                    name: name.clone(),
-                });
+                return Err(GitError::TagAlreadyExists { name: name.clone() });
             }
         }
 
@@ -4780,18 +4940,16 @@ impl GitHandle {
             let message = config.message.as_ref().unwrap(); // Already validated
             let tagger = self.resolve_tag_identity(config, profile, repo)?;
 
-            repo.tag(name, &target, &tagger, message, force).map_err(|e| {
-                GitError::TagCreateFailed {
+            repo.tag(name, &target, &tagger, message, force)
+                .map_err(|e| GitError::TagCreateFailed {
                     message: format!("failed to create annotated tag: {}", e),
-                }
-            })?
+                })?
         } else {
             // Create lightweight tag
-            repo.tag_lightweight(name, &target, force).map_err(|e| {
-                GitError::TagCreateFailed {
+            repo.tag_lightweight(name, &target, force)
+                .map_err(|e| GitError::TagCreateFailed {
                     message: format!("failed to create lightweight tag: {}", e),
-                }
-            })?
+                })?
         };
 
         // Get the created tag info
@@ -4819,7 +4977,7 @@ impl GitHandle {
     /// Delete tags operation
     async fn delete_tags(&self, repo: &Repository, config: &TagConfig) -> Result<Value, GitError> {
         let force = config.force.unwrap_or(false);
-        
+
         // Determine which tags to delete
         let names_to_delete = if let Some(names) = &config.names {
             names.clone()
@@ -4837,23 +4995,19 @@ impl GitHandle {
         for name in &names_to_delete {
             let refname = format!("refs/tags/{}", name);
             match repo.find_reference(&refname) {
-                Ok(mut tag_ref) => {
-                    match tag_ref.delete() {
-                        Ok(_) => deleted.push(name.clone()),
-                        Err(e) => {
-                            return Err(GitError::TagDeleteFailed {
-                                message: format!("failed to delete tag '{}': {}", name, e),
-                            });
-                        }
+                Ok(mut tag_ref) => match tag_ref.delete() {
+                    Ok(_) => deleted.push(name.clone()),
+                    Err(e) => {
+                        return Err(GitError::TagDeleteFailed {
+                            message: format!("failed to delete tag '{}': {}", name, e),
+                        });
                     }
-                }
+                },
                 Err(_) => {
                     if force {
                         missing.push(name.clone());
                     } else {
-                        return Err(GitError::TagNotFound {
-                            name: name.clone(),
-                        });
+                        return Err(GitError::TagNotFound { name: name.clone() });
                     }
                 }
             }
@@ -4876,7 +5030,7 @@ impl GitHandle {
     /// Get detailed information about a specific tag
     fn get_tag_info(&self, repo: &Repository, name: &str) -> Result<TagEntry, GitError> {
         let refname = format!("refs/tags/{}", name);
-        
+
         // First try to find it as an annotated tag by finding the tag object
         if let Ok(oid) = repo.refname_to_id(&refname) {
             if let Ok(obj) = repo.find_object(oid, None) {
@@ -4970,12 +5124,13 @@ impl GitHandle {
     /// Compare version strings for semantic version sorting
     fn compare_versions(&self, a: &str, b: &str) -> std::cmp::Ordering {
         use std::cmp::Ordering;
-        
+
         // Extract numeric parts from version strings
         let extract_version_parts = |s: &str| -> Vec<u32> {
             // Remove common prefixes like 'v' and extract numbers
             let clean = s.strip_prefix('v').unwrap_or(s);
-            clean.split('.')
+            clean
+                .split('.')
                 .filter_map(|part| part.parse::<u32>().ok())
                 .collect()
         };
@@ -4988,7 +5143,7 @@ impl GitHandle {
         for i in 0..max_len {
             let a_part = a_parts.get(i).unwrap_or(&0);
             let b_part = b_parts.get(i).unwrap_or(&0);
-            
+
             match a_part.cmp(b_part) {
                 std::cmp::Ordering::Equal => continue,
                 other => return other,
@@ -5000,7 +5155,12 @@ impl GitHandle {
     }
 
     /// Resolve tag identity (author/tagger) from config, profile, and repo config
-    fn resolve_tag_identity(&self, config: &TagConfig, profile: &GitConnectionProfile, repo: &Repository) -> Result<Signature, GitError> {
+    fn resolve_tag_identity(
+        &self,
+        config: &TagConfig,
+        profile: &GitConnectionProfile,
+        repo: &Repository,
+    ) -> Result<Signature, GitError> {
         let name = if let Some(name) = &config.author_name {
             name.clone()
         } else if let Some(name) = &profile.username {
@@ -5031,9 +5191,7 @@ impl GitHandle {
                             message: format!("invalid ISO8601 timestamp: {}", iso_str),
                         })?
                 }
-                TagTimestamp::UnixSeconds(unix_secs) => {
-                    Time::new(*unix_secs as i64, 0)
-                }
+                TagTimestamp::UnixSeconds(unix_secs) => Time::new(*unix_secs as i64, 0),
             }
         } else {
             // Use current time
@@ -5056,42 +5214,60 @@ impl GitHandle {
 
     /// Get string value from repository config
     fn get_repo_config_string(&self, repo: &Repository, key: &str) -> Option<String> {
-        repo.config().ok()
+        repo.config()
+            .ok()
             .and_then(|config| config.get_string(key).ok())
     }
 
     /// Get string value from global git config
     fn get_global_config_string(&self, key: &str) -> Option<String> {
-        git2::Config::open_default().ok()
+        git2::Config::open_default()
+            .ok()
             .and_then(|config| config.get_string(key).ok())
     }
 
     /// Get HEAD tree for diff operations
     fn get_head_tree<'a>(&self, repo: &'a Repository) -> Result<git2::Tree<'a>, GitError> {
         let head = repo.head().map_err(|_| GitError::DiffHeadNotFound)?;
-        let commit = head.peel_to_commit().map_err(|_| GitError::DiffHeadNotFound)?;
+        let commit = head
+            .peel_to_commit()
+            .map_err(|_| GitError::DiffHeadNotFound)?;
         commit.tree().map_err(|e| GitError::DiffFailed {
             message: format!("failed to get HEAD tree: {}", e),
         })
     }
 
     /// Resolve commit-ish string to tree
-    fn resolve_commit_tree<'a>(&self, repo: &'a Repository, commit_ish: &str) -> Result<git2::Tree<'a>, GitError> {
-        let object = repo.revparse_single(commit_ish).map_err(|_| GitError::DiffRefNotFound {
-            reference: commit_ish.to_string(),
-        })?;
-        
-        let commit = object.peel_to_commit().map_err(|_| GitError::DiffRefNotFound {
-            reference: commit_ish.to_string(),
-        })?;
-        
+    fn resolve_commit_tree<'a>(
+        &self,
+        repo: &'a Repository,
+        commit_ish: &str,
+    ) -> Result<git2::Tree<'a>, GitError> {
+        let object = repo
+            .revparse_single(commit_ish)
+            .map_err(|_| GitError::DiffRefNotFound {
+                reference: commit_ish.to_string(),
+            })?;
+
+        let commit = object
+            .peel_to_commit()
+            .map_err(|_| GitError::DiffRefNotFound {
+                reference: commit_ish.to_string(),
+            })?;
+
         commit.tree().map_err(|e| GitError::DiffFailed {
             message: format!("failed to get tree for {}: {}", commit_ish, e),
         })
     }
 
     /// Parse libgit2 diff to JSON structure
-    async fn parse_diff_to_json(&self, diff: &git2::Diff<'_>, config: &DiffConfig, max_files: u32, max_hunks: u32) -> Result<Value, GitError> {
+    async fn parse_diff_to_json(
+        &self,
+        diff: &git2::Diff<'_>,
+        config: &DiffConfig,
+        max_files: u32,
+        max_hunks: u32,
+    ) -> Result<Value, GitError> {
         let mut files = Vec::new();
         let mut total_insertions = 0u32;
         let mut total_deletions = 0u32;
@@ -5107,12 +5283,18 @@ impl GitHandle {
                 break;
             }
 
-            let old_path = delta.old_file().path().map(|p: &std::path::Path| p.to_string_lossy().to_string());
-            let new_path = delta.new_file().path().map(|p: &std::path::Path| p.to_string_lossy().to_string());
+            let old_path = delta
+                .old_file()
+                .path()
+                .map(|p: &std::path::Path| p.to_string_lossy().to_string());
+            let new_path = delta
+                .new_file()
+                .path()
+                .map(|p: &std::path::Path| p.to_string_lossy().to_string());
 
             let status = match delta.status() {
                 git2::Delta::Added => "added",
-                git2::Delta::Deleted => "deleted", 
+                git2::Delta::Deleted => "deleted",
                 git2::Delta::Modified => "modified",
                 git2::Delta::Renamed => "renamed",
                 git2::Delta::Copied => "copied",
@@ -5121,15 +5303,16 @@ impl GitHandle {
             };
 
             let is_binary = delta.old_file().is_binary() || delta.new_file().is_binary();
-            
+
             let mut hunks = Vec::new();
             let mut actual_is_binary = is_binary;
 
             // Process hunks for non-binary files or if binary is enabled
             if !is_binary || config.binary.unwrap_or(false) {
-                let patch = git2::Patch::from_diff(diff, delta_idx).map_err(|e| GitError::DiffFailed {
-                    message: format!("failed to create patch: {}", e),
-                })?;
+                let patch =
+                    git2::Patch::from_diff(diff, delta_idx).map_err(|e| GitError::DiffFailed {
+                        message: format!("failed to create patch: {}", e),
+                    })?;
 
                 if let Some(patch) = patch {
                     // Check if the patch itself indicates binary content
@@ -5137,16 +5320,20 @@ impl GitHandle {
                         // This might be a binary file that git2 didn't detect as binary
                         // Try to read the file content to check for null bytes
                         if let Some(new_file_path) = new_path.as_ref() {
-                            if let Ok(content) = std::fs::read(Path::new(&config.path).join(new_file_path)) {
+                            if let Ok(content) =
+                                std::fs::read(Path::new(&config.path).join(new_file_path))
+                            {
                                 actual_is_binary = content.contains(&0);
                             }
                         } else if let Some(old_file_path) = old_path.as_ref() {
-                            if let Ok(content) = std::fs::read(Path::new(&config.path).join(old_file_path)) {
+                            if let Ok(content) =
+                                std::fs::read(Path::new(&config.path).join(old_file_path))
+                            {
                                 actual_is_binary = content.contains(&0);
                             }
                         }
                     }
-                    
+
                     if !actual_is_binary {
                         for hunk_idx in 0..patch.num_hunks() {
                             if hunk_count >= max_hunks {
@@ -5154,54 +5341,59 @@ impl GitHandle {
                                 break;
                             }
 
-                            let (hunk, _) = patch.hunk(hunk_idx).map_err(|e| GitError::DiffFailed {
-                                message: format!("failed to get hunk: {}", e),
-                            })?;
+                            let (hunk, _) =
+                                patch.hunk(hunk_idx).map_err(|e| GitError::DiffFailed {
+                                    message: format!("failed to get hunk: {}", e),
+                                })?;
 
                             let mut lines = Vec::new();
-                            let num_lines = patch.num_lines_in_hunk(hunk_idx).map_err(|e| GitError::DiffFailed {
-                                message: format!("failed to get hunk line count: {}", e),
+                            let num_lines = patch.num_lines_in_hunk(hunk_idx).map_err(|e| {
+                                GitError::DiffFailed {
+                                    message: format!("failed to get hunk line count: {}", e),
+                                }
                             })?;
 
                             for line_idx in 0..num_lines {
-                                let line = patch.line_in_hunk(hunk_idx, line_idx).map_err(|e| GitError::DiffFailed {
-                                    message: format!("failed to get line: {}", e),
+                                let line = patch.line_in_hunk(hunk_idx, line_idx).map_err(|e| {
+                                    GitError::DiffFailed {
+                                        message: format!("failed to get line: {}", e),
+                                    }
                                 })?;
 
                                 let line_type = match line.origin() {
                                     '+' => "add",
-                                '-' => "delete",
-                                ' ' => "context",
-                                _ => "context", // Default fallback
-                            };
+                                    '-' => "delete",
+                                    ' ' => "context",
+                                    _ => "context", // Default fallback
+                                };
 
-                            // Remove trailing newline from content
-                            let content = String::from_utf8_lossy(line.content());
-                            let content = content.trim_end_matches('\n').to_string();
+                                // Remove trailing newline from content
+                                let content = String::from_utf8_lossy(line.content());
+                                let content = content.trim_end_matches('\n').to_string();
 
-                            lines.push(DiffLine {
-                                line_type: line_type.to_string(),
-                                content,
+                                lines.push(DiffLine {
+                                    line_type: line_type.to_string(),
+                                    content,
+                                });
+
+                                // Count insertions/deletions
+                                match line.origin() {
+                                    '+' => total_insertions += 1,
+                                    '-' => total_deletions += 1,
+                                    _ => {}
+                                }
+                            }
+
+                            hunks.push(DiffHunk {
+                                old_start: hunk.old_start(),
+                                old_lines: hunk.old_lines(),
+                                new_start: hunk.new_start(),
+                                new_lines: hunk.new_lines(),
+                                lines,
                             });
 
-                            // Count insertions/deletions
-                            match line.origin() {
-                                '+' => total_insertions += 1,
-                                '-' => total_deletions += 1,
-                                _ => {}
-                            }
+                            hunk_count += 1;
                         }
-
-                        hunks.push(DiffHunk {
-                            old_start: hunk.old_start(),
-                            old_lines: hunk.old_lines(),
-                            new_start: hunk.new_start(),
-                            new_lines: hunk.new_lines(),
-                            lines,
-                        });
-
-                        hunk_count += 1;
-                    }
                     }
                 }
             }
@@ -5231,10 +5423,9 @@ impl GitHandle {
                 config.from.clone().unwrap_or_default(),
                 "WORKDIR".to_string(),
             ),
-            DiffMode::CommitVsIndex => (
-                config.from.clone().unwrap_or_default(),
-                "INDEX".to_string(),
-            ),
+            DiffMode::CommitVsIndex => {
+                (config.from.clone().unwrap_or_default(), "INDEX".to_string())
+            }
         };
 
         let mode_string = match mode {
@@ -5266,7 +5457,13 @@ impl GitHandle {
     }
 
     /// Create a new commit
-    fn create_new_commit(&self, repo: &Repository, message: &str, author: &Signature, committer: &Signature) -> Result<Oid, GitError> {
+    fn create_new_commit(
+        &self,
+        repo: &Repository,
+        message: &str,
+        author: &Signature,
+        committer: &Signature,
+    ) -> Result<Oid, GitError> {
         let mut index = repo.index().map_err(|e| GitError::CommitFailed {
             message: format!("failed to get index: {}", e),
         })?;
@@ -5275,16 +5472,22 @@ impl GitHandle {
             message: format!("failed to write tree: {}", e),
         })?;
 
-        let tree = repo.find_tree(tree_oid).map_err(|e| GitError::CommitFailed {
-            message: format!("failed to find tree: {}", e),
-        })?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| GitError::CommitFailed {
+                message: format!("failed to find tree: {}", e),
+            })?;
 
         // Determine parents
         let parents: Vec<Commit> = match repo.head() {
             Ok(head_ref) => {
-                vec![head_ref.peel_to_commit().map_err(|e| GitError::CommitFailed {
-                    message: format!("failed to get HEAD commit: {}", e),
-                })?]
+                vec![
+                    head_ref
+                        .peel_to_commit()
+                        .map_err(|e| GitError::CommitFailed {
+                            message: format!("failed to get HEAD commit: {}", e),
+                        })?,
+                ]
             }
             Err(_) => vec![], // No parents for initial commit
         };
@@ -5292,36 +5495,50 @@ impl GitHandle {
         let parent_refs: Vec<&Commit> = parents.iter().collect();
 
         // Create commit
-        let commit_oid = repo.commit(
-            Some("HEAD"),
-            author,
-            committer,
-            message,
-            &tree,
-            &parent_refs,
-        ).map_err(|e| GitError::CommitFailed {
-            message: format!("failed to create commit: {}", e),
-        })?;
+        let commit_oid = repo
+            .commit(
+                Some("HEAD"),
+                author,
+                committer,
+                message,
+                &tree,
+                &parent_refs,
+            )
+            .map_err(|e| GitError::CommitFailed {
+                message: format!("failed to create commit: {}", e),
+            })?;
 
         Ok(commit_oid)
     }
 
     /// Amend the existing HEAD commit
-    fn amend_commit(&self, repo: &Repository, message: &str, author: &Signature, committer: &Signature) -> Result<Oid, GitError> {
+    fn amend_commit(
+        &self,
+        repo: &Repository,
+        message: &str,
+        author: &Signature,
+        committer: &Signature,
+    ) -> Result<Oid, GitError> {
         let mut index = repo.index().map_err(|e| GitError::CommitAmendFailed {
             message: format!("failed to get index: {}", e),
         })?;
 
-        let tree_oid = index.write_tree().map_err(|e| GitError::CommitAmendFailed {
-            message: format!("failed to write tree: {}", e),
-        })?;
+        let tree_oid = index
+            .write_tree()
+            .map_err(|e| GitError::CommitAmendFailed {
+                message: format!("failed to write tree: {}", e),
+            })?;
 
-        let tree = repo.find_tree(tree_oid).map_err(|e| GitError::CommitAmendFailed {
-            message: format!("failed to find tree: {}", e),
-        })?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| GitError::CommitAmendFailed {
+                message: format!("failed to find tree: {}", e),
+            })?;
 
         // Get current HEAD commit
-        let head_commit = repo.head().and_then(|head_ref| head_ref.peel_to_commit())
+        let head_commit = repo
+            .head()
+            .and_then(|head_ref| head_ref.peel_to_commit())
             .map_err(|e| GitError::CommitAmendFailed {
                 message: format!("failed to get HEAD commit: {}", e),
             })?;
@@ -5331,37 +5548,47 @@ impl GitHandle {
         let parent_refs: Vec<&Commit> = parents.iter().collect();
 
         // Create amended commit
-        let commit_oid = repo.commit(
-            Some("HEAD"),
-            author,
-            committer,
-            message,
-            &tree,
-            &parent_refs,
-        ).map_err(|e| GitError::CommitAmendFailed {
-            message: format!("failed to amend commit: {}", e),
-        })?;
+        let commit_oid = repo
+            .commit(
+                Some("HEAD"),
+                author,
+                committer,
+                message,
+                &tree,
+                &parent_refs,
+            )
+            .map_err(|e| GitError::CommitAmendFailed {
+                message: format!("failed to amend commit: {}", e),
+            })?;
 
         Ok(commit_oid)
     }
 
     /// Resolve which branches to push based on configuration
-    fn resolve_push_branches(&self, repo: &Repository, config: &PushConfig) -> Result<Vec<String>, GitError> {
+    fn resolve_push_branches(
+        &self,
+        repo: &Repository,
+        config: &PushConfig,
+    ) -> Result<Vec<String>, GitError> {
         if let Some(ref branches) = config.branches {
             // Use provided branches list
             for branch_name in branches {
                 // Verify branch exists
                 let branch_ref_name = format!("refs/heads/{}", branch_name);
-                repo.find_reference(&branch_ref_name).map_err(|_| GitError::PushLocalBranchNotFound {
-                    branch: branch_name.clone(),
+                repo.find_reference(&branch_ref_name).map_err(|_| {
+                    GitError::PushLocalBranchNotFound {
+                        branch: branch_name.clone(),
+                    }
                 })?;
             }
             Ok(branches.clone())
         } else if let Some(ref branch) = config.branch {
             // Use single branch
             let branch_ref_name = format!("refs/heads/{}", branch);
-            repo.find_reference(&branch_ref_name).map_err(|_| GitError::PushLocalBranchNotFound {
-                branch: branch.clone(),
+            repo.find_reference(&branch_ref_name).map_err(|_| {
+                GitError::PushLocalBranchNotFound {
+                    branch: branch.clone(),
+                }
             })?;
             Ok(vec![branch.clone()])
         } else {
@@ -5380,8 +5607,12 @@ impl GitHandle {
     }
 
     /// List branches operation
-    async fn list_branches(&self, repo: &Repository, config: &BranchConfig) -> Result<Value, GitError> {
-        use git2::{BranchType, Branch};
+    async fn list_branches(
+        &self,
+        repo: &Repository,
+        config: &BranchConfig,
+    ) -> Result<Value, GitError> {
+        use git2::{Branch, BranchType};
 
         let local_only = config.local_only.unwrap_or(true);
         let remote_only = config.remote_only.unwrap_or(false);
@@ -5405,17 +5636,15 @@ impl GitHandle {
         };
 
         for branch_type in branch_types {
-            let branch_iter = repo.branches(Some(branch_type)).map_err(|e| {
-                GitError::BranchFailed {
-                    message: format!("failed to list branches: {}", e),
-                }
-            })?;
+            let branch_iter =
+                repo.branches(Some(branch_type))
+                    .map_err(|e| GitError::BranchFailed {
+                        message: format!("failed to list branches: {}", e),
+                    })?;
 
             for branch_result in branch_iter {
-                let (branch, _branch_type) = branch_result.map_err(|e| {
-                    GitError::BranchFailed {
-                        message: format!("failed to iterate branches: {}", e),
-                    }
+                let (branch, _branch_type) = branch_result.map_err(|e| GitError::BranchFailed {
+                    message: format!("failed to iterate branches: {}", e),
                 })?;
 
                 let branch_info = self.extract_branch_info(&branch, &current_branch_name)?;
@@ -5436,26 +5665,28 @@ impl GitHandle {
     }
 
     /// Create branch operation
-    async fn create_branch(&self, repo: &Repository, config: &BranchConfig) -> Result<Value, GitError> {
+    async fn create_branch(
+        &self,
+        repo: &Repository,
+        config: &BranchConfig,
+    ) -> Result<Value, GitError> {
         let name = config.name.as_ref().unwrap();
         let start_point = config.start_point.as_deref().unwrap_or("HEAD");
 
         // Check if branch already exists
         if repo.find_branch(name, git2::BranchType::Local).is_ok() {
-            return Err(GitError::BranchAlreadyExists {
-                name: name.clone(),
-            });
+            return Err(GitError::BranchAlreadyExists { name: name.clone() });
         }
 
         // Resolve start point to a commit
         let target_commit = self.resolve_start_point(repo, start_point)?;
 
         // Create the branch
-        let mut branch = repo.branch(name, &target_commit, false).map_err(|e| {
-            GitError::BranchFailed {
-                message: format!("failed to create branch '{}': {}", name, e),
-            }
-        })?;
+        let mut branch =
+            repo.branch(name, &target_commit, false)
+                .map_err(|e| GitError::BranchFailed {
+                    message: format!("failed to create branch '{}': {}", name, e),
+                })?;
 
         // Set upstream tracking if requested
         let tracked_remote = if config.track.unwrap_or(false) {
@@ -5491,21 +5722,21 @@ impl GitHandle {
     }
 
     /// Delete branch operation
-    async fn delete_branch(&self, repo: &Repository, config: &BranchConfig) -> Result<Value, GitError> {
+    async fn delete_branch(
+        &self,
+        repo: &Repository,
+        config: &BranchConfig,
+    ) -> Result<Value, GitError> {
         let name = config.name.as_ref().unwrap();
 
         // Find the branch
-        let mut branch = repo.find_branch(name, git2::BranchType::Local).map_err(|_| {
-            GitError::BranchNotFound {
-                name: name.clone(),
-            }
-        })?;
+        let mut branch = repo
+            .find_branch(name, git2::BranchType::Local)
+            .map_err(|_| GitError::BranchNotFound { name: name.clone() })?;
 
         // Check if it's the current branch
         if branch.is_head() && !config.force.unwrap_or(false) {
-            return Err(GitError::BranchDeleteCurrent {
-                name: name.clone(),
-            });
+            return Err(GitError::BranchDeleteCurrent { name: name.clone() });
         }
 
         // Check if branch is merged (simplified check - we could make this more sophisticated)
@@ -5515,10 +5746,8 @@ impl GitHandle {
         }
 
         // Delete the branch
-        branch.delete().map_err(|e| {
-            GitError::BranchDeleteFailed {
-                message: format!("failed to delete branch '{}': {}", name, e),
-            }
+        branch.delete().map_err(|e| GitError::BranchDeleteFailed {
+            message: format!("failed to delete branch '{}': {}", name, e),
         })?;
 
         let branch_data = json!({
@@ -5539,30 +5768,39 @@ impl GitHandle {
     }
 
     /// Rename branch operation
-    async fn rename_branch(&self, repo: &Repository, config: &BranchConfig) -> Result<Value, GitError> {
+    async fn rename_branch(
+        &self,
+        repo: &Repository,
+        config: &BranchConfig,
+    ) -> Result<Value, GitError> {
         let old_name = config.name.as_ref().unwrap();
         let new_name = config.new_name.as_ref().unwrap();
 
         // Find the old branch
-        let mut branch = repo.find_branch(old_name, git2::BranchType::Local).map_err(|_| {
-            GitError::BranchNotFound {
+        let mut branch = repo
+            .find_branch(old_name, git2::BranchType::Local)
+            .map_err(|_| GitError::BranchNotFound {
                 name: old_name.clone(),
-            }
-        })?;
+            })?;
 
         // Check if target name already exists
-        if !config.force.unwrap_or(false) && repo.find_branch(new_name, git2::BranchType::Local).is_ok() {
+        if !config.force.unwrap_or(false)
+            && repo.find_branch(new_name, git2::BranchType::Local).is_ok()
+        {
             return Err(GitError::BranchAlreadyExists {
                 name: new_name.clone(),
             });
         }
 
         // Rename the branch
-        branch.rename(new_name, config.force.unwrap_or(false)).map_err(|e| {
-            GitError::BranchRenameFailed {
-                message: format!("failed to rename branch '{}' to '{}': {}", old_name, new_name, e),
-            }
-        })?;
+        branch
+            .rename(new_name, config.force.unwrap_or(false))
+            .map_err(|e| GitError::BranchRenameFailed {
+                message: format!(
+                    "failed to rename branch '{}' to '{}': {}",
+                    old_name, new_name, e
+                ),
+            })?;
 
         let branch_data = json!({
             "old_name": old_name,
@@ -5578,20 +5816,26 @@ impl GitHandle {
             branch: branch_data,
         };
 
-        log::info!("Successfully renamed branch '{}' to '{}'", old_name, new_name);
+        log::info!(
+            "Successfully renamed branch '{}' to '{}'",
+            old_name,
+            new_name
+        );
         Ok(serde_json::to_value(result).unwrap())
     }
 
     /// Checkout branch operation
-    async fn checkout_branch(&self, repo: &Repository, config: &BranchConfig) -> Result<Value, GitError> {
+    async fn checkout_branch(
+        &self,
+        repo: &Repository,
+        config: &BranchConfig,
+    ) -> Result<Value, GitError> {
         let name = config.name.as_ref().unwrap();
 
         // Find the branch
-        let branch = repo.find_branch(name, git2::BranchType::Local).map_err(|_| {
-            GitError::BranchNotFound {
-                name: name.clone(),
-            }
-        })?;
+        let branch = repo
+            .find_branch(name, git2::BranchType::Local)
+            .map_err(|_| GitError::BranchNotFound { name: name.clone() })?;
 
         // Check if already current
         let was_current = branch.is_head();
@@ -5599,11 +5843,11 @@ impl GitHandle {
         if !was_current {
             // Check working directory status if force is not set
             if !config.force.unwrap_or(false) {
-                let statuses = repo.statuses(None).map_err(|e| {
-                    GitError::BranchCheckoutFailed {
+                let statuses = repo
+                    .statuses(None)
+                    .map_err(|e| GitError::BranchCheckoutFailed {
                         message: format!("failed to check repository status: {}", e),
-                    }
-                })?;
+                    })?;
 
                 // Check for uncommitted changes that would conflict
                 let has_changes = statuses.iter().any(|entry| {
@@ -5618,7 +5862,7 @@ impl GitHandle {
 
             // Get the branch reference
             let branch_ref = branch.get();
-            
+
             // Set HEAD to point to the branch
             repo.set_head(branch_ref.name().unwrap()).map_err(|e| {
                 GitError::BranchCheckoutFailed {
@@ -5631,7 +5875,7 @@ impl GitHandle {
             if config.force.unwrap_or(false) {
                 checkout_opts.force();
             }
-            
+
             repo.checkout_head(Some(&mut checkout_opts)).map_err(|e| {
                 GitError::BranchCheckoutFailed {
                     message: format!("failed to checkout working directory: {}", e),
@@ -5658,13 +5902,19 @@ impl GitHandle {
     }
 
     /// Extract branch information for list operation
-    fn extract_branch_info(&self, branch: &git2::Branch, current_branch_name: &Option<String>) -> Result<BranchListEntry, GitError> {
+    fn extract_branch_info(
+        &self,
+        branch: &git2::Branch,
+        current_branch_name: &Option<String>,
+    ) -> Result<BranchListEntry, GitError> {
         let branch_ref = branch.get();
-        let name = branch.name().map_err(|e| {
-            GitError::BranchFailed {
+        let name = branch
+            .name()
+            .map_err(|e| GitError::BranchFailed {
                 message: format!("failed to get branch name: {}", e),
-            }
-        })?.unwrap_or("").to_string();
+            })?
+            .unwrap_or("")
+            .to_string();
 
         let full_ref = branch_ref.name().unwrap_or("").to_string();
         let is_remote = branch_ref.is_remote();
@@ -5675,19 +5925,27 @@ impl GitHandle {
         };
 
         // Get commit SHA
-        let head = branch_ref.target().map(|oid| oid.to_string()).unwrap_or_else(|| "".to_string());
+        let head = branch_ref
+            .target()
+            .map(|oid| oid.to_string())
+            .unwrap_or_else(|| "".to_string());
 
         // Get upstream information for local branches
         let upstream = if !is_remote {
             match branch.upstream() {
                 Ok(upstream_branch) => {
                     let upstream_ref = upstream_branch.get();
-                    let upstream_name = upstream_branch.name().unwrap_or(None).unwrap_or("").to_string();
+                    let upstream_name = upstream_branch
+                        .name()
+                        .unwrap_or(None)
+                        .unwrap_or("")
+                        .to_string();
                     let upstream_full_ref = upstream_ref.name().unwrap_or("").to_string();
-                    
+
                     // Extract remote name from upstream reference
                     let remote_name = if upstream_full_ref.starts_with("refs/remotes/") {
-                        upstream_full_ref.strip_prefix("refs/remotes/")
+                        upstream_full_ref
+                            .strip_prefix("refs/remotes/")
                             .and_then(|s| s.split('/').next())
                             .unwrap_or("origin")
                             .to_string()
@@ -5718,28 +5976,37 @@ impl GitHandle {
     }
 
     /// Resolve start point to a commit
-    fn resolve_start_point<'a>(&self, repo: &'a Repository, start_point: &str) -> Result<git2::Commit<'a>, GitError> {
+    fn resolve_start_point<'a>(
+        &self,
+        repo: &'a Repository,
+        start_point: &str,
+    ) -> Result<git2::Commit<'a>, GitError> {
         // Try to resolve as reference, tag, or commit SHA
-        let obj = repo.revparse_single(start_point).map_err(|_| {
-            GitError::BranchStartpointNotFound {
-                start_point: start_point.to_string(),
-            }
-        })?;
+        let obj =
+            repo.revparse_single(start_point)
+                .map_err(|_| GitError::BranchStartpointNotFound {
+                    start_point: start_point.to_string(),
+                })?;
 
         // Convert to commit
-        let commit = obj.peel_to_commit().map_err(|_| {
-            GitError::BranchStartpointNotFound {
+        let commit = obj
+            .peel_to_commit()
+            .map_err(|_| GitError::BranchStartpointNotFound {
                 start_point: start_point.to_string(),
-            }
-        })?;
+            })?;
 
         Ok(commit)
     }
 
     /// Set upstream tracking for a branch
-    fn set_branch_upstream(&self, branch: &mut git2::Branch, remote_name: &str, branch_name: &str) -> Result<String, GitError> {
+    fn set_branch_upstream(
+        &self,
+        branch: &mut git2::Branch,
+        remote_name: &str,
+        branch_name: &str,
+    ) -> Result<String, GitError> {
         let upstream_ref = format!("refs/remotes/{}/{}", remote_name, branch_name);
-        
+
         // Set upstream reference
         branch.set_upstream(Some(&upstream_ref)).map_err(|e| {
             GitError::BranchSetUpstreamFailed {
@@ -5751,12 +6018,19 @@ impl GitHandle {
     }
 
     /// Compute ahead/behind counts for a local branch against its remote tracking branch
-    fn compute_ahead_behind(&self, repo: &Repository, branch_name: &str, remote_name: &str) -> Result<(usize, usize), GitError> {
+    fn compute_ahead_behind(
+        &self,
+        repo: &Repository,
+        branch_name: &str,
+        remote_name: &str,
+    ) -> Result<(usize, usize), GitError> {
         let local_ref_name = format!("refs/heads/{}", branch_name);
         let remote_ref_name = format!("refs/remotes/{}/{}", remote_name, branch_name);
 
-        let local_ref = repo.find_reference(&local_ref_name).map_err(|_| GitError::PushLocalBranchNotFound {
-            branch: branch_name.to_string(),
+        let local_ref = repo.find_reference(&local_ref_name).map_err(|_| {
+            GitError::PushLocalBranchNotFound {
+                branch: branch_name.to_string(),
+            }
         })?;
 
         let local_oid = local_ref.target().ok_or_else(|| GitError::PushFailed {
@@ -5776,9 +6050,11 @@ impl GitHandle {
         };
 
         // Compute ahead/behind counts
-        let (ahead, behind) = repo.graph_ahead_behind(local_oid, remote_oid).map_err(|e| GitError::PushFailed {
-            message: format!("failed to compute ahead/behind: {}", e),
-        })?;
+        let (ahead, behind) = repo
+            .graph_ahead_behind(local_oid, remote_oid)
+            .map_err(|e| GitError::PushFailed {
+                message: format!("failed to compute ahead/behind: {}", e),
+            })?;
 
         Ok((ahead, behind))
     }
@@ -5791,15 +6067,21 @@ impl GitHandle {
         profile: &GitConnectionProfile,
     ) -> Result<(), GitError> {
         // Clone all auth values for the closure
-        let ssh_key_clone = config.ssh_key.clone().or_else(|| 
-            profile.ssh_key_path.as_ref().map(|p| p.to_string_lossy().to_string())
-        );
+        let ssh_key_clone = config.ssh_key.clone().or_else(|| {
+            profile
+                .ssh_key_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+        });
         let username_clone = config.username.clone().or_else(|| profile.username.clone());
         let password_clone = config.password.clone().or_else(|| profile.password.clone());
         let token_clone = config.token.clone().or_else(|| profile.token.clone());
 
         callbacks.credentials(move |_url, username_from_url, allowed_types| {
-            log::debug!("Git authentication requested for push, allowed_types: {:?}", allowed_types);
+            log::debug!(
+                "Git authentication requested for push, allowed_types: {:?}",
+                allowed_types
+            );
 
             if allowed_types.contains(CredentialType::SSH_KEY) {
                 if let Some(ref key_path) = ssh_key_clone {
@@ -5834,12 +6116,22 @@ impl GitHandle {
     }
 
     /// Set upstream configuration for branches
-    fn set_upstream_branches(&self, repo: &Repository, branches: &[String], remote_name: &str) -> Result<(), GitError> {
+    fn set_upstream_branches(
+        &self,
+        repo: &Repository,
+        branches: &[String],
+        remote_name: &str,
+    ) -> Result<(), GitError> {
         for branch_name in branches {
             // This is a simplified implementation - in a real implementation you'd use
             // git2's config API to set branch.<name>.remote and branch.<name>.merge
-            log::debug!("Setting upstream for branch '{}' to '{}/{}'", branch_name, remote_name, branch_name);
-            
+            log::debug!(
+                "Setting upstream for branch '{}' to '{}/{}'",
+                branch_name,
+                remote_name,
+                branch_name
+            );
+
             // For now, just log - proper implementation would use:
             // let mut config = repo.config()?;
             // config.set_str(&format!("branch.{}.remote", branch_name), remote_name)?;
@@ -5849,7 +6141,11 @@ impl GitHandle {
     }
 
     /// Get branch information for status operation
-    fn get_branch_info(&self, repo: &Repository, include_remote: bool) -> Result<BranchInfo, GitError> {
+    fn get_branch_info(
+        &self,
+        repo: &Repository,
+        include_remote: bool,
+    ) -> Result<BranchInfo, GitError> {
         let head = repo.head().map_err(|e| GitError::StatusFailed {
             message: format!("failed to get HEAD: {}", e),
         })?;
@@ -5884,7 +6180,11 @@ impl GitHandle {
     }
 
     /// Get upstream information for a branch
-    fn get_upstream_info(&self, repo: &Repository, branch_name: &str) -> Result<Option<UpstreamInfo>, GitError> {
+    fn get_upstream_info(
+        &self,
+        repo: &Repository,
+        branch_name: &str,
+    ) -> Result<Option<UpstreamInfo>, GitError> {
         let local_branch = match repo.find_branch(branch_name, git2::BranchType::Local) {
             Ok(branch) => branch,
             Err(_) => return Ok(None),
@@ -5895,14 +6195,19 @@ impl GitHandle {
             Err(_) => return Ok(None),
         };
 
-        let upstream_name = upstream_branch.name().map_err(|e| GitError::StatusFailed {
-            message: format!("failed to get upstream branch name: {}", e),
-        })?.unwrap_or("unknown");
+        let upstream_name = upstream_branch
+            .name()
+            .map_err(|e| GitError::StatusFailed {
+                message: format!("failed to get upstream branch name: {}", e),
+            })?
+            .unwrap_or("unknown");
 
         // Extract remote name from upstream reference
         let remote_name = if let Some(upstream_ref) = upstream_branch.get().name() {
             if upstream_ref.starts_with("refs/remotes/") {
-                let parts: Vec<&str> = upstream_ref["refs/remotes/".len()..].splitn(2, '/').collect();
+                let parts: Vec<&str> = upstream_ref["refs/remotes/".len()..]
+                    .splitn(2, '/')
+                    .collect();
                 if parts.len() == 2 {
                     parts[0].to_string()
                 } else {
@@ -5918,7 +6223,7 @@ impl GitHandle {
         // Calculate ahead/behind counts
         let (ahead_by, behind_by) = if let (Ok(local_oid), Ok(upstream_oid)) = (
             local_branch.get().target().ok_or("no local target"),
-            upstream_branch.get().target().ok_or("no upstream target")
+            upstream_branch.get().target().ok_or("no upstream target"),
         ) {
             repo.graph_ahead_behind(local_oid, upstream_oid)
                 .map_err(|e| GitError::StatusFailed {
@@ -5937,20 +6242,26 @@ impl GitHandle {
     }
 
     /// Get working tree status for status operation
-    fn get_working_tree_status(&self, repo: &Repository, config: &StatusConfig) -> Result<WorkingTreeStatus, GitError> {
+    fn get_working_tree_status(
+        &self,
+        repo: &Repository,
+        config: &StatusConfig,
+    ) -> Result<WorkingTreeStatus, GitError> {
         let mut opts = git2::StatusOptions::new();
-        
+
         if config.include_untracked.unwrap_or(true) {
             opts.include_untracked(true);
         }
-        
+
         if config.include_ignored.unwrap_or(false) {
             opts.include_ignored(true);
         }
 
-        let statuses = repo.statuses(Some(&mut opts)).map_err(|e| GitError::StatusFailed {
-            message: format!("failed to get repository status: {}", e),
-        })?;
+        let statuses = repo
+            .statuses(Some(&mut opts))
+            .map_err(|e| GitError::StatusFailed {
+                message: format!("failed to get repository status: {}", e),
+            })?;
 
         let mut staged = Vec::new();
         let mut unstaged = Vec::new();
@@ -5970,9 +6281,13 @@ impl GitHandle {
             }
 
             if config.include_staged.unwrap_or(true) {
-                if status_flags.intersects(git2::Status::INDEX_NEW | git2::Status::INDEX_MODIFIED | 
-                                           git2::Status::INDEX_DELETED | git2::Status::INDEX_RENAMED | 
-                                           git2::Status::INDEX_TYPECHANGE) {
+                if status_flags.intersects(
+                    git2::Status::INDEX_NEW
+                        | git2::Status::INDEX_MODIFIED
+                        | git2::Status::INDEX_DELETED
+                        | git2::Status::INDEX_RENAMED
+                        | git2::Status::INDEX_TYPECHANGE,
+                ) {
                     let status_name = if status_flags.contains(git2::Status::INDEX_NEW) {
                         "added"
                     } else if status_flags.contains(git2::Status::INDEX_MODIFIED) {
@@ -5994,8 +6309,12 @@ impl GitHandle {
                 }
             }
 
-            if status_flags.intersects(git2::Status::WT_MODIFIED | git2::Status::WT_DELETED | 
-                                       git2::Status::WT_TYPECHANGE | git2::Status::WT_RENAMED) {
+            if status_flags.intersects(
+                git2::Status::WT_MODIFIED
+                    | git2::Status::WT_DELETED
+                    | git2::Status::WT_TYPECHANGE
+                    | git2::Status::WT_RENAMED,
+            ) {
                 let status_name = if status_flags.contains(git2::Status::WT_MODIFIED) {
                     "modified"
                 } else if status_flags.contains(git2::Status::WT_DELETED) {
@@ -6014,14 +6333,18 @@ impl GitHandle {
                 });
             }
 
-            if config.include_untracked.unwrap_or(true) && status_flags.contains(git2::Status::WT_NEW) {
+            if config.include_untracked.unwrap_or(true)
+                && status_flags.contains(git2::Status::WT_NEW)
+            {
                 untracked.push(FileStatus {
                     path: path.clone(),
                     status: "untracked".to_string(),
                 });
             }
 
-            if config.include_ignored.unwrap_or(false) && status_flags.contains(git2::Status::IGNORED) {
+            if config.include_ignored.unwrap_or(false)
+                && status_flags.contains(git2::Status::IGNORED)
+            {
                 ignored.push(FileStatus {
                     path: path.clone(),
                     status: "ignored".to_string(),
@@ -6029,7 +6352,10 @@ impl GitHandle {
             }
         }
 
-        let clean = staged.is_empty() && unstaged.is_empty() && untracked.is_empty() && conflicts.is_empty();
+        let clean = staged.is_empty()
+            && unstaged.is_empty()
+            && untracked.is_empty()
+            && conflicts.is_empty();
 
         Ok(WorkingTreeStatus {
             clean,
@@ -6049,10 +6375,9 @@ impl GitHandle {
         let cherry_pick = git_dir.join("CHERRY_PICK_HEAD").exists();
         let revert = git_dir.join("REVERT_HEAD").exists();
         let bisect = git_dir.join("BISECT_LOG").exists();
-        
+
         // Check for rebase (multiple possible locations)
-        let rebase = git_dir.join("rebase-apply").exists() || 
-                     git_dir.join("rebase-merge").exists();
+        let rebase = git_dir.join("rebase-apply").exists() || git_dir.join("rebase-merge").exists();
 
         Ok(InProgressFlags {
             merge,
@@ -6069,7 +6394,11 @@ impl GitHandle {
     }
 
     /// Execute merge operation
-    async fn execute_merge(&self, config: &MergeConfig, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn execute_merge(
+        &self,
+        config: &MergeConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
 
         // Open the repository
@@ -6114,18 +6443,18 @@ impl GitHandle {
         let source_commit = self.resolve_source_commit(&repo, config)?;
 
         // Create annotated commit for merge analysis
-        let source_annotated = repo.find_annotated_commit(source_commit.id()).map_err(|e| {
-            GitError::MergeFailed {
+        let source_annotated = repo
+            .find_annotated_commit(source_commit.id())
+            .map_err(|e| GitError::MergeFailed {
                 message: format!("failed to create annotated commit: {}", e),
-            }
-        })?;
+            })?;
 
         // Perform merge analysis
-        let merge_analysis = repo.merge_analysis(&[&source_annotated]).map_err(|e| {
-            GitError::MergeFailed {
-                message: format!("merge analysis failed: {}", e),
-            }
-        })?;
+        let merge_analysis =
+            repo.merge_analysis(&[&source_annotated])
+                .map_err(|e| GitError::MergeFailed {
+                    message: format!("merge analysis failed: {}", e),
+                })?;
 
         let ff_only = config.ff_only.unwrap_or(false);
         let no_ff = config.no_ff.unwrap_or(false);
@@ -6151,7 +6480,9 @@ impl GitHandle {
             }));
         } else if merge_analysis.0.is_fast_forward() && !no_ff && !squash {
             // Fast-forward merge
-            return self.perform_fast_forward_merge(&repo, &source_commit, config, &target_branch_name).await;
+            return self
+                .perform_fast_forward_merge(&repo, &source_commit, config, &target_branch_name)
+                .await;
         } else if merge_analysis.0.is_normal() || no_ff {
             // Normal merge or forced non-fast-forward
             if ff_only {
@@ -6159,9 +6490,27 @@ impl GitHandle {
             }
 
             if squash {
-                return self.perform_squash_merge(&repo, &source_commit, config, profile, &target_branch_name).await;
+                return self
+                    .perform_squash_merge(
+                        &repo,
+                        &source_commit,
+                        config,
+                        profile,
+                        &target_branch_name,
+                    )
+                    .await;
             } else {
-                return self.perform_normal_merge(&repo, &source_commit, config, profile, &target_branch_name, head_commit_oid, abort_on_conflict).await;
+                return self
+                    .perform_normal_merge(
+                        &repo,
+                        &source_commit,
+                        config,
+                        profile,
+                        &target_branch_name,
+                        head_commit_oid,
+                        abort_on_conflict,
+                    )
+                    .await;
             }
         } else {
             return Err(GitError::MergeFailed {
@@ -6171,9 +6520,13 @@ impl GitHandle {
     }
 
     /// Execute rebase operation
-    async fn execute_rebase(&self, config: &RebaseConfig, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn execute_rebase(
+        &self,
+        config: &RebaseConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
-        
+
         // Open the repository
         let repo = Repository::open(path).map_err(|e| {
             if e.code() == git2::ErrorCode::NotFound {
@@ -6217,43 +6570,55 @@ impl GitHandle {
     /// Check if a rebase operation is currently in progress
     fn is_rebase_in_progress(&self, repo: &Repository) -> Result<bool, GitError> {
         let git_dir = repo.path();
-        
+
         // Check for rebase-apply directory (used by git am and git rebase)
         let rebase_apply = git_dir.join("rebase-apply");
         if rebase_apply.exists() {
             log::debug!("Found rebase-apply directory, rebase in progress");
             return Ok(true);
         }
-        
+
         // Check for rebase-merge directory (used by interactive rebase)
         let rebase_merge = git_dir.join("rebase-merge");
         if rebase_merge.exists() {
             log::debug!("Found rebase-merge directory, rebase in progress");
             return Ok(true);
         }
-        
+
         // Also check repository state
         let repo_state = repo.state();
         match repo_state {
-            git2::RepositoryState::Rebase | 
-            git2::RepositoryState::RebaseInteractive | 
-            git2::RepositoryState::RebaseMerge => {
-                log::debug!("Repository state indicates rebase in progress: {:?}", repo_state);
+            git2::RepositoryState::Rebase
+            | git2::RepositoryState::RebaseInteractive
+            | git2::RepositoryState::RebaseMerge => {
+                log::debug!(
+                    "Repository state indicates rebase in progress: {:?}",
+                    repo_state
+                );
                 Ok(true)
             }
-            _ => Ok(false)
+            _ => Ok(false),
         }
     }
 
     /// Execute rebase start operation
-    async fn execute_rebase_start(&self, repo: &Repository, config: &RebaseConfig, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn execute_rebase_start(
+        &self,
+        repo: &Repository,
+        config: &RebaseConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         // Handle advanced features with warnings
         if config.preserve_merges.unwrap_or(false) {
-            log::warn!("preserve_merges option requested but not supported by git2 library, proceeding with standard rebase");
+            log::warn!(
+                "preserve_merges option requested but not supported by git2 library, proceeding with standard rebase"
+            );
         }
-        
+
         if config.autosquash.unwrap_or(false) {
-            log::warn!("autosquash option requested but not supported by git2 library, proceeding with standard rebase");
+            log::warn!(
+                "autosquash option requested but not supported by git2 library, proceeding with standard rebase"
+            );
         }
 
         // Resolve branch (source) and upstream
@@ -6267,36 +6632,42 @@ impl GitHandle {
 
         // Check for fast-forward scenario
         if config.ff_only.unwrap_or(false) {
-            return self.handle_fast_forward_rebase(repo, &branch_commit, &upstream_commit, config, &branch_name);
+            return self.handle_fast_forward_rebase(
+                repo,
+                &branch_commit,
+                &upstream_commit,
+                config,
+                &branch_name,
+            );
         }
 
         // Start the actual rebase operation
         let abort_on_conflict = config.abort_on_conflict.unwrap_or(true);
-        
-        // Use git2 rebase API
-        let branch_annotated = repo.find_annotated_commit(branch_commit.id()).map_err(|e| {
-            GitError::RebaseFailed {
-                message: format!("failed to create annotated commit for branch: {}", e),
-            }
-        })?;
 
-        let upstream_annotated = repo.find_annotated_commit(upstream_commit.id()).map_err(|e| {
-            GitError::RebaseFailed {
+        // Use git2 rebase API
+        let branch_annotated = repo
+            .find_annotated_commit(branch_commit.id())
+            .map_err(|e| GitError::RebaseFailed {
+                message: format!("failed to create annotated commit for branch: {}", e),
+            })?;
+
+        let upstream_annotated = repo
+            .find_annotated_commit(upstream_commit.id())
+            .map_err(|e| GitError::RebaseFailed {
                 message: format!("failed to create annotated commit for upstream: {}", e),
-            }
-        })?;
+            })?;
 
         // Initialize rebase
-        let mut rebase = repo.rebase(
-            Some(&branch_annotated),
-            Some(&upstream_annotated), 
-            None, // onto (same as upstream)
-            None  // options
-        ).map_err(|e| {
-            GitError::RebaseFailed {
+        let mut rebase = repo
+            .rebase(
+                Some(&branch_annotated),
+                Some(&upstream_annotated),
+                None, // onto (same as upstream)
+                None, // options
+            )
+            .map_err(|e| GitError::RebaseFailed {
                 message: format!("failed to start rebase: {}", e),
-            }
-        })?;
+            })?;
 
         let mut commits_rebased = 0;
         let old_base = branch_commit.id().to_string();
@@ -6306,25 +6677,21 @@ impl GitHandle {
             match rebase.next() {
                 Some(Ok(op)) => {
                     log::debug!("Processing rebase operation for commit: {:?}", op.id());
-                    
+
                     // Apply the operation to the working tree and index
                     // The git2 library handles this automatically when we call next()
-                    
+
                     // Check if there are any conflicts after applying the operation
-                    let index = repo.index().map_err(|e| {
-                        GitError::RebaseFailed {
-                            message: format!("failed to get repository index: {}", e),
-                        }
+                    let index = repo.index().map_err(|e| GitError::RebaseFailed {
+                        message: format!("failed to get repository index: {}", e),
                     })?;
-                    
+
                     if index.has_conflicts() {
                         log::warn!("Conflicts detected during rebase operation");
                         if abort_on_conflict {
                             // Abort the rebase
-                            rebase.abort().map_err(|e| {
-                                GitError::RebaseFailed {
-                                    message: format!("failed to abort rebase: {}", e),
-                                }
+                            rebase.abort().map_err(|e| GitError::RebaseFailed {
+                                message: format!("failed to abort rebase: {}", e),
                             })?;
                             return Err(GitError::RebaseConflict);
                         } else {
@@ -6332,7 +6699,7 @@ impl GitHandle {
                             return Err(GitError::RebaseConflict);
                         }
                     }
-                    
+
                     // Commit the rebased changes
                     let committer_sig = self.resolve_rebase_committer_signature(config, profile)?;
                     rebase.commit(None, &committer_sig, None).map_err(|e| {
@@ -6340,7 +6707,7 @@ impl GitHandle {
                             message: format!("failed to commit during rebase: {}", e),
                         }
                     })?;
-                    
+
                     commits_rebased += 1;
                 }
                 Some(Err(e)) => {
@@ -6357,17 +6724,15 @@ impl GitHandle {
 
         // Finish the rebase
         let committer_sig = self.resolve_rebase_committer_signature(config, profile)?;
-        rebase.finish(Some(&committer_sig)).map_err(|e| {
-            GitError::RebaseFailed {
+        rebase
+            .finish(Some(&committer_sig))
+            .map_err(|e| GitError::RebaseFailed {
                 message: format!("failed to finish rebase: {}", e),
-            }
-        })?;
+            })?;
 
         // Get new HEAD
-        let new_head = repo.head().map_err(|e| {
-            GitError::RebaseFailed {
-                message: format!("failed to get new HEAD after rebase: {}", e),
-            }
+        let new_head = repo.head().map_err(|e| GitError::RebaseFailed {
+            message: format!("failed to get new HEAD after rebase: {}", e),
         })?;
         let new_base = new_head.target().unwrap().to_string();
 
@@ -6393,21 +6758,26 @@ impl GitHandle {
     }
 
     /// Execute rebase continue operation
-    async fn execute_rebase_continue(&self, repo: &Repository, config: &RebaseConfig, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn execute_rebase_continue(
+        &self,
+        repo: &Repository,
+        config: &RebaseConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         let abort_on_conflict = config.abort_on_conflict.unwrap_or(true);
         let committer_sig = self.resolve_rebase_committer_signature(config, profile)?;
-        
+
         // Open the existing rebase - git2 can resume from rebase state files
-        let mut rebase = repo.rebase(
-            None, // branch - will be read from state
-            None, // upstream - will be read from state  
-            None, // onto - will be read from state
-            None  // options
-        ).map_err(|e| {
-            GitError::RebaseFailed {
+        let mut rebase = repo
+            .rebase(
+                None, // branch - will be read from state
+                None, // upstream - will be read from state
+                None, // onto - will be read from state
+                None, // options
+            )
+            .map_err(|e| GitError::RebaseFailed {
                 message: format!("failed to open existing rebase: {}", e),
-            }
-        })?;
+            })?;
 
         let mut commits_rebased = 0;
 
@@ -6416,22 +6786,18 @@ impl GitHandle {
             match rebase.next() {
                 Some(Ok(op)) => {
                     log::debug!("Continuing rebase operation for commit: {:?}", op.id());
-                    
+
                     // Check if there are any conflicts after applying the operation
-                    let index = repo.index().map_err(|e| {
-                        GitError::RebaseFailed {
-                            message: format!("failed to get repository index: {}", e),
-                        }
+                    let index = repo.index().map_err(|e| GitError::RebaseFailed {
+                        message: format!("failed to get repository index: {}", e),
                     })?;
-                    
+
                     if index.has_conflicts() {
                         log::warn!("Conflicts detected during rebase continue");
                         if abort_on_conflict {
                             // Abort the rebase
-                            rebase.abort().map_err(|e| {
-                                GitError::RebaseFailed {
-                                    message: format!("failed to abort rebase: {}", e),
-                                }
+                            rebase.abort().map_err(|e| GitError::RebaseFailed {
+                                message: format!("failed to abort rebase: {}", e),
                             })?;
                             return Err(GitError::RebaseConflict);
                         } else {
@@ -6439,14 +6805,14 @@ impl GitHandle {
                             return Err(GitError::RebaseConflict);
                         }
                     }
-                    
+
                     // Commit the rebased changes
                     rebase.commit(None, &committer_sig, None).map_err(|e| {
                         GitError::RebaseFailed {
                             message: format!("failed to commit during rebase continue: {}", e),
                         }
                     })?;
-                    
+
                     commits_rebased += 1;
                 }
                 Some(Err(e)) => {
@@ -6460,13 +6826,13 @@ impl GitHandle {
                 }
             }
         }
-        
+
         // Finish the rebase
-        rebase.finish(Some(&committer_sig)).map_err(|e| {
-            GitError::RebaseFailed {
+        rebase
+            .finish(Some(&committer_sig))
+            .map_err(|e| GitError::RebaseFailed {
                 message: format!("failed to finish rebase: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(json!({
             "backend": "git",
@@ -6482,24 +6848,26 @@ impl GitHandle {
     }
 
     /// Execute rebase abort operation  
-    async fn execute_rebase_abort(&self, repo: &Repository, config: &RebaseConfig) -> Result<Value, GitError> {
+    async fn execute_rebase_abort(
+        &self,
+        repo: &Repository,
+        config: &RebaseConfig,
+    ) -> Result<Value, GitError> {
         // Open the existing rebase to access its state
-        let mut rebase = repo.rebase(
-            None, // branch - will be read from state
-            None, // upstream - will be read from state  
-            None, // onto - will be read from state
-            None  // options
-        ).map_err(|e| {
-            GitError::RebaseFailed {
+        let mut rebase = repo
+            .rebase(
+                None, // branch - will be read from state
+                None, // upstream - will be read from state
+                None, // onto - will be read from state
+                None, // options
+            )
+            .map_err(|e| GitError::RebaseFailed {
                 message: format!("failed to open existing rebase for abort: {}", e),
-            }
-        })?;
+            })?;
 
         // Abort the rebase - this restores the repository to its pre-rebase state
-        rebase.abort().map_err(|e| {
-            GitError::RebaseFailed {
-                message: format!("failed to abort rebase: {}", e),
-            }
+        rebase.abort().map_err(|e| GitError::RebaseFailed {
+            message: format!("failed to abort rebase: {}", e),
         })?;
 
         log::info!("Rebase aborted, repository restored to original state");
@@ -6515,20 +6883,25 @@ impl GitHandle {
     }
 
     /// Resolve the branch to be rebased
-    fn resolve_rebase_branch<'a>(&self, repo: &'a Repository, config: &RebaseConfig) -> Result<(String, Commit<'a>), GitError> {
+    fn resolve_rebase_branch<'a>(
+        &self,
+        repo: &'a Repository,
+        config: &RebaseConfig,
+    ) -> Result<(String, Commit<'a>), GitError> {
         if let Some(ref branch_name) = config.branch {
             // Use specified branch
-            let branch = repo.find_branch(branch_name, BranchType::Local).map_err(|_| {
-                GitError::RebaseBranchNotFound {
+            let branch = repo
+                .find_branch(branch_name, BranchType::Local)
+                .map_err(|_| GitError::RebaseBranchNotFound {
                     branch: branch_name.clone(),
-                }
-            })?;
-            
-            let commit = branch.get().peel_to_commit().map_err(|e| {
-                GitError::RebaseFailed {
+                })?;
+
+            let commit = branch
+                .get()
+                .peel_to_commit()
+                .map_err(|e| GitError::RebaseFailed {
                     message: format!("failed to get commit from branch '{}': {}", branch_name, e),
-                }
-            })?;
+                })?;
 
             Ok((branch_name.clone(), commit))
         } else {
@@ -6547,11 +6920,11 @@ impl GitHandle {
 
             if head_ref.is_branch() {
                 let branch_name = head_ref.shorthand().unwrap_or("HEAD").to_string();
-                let commit = head_ref.peel_to_commit().map_err(|e| {
-                    GitError::RebaseFailed {
+                let commit = head_ref
+                    .peel_to_commit()
+                    .map_err(|e| GitError::RebaseFailed {
                         message: format!("failed to get commit from HEAD: {}", e),
-                    }
-                })?;
+                    })?;
                 Ok((branch_name, commit))
             } else {
                 Err(GitError::RebaseDetachedHead)
@@ -6560,38 +6933,53 @@ impl GitHandle {
     }
 
     /// Resolve the upstream commit for rebase
-    fn resolve_rebase_upstream<'a>(&self, repo: &'a Repository, config: &RebaseConfig) -> Result<Commit<'a>, GitError> {
+    fn resolve_rebase_upstream<'a>(
+        &self,
+        repo: &'a Repository,
+        config: &RebaseConfig,
+    ) -> Result<Commit<'a>, GitError> {
         let upstream_spec = config.upstream.as_ref().unwrap(); // Should be validated already
 
-        let upstream_obj = repo.revparse_single(upstream_spec).map_err(|_| {
-            GitError::RebaseUpstreamNotFound {
-                upstream: upstream_spec.clone(),
-            }
-        })?;
+        let upstream_obj =
+            repo.revparse_single(upstream_spec)
+                .map_err(|_| GitError::RebaseUpstreamNotFound {
+                    upstream: upstream_spec.clone(),
+                })?;
 
-        let upstream_commit = upstream_obj.peel_to_commit().map_err(|_| {
-            GitError::RebaseUpstreamNotCommit {
-                upstream: upstream_spec.clone(),
-            }
-        })?;
+        let upstream_commit =
+            upstream_obj
+                .peel_to_commit()
+                .map_err(|_| GitError::RebaseUpstreamNotCommit {
+                    upstream: upstream_spec.clone(),
+                })?;
 
         Ok(upstream_commit)
     }
 
     /// Handle fast-forward only rebase
-    fn handle_fast_forward_rebase(&self, repo: &Repository, branch_commit: &Commit, upstream_commit: &Commit, config: &RebaseConfig, branch_name: &str) -> Result<Value, GitError> {
+    fn handle_fast_forward_rebase(
+        &self,
+        repo: &Repository,
+        branch_commit: &Commit,
+        upstream_commit: &Commit,
+        config: &RebaseConfig,
+        branch_name: &str,
+    ) -> Result<Value, GitError> {
         // Check if branch can be fast-forwarded to upstream
-        let upstream_annotated = repo.find_annotated_commit(upstream_commit.id()).map_err(|e| {
-            GitError::RebaseFailed {
-                message: format!("failed to create annotated commit for merge analysis: {}", e),
-            }
-        })?;
+        let upstream_annotated = repo
+            .find_annotated_commit(upstream_commit.id())
+            .map_err(|e| GitError::RebaseFailed {
+                message: format!(
+                    "failed to create annotated commit for merge analysis: {}",
+                    e
+                ),
+            })?;
 
-        let merge_analysis = repo.merge_analysis(&[&upstream_annotated]).map_err(|e| {
-            GitError::RebaseFailed {
-                message: format!("merge analysis failed: {}", e),
-            }
-        })?;
+        let merge_analysis =
+            repo.merge_analysis(&[&upstream_annotated])
+                .map_err(|e| GitError::RebaseFailed {
+                    message: format!("merge analysis failed: {}", e),
+                })?;
 
         if merge_analysis.0.is_up_to_date() {
             Ok(json!({
@@ -6615,27 +7003,21 @@ impl GitHandle {
             }))
         } else if merge_analysis.0.is_fast_forward() {
             // Perform fast-forward
-            let mut reference = repo.head().map_err(|e| {
-                GitError::RebaseFailed {
-                    message: format!("failed to get HEAD reference: {}", e),
-                }
+            let mut reference = repo.head().map_err(|e| GitError::RebaseFailed {
+                message: format!("failed to get HEAD reference: {}", e),
             })?;
 
-            reference.set_target(upstream_commit.id(), "Fast-forward rebase").map_err(|e| {
-                GitError::RebaseFailed {
+            reference
+                .set_target(upstream_commit.id(), "Fast-forward rebase")
+                .map_err(|e| GitError::RebaseFailed {
                     message: format!("failed to fast-forward HEAD: {}", e),
-                }
-            })?;
+                })?;
 
             // Update working directory
-            repo.checkout_head(Some(
-                git2::build::CheckoutBuilder::new()
-                    .force()
-            )).map_err(|e| {
-                GitError::RebaseFailed {
+            repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+                .map_err(|e| GitError::RebaseFailed {
                     message: format!("failed to checkout after fast-forward: {}", e),
-                }
-            })?;
+                })?;
 
             Ok(json!({
                 "backend": "git",
@@ -6662,7 +7044,11 @@ impl GitHandle {
     }
 
     /// Resolve committer signature for rebase operations
-    fn resolve_rebase_committer_signature(&self, config: &RebaseConfig, profile: &GitConnectionProfile) -> Result<Signature, GitError> {
+    fn resolve_rebase_committer_signature(
+        &self,
+        config: &RebaseConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<Signature, GitError> {
         // Get environment variables for fallback identity
         let git_committer_name = std::env::var("GIT_COMMITTER_NAME").ok();
         let git_committer_email = std::env::var("GIT_COMMITTER_EMAIL").ok();
@@ -6670,35 +7056,44 @@ impl GitHandle {
         let user_email = std::env::var("EMAIL").ok();
 
         // Resolve committer identity
-        let committer_name = config.committer_name.as_ref()
+        let committer_name = config
+            .committer_name
+            .as_ref()
             .or(profile.username.as_ref())
             .or(git_committer_name.as_ref())
             .or(user_name.as_ref())
             .ok_or(GitError::RebaseIdentityMissing)?;
 
-        let committer_email = config.committer_email.as_ref()
+        let committer_email = config
+            .committer_email
+            .as_ref()
             .or(git_committer_email.as_ref())
             .or(user_email.as_ref())
             .ok_or(GitError::RebaseIdentityMissing)?;
 
-        Signature::now(committer_name, committer_email).map_err(|_e| {
-            GitError::RebaseIdentityMissing
-        })
+        Signature::now(committer_name, committer_email)
+            .map_err(|_e| GitError::RebaseIdentityMissing)
     }
 
     /// Resolve target branch for merge
-    fn resolve_target_branch<'a>(&self, repo: &'a Repository, config: &MergeConfig) -> Result<(String, Commit<'a>), GitError> {
+    fn resolve_target_branch<'a>(
+        &self,
+        repo: &'a Repository,
+        config: &MergeConfig,
+    ) -> Result<(String, Commit<'a>), GitError> {
         if let Some(target_name) = &config.target {
             // Explicit target branch specified
-            let target_branch = repo.find_branch(target_name, BranchType::Local).map_err(|_| {
-                GitError::MergeTargetNotFound(target_name.clone())
-            })?;
+            let target_branch = repo
+                .find_branch(target_name, BranchType::Local)
+                .map_err(|_| GitError::MergeTargetNotFound(target_name.clone()))?;
 
-            let target_commit = target_branch.get().peel_to_commit().map_err(|e| {
-                GitError::MergeFailed {
-                    message: format!("failed to get target commit: {}", e),
-                }
-            })?;
+            let target_commit =
+                target_branch
+                    .get()
+                    .peel_to_commit()
+                    .map_err(|e| GitError::MergeFailed {
+                        message: format!("failed to get target commit: {}", e),
+                    })?;
 
             // Ensure we're on the target branch
             let head = repo.head().map_err(|e| GitError::MergeFailed {
@@ -6726,10 +7121,8 @@ impl GitHandle {
             }
 
             let target_branch_name = head.shorthand().unwrap_or("HEAD").to_string();
-            let target_commit = head.peel_to_commit().map_err(|e| {
-                GitError::MergeFailed {
-                    message: format!("failed to get target commit: {}", e),
-                }
+            let target_commit = head.peel_to_commit().map_err(|e| GitError::MergeFailed {
+                message: format!("failed to get target commit: {}", e),
             })?;
 
             Ok((target_branch_name, target_commit))
@@ -6752,15 +7145,19 @@ impl GitHandle {
     }
 
     /// Resolve source commit
-    fn resolve_source_commit<'a>(&self, repo: &'a Repository, config: &MergeConfig) -> Result<Commit<'a>, GitError> {
-        let source_object = repo.revparse_single(&config.source).map_err(|_| {
-            GitError::MergeSourceNotFound(config.source.clone())
-        })?;
+    fn resolve_source_commit<'a>(
+        &self,
+        repo: &'a Repository,
+        config: &MergeConfig,
+    ) -> Result<Commit<'a>, GitError> {
+        let source_object = repo
+            .revparse_single(&config.source)
+            .map_err(|_| GitError::MergeSourceNotFound(config.source.clone()))?;
 
         // Peel to commit
-        let source_commit = source_object.peel_to_commit().map_err(|_| {
-            GitError::MergeSourceNotCommit(config.source.clone())
-        })?;
+        let source_commit = source_object
+            .peel_to_commit()
+            .map_err(|_| GitError::MergeSourceNotCommit(config.source.clone()))?;
 
         Ok(source_commit)
     }
@@ -6781,9 +7178,10 @@ impl GitHandle {
             })?;
 
         // Update working tree
-        repo.checkout_head(None).map_err(|e| GitError::MergeFailed {
-            message: format!("failed to update working tree: {}", e),
-        })?;
+        repo.checkout_head(None)
+            .map_err(|e| GitError::MergeFailed {
+                message: format!("failed to update working tree: {}", e),
+            })?;
 
         Ok(json!({
             "backend": "git",
@@ -6814,24 +7212,25 @@ impl GitHandle {
         target_branch_name: &str,
     ) -> Result<Value, GitError> {
         // Get current HEAD commit
-        let head_commit = repo.head().unwrap().peel_to_commit().map_err(|e| {
-            GitError::MergeFailed {
-                message: format!("failed to get HEAD commit: {}", e),
-            }
-        })?;
+        let head_commit =
+            repo.head()
+                .unwrap()
+                .peel_to_commit()
+                .map_err(|e| GitError::MergeFailed {
+                    message: format!("failed to get HEAD commit: {}", e),
+                })?;
 
         // Apply changes from source to index
         let mut merge_opts = git2::MergeOptions::new();
-        let source_annotated = repo.find_annotated_commit(source_commit.id()).map_err(|e| {
-            GitError::MergeFailed {
+        let source_annotated = repo
+            .find_annotated_commit(source_commit.id())
+            .map_err(|e| GitError::MergeFailed {
                 message: format!("failed to create annotated commit: {}", e),
-            }
-        })?;
-        repo.merge(&[&source_annotated], Some(&mut merge_opts), None).map_err(|e| {
-            GitError::MergeFailed {
+            })?;
+        repo.merge(&[&source_annotated], Some(&mut merge_opts), None)
+            .map_err(|e| GitError::MergeFailed {
                 message: format!("squash merge failed: {}", e),
-            }
-        })?;
+            })?;
 
         // Check for conflicts
         let mut index = repo.index().map_err(|e| GitError::MergeFailed {
@@ -6841,11 +7240,10 @@ impl GitHandle {
         if index.has_conflicts() {
             if config.abort_on_conflict.unwrap_or(true) {
                 // Abort merge
-                repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force())).map_err(|e| {
-                    GitError::MergeFailed {
+                repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
+                    .map_err(|e| GitError::MergeFailed {
                         message: format!("failed to abort conflicted merge: {}", e),
-                    }
-                })?;
+                    })?;
             }
             return Err(GitError::MergeConflict);
         }
@@ -6860,19 +7258,24 @@ impl GitHandle {
 
         let (author_sig, committer_sig) = self.resolve_merge_identity(config, profile)?;
 
-        let default_message = format!("Squash merge '{}' into '{}'", config.source, target_branch_name);
+        let default_message = format!(
+            "Squash merge '{}' into '{}'",
+            config.source, target_branch_name
+        );
         let message = config.commit_message.as_deref().unwrap_or(&default_message);
 
-        let commit_id = repo.commit(
-            Some("HEAD"),
-            &author_sig,
-            &committer_sig,
-            message,
-            &tree,
-            &[&head_commit],
-        ).map_err(|e| GitError::MergeFailed {
-            message: format!("failed to create squash commit: {}", e),
-        })?;
+        let commit_id = repo
+            .commit(
+                Some("HEAD"),
+                &author_sig,
+                &committer_sig,
+                message,
+                &tree,
+                &[&head_commit],
+            )
+            .map_err(|e| GitError::MergeFailed {
+                message: format!("failed to create squash commit: {}", e),
+            })?;
 
         Ok(json!({
             "backend": "git",
@@ -6912,24 +7315,25 @@ impl GitHandle {
         _head_commit_oid: Oid,
         abort_on_conflict: bool,
     ) -> Result<Value, GitError> {
-        let head_commit = repo.head().unwrap().peel_to_commit().map_err(|e| {
-            GitError::MergeFailed {
-                message: format!("failed to get HEAD commit: {}", e),
-            }
-        })?;
+        let head_commit =
+            repo.head()
+                .unwrap()
+                .peel_to_commit()
+                .map_err(|e| GitError::MergeFailed {
+                    message: format!("failed to get HEAD commit: {}", e),
+                })?;
 
         // Perform merge
         let mut merge_opts = git2::MergeOptions::new();
-        let source_annotated = repo.find_annotated_commit(source_commit.id()).map_err(|e| {
-            GitError::MergeFailed {
+        let source_annotated = repo
+            .find_annotated_commit(source_commit.id())
+            .map_err(|e| GitError::MergeFailed {
                 message: format!("failed to create annotated commit: {}", e),
-            }
-        })?;
-        repo.merge(&[&source_annotated], Some(&mut merge_opts), None).map_err(|e| {
-            GitError::MergeFailed {
+            })?;
+        repo.merge(&[&source_annotated], Some(&mut merge_opts), None)
+            .map_err(|e| GitError::MergeFailed {
                 message: format!("merge failed: {}", e),
-            }
-        })?;
+            })?;
 
         // Check for conflicts
         let mut index = repo.index().map_err(|e| GitError::MergeFailed {
@@ -6939,11 +7343,10 @@ impl GitHandle {
         if index.has_conflicts() {
             if abort_on_conflict {
                 // Abort merge
-                repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force())).map_err(|e| {
-                    GitError::MergeFailed {
+                repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
+                    .map_err(|e| GitError::MergeFailed {
                         message: format!("failed to abort conflicted merge: {}", e),
-                    }
-                })?;
+                    })?;
             }
             return Err(GitError::MergeConflict);
         }
@@ -6958,19 +7361,24 @@ impl GitHandle {
 
         let (author_sig, committer_sig) = self.resolve_merge_identity(config, profile)?;
 
-        let default_message = format!("Merge branch '{}' into '{}'", config.source, target_branch_name);
+        let default_message = format!(
+            "Merge branch '{}' into '{}'",
+            config.source, target_branch_name
+        );
         let message = config.commit_message.as_deref().unwrap_or(&default_message);
 
-        let commit_id = repo.commit(
-            Some("HEAD"),
-            &author_sig,
-            &committer_sig,
-            message,
-            &tree,
-            &[&head_commit, source_commit],
-        ).map_err(|e| GitError::MergeFailed {
-            message: format!("failed to create merge commit: {}", e),
-        })?;
+        let commit_id = repo
+            .commit(
+                Some("HEAD"),
+                &author_sig,
+                &committer_sig,
+                message,
+                &tree,
+                &[&head_commit, source_commit],
+            )
+            .map_err(|e| GitError::MergeFailed {
+                message: format!("failed to create merge commit: {}", e),
+            })?;
 
         Ok(json!({
             "backend": "git",
@@ -7000,7 +7408,11 @@ impl GitHandle {
     }
 
     /// Resolve merge identity (author and committer)
-    fn resolve_merge_identity(&self, config: &MergeConfig, profile: &GitConnectionProfile) -> Result<(Signature, Signature), GitError> {
+    fn resolve_merge_identity(
+        &self,
+        config: &MergeConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<(Signature, Signature), GitError> {
         // Get environment variables
         let git_author_name = std::env::var("GIT_AUTHOR_NAME").ok();
         let user_name = std::env::var("USER").ok();
@@ -7008,23 +7420,25 @@ impl GitHandle {
         let user_email = std::env::var("EMAIL").ok();
 
         // Resolve author identity
-        let author_name = config.author_name.as_ref()
+        let author_name = config
+            .author_name
+            .as_ref()
             .or(profile.username.as_ref())
             .or(git_author_name.as_ref())
             .or(user_name.as_ref())
             .ok_or(GitError::MergeIdentityMissing)?;
 
-        let author_email = config.author_email.as_ref()
+        let author_email = config
+            .author_email
+            .as_ref()
             .or(git_author_email.as_ref())
             .or(user_email.as_ref())
             .ok_or(GitError::MergeIdentityMissing)?;
 
         // Resolve committer identity
-        let committer_name = config.committer_name.as_ref()
-            .unwrap_or(author_name);
+        let committer_name = config.committer_name.as_ref().unwrap_or(author_name);
 
-        let committer_email = config.committer_email.as_ref()
-            .unwrap_or(author_email);
+        let committer_email = config.committer_email.as_ref().unwrap_or(author_email);
 
         let now = Time::new(chrono::Utc::now().timestamp(), 0);
 
@@ -7039,27 +7453,26 @@ impl GitHandle {
 
     /// Checkout a specific branch for merge (different from branch checkout)
     fn checkout_merge_branch(&self, repo: &Repository, branch_name: &str) -> Result<(), GitError> {
-        let branch = repo.find_branch(branch_name, BranchType::Local).map_err(|_| {
-            GitError::MergeTargetNotFound(branch_name.to_string())
-        })?;
+        let branch = repo
+            .find_branch(branch_name, BranchType::Local)
+            .map_err(|_| GitError::MergeTargetNotFound(branch_name.to_string()))?;
 
-        let commit = branch.get().peel_to_commit().map_err(|e| {
-            GitError::MergeFailed {
+        let commit = branch
+            .get()
+            .peel_to_commit()
+            .map_err(|e| GitError::MergeFailed {
                 message: format!("failed to get branch commit: {}", e),
-            }
-        })?;
+            })?;
 
-        repo.checkout_tree(commit.as_object(), None).map_err(|e| {
-            GitError::MergeFailed {
+        repo.checkout_tree(commit.as_object(), None)
+            .map_err(|e| GitError::MergeFailed {
                 message: format!("failed to checkout branch: {}", e),
-            }
-        })?;
+            })?;
 
-        repo.set_head(&format!("refs/heads/{}", branch_name)).map_err(|e| {
-            GitError::MergeFailed {
+        repo.set_head(&format!("refs/heads/{}", branch_name))
+            .map_err(|e| GitError::MergeFailed {
                 message: format!("failed to set HEAD: {}", e),
-            }
-        })?;
+            })?;
 
         Ok(())
     }
@@ -7079,10 +7492,8 @@ impl GitHandle {
         let timeout_ms = config.timeout_ms.unwrap_or(60000);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_sync(&config, &profile)
-        ).await;
+        let result =
+            tokio::time::timeout(timeout_duration, self.execute_sync(&config, &profile)).await;
 
         match result {
             Ok(sync_result) => sync_result,
@@ -7092,10 +7503,9 @@ impl GitHandle {
 
     /// Parse sync configuration from arguments
     fn parse_sync_config(&self, args: Value) -> Result<SyncConfig, GitError> {
-        crate::core::lenient::from_value(args)
-            .map_err(|e| GitError::InvalidSyncConfig {
-                message: format!("failed to parse sync config: {}", e),
-            })
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidSyncConfig {
+            message: format!("failed to parse sync config: {}", e),
+        })
     }
 
     /// Validate sync configuration
@@ -7155,11 +7565,12 @@ impl GitHandle {
 
     /// Parse status summary configuration from arguments
     fn parse_status_summary_config(&self, args: Value) -> Result<StatusSummaryConfig, GitError> {
-        let config: StatusSummaryConfig = crate::core::lenient::from_value(args)
-            .map_err(|e| GitError::InvalidStatusSummaryConfig {
+        let config: StatusSummaryConfig = crate::core::lenient::from_value(args).map_err(|e| {
+            GitError::InvalidStatusSummaryConfig {
                 message: format!("failed to parse status summary config: {}", e),
-            })?;
-        
+            }
+        })?;
+
         self.validate_status_summary_config(&config)?;
         Ok(config)
     }
@@ -7213,18 +7624,24 @@ impl GitHandle {
     }
 
     /// Execute the sync operation
-    async fn execute_sync(&self, config: &SyncConfig, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn execute_sync(
+        &self,
+        config: &SyncConfig,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         log::info!("Starting sync operation for path: {}", config.path);
 
         // Open repository
-        let mut repo = Repository::open(&config.path).map_err(|_e| {
-            GitError::RepositoryNotFound { 
-                path: config.path.clone() 
-            }
-        })?;
+        let mut repo =
+            Repository::open(&config.path).map_err(|_e| GitError::RepositoryNotFound {
+                path: config.path.clone(),
+            })?;
 
         // Set defaults
-        let remote_name = config.remote.clone().unwrap_or_else(|| "origin".to_string());
+        let remote_name = config
+            .remote
+            .clone()
+            .unwrap_or_else(|| "origin".to_string());
         let pull_strategy = config.pull_strategy.clone().unwrap_or_default();
         let allow_uncommitted = config.allow_uncommitted.unwrap_or(false);
         let stash_uncommitted = config.stash_uncommitted.unwrap_or(false);
@@ -7245,15 +7662,17 @@ impl GitHandle {
                 // Explicit branch specified
                 let branch_ref = format!("refs/heads/{}", branch);
                 if repo.find_reference(&branch_ref).is_err() {
-                    return Err(GitError::SyncBranchNotFound { branch: branch.clone() });
+                    return Err(GitError::SyncBranchNotFound {
+                        branch: branch.clone(),
+                    });
                 }
 
                 // Check if we need to checkout this branch
                 let head = repo.head().map_err(|_| GitError::SyncDetachedHead)?;
                 if head.shorthand() != Some(branch) {
                     // Would need to checkout - for now, require being on the right branch
-                    return Err(GitError::SyncBranchNotFound { 
-                        branch: format!("not currently on branch '{}'", branch)
+                    return Err(GitError::SyncBranchNotFound {
+                        branch: format!("not currently on branch '{}'", branch),
                     });
                 }
 
@@ -7268,7 +7687,10 @@ impl GitHandle {
             };
 
             // Determine remote branch
-            let remote_branch = config.remote_branch.clone().unwrap_or_else(|| local_branch.clone());
+            let remote_branch = config
+                .remote_branch
+                .clone()
+                .unwrap_or_else(|| local_branch.clone());
 
             // The fetch/fast-forward step integrates `<remote>/<branch>` into
             // the same-named local branch; a different remote branch would
@@ -7284,7 +7706,7 @@ impl GitHandle {
 
             (local_branch, remote_branch)
         };
-        
+
         // Check working tree cleanliness and handle stash
         let stash_ref = if !dry_run {
             self.handle_sync_worktree(&mut repo, allow_uncommitted, stash_uncommitted)?
@@ -7295,8 +7717,16 @@ impl GitHandle {
         // Perform the sync operation
         if dry_run {
             // For dry-run, analyze what would happen
-            let actions = self.analyze_sync_actions(&repo, &remote_name, &local_branch, &remote_branch, &pull_strategy, push, push_tags)?;
-            
+            let actions = self.analyze_sync_actions(
+                &repo,
+                &remote_name,
+                &local_branch,
+                &remote_branch,
+                &pull_strategy,
+                push,
+                push_tags,
+            )?;
+
             return Ok(json!({
                 "backend": "git",
                 "alias": self.alias,
@@ -7315,15 +7745,30 @@ impl GitHandle {
         // Fetch and integrate, then push. Nothing is pushed unless the
         // integration really completed.
         let outcome: Result<(Value, Option<Value>), GitError> = async {
-            let fetched = self.sync_fetch(&repo, &remote_name, &local_branch, &pull_strategy, profile).await?;
+            let fetched = self
+                .sync_fetch(&repo, &remote_name, &local_branch, &pull_strategy, profile)
+                .await?;
             let integration = sync_integration_report(&fetched, &pull_strategy);
             let pushed = if push {
-                Some(self.sync_push(&repo, &remote_name, &local_branch, &remote_branch, push_tags, force_push, set_upstream, profile).await?)
+                Some(
+                    self.sync_push(
+                        &repo,
+                        &remote_name,
+                        &local_branch,
+                        &remote_branch,
+                        push_tags,
+                        force_push,
+                        set_upstream,
+                        profile,
+                    )
+                    .await?,
+                )
             } else {
                 None
             };
             Ok((integration, pushed))
-        }.await;
+        }
+        .await;
 
         let (integration, push_result) = match outcome {
             Ok(v) => v,
@@ -7342,10 +7787,12 @@ impl GitHandle {
             stash_conflicts = self.sync_restore_stash(&mut repo, stash_oid)?;
         }
 
-        let push_info = push_result.unwrap_or_else(|| json!({
-            "attempted": false,
-            "status": "skipped"
-        }));
+        let push_info = push_result.unwrap_or_else(|| {
+            json!({
+                "attempted": false,
+                "status": "skipped"
+            })
+        });
 
         Ok(json!({
             "backend": "git",
@@ -7368,21 +7815,27 @@ impl GitHandle {
     }
 
     /// Resolve local and remote branch names for sync
-    fn resolve_sync_branches(&self, repo: &Repository, config: &SyncConfig) -> Result<(String, String), GitError> {
+    fn resolve_sync_branches(
+        &self,
+        repo: &Repository,
+        config: &SyncConfig,
+    ) -> Result<(String, String), GitError> {
         // Determine local branch
         let local_branch = if let Some(ref branch) = config.branch {
             // Explicit branch specified
             let branch_ref = format!("refs/heads/{}", branch);
             if repo.find_reference(&branch_ref).is_err() {
-                return Err(GitError::SyncBranchNotFound { branch: branch.clone() });
+                return Err(GitError::SyncBranchNotFound {
+                    branch: branch.clone(),
+                });
             }
 
             // Check if we need to checkout this branch
             let head = repo.head().map_err(|_| GitError::SyncDetachedHead)?;
             if head.shorthand() != Some(branch) {
                 // Would need to checkout - for now, require being on the right branch
-                return Err(GitError::SyncBranchNotFound { 
-                    branch: format!("not currently on branch '{}'", branch)
+                return Err(GitError::SyncBranchNotFound {
+                    branch: format!("not currently on branch '{}'", branch),
                 });
             }
 
@@ -7397,24 +7850,33 @@ impl GitHandle {
         };
 
         // Determine remote branch
-        let remote_branch = config.remote_branch.clone().unwrap_or_else(|| local_branch.clone());
+        let remote_branch = config
+            .remote_branch
+            .clone()
+            .unwrap_or_else(|| local_branch.clone());
 
         Ok((local_branch, remote_branch))
     }
 
     /// Handle working tree cleanliness and stashing
-    fn handle_sync_worktree(&self, repo: &mut Repository, allow_uncommitted: bool, stash_uncommitted: bool) -> Result<Option<Oid>, GitError> {
+    fn handle_sync_worktree(
+        &self,
+        repo: &mut Repository,
+        allow_uncommitted: bool,
+        stash_uncommitted: bool,
+    ) -> Result<Option<Oid>, GitError> {
         // Check if working tree is dirty
         let is_dirty = {
-            let statuses = repo.statuses(None).map_err(|e| {
-                GitError::SyncFailed {
-                    message: format!("failed to get repository status: {}", e),
-                }
+            let statuses = repo.statuses(None).map_err(|e| GitError::SyncFailed {
+                message: format!("failed to get repository status: {}", e),
             })?;
 
             statuses.iter().any(|entry| {
                 let status = entry.status();
-                status.is_wt_modified() || status.is_wt_new() || status.is_index_modified() || status.is_index_new()
+                status.is_wt_modified()
+                    || status.is_wt_new()
+                    || status.is_index_modified()
+                    || status.is_index_new()
             })
         }; // statuses is dropped here
 
@@ -7424,17 +7886,15 @@ impl GitHandle {
                 Ok(None)
             } else if stash_uncommitted {
                 // Create stash
-                let sig = repo.signature().map_err(|e| {
-                    GitError::SyncFailed {
-                        message: format!("failed to get signature for stash: {}", e),
-                    }
+                let sig = repo.signature().map_err(|e| GitError::SyncFailed {
+                    message: format!("failed to get signature for stash: {}", e),
                 })?;
 
-                let stash_oid = repo.stash_save(&sig, "sync auto-stash", Some(git2::StashFlags::DEFAULT)).map_err(|e| {
-                    GitError::SyncFailed {
+                let stash_oid = repo
+                    .stash_save(&sig, "sync auto-stash", Some(git2::StashFlags::DEFAULT))
+                    .map_err(|e| GitError::SyncFailed {
                         message: format!("failed to create stash: {}", e),
-                    }
-                })?;
+                    })?;
 
                 Ok(Some(stash_oid))
             } else {
@@ -7446,7 +7906,16 @@ impl GitHandle {
     }
 
     /// Analyze what sync would do (for dry-run)
-    fn analyze_sync_actions(&self, _repo: &Repository, remote: &str, local_branch: &str, remote_branch: &str, pull_strategy: &PullStrategy, push: bool, push_tags: bool) -> Result<Vec<String>, GitError> {
+    fn analyze_sync_actions(
+        &self,
+        _repo: &Repository,
+        remote: &str,
+        local_branch: &str,
+        remote_branch: &str,
+        pull_strategy: &PullStrategy,
+        push: bool,
+        push_tags: bool,
+    ) -> Result<Vec<String>, GitError> {
         let mut actions = Vec::new();
 
         actions.push(format!("Would fetch from {}/{}", remote, remote_branch));
@@ -7458,7 +7927,10 @@ impl GitHandle {
         ));
 
         if push {
-            actions.push(format!("Would push '{}' to {}/{}", local_branch, remote, remote_branch));
+            actions.push(format!(
+                "Would push '{}' to {}/{}",
+                local_branch, remote, remote_branch
+            ));
             if push_tags {
                 actions.push("Would push tags".to_string());
             }
@@ -7474,7 +7946,14 @@ impl GitHandle {
     /// sync does not rebase or merge divergent history: when both sides
     /// have new commits it fails before anything is pushed, for every
     /// pull_strategy, instead of reporting an integration that never ran.
-    async fn sync_fetch(&self, repo: &Repository, remote: &str, branch: &str, pull_strategy: &PullStrategy, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn sync_fetch(
+        &self,
+        repo: &Repository,
+        remote: &str,
+        branch: &str,
+        pull_strategy: &PullStrategy,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         let pull_value = json!({
             "path": repo.workdir().unwrap().to_string_lossy(),
             "remote": remote,
@@ -7505,7 +7984,17 @@ impl GitHandle {
     }
 
     /// Push changes to remote
-    async fn sync_push(&self, repo: &Repository, remote: &str, local_branch: &str, _remote_branch: &str, push_tags: bool, force_push: bool, _set_upstream: bool, profile: &GitConnectionProfile) -> Result<Value, GitError> {
+    async fn sync_push(
+        &self,
+        repo: &Repository,
+        remote: &str,
+        local_branch: &str,
+        _remote_branch: &str,
+        push_tags: bool,
+        force_push: bool,
+        _set_upstream: bool,
+        profile: &GitConnectionProfile,
+    ) -> Result<Value, GitError> {
         // Create a push request using JSON values
         let push_value = json!({
             "path": repo.workdir().unwrap().to_string_lossy(),
@@ -7519,12 +8008,12 @@ impl GitHandle {
             "token": profile.token,
             "timeout_ms": 30000
         });
-        
-        self.push(push_value).await.map_err(|e| {
-            match e {
-                GitError::PushRejected { message } => GitError::SyncPushRejected { message },
-                _ => GitError::SyncPushFailed { message: format!("push failed: {}", e) }
-            }
+
+        self.push(push_value).await.map_err(|e| match e {
+            GitError::PushRejected { message } => GitError::SyncPushRejected { message },
+            _ => GitError::SyncPushFailed {
+                message: format!("push failed: {}", e),
+            },
         })?;
 
         Ok(json!({
@@ -7538,7 +8027,7 @@ impl GitHandle {
     /// Restore stash after sync
     fn sync_restore_stash(&self, repo: &mut Repository, _stash_oid: Oid) -> Result<bool, GitError> {
         let result = repo.stash_pop(0, None);
-        
+
         match result {
             Ok(_) => Ok(false), // No conflicts
             Err(e) => {
@@ -7553,12 +8042,19 @@ impl GitHandle {
     }
 
     /// Determine the focus branch (either from config or current HEAD)
-    fn determine_focus_branch(&self, repo: &Repository, config_branch: &Option<String>) -> Result<(Option<String>, bool, Option<String>), GitError> {
+    fn determine_focus_branch(
+        &self,
+        repo: &Repository,
+        config_branch: &Option<String>,
+    ) -> Result<(Option<String>, bool, Option<String>), GitError> {
         if let Some(branch_name) = config_branch {
             // Use specified branch
-            let branch = repo.find_branch(branch_name, git2::BranchType::Local)
-                .map_err(|_| GitError::StatusSummaryBranchNotFound { name: branch_name.clone() })?;
-            
+            let branch = repo
+                .find_branch(branch_name, git2::BranchType::Local)
+                .map_err(|_| GitError::StatusSummaryBranchNotFound {
+                    name: branch_name.clone(),
+                })?;
+
             let head_oid = branch.get().target().map(|oid| oid.to_string());
             Ok((Some(branch_name.clone()), false, head_oid))
         } else {
@@ -7566,7 +8062,7 @@ impl GitHandle {
             match repo.head() {
                 Ok(head_ref) => {
                     let head_oid = head_ref.target().map(|oid| oid.to_string());
-                    
+
                     if head_ref.is_branch() {
                         let branch_name = head_ref.shorthand().map(|s| s.to_string());
                         Ok((branch_name, false, head_oid))
@@ -7574,7 +8070,7 @@ impl GitHandle {
                         // Detached HEAD
                         Ok((None, true, head_oid))
                     }
-                },
+                }
                 Err(_) => {
                     // No commits yet (unborn branch)
                     Ok((Some("main".to_string()), false, None))
@@ -7584,15 +8080,20 @@ impl GitHandle {
     }
 
     /// Compute working tree status counts
-    fn compute_working_tree_status(&self, repo: &Repository, config: &StatusSummaryConfig) -> Result<Value, GitError> {
+    fn compute_working_tree_status(
+        &self,
+        repo: &Repository,
+        config: &StatusSummaryConfig,
+    ) -> Result<Value, GitError> {
         let mut opts = git2::StatusOptions::new();
         opts.include_ignored(config.include_ignored.unwrap_or(false));
         opts.include_untracked(config.include_untracked.unwrap_or(true));
 
-        let statuses = repo.statuses(Some(&mut opts))
-            .map_err(|e| GitError::StatusSummaryFailed {
-                message: format!("failed to get repository status: {}", e)
-            })?;
+        let statuses =
+            repo.statuses(Some(&mut opts))
+                .map_err(|e| GitError::StatusSummaryFailed {
+                    message: format!("failed to get repository status: {}", e),
+                })?;
 
         let mut staged_count = 0;
         let mut unstaged_count = 0;
@@ -7602,25 +8103,36 @@ impl GitHandle {
 
         for entry in statuses.iter() {
             let flags = entry.status();
-            
+
             if flags.contains(GitStatus::CONFLICTED) {
                 conflicts_count += 1;
             } else {
                 // Check for staged changes
-                if flags.intersects(GitStatus::INDEX_NEW | GitStatus::INDEX_MODIFIED | GitStatus::INDEX_DELETED | GitStatus::INDEX_RENAMED | GitStatus::INDEX_TYPECHANGE) {
+                if flags.intersects(
+                    GitStatus::INDEX_NEW
+                        | GitStatus::INDEX_MODIFIED
+                        | GitStatus::INDEX_DELETED
+                        | GitStatus::INDEX_RENAMED
+                        | GitStatus::INDEX_TYPECHANGE,
+                ) {
                     staged_count += 1;
                 }
-                
+
                 // Check for unstaged changes
-                if flags.intersects(GitStatus::WT_MODIFIED | GitStatus::WT_DELETED | GitStatus::WT_TYPECHANGE | GitStatus::WT_RENAMED) {
+                if flags.intersects(
+                    GitStatus::WT_MODIFIED
+                        | GitStatus::WT_DELETED
+                        | GitStatus::WT_TYPECHANGE
+                        | GitStatus::WT_RENAMED,
+                ) {
                     unstaged_count += 1;
                 }
-                
+
                 // Check for untracked files
                 if flags.contains(GitStatus::WT_NEW) {
                     untracked_count += 1;
                 }
-                
+
                 // Check for ignored files
                 if flags.contains(GitStatus::IGNORED) {
                     ignored_count += 1;
@@ -7633,7 +8145,9 @@ impl GitHandle {
 
         // Determine if clean
         let include_untracked_in_clean = config.include_untracked.unwrap_or(true);
-        let clean = staged_count == 0 && unstaged_count == 0 && conflicts_count == 0 
+        let clean = staged_count == 0
+            && unstaged_count == 0
+            && conflicts_count == 0
             && (!include_untracked_in_clean || untracked_count == 0);
 
         Ok(json!({
@@ -7650,7 +8164,7 @@ impl GitHandle {
     /// Detect operations in progress (merge, rebase, etc.)
     fn detect_operations_in_progress(&self, repo: &Repository) -> Result<Value, GitError> {
         let git_dir = repo.path();
-        
+
         let merge = git_dir.join("MERGE_HEAD").exists();
         let rebase = git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists();
         let cherry_pick = git_dir.join("CHERRY_PICK_HEAD").exists();
@@ -7667,7 +8181,13 @@ impl GitHandle {
     }
 
     /// Compute upstream status and sync state
-    fn compute_upstream_status(&self, repo: &Repository, branch_name: &Option<String>, config_remote: &Option<String>, head_commit_oid: Option<&String>) -> Result<(Option<Value>, String, usize, usize), GitError> {
+    fn compute_upstream_status(
+        &self,
+        repo: &Repository,
+        branch_name: &Option<String>,
+        config_remote: &Option<String>,
+        head_commit_oid: Option<&String>,
+    ) -> Result<(Option<Value>, String, usize, usize), GitError> {
         // If no commits, cannot have upstream
         if head_commit_oid.is_none() {
             return Ok((None, "no_upstream".to_string(), 0, 0));
@@ -7680,17 +8200,19 @@ impl GitHandle {
 
         // Try to find upstream
         let upstream_ref = self.resolve_upstream_ref(repo, branch_name, config_remote)?;
-        
-        if let Some((upstream_name, upstream_oid)) = upstream_ref {
-            let local_oid = git2::Oid::from_str(head_commit_oid.unwrap())
-                .map_err(|e| GitError::StatusSummaryFailed {
-                    message: format!("invalid head commit OID: {}", e)
-                })?;
 
-            let (ahead_by, behind_by) = repo.graph_ahead_behind(local_oid, upstream_oid)
-                .map_err(|e| GitError::StatusSummaryFailed {
-                    message: format!("failed to compute ahead/behind: {}", e)
-                })?;
+        if let Some((upstream_name, upstream_oid)) = upstream_ref {
+            let local_oid = git2::Oid::from_str(head_commit_oid.unwrap()).map_err(|e| {
+                GitError::StatusSummaryFailed {
+                    message: format!("invalid head commit OID: {}", e),
+                }
+            })?;
+
+            let (ahead_by, behind_by) =
+                repo.graph_ahead_behind(local_oid, upstream_oid)
+                    .map_err(|e| GitError::StatusSummaryFailed {
+                        message: format!("failed to compute ahead/behind: {}", e),
+                    })?;
 
             let sync_state = match (ahead_by, behind_by) {
                 (0, 0) => "in_sync",
@@ -7698,7 +8220,8 @@ impl GitHandle {
                 (0, b) if b > 0 => "behind_only",
                 (a, b) if a > 0 && b > 0 => "diverged",
                 _ => "unknown",
-            }.to_string();
+            }
+            .to_string();
 
             let upstream_info = json!({
                 "name": upstream_name,
@@ -7716,7 +8239,12 @@ impl GitHandle {
     }
 
     /// Resolve upstream reference for a branch
-    fn resolve_upstream_ref(&self, repo: &Repository, branch_name: &str, config_remote: &Option<String>) -> Result<Option<(String, git2::Oid)>, GitError> {
+    fn resolve_upstream_ref(
+        &self,
+        repo: &Repository,
+        branch_name: &str,
+        config_remote: &Option<String>,
+    ) -> Result<Option<(String, git2::Oid)>, GitError> {
         // First try the configured upstream for the branch
         if let Ok(local_branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
             if let Ok(upstream_branch) = local_branch.upstream() {
@@ -7732,7 +8260,7 @@ impl GitHandle {
         let default_remote = "origin".to_string();
         let remote_name = config_remote.as_ref().unwrap_or(&default_remote);
         let upstream_ref_name = format!("refs/remotes/{}/{}", remote_name, branch_name);
-        
+
         if let Ok(upstream_ref) = repo.find_reference(&upstream_ref_name) {
             if let Some(upstream_oid) = upstream_ref.target() {
                 return Ok(Some((upstream_ref_name, upstream_oid)));
@@ -7744,19 +8272,23 @@ impl GitHandle {
 
     /// Compute optional diffstats
     fn compute_diffstats(&self, repo: &Repository, max_files: u32) -> Result<Value, GitError> {
-        let head_commit = repo.head()?.peel_to_commit()
+        let head_commit =
+            repo.head()?
+                .peel_to_commit()
+                .map_err(|e| GitError::StatusSummaryFailed {
+                    message: format!("failed to get HEAD commit: {}", e),
+                })?;
+
+        let head_tree = head_commit
+            .tree()
             .map_err(|e| GitError::StatusSummaryFailed {
-                message: format!("failed to get HEAD commit: {}", e)
-            })?;
-        
-        let head_tree = head_commit.tree()
-            .map_err(|e| GitError::StatusSummaryFailed {
-                message: format!("failed to get HEAD tree: {}", e)
+                message: format!("failed to get HEAD tree: {}", e),
             })?;
 
-        let diff = repo.diff_tree_to_workdir_with_index(Some(&head_tree), None)
+        let diff = repo
+            .diff_tree_to_workdir_with_index(Some(&head_tree), None)
             .map_err(|e| GitError::StatusSummaryFailed {
-                message: format!("failed to create diff: {}", e)
+                message: format!("failed to create diff: {}", e),
             })?;
 
         let mut changed_files = 0;
@@ -7782,9 +8314,10 @@ impl GitHandle {
                     _ => {}
                 }
                 true
-            })
-        ).map_err(|e| GitError::StatusSummaryFailed {
-            message: format!("failed to process diff: {}", e)
+            }),
+        )
+        .map_err(|e| GitError::StatusSummaryFailed {
+            message: format!("failed to process diff: {}", e),
         })?;
 
         Ok(json!({
@@ -7797,22 +8330,35 @@ impl GitHandle {
     }
 
     /// Compute summary flags based on working tree and sync state
-    fn compute_summary_flags(&self, working_tree: &Value, sync_state: &str) -> Result<Value, GitError> {
+    fn compute_summary_flags(
+        &self,
+        working_tree: &Value,
+        sync_state: &str,
+    ) -> Result<Value, GitError> {
         let staged_count = working_tree["staged_count"].as_u64().unwrap_or(0);
         let unstaged_count = working_tree["unstaged_count"].as_u64().unwrap_or(0);
         let conflicts_count = working_tree["conflicts_count"].as_u64().unwrap_or(0);
         let untracked_count = working_tree["untracked_count"].as_u64().unwrap_or(0);
         let clean = working_tree["clean"].as_bool().unwrap_or(false);
 
-        let has_uncommitted_changes = staged_count > 0 || unstaged_count > 0 || conflicts_count > 0 || untracked_count > 0;
+        let has_uncommitted_changes =
+            staged_count > 0 || unstaged_count > 0 || conflicts_count > 0 || untracked_count > 0;
         let can_commit = staged_count > 0 && conflicts_count == 0;
         let needs_pull = sync_state == "behind_only" || sync_state == "diverged";
         let needs_push = sync_state == "ahead_only" || sync_state == "diverged";
-        let blocked_by_conflicts = conflicts_count > 0 || 
-            working_tree["in_progress"]["merge"].as_bool().unwrap_or(false) ||
-            working_tree["in_progress"]["rebase"].as_bool().unwrap_or(false) ||
-            working_tree["in_progress"]["cherry_pick"].as_bool().unwrap_or(false) ||
-            working_tree["in_progress"]["revert"].as_bool().unwrap_or(false);
+        let blocked_by_conflicts = conflicts_count > 0
+            || working_tree["in_progress"]["merge"]
+                .as_bool()
+                .unwrap_or(false)
+            || working_tree["in_progress"]["rebase"]
+                .as_bool()
+                .unwrap_or(false)
+            || working_tree["in_progress"]["cherry_pick"]
+                .as_bool()
+                .unwrap_or(false)
+            || working_tree["in_progress"]["revert"]
+                .as_bool()
+                .unwrap_or(false);
 
         // Derive overall state
         let state = if blocked_by_conflicts {
@@ -7844,52 +8390,51 @@ impl GitHandle {
     }
 
     /// Compute recommendations based on summary and state
-    fn compute_recommendations(&self, summary: &Value, sync_state: &str, working_tree: &Value) -> Result<Value, GitError> {
+    fn compute_recommendations(
+        &self,
+        summary: &Value,
+        sync_state: &str,
+        working_tree: &Value,
+    ) -> Result<Value, GitError> {
         let state = summary["state"].as_str().unwrap_or("unknown");
         let blocked_by_conflicts = summary["blocked_by_conflicts"].as_bool().unwrap_or(false);
-        let has_uncommitted_changes = summary["has_uncommitted_changes"].as_bool().unwrap_or(false);
+        let has_uncommitted_changes = summary["has_uncommitted_changes"]
+            .as_bool()
+            .unwrap_or(false);
 
         let (primary_action, actions, description) = match state {
             "conflicts_present" => (
                 "resolve_conflicts",
                 vec!["resolve_conflicts", "continue_merge_or_rebase"],
-                "Resolve conflicts before proceeding with other operations."
+                "Resolve conflicts before proceeding with other operations.",
             ),
             "local_changes_only" => (
                 "commit",
                 vec!["commit_changes", "sync_with_remote"],
-                "Commit your local changes and sync with remote."
+                "Commit your local changes and sync with remote.",
             ),
             "committed_but_ahead" => (
                 "push",
                 vec!["push_branch"],
-                "Push your commits to the remote repository."
+                "Push your commits to the remote repository.",
             ),
             "behind_remote" => (
                 "pull",
                 vec!["pull_or_sync"],
-                "Pull the latest changes from remote."
+                "Pull the latest changes from remote.",
             ),
             "diverged" => (
                 "sync",
                 vec!["sync_with_remote"],
-                "Sync to integrate remote changes with your local commits."
+                "Sync to integrate remote changes with your local commits.",
             ),
             "no_upstream" => (
                 "setup_upstream",
                 vec!["set_upstream", "sync_with_remote"],
-                "Configure upstream tracking for this branch."
+                "Configure upstream tracking for this branch.",
             ),
-            "clean_and_synced" => (
-                "none",
-                vec![],
-                "Repository is clean and synchronized."
-            ),
-            _ => (
-                "none",
-                vec![],
-                "Repository state analysis complete."
-            )
+            "clean_and_synced" => ("none", vec![], "Repository is clean and synchronized."),
+            _ => ("none", vec![], "Repository state analysis complete."),
         };
 
         Ok(json!({
@@ -7900,25 +8445,32 @@ impl GitHandle {
     }
 
     /// Execute status summary operation
-    async fn execute_status_summary(&self, config: &StatusSummaryConfig) -> Result<Value, GitError> {
+    async fn execute_status_summary(
+        &self,
+        config: &StatusSummaryConfig,
+    ) -> Result<Value, GitError> {
         log::info!("Executing status summary for path: {}", config.path);
 
         // Open repository
-        let repo = Repository::open(&config.path).map_err(|_e| {
-            GitError::RepositoryNotFound { 
-                path: config.path.clone() 
-            }
+        let repo = Repository::open(&config.path).map_err(|_e| GitError::RepositoryNotFound {
+            path: config.path.clone(),
         })?;
 
         // Determine focus branch
-        let (branch_name, branch_detached, head_commit_oid) = self.determine_focus_branch(&repo, &config.branch)?;
+        let (branch_name, branch_detached, head_commit_oid) =
+            self.determine_focus_branch(&repo, &config.branch)?;
 
         // Get working tree status
         let working_tree = self.compute_working_tree_status(&repo, config)?;
 
         // Get upstream and sync info if requested
         let (upstream, sync_state, ahead_by, behind_by) = if config.include_remote.unwrap_or(true) {
-            self.compute_upstream_status(&repo, &branch_name, &config.remote, head_commit_oid.as_ref())?
+            self.compute_upstream_status(
+                &repo,
+                &branch_name,
+                &config.remote,
+                head_commit_oid.as_ref(),
+            )?
         } else {
             (None, "no_upstream".to_string(), 0, 0)
         };
@@ -7932,7 +8484,7 @@ impl GitHandle {
 
         // Derive summary flags and state
         let summary = self.compute_summary_flags(&working_tree, &sync_state)?;
-        
+
         // Compute recommendations
         let recommendation = self.compute_recommendations(&summary, &sync_state, &working_tree)?;
 
@@ -7962,16 +8514,16 @@ impl GitHandle {
 
         // Parse and validate configuration
         let config = self.parse_status_summary_config(args)?;
-        
+
         // Execute with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms.unwrap_or(5000));
-        
+
         tokio::time::timeout(timeout_duration, async {
             self.execute_status_summary(&config).await
         })
         .await
-        .map_err(|_| GitError::StatusSummaryTimeout { 
-            timeout_ms: config.timeout_ms.unwrap_or(5000) 
+        .map_err(|_| GitError::StatusSummaryTimeout {
+            timeout_ms: config.timeout_ms.unwrap_or(5000),
         })?
     }
 
@@ -7982,15 +8534,13 @@ impl GitHandle {
         // Parse and validate configuration
         let config = self.parse_status_short_config(args)?;
         self.validate_status_short_config(&config)?;
-        
+
         // Execute with timeout (default 1000ms for PS1 use)
         let timeout_ms = config.timeout_ms.unwrap_or(1000);
         let timeout_duration = Duration::from_millis(timeout_ms);
-        
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.execute_status_short(&config)
-        ).await;
+
+        let result =
+            tokio::time::timeout(timeout_duration, self.execute_status_short(&config)).await;
 
         match result {
             Ok(status_result) => status_result,
@@ -8095,7 +8645,10 @@ impl GitHandle {
     }
 
     /// Resolve symbols with defaults
-    fn resolve_status_short_symbols(&self, symbols: &Option<StatusShortSymbols>) -> StatusShortSymbols {
+    fn resolve_status_short_symbols(
+        &self,
+        symbols: &Option<StatusShortSymbols>,
+    ) -> StatusShortSymbols {
         let defaults = StatusShortSymbols {
             detached: Some("!".to_string()),
             ahead: Some("↑".to_string()),
@@ -8132,10 +8685,13 @@ impl GitHandle {
                     .map_err(|_| GitError::StatusShortBranchNotFound {
                         branch: branch_name.clone(),
                     })?;
-                
-                let target = branch.get().target().ok_or_else(|| GitError::StatusShortFailed {
-                    message: "branch has no target commit".to_string(),
-                })?;
+
+                let target = branch
+                    .get()
+                    .target()
+                    .ok_or_else(|| GitError::StatusShortFailed {
+                        message: "branch has no target commit".to_string(),
+                    })?;
 
                 Ok((branch_name.clone(), false, target))
             }
@@ -8152,7 +8708,7 @@ impl GitHandle {
                             message: "failed to get branch name".to_string(),
                         })?
                         .to_string();
-                    
+
                     let target = head.target().ok_or_else(|| GitError::StatusShortFailed {
                         message: "HEAD has no target commit".to_string(),
                     })?;
@@ -8185,16 +8741,18 @@ impl GitHandle {
             return Ok((true, false)); // Assume clean if not checking
         }
 
-        let statuses = repo.statuses(None).map_err(|e| GitError::StatusShortFailed {
-            message: format!("failed to get repository status: {}", e),
-        })?;
+        let statuses = repo
+            .statuses(None)
+            .map_err(|e| GitError::StatusShortFailed {
+                message: format!("failed to get repository status: {}", e),
+            })?;
 
         let mut clean = true;
         let mut has_conflicts = false;
 
         for status_entry in statuses.iter() {
             let status = status_entry.status();
-            
+
             if include_conflicts && status.contains(GitStatus::CONFLICTED) {
                 has_conflicts = true;
             }
@@ -8223,15 +8781,15 @@ impl GitHandle {
     ) -> Result<(usize, usize, bool), GitError> {
         // Try to find upstream reference
         let upstream_ref = self.find_upstream_ref(repo, branch_name, remote_override, detached)?;
-        
+
         match upstream_ref {
             Some(upstream_oid) => {
-                let (ahead, behind) = repo
-                    .graph_ahead_behind(local_oid, upstream_oid)
-                    .map_err(|e| GitError::StatusShortFailed {
-                        message: format!("failed to compute ahead/behind: {}", e),
-                    })?;
-                
+                let (ahead, behind) =
+                    repo.graph_ahead_behind(local_oid, upstream_oid)
+                        .map_err(|e| GitError::StatusShortFailed {
+                            message: format!("failed to compute ahead/behind: {}", e),
+                        })?;
+
                 Ok((ahead, behind, true))
             }
             None => Ok((0, 0, false)),
@@ -8263,7 +8821,7 @@ impl GitHandle {
         // Try specified remote
         let remote_name = remote_override.as_deref().unwrap_or("origin");
         let upstream_ref_name = format!("refs/remotes/{}/{}", remote_name, branch_name);
-        
+
         if let Ok(upstream_ref) = repo.find_reference(&upstream_ref_name) {
             if let Some(target) = upstream_ref.target() {
                 return Ok(Some(target));
@@ -8370,8 +8928,8 @@ impl Handle for GitHandle {
         match verb {
             "clone" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize clone arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize clone arguments")?;
 
                 // For now, we need to handle async in sync context
                 // This is a limitation we'll need to address with the registry design
@@ -8380,9 +8938,7 @@ impl Handle for GitHandle {
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.clone(args_value).await
-                });
+                let result = runtime.block_on(async { self.clone(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8397,17 +8953,15 @@ impl Handle for GitHandle {
             }
             "pull" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize pull arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize pull arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.pull(args_value).await
-                });
+                let result = runtime.block_on(async { self.pull(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8422,17 +8976,15 @@ impl Handle for GitHandle {
             }
             "push" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize push arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize push arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.push(args_value).await
-                });
+                let result = runtime.block_on(async { self.push(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8447,17 +8999,15 @@ impl Handle for GitHandle {
             }
             "status" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize status arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize status arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.status(args_value).await
-                });
+                let result = runtime.block_on(async { self.status(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8472,17 +9022,15 @@ impl Handle for GitHandle {
             }
             "branch" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize branch arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize branch arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.branch(args_value).await
-                });
+                let result = runtime.block_on(async { self.branch(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8497,17 +9045,15 @@ impl Handle for GitHandle {
             }
             "commit" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize commit arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize commit arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.commit(args_value).await
-                });
+                let result = runtime.block_on(async { self.commit(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8522,17 +9068,15 @@ impl Handle for GitHandle {
             }
             "diff" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize diff arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize diff arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.diff(args_value).await
-                });
+                let result = runtime.block_on(async { self.diff(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8547,17 +9091,15 @@ impl Handle for GitHandle {
             }
             "tag" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize tag arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize tag arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.tag(args_value).await
-                });
+                let result = runtime.block_on(async { self.tag(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8572,17 +9114,15 @@ impl Handle for GitHandle {
             }
             "merge" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize merge arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize merge arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.merge(args_value).await
-                });
+                let result = runtime.block_on(async { self.merge(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8597,17 +9137,15 @@ impl Handle for GitHandle {
             }
             "rebase" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize rebase arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize rebase arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.rebase(args_value).await
-                });
+                let result = runtime.block_on(async { self.rebase(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8622,17 +9160,15 @@ impl Handle for GitHandle {
             }
             "sync" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize sync arguments")?;
+                let args_value =
+                    serde_json::to_value(args).context("failed to serialize sync arguments")?;
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.sync(args_value).await
-                });
+                let result = runtime.block_on(async { self.sync(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8655,9 +9191,7 @@ impl Handle for GitHandle {
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.status_summary(args_value).await
-                });
+                let result = runtime.block_on(async { self.status_summary(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8680,9 +9214,7 @@ impl Handle for GitHandle {
                     .build()
                     .context("failed to create tokio runtime")?;
 
-                let result = runtime.block_on(async {
-                    self.status_short(args_value).await
-                });
+                let result = runtime.block_on(async { self.status_short(args_value).await });
 
                 match result {
                     Ok(value) => {
@@ -8714,7 +9246,10 @@ mod tests {
     // Helper to create test arguments
     fn create_test_args() -> HashMap<String, String> {
         let mut args = HashMap::new();
-        args.insert("url".to_string(), "https://github.com/test/repo.git".to_string());
+        args.insert(
+            "url".to_string(),
+            "https://github.com/test/repo.git".to_string(),
+        );
         args.insert("path".to_string(), "/tmp/test_repo".to_string());
         args
     }
@@ -8736,7 +9271,7 @@ mod tests {
         println!("Parsed URL: {:?}, path: {:?}", url, url.path());
         let handle = GitHandle::from_url(url).unwrap();
         assert_eq!(handle.alias, "default");
-        
+
         // For a path-based alias
         let url = Url::parse("git:///my_alias").unwrap();
         println!("Parsed URL: {:?}, path: {:?}", url, url.path());
@@ -8753,7 +9288,9 @@ mod tests {
 
     #[test]
     fn test_clone_config_validation() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Valid configuration
         let config = CloneConfig {
@@ -8773,7 +9310,10 @@ mod tests {
         // Empty URL
         let mut config = config.clone();
         config.url = "".to_string();
-        assert!(matches!(handle.validate_clone_config(&config), Err(GitError::InvalidCloneConfig { .. })));
+        assert!(matches!(
+            handle.validate_clone_config(&config),
+            Err(GitError::InvalidCloneConfig { .. })
+        ));
 
         // Empty path
         let mut config = CloneConfig {
@@ -8788,7 +9328,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_clone_config(&config), Err(GitError::InvalidCloneConfig { .. })));
+        assert!(matches!(
+            handle.validate_clone_config(&config),
+            Err(GitError::InvalidCloneConfig { .. })
+        ));
 
         // Invalid depth
         let mut config = CloneConfig {
@@ -8803,7 +9346,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_clone_config(&config), Err(GitError::InvalidCloneConfig { .. })));
+        assert!(matches!(
+            handle.validate_clone_config(&config),
+            Err(GitError::InvalidCloneConfig { .. })
+        ));
 
         // Invalid timeout
         let mut config = CloneConfig {
@@ -8818,7 +9364,10 @@ mod tests {
             token: None,
             timeout_ms: Some(0),
         };
-        assert!(matches!(handle.validate_clone_config(&config), Err(GitError::InvalidCloneConfig { .. })));
+        assert!(matches!(
+            handle.validate_clone_config(&config),
+            Err(GitError::InvalidCloneConfig { .. })
+        ));
 
         // Multiple auth methods
         let mut config = CloneConfig {
@@ -8833,7 +9382,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_clone_config(&config), Err(GitError::InvalidCloneConfig { .. })));
+        assert!(matches!(
+            handle.validate_clone_config(&config),
+            Err(GitError::InvalidCloneConfig { .. })
+        ));
 
         // Invalid URL protocol
         let mut config = CloneConfig {
@@ -8848,12 +9400,17 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_clone_config(&config), Err(GitError::InvalidCloneConfig { .. })));
+        assert!(matches!(
+            handle.validate_clone_config(&config),
+            Err(GitError::InvalidCloneConfig { .. })
+        ));
     }
 
     #[test]
     fn test_clone_config_parsing() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         let args = json!({
             "url": "https://github.com/test/repo.git",
@@ -8878,30 +9435,41 @@ mod tests {
         // An unregistered alias is not an error: local verbs (status,
         // commit, branch, ...) run without a connection profile. It must
         // get an empty profile and never another alias's credentials.
-        GitHandle::register_connection("registered_with_secrets".to_string(), GitConnectionProfile {
-            ssh_key_path: Some(PathBuf::from("/nonexistent/id_ed25519")),
-            known_hosts_path: None,
-            username: Some("user".to_string()),
-            password: Some("secret".to_string()),
-            token: Some("token".to_string()),
-        });
+        GitHandle::register_connection(
+            "registered_with_secrets".to_string(),
+            GitConnectionProfile {
+                ssh_key_path: Some(PathBuf::from("/nonexistent/id_ed25519")),
+                known_hosts_path: None,
+                username: Some("user".to_string()),
+                password: Some("secret".to_string()),
+                token: Some("token".to_string()),
+            },
+        );
 
-        let handle = GitHandle { alias: "nonexistent".to_string() };
-        let profile = handle.load_connection_profile().expect("unregistered alias gets the default profile");
+        let handle = GitHandle {
+            alias: "nonexistent".to_string(),
+        };
+        let profile = handle
+            .load_connection_profile()
+            .expect("unregistered alias gets the default profile");
         assert!(profile.ssh_key_path.is_none());
         assert!(profile.known_hosts_path.is_none());
         assert!(profile.username.is_none());
         assert!(profile.password.is_none());
         assert!(profile.token.is_none());
 
-        let handle = GitHandle { alias: "registered_with_secrets".to_string() };
+        let handle = GitHandle {
+            alias: "registered_with_secrets".to_string(),
+        };
         let profile = handle.load_connection_profile().unwrap();
         assert_eq!(profile.token.as_deref(), Some("token"));
     }
 
     #[test]
     fn test_auth_validation_single_methods() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // SSH key only
         let config = CloneConfig {
@@ -8951,8 +9519,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_clone_target_directory_check() {
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Create a temporary directory with a file in it
         let temp_dir = TempDir::new().unwrap();
         let target_path = temp_dir.path().join("existing");
@@ -8996,8 +9566,10 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let target_path = temp_dir.path().join("cloned_repo");
 
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Register a default connection profile
         let profile = GitConnectionProfile {
             ssh_key_path: None,
@@ -9023,7 +9595,7 @@ mod tests {
 
         let profile = handle.load_connection_profile().unwrap();
         let result = handle.execute_clone(&config, &profile).await;
-        
+
         if result.is_ok() {
             assert!(target_path.exists());
             assert!(target_path.join(".git").exists());
@@ -9033,13 +9605,15 @@ mod tests {
         }
     }
 
-    #[tokio::test] 
+    #[tokio::test]
     async fn test_timeout_functionality() {
         // Hermetic: no network and no fixed /tmp path. A git timeout cannot
         // be enforced (libgit2 calls are blocking), so the CLI refuses
         // timeout_ms (see timeout_rejection_tests); here the clone itself
         // must fail promptly and leave nothing behind.
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
         let tmp = TempDir::new().unwrap();
         let missing_source = tmp.path().join("no-such-repo");
         let target = tmp.path().join("clone");
@@ -9060,7 +9634,9 @@ mod tests {
     // Pull validation tests
     #[test]
     fn test_pull_config_validation() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Valid configuration
         let config = PullConfig {
@@ -9084,7 +9660,10 @@ mod tests {
         // Empty path
         let mut config = config.clone();
         config.path = "".to_string();
-        assert!(matches!(handle.validate_pull_config(&config), Err(GitError::InvalidPullConfig { .. })));
+        assert!(matches!(
+            handle.validate_pull_config(&config),
+            Err(GitError::InvalidPullConfig { .. })
+        ));
 
         // Invalid timeout
         let mut config = PullConfig {
@@ -9101,7 +9680,10 @@ mod tests {
             token: None,
             timeout_ms: Some(0),
         };
-        assert!(matches!(handle.validate_pull_config(&config), Err(GitError::InvalidPullConfig { .. })));
+        assert!(matches!(
+            handle.validate_pull_config(&config),
+            Err(GitError::InvalidPullConfig { .. })
+        ));
 
         // Invalid depth
         let mut config = PullConfig {
@@ -9118,7 +9700,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_pull_config(&config), Err(GitError::InvalidPullConfig { .. })));
+        assert!(matches!(
+            handle.validate_pull_config(&config),
+            Err(GitError::InvalidPullConfig { .. })
+        ));
 
         // Empty remote string
         let mut config = PullConfig {
@@ -9135,7 +9720,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_pull_config(&config), Err(GitError::InvalidPullConfig { .. })));
+        assert!(matches!(
+            handle.validate_pull_config(&config),
+            Err(GitError::InvalidPullConfig { .. })
+        ));
 
         // Empty branch string
         let mut config = PullConfig {
@@ -9152,7 +9740,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_pull_config(&config), Err(GitError::InvalidPullConfig { .. })));
+        assert!(matches!(
+            handle.validate_pull_config(&config),
+            Err(GitError::InvalidPullConfig { .. })
+        ));
 
         // Multiple auth methods
         let mut config = PullConfig {
@@ -9169,12 +9760,17 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_pull_config(&config), Err(GitError::InvalidPullConfig { .. })));
+        assert!(matches!(
+            handle.validate_pull_config(&config),
+            Err(GitError::InvalidPullConfig { .. })
+        ));
     }
 
     #[test]
     fn test_pull_config_parsing() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         let args = json!({
             "path": "/tmp/test",
@@ -9200,7 +9796,9 @@ mod tests {
 
     #[test]
     fn test_pull_auth_validation_single_methods() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // SSH key only
         let config = PullConfig {
@@ -9260,8 +9858,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_repository_not_found() {
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Register a connection profile
         let profile = GitConnectionProfile {
             ssh_key_path: None,
@@ -9294,8 +9894,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_timeout() {
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Register a connection profile
         let profile = GitConnectionProfile {
             ssh_key_path: None,
@@ -9329,8 +9931,10 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let clone_path = temp_dir.path().join("cloned_repo");
 
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Register a default connection profile
         let profile = GitConnectionProfile {
             ssh_key_path: None,
@@ -9379,7 +9983,7 @@ mod tests {
         };
 
         let pull_result = handle.execute_pull(&pull_config, &profile).await;
-        
+
         if pull_result.is_ok() {
             let result_value = pull_result.unwrap();
             let result: PullResult = serde_json::from_value(result_value).unwrap();
@@ -9398,7 +10002,9 @@ mod tests {
     // Push validation tests
     #[test]
     fn test_push_config_validation() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Valid configuration
         let config = PushConfig {
@@ -9423,7 +10029,10 @@ mod tests {
         // Empty path
         let mut config = config.clone();
         config.path = "".to_string();
-        assert!(matches!(handle.validate_push_config(&config), Err(GitError::InvalidPushConfig { .. })));
+        assert!(matches!(
+            handle.validate_push_config(&config),
+            Err(GitError::InvalidPushConfig { .. })
+        ));
 
         // Invalid timeout
         let mut config = PushConfig {
@@ -9441,7 +10050,10 @@ mod tests {
             token: None,
             timeout_ms: Some(0),
         };
-        assert!(matches!(handle.validate_push_config(&config), Err(GitError::InvalidPushConfig { .. })));
+        assert!(matches!(
+            handle.validate_push_config(&config),
+            Err(GitError::InvalidPushConfig { .. })
+        ));
 
         // Both branch and branches provided
         let mut config = PushConfig {
@@ -9459,7 +10071,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_push_config(&config), Err(GitError::InvalidPushConfig { .. })));
+        assert!(matches!(
+            handle.validate_push_config(&config),
+            Err(GitError::InvalidPushConfig { .. })
+        ));
 
         // Empty branches array
         let mut config = PushConfig {
@@ -9477,7 +10092,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_push_config(&config), Err(GitError::InvalidPushConfig { .. })));
+        assert!(matches!(
+            handle.validate_push_config(&config),
+            Err(GitError::InvalidPushConfig { .. })
+        ));
 
         // force and ff_only both true
         let mut config = PushConfig {
@@ -9495,7 +10113,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_push_config(&config), Err(GitError::InvalidPushConfig { .. })));
+        assert!(matches!(
+            handle.validate_push_config(&config),
+            Err(GitError::InvalidPushConfig { .. })
+        ));
 
         // Empty remote string
         let mut config = PushConfig {
@@ -9513,7 +10134,10 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_push_config(&config), Err(GitError::InvalidPushConfig { .. })));
+        assert!(matches!(
+            handle.validate_push_config(&config),
+            Err(GitError::InvalidPushConfig { .. })
+        ));
 
         // Multiple auth methods
         let mut config = PushConfig {
@@ -9531,12 +10155,17 @@ mod tests {
             token: None,
             timeout_ms: None,
         };
-        assert!(matches!(handle.validate_push_config(&config), Err(GitError::InvalidPushConfig { .. })));
+        assert!(matches!(
+            handle.validate_push_config(&config),
+            Err(GitError::InvalidPushConfig { .. })
+        ));
     }
 
     #[test]
     fn test_push_config_parsing() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         let args = json!({
             "path": "/tmp/test",
@@ -9563,7 +10192,9 @@ mod tests {
 
     #[test]
     fn test_push_auth_validation_single_methods() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // SSH key only
         let config = PushConfig {
@@ -9626,8 +10257,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_push_repository_not_found() {
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Register a connection profile
         let profile = GitConnectionProfile {
             ssh_key_path: None,
@@ -9661,8 +10294,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_push_timeout() {
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Register a connection profile
         let profile = GitConnectionProfile {
             ssh_key_path: None,
@@ -9696,8 +10331,10 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let clone_path = temp_dir.path().join("cloned_repo");
 
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Register a default connection profile
         let profile = GitConnectionProfile {
             ssh_key_path: None,
@@ -9747,7 +10384,7 @@ mod tests {
         };
 
         let push_result = handle.execute_push(&push_config, &profile).await;
-        
+
         if push_result.is_ok() {
             let result_value = push_result.unwrap();
             let result: PushResult = serde_json::from_value(result_value).unwrap();
@@ -9768,8 +10405,10 @@ mod tests {
     // Status operation tests
     #[test]
     fn test_parse_status_config() {
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Valid config with all fields
         let args = json!({
             "path": "/tmp/test_repo",
@@ -9807,8 +10446,10 @@ mod tests {
 
     #[test]
     fn test_status_config_validation() {
-        let handle = GitHandle { alias: "test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
+
         // Test missing path
         let config = StatusConfig {
             path: "".to_string(),
@@ -9819,7 +10460,7 @@ mod tests {
             include_remote: None,
             timeout_ms: None,
         };
-        
+
         let result = handle.validate_status_config(&config);
         assert!(matches!(result, Err(GitError::InvalidStatusConfig { .. })));
 
@@ -9833,7 +10474,7 @@ mod tests {
             include_remote: None,
             timeout_ms: Some(0),
         };
-        
+
         let result = handle.validate_status_config(&config);
         assert!(matches!(result, Err(GitError::InvalidStatusConfig { .. })));
 
@@ -9847,14 +10488,16 @@ mod tests {
             include_remote: None,
             timeout_ms: Some(5000),
         };
-        
+
         let result = handle.validate_status_config(&config);
         assert!(matches!(result, Err(GitError::RepositoryNotFound { .. })));
     }
 
     #[test]
     fn test_status_config_parsing_errors() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test invalid JSON structure
         let args = json!({
@@ -9935,15 +10578,18 @@ mod tests {
     fn test_working_tree_status_serialization() {
         let status = WorkingTreeStatus {
             clean: false,
-            staged: vec![
-                FileStatus { path: "file1.rs".to_string(), status: "modified".to_string() },
-            ],
-            unstaged: vec![
-                FileStatus { path: "file2.rs".to_string(), status: "modified".to_string() },
-            ],
-            untracked: vec![
-                FileStatus { path: "newfile.txt".to_string(), status: "untracked".to_string() },
-            ],
+            staged: vec![FileStatus {
+                path: "file1.rs".to_string(),
+                status: "modified".to_string(),
+            }],
+            unstaged: vec![FileStatus {
+                path: "file2.rs".to_string(),
+                status: "modified".to_string(),
+            }],
+            untracked: vec![FileStatus {
+                path: "newfile.txt".to_string(),
+                status: "untracked".to_string(),
+            }],
             ignored: vec![],
             conflicts: vec![],
         };
@@ -9993,13 +10639,15 @@ mod tests {
 
         let working_tree = WorkingTreeStatus {
             clean: false,
-            staged: vec![
-                FileStatus { path: "src/app.rs".to_string(), status: "modified".to_string() },
-            ],
+            staged: vec![FileStatus {
+                path: "src/app.rs".to_string(),
+                status: "modified".to_string(),
+            }],
             unstaged: vec![],
-            untracked: vec![
-                FileStatus { path: "notes.txt".to_string(), status: "untracked".to_string() },
-            ],
+            untracked: vec![FileStatus {
+                path: "notes.txt".to_string(),
+                status: "untracked".to_string(),
+            }],
             ignored: vec![],
             conflicts: vec![],
         };
@@ -10030,7 +10678,10 @@ mod tests {
         assert_eq!(json["branch"]["upstream"]["ahead_by"], 1);
         assert_eq!(json["working_tree"]["clean"], false);
         assert_eq!(json["working_tree"]["staged"].as_array().unwrap().len(), 1);
-        assert_eq!(json["working_tree"]["untracked"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            json["working_tree"]["untracked"].as_array().unwrap().len(),
+            1
+        );
         assert_eq!(json["in_progress"]["merge"], false);
 
         // Test round-trip serialization
@@ -10048,10 +10699,10 @@ mod tests {
         // Create a temporary directory and initialize a git repo
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path();
-        
+
         // Initialize git repository
         let repo = Repository::init(repo_path).unwrap();
-        
+
         // Configure git user (required for commits)
         let mut config = repo.config().unwrap();
         config.set_str("user.name", "Test User").unwrap();
@@ -10060,34 +10711,40 @@ mod tests {
         // Create and commit an initial file
         let file_path = repo_path.join("README.md");
         std::fs::write(&file_path, "# Test Repository\nThis is a test.\n").unwrap();
-        
+
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("README.md")).unwrap();
         index.write().unwrap();
-        
+
         let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
-        
+
         repo.commit(
             Some("HEAD"),
             &signature,
             &signature,
             "Initial commit",
             &tree,
-            &[]
-        ).unwrap();
+            &[],
+        )
+        .unwrap();
 
         // Create GitHandle and test status
-        GitHandle::register_connection("test".to_string(), GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        });
+        GitHandle::register_connection(
+            "test".to_string(),
+            GitConnectionProfile {
+                ssh_key_path: None,
+                known_hosts_path: None,
+                username: None,
+                password: None,
+                token: None,
+            },
+        );
 
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
         let config = StatusConfig {
             path: repo_path.to_string_lossy().to_string(),
             include_ignored: Some(false),
@@ -10107,12 +10764,12 @@ mod tests {
             .build()
             .unwrap();
 
-        let result = rt.block_on(async {
-            handle.execute_status(&config).await
-        }).unwrap();
+        let result = rt
+            .block_on(async { handle.execute_status(&config).await })
+            .unwrap();
 
         let status_result: StatusResult = serde_json::from_value(result).unwrap();
-        
+
         // Verify basic structure
         assert_eq!(status_result.backend, "git");
         assert_eq!(status_result.alias, "test");
@@ -10121,7 +10778,7 @@ mod tests {
         assert!(status_result.working_tree.unstaged.is_empty());
         assert!(status_result.working_tree.untracked.is_empty());
         assert!(status_result.working_tree.conflicts.is_empty());
-        
+
         // Branch should not be detached and should be on main/master
         if let Some(branch) = status_result.branch {
             assert!(!branch.detached);
@@ -10144,10 +10801,10 @@ mod tests {
         // Create a temporary directory and initialize a git repo with changes
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path();
-        
+
         // Initialize git repository
         let repo = Repository::init(repo_path).unwrap();
-        
+
         // Configure git user
         let mut config = repo.config().unwrap();
         config.set_str("user.name", "Test User").unwrap();
@@ -10156,40 +10813,45 @@ mod tests {
         // Create and commit an initial file
         let readme_path = repo_path.join("README.md");
         std::fs::write(&readme_path, "# Test Repository\nThis is a test.\n").unwrap();
-        
+
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("README.md")).unwrap();
         index.write().unwrap();
-        
+
         let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
-        
+
         repo.commit(
             Some("HEAD"),
             &signature,
             &signature,
             "Initial commit",
             &tree,
-            &[]
-        ).unwrap();
+            &[],
+        )
+        .unwrap();
 
         // Create various types of changes
-        
+
         // 1. Modify existing file (unstaged)
-        std::fs::write(&readme_path, "# Test Repository\nThis is a modified test.\nNew line added.\n").unwrap();
-        
+        std::fs::write(
+            &readme_path,
+            "# Test Repository\nThis is a modified test.\nNew line added.\n",
+        )
+        .unwrap();
+
         // 2. Create new file and stage it
         let new_file_path = repo_path.join("new_file.txt");
         std::fs::write(&new_file_path, "This is a new file").unwrap();
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("new_file.txt")).unwrap();
         index.write().unwrap();
-        
+
         // 3. Create untracked file
         let untracked_path = repo_path.join("untracked.log");
         std::fs::write(&untracked_path, "Some log content").unwrap();
-        
+
         // 4. Create gitignore and ignored file
         let gitignore_path = repo_path.join(".gitignore");
         std::fs::write(&gitignore_path, "*.tmp\ntarget/\n").unwrap();
@@ -10197,15 +10859,20 @@ mod tests {
         std::fs::write(&ignored_path, "Temporary file").unwrap();
 
         // Test status with all flags enabled
-        GitHandle::register_connection("test2".to_string(), GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        });
+        GitHandle::register_connection(
+            "test2".to_string(),
+            GitConnectionProfile {
+                ssh_key_path: None,
+                known_hosts_path: None,
+                username: None,
+                password: None,
+                token: None,
+            },
+        );
 
-        let handle = GitHandle { alias: "test2".to_string() };
+        let handle = GitHandle {
+            alias: "test2".to_string(),
+        };
         let config = StatusConfig {
             path: repo_path.to_string_lossy().to_string(),
             include_ignored: Some(true),
@@ -10221,33 +10888,55 @@ mod tests {
             .build()
             .unwrap();
 
-        let result = rt.block_on(async {
-            handle.execute_status(&config).await
-        }).unwrap();
+        let result = rt
+            .block_on(async { handle.execute_status(&config).await })
+            .unwrap();
 
         let status_result: StatusResult = serde_json::from_value(result).unwrap();
-        
+
         // Verify the working tree is not clean
         assert!(!status_result.working_tree.clean);
-        
+
         // Check that we have staged changes (new_file.txt)
         assert!(!status_result.working_tree.staged.is_empty());
-        let staged_files: Vec<_> = status_result.working_tree.staged.iter().map(|f| &f.path).collect();
+        let staged_files: Vec<_> = status_result
+            .working_tree
+            .staged
+            .iter()
+            .map(|f| &f.path)
+            .collect();
         assert!(staged_files.contains(&&"new_file.txt".to_string()));
-        
+
         // Check that we have unstaged changes (README.md)
         assert!(!status_result.working_tree.unstaged.is_empty());
-        let unstaged_files: Vec<_> = status_result.working_tree.unstaged.iter().map(|f| &f.path).collect();
+        let unstaged_files: Vec<_> = status_result
+            .working_tree
+            .unstaged
+            .iter()
+            .map(|f| &f.path)
+            .collect();
         assert!(unstaged_files.contains(&&"README.md".to_string()));
-        
+
         // Check that we have untracked files
         assert!(!status_result.working_tree.untracked.is_empty());
-        let untracked_files: Vec<_> = status_result.working_tree.untracked.iter().map(|f| &f.path).collect();
-        assert!(untracked_files.contains(&&"untracked.log".to_string()) || 
-                untracked_files.contains(&&".gitignore".to_string()));
-        
+        let untracked_files: Vec<_> = status_result
+            .working_tree
+            .untracked
+            .iter()
+            .map(|f| &f.path)
+            .collect();
+        assert!(
+            untracked_files.contains(&&"untracked.log".to_string())
+                || untracked_files.contains(&&".gitignore".to_string())
+        );
+
         // Check that we have ignored files (if include_ignored is true)
-        let ignored_files: Vec<_> = status_result.working_tree.ignored.iter().map(|f| &f.path).collect();
+        let ignored_files: Vec<_> = status_result
+            .working_tree
+            .ignored
+            .iter()
+            .map(|f| &f.path)
+            .collect();
         // The ignored file might or might not be detected depending on git2 behavior
         println!("Ignored files detected: {:?}", ignored_files);
 
@@ -10260,10 +10949,10 @@ mod tests {
         // Create a temporary directory and initialize a git repo
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path();
-        
+
         // Initialize git repository
         let repo = Repository::init(repo_path).unwrap();
-        
+
         // Configure git user
         let mut config = repo.config().unwrap();
         config.set_str("user.name", "Test User").unwrap();
@@ -10272,63 +10961,73 @@ mod tests {
         // Create and commit initial files
         let file1_path = repo_path.join("file1.txt");
         std::fs::write(&file1_path, "Content 1").unwrap();
-        
+
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("file1.txt")).unwrap();
         index.write().unwrap();
-        
+
         let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
-        
-        let commit1 = repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "First commit",
-            &tree,
-            &[]
-        ).unwrap();
+
+        let commit1 = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "First commit",
+                &tree,
+                &[],
+            )
+            .unwrap();
 
         // Create second commit
         let file2_path = repo_path.join("file2.txt");
         std::fs::write(&file2_path, "Content 2").unwrap();
-        
+
         let mut index = repo.index().unwrap();
         index.add_path(Path::new("file2.txt")).unwrap();
         index.write().unwrap();
-        
+
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         let first_commit = repo.find_commit(commit1).unwrap();
-        
-        let commit2 = repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "Second commit",
-            &tree,
-            &[&first_commit]
-        ).unwrap();
+
+        let commit2 = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "Second commit",
+                &tree,
+                &[&first_commit],
+            )
+            .unwrap();
 
         // Checkout the first commit (detached HEAD), as `git checkout <sha>`
         // does: update the index and working tree first, then move HEAD.
         // Moving HEAD first would leave file2.txt staged as a new file.
         let first_commit_obj = repo.find_commit(commit1).unwrap();
-        repo.checkout_tree(first_commit_obj.as_object(), None).unwrap();
+        repo.checkout_tree(first_commit_obj.as_object(), None)
+            .unwrap();
         repo.set_head_detached(commit1).unwrap();
         assert!(!repo_path.join("file2.txt").exists());
 
         // Test status in detached HEAD state
-        GitHandle::register_connection("test3".to_string(), GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        });
+        GitHandle::register_connection(
+            "test3".to_string(),
+            GitConnectionProfile {
+                ssh_key_path: None,
+                known_hosts_path: None,
+                username: None,
+                password: None,
+                token: None,
+            },
+        );
 
-        let handle = GitHandle { alias: "test3".to_string() };
+        let handle = GitHandle {
+            alias: "test3".to_string(),
+        };
         let config = StatusConfig {
             path: repo_path.to_string_lossy().to_string(),
             include_ignored: Some(false),
@@ -10344,12 +11043,12 @@ mod tests {
             .build()
             .unwrap();
 
-        let result = rt.block_on(async {
-            handle.execute_status(&config).await
-        }).unwrap();
+        let result = rt
+            .block_on(async { handle.execute_status(&config).await })
+            .unwrap();
 
         let status_result: StatusResult = serde_json::from_value(result).unwrap();
-        
+
         // Verify detached HEAD state
         if let Some(branch) = status_result.branch {
             assert!(branch.detached);
@@ -10364,18 +11063,23 @@ mod tests {
         assert!(status_result.working_tree.clean);
     }
 
-    #[test] 
+    #[test]
     fn test_status_timeout() {
-        GitHandle::register_connection("timeout_test".to_string(), GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        });
+        GitHandle::register_connection(
+            "timeout_test".to_string(),
+            GitConnectionProfile {
+                ssh_key_path: None,
+                known_hosts_path: None,
+                username: None,
+                password: None,
+                token: None,
+            },
+        );
 
-        let handle = GitHandle { alias: "timeout_test".to_string() };
-        
+        let handle = GitHandle {
+            alias: "timeout_test".to_string(),
+        };
+
         // Use a very small timeout to trigger timeout
         let config = StatusConfig {
             path: "/tmp".to_string(), // This exists but is not a git repo
@@ -10393,9 +11097,8 @@ mod tests {
             .unwrap();
 
         // This might timeout or might fail due to invalid repo - either is acceptable for this test
-        let result = rt.block_on(async {
-            handle.status(serde_json::to_value(config).unwrap()).await
-        });
+        let result =
+            rt.block_on(async { handle.status(serde_json::to_value(config).unwrap()).await });
 
         // We expect either a timeout error or repository not found error
         match result {
@@ -10414,7 +11117,9 @@ mod tests {
 
     #[test]
     fn test_branch_config_parsing() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test basic list action parsing
         let args = json!({
@@ -10452,7 +11157,9 @@ mod tests {
 
     #[test]
     fn test_branch_config_validation() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test missing path
         let config = BranchConfig {
@@ -10471,7 +11178,12 @@ mod tests {
         };
         let result = handle.validate_branch_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("path cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("path cannot be empty")
+        );
 
         // Test invalid list flags
         let mut config = BranchConfig {
@@ -10490,7 +11202,12 @@ mod tests {
         };
         let result = handle.validate_branch_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid list flags"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid list flags")
+        );
 
         // Test missing name for create action
         config = BranchConfig {
@@ -10509,7 +11226,12 @@ mod tests {
         };
         let result = handle.validate_branch_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("name is required for create"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("name is required for create")
+        );
 
         // Test missing new_name for rename action
         config = BranchConfig {
@@ -10528,7 +11250,12 @@ mod tests {
         };
         let result = handle.validate_branch_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("new_name is required for rename"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("new_name is required for rename")
+        );
 
         // Test same name and new_name for rename action
         config = BranchConfig {
@@ -10547,7 +11274,12 @@ mod tests {
         };
         let result = handle.validate_branch_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("name and new_name cannot be the same"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("name and new_name cannot be the same")
+        );
     }
 
     #[test]
@@ -10606,17 +11338,24 @@ mod tests {
 
     #[test]
     fn test_parse_tag_config_validation() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test missing path
         let args = json!({});
         let result = handle.parse_tag_config(args);
         assert!(result.is_ok()); // Path will be empty string, validated later
-        
+
         let config = result.unwrap();
         let validation = handle.validate_tag_config(&config);
         assert!(validation.is_err());
-        assert!(validation.unwrap_err().to_string().contains("path is required"));
+        assert!(
+            validation
+                .unwrap_err()
+                .to_string()
+                .contains("path is required")
+        );
 
         // Test timeout_ms = 0
         let args = json!({
@@ -10626,7 +11365,12 @@ mod tests {
         let result = handle.parse_tag_config(args).unwrap();
         let validation = handle.validate_tag_config(&result);
         assert!(validation.is_err());
-        assert!(validation.unwrap_err().to_string().contains("timeout_ms must be greater than 0"));
+        assert!(
+            validation
+                .unwrap_err()
+                .to_string()
+                .contains("timeout_ms must be greater than 0")
+        );
 
         // Test invalid action
         let args = json!({
@@ -10640,7 +11384,9 @@ mod tests {
 
     #[test]
     fn test_validate_tag_config_create() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test create action without name
         let mut config = TagConfig {
@@ -10661,14 +11407,24 @@ mod tests {
         };
         let result = handle.validate_tag_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("name is required for create"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("name is required for create")
+        );
 
         // Test create annotated tag without message
         config.name = Some("v1.0.0".to_string());
         config.annotated = Some(true);
         let result = handle.validate_tag_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("message is required for annotated"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("message is required for annotated")
+        );
 
         // Test valid annotated tag
         config.message = Some("Release 1.0.0".to_string());
@@ -10684,7 +11440,9 @@ mod tests {
 
     #[test]
     fn test_validate_tag_config_delete() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test delete action without name or names
         let mut config = TagConfig {
@@ -10705,13 +11463,23 @@ mod tests {
         };
         let result = handle.validate_tag_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("either name or names is required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("either name or names is required")
+        );
 
         // Test delete with empty names array
         config.names = Some(vec![]);
         let result = handle.validate_tag_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("names array cannot be empty"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("names array cannot be empty")
+        );
 
         // Test valid delete with name
         config.names = None;
@@ -10728,32 +11496,60 @@ mod tests {
 
     #[test]
     fn test_compare_versions() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test semantic version sorting
-        assert_eq!(handle.compare_versions("v1.0.0", "v1.0.1"), std::cmp::Ordering::Less);
-        assert_eq!(handle.compare_versions("v1.0.1", "v1.0.0"), std::cmp::Ordering::Greater);
-        assert_eq!(handle.compare_versions("v1.0.0", "v1.0.0"), std::cmp::Ordering::Equal);
+        assert_eq!(
+            handle.compare_versions("v1.0.0", "v1.0.1"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            handle.compare_versions("v1.0.1", "v1.0.0"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            handle.compare_versions("v1.0.0", "v1.0.0"),
+            std::cmp::Ordering::Equal
+        );
 
         // Test major version differences
-        assert_eq!(handle.compare_versions("v1.9.9", "v2.0.0"), std::cmp::Ordering::Less);
+        assert_eq!(
+            handle.compare_versions("v1.9.9", "v2.0.0"),
+            std::cmp::Ordering::Less
+        );
 
         // Test minor version differences
-        assert_eq!(handle.compare_versions("v1.1.0", "v1.2.0"), std::cmp::Ordering::Less);
+        assert_eq!(
+            handle.compare_versions("v1.1.0", "v1.2.0"),
+            std::cmp::Ordering::Less
+        );
 
         // Test version without 'v' prefix
-        assert_eq!(handle.compare_versions("1.0.0", "1.0.1"), std::cmp::Ordering::Less);
+        assert_eq!(
+            handle.compare_versions("1.0.0", "1.0.1"),
+            std::cmp::Ordering::Less
+        );
 
         // Test versions with different lengths
-        assert_eq!(handle.compare_versions("1.0", "1.0.1"), std::cmp::Ordering::Less);
+        assert_eq!(
+            handle.compare_versions("1.0", "1.0.1"),
+            std::cmp::Ordering::Less
+        );
 
         // Test non-numeric versions (fallback to string comparison)
-        assert_eq!(handle.compare_versions("alpha", "beta"), std::cmp::Ordering::Less);
+        assert_eq!(
+            handle.compare_versions("alpha", "beta"),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]
     fn test_tag_timestamp_parsing() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test ISO8601 timestamp parsing
         let args = json!({
@@ -10793,7 +11589,9 @@ mod tests {
     // Sync verb tests
     #[test]
     fn test_sync_config_validation() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Valid configuration
         let config = SyncConfig {
@@ -10818,7 +11616,10 @@ mod tests {
         // Empty path
         let mut config = config.clone();
         config.path = "".to_string();
-        assert!(matches!(handle.validate_sync_config(&config), Err(GitError::InvalidSyncConfig { .. })));
+        assert!(matches!(
+            handle.validate_sync_config(&config),
+            Err(GitError::InvalidSyncConfig { .. })
+        ));
 
         // Zero timeout
         let mut config = SyncConfig {
@@ -10838,7 +11639,10 @@ mod tests {
             dry_run: Some(false),
             timeout_ms: Some(0),
         };
-        assert!(matches!(handle.validate_sync_config(&config), Err(GitError::InvalidSyncConfig { .. })));
+        assert!(matches!(
+            handle.validate_sync_config(&config),
+            Err(GitError::InvalidSyncConfig { .. })
+        ));
 
         // Empty remote
         let mut config = SyncConfig {
@@ -10858,7 +11662,10 @@ mod tests {
             dry_run: Some(false),
             timeout_ms: Some(60000),
         };
-        assert!(matches!(handle.validate_sync_config(&config), Err(GitError::InvalidSyncConfig { .. })));
+        assert!(matches!(
+            handle.validate_sync_config(&config),
+            Err(GitError::InvalidSyncConfig { .. })
+        ));
 
         // Empty branch
         let mut config = SyncConfig {
@@ -10878,7 +11685,10 @@ mod tests {
             dry_run: Some(false),
             timeout_ms: Some(60000),
         };
-        assert!(matches!(handle.validate_sync_config(&config), Err(GitError::InvalidSyncConfig { .. })));
+        assert!(matches!(
+            handle.validate_sync_config(&config),
+            Err(GitError::InvalidSyncConfig { .. })
+        ));
 
         // Contradictory force_push and ff_only
         let mut config = SyncConfig {
@@ -10898,12 +11708,17 @@ mod tests {
             dry_run: Some(false),
             timeout_ms: Some(60000),
         };
-        assert!(matches!(handle.validate_sync_config(&config), Err(GitError::InvalidSyncConfig { .. })));
+        assert!(matches!(
+            handle.validate_sync_config(&config),
+            Err(GitError::InvalidSyncConfig { .. })
+        ));
     }
 
     #[test]
     fn test_sync_config_parsing() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test parsing from JSON
         let args = json!({
@@ -10942,15 +11757,26 @@ mod tests {
         assert_eq!(serde_json::to_string(&ff_only).unwrap(), "\"ff_only\"");
 
         // Test JSON deserialization
-        assert_eq!(serde_json::from_str::<PullStrategy>("\"rebase\"").unwrap(), PullStrategy::Rebase);
-        assert_eq!(serde_json::from_str::<PullStrategy>("\"merge\"").unwrap(), PullStrategy::Merge);
-        assert_eq!(serde_json::from_str::<PullStrategy>("\"ff_only\"").unwrap(), PullStrategy::FfOnly);
+        assert_eq!(
+            serde_json::from_str::<PullStrategy>("\"rebase\"").unwrap(),
+            PullStrategy::Rebase
+        );
+        assert_eq!(
+            serde_json::from_str::<PullStrategy>("\"merge\"").unwrap(),
+            PullStrategy::Merge
+        );
+        assert_eq!(
+            serde_json::from_str::<PullStrategy>("\"ff_only\"").unwrap(),
+            PullStrategy::FfOnly
+        );
     }
 
     #[test]
     fn test_sync_error_conversion() {
         // Test that sync errors are properly converted to shell errors
-        let sync_error = GitError::InvalidSyncConfig { message: "test message".to_string() };
+        let sync_error = GitError::InvalidSyncConfig {
+            message: "test message".to_string(),
+        };
         let shell_error: crate::core::status::ShellError = sync_error.into();
         assert_eq!(shell_error.code, "git.sync_invalid_config");
         assert!(shell_error.message.contains("test message"));
@@ -10972,7 +11798,9 @@ mod tests {
     // Status summary tests
     #[test]
     fn test_status_summary_config_validation() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Valid configuration
         let config = StatusSummaryConfig {
@@ -10991,7 +11819,10 @@ mod tests {
         // Empty path
         let mut config = config.clone();
         config.path = "".to_string();
-        assert!(matches!(handle.validate_status_summary_config(&config), Err(GitError::InvalidStatusSummaryConfig { .. })));
+        assert!(matches!(
+            handle.validate_status_summary_config(&config),
+            Err(GitError::InvalidStatusSummaryConfig { .. })
+        ));
 
         // Zero timeout
         let mut config = StatusSummaryConfig {
@@ -11005,7 +11836,10 @@ mod tests {
             max_files: Some(500),
             timeout_ms: Some(0),
         };
-        assert!(matches!(handle.validate_status_summary_config(&config), Err(GitError::InvalidStatusSummaryConfig { .. })));
+        assert!(matches!(
+            handle.validate_status_summary_config(&config),
+            Err(GitError::InvalidStatusSummaryConfig { .. })
+        ));
 
         // Zero max_files
         let mut config = StatusSummaryConfig {
@@ -11019,7 +11853,10 @@ mod tests {
             max_files: Some(0),
             timeout_ms: Some(5000),
         };
-        assert!(matches!(handle.validate_status_summary_config(&config), Err(GitError::InvalidStatusSummaryConfig { .. })));
+        assert!(matches!(
+            handle.validate_status_summary_config(&config),
+            Err(GitError::InvalidStatusSummaryConfig { .. })
+        ));
 
         // Empty branch string
         let mut config = StatusSummaryConfig {
@@ -11033,7 +11870,10 @@ mod tests {
             max_files: Some(500),
             timeout_ms: Some(5000),
         };
-        assert!(matches!(handle.validate_status_summary_config(&config), Err(GitError::InvalidStatusSummaryConfig { .. })));
+        assert!(matches!(
+            handle.validate_status_summary_config(&config),
+            Err(GitError::InvalidStatusSummaryConfig { .. })
+        ));
 
         // Empty remote string
         let mut config = StatusSummaryConfig {
@@ -11047,12 +11887,17 @@ mod tests {
             max_files: Some(500),
             timeout_ms: Some(5000),
         };
-        assert!(matches!(handle.validate_status_summary_config(&config), Err(GitError::InvalidStatusSummaryConfig { .. })));
+        assert!(matches!(
+            handle.validate_status_summary_config(&config),
+            Err(GitError::InvalidStatusSummaryConfig { .. })
+        ));
     }
 
     #[test]
     fn test_status_summary_state_classification() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test clean and synced state
         let working_tree = json!({
@@ -11069,7 +11914,9 @@ mod tests {
             }
         });
         let sync_state = "in_sync";
-        let summary = handle.compute_summary_flags(&working_tree, sync_state).unwrap();
+        let summary = handle
+            .compute_summary_flags(&working_tree, sync_state)
+            .unwrap();
         assert_eq!(summary["state"], "clean_and_synced");
         assert_eq!(summary["has_uncommitted_changes"], false);
         assert_eq!(summary["blocked_by_conflicts"], false);
@@ -11089,7 +11936,9 @@ mod tests {
             }
         });
         let sync_state = "in_sync";
-        let summary = handle.compute_summary_flags(&working_tree, sync_state).unwrap();
+        let summary = handle
+            .compute_summary_flags(&working_tree, sync_state)
+            .unwrap();
         assert_eq!(summary["state"], "local_changes_only");
         assert_eq!(summary["has_uncommitted_changes"], true);
         assert_eq!(summary["can_commit"], true);
@@ -11109,7 +11958,9 @@ mod tests {
             }
         });
         let sync_state = "ahead_only";
-        let summary = handle.compute_summary_flags(&working_tree, sync_state).unwrap();
+        let summary = handle
+            .compute_summary_flags(&working_tree, sync_state)
+            .unwrap();
         assert_eq!(summary["state"], "committed_but_ahead");
         assert_eq!(summary["needs_push"], true);
 
@@ -11128,7 +11979,9 @@ mod tests {
             }
         });
         let sync_state = "in_sync";
-        let summary = handle.compute_summary_flags(&working_tree, sync_state).unwrap();
+        let summary = handle
+            .compute_summary_flags(&working_tree, sync_state)
+            .unwrap();
         assert_eq!(summary["state"], "conflicts_present");
         assert_eq!(summary["blocked_by_conflicts"], true);
 
@@ -11147,7 +12000,9 @@ mod tests {
             }
         });
         let sync_state = "diverged";
-        let summary = handle.compute_summary_flags(&working_tree, sync_state).unwrap();
+        let summary = handle
+            .compute_summary_flags(&working_tree, sync_state)
+            .unwrap();
         assert_eq!(summary["state"], "diverged");
         assert_eq!(summary["needs_pull"], true);
         assert_eq!(summary["needs_push"], true);
@@ -11155,7 +12010,9 @@ mod tests {
 
     #[test]
     fn test_status_summary_recommendations() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test conflicts present recommendation
         let summary = json!({
@@ -11165,7 +12022,9 @@ mod tests {
         });
         let working_tree = json!({});
         let sync_state = "in_sync";
-        let rec = handle.compute_recommendations(&summary, sync_state, &working_tree).unwrap();
+        let rec = handle
+            .compute_recommendations(&summary, sync_state, &working_tree)
+            .unwrap();
         assert_eq!(rec["primary_action"], "resolve_conflicts");
         assert_eq!(rec["actions"].as_array().unwrap().len(), 2);
 
@@ -11175,7 +12034,9 @@ mod tests {
             "blocked_by_conflicts": false,
             "has_uncommitted_changes": true
         });
-        let rec = handle.compute_recommendations(&summary, sync_state, &working_tree).unwrap();
+        let rec = handle
+            .compute_recommendations(&summary, sync_state, &working_tree)
+            .unwrap();
         assert_eq!(rec["primary_action"], "commit");
         assert_eq!(rec["actions"].as_array().unwrap()[0], "commit_changes");
 
@@ -11185,7 +12046,9 @@ mod tests {
             "blocked_by_conflicts": false,
             "has_uncommitted_changes": false
         });
-        let rec = handle.compute_recommendations(&summary, sync_state, &working_tree).unwrap();
+        let rec = handle
+            .compute_recommendations(&summary, sync_state, &working_tree)
+            .unwrap();
         assert_eq!(rec["primary_action"], "push");
 
         // Test behind remote recommendation
@@ -11194,7 +12057,9 @@ mod tests {
             "blocked_by_conflicts": false,
             "has_uncommitted_changes": false
         });
-        let rec = handle.compute_recommendations(&summary, sync_state, &working_tree).unwrap();
+        let rec = handle
+            .compute_recommendations(&summary, sync_state, &working_tree)
+            .unwrap();
         assert_eq!(rec["primary_action"], "pull");
 
         // Test clean and synced recommendation
@@ -11203,7 +12068,9 @@ mod tests {
             "blocked_by_conflicts": false,
             "has_uncommitted_changes": false
         });
-        let rec = handle.compute_recommendations(&summary, sync_state, &working_tree).unwrap();
+        let rec = handle
+            .compute_recommendations(&summary, sync_state, &working_tree)
+            .unwrap();
         assert_eq!(rec["primary_action"], "none");
         assert_eq!(rec["actions"].as_array().unwrap().len(), 0);
     }
@@ -11211,12 +12078,16 @@ mod tests {
     #[test]
     fn test_status_summary_error_conversion() {
         // Test status summary error conversion to shell errors
-        let error = GitError::InvalidStatusSummaryConfig { message: "test message".to_string() };
+        let error = GitError::InvalidStatusSummaryConfig {
+            message: "test message".to_string(),
+        };
         let shell_error: crate::core::status::ShellError = error.into();
         assert_eq!(shell_error.code, "git.invalid_status_summary_config");
         assert!(shell_error.message.contains("test message"));
 
-        let error = GitError::StatusSummaryBranchNotFound { name: "feature-branch".to_string() };
+        let error = GitError::StatusSummaryBranchNotFound {
+            name: "feature-branch".to_string(),
+        };
         let shell_error: crate::core::status::ShellError = error.into();
         assert_eq!(shell_error.code, "git.status_summary_branch_not_found");
         assert_eq!(shell_error.details["name"], "feature-branch");
@@ -11226,14 +12097,18 @@ mod tests {
         assert_eq!(shell_error.code, "git.status_summary_timeout");
         assert_eq!(shell_error.details["timeout_ms"], 5000);
 
-        let error = GitError::StatusSummaryFailed { message: "git operation failed".to_string() };
+        let error = GitError::StatusSummaryFailed {
+            message: "git operation failed".to_string(),
+        };
         let shell_error: crate::core::status::ShellError = error.into();
         assert_eq!(shell_error.code, "git.status_summary_failed");
     }
 
     #[test]
     fn test_status_short_config_validation() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Valid configuration
         let config = StatusShortConfig {
@@ -11251,7 +12126,10 @@ mod tests {
         // Empty path
         let mut config = config.clone();
         config.path = "".to_string();
-        assert!(matches!(handle.validate_status_short_config(&config), Err(GitError::InvalidStatusShortConfig { .. })));
+        assert!(matches!(
+            handle.validate_status_short_config(&config),
+            Err(GitError::InvalidStatusShortConfig { .. })
+        ));
 
         // Zero timeout
         let mut config = StatusShortConfig {
@@ -11264,7 +12142,10 @@ mod tests {
             symbols: None,
             timeout_ms: Some(0),
         };
-        assert!(matches!(handle.validate_status_short_config(&config), Err(GitError::InvalidStatusShortConfig { .. })));
+        assert!(matches!(
+            handle.validate_status_short_config(&config),
+            Err(GitError::InvalidStatusShortConfig { .. })
+        ));
 
         // Empty branch string
         let mut config = StatusShortConfig {
@@ -11277,7 +12158,10 @@ mod tests {
             symbols: None,
             timeout_ms: Some(1000),
         };
-        assert!(matches!(handle.validate_status_short_config(&config), Err(GitError::InvalidStatusShortConfig { .. })));
+        assert!(matches!(
+            handle.validate_status_short_config(&config),
+            Err(GitError::InvalidStatusShortConfig { .. })
+        ));
 
         // Empty remote string
         let mut config = StatusShortConfig {
@@ -11290,12 +12174,17 @@ mod tests {
             symbols: None,
             timeout_ms: Some(1000),
         };
-        assert!(matches!(handle.validate_status_short_config(&config), Err(GitError::InvalidStatusShortConfig { .. })));
+        assert!(matches!(
+            handle.validate_status_short_config(&config),
+            Err(GitError::InvalidStatusShortConfig { .. })
+        ));
     }
 
     #[test]
     fn test_status_short_symbols_resolution() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         // Test default symbols
         let symbols = handle.resolve_status_short_symbols(&None);
@@ -11326,7 +12215,9 @@ mod tests {
 
     #[test]
     fn test_status_short_summary_string_building() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
         let symbols = StatusShortSymbols {
             detached: Some("!".to_string()),
             ahead: Some("↑".to_string()),
@@ -11335,7 +12226,7 @@ mod tests {
             conflict: Some("✖".to_string()),
             no_upstream: Some("·".to_string()),
         };
-        
+
         let config = StatusShortConfig {
             path: "/tmp/test".to_string(),
             branch: None,
@@ -11348,72 +12239,88 @@ mod tests {
         };
 
         // Clean branch, in sync
-        let summary = handle.build_summary_string(
-            "main", false, 0, 0, true, true, false, &symbols, &config
-        );
+        let summary =
+            handle.build_summary_string("main", false, 0, 0, true, true, false, &symbols, &config);
         assert_eq!(summary, "main");
 
         // Dirty branch, in sync
-        let summary = handle.build_summary_string(
-            "main", false, 0, 0, true, false, false, &symbols, &config
-        );
+        let summary =
+            handle.build_summary_string("main", false, 0, 0, true, false, false, &symbols, &config);
         assert_eq!(summary, "main*");
 
         // Clean branch, ahead by 1
-        let summary = handle.build_summary_string(
-            "main", false, 1, 0, true, true, false, &symbols, &config
-        );
+        let summary =
+            handle.build_summary_string("main", false, 1, 0, true, true, false, &symbols, &config);
         assert_eq!(summary, "main↑1");
 
         // Clean branch, behind by 2
-        let summary = handle.build_summary_string(
-            "main", false, 0, 2, true, true, false, &symbols, &config
-        );
+        let summary =
+            handle.build_summary_string("main", false, 0, 2, true, true, false, &symbols, &config);
         assert_eq!(summary, "main↓2");
 
         // Dirty branch, diverged
-        let summary = handle.build_summary_string(
-            "main", false, 1, 2, true, false, false, &symbols, &config
-        );
+        let summary =
+            handle.build_summary_string("main", false, 1, 2, true, false, false, &symbols, &config);
         assert_eq!(summary, "main↑1↓2*");
 
         // Detached head, clean, no upstream
-        let summary = handle.build_summary_string(
-            "HEAD", true, 0, 0, false, true, false, &symbols, &config
-        );
+        let summary =
+            handle.build_summary_string("HEAD", true, 0, 0, false, true, false, &symbols, &config);
         assert_eq!(summary, "HEAD!·");
 
         // Clean branch with conflicts
-        let summary = handle.build_summary_string(
-            "main", false, 0, 0, true, true, true, &symbols, &config
-        );
+        let summary =
+            handle.build_summary_string("main", false, 0, 0, true, true, true, &symbols, &config);
         assert_eq!(summary, "main✖");
 
         // Dirty branch with conflicts
-        let summary = handle.build_summary_string(
-            "main", false, 0, 0, true, false, true, &symbols, &config
-        );
+        let summary =
+            handle.build_summary_string("main", false, 0, 0, true, false, true, &symbols, &config);
         assert_eq!(summary, "main*✖");
 
         // Test with include flags disabled
         let mut config_no_remote = config.clone();
         config_no_remote.include_remote = Some(false);
         let summary = handle.build_summary_string(
-            "main", false, 1, 2, true, false, true, &symbols, &config_no_remote
+            "main",
+            false,
+            1,
+            2,
+            true,
+            false,
+            true,
+            &symbols,
+            &config_no_remote,
         );
         assert_eq!(summary, "main*✖"); // No arrows
 
         let mut config_no_dirty = config.clone();
         config_no_dirty.include_dirty = Some(false);
         let summary = handle.build_summary_string(
-            "main", false, 1, 2, true, false, true, &symbols, &config_no_dirty
+            "main",
+            false,
+            1,
+            2,
+            true,
+            false,
+            true,
+            &symbols,
+            &config_no_dirty,
         );
         assert_eq!(summary, "main↑1↓2✖"); // No dirty marker
 
         let mut config_no_conflicts = config.clone();
         config_no_conflicts.include_conflicts = Some(false);
         let summary = handle.build_summary_string(
-            "main", false, 1, 2, true, false, true, &symbols, &config_no_conflicts
+            "main",
+            false,
+            1,
+            2,
+            true,
+            false,
+            true,
+            &symbols,
+            &config_no_conflicts,
         );
         assert_eq!(summary, "main↑1↓2*"); // No conflict marker
     }
@@ -11421,12 +12328,16 @@ mod tests {
     #[test]
     fn test_status_short_error_conversion() {
         // Test status_short error conversion to shell errors
-        let error = GitError::InvalidStatusShortConfig { message: "test message".to_string() };
+        let error = GitError::InvalidStatusShortConfig {
+            message: "test message".to_string(),
+        };
         let shell_error: crate::core::status::ShellError = error.into();
         assert_eq!(shell_error.code, "git.invalid_status_short_config");
         assert!(shell_error.message.contains("test message"));
 
-        let error = GitError::StatusShortBranchNotFound { branch: "feature-branch".to_string() };
+        let error = GitError::StatusShortBranchNotFound {
+            branch: "feature-branch".to_string(),
+        };
         let shell_error: crate::core::status::ShellError = error.into();
         assert_eq!(shell_error.code, "git.status_short_branch_not_found");
         assert_eq!(shell_error.details["branch"], "feature-branch");
@@ -11436,20 +12347,27 @@ mod tests {
         assert_eq!(shell_error.code, "git.status_short_timeout");
         assert_eq!(shell_error.details["timeout_ms"], 1000);
 
-        let error = GitError::StatusShortFailed { message: "git operation failed".to_string() };
+        let error = GitError::StatusShortFailed {
+            message: "git operation failed".to_string(),
+        };
         let shell_error: crate::core::status::ShellError = error.into();
         assert_eq!(shell_error.code, "git.status_short_failed");
     }
 
     /// CLI args as the registry delivers them: every value is a string.
     fn cli_args(pairs: &[(&str, &str)]) -> Value {
-        let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let args: Args = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         serde_json::to_value(args).unwrap()
     }
 
     #[test]
     fn test_parse_commit_config_from_cli_strings() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
         let config = handle
             .parse_commit_config(cli_args(&[
                 ("path", "/repo"),
@@ -11461,7 +12379,10 @@ mod tests {
             ]))
             .unwrap();
         assert_eq!(config.all, Some(true));
-        assert_eq!(config.paths, Some(vec!["a.txt".to_string(), "b.txt".to_string()]));
+        assert_eq!(
+            config.paths,
+            Some(vec!["a.txt".to_string(), "b.txt".to_string()])
+        );
         assert_eq!(config.allow_empty, Some(false));
         assert_eq!(config.timeout_ms, Some(5000));
 
@@ -11470,26 +12391,41 @@ mod tests {
             .unwrap();
         assert_eq!(config.paths, Some(vec!["x y.txt".to_string()]));
 
-        assert!(handle
-            .parse_commit_config(cli_args(&[("path", "/repo"), ("all", "maybe")]))
-            .is_err());
+        assert!(
+            handle
+                .parse_commit_config(cli_args(&[("path", "/repo"), ("all", "maybe")]))
+                .is_err()
+        );
     }
 
     #[test]
     fn test_parse_typed_configs_from_cli_strings() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         let pull = handle
-            .parse_pull_config(cli_args(&[("path", "/r"), ("ff_only", "true"), ("timeout_ms", "100")]))
+            .parse_pull_config(cli_args(&[
+                ("path", "/r"),
+                ("ff_only", "true"),
+                ("timeout_ms", "100"),
+            ]))
             .unwrap();
         assert_eq!(pull.ff_only, Some(true));
         assert_eq!(pull.timeout_ms, Some(100));
 
         let push = handle
-            .parse_push_config(cli_args(&[("path", "/r"), ("tags", "yes"), ("branches", "main,dev")]))
+            .parse_push_config(cli_args(&[
+                ("path", "/r"),
+                ("tags", "yes"),
+                ("branches", "main,dev"),
+            ]))
             .unwrap();
         assert_eq!(push.tags, Some(true));
-        assert_eq!(push.branches, Some(vec!["main".to_string(), "dev".to_string()]));
+        assert_eq!(
+            push.branches,
+            Some(vec!["main".to_string(), "dev".to_string()])
+        );
 
         let status = handle
             .parse_status_config(cli_args(&[("path", "/r"), ("include_ignored", "1")]))
@@ -11497,13 +12433,21 @@ mod tests {
         assert_eq!(status.include_ignored, Some(true));
 
         let branch = handle
-            .parse_branch_config(cli_args(&[("path", "/r"), ("action", "list"), ("all", "true")]))
+            .parse_branch_config(cli_args(&[
+                ("path", "/r"),
+                ("action", "list"),
+                ("all", "true"),
+            ]))
             .unwrap();
         assert_eq!(branch.action, Some(BranchAction::List));
         assert_eq!(branch.all, Some(true));
 
         let sync = handle
-            .parse_sync_config(cli_args(&[("path", "/r"), ("pull_strategy", "ff_only"), ("dry_run", "true")]))
+            .parse_sync_config(cli_args(&[
+                ("path", "/r"),
+                ("pull_strategy", "ff_only"),
+                ("dry_run", "true"),
+            ]))
             .unwrap();
         assert_eq!(sync.pull_strategy, Some(PullStrategy::FfOnly));
         assert_eq!(sync.dry_run, Some(true));
@@ -11521,7 +12465,9 @@ mod tests {
 
     #[test]
     fn test_parse_merge_and_rebase_config_from_cli_strings() {
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
 
         let merge = handle
             .parse_merge_config(cli_args(&[
@@ -11535,9 +12481,15 @@ mod tests {
         assert_eq!(merge.ff_only, Some(true));
         assert_eq!(merge.squash, Some(false));
         assert_eq!(merge.timeout_ms, Some(250));
-        assert!(handle
-            .parse_merge_config(cli_args(&[("path", "/r"), ("source", "f"), ("no_ff", "maybe")]))
-            .is_err());
+        assert!(
+            handle
+                .parse_merge_config(cli_args(&[
+                    ("path", "/r"),
+                    ("source", "f"),
+                    ("no_ff", "maybe")
+                ]))
+                .is_err()
+        );
 
         let rebase = handle
             .parse_rebase_config(cli_args(&[
@@ -11549,9 +12501,11 @@ mod tests {
             .unwrap();
         assert_eq!(rebase.autosquash, Some(true));
         assert_eq!(rebase.timeout_ms, Some(300));
-        assert!(handle
-            .parse_rebase_config(cli_args(&[("path", "/r"), ("timeout_ms", "soon")]))
-            .is_err());
+        assert!(
+            handle
+                .parse_rebase_config(cli_args(&[("path", "/r"), ("timeout_ms", "soon")]))
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -11566,11 +12520,14 @@ mod tests {
             index.write().unwrap();
             let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
             let sig = Signature::now("T", "t@example.com").unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
         }
         std::fs::write(&file, "two\n").unwrap();
 
-        let handle = GitHandle { alias: "test".to_string() };
+        let handle = GitHandle {
+            alias: "test".to_string(),
+        };
         let path = temp_dir.path().to_string_lossy().to_string();
         let result = handle
             .commit(cli_args(&[
@@ -11585,7 +12542,11 @@ mod tests {
         assert_eq!(result["stats"]["staged_files"], 1);
 
         let statuses = repo.statuses(None).unwrap();
-        assert!(statuses.iter().all(|e| !e.status().contains(GitStatus::WT_MODIFIED)));
+        assert!(
+            statuses
+                .iter()
+                .all(|e| !e.status().contains(GitStatus::WT_MODIFIED))
+        );
         let head = repo.head().unwrap().peel_to_commit().unwrap();
         assert_eq!(head.message(), Some("update"));
 
@@ -11647,17 +12608,29 @@ mod sync_correctness_tests {
         index.add_path(Path::new(file)).unwrap();
         index.write().unwrap();
         let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-        let parents: Vec<git2::Commit> = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).into_iter().collect();
+        let parents: Vec<git2::Commit> = repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .into_iter()
+            .collect();
         let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-        repo.commit(Some("HEAD"), &sig(), &sig(), content, &tree, &parent_refs).unwrap()
+        repo.commit(Some("HEAD"), &sig(), &sig(), content, &tree, &parent_refs)
+            .unwrap()
     }
 
     fn push_main(repo: &Repository) {
-        repo.find_remote("origin").unwrap().push(&["refs/heads/main:refs/heads/main"], None).unwrap();
+        repo.find_remote("origin")
+            .unwrap()
+            .push(&["refs/heads/main:refs/heads/main"], None)
+            .unwrap();
     }
 
     fn remote_main(w: &World) -> Oid {
-        Repository::open_bare(&w.remote).unwrap().refname_to_id("refs/heads/main").unwrap()
+        Repository::open_bare(&w.remote)
+            .unwrap()
+            .refname_to_id("refs/heads/main")
+            .unwrap()
     }
 
     fn head(repo: &Repository) -> Oid {
@@ -11668,11 +12641,17 @@ mod sync_correctness_tests {
     fn world() -> World {
         let dir = TempDir::new().unwrap();
         let remote = dir.path().join("remote.git");
-        Repository::init_opts(&remote, RepositoryInitOptions::new().bare(true).initial_head("main")).unwrap();
+        Repository::init_opts(
+            &remote,
+            RepositoryInitOptions::new().bare(true).initial_head("main"),
+        )
+        .unwrap();
 
         let open = |name: &str| {
             let path = dir.path().join(name);
-            let repo = Repository::init_opts(&path, RepositoryInitOptions::new().initial_head("main")).unwrap();
+            let repo =
+                Repository::init_opts(&path, RepositoryInitOptions::new().initial_head("main"))
+                    .unwrap();
             repo.remote("origin", remote.to_str().unwrap()).unwrap();
             let mut cfg = repo.config().unwrap();
             cfg.set_str("user.name", "Resh Test").unwrap();
@@ -11684,12 +12663,21 @@ mod sync_correctness_tests {
         push_main(&a);
 
         let b = open("b");
-        b.find_remote("origin").unwrap().fetch(&["refs/heads/main:refs/remotes/origin/main"], None, None).unwrap();
+        b.find_remote("origin")
+            .unwrap()
+            .fetch(&["refs/heads/main:refs/remotes/origin/main"], None, None)
+            .unwrap();
         let base = b.refname_to_id("refs/remotes/origin/main").unwrap();
         b.reference("refs/heads/main", base, true, "test").unwrap();
         b.set_head("refs/heads/main").unwrap();
-        b.checkout_head(Some(git2::build::CheckoutBuilder::default().force())).unwrap();
-        World { _dir: dir, remote, a, b }
+        b.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
+            .unwrap();
+        World {
+            _dir: dir,
+            remote,
+            a,
+            b,
+        }
     }
 
     fn sync(repo: &Repository, extra: &[(&str, &str)]) -> Result<Value, GitError> {
@@ -11697,8 +12685,13 @@ mod sync_correctness_tests {
         for (k, v) in extra {
             args[*k] = json!(v);
         }
-        let h = GitHandle { alias: "sync-test".to_string() };
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        let h = GitHandle {
+            alias: "sync-test".to_string(),
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
             .block_on(h.sync(args))
     }
 
@@ -11741,7 +12734,10 @@ mod sync_correctness_tests {
             match (strategy, &err) {
                 ("ff_only", GitError::SyncNonFastForward) => {}
                 (_, GitError::SyncFailed { message }) => {
-                    assert!(message.contains("diverged") && message.contains("nothing was pushed"), "{message}");
+                    assert!(
+                        message.contains("diverged") && message.contains("nothing was pushed"),
+                        "{message}"
+                    );
                     assert!(message.contains(strategy), "{message}");
                 }
                 _ => panic!("{strategy}: unexpected {err:?}"),
@@ -11758,7 +12754,10 @@ mod sync_correctness_tests {
         push_main(&w.a);
         commit(&w.b, "base.txt", "local edit");
         assert!(sync(&w.b, &[("pull_strategy", "merge")]).is_err());
-        assert_eq!(std::fs::read_to_string(w.b.workdir().unwrap().join("base.txt")).unwrap(), "local edit");
+        assert_eq!(
+            std::fs::read_to_string(w.b.workdir().unwrap().join("base.txt")).unwrap(),
+            "local edit"
+        );
         assert_eq!(w.b.state(), git2::RepositoryState::Clean);
     }
 
@@ -11767,7 +12766,8 @@ mod sync_correctness_tests {
         let w = world();
         let local = commit(&w.b, "b.txt", "local work");
         let before = remote_main(&w);
-        w.b.remote_set_url("origin", "/nonexistent/resh-test-remote.git").unwrap();
+        w.b.remote_set_url("origin", "/nonexistent/resh-test-remote.git")
+            .unwrap();
         let err = sync(&w.b, &[]).unwrap_err();
         assert!(matches!(err, GitError::SyncPullFailed { .. }), "{err:?}");
         assert_eq!(remote_main(&w), before);
@@ -11779,9 +12779,16 @@ mod sync_correctness_tests {
         let w = world();
         commit(&w.b, "b.txt", "local work");
         let before = remote_main(&w);
-        w.b.remote_set_pushurl("origin", Some("/nonexistent/resh-test-remote.git")).unwrap();
+        w.b.remote_set_pushurl("origin", Some("/nonexistent/resh-test-remote.git"))
+            .unwrap();
         let err = sync(&w.b, &[]).unwrap_err();
-        assert!(matches!(err, GitError::SyncPushFailed { .. } | GitError::SyncPushRejected { .. }), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                GitError::SyncPushFailed { .. } | GitError::SyncPushRejected { .. }
+            ),
+            "{err:?}"
+        );
         assert_eq!(remote_main(&w), before);
     }
 
@@ -11808,7 +12815,11 @@ mod sync_correctness_tests {
         assert_eq!(std::fs::read_to_string(&dirty).unwrap(), "uncommitted edit");
         let mut stashes = 0;
         let mut b = Repository::open(w.b.workdir().unwrap()).unwrap();
-        b.stash_foreach(|_, _, _| { stashes += 1; true }).unwrap();
+        b.stash_foreach(|_, _, _| {
+            stashes += 1;
+            true
+        })
+        .unwrap();
         assert_eq!(stashes, 0, "stash was popped back");
     }
 
@@ -11817,7 +12828,10 @@ mod sync_correctness_tests {
         let w = world();
         let out = sync(&w.b, &[("dry_run", "true"), ("pull_strategy", "merge")]).unwrap();
         let actions = out["actions"].to_string();
-        assert!(actions.contains("fast-forward") && actions.contains("pull_strategy=merge"), "{actions}");
+        assert!(
+            actions.contains("fast-forward") && actions.contains("pull_strategy=merge"),
+            "{actions}"
+        );
         assert!(!actions.contains("Would merge") && !actions.contains("Would rebase"));
     }
 }
@@ -11831,15 +12845,28 @@ mod timeout_rejection_tests {
     use tempfile::TempDir;
 
     fn run(verb: &str, pairs: &[(&str, &str)]) -> (Status, String, String) {
-        let h = GitHandle { alias: "timeout_rejection".to_string() };
-        let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let h = GitHandle {
+            alias: "timeout_rejection".to_string(),
+        };
+        let args: Args = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         let mut i: &[u8] = &[];
         let (mut o, mut e) = (Vec::new(), Vec::new());
         let status = {
-            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
             h.call(verb, &args, &mut io).unwrap()
         };
-        (status, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())
+        (
+            status,
+            String::from_utf8_lossy(&o).into_owned(),
+            String::from_utf8_lossy(&e).into_owned(),
+        )
     }
 
     #[test]
@@ -11847,11 +12874,24 @@ mod timeout_rejection_tests {
         let dir = TempDir::new().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-        let tree = repo.find_tree(repo.index().unwrap().write_tree().unwrap()).unwrap();
-        let head = repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        let tree = repo
+            .find_tree(repo.index().unwrap().write_tree().unwrap())
+            .unwrap();
+        let head = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
         let path = dir.path().to_string_lossy().to_string();
 
-        for verb in ["status", "status_short", "branch", "commit", "clone", "pull", "push", "sync"] {
+        for verb in [
+            "status",
+            "status_short",
+            "branch",
+            "commit",
+            "clone",
+            "pull",
+            "push",
+            "sync",
+        ] {
             let (status, out, err) = run(verb, &[("path", &path), ("timeout_ms", "5000")]);
             assert!(!status.ok, "{verb} accepted timeout_ms");
             assert_eq!(status.exit_code(), 2, "{verb}");
@@ -11859,7 +12899,11 @@ mod timeout_rejection_tests {
             assert!(out.is_empty(), "{verb} produced output: {out}");
         }
         // Nothing was done to the repository (no commit, no branch).
-        assert_eq!(repo.head().unwrap().target(), Some(head), "repository was modified");
+        assert_eq!(
+            repo.head().unwrap().target(),
+            Some(head),
+            "repository was modified"
+        );
         assert_eq!(repo.branches(None).unwrap().count(), 1);
 
         // Without timeout_ms the verb still runs normally.

@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -27,10 +27,10 @@ impl RetentionPolicy {
 
     /// Check if the policy is empty (no retention rules specified)
     pub fn is_empty(&self) -> bool {
-        self.keep_last.is_none() 
-            && self.keep_daily.is_none() 
-            && self.keep_weekly.is_none() 
-            && self.keep_monthly.is_none() 
+        self.keep_last.is_none()
+            && self.keep_daily.is_none()
+            && self.keep_weekly.is_none()
+            && self.keep_monthly.is_none()
             && self.keep_yearly.is_none()
     }
 
@@ -53,15 +53,19 @@ impl RetentionPolicy {
 
             let key_value: Vec<&str> = part.split(':').collect();
             if key_value.len() != 2 {
-                return Err(anyhow!("invalid policy format '{}', expected 'key:value'", part));
+                return Err(anyhow!(
+                    "invalid policy format '{}', expected 'key:value'",
+                    part
+                ));
             }
 
             let key = key_value[0].trim();
             let value_str = key_value[1].trim();
-            
-            let value: u32 = value_str.parse()
+
+            let value: u32 = value_str
+                .parse()
                 .map_err(|_| anyhow!("invalid number '{}' for key '{}'", value_str, key))?;
-            
+
             if value == 0 {
                 return Err(anyhow!("retention value cannot be zero for key '{}'", key));
             }
@@ -72,7 +76,12 @@ impl RetentionPolicy {
                 "keep-weekly" => policy.keep_weekly = Some(value),
                 "keep-monthly" => policy.keep_monthly = Some(value),
                 "keep-yearly" => policy.keep_yearly = Some(value),
-                _ => return Err(anyhow!("unknown retention key '{}'. Supported: keep-last, keep-daily, keep-weekly, keep-monthly, keep-yearly", key)),
+                _ => {
+                    return Err(anyhow!(
+                        "unknown retention key '{}'. Supported: keep-last, keep-daily, keep-weekly, keep-monthly, keep-yearly",
+                        key
+                    ));
+                }
             }
         }
 
@@ -86,7 +95,7 @@ impl RetentionPolicy {
     /// Convert the policy to restic command arguments
     pub fn to_restic_args(&self) -> Vec<String> {
         let mut args = Vec::new();
-        
+
         if let Some(n) = self.keep_last {
             args.push(format!("--keep-last={}", n));
         }
@@ -102,14 +111,14 @@ impl RetentionPolicy {
         if let Some(n) = self.keep_yearly {
             args.push(format!("--keep-yearly={}", n));
         }
-        
+
         args
     }
 
     /// Convert the policy to borg command arguments
     pub fn to_borg_args(&self) -> Vec<String> {
         let mut args = Vec::new();
-        
+
         if let Some(n) = self.keep_last {
             args.push(format!("--keep-last={}", n));
         }
@@ -125,14 +134,14 @@ impl RetentionPolicy {
         if let Some(n) = self.keep_yearly {
             args.push(format!("--keep-yearly={}", n));
         }
-        
+
         args
     }
 
     /// Serialize the policy to a JSON-friendly format for output
     pub fn to_json_map(&self) -> HashMap<String, u32> {
         let mut map = HashMap::new();
-        
+
         if let Some(n) = self.keep_last {
             map.insert("keep_last".to_string(), n);
         }
@@ -148,7 +157,7 @@ impl RetentionPolicy {
         if let Some(n) = self.keep_yearly {
             map.insert("keep_yearly".to_string(), n);
         }
-        
+
         map
     }
 }
@@ -176,8 +185,9 @@ mod tests {
     #[test]
     fn test_parse_full_policy() {
         let policy = RetentionPolicy::from_string(
-            "keep-last:10,keep-daily:7,keep-weekly:4,keep-monthly:12,keep-yearly:2"
-        ).unwrap();
+            "keep-last:10,keep-daily:7,keep-weekly:4,keep-monthly:12,keep-yearly:2",
+        )
+        .unwrap();
         assert_eq!(policy.keep_last, Some(10));
         assert_eq!(policy.keep_daily, Some(7));
         assert_eq!(policy.keep_weekly, Some(4));

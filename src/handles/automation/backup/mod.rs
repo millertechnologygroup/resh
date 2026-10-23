@@ -1,7 +1,7 @@
+pub mod fs_snapshots;
 pub mod policy;
 pub mod tools;
-pub mod fs_snapshots;
 
+pub use fs_snapshots::{FilesystemConfig, FilesystemLock, FilesystemSnapshots, SnapshotDirectory};
 pub use policy::RetentionPolicy;
-pub use tools::{ToolRunner, ResticTool, BorgTool, PruneResult, SnapshotInfo};
-pub use fs_snapshots::{FilesystemSnapshots, FilesystemConfig, SnapshotDirectory, FilesystemLock};
+pub use tools::{BorgTool, PruneResult, ResticTool, SnapshotInfo, ToolRunner};

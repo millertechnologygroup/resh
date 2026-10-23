@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Utc};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 use crate::core::{
-    envelope::{BackupEnvelope, BackendInfo, BackupError},
+    envelope::{BackendInfo, BackupEnvelope, BackupError},
     help::{self, HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
     status::Status,
@@ -553,7 +553,10 @@ pub(crate) fn wait_with_deadline(
 
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(status) = child.try_wait().context("Failed to wait for backend process")? {
+        if let Some(status) = child
+            .try_wait()
+            .context("Failed to wait for backend process")?
+        {
             return Ok(Some(std::process::Output {
                 status,
                 stdout: stdout.join().unwrap_or_default(),
@@ -573,11 +576,11 @@ pub(crate) fn wait_with_deadline(
 
 /// Constants for default timeouts per specification (in milliseconds)
 const DEFAULT_CREATE_TIMEOUT_MS: u64 = 1_800_000; // 30 minutes
-const DEFAULT_LIST_TIMEOUT_MS: u64 = 10_000;      // 10 seconds
+const DEFAULT_LIST_TIMEOUT_MS: u64 = 10_000; // 10 seconds
 const DEFAULT_RESTORE_TIMEOUT_MS: u64 = 1_800_000; // 30 minutes
-const DEFAULT_VERIFY_TIMEOUT_MS: u64 = 3_600_000;  // 60 minutes
-const DEFAULT_PRUNE_TIMEOUT_MS: u64 = 3_600_000;   // 60 minutes
-const DEFAULT_SCHEDULE_TIMEOUT_MS: u64 = 10_000;   // 10 seconds
+const DEFAULT_VERIFY_TIMEOUT_MS: u64 = 3_600_000; // 60 minutes
+const DEFAULT_PRUNE_TIMEOUT_MS: u64 = 3_600_000; // 60 minutes
+const DEFAULT_SCHEDULE_TIMEOUT_MS: u64 = 10_000; // 10 seconds
 
 /// Default repository locations when repo_url is not given
 const DEFAULT_RSYNC_REPO: &str = "/tmp/rsync_backup";
@@ -591,12 +594,23 @@ const ERROR_TAIL_SIZE: usize = 8 * 1024;
 
 /// Secret key patterns for redaction per specification (case insensitive)
 const SECRET_PATTERNS: &[&str] = &[
-    "password", "passphrase", "passcommand", "secret", "token", "key",
-    "access_key", "secret_key", "session_token"
+    "password",
+    "passphrase",
+    "passcommand",
+    "secret",
+    "token",
+    "key",
+    "access_key",
+    "secret_key",
+    "session_token",
 ];
 
 /// Environment variables through which restic already has a repository password.
-const RESTIC_SECRET_ENV: &[&str] = &["RESTIC_PASSWORD", "RESTIC_PASSWORD_FILE", "RESTIC_PASSWORD_COMMAND"];
+const RESTIC_SECRET_ENV: &[&str] = &[
+    "RESTIC_PASSWORD",
+    "RESTIC_PASSWORD_FILE",
+    "RESTIC_PASSWORD_COMMAND",
+];
 
 /// Environment variables through which borg already has a repository passphrase.
 const BORG_SECRET_ENV: &[&str] = &["BORG_PASSPHRASE", "BORG_PASSCOMMAND", "BORG_PASSPHRASE_FD"];
@@ -629,7 +643,10 @@ pub struct CmdSpec {
 
 impl CmdSpec {
     fn new(program: &str) -> Self {
-        CmdSpec { program: program.to_string(), ..Default::default() }
+        CmdSpec {
+            program: program.to_string(),
+            ..Default::default()
+        }
     }
 
     fn arg(mut self, a: impl Into<String>) -> Self {
@@ -648,13 +665,18 @@ impl CmdSpec {
 
     /// Full argv, program first.
     pub fn argv(&self) -> Vec<String> {
-        std::iter::once(self.program.clone()).chain(self.args.iter().cloned()).collect()
+        std::iter::once(self.program.clone())
+            .chain(self.args.iter().cloned())
+            .collect()
     }
 }
 
 /// `--flag v1 --flag v2 ...`
 fn repeat_flag(flag: &str, values: &[String]) -> Vec<String> {
-    values.iter().flat_map(|v| [flag.to_string(), v.clone()]).collect()
+    values
+        .iter()
+        .flat_map(|v| [flag.to_string(), v.clone()])
+        .collect()
 }
 
 /// Local repository directory for tar/rsync, accepting `file://` URLs.
@@ -666,7 +688,9 @@ fn local_repo_path(repo_url: Option<&String>, default: &str) -> String {
 }
 
 fn borg_repo(repo_url: Option<&String>) -> String {
-    repo_url.cloned().unwrap_or_else(|| DEFAULT_BORG_REPO.to_string())
+    repo_url
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_BORG_REPO.to_string())
 }
 
 /// Snapshot (archive or directory) name: `<label>_<ts>` or `backup_<ts>`.
@@ -677,7 +701,13 @@ pub(crate) fn snapshot_name(label: Option<&str>, timestamp: &str) -> String {
         Some(l) => {
             let clean: String = l
                 .chars()
-                .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             format!("{}_{}", clean, timestamp)
         }
@@ -731,7 +761,12 @@ pub(crate) fn build_restic_create(
         .args(sources.iter().cloned())
 }
 
-pub(crate) fn build_borg_create(repo: &str, archive: &str, sources: &[String], exclude: &[String]) -> CmdSpec {
+pub(crate) fn build_borg_create(
+    repo: &str,
+    archive: &str,
+    sources: &[String],
+    exclude: &[String],
+) -> CmdSpec {
     CmdSpec::new("borg")
         .args(["create", "--json", "--compression", "lz4"])
         .args(repeat_flag("--exclude", exclude))
@@ -739,7 +774,11 @@ pub(crate) fn build_borg_create(repo: &str, archive: &str, sources: &[String], e
         .args(sources.iter().cloned())
 }
 
-pub(crate) fn build_rsync_create(dest_dir: &str, sources: &[String], exclude: &[String]) -> CmdSpec {
+pub(crate) fn build_rsync_create(
+    dest_dir: &str,
+    sources: &[String],
+    exclude: &[String],
+) -> CmdSpec {
     CmdSpec::new("rsync")
         .args(["-a", "--stats"])
         .args(repeat_flag("--exclude", exclude))
@@ -748,7 +787,9 @@ pub(crate) fn build_rsync_create(dest_dir: &str, sources: &[String], exclude: &[
 }
 
 pub(crate) fn build_restic_list(repo_url: Option<&String>, tags: &[String]) -> CmdSpec {
-    restic_base(repo_url, "snapshots").arg("--json").args(repeat_flag("--tag", tags))
+    restic_base(repo_url, "snapshots")
+        .arg("--json")
+        .args(repeat_flag("--tag", tags))
 }
 
 pub(crate) fn build_borg_list(repo: &str) -> CmdSpec {
@@ -769,7 +810,12 @@ pub(crate) fn build_restic_restore(
 }
 
 /// borg extracts into its working directory, so the destination is the cwd.
-pub(crate) fn build_borg_restore(repo: &str, snapshot_id: &str, dest: &str, exclude: &[String]) -> CmdSpec {
+pub(crate) fn build_borg_restore(
+    repo: &str,
+    snapshot_id: &str,
+    dest: &str,
+    exclude: &[String],
+) -> CmdSpec {
     let mut c = CmdSpec::new("borg")
         .arg("extract")
         .args(repeat_flag("--exclude", exclude))
@@ -799,7 +845,11 @@ pub(crate) fn build_restic_verify(repo_url: Option<&String>, read_data: bool) ->
 
 pub(crate) fn build_borg_verify(repo: &str, verify_data: bool) -> CmdSpec {
     let c = CmdSpec::new("borg").arg("check");
-    let c = if verify_data { c.arg("--verify-data") } else { c };
+    let c = if verify_data {
+        c.arg("--verify-data")
+    } else {
+        c
+    };
     c.arg(repo)
 }
 
@@ -807,7 +857,11 @@ pub(crate) fn build_tar_verify(archive: &str) -> CmdSpec {
     CmdSpec::new("tar").args(["-tzf", archive])
 }
 
-pub(crate) fn build_restic_prune(repo_url: Option<&String>, policy: &RetentionPolicy, dry_run: bool) -> CmdSpec {
+pub(crate) fn build_restic_prune(
+    repo_url: Option<&String>,
+    policy: &RetentionPolicy,
+    dry_run: bool,
+) -> CmdSpec {
     restic_base(repo_url, "forget")
         .arg("--json")
         .args(keep_flags(policy))
@@ -856,32 +910,41 @@ pub(crate) fn resolve_repo_secret(
             if let Some(p) = args.get("password") {
                 secret.set.insert("RESTIC_PASSWORD".to_string(), p.clone());
                 // restic prefers a password file or command over RESTIC_PASSWORD.
-                secret.remove = vec!["RESTIC_PASSWORD_FILE".to_string(), "RESTIC_PASSWORD_COMMAND".to_string()];
+                secret.remove = vec![
+                    "RESTIC_PASSWORD_FILE".to_string(),
+                    "RESTIC_PASSWORD_COMMAND".to_string(),
+                ];
             } else if let Some(f) = args.get("password_file") {
-                secret.set.insert("RESTIC_PASSWORD_FILE".to_string(), f.clone());
+                secret
+                    .set
+                    .insert("RESTIC_PASSWORD_FILE".to_string(), f.clone());
                 // restic refuses both a password file and a password command.
                 secret.remove = vec!["RESTIC_PASSWORD_COMMAND".to_string()];
             } else if !RESTIC_SECRET_ENV.iter().any(|k| env_has(k)) {
-                return Err("restic needs a repository password: pass password=<secret> or \
+                return Err(
+                    "restic needs a repository password: pass password=<secret> or \
                     password_file=<path>, or set RESTIC_PASSWORD or RESTIC_PASSWORD_FILE"
-                    .to_string());
+                        .to_string(),
+                );
             }
         }
         BackendType::Borg => {
             if let Some(p) = args.get("password") {
                 secret.set.insert("BORG_PASSPHRASE".to_string(), p.clone());
             } else if let Some(f) = args.get("password_file") {
-                let content = read_file(f)
-                    .map_err(|e| format!("cannot read password_file {}: {}", f, e))?;
+                let content =
+                    read_file(f).map_err(|e| format!("cannot read password_file {}: {}", f, e))?;
                 secret.set.insert(
                     "BORG_PASSPHRASE".to_string(),
                     content.trim_end_matches(['\r', '\n']).to_string(),
                 );
             } else if !BORG_SECRET_ENV.iter().any(|k| env_has(k)) {
-                return Err("borg needs a repository passphrase: pass password=<secret> or \
+                return Err(
+                    "borg needs a repository passphrase: pass password=<secret> or \
                     password_file=<path>, or set BORG_PASSPHRASE or BORG_PASSCOMMAND \
                     (BORG_PASSPHRASE may be empty for an unencrypted repository)"
-                    .to_string());
+                        .to_string(),
+                );
             }
         }
         BackendType::Rsync | BackendType::Tar => {}
@@ -907,7 +970,11 @@ pub(crate) fn parse_restic_summary(stdout: &str) -> Option<Value> {
 fn rsync_stat(stdout: &str, prefix: &str) -> Option<u64> {
     stdout.lines().find_map(|l| {
         let rest = l.trim().strip_prefix(prefix)?;
-        rest.split_whitespace().next()?.replace(',', "").parse().ok()
+        rest.split_whitespace()
+            .next()?
+            .replace(',', "")
+            .parse()
+            .ok()
     })
 }
 
@@ -922,8 +989,12 @@ pub(crate) fn parse_rsync_stats(stdout: &str) -> (Option<u64>, Option<u64>) {
 /// Exit codes that mean the backup was written, with a warning.
 pub(crate) fn create_exit_warning(backend: &BackendType, code: i32) -> Option<&'static str> {
     match (backend, code) {
-        (BackendType::Restic, 3) => Some("restic could not read some source files; the snapshot was created without them"),
-        (BackendType::Borg, 1) => Some("borg finished with warnings; see result.backend_raw.stderr"),
+        (BackendType::Restic, 3) => {
+            Some("restic could not read some source files; the snapshot was created without them")
+        }
+        (BackendType::Borg, 1) => {
+            Some("borg finished with warnings; see result.backend_raw.stderr")
+        }
         (BackendType::Rsync, 24) => Some("some source files vanished during the rsync transfer"),
         (BackendType::Tar, 1) => Some("some files changed while tar was reading them"),
         _ => None,
@@ -981,7 +1052,11 @@ pub(crate) fn parse_create_output(
 
 fn json_strings(v: &Value) -> Vec<String> {
     v.as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -1012,7 +1087,8 @@ pub(crate) fn parse_list_output(backend: &BackendType, output: &str) -> Result<V
                 .collect())
         }
         BackendType::Borg => {
-            let data: Value = serde_json::from_str(output.trim()).context("borg list output is not JSON")?;
+            let data: Value =
+                serde_json::from_str(output.trim()).context("borg list output is not JSON")?;
             Ok(data["archives"]
                 .as_array()
                 .map(|archives| {
@@ -1033,18 +1109,28 @@ pub(crate) fn parse_list_output(backend: &BackendType, output: &str) -> Result<V
                 })
                 .unwrap_or_default())
         }
-        BackendType::Rsync | BackendType::Tar => bail!("{} snapshots are listed from the repository directory", backend),
+        BackendType::Rsync | BackendType::Tar => bail!(
+            "{} snapshots are listed from the repository directory",
+            backend
+        ),
     }
 }
 
 fn parse_restore_output(backend: &BackendType, output: &str) -> Value {
     let files_count = match backend {
-        BackendType::Restic => output.lines().filter(|line| line.contains("restoring")).count(),
+        BackendType::Restic => output
+            .lines()
+            .filter(|line| line.contains("restoring"))
+            .count(),
         BackendType::Borg => output.lines().filter(|line| line.contains("files")).count(),
         BackendType::Tar => output.lines().count(),
         BackendType::Rsync => output
             .lines()
-            .filter(|line| !line.trim().is_empty() && !line.contains("receiving incremental") && !line.contains("sending incremental"))
+            .filter(|line| {
+                !line.trim().is_empty()
+                    && !line.contains("receiving incremental")
+                    && !line.contains("sending incremental")
+            })
             .count(),
     };
     json!({
@@ -1055,7 +1141,11 @@ fn parse_restore_output(backend: &BackendType, output: &str) -> Value {
 }
 
 /// Number of snapshots removed (or that would be removed) by a prune run.
-pub(crate) fn parse_prune_count(backend: &BackendType, stdout: &str, stderr: &str) -> Option<usize> {
+pub(crate) fn parse_prune_count(
+    backend: &BackendType,
+    stdout: &str,
+    stderr: &str,
+) -> Option<usize> {
     match backend {
         BackendType::Restic => {
             // `restic forget --json` prints one JSON array of groups.
@@ -1064,7 +1154,12 @@ pub(crate) fn parse_prune_count(backend: &BackendType, stdout: &str, stderr: &st
                 .map(str::trim)
                 .filter(|l| l.starts_with('['))
                 .find_map(|l| serde_json::from_str(l).ok())?;
-            Some(groups.iter().map(|g| g["remove"].as_array().map_or(0, |r| r.len())).sum())
+            Some(
+                groups
+                    .iter()
+                    .map(|g| g["remove"].as_array().map_or(0, |r| r.len()))
+                    .sum(),
+            )
         }
         BackendType::Borg => Some(
             stdout
@@ -1096,7 +1191,9 @@ fn dir_size(path: &Path) -> u64 {
     let mut total = 0;
     let mut stack = vec![path.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let Ok(meta) = entry.metadata() else { continue };
             if meta.is_dir() {
@@ -1111,7 +1208,11 @@ fn dir_size(path: &Path) -> u64 {
 
 /// tar: `*.tar.gz` files (id is the name without `.tar.gz`); rsync: snapshot
 /// directories. Newest first.
-pub(crate) fn scan_local_snapshots(backend: &BackendType, repo: &Path, with_sizes: bool) -> std::io::Result<Vec<LocalSnapshot>> {
+pub(crate) fn scan_local_snapshots(
+    backend: &BackendType,
+    repo: &Path,
+    with_sizes: bool,
+) -> std::io::Result<Vec<LocalSnapshot>> {
     let mut out = Vec::new();
     for entry in fs::read_dir(repo)? {
         let entry = entry?;
@@ -1122,12 +1223,22 @@ pub(crate) fn scan_local_snapshots(backend: &BackendType, repo: &Path, with_size
         match backend {
             BackendType::Tar if meta.is_file() => {
                 if let Some(id) = name.strip_suffix(".tar.gz") {
-                    out.push(LocalSnapshot { id: id.to_string(), path: entry.path(), modified, bytes: Some(meta.len()) });
+                    out.push(LocalSnapshot {
+                        id: id.to_string(),
+                        path: entry.path(),
+                        modified,
+                        bytes: Some(meta.len()),
+                    });
                 }
             }
             BackendType::Rsync if meta.is_dir() => {
                 let bytes = with_sizes.then(|| dir_size(&entry.path()));
-                out.push(LocalSnapshot { id: name, path: entry.path(), modified, bytes });
+                out.push(LocalSnapshot {
+                    id: name,
+                    path: entry.path(),
+                    modified,
+                    bytes,
+                });
             }
             _ => {}
         }
@@ -1139,7 +1250,10 @@ pub(crate) fn scan_local_snapshots(backend: &BackendType, repo: &Path, with_size
 /// Ids to remove under a keep_daily/keep_weekly/keep_monthly policy. For each
 /// rule, the newest snapshot of each of the newest N UTC days, ISO weeks or
 /// months is kept; a snapshot kept by any rule is not removed.
-pub(crate) fn select_prune(snapshots: &[(String, DateTime<Utc>)], policy: &RetentionPolicy) -> Vec<String> {
+pub(crate) fn select_prune(
+    snapshots: &[(String, DateTime<Utc>)],
+    policy: &RetentionPolicy,
+) -> Vec<String> {
     let mut snaps: Vec<&(String, DateTime<Utc>)> = snapshots.iter().collect();
     snaps.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
@@ -1211,7 +1325,10 @@ fn check_files_readable(root: &Path) -> (usize, Vec<String>) {
 // ---------------------------------------------------------------------------
 
 fn split_list(s: &str, sep: char) -> Vec<String> {
-    s.split(sep).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    s.split(sep)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Boolean argument; accepts true/false, 1/0, yes/no.
@@ -1224,7 +1341,9 @@ fn arg_flag(args: &Args, key: &str, default: bool) -> bool {
 }
 
 fn arg_timeout(args: &Args, default: u64) -> u64 {
-    args.get("timeout_ms").and_then(|s| s.trim().parse().ok()).unwrap_or(default)
+    args.get("timeout_ms")
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(default)
 }
 
 fn arg_u32(args: &Args, key: &str) -> std::result::Result<Option<u32>, String> {
@@ -1259,7 +1378,12 @@ struct Reply {
 
 impl Reply {
     fn new(verb: &'static str, args: &Args, dry_run: bool) -> Self {
-        Reply { verb, pretty: arg_flag(args, "json_pretty", false), dry_run, start: Instant::now() }
+        Reply {
+            verb,
+            pretty: arg_flag(args, "json_pretty", false),
+            dry_run,
+            start: Instant::now(),
+        }
     }
 
     fn elapsed_ms(&self) -> u64 {
@@ -1279,9 +1403,17 @@ impl BackupHandle {
                 .context("Invalid UTF-8 in repository path")?
                 .into_owned())
         };
-        let host = url.host_str().filter(|h| !h.is_empty()).map(decode).transpose()?;
+        let host = url
+            .host_str()
+            .filter(|h| !h.is_empty())
+            .map(decode)
+            .transpose()?;
         let path = url.path().strip_prefix('/').unwrap_or(url.path());
-        let path = if path.is_empty() { None } else { Some(decode(path)?) };
+        let path = if path.is_empty() {
+            None
+        } else {
+            Some(decode(path)?)
+        };
         let repo = match (host, path) {
             (Some(h), Some(p)) => format!("{}/{}", h, p),
             (Some(h), None) => h,
@@ -1308,7 +1440,12 @@ impl BackupHandle {
                 encryption: true,
                 retention: true,
                 verify: true,
-                cloud_targets: vec!["s3".to_string(), "azure".to_string(), "gcs".to_string(), "file".to_string()],
+                cloud_targets: vec![
+                    "s3".to_string(),
+                    "azure".to_string(),
+                    "gcs".to_string(),
+                    "file".to_string(),
+                ],
             },
             BackendType::Borg => BackupCapabilities {
                 incremental: true,
@@ -1360,7 +1497,11 @@ impl BackupHandle {
     }
 
     /// Repository password for restic/borg from args or the process environment.
-    fn repo_secret(&self, backend: &BackendType, args: &Args) -> std::result::Result<RepoSecret, String> {
+    fn repo_secret(
+        &self,
+        backend: &BackendType,
+        args: &Args,
+    ) -> std::result::Result<RepoSecret, String> {
         resolve_repo_secret(
             backend,
             args,
@@ -1407,13 +1548,23 @@ impl BackupHandle {
 
     /// BackendInfo for the envelope; secret environment values are redacted.
     /// `spec` is None for operations done directly on a local repository.
-    fn backend_info(&self, backend: &BackendType, spec: Option<&CmdSpec>, timeout_ms: u64, simulated: bool) -> BackendInfo {
+    fn backend_info(
+        &self,
+        backend: &BackendType,
+        spec: Option<&CmdSpec>,
+        timeout_ms: u64,
+        simulated: bool,
+    ) -> BackendInfo {
         let env_redacted = spec
             .map(|s| {
                 s.env
                     .iter()
                     .map(|(k, v)| {
-                        let v = if is_secret_key(k) { REDACTED.to_string() } else { v.clone() };
+                        let v = if is_secret_key(k) {
+                            REDACTED.to_string()
+                        } else {
+                            v.clone()
+                        };
                         (k.clone(), v)
                     })
                     .collect()
@@ -1443,7 +1594,12 @@ impl BackupHandle {
     }
 
     /// Write envelope to stdout per specification
-    fn write_envelope(&self, envelope: &BackupEnvelope, io: &mut IoStreams, pretty: bool) -> Result<()> {
+    fn write_envelope(
+        &self,
+        envelope: &BackupEnvelope,
+        io: &mut IoStreams,
+        pretty: bool,
+    ) -> Result<()> {
         let json_str = if pretty {
             serde_json::to_string_pretty(envelope)?
         } else {
@@ -1453,8 +1609,22 @@ impl BackupHandle {
         Ok(())
     }
 
-    fn ok(&self, r: &Reply, io: &mut IoStreams, info: BackendInfo, result: Value, warnings: Vec<String>) -> Result<Status> {
-        let mut envelope = BackupEnvelope::success(r.verb, &self.target, info, result, r.dry_run, r.elapsed_ms());
+    fn ok(
+        &self,
+        r: &Reply,
+        io: &mut IoStreams,
+        info: BackendInfo,
+        result: Value,
+        warnings: Vec<String>,
+    ) -> Result<Status> {
+        let mut envelope = BackupEnvelope::success(
+            r.verb,
+            &self.target,
+            info,
+            result,
+            r.dry_run,
+            r.elapsed_ms(),
+        );
         envelope.warnings = warnings;
         self.write_envelope(&envelope, io, r.pretty)?;
         Ok(Status::success())
@@ -1472,26 +1642,62 @@ impl BackupHandle {
         warnings: Vec<String>,
         code: i32,
     ) -> Result<Status> {
-        let error = BackupError { kind: kind.to_string(), message: message.to_string(), details };
-        let mut envelope = BackupEnvelope::error(r.verb, &self.target, info, error, r.dry_run, r.elapsed_ms());
+        let error = BackupError {
+            kind: kind.to_string(),
+            message: message.to_string(),
+            details,
+        };
+        let mut envelope =
+            BackupEnvelope::error(r.verb, &self.target, info, error, r.dry_run, r.elapsed_ms());
         envelope.warnings = warnings;
         self.write_envelope(&envelope, io, r.pretty)?;
-        Ok(Status::err(if code == 0 { 1 } else { code }, message.to_string()))
+        Ok(Status::err(
+            if code == 0 { 1 } else { code },
+            message.to_string(),
+        ))
     }
 
     /// BACKEND_FAILED envelope for a non-zero exit.
-    fn fail_exit(&self, r: &Reply, io: &mut IoStreams, info: BackendInfo, res: &BackendResult, warnings: Vec<String>) -> Result<Status> {
+    fn fail_exit(
+        &self,
+        r: &Reply,
+        io: &mut IoStreams,
+        info: BackendInfo,
+        res: &BackendResult,
+        warnings: Vec<String>,
+    ) -> Result<Status> {
         let details = json!({
             "exit_code": res.exit_code,
             "stderr_tail": self.get_stderr_tail(&res.stderr)
         });
-        self.fail(r, io, info, "BACKEND_FAILED", "Backend command failed", Some(details), warnings, res.exit_code)
+        self.fail(
+            r,
+            io,
+            info,
+            "BACKEND_FAILED",
+            "Backend command failed",
+            Some(details),
+            warnings,
+            res.exit_code,
+        )
     }
 
     /// TIMEOUT or `kind` envelope for a command that could not be run.
-    fn fail_exec(&self, r: &Reply, io: &mut IoStreams, info: BackendInfo, kind: &str, e: anyhow::Error, warnings: Vec<String>) -> Result<Status> {
+    fn fail_exec(
+        &self,
+        r: &Reply,
+        io: &mut IoStreams,
+        info: BackendInfo,
+        kind: &str,
+        e: anyhow::Error,
+        warnings: Vec<String>,
+    ) -> Result<Status> {
         let msg = e.to_string();
-        let kind = if msg.contains("timed out") { "TIMEOUT" } else { kind };
+        let kind = if msg.contains("timed out") {
+            "TIMEOUT"
+        } else {
+            kind
+        };
         self.fail(r, io, info, kind, &msg, None, warnings, 1)
     }
 
@@ -1516,7 +1722,16 @@ macro_rules! select_or_return {
             Ok(b) => b,
             Err(e) => {
                 let info = $self.unknown_backend_info($timeout);
-                return $self.fail(&$r, $io, info, "BACKEND_NOT_FOUND", &e.to_string(), None, vec![], 1);
+                return $self.fail(
+                    &$r,
+                    $io,
+                    info,
+                    "BACKEND_NOT_FOUND",
+                    &e.to_string(),
+                    None,
+                    vec![],
+                    1,
+                );
             }
         }
     }};
@@ -1540,32 +1755,63 @@ macro_rules! secret_or_return {
 impl BackupHandle {
     /// Create backup snapshot per specification
     fn verb_create(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let src = args.get("src").ok_or_else(|| anyhow::anyhow!("Missing required argument: src"))?;
+        let src = args
+            .get("src")
+            .ok_or_else(|| anyhow::anyhow!("Missing required argument: src"))?;
         let timeout_ms = arg_timeout(args, DEFAULT_CREATE_TIMEOUT_MS);
         let r = Reply::new("create", args, crate::core::lenient::dry_run(args)?);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
 
         let sources = split_list(src, ';');
-        let mut tags = args.get("tag").map(|t| split_list(t, ';')).unwrap_or_default();
+        let mut tags = args
+            .get("tag")
+            .map(|t| split_list(t, ';'))
+            .unwrap_or_default();
         tags.sort();
-        let exclude = args.get("exclude").map(|e| split_list(e, ';')).unwrap_or_default();
+        let exclude = args
+            .get("exclude")
+            .map(|e| split_list(e, ';'))
+            .unwrap_or_default();
         let label = args.get("label").cloned();
         let repo_url = args.get("repo_url");
-        let name = snapshot_name(label.as_deref(), &Utc::now().format("%Y%m%d_%H%M%S").to_string());
+        let name = snapshot_name(
+            label.as_deref(),
+            &Utc::now().format("%Y%m%d_%H%M%S").to_string(),
+        );
 
         // (command, snapshot id known in advance, repo dir to create, tar archive)
         let (mut spec, known_id, repo_dir, archive) = match backend {
             BackendType::Tar => {
                 let repo = local_repo_path(repo_url, &self.default_tar_repo());
                 let archive = format!("{}/{}.tar.gz", repo, name);
-                (build_tar_create(&archive, &sources, &exclude), Some(name.clone()), Some(repo), Some(archive))
+                (
+                    build_tar_create(&archive, &sources, &exclude),
+                    Some(name.clone()),
+                    Some(repo),
+                    Some(archive),
+                )
             }
-            BackendType::Restic => (build_restic_create(repo_url, &sources, &tags, label.as_deref(), &exclude), None, None, None),
-            BackendType::Borg => (build_borg_create(&borg_repo(repo_url), &name, &sources, &exclude), Some(name.clone()), None, None),
+            BackendType::Restic => (
+                build_restic_create(repo_url, &sources, &tags, label.as_deref(), &exclude),
+                None,
+                None,
+                None,
+            ),
+            BackendType::Borg => (
+                build_borg_create(&borg_repo(repo_url), &name, &sources, &exclude),
+                Some(name.clone()),
+                None,
+                None,
+            ),
             BackendType::Rsync => {
                 let repo = local_repo_path(repo_url, DEFAULT_RSYNC_REPO);
                 let dest = format!("{}/{}/", repo, name);
-                (build_rsync_create(&dest, &sources, &exclude), Some(name.clone()), Some(repo), None)
+                (
+                    build_rsync_create(&dest, &sources, &exclude),
+                    Some(name.clone()),
+                    Some(repo),
+                    None,
+                )
             }
         };
         secret_or_return!(self, r, io, args, backend, spec, timeout_ms);
@@ -1613,7 +1859,14 @@ impl BackupHandle {
 
         // The backup has been written: report success even if the output
         // cannot be parsed.
-        let mut snapshot = parse_create_output(&backend, &res.stdout, known_id.as_deref(), &sources, &tags, label.as_deref());
+        let mut snapshot = parse_create_output(
+            &backend,
+            &res.stdout,
+            known_id.as_deref(),
+            &sources,
+            &tags,
+            label.as_deref(),
+        );
         if let (Some(snap), Some(archive)) = (snapshot.as_mut(), &archive) {
             snap.bytes_total = fs::metadata(archive).ok().map(|m| m.len());
         }
@@ -1641,7 +1894,10 @@ impl BackupHandle {
         let r = Reply::new("list", args, false);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
         let repo_url = args.get("repo_url");
-        let mut tags = args.get("tag").map(|t| split_list(t, ';')).unwrap_or_default();
+        let mut tags = args
+            .get("tag")
+            .map(|t| split_list(t, ';'))
+            .unwrap_or_default();
         tags.sort();
         let capabilities = self.get_capabilities(&backend);
 
@@ -1649,7 +1905,11 @@ impl BackupHandle {
             BackendType::Restic => build_restic_list(repo_url, &tags),
             BackendType::Borg => build_borg_list(&borg_repo(repo_url)),
             BackendType::Tar | BackendType::Rsync => {
-                let default = if backend == BackendType::Tar { self.default_tar_repo() } else { DEFAULT_RSYNC_REPO.to_string() };
+                let default = if backend == BackendType::Tar {
+                    self.default_tar_repo()
+                } else {
+                    DEFAULT_RSYNC_REPO.to_string()
+                };
                 let repo = local_repo_path(repo_url, &default);
                 let info = self.backend_info(&backend, None, timeout_ms, false);
                 let snaps = match scan_local_snapshots(&backend, Path::new(&repo), false) {
@@ -1691,7 +1951,9 @@ impl BackupHandle {
         }
         let snapshots = match parse_list_output(&backend, &res.stdout) {
             Ok(s) => s,
-            Err(e) => return self.fail(&r, io, info, "PARSE", &format!("{:#}", e), None, vec![], 1),
+            Err(e) => {
+                return self.fail(&r, io, info, "PARSE", &format!("{:#}", e), None, vec![], 1);
+            }
         };
         let result = json!({
             "snapshots": snapshots,
@@ -1703,8 +1965,12 @@ impl BackupHandle {
 
     /// Restore backup snapshot per specification
     fn verb_restore(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let snapshot_id = args.get("snapshot_id").ok_or_else(|| anyhow::anyhow!("Missing required argument: snapshot_id"))?;
-        let dest = args.get("dest").ok_or_else(|| anyhow::anyhow!("Missing required argument: dest"))?;
+        let snapshot_id = args
+            .get("snapshot_id")
+            .ok_or_else(|| anyhow::anyhow!("Missing required argument: snapshot_id"))?;
+        let dest = args
+            .get("dest")
+            .ok_or_else(|| anyhow::anyhow!("Missing required argument: dest"))?;
         let timeout_ms = arg_timeout(args, DEFAULT_RESTORE_TIMEOUT_MS);
         // restore has no dry-run mode. A dry-run request must never become a
         // real restore over `dest`, so it is refused before anything runs.
@@ -1715,16 +1981,29 @@ impl BackupHandle {
         let backend = select_or_return!(self, r, io, args, timeout_ms);
 
         let repo_url = args.get("repo_url");
-        let include = args.get("include").map(|i| split_list(i, ',')).unwrap_or_default();
-        let exclude = args.get("exclude").map(|e| split_list(e, ';')).unwrap_or_default();
+        let include = args
+            .get("include")
+            .map(|i| split_list(i, ','))
+            .unwrap_or_default();
+        let exclude = args
+            .get("exclude")
+            .map(|e| split_list(e, ';'))
+            .unwrap_or_default();
         let mut warnings = Vec::new();
         if !include.is_empty() && backend != BackendType::Restic {
-            warnings.push(format!("include is only supported by restic; {} restores the whole snapshot", backend));
+            warnings.push(format!(
+                "include is only supported by restic; {} restores the whole snapshot",
+                backend
+            ));
         }
 
         let mut spec = match backend {
-            BackendType::Restic => build_restic_restore(repo_url, snapshot_id, dest, &include, &exclude),
-            BackendType::Borg => build_borg_restore(&borg_repo(repo_url), snapshot_id, dest, &exclude),
+            BackendType::Restic => {
+                build_restic_restore(repo_url, snapshot_id, dest, &include, &exclude)
+            }
+            BackendType::Borg => {
+                build_borg_restore(&borg_repo(repo_url), snapshot_id, dest, &exclude)
+            }
             BackendType::Tar => {
                 let repo = local_repo_path(repo_url, &self.default_tar_repo());
                 build_tar_restore(&format!("{}/{}.tar.gz", repo, snapshot_id), dest, &exclude)
@@ -1767,7 +2046,10 @@ impl BackupHandle {
         let timeout_ms = arg_timeout(args, DEFAULT_VERIFY_TIMEOUT_MS);
         let r = Reply::new("verify", args, false);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
-        let mode = args.get("mode").cloned().unwrap_or_else(|| "quick".to_string());
+        let mode = args
+            .get("mode")
+            .cloned()
+            .unwrap_or_else(|| "quick".to_string());
         let repo_url = args.get("repo_url");
         let read_data = mode == "thorough" || mode == "data";
         let capabilities = self.get_capabilities(&backend);
@@ -1788,7 +2070,11 @@ impl BackupHandle {
                 if res.exit_code != 0 {
                     return self.fail_exit(&r, io, info, &res, vec![]);
                 }
-                let files_checked = if backend == BackendType::Restic { res.stdout.lines().count() } else { 0 };
+                let files_checked = if backend == BackendType::Restic {
+                    res.stdout.lines().count()
+                } else {
+                    0
+                };
                 let verification = json!({
                     "success": true,
                     "issues": Vec::<String>::new(),
@@ -1825,7 +2111,9 @@ impl BackupHandle {
                             errors.push(self.get_stderr_tail(&res.stderr));
                             checked.push(json!({ "id": a.id, "ok": false, "members": 0 }));
                         }
-                        Err(e) => return self.fail_exec(&r, io, info, "EXECUTION_FAILED", e, vec![]),
+                        Err(e) => {
+                            return self.fail_exec(&r, io, info, "EXECUTION_FAILED", e, vec![]);
+                        }
                     }
                 }
                 if archives.is_empty() {
@@ -1848,7 +2136,11 @@ impl BackupHandle {
                     return self.fail(&r, io, info, "IO", &msg, None, vec![], 1);
                 }
                 let (files_checked, errors) = check_files_readable(Path::new(&repo));
-                let issues: Vec<String> = if errors.is_empty() { vec![] } else { vec!["File access issues found".to_string()] };
+                let issues: Vec<String> = if errors.is_empty() {
+                    vec![]
+                } else {
+                    vec!["File access issues found".to_string()]
+                };
                 let verification = json!({
                     "success": errors.is_empty(),
                     "issues": issues,
@@ -1861,7 +2153,16 @@ impl BackupHandle {
         let (info, verification) = verification;
 
         if verification["success"] != json!(true) {
-            return self.fail(&r, io, info, "VERIFY_FAILED", "Backup verification found problems", Some(verification), vec![], 1);
+            return self.fail(
+                &r,
+                io,
+                info,
+                "VERIFY_FAILED",
+                "Backup verification found problems",
+                Some(verification),
+                vec![],
+                1,
+            );
         }
         let result = json!({
             "verification": verification,
@@ -1899,7 +2200,10 @@ impl BackupHandle {
             "keep_weekly": policy.keep_weekly,
             "keep_monthly": policy.keep_monthly
         });
-        if policy.keep_daily.is_none() && policy.keep_weekly.is_none() && policy.keep_monthly.is_none() {
+        if policy.keep_daily.is_none()
+            && policy.keep_weekly.is_none()
+            && policy.keep_monthly.is_none()
+        {
             let info = self.backend_info(&backend, None, timeout_ms, r.dry_run);
             let msg = "prune needs at least one of keep_daily, keep_weekly, keep_monthly";
             return self.fail(&r, io, info, "INVALID_ARGS", msg, None, vec![], 1);
@@ -1925,7 +2229,10 @@ impl BackupHandle {
                 }
                 let removed = parse_prune_count(&backend, &res.stdout, &res.stderr);
                 if removed.is_none() {
-                    warnings.push(format!("could not count removed snapshots in the {} output", backend));
+                    warnings.push(format!(
+                        "could not count removed snapshots in the {} output",
+                        backend
+                    ));
                 }
                 let mut result = json!({
                     "dry_run": r.dry_run,
@@ -1940,7 +2247,11 @@ impl BackupHandle {
                 self.ok(&r, io, info, result, warnings)
             }
             BackendType::Tar | BackendType::Rsync => {
-                let default = if backend == BackendType::Tar { self.default_tar_repo() } else { DEFAULT_RSYNC_REPO.to_string() };
+                let default = if backend == BackendType::Tar {
+                    self.default_tar_repo()
+                } else {
+                    DEFAULT_RSYNC_REPO.to_string()
+                };
                 let repo = local_repo_path(repo_url, &default);
                 let info = self.backend_info(&backend, None, timeout_ms, false);
                 let snaps = match scan_local_snapshots(&backend, Path::new(&repo), true) {
@@ -1950,7 +2261,8 @@ impl BackupHandle {
                         return self.fail(&r, io, info, "IO", &msg, None, warnings, 1);
                     }
                 };
-                let pairs: Vec<(String, DateTime<Utc>)> = snaps.iter().map(|s| (s.id.clone(), s.modified)).collect();
+                let pairs: Vec<(String, DateTime<Utc>)> =
+                    snaps.iter().map(|s| (s.id.clone(), s.modified)).collect();
                 let to_remove = select_prune(&pairs, &policy);
 
                 let mut removed = Vec::new();
@@ -1980,7 +2292,16 @@ impl BackupHandle {
                 });
                 if !errors.is_empty() {
                     let details = json!({ stats_key: stats, "errors": errors });
-                    return self.fail(&r, io, info, "IO", "Some snapshots could not be removed", Some(details), warnings, 1);
+                    return self.fail(
+                        &r,
+                        io,
+                        info,
+                        "IO",
+                        "Some snapshots could not be removed",
+                        Some(details),
+                        warnings,
+                        1,
+                    );
                 }
                 let mut result = json!({
                     "dry_run": r.dry_run,
@@ -1995,8 +2316,12 @@ impl BackupHandle {
 
     /// Schedule automated backups per specification
     fn verb_schedule(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let when = args.get("when").ok_or_else(|| anyhow::anyhow!("Missing required argument: when"))?;
-        let _src = args.get("src").ok_or_else(|| anyhow::anyhow!("Missing required argument: src"))?;
+        let when = args
+            .get("when")
+            .ok_or_else(|| anyhow::anyhow!("Missing required argument: when"))?;
+        let _src = args
+            .get("src")
+            .ok_or_else(|| anyhow::anyhow!("Missing required argument: src"))?;
         let enabled = arg_flag(args, "enabled", true);
         let timeout_ms = arg_timeout(args, DEFAULT_SCHEDULE_TIMEOUT_MS);
         let r = Reply::new("schedule", args, false);
@@ -2040,18 +2365,23 @@ impl BackupHandle {
         verb == "help"
             || help::is_help_flag(verb)
             || verb.starts_with("--help=")
-            || ["help", "h", "--help", "-h"].iter().any(|k| args.contains_key(*k))
+            || ["help", "h", "--help", "-h"]
+                .iter()
+                .any(|k| args.contains_key(*k))
     }
 
     /// The verb a help request names (`--help=create`, or `verb=create`).
     fn help_verb<'a>(verb: &'a str, args: &'a Args) -> Option<&'a str> {
-        verb.strip_prefix("--help=").or_else(|| args.get("verb").map(String::as_str))
+        verb.strip_prefix("--help=")
+            .or_else(|| args.get("verb").map(String::as_str))
     }
 }
 
 /// Register the backup handle with the registry per specification
 pub fn register(reg: &mut crate::core::Registry) {
-    reg.register_scheme("backup", |u| Ok(Box::new(BackupHandle::from_url(u.clone())?)));
+    reg.register_scheme("backup", |u| {
+        Ok(Box::new(BackupHandle::from_url(u.clone())?))
+    });
 }
 
 impl Handle for BackupHandle {
@@ -2065,7 +2395,12 @@ impl Handle for BackupHandle {
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         if Self::should_show_help(verb, args) {
-            let text = help::render_legacy("backup", &BACKUP_HELP, self.verbs(), Self::help_verb(verb, args));
+            let text = help::render_legacy(
+                "backup",
+                &BACKUP_HELP,
+                self.verbs(),
+                Self::help_verb(verb, args),
+            );
             write!(io.stdout, "{}", text)?;
             return Ok(Status::success());
         }
@@ -2092,7 +2427,9 @@ mod tests {
     }
 
     fn args(kv: &[(&str, &str)]) -> Args {
-        kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn handle(url: &str) -> BackupHandle {
@@ -2104,14 +2441,19 @@ mod tests {
         let mut out = Vec::new();
         let mut err = Vec::new();
         let status = {
-            let mut io = IoStreams { stdin: &mut stdin, stdout: &mut out, stderr: &mut err };
+            let mut io = IoStreams {
+                stdin: &mut stdin,
+                stdout: &mut out,
+                stderr: &mut err,
+            };
             h.call(verb, a, &mut io).unwrap()
         };
         (status, String::from_utf8(out).unwrap())
     }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("resh_backuph_test_{}_{}", tag, std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("resh_backuph_test_{}_{}", tag, std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
@@ -2125,34 +2467,90 @@ mod tests {
         let ex = s(&["*.tmp"]);
         assert_eq!(
             build_tar_create("/r/backup_1.tar.gz", &src, &ex).argv(),
-            s(&["tar", "-czf", "/r/backup_1.tar.gz", "--exclude", "*.tmp", "/etc", "/home"])
+            s(&[
+                "tar",
+                "-czf",
+                "/r/backup_1.tar.gz",
+                "--exclude",
+                "*.tmp",
+                "/etc",
+                "/home"
+            ])
         );
         let repo = "/srv/restic".to_string();
         let c = build_restic_create(Some(&repo), &src, &s(&["daily"]), Some("web01"), &ex);
         assert_eq!(
             c.argv(),
-            s(&["restic", "backup", "--tag", "daily", "--hostname", "web01", "--exclude", "*.tmp", "--json", "/etc", "/home"])
+            s(&[
+                "restic",
+                "backup",
+                "--tag",
+                "daily",
+                "--hostname",
+                "web01",
+                "--exclude",
+                "*.tmp",
+                "--json",
+                "/etc",
+                "/home"
+            ])
         );
         assert_eq!(c.env.get("RESTIC_REPOSITORY"), Some(&repo));
         assert_eq!(
             build_borg_create("/srv/borg", "backup_1", &src, &ex).argv(),
-            s(&["borg", "create", "--json", "--compression", "lz4", "--exclude", "*.tmp", "/srv/borg::backup_1", "/etc", "/home"])
+            s(&[
+                "borg",
+                "create",
+                "--json",
+                "--compression",
+                "lz4",
+                "--exclude",
+                "*.tmp",
+                "/srv/borg::backup_1",
+                "/etc",
+                "/home"
+            ])
         );
         assert_eq!(
             build_rsync_create("/r/backup_1/", &src, &ex).argv(),
-            s(&["rsync", "-a", "--stats", "--exclude", "*.tmp", "/etc", "/home", "/r/backup_1/"])
+            s(&[
+                "rsync",
+                "-a",
+                "--stats",
+                "--exclude",
+                "*.tmp",
+                "/etc",
+                "/home",
+                "/r/backup_1/"
+            ])
         );
     }
 
     #[test]
     fn list_restore_verify_prune_argv() {
         let repo = "/srv/restic".to_string();
-        assert_eq!(build_restic_list(Some(&repo), &s(&["a"])).argv(), s(&["restic", "snapshots", "--json", "--tag", "a"]));
-        assert_eq!(build_borg_list("/b").argv(), s(&["borg", "list", "--json", "/b"]));
+        assert_eq!(
+            build_restic_list(Some(&repo), &s(&["a"])).argv(),
+            s(&["restic", "snapshots", "--json", "--tag", "a"])
+        );
+        assert_eq!(
+            build_borg_list("/b").argv(),
+            s(&["borg", "list", "--json", "/b"])
+        );
 
         assert_eq!(
             build_restic_restore(None, "4f2a", "/tmp/r", &s(&["*.conf"]), &s(&["*.tmp"])).argv(),
-            s(&["restic", "restore", "4f2a", "--target", "/tmp/r", "--include", "*.conf", "--exclude", "*.tmp"])
+            s(&[
+                "restic",
+                "restore",
+                "4f2a",
+                "--target",
+                "/tmp/r",
+                "--include",
+                "*.conf",
+                "--exclude",
+                "*.tmp"
+            ])
         );
         let b = build_borg_restore("/b", "backup_1", "/tmp/r", &[]);
         assert_eq!(b.argv(), s(&["borg", "extract", "/b::backup_1"]));
@@ -2166,40 +2564,100 @@ mod tests {
             s(&["rsync", "-av", "/r/backup_1/", "/tmp/r"])
         );
 
-        assert_eq!(build_restic_verify(None, false).argv(), s(&["restic", "check"]));
-        assert_eq!(build_restic_verify(None, true).argv(), s(&["restic", "check", "--read-data"]));
-        assert_eq!(build_borg_verify("/b", true).argv(), s(&["borg", "check", "--verify-data", "/b"]));
-        assert_eq!(build_tar_verify("/r/a.tar.gz").argv(), s(&["tar", "-tzf", "/r/a.tar.gz"]));
+        assert_eq!(
+            build_restic_verify(None, false).argv(),
+            s(&["restic", "check"])
+        );
+        assert_eq!(
+            build_restic_verify(None, true).argv(),
+            s(&["restic", "check", "--read-data"])
+        );
+        assert_eq!(
+            build_borg_verify("/b", true).argv(),
+            s(&["borg", "check", "--verify-data", "/b"])
+        );
+        assert_eq!(
+            build_tar_verify("/r/a.tar.gz").argv(),
+            s(&["tar", "-tzf", "/r/a.tar.gz"])
+        );
 
-        let p = RetentionPolicy { keep_daily: Some(7), keep_monthly: Some(12), ..Default::default() };
+        let p = RetentionPolicy {
+            keep_daily: Some(7),
+            keep_monthly: Some(12),
+            ..Default::default()
+        };
         assert_eq!(
             build_restic_prune(None, &p, true).argv(),
-            s(&["restic", "forget", "--json", "--keep-daily", "7", "--keep-monthly", "12", "--dry-run"])
+            s(&[
+                "restic",
+                "forget",
+                "--json",
+                "--keep-daily",
+                "7",
+                "--keep-monthly",
+                "12",
+                "--dry-run"
+            ])
         );
         assert_eq!(
             build_restic_prune(None, &p, false).argv(),
-            s(&["restic", "forget", "--json", "--keep-daily", "7", "--keep-monthly", "12", "--prune"])
+            s(&[
+                "restic",
+                "forget",
+                "--json",
+                "--keep-daily",
+                "7",
+                "--keep-monthly",
+                "12",
+                "--prune"
+            ])
         );
         assert_eq!(
             build_borg_prune("/b", &p, true).argv(),
-            s(&["borg", "prune", "--list", "--keep-daily", "7", "--keep-monthly", "12", "--dry-run", "/b"])
+            s(&[
+                "borg",
+                "prune",
+                "--list",
+                "--keep-daily",
+                "7",
+                "--keep-monthly",
+                "12",
+                "--dry-run",
+                "/b"
+            ])
         );
         assert_eq!(
             build_borg_prune("/b", &p, false).argv(),
-            s(&["borg", "prune", "--list", "--keep-daily", "7", "--keep-monthly", "12", "--stats", "/b"])
+            s(&[
+                "borg",
+                "prune",
+                "--list",
+                "--keep-daily",
+                "7",
+                "--keep-monthly",
+                "12",
+                "--stats",
+                "/b"
+            ])
         );
     }
 
     #[test]
     fn snapshot_name_sanitizes_label() {
-        assert_eq!(snapshot_name(None, "20261016_091244"), "backup_20261016_091244");
+        assert_eq!(
+            snapshot_name(None, "20261016_091244"),
+            "backup_20261016_091244"
+        );
         assert_eq!(snapshot_name(Some("daily run"), "T"), "daily_run_T");
         assert_eq!(snapshot_name(Some("../etc"), "T"), ".._etc_T");
     }
 
     #[test]
     fn local_repo_path_strips_file_scheme() {
-        assert_eq!(local_repo_path(Some(&"file:///srv/b".to_string()), "/d"), "/srv/b");
+        assert_eq!(
+            local_repo_path(Some(&"file:///srv/b".to_string()), "/d"),
+            "/srv/b"
+        );
         assert_eq!(local_repo_path(None, "/d"), "/d");
     }
 
@@ -2215,42 +2673,99 @@ mod tests {
 
     #[test]
     fn restic_password_sources() {
-        let r = resolve_repo_secret(&BackendType::Restic, &args(&[("password", "s3cr3t")]), no_env, no_file).unwrap();
-        assert_eq!(r.set.get("RESTIC_PASSWORD").map(String::as_str), Some("s3cr3t"));
+        let r = resolve_repo_secret(
+            &BackendType::Restic,
+            &args(&[("password", "s3cr3t")]),
+            no_env,
+            no_file,
+        )
+        .unwrap();
+        assert_eq!(
+            r.set.get("RESTIC_PASSWORD").map(String::as_str),
+            Some("s3cr3t")
+        );
         assert!(r.remove.contains(&"RESTIC_PASSWORD_FILE".to_string()));
 
-        let r = resolve_repo_secret(&BackendType::Restic, &args(&[("password_file", "/k")]), no_env, no_file).unwrap();
-        assert_eq!(r.set.get("RESTIC_PASSWORD_FILE").map(String::as_str), Some("/k"));
+        let r = resolve_repo_secret(
+            &BackendType::Restic,
+            &args(&[("password_file", "/k")]),
+            no_env,
+            no_file,
+        )
+        .unwrap();
+        assert_eq!(
+            r.set.get("RESTIC_PASSWORD_FILE").map(String::as_str),
+            Some("/k")
+        );
 
-        let r = resolve_repo_secret(&BackendType::Restic, &args(&[]), |k| k == "RESTIC_PASSWORD_FILE", no_file).unwrap();
+        let r = resolve_repo_secret(
+            &BackendType::Restic,
+            &args(&[]),
+            |k| k == "RESTIC_PASSWORD_FILE",
+            no_file,
+        )
+        .unwrap();
         assert!(r.set.is_empty());
 
         let e = resolve_repo_secret(&BackendType::Restic, &args(&[]), no_env, no_file).unwrap_err();
-        assert!(e.contains("password=") && e.contains("RESTIC_PASSWORD"), "{e}");
+        assert!(
+            e.contains("password=") && e.contains("RESTIC_PASSWORD"),
+            "{e}"
+        );
     }
 
     #[test]
     fn borg_password_sources() {
-        let r = resolve_repo_secret(&BackendType::Borg, &args(&[("password", "pw")]), no_env, no_file).unwrap();
+        let r = resolve_repo_secret(
+            &BackendType::Borg,
+            &args(&[("password", "pw")]),
+            no_env,
+            no_file,
+        )
+        .unwrap();
         assert_eq!(r.set.get("BORG_PASSPHRASE").map(String::as_str), Some("pw"));
 
-        let r = resolve_repo_secret(&BackendType::Borg, &args(&[("password_file", "/k")]), no_env, |_| Ok("pw\n".to_string())).unwrap();
+        let r = resolve_repo_secret(
+            &BackendType::Borg,
+            &args(&[("password_file", "/k")]),
+            no_env,
+            |_| Ok("pw\n".to_string()),
+        )
+        .unwrap();
         assert_eq!(r.set.get("BORG_PASSPHRASE").map(String::as_str), Some("pw"));
 
-        let e = resolve_repo_secret(&BackendType::Borg, &args(&[("password_file", "/k")]), no_env, no_file).unwrap_err();
+        let e = resolve_repo_secret(
+            &BackendType::Borg,
+            &args(&[("password_file", "/k")]),
+            no_env,
+            no_file,
+        )
+        .unwrap_err();
         assert!(e.contains("cannot read password_file /k"), "{e}");
 
-        let r = resolve_repo_secret(&BackendType::Borg, &args(&[]), |k| k == "BORG_PASSCOMMAND", no_file).unwrap();
+        let r = resolve_repo_secret(
+            &BackendType::Borg,
+            &args(&[]),
+            |k| k == "BORG_PASSCOMMAND",
+            no_file,
+        )
+        .unwrap();
         assert!(r.set.is_empty());
 
         assert!(resolve_repo_secret(&BackendType::Borg, &args(&[]), no_env, no_file).is_err());
-        assert_eq!(resolve_repo_secret(&BackendType::Tar, &args(&[]), no_env, no_file).unwrap(), RepoSecret::default());
+        assert_eq!(
+            resolve_repo_secret(&BackendType::Tar, &args(&[]), no_env, no_file).unwrap(),
+            RepoSecret::default()
+        );
     }
 
     #[test]
     fn no_hard_coded_password_in_commands() {
         let repo = "/r".to_string();
-        let p = RetentionPolicy { keep_daily: Some(1), ..Default::default() };
+        let p = RetentionPolicy {
+            keep_daily: Some(1),
+            ..Default::default()
+        };
         for spec in [
             build_restic_create(Some(&repo), &s(&["/etc"]), &[], None, &[]),
             build_restic_list(Some(&repo), &[]),
@@ -2272,21 +2787,39 @@ mod tests {
         let mut spec = build_restic_list(Some(&"/r".to_string()), &[]);
         spec.env.insert("RESTIC_PASSWORD".into(), "hunter2".into());
         spec.env.insert("BORG_PASSPHRASE".into(), "hunter2".into());
-        spec.env.insert("BORG_PASSCOMMAND".into(), "pass show hunter2".into());
+        spec.env
+            .insert("BORG_PASSCOMMAND".into(), "pass show hunter2".into());
         let info = h.backend_info(&BackendType::Restic, Some(&spec), 1, false);
         let text = serde_json::to_string(&info).unwrap();
         assert!(!text.contains("hunter2"), "{text}");
-        assert_eq!(info.env_redacted.get("RESTIC_REPOSITORY").map(String::as_str), Some("/r"));
-        assert_eq!(info.env_redacted.get("BORG_PASSCOMMAND").map(String::as_str), Some(REDACTED));
+        assert_eq!(
+            info.env_redacted
+                .get("RESTIC_REPOSITORY")
+                .map(String::as_str),
+            Some("/r")
+        );
+        assert_eq!(
+            info.env_redacted
+                .get("BORG_PASSCOMMAND")
+                .map(String::as_str),
+            Some(REDACTED)
+        );
     }
 
     #[test]
     fn restic_without_password_fails_before_running() {
-        if RESTIC_SECRET_ENV.iter().any(|k| std::env::var_os(k).is_some()) {
+        if RESTIC_SECRET_ENV
+            .iter()
+            .any(|k| std::env::var_os(k).is_some())
+        {
             return; // the test environment supplies a password
         }
         let h = handle("backup://db");
-        let a = args(&[("src", "/etc"), ("backend", "restic"), ("repo_url", "/nonexistent/resh-test")]);
+        let a = args(&[
+            ("src", "/etc"),
+            ("backend", "restic"),
+            ("repo_url", "/nonexistent/resh-test"),
+        ]);
         let (status, out) = call(&h, "create", &a);
         assert!(!status.ok);
         let v: Value = serde_json::from_str(out.trim()).unwrap();
@@ -2298,7 +2831,12 @@ mod tests {
     #[test]
     fn password_arg_is_redacted_in_envelope() {
         let h = handle("backup://db");
-        let a = args(&[("src", "/etc"), ("backend", "restic"), ("password", "hunter2"), ("dry_run", "true")]);
+        let a = args(&[
+            ("src", "/etc"),
+            ("backend", "restic"),
+            ("password", "hunter2"),
+            ("dry_run", "true"),
+        ]);
         let (status, out) = call(&h, "create", &a);
         assert!(status.ok);
         assert!(!out.contains("hunter2"), "{out}");
@@ -2311,26 +2849,33 @@ mod tests {
     #[test]
     fn parses_restic_summary() {
         let out = concat!(
-            r#"{"message_type":"status","percent_done":0.5}"#, "\n",
-            r#"{"message_type":"summary","files_new":3,"data_added":1200,"total_bytes_processed":5000,"snapshot_id":"4f2a9c1e0011"}"#, "\n"
+            r#"{"message_type":"status","percent_done":0.5}"#,
+            "\n",
+            r#"{"message_type":"summary","files_new":3,"data_added":1200,"total_bytes_processed":5000,"snapshot_id":"4f2a9c1e0011"}"#,
+            "\n"
         );
-        let snap = parse_create_output(&BackendType::Restic, out, None, &s(&["/etc"]), &[], None).unwrap();
+        let snap =
+            parse_create_output(&BackendType::Restic, out, None, &s(&["/etc"]), &[], None).unwrap();
         assert_eq!(snap.id, "4f2a9c1e0011");
         assert_eq!(snap.bytes_sent, Some(1200));
         assert_eq!(snap.bytes_total, Some(5000));
         // Unparseable restic output yields no snapshot rather than an error.
-        assert!(parse_create_output(&BackendType::Restic, "garbage", None, &[], &[], None).is_none());
+        assert!(
+            parse_create_output(&BackendType::Restic, "garbage", None, &[], &[], None).is_none()
+        );
     }
 
     #[test]
     fn parses_borg_json() {
         let out = r#"{"archive":{"name":"backup_1","start":"2026-10-16T02:00:04.000000","stats":{"original_size":9000,"deduplicated_size":100}},"repository":{}}"#;
-        let snap = parse_create_output(&BackendType::Borg, out, Some("backup_1"), &[], &[], None).unwrap();
+        let snap =
+            parse_create_output(&BackendType::Borg, out, Some("backup_1"), &[], &[], None).unwrap();
         assert_eq!(snap.id, "backup_1");
         assert_eq!(snap.created_at, "2026-10-16T02:00:04.000000");
         assert_eq!((snap.bytes_total, snap.bytes_sent), (Some(9000), Some(100)));
         // Non-JSON borg output still reports the known archive name.
-        let snap = parse_create_output(&BackendType::Borg, "", Some("backup_1"), &[], &[], None).unwrap();
+        let snap =
+            parse_create_output(&BackendType::Borg, "", Some("backup_1"), &[], &[], None).unwrap();
         assert_eq!(snap.id, "backup_1");
     }
 
@@ -2338,8 +2883,12 @@ mod tests {
     fn parses_rsync_stats() {
         let out = "\nNumber of files: 3 (reg: 2, dir: 1)\nTotal file size: 1,234,567 bytes\nTotal transferred file size: 2,048 bytes\n";
         assert_eq!(parse_rsync_stats(out), (Some(1_234_567), Some(2048)));
-        let snap = parse_create_output(&BackendType::Rsync, out, Some("backup_1"), &[], &[], None).unwrap();
-        assert_eq!((snap.id.as_str(), snap.bytes_total), ("backup_1", Some(1_234_567)));
+        let snap = parse_create_output(&BackendType::Rsync, out, Some("backup_1"), &[], &[], None)
+            .unwrap();
+        assert_eq!(
+            (snap.id.as_str(), snap.bytes_total),
+            ("backup_1", Some(1_234_567))
+        );
         assert_eq!(parse_rsync_stats("nothing"), (None, None));
     }
 
@@ -2360,7 +2909,11 @@ mod tests {
         let snaps = parse_list_output(&BackendType::Restic, out).unwrap();
         assert_eq!(snaps.len(), 2);
         assert!(snaps[1].tags.is_empty() && snaps[1].sources.is_empty());
-        assert!(parse_list_output(&BackendType::Restic, "null").unwrap().is_empty());
+        assert!(
+            parse_list_output(&BackendType::Restic, "null")
+                .unwrap()
+                .is_empty()
+        );
         assert!(parse_list_output(&BackendType::Restic, "not json").is_err());
     }
 
@@ -2383,12 +2936,19 @@ mod tests {
             ("d14".to_string(), t(14, 2)),
             ("d01".to_string(), t(1, 2)),
         ];
-        let daily2 = RetentionPolicy { keep_daily: Some(2), ..Default::default() };
+        let daily2 = RetentionPolicy {
+            keep_daily: Some(2),
+            ..Default::default()
+        };
         let mut removed = select_prune(&snaps, &daily2);
         removed.sort();
         assert_eq!(removed, s(&["d01", "d14", "d16a"]));
 
-        let monthly1 = RetentionPolicy { keep_monthly: Some(1), keep_daily: Some(1), ..Default::default() };
+        let monthly1 = RetentionPolicy {
+            keep_monthly: Some(1),
+            keep_daily: Some(1),
+            ..Default::default()
+        };
         let mut removed = select_prune(&snaps, &monthly1);
         removed.sort();
         assert_eq!(removed, s(&["d01", "d14", "d15", "d16a"]));
@@ -2403,21 +2963,34 @@ mod tests {
         let h = handle("backup://db");
         let repo = dir.to_string_lossy().to_string();
 
-        let (status, out) = call(&h, "list", &args(&[("backend", "tar"), ("repo_url", &repo)]));
+        let (status, out) = call(
+            &h,
+            "list",
+            &args(&[("backend", "tar"), ("repo_url", &repo)]),
+        );
         assert!(status.ok, "{out}");
         let v: Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(v["result"]["total_count"], 2);
         assert_eq!(v["backend"]["command"], json!([]));
 
         // Dry run keeps both files and reports one removal.
-        let a = args(&[("backend", "tar"), ("repo_url", &repo), ("keep_daily", "1"), ("dry_run", "true")]);
+        let a = args(&[
+            ("backend", "tar"),
+            ("repo_url", &repo),
+            ("keep_daily", "1"),
+            ("dry_run", "true"),
+        ]);
         let (status, out) = call(&h, "prune", &a);
         assert!(status.ok, "{out}");
         let v: Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(v["result"]["would_prune"]["snapshots_removed"], 1);
         assert!(dir.join("backup_a.tar.gz").exists() && dir.join("backup_b.tar.gz").exists());
 
-        let (status, out) = call(&h, "prune", &args(&[("backend", "tar"), ("repo_url", &repo)]));
+        let (status, out) = call(
+            &h,
+            "prune",
+            &args(&[("backend", "tar"), ("repo_url", &repo)]),
+        );
         assert!(!status.ok);
         assert!(out.contains("INVALID_ARGS"));
 
@@ -2456,7 +3029,9 @@ mod profile_tests {
     use super::*;
 
     fn repo(url: &str) -> String {
-        BackupHandle::from_url(Url::parse(url).unwrap()).unwrap().repo
+        BackupHandle::from_url(Url::parse(url).unwrap())
+            .unwrap()
+            .repo
     }
 
     #[test]
@@ -2464,8 +3039,12 @@ mod profile_tests {
         assert_eq!(repo("backup://db"), "db");
         assert_eq!(repo("backup://web"), "web");
         assert_ne!(
-            BackupHandle::from_url(Url::parse("backup://db").unwrap()).unwrap().default_tar_repo(),
-            BackupHandle::from_url(Url::parse("backup://web").unwrap()).unwrap().default_tar_repo(),
+            BackupHandle::from_url(Url::parse("backup://db").unwrap())
+                .unwrap()
+                .default_tar_repo(),
+            BackupHandle::from_url(Url::parse("backup://web").unwrap())
+                .unwrap()
+                .default_tar_repo(),
             "profiles must not share a repository"
         );
         // Unchanged forms.
@@ -2492,9 +3071,16 @@ mod dry_run_tests {
 
     fn call(verb: &str, kv: &[(&str, &str)]) -> Result<Status> {
         let h = BackupHandle::from_url(Url::parse("backup://t").unwrap()).unwrap();
-        let args: Args = kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let args: Args = kv
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
         h.call(verb, &args, &mut io)
     }
 
@@ -2520,11 +3106,29 @@ mod dry_run_tests {
         }
         // Real spellings still work: a dry run writes nothing, a real run does.
         for yes in ["true", "1", "yes", "ON"] {
-            let st = call("create", &[("backend", "tar"), ("repo_url", r), ("src", s), ("dry_run", yes)]).unwrap();
+            let st = call(
+                "create",
+                &[
+                    ("backend", "tar"),
+                    ("repo_url", r),
+                    ("src", s),
+                    ("dry_run", yes),
+                ],
+            )
+            .unwrap();
             assert!(st.ok, "dry_run={yes}");
             assert_eq!(entries(&repo), 0, "dry_run={yes} wrote a backup");
         }
-        let st = call("create", &[("backend", "tar"), ("repo_url", r), ("src", s), ("dry_run", "off")]).unwrap();
+        let st = call(
+            "create",
+            &[
+                ("backend", "tar"),
+                ("repo_url", r),
+                ("src", s),
+                ("dry_run", "off"),
+            ],
+        )
+        .unwrap();
         assert!(st.ok);
         assert_eq!(entries(&repo), 1);
     }
@@ -2539,14 +3143,28 @@ mod dry_run_tests {
         let repo = tmp.path().join("repo");
         let r = repo.to_str().unwrap();
         for v in ["true", "1", "yes", "on", "maybe"] {
-            let res = call("restore", &[("backend", "tar"), ("repo_url", r), ("snapshot_id", "x"), ("dest", d), ("dry_run", v)]);
-            let err = res.expect_err(&format!("restore dry_run={v} must fail")).to_string();
+            let res = call(
+                "restore",
+                &[
+                    ("backend", "tar"),
+                    ("repo_url", r),
+                    ("snapshot_id", "x"),
+                    ("dest", d),
+                    ("dry_run", v),
+                ],
+            );
+            let err = res
+                .expect_err(&format!("restore dry_run={v} must fail"))
+                .to_string();
             if v != "maybe" {
                 assert!(err.contains("does not support dry_run"), "{err}");
             }
         }
         assert_eq!(entries(&dest), 1);
-        assert_eq!(std::fs::read_to_string(dest.join("keep.txt")).unwrap(), "original");
+        assert_eq!(
+            std::fs::read_to_string(dest.join("keep.txt")).unwrap(),
+            "original"
+        );
     }
 }
 
@@ -2573,7 +3191,10 @@ mod timeout_tests {
         let start = Instant::now();
         let out = wait_with_deadline(child, Duration::from_millis(200)).unwrap();
         assert!(out.is_none(), "timed out");
-        assert!(start.elapsed() < Duration::from_secs(2), "returned at the deadline");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "returned at the deadline"
+        );
         // Killed and reaped: the pid no longer exists.
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
     }
@@ -2581,7 +3202,9 @@ mod timeout_tests {
     #[test]
     fn fast_commands_are_unaffected() {
         let child = piped("sh", &["-c", "echo out; echo err >&2; exit 3"]);
-        let out = wait_with_deadline(child, Duration::from_secs(10)).unwrap().unwrap();
+        let out = wait_with_deadline(child, Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
         assert_eq!(out.status.code(), Some(3));
         assert_eq!(out.stdout, b"out\n");
         assert_eq!(out.stderr, b"err\n");
@@ -2590,14 +3213,19 @@ mod timeout_tests {
     #[test]
     fn large_output_does_not_deadlock() {
         let child = piped("head", &["-c", "300000", "/dev/zero"]);
-        let out = wait_with_deadline(child, Duration::from_secs(10)).unwrap().unwrap();
+        let out = wait_with_deadline(child, Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
         assert!(out.status.success());
         assert_eq!(out.stdout.len(), 300000);
     }
 
     #[test]
     fn backend_command_timeout_is_an_error() {
-        let h = BackupHandle { repo: "t".into(), target: "backup://t".into() };
+        let h = BackupHandle {
+            repo: "t".into(),
+            target: "backup://t".into(),
+        };
         let spec = CmdSpec {
             program: "sleep".into(),
             args: vec!["5".into()],
@@ -2610,7 +3238,11 @@ mod timeout_tests {
         assert!(err.to_string().contains("timed out after 150ms"), "{err}");
         assert!(start.elapsed() < Duration::from_secs(2));
 
-        let quick = CmdSpec { program: "true".into(), args: vec![], ..spec };
+        let quick = CmdSpec {
+            program: "true".into(),
+            args: vec![],
+            ..spec
+        };
         let res = h.execute_backend_command(&quick, 5000).unwrap();
         assert_eq!(res.exit_code, 0);
     }

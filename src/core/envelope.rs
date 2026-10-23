@@ -1,8 +1,8 @@
-use serde::{Serialize, Deserialize};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::SystemTime;
-use anyhow::{Result, anyhow};
 
 /// Shared JSON envelope structure for all backup handle verbs
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,7 +124,8 @@ impl BackupEnvelope {
     /// Serialize to JSON (pretty or compact)
     pub fn to_json(&self, pretty: bool) -> Result<String> {
         if pretty {
-            serde_json::to_string_pretty(self).map_err(|e| anyhow!("JSON serialization error: {}", e))
+            serde_json::to_string_pretty(self)
+                .map_err(|e| anyhow!("JSON serialization error: {}", e))
         } else {
             serde_json::to_string(self).map_err(|e| anyhow!("JSON serialization error: {}", e))
         }
@@ -183,13 +184,13 @@ impl BackupError {
             127 => ("backend_error", "Backend invocation error"),
             _ => ("backend_error", "Unknown backend error"),
         };
-        
+
         let full_message = if stderr.is_empty() {
             message.to_string()
         } else {
             format!("{}: {}", message, stderr.lines().next().unwrap_or(stderr))
         };
-        
+
         Self::new(kind, &full_message)
     }
 }
@@ -198,14 +199,23 @@ impl BackupError {
 pub fn redact_command_args(command: &[String]) -> Vec<String> {
     let mut redacted = Vec::new();
     let mut redact_next = false;
-    
+
     let sensitive_flags = [
-        "--password", "-p", "--key", "--secret", "--token", "--auth",
-        "--aws-access-key-id", "--aws-secret-access-key",
-        "--azure-account-name", "--azure-account-key",
-        "--gcs-key-file", "--encryption-key", "--passphrase"
+        "--password",
+        "-p",
+        "--key",
+        "--secret",
+        "--token",
+        "--auth",
+        "--aws-access-key-id",
+        "--aws-secret-access-key",
+        "--azure-account-name",
+        "--azure-account-key",
+        "--gcs-key-file",
+        "--encryption-key",
+        "--passphrase",
     ];
-    
+
     for arg in command {
         if redact_next {
             redacted.push("***REDACTED***".to_string());
@@ -223,30 +233,44 @@ pub fn redact_command_args(command: &[String]) -> Vec<String> {
             redacted.push(arg.clone());
         }
     }
-    
+
     redacted
 }
 
 /// Redact sensitive environment variables
 pub fn redact_env_vars(env: &HashMap<String, String>) -> HashMap<String, String> {
     let mut redacted = HashMap::new();
-    
+
     let sensitive_keys = [
-        "PASSWORD", "SECRET", "KEY", "TOKEN", "AUTH", "PASSPHRASE",
-        "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN",
-        "AZURE_STORAGE_KEY", "AZURE_STORAGE_CONNECTION_STRING",
-        "GCS_KEY_FILE", "GOOGLE_APPLICATION_CREDENTIALS",
-        "RESTIC_PASSWORD", "BORG_PASSPHRASE", "ENCRYPTION_KEY"
+        "PASSWORD",
+        "SECRET",
+        "KEY",
+        "TOKEN",
+        "AUTH",
+        "PASSPHRASE",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SESSION_TOKEN",
+        "AZURE_STORAGE_KEY",
+        "AZURE_STORAGE_CONNECTION_STRING",
+        "GCS_KEY_FILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "RESTIC_PASSWORD",
+        "BORG_PASSPHRASE",
+        "ENCRYPTION_KEY",
     ];
-    
+
     for (key, value) in env {
-        if sensitive_keys.iter().any(|&sensitive| key.to_uppercase().contains(sensitive)) {
+        if sensitive_keys
+            .iter()
+            .any(|&sensitive| key.to_uppercase().contains(sensitive))
+        {
             redacted.insert(key.clone(), "***REDACTED***".to_string());
         } else {
             redacted.insert(key.clone(), value.clone());
         }
     }
-    
+
     redacted
 }
 
@@ -263,10 +287,7 @@ impl Timer {
     }
 
     pub fn elapsed_ms(&self) -> u64 {
-        self.start
-            .elapsed()
-            .unwrap_or_default()
-            .as_millis() as u64
+        self.start.elapsed().unwrap_or_default().as_millis() as u64
     }
 }
 
@@ -279,8 +300,9 @@ mod tests {
     fn test_envelope_success() {
         let backend = BackendInfo::new("restic", 600000);
         let result = json!({"snapshot_id": "abc123"});
-        let envelope = BackupEnvelope::success("create", "backup://test", backend, result, false, 1000);
-        
+        let envelope =
+            BackupEnvelope::success("create", "backup://test", backend, result, false, 1000);
+
         assert!(envelope.ok);
         assert_eq!(envelope.verb, "create");
         assert_eq!(envelope.handle, "backup");
@@ -292,8 +314,9 @@ mod tests {
     fn test_envelope_error() {
         let backend = BackendInfo::new("restic", 600000);
         let error = BackupError::new("timeout", "Operation timed out after 10 minutes");
-        let envelope = BackupEnvelope::error("create", "backup://test", backend, error, false, 10000);
-        
+        let envelope =
+            BackupEnvelope::error("create", "backup://test", backend, error, false, 10000);
+
         assert!(!envelope.ok);
         assert!(envelope.error.is_some());
         assert!(envelope.result.is_none());
@@ -309,7 +332,7 @@ mod tests {
             "/backup".to_string(),
             "--key=private-key".to_string(),
         ];
-        
+
         let redacted = redact_command_args(&command);
         assert_eq!(redacted[0], "restic");
         assert_eq!(redacted[1], "--password");
@@ -324,8 +347,11 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("PATH".to_string(), "/usr/bin".to_string());
         env.insert("RESTIC_PASSWORD".to_string(), "secret123".to_string());
-        env.insert("AWS_SECRET_ACCESS_KEY".to_string(), "aws-secret".to_string());
-        
+        env.insert(
+            "AWS_SECRET_ACCESS_KEY".to_string(),
+            "aws-secret".to_string(),
+        );
+
         let redacted = redact_env_vars(&env);
         assert_eq!(redacted["PATH"], "/usr/bin");
         assert_eq!(redacted["RESTIC_PASSWORD"], "***REDACTED***");
@@ -346,12 +372,13 @@ mod tests {
     fn test_json_serialization() {
         let backend = BackendInfo::new("restic", 600000);
         let result = json!({"snapshot_id": "abc123"});
-        let envelope = BackupEnvelope::success("create", "backup://test", backend, result, false, 1000);
-        
+        let envelope =
+            BackupEnvelope::success("create", "backup://test", backend, result, false, 1000);
+
         let json_str = envelope.to_json(false).unwrap();
         assert!(json_str.contains("\"ok\":true"));
         assert!(json_str.contains("\"handle\":\"backup\""));
-        
+
         let pretty_json = envelope.to_json(true).unwrap();
         assert!(pretty_json.contains("\"ok\": true"));
         assert!(pretty_json.len() > json_str.len()); // Pretty format should be longer

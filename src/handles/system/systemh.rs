@@ -1,8 +1,8 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::thread;
@@ -361,7 +361,9 @@ Shown with --json-pretty."#,
 
 /// Verbs registered by the system handle (shared by `Handle::verbs` and the
 /// in-URL help forms).
-const SYSTEM_VERBS: &[&str] = &["info", "uptime", "load", "memory", "cpu", "disk", "env.list"];
+const SYSTEM_VERBS: &[&str] = &[
+    "info", "uptime", "load", "memory", "cpu", "disk", "env.list",
+];
 
 /// Argument keys that request help instead of running a verb.
 const HELP_KEYS: &[&str] = &["help", "--help", "-h", "h"];
@@ -377,10 +379,10 @@ fn parse_verb_options<T: serde::de::DeserializeOwned + Default>(args: &Args) -> 
                 return Err(SystemError::InvalidParameter(
                     "input must be a JSON object".to_string(),
                 )
-                .into())
+                .into());
             }
             Err(e) => {
-                return Err(SystemError::InvalidParameter(format!("invalid JSON: {}", e)).into())
+                return Err(SystemError::InvalidParameter(format!("invalid JSON: {}", e)).into());
             }
         },
         None => serde_json::Map::new(),
@@ -596,7 +598,9 @@ impl SystemError {
             // Environment variable listing error codes
             Self::EnvListUnavailable(_) => "system.env_list_unavailable".to_string(),
             Self::EnvListPidUnavailable(_) => "system.env_list_pid_unavailable".to_string(),
-            Self::EnvListNotSupportedForPid(_) => "system.env_list_not_supported_for_pid".to_string(),
+            Self::EnvListNotSupportedForPid(_) => {
+                "system.env_list_not_supported_for_pid".to_string()
+            }
             Self::EnvListInvalidRegex(_) => "system.env_list_invalid_regex".to_string(),
             Self::EnvListInternalError(_) => "system.env_list_internal_error".to_string(),
         }
@@ -1325,8 +1329,8 @@ pub struct SystemEnvListOptions {
     pub max_vars: u32,
 
     // Sorting
-    pub sort_by: String,      // "name" | "length" | "none"
-    pub sort_order: String,   // "asc" | "desc"
+    pub sort_by: String,    // "name" | "length" | "none"
+    pub sort_order: String, // "asc" | "desc"
 
     // Debug / inspection
     pub include_raw: bool,
@@ -1426,7 +1430,7 @@ pub trait SystemProvider {
     fn get_disk_stats(&self, mount_point: &str) -> Result<(u64, u64, u64)>;
     fn get_cpu_count(&self) -> Result<u32>;
     fn now_unix_ms(&self) -> i64;
-    
+
     // Cgroup memory methods
     fn read_cgroup_memory_max(&self) -> Result<String>;
     fn read_cgroup_memory_current(&self) -> Result<String>;
@@ -1437,14 +1441,14 @@ pub trait SystemProvider {
     fn read_cpu_frequency_current(&self, cpu_id: u32) -> Result<String>;
     fn read_cpu_frequency_max(&self, cpu_id: u32) -> Result<String>;
     fn read_cpu_topology(&self, cpu_id: u32) -> Result<(Option<u32>, Option<u32>)>; // (core_id, socket_id)
-    
+
     // Cgroup CPU methods
     fn read_cgroup_cpu_max(&self) -> Result<String>;
     fn read_cgroup_cpu_stat(&self) -> Result<String>;
     fn read_cgroup_cpu_quota(&self) -> Result<String>;
     fn read_cgroup_cpu_period(&self) -> Result<String>;
     fn read_cgroup_cpu_usage(&self) -> Result<String>;
-    
+
     // Sleep for sampling
     fn sleep_ms(&self, duration_ms: u64);
 
@@ -1491,7 +1495,9 @@ impl SystemProvider for RealSystemProvider {
     fn get_uname(&self) -> Result<(String, String, String, String)> {
         use std::process::Command;
 
-        let output = Command::new("uname").arg("-a").output()
+        let output = Command::new("uname")
+            .arg("-a")
+            .output()
             .map_err(|e| SystemError::InternalError(format!("uname failed: {}", e)))?;
 
         let full = String::from_utf8_lossy(&output.stdout).to_string();
@@ -1508,7 +1514,8 @@ impl SystemProvider for RealSystemProvider {
     fn get_hostname(&self) -> Result<String> {
         use std::process::Command;
 
-        let output = Command::new("hostname").output()
+        let output = Command::new("hostname")
+            .output()
             .map_err(|e| SystemError::InternalError(format!("hostname failed: {}", e)))?;
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -1547,8 +1554,11 @@ impl SystemProvider for RealSystemProvider {
     fn get_cpu_count(&self) -> Result<u32> {
         // Count CPUs from /proc/stat
         let content = self.read_proc_stat()?;
-        let count = content.lines()
-            .filter(|line| line.starts_with("cpu") && line.chars().nth(3).map_or(false, |c| c.is_ascii_digit()))
+        let count = content
+            .lines()
+            .filter(|line| {
+                line.starts_with("cpu") && line.chars().nth(3).map_or(false, |c| c.is_ascii_digit())
+            })
             .count();
         Ok(count as u32)
     }
@@ -1565,7 +1575,7 @@ impl SystemProvider for RealSystemProvider {
         if let Ok(content) = self.read_file("/sys/fs/cgroup/memory.max") {
             return Ok(content);
         }
-        
+
         // cgroup v1 fallback
         self.read_file("/sys/fs/cgroup/memory/memory.limit_in_bytes")
     }
@@ -1575,7 +1585,7 @@ impl SystemProvider for RealSystemProvider {
         if let Ok(content) = self.read_file("/sys/fs/cgroup/memory.current") {
             return Ok(content);
         }
-        
+
         // cgroup v1 fallback
         self.read_file("/sys/fs/cgroup/memory/memory.usage_in_bytes")
     }
@@ -1585,7 +1595,7 @@ impl SystemProvider for RealSystemProvider {
         if let Ok(content) = self.read_file("/sys/fs/cgroup/memory.swap.max") {
             return Ok(content);
         }
-        
+
         // cgroup v1 fallback
         self.read_file("/sys/fs/cgroup/memory/memory.memsw.limit_in_bytes")
     }
@@ -1595,39 +1605,53 @@ impl SystemProvider for RealSystemProvider {
         if let Ok(content) = self.read_file("/sys/fs/cgroup/memory.swap.current") {
             return Ok(content);
         }
-        
+
         // cgroup v1 fallback
         self.read_file("/sys/fs/cgroup/memory/memory.memsw.usage_in_bytes")
     }
 
     // CPU-specific methods
     fn read_cpu_frequency_current(&self, cpu_id: u32) -> Result<String> {
-        self.read_file(&format!("/sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq", cpu_id))
+        self.read_file(&format!(
+            "/sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq",
+            cpu_id
+        ))
     }
 
     fn read_cpu_frequency_max(&self, cpu_id: u32) -> Result<String> {
-        self.read_file(&format!("/sys/devices/system/cpu/cpu{}/cpufreq/cpuinfo_max_freq", cpu_id))
+        self.read_file(&format!(
+            "/sys/devices/system/cpu/cpu{}/cpufreq/cpuinfo_max_freq",
+            cpu_id
+        ))
     }
 
     fn read_cpu_topology(&self, cpu_id: u32) -> Result<(Option<u32>, Option<u32>)> {
-        let core_id = self.read_file(&format!("/sys/devices/system/cpu/cpu{}/topology/core_id", cpu_id))
+        let core_id = self
+            .read_file(&format!(
+                "/sys/devices/system/cpu/cpu{}/topology/core_id",
+                cpu_id
+            ))
             .ok()
             .and_then(|s| s.trim().parse().ok());
-            
-        let socket_id = self.read_file(&format!("/sys/devices/system/cpu/cpu{}/topology/physical_package_id", cpu_id))
+
+        let socket_id = self
+            .read_file(&format!(
+                "/sys/devices/system/cpu/cpu{}/topology/physical_package_id",
+                cpu_id
+            ))
             .ok()
             .and_then(|s| s.trim().parse().ok());
-            
+
         Ok((core_id, socket_id))
     }
-    
+
     // Cgroup CPU methods
     fn read_cgroup_cpu_max(&self) -> Result<String> {
         // Try cgroup v2 first
         if let Ok(content) = self.read_file("/sys/fs/cgroup/cpu.max") {
             return Ok(content);
         }
-        
+
         // cgroup v1 fallback - read both files and format as "quota period"
         let quota = self.read_file("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")?;
         let period = self.read_file("/sys/fs/cgroup/cpu/cpu.cfs_period_us")?;
@@ -1639,7 +1663,7 @@ impl SystemProvider for RealSystemProvider {
         if let Ok(content) = self.read_file("/sys/fs/cgroup/cpu.stat") {
             return Ok(content);
         }
-        
+
         // cgroup v1 fallback - read usage from cpuacct
         self.read_file("/sys/fs/cgroup/cpuacct/cpuacct.usage")
     }
@@ -1655,7 +1679,7 @@ impl SystemProvider for RealSystemProvider {
     fn read_cgroup_cpu_usage(&self) -> Result<String> {
         self.read_file("/sys/fs/cgroup/cpuacct/cpuacct.usage")
     }
-    
+
     fn sleep_ms(&self, duration_ms: u64) {
         thread::sleep(Duration::from_millis(duration_ms));
     }
@@ -1681,13 +1705,17 @@ impl SystemProvider for RealSystemProvider {
 
         // f_frsize: fragment size (preferred block size for I/O)
         // f_bsize: filesystem block size
-        let block_size = if stats.fragment_size() > 0 { stats.fragment_size() } else { stats.block_size() };
-        
+        let block_size = if stats.fragment_size() > 0 {
+            stats.fragment_size()
+        } else {
+            stats.block_size()
+        };
+
         let total_blocks = stats.blocks();
         let free_blocks = stats.blocks_free();
         let avail_blocks = stats.blocks_available();
         let used_blocks = total_blocks.saturating_sub(free_blocks);
-        
+
         let total_bytes = total_blocks * block_size;
         let free_bytes = free_blocks * block_size;
         let avail_bytes = avail_blocks * block_size;
@@ -1698,7 +1726,16 @@ impl SystemProvider for RealSystemProvider {
         let inodes_avail = stats.files_available();
         let inodes_used = inodes_total.saturating_sub(inodes_free);
 
-        Ok((total_bytes, used_bytes, free_bytes, avail_bytes, inodes_total, inodes_used, inodes_free, inodes_avail))
+        Ok((
+            total_bytes,
+            used_bytes,
+            free_bytes,
+            avail_bytes,
+            inodes_total,
+            inodes_used,
+            inodes_free,
+            inodes_avail,
+        ))
     }
 
     // Environment variable methods
@@ -1710,7 +1747,7 @@ impl SystemProvider for RealSystemProvider {
                 (key, value)
             })
             .collect();
-        
+
         Ok(env_vars)
     }
 
@@ -1718,10 +1755,10 @@ impl SystemProvider for RealSystemProvider {
         let environ_path = format!("/proc/{}/environ", pid);
         let environ_content = fs::read(&environ_path)
             .map_err(|e| SystemError::EnvListPidUnavailable(format!("pid={}: {}", pid, e)))?;
-        
+
         let mut env_vars = Vec::new();
         let mut current_var = Vec::new();
-        
+
         for &byte in &environ_content {
             if byte == 0 {
                 if !current_var.is_empty() {
@@ -1737,7 +1774,7 @@ impl SystemProvider for RealSystemProvider {
                 current_var.push(byte);
             }
         }
-        
+
         // Handle the last variable if the file doesn't end with null byte
         if !current_var.is_empty() {
             let var_string = String::from_utf8_lossy(&current_var);
@@ -1747,7 +1784,7 @@ impl SystemProvider for RealSystemProvider {
                 env_vars.push((name, value));
             }
         }
-        
+
         Ok(env_vars)
     }
 
@@ -1829,7 +1866,11 @@ impl SystemHandle {
             }
             _ => {
                 let err = SystemError::InvalidParameter(format!("invalid format: {}", opts.format));
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&err.to_json())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&err.to_json())?
+                )?;
                 return Ok(Status::err(1, err.to_string()));
             }
         }
@@ -1848,8 +1889,15 @@ impl SystemHandle {
 
         // Validate format
         if opts.format != "json" && opts.format != "text" {
-            let err = SystemError::InvalidParameter(format!("format must be 'json' or 'text', got '{}'", opts.format));
-            writeln!(io.stdout, "{}", serde_json::to_string_pretty(&err.to_json())?)?;
+            let err = SystemError::InvalidParameter(format!(
+                "format must be 'json' or 'text', got '{}'",
+                opts.format
+            ));
+            writeln!(
+                io.stdout,
+                "{}",
+                serde_json::to_string_pretty(&err.to_json())?
+            )?;
             return Ok(Status::err(1, err.to_string()));
         }
 
@@ -1869,7 +1917,11 @@ impl SystemHandle {
             _ => {
                 // Already validated above, but for safety
                 let err = SystemError::InvalidParameter(format!("invalid format: {}", opts.format));
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&err.to_json())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&err.to_json())?
+                )?;
                 return Ok(Status::err(1, err.to_string()));
             }
         }
@@ -1888,7 +1940,7 @@ impl SystemHandle {
     pub fn collect_uptime(
         &self,
         opts: &SystemUptimeOptions,
-        provider: &dyn SystemProvider
+        provider: &dyn SystemProvider,
     ) -> SystemUptimeResponse {
         let timestamp_unix_ms = provider.now_unix_ms();
         let mut warnings = Vec::new();
@@ -2003,12 +2055,17 @@ impl SystemHandle {
                 match idle_str.parse::<f64>() {
                     Ok(val) => Some(val),
                     Err(_) => {
-                        warnings.push("Idle time not available: could not parse idle field from /proc/uptime".to_string());
+                        warnings.push(
+                            "Idle time not available: could not parse idle field from /proc/uptime"
+                                .to_string(),
+                        );
                         None
                     }
                 }
             } else {
-                warnings.push("Idle time not available: /proc/uptime did not contain idle field".to_string());
+                warnings.push(
+                    "Idle time not available: /proc/uptime did not contain idle field".to_string(),
+                );
                 None
             }
         } else {
@@ -2018,15 +2075,17 @@ impl SystemHandle {
         // Calculate idle_seconds_per_cpu
         let idle_seconds_per_cpu = if opts.include_idle && idle_seconds.is_some() {
             match provider.get_cpu_count() {
-                Ok(cpu_count) if cpu_count > 0 => {
-                    Some(idle_seconds.unwrap() / cpu_count as f64)
-                }
+                Ok(cpu_count) if cpu_count > 0 => Some(idle_seconds.unwrap() / cpu_count as f64),
                 Ok(_) => {
-                    warnings.push("CPU count is zero, cannot calculate idle_seconds_per_cpu".to_string());
+                    warnings.push(
+                        "CPU count is zero, cannot calculate idle_seconds_per_cpu".to_string(),
+                    );
                     None
                 }
                 Err(_) => {
-                    warnings.push("Failed to get CPU count for idle_seconds_per_cpu calculation".to_string());
+                    warnings.push(
+                        "Failed to get CPU count for idle_seconds_per_cpu calculation".to_string(),
+                    );
                     None
                 }
             }
@@ -2162,7 +2221,10 @@ impl SystemHandle {
         let timestamp_secs = response.timestamp_unix_ms / 1000;
         let dt = chrono::DateTime::from_timestamp(timestamp_secs, 0)
             .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
-        output.push_str(&format!("Timestamp : {}\n\n", dt.format("%Y-%m-%dT%H:%M:%SZ")));
+        output.push_str(&format!(
+            "Timestamp : {}\n\n",
+            dt.format("%Y-%m-%dT%H:%M:%SZ")
+        ));
 
         // Uptime
         if let Some(human) = &response.uptime_human {
@@ -2181,7 +2243,10 @@ impl SystemHandle {
         if let Some(boot_time) = response.boot_time_unix {
             let boot_dt = chrono::DateTime::from_timestamp(boot_time, 0)
                 .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
-            output.push_str(&format!("Boot Time : {}\n\n", boot_dt.format("%Y-%m-%dT%H:%M:%SZ")));
+            output.push_str(&format!(
+                "Boot Time : {}\n\n",
+                boot_dt.format("%Y-%m-%dT%H:%M:%SZ")
+            ));
         } else {
             output.push_str("Boot Time : (unknown)\n\n");
         }
@@ -2189,7 +2254,10 @@ impl SystemHandle {
         // Idle
         if let Some(idle) = response.idle_seconds {
             if let Some(idle_per_cpu) = response.idle_seconds_per_cpu {
-                output.push_str(&format!("Idle      : {:.2} s (per CPU: {:.2} s)\n\n", idle, idle_per_cpu));
+                output.push_str(&format!(
+                    "Idle      : {:.2} s (per CPU: {:.2} s)\n\n",
+                    idle, idle_per_cpu
+                ));
             } else {
                 output.push_str(&format!("Idle      : {:.2} s\n\n", idle));
             }
@@ -2221,8 +2289,15 @@ impl SystemHandle {
 
         // Validate format
         if opts.format != "json" && opts.format != "text" {
-            let err = SystemError::InvalidParameter(format!("format must be 'json' or 'text', got '{}'", opts.format));
-            writeln!(io.stdout, "{}", serde_json::to_string_pretty(&err.to_json())?)?;
+            let err = SystemError::InvalidParameter(format!(
+                "format must be 'json' or 'text', got '{}'",
+                opts.format
+            ));
+            writeln!(
+                io.stdout,
+                "{}",
+                serde_json::to_string_pretty(&err.to_json())?
+            )?;
             return Ok(Status::err(1, err.to_string()));
         }
 
@@ -2242,7 +2317,11 @@ impl SystemHandle {
             _ => {
                 // Already validated above, but for safety
                 let err = SystemError::InvalidParameter(format!("invalid format: {}", opts.format));
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&err.to_json())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&err.to_json())?
+                )?;
                 return Ok(Status::err(1, err.to_string()));
             }
         }
@@ -2366,7 +2445,7 @@ impl SystemHandle {
     pub fn collect_disk(
         &self,
         opts: &SystemDiskOptions,
-        provider: &dyn SystemProvider
+        provider: &dyn SystemProvider,
     ) -> SystemDiskResponse {
         let timestamp_unix_ms = provider.now_unix_ms();
         let mut warnings = Vec::new();
@@ -2398,23 +2477,28 @@ impl SystemHandle {
         }
 
         let mount_content = mount_content.unwrap();
-        
+
         // Parse mounts
         let parsed_mounts = self.parse_mounts(&mount_content, &mut warnings);
-        
+
         // Apply filters
         let filtered_mounts = self.filter_mounts(parsed_mounts, opts, &mut warnings);
-        
+
         // Apply limits and get final mount list
-        let (final_mounts, mounts_truncated) = self.limit_mounts(filtered_mounts, opts.max_mounts, &mut warnings);
-        
+        let (final_mounts, mounts_truncated) =
+            self.limit_mounts(filtered_mounts, opts.max_mounts, &mut warnings);
+
         // Get filesystem stats for each mount
         let mut mount_entries = Vec::new();
         for (device, mount_point, fs_type) in final_mounts {
             let mut entry = SystemDiskMountEntry {
                 mount_point: mount_point.clone(),
                 device: device.clone(),
-                fs_type: if opts.include_fs_types { Some(fs_type.clone()) } else { None },
+                fs_type: if opts.include_fs_types {
+                    Some(fs_type.clone())
+                } else {
+                    None
+                },
                 virtual_fs: self.is_virtual_filesystem(&fs_type),
                 total_bytes: None,
                 used_bytes: None,
@@ -2432,23 +2516,31 @@ impl SystemHandle {
             };
 
             // Get filesystem statistics
-            if let Ok((total, used, free, avail, inodes_total, inodes_used, inodes_free, _inodes_avail)) = 
-                provider.statvfs_mount(&mount_point) {
-                
+            if let Ok((
+                total,
+                used,
+                free,
+                avail,
+                inodes_total,
+                inodes_used,
+                inodes_free,
+                _inodes_avail,
+            )) = provider.statvfs_mount(&mount_point)
+            {
                 entry.total_bytes = Some(total);
                 entry.used_bytes = Some(used);
                 entry.free_bytes = Some(free);
                 entry.avail_bytes = Some(avail);
-                
+
                 if total > 0 {
                     entry.used_pct = Some(100.0 * used as f64 / total as f64);
                     entry.free_pct = Some(100.0 * free as f64 / total as f64);
                 }
-                
+
                 entry.inodes_total = Some(inodes_total);
                 entry.inodes_used = Some(inodes_used);
                 entry.inodes_free = Some(inodes_free);
-                
+
                 if inodes_total > 0 {
                     entry.inodes_used_pct = Some(100.0 * inodes_used as f64 / inodes_total as f64);
                 }
@@ -2458,7 +2550,10 @@ impl SystemHandle {
                     entry.human_summary = Some(self.generate_mount_human_summary(&entry));
                 }
             } else {
-                warnings.push(format!("Failed to get filesystem stats for {}", mount_point));
+                warnings.push(format!(
+                    "Failed to get filesystem stats for {}",
+                    mount_point
+                ));
             }
 
             // Map device to I/O device name if needed
@@ -2479,7 +2574,8 @@ impl SystemHandle {
         // Generate human summaries
         let human = if opts.include_human {
             Some(SystemDiskHumanSummary {
-                summaries: mount_entries.iter()
+                summaries: mount_entries
+                    .iter()
                     .filter_map(|e| e.human_summary.clone())
                     .collect(),
             })
@@ -2527,7 +2623,11 @@ impl SystemHandle {
         }
     }
 
-    fn read_mounts_content(&self, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> Option<String> {
+    fn read_mounts_content(
+        &self,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> Option<String> {
         // Try /proc/self/mounts first, then /proc/mounts
         if let Ok(content) = provider.read_proc_self_mounts() {
             Some(content)
@@ -2539,14 +2639,18 @@ impl SystemHandle {
         }
     }
 
-    fn parse_mounts(&self, content: &str, warnings: &mut Vec<String>) -> Vec<(String, String, String)> {
+    fn parse_mounts(
+        &self,
+        content: &str,
+        warnings: &mut Vec<String>,
+    ) -> Vec<(String, String, String)> {
         let mut mounts = Vec::new();
-        
+
         for line in content.lines() {
             if line.trim().is_empty() {
                 continue;
             }
-            
+
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
                 let device = self.unescape_mount_field(parts[0]);
@@ -2557,7 +2661,7 @@ impl SystemHandle {
                 warnings.push(format!("Skipping malformed mount line: {}", line));
             }
         }
-        
+
         mounts
     }
 
@@ -2565,7 +2669,7 @@ impl SystemHandle {
         // Handle octal escape sequences like \040 for space
         let mut result = String::new();
         let mut chars = field.chars().peekable();
-        
+
         while let Some(c) = chars.next() {
             if c == '\\' && chars.peek() == Some(&'0') {
                 // Try to parse octal escape sequence
@@ -2593,57 +2697,75 @@ impl SystemHandle {
                 result.push(c);
             }
         }
-        
+
         result
     }
 
     fn filter_mounts(
-        &self, 
-        mounts: Vec<(String, String, String)>, 
+        &self,
+        mounts: Vec<(String, String, String)>,
         opts: &SystemDiskOptions,
-        warnings: &mut Vec<String>
+        warnings: &mut Vec<String>,
     ) -> Vec<(String, String, String)> {
         let mut filtered = Vec::new();
-        
+
         for (device, mount_point, fs_type) in mounts {
             // Apply filters
             let mut include = true;
-            
+
             // Filter by mount points
             if !opts.mount_points.is_empty() {
                 include = include && opts.mount_points.contains(&mount_point);
             }
-            
+
             // Filter by devices
             if !opts.devices.is_empty() {
                 include = include && opts.devices.contains(&device);
             }
-            
+
             // Filter by filesystem types
             if !opts.fs_types.is_empty() {
                 include = include && opts.fs_types.contains(&fs_type);
             }
-            
+
             // Filter virtual filesystems
             if !opts.include_virtual && self.is_virtual_filesystem(&fs_type) {
                 include = false;
             }
-            
+
             if include {
                 filtered.push((device, mount_point, fs_type));
             }
         }
-        
+
         filtered
     }
 
     fn is_virtual_filesystem(&self, fs_type: &str) -> bool {
-        matches!(fs_type,
-            "proc" | "sysfs" | "debugfs" | "devpts" | "devtmpfs" |
-            "tmpfs" | "securityfs" | "cgroup" | "cgroup2" | "cgroupfs" |
-            "binfmt_misc" | "configfs" | "fusectl" | "mqueue" |
-            "hugetlbfs" | "autofs" | "pstore" | "efivarfs" |
-            "overlay" | "squashfs" | "iso9660" | "udf"
+        matches!(
+            fs_type,
+            "proc"
+                | "sysfs"
+                | "debugfs"
+                | "devpts"
+                | "devtmpfs"
+                | "tmpfs"
+                | "securityfs"
+                | "cgroup"
+                | "cgroup2"
+                | "cgroupfs"
+                | "binfmt_misc"
+                | "configfs"
+                | "fusectl"
+                | "mqueue"
+                | "hugetlbfs"
+                | "autofs"
+                | "pstore"
+                | "efivarfs"
+                | "overlay"
+                | "squashfs"
+                | "iso9660"
+                | "udf"
         )
     }
 
@@ -2651,10 +2773,10 @@ impl SystemHandle {
         &self,
         mounts: Vec<(String, String, String)>,
         max_mounts: u32,
-        warnings: &mut Vec<String>
+        warnings: &mut Vec<String>,
     ) -> (Vec<(String, String, String)>, bool) {
         let max_mounts = max_mounts as usize;
-        
+
         if mounts.len() > max_mounts {
             warnings.push(format!("Mount list truncated at max_mounts={}", max_mounts));
             (mounts.into_iter().take(max_mounts).collect(), true)
@@ -2665,7 +2787,7 @@ impl SystemHandle {
 
     fn generate_mount_tags(&self, mount_point: &str) -> Vec<String> {
         let mut tags = Vec::new();
-        
+
         match mount_point {
             "/" => tags.push("rootfs".to_string()),
             "/home" => tags.push("home".to_string()),
@@ -2679,17 +2801,22 @@ impl SystemHandle {
             path if path.starts_with("/media/") => tags.push("media".to_string()),
             _ => {}
         }
-        
+
         tags
     }
 
     fn generate_mount_human_summary(&self, entry: &SystemDiskMountEntry) -> String {
         let mount_point = &entry.mount_point;
-        
-        if let (Some(total), Some(used), Some(used_pct)) = (entry.total_bytes, entry.used_bytes, entry.used_pct) {
+
+        if let (Some(total), Some(used), Some(used_pct)) =
+            (entry.total_bytes, entry.used_bytes, entry.used_pct)
+        {
             let total_str = self.format_bytes_human(total);
             let used_str = self.format_bytes_human(used);
-            format!("{}: {} total, {} used ({:.1}%)", mount_point, total_str, used_str, used_pct)
+            format!(
+                "{}: {} total, {} used ({:.1}%)",
+                mount_point, total_str, used_str, used_pct
+            )
         } else {
             format!("{}: stats unavailable", mount_point)
         }
@@ -2698,20 +2825,20 @@ impl SystemHandle {
     fn format_bytes_human(&self, bytes: u64) -> String {
         const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
         const DIVISOR: f64 = 1024.0;
-        
+
         if bytes == 0 {
             return "0 B".to_string();
         }
-        
+
         let bytes_f = bytes as f64;
         let mut unit_index = 0;
         let mut value = bytes_f;
-        
+
         while value >= DIVISOR && unit_index < UNITS.len() - 1 {
             value /= DIVISOR;
             unit_index += 1;
         }
-        
+
         if unit_index == 0 {
             format!("{} {}", bytes, UNITS[unit_index])
         } else {
@@ -2738,11 +2865,14 @@ impl SystemHandle {
         if dev_name.starts_with("nvme") {
             // nvme0n1p1 -> nvme0n1
             if let Some(pos) = dev_name.rfind('p') {
-                if dev_name[pos+1..].chars().all(|c| c.is_ascii_digit()) {
+                if dev_name[pos + 1..].chars().all(|c| c.is_ascii_digit()) {
                     return Some(dev_name[..pos].to_string());
                 }
             }
-        } else if dev_name.starts_with("sd") || dev_name.starts_with("hd") || dev_name.starts_with("vd") {
+        } else if dev_name.starts_with("sd")
+            || dev_name.starts_with("hd")
+            || dev_name.starts_with("vd")
+        {
             // sda1 -> sda, hda1 -> hda, vda1 -> vda
             if dev_name.len() > 3 && dev_name[3..].chars().all(|c| c.is_ascii_digit()) {
                 return Some(dev_name[..3].to_string());
@@ -2750,12 +2880,12 @@ impl SystemHandle {
         } else if dev_name.starts_with("mmcblk") {
             // mmcblk0p1 -> mmcblk0
             if let Some(pos) = dev_name.rfind('p') {
-                if dev_name[pos+1..].chars().all(|c| c.is_ascii_digit()) {
+                if dev_name[pos + 1..].chars().all(|c| c.is_ascii_digit()) {
                     return Some(dev_name[..pos].to_string());
                 }
             }
         }
-        
+
         None
     }
 
@@ -2763,7 +2893,7 @@ impl SystemHandle {
         &self,
         provider: &dyn SystemProvider,
         mount_entries: &[SystemDiskMountEntry],
-        warnings: &mut Vec<String>
+        warnings: &mut Vec<String>,
     ) -> Option<SystemDiskIoMetrics> {
         // Try to read /proc/diskstats
         let diskstats_content = match provider.read_proc_diskstats() {
@@ -2824,14 +2954,18 @@ impl SystemHandle {
 
     pub fn format_disk_text(&self, response: &SystemDiskResponse) -> Result<String> {
         let mut output = String::new();
-        
+
         output.push_str("Disk Usage\n");
         output.push_str("==========\n\n");
-        
-        if let Some(timestamp) = chrono::DateTime::from_timestamp_millis(response.timestamp_unix_ms) {
-            output.push_str(&format!("Timestamp : {}\n\n", timestamp.format("%Y-%m-%dT%H:%M:%SZ")));
+
+        if let Some(timestamp) = chrono::DateTime::from_timestamp_millis(response.timestamp_unix_ms)
+        {
+            output.push_str(&format!(
+                "Timestamp : {}\n\n",
+                timestamp.format("%Y-%m-%dT%H:%M:%SZ")
+            ));
         }
-        
+
         if let Some(mounts) = &response.mounts {
             output.push_str("Mounts:\n");
             for mount in mounts {
@@ -2841,38 +2975,69 @@ impl SystemHandle {
                 } else {
                     output.push_str(&format!("({})\n", mount.device));
                 }
-                
-                if let (Some(total), Some(used), Some(free), Some(avail), Some(used_pct)) = 
-                    (mount.total_bytes, mount.used_bytes, mount.free_bytes, mount.avail_bytes, mount.used_pct) {
-                    output.push_str(&format!("    Total   : {}\n", self.format_bytes_human(total)));
-                    output.push_str(&format!("    Used    : {} ({:.1}%)\n", self.format_bytes_human(used), used_pct));
-                    output.push_str(&format!("    Free    : {}\n", self.format_bytes_human(free)));
-                    output.push_str(&format!("    Avail   : {}\n", self.format_bytes_human(avail)));
+
+                if let (Some(total), Some(used), Some(free), Some(avail), Some(used_pct)) = (
+                    mount.total_bytes,
+                    mount.used_bytes,
+                    mount.free_bytes,
+                    mount.avail_bytes,
+                    mount.used_pct,
+                ) {
+                    output.push_str(&format!(
+                        "    Total   : {}\n",
+                        self.format_bytes_human(total)
+                    ));
+                    output.push_str(&format!(
+                        "    Used    : {} ({:.1}%)\n",
+                        self.format_bytes_human(used),
+                        used_pct
+                    ));
+                    output.push_str(&format!(
+                        "    Free    : {}\n",
+                        self.format_bytes_human(free)
+                    ));
+                    output.push_str(&format!(
+                        "    Avail   : {}\n",
+                        self.format_bytes_human(avail)
+                    ));
                 } else {
                     output.push_str("    Stats   : unavailable\n");
                 }
-                
+
                 output.push('\n');
             }
-            
+
             if response.mounts_truncated {
                 output.push_str(&format!("  ... (first {} entries shown)\n", mounts.len()));
-                output.push_str(&format!("  NOTE: mount list truncated at max_mounts={}.\n\n", mounts.len()));
+                output.push_str(&format!(
+                    "  NOTE: mount list truncated at max_mounts={}.\n\n",
+                    mounts.len()
+                ));
             }
         }
-        
+
         if let Some(io) = &response.io {
             output.push_str("I/O:\n");
             if io.available {
                 for device in &io.devices {
                     output.push_str(&format!("  {} ({})\n", device.name, device.maj_min));
-                    if let (Some(reads), Some(writes)) = (device.reads_completed, device.writes_completed) {
+                    if let (Some(reads), Some(writes)) =
+                        (device.reads_completed, device.writes_completed)
+                    {
                         output.push_str(&format!("    Reads   : {}\n", reads));
                         output.push_str(&format!("    Writes  : {}\n", writes));
                     }
-                    if let (Some(read_bytes), Some(write_bytes)) = (device.read_bytes, device.write_bytes) {
-                        output.push_str(&format!("    RBytes  : {}\n", self.format_bytes_human(read_bytes)));
-                        output.push_str(&format!("    WBytes  : {}\n", self.format_bytes_human(write_bytes)));
+                    if let (Some(read_bytes), Some(write_bytes)) =
+                        (device.read_bytes, device.write_bytes)
+                    {
+                        output.push_str(&format!(
+                            "    RBytes  : {}\n",
+                            self.format_bytes_human(read_bytes)
+                        ));
+                        output.push_str(&format!(
+                            "    WBytes  : {}\n",
+                            self.format_bytes_human(write_bytes)
+                        ));
                     }
                     output.push('\n');
                 }
@@ -2880,7 +3045,7 @@ impl SystemHandle {
                 output.push_str("  I/O stats unavailable\n\n");
             }
         }
-        
+
         if !response.warnings.is_empty() {
             output.push_str("Warnings:\n");
             for warning in &response.warnings {
@@ -2889,7 +3054,7 @@ impl SystemHandle {
         } else {
             output.push_str("Warnings:\n  (none)\n");
         }
-        
+
         Ok(output)
     }
 
@@ -2905,8 +3070,15 @@ impl SystemHandle {
 
         // Validate format
         if opts.format != "json" && opts.format != "text" {
-            let err = SystemError::InvalidParameter(format!("format must be 'json' or 'text', got '{}'", opts.format));
-            writeln!(io.stdout, "{}", serde_json::to_string_pretty(&err.to_json())?)?;
+            let err = SystemError::InvalidParameter(format!(
+                "format must be 'json' or 'text', got '{}'",
+                opts.format
+            ));
+            writeln!(
+                io.stdout,
+                "{}",
+                serde_json::to_string_pretty(&err.to_json())?
+            )?;
             return Ok(Status::err(1, err.to_string()));
         }
 
@@ -2926,7 +3098,11 @@ impl SystemHandle {
             _ => {
                 // Already validated above, but for safety
                 let err = SystemError::InvalidParameter(format!("invalid format: {}", opts.format));
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&err.to_json())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&err.to_json())?
+                )?;
                 return Ok(Status::err(1, err.to_string()));
             }
         }
@@ -2945,7 +3121,7 @@ impl SystemHandle {
     pub fn collect_env_list(
         &self,
         opts: &SystemEnvListOptions,
-        provider: &dyn SystemProvider
+        provider: &dyn SystemProvider,
     ) -> SystemEnvListResponse {
         let timestamp_unix_ms = provider.now_unix_ms();
         let mut warnings = Vec::new();
@@ -2953,18 +3129,19 @@ impl SystemHandle {
         // Determine target PID and source
         let (target_pid, source_kind) = match opts.pid {
             Some(pid) => (Some(pid), EnvSourceKind::Proc),
-            None => (Some(provider.get_current_process_id()), EnvSourceKind::Process),
+            None => (
+                Some(provider.get_current_process_id()),
+                EnvSourceKind::Process,
+            ),
         };
 
         // Get environment variables
         let env_vars_result = match source_kind {
             EnvSourceKind::Process => provider.get_current_process_env(),
-            EnvSourceKind::Proc => {
-                match target_pid {
-                    Some(pid) => provider.get_process_env(pid),
-                    None => provider.get_current_process_env(),
-                }
-            }
+            EnvSourceKind::Proc => match target_pid {
+                Some(pid) => provider.get_process_env(pid),
+                None => provider.get_current_process_env(),
+            },
         };
 
         let env_vars = match env_vars_result {
@@ -3039,7 +3216,10 @@ impl SystemHandle {
         if filtered_vars.len() > opts.max_vars as usize {
             filtered_vars.truncate(opts.max_vars as usize);
             truncated_vars = true;
-            warnings.push(format!("Variable list truncated to {} items (was {})", opts.max_vars, env_count_total));
+            warnings.push(format!(
+                "Variable list truncated to {} items (was {})",
+                opts.max_vars, env_count_total
+            ));
         }
 
         // Process each variable (masking, truncation, etc.)
@@ -3050,7 +3230,7 @@ impl SystemHandle {
         for (name, value) in filtered_vars {
             let should_mask = !opts.include_sensitive && self.is_sensitive_env_var(&name);
             let source_str = self.format_source_kind(&source_kind);
-            
+
             let (final_value, masked, truncated, value_length) = if opts.include_values {
                 let (processed_value, was_truncated) = if should_mask {
                     env_count_masked += 1;
@@ -3058,12 +3238,17 @@ impl SystemHandle {
                 } else {
                     self.truncate_value(&value, opts.truncate_length)
                 };
-                
+
                 if was_truncated {
                     env_count_truncated += 1;
                 }
 
-                (Some(processed_value), should_mask, was_truncated, Some(value.len()))
+                (
+                    Some(processed_value),
+                    should_mask,
+                    was_truncated,
+                    Some(value.len()),
+                )
             } else {
                 // include_values=false
                 (None, should_mask, false, Some(value.len()))
@@ -3101,7 +3286,11 @@ impl SystemHandle {
                 env_count_total,
                 env_count_masked,
                 env_count_truncated,
-                if truncated_vars { " [list truncated]" } else { "" }
+                if truncated_vars {
+                    " [list truncated]"
+                } else {
+                    ""
+                }
             ),
         });
 
@@ -3124,9 +3313,13 @@ impl SystemHandle {
         }
     }
 
-    fn compile_regex_filters(&self, patterns: &[String], warnings: &mut Vec<String>) -> Option<Vec<Regex>> {
+    fn compile_regex_filters(
+        &self,
+        patterns: &[String],
+        warnings: &mut Vec<String>,
+    ) -> Option<Vec<Regex>> {
         let mut compiled_filters = Vec::new();
-        
+
         for pattern in patterns {
             match Regex::new(pattern) {
                 Ok(regex) => compiled_filters.push(regex),
@@ -3136,11 +3329,16 @@ impl SystemHandle {
                 }
             }
         }
-        
+
         Some(compiled_filters)
     }
 
-    fn should_include_env_var(&self, name: &str, opts: &SystemEnvListOptions, regex_filters: &[Regex]) -> bool {
+    fn should_include_env_var(
+        &self,
+        name: &str,
+        opts: &SystemEnvListOptions,
+        regex_filters: &[Regex],
+    ) -> bool {
         // If names filter is specified, must match exactly
         if !opts.names.is_empty() && !opts.names.contains(&name.to_string()) {
             return false;
@@ -3148,7 +3346,10 @@ impl SystemHandle {
 
         // If prefix filters specified, must match at least one
         if !opts.prefix_filters.is_empty() {
-            let matches_prefix = opts.prefix_filters.iter().any(|prefix| name.starts_with(prefix));
+            let matches_prefix = opts
+                .prefix_filters
+                .iter()
+                .any(|prefix| name.starts_with(prefix));
             if !matches_prefix {
                 return false;
             }
@@ -3167,18 +3368,14 @@ impl SystemHandle {
 
     fn sort_env_vars(&self, vars: &mut Vec<(String, String)>, opts: &SystemEnvListOptions) {
         match opts.sort_by.as_str() {
-            "name" => {
-                match opts.sort_order.as_str() {
-                    "desc" => vars.sort_by(|a, b| b.0.cmp(&a.0)),
-                    _ => vars.sort_by(|a, b| a.0.cmp(&b.0)),
-                }
-            }
-            "length" => {
-                match opts.sort_order.as_str() {
-                    "desc" => vars.sort_by(|a, b| b.1.len().cmp(&a.1.len())),
-                    _ => vars.sort_by(|a, b| a.1.len().cmp(&b.1.len())),
-                }
-            }
+            "name" => match opts.sort_order.as_str() {
+                "desc" => vars.sort_by(|a, b| b.0.cmp(&a.0)),
+                _ => vars.sort_by(|a, b| a.0.cmp(&b.0)),
+            },
+            "length" => match opts.sort_order.as_str() {
+                "desc" => vars.sort_by(|a, b| b.1.len().cmp(&a.1.len())),
+                _ => vars.sort_by(|a, b| a.1.len().cmp(&b.1.len())),
+            },
             _ => {
                 // "none" or anything else - preserve natural order
             }
@@ -3187,16 +3384,16 @@ impl SystemHandle {
 
     fn is_sensitive_env_var(&self, name: &str) -> bool {
         let name_lower = name.to_lowercase();
-        
-        name_lower.contains("password") ||
-        name_lower.contains("passwd") ||
-        name_lower.contains("secret") ||
-        name_lower.contains("token") ||
-        name_lower.contains("api_key") ||
-        name_lower.contains("access_key") ||
-        name_lower.contains("private_key") ||
-        name_lower.contains("client_secret") ||
-        (name_lower.contains("auth") && name_lower.contains("key"))
+
+        name_lower.contains("password")
+            || name_lower.contains("passwd")
+            || name_lower.contains("secret")
+            || name_lower.contains("token")
+            || name_lower.contains("api_key")
+            || name_lower.contains("access_key")
+            || name_lower.contains("private_key")
+            || name_lower.contains("client_secret")
+            || (name_lower.contains("auth") && name_lower.contains("key"))
     }
 
     fn truncate_value(&self, value: &str, max_length: u32) -> (String, bool) {
@@ -3215,18 +3412,22 @@ impl SystemHandle {
         }
     }
 
-    fn build_raw_env_data(&self, source_kind: &EnvSourceKind, target_pid: Option<i64>, provider: &dyn SystemProvider) -> Value {
+    fn build_raw_env_data(
+        &self,
+        source_kind: &EnvSourceKind,
+        target_pid: Option<i64>,
+        provider: &dyn SystemProvider,
+    ) -> Value {
         let env_vars = match source_kind {
             EnvSourceKind::Process => provider.get_current_process_env().unwrap_or_default(),
-            EnvSourceKind::Proc => {
-                match target_pid {
-                    Some(pid) => provider.get_process_env(pid).unwrap_or_default(),
-                    None => provider.get_current_process_env().unwrap_or_default(),
-                }
-            }
+            EnvSourceKind::Proc => match target_pid {
+                Some(pid) => provider.get_process_env(pid).unwrap_or_default(),
+                None => provider.get_current_process_env().unwrap_or_default(),
+            },
         };
 
-        let environ_strings: Vec<String> = env_vars.into_iter()
+        let environ_strings: Vec<String> = env_vars
+            .into_iter()
             .map(|(name, value)| format!("{}={}", name, value))
             .collect();
 
@@ -3242,26 +3443,24 @@ impl SystemHandle {
                     "environ": "/proc/self/environ"
                 })
             }
-            EnvSourceKind::Proc => {
-                match target_pid {
-                    Some(pid) => {
-                        json!({
-                            "environ": format!("/proc/{}/environ", pid)
-                        })
-                    }
-                    None => {
-                        json!({
-                            "environ": "/proc/self/environ"
-                        })
-                    }
+            EnvSourceKind::Proc => match target_pid {
+                Some(pid) => {
+                    json!({
+                        "environ": format!("/proc/{}/environ", pid)
+                    })
                 }
-            }
+                None => {
+                    json!({
+                        "environ": "/proc/self/environ"
+                    })
+                }
+            },
         }
     }
 
     pub fn format_env_list_text(&self, response: &SystemEnvListResponse) -> Result<String> {
         let mut output = String::new();
-        
+
         output.push_str("Environment Variables\n");
         output.push_str("=====================\n\n");
 
@@ -3272,13 +3471,13 @@ impl SystemHandle {
         if let Some(source) = &response.source {
             output.push_str(&format!("Source    : {}\n", source));
         }
-        
+
         let total_text = if let Some(total) = response.env_count_total {
             total.to_string()
         } else {
             "unknown".to_string()
         };
-        
+
         output.push_str(&format!(
             "Returned  : {} of {} ({} masked, {} truncated)\n\n",
             response.env_count_returned,
@@ -3292,7 +3491,7 @@ impl SystemHandle {
         } else {
             // Check if we should show values
             let show_values = response.variables.iter().any(|var| var.value.is_some());
-            
+
             if show_values {
                 for var in &response.variables {
                     if let Some(value) = &var.value {
@@ -3312,7 +3511,10 @@ impl SystemHandle {
         output.push('\n');
 
         if response.truncated_vars {
-            output.push_str(&format!("Note: List truncated to max_vars={}.\n", response.variables.len()));
+            output.push_str(&format!(
+                "Note: List truncated to max_vars={}.\n",
+                response.variables.len()
+            ));
         }
 
         if !response.warnings.is_empty() {
@@ -3330,7 +3532,7 @@ impl SystemHandle {
     pub fn collect_load(
         &self,
         opts: &SystemLoadOptions,
-        provider: &dyn SystemProvider
+        provider: &dyn SystemProvider,
     ) -> SystemLoadResponse {
         let timestamp_unix_ms = provider.now_unix_ms();
         let mut warnings = Vec::new();
@@ -3426,11 +3628,17 @@ impl SystemHandle {
                     }
                     (runnable, total)
                 } else {
-                    warnings.push("Queue info not available: malformed queue field in /proc/loadavg".to_string());
+                    warnings.push(
+                        "Queue info not available: malformed queue field in /proc/loadavg"
+                            .to_string(),
+                    );
                     (None, None)
                 }
             } else {
-                warnings.push("Queue info not available: /proc/loadavg did not contain queue field".to_string());
+                warnings.push(
+                    "Queue info not available: /proc/loadavg did not contain queue field"
+                        .to_string(),
+                );
                 (None, None)
             }
         } else {
@@ -3446,7 +3654,10 @@ impl SystemHandle {
                     None
                 }
                 Err(_) => {
-                    warnings.push("CPU count could not be determined; per-CPU normalization disabled.".to_string());
+                    warnings.push(
+                        "CPU count could not be determined; per-CPU normalization disabled."
+                            .to_string(),
+                    );
                     None
                 }
             }
@@ -3459,19 +3670,25 @@ impl SystemHandle {
             .map(|count| count.max(opts.min_cpu_count))
             .unwrap_or(opts.min_cpu_count);
 
-        let (load_1m_per_cpu, load_5m_per_cpu, load_15m_per_cpu) = if opts.normalize_per_cpu && cpu_count_logical.is_some() {
-            (
-                load_1m.map(|l| l / effective_cpu_count as f64),
-                load_5m.map(|l| l / effective_cpu_count as f64),
-                load_15m.map(|l| l / effective_cpu_count as f64)
-            )
-        } else {
-            (None, None, None)
-        };
+        let (load_1m_per_cpu, load_5m_per_cpu, load_15m_per_cpu) =
+            if opts.normalize_per_cpu && cpu_count_logical.is_some() {
+                (
+                    load_1m.map(|l| l / effective_cpu_count as f64),
+                    load_5m.map(|l| l / effective_cpu_count as f64),
+                    load_15m.map(|l| l / effective_cpu_count as f64),
+                )
+            } else {
+                (None, None, None)
+            };
 
         // Generate human-friendly classification
         let human = if opts.include_human {
-            Some(self.classify_load(load_1m, load_1m_per_cpu, effective_cpu_count, opts.normalize_per_cpu && cpu_count_logical.is_some()))
+            Some(self.classify_load(
+                load_1m,
+                load_1m_per_cpu,
+                effective_cpu_count,
+                opts.normalize_per_cpu && cpu_count_logical.is_some(),
+            ))
         } else {
             None
         };
@@ -3517,7 +3734,7 @@ impl SystemHandle {
     pub fn collect_memory(
         &self,
         opts: &SystemMemoryOptions,
-        provider: &dyn SystemProvider
+        provider: &dyn SystemProvider,
     ) -> SystemMemoryResponse {
         let timestamp_unix_ms = provider.now_unix_ms();
         let mut warnings = Vec::new();
@@ -3551,7 +3768,7 @@ impl SystemHandle {
         }
 
         let meminfo_content = meminfo_result.unwrap();
-        
+
         // Parse meminfo
         let mut meminfo_map = HashMap::new();
         for line in meminfo_content.lines() {
@@ -3565,7 +3782,7 @@ impl SystemHandle {
 
         // Extract system memory metrics
         let system = self.collect_system_memory(&meminfo_map, &mut warnings);
-        
+
         // Extract hugepages metrics if requested
         let hugepages = if opts.include_hugepages {
             Some(self.collect_hugepages_memory(&meminfo_map, &mut warnings))
@@ -3592,14 +3809,17 @@ impl SystemHandle {
             let mut raw_data = json!({
                 "meminfo": meminfo_map
             });
-            
+
             // Add cgroup raw data if available
             if opts.include_cgroup {
                 if let Some(cgroup_data) = self.collect_cgroup_raw_data(provider) {
-                    raw_data.as_object_mut().unwrap().insert("cgroup".to_string(), cgroup_data);
+                    raw_data
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("cgroup".to_string(), cgroup_data);
                 }
             }
-            
+
             Some(raw_data)
         } else {
             None
@@ -3610,16 +3830,19 @@ impl SystemHandle {
             let mut paths_data = json!({
                 "meminfo": "/proc/meminfo"
             });
-            
+
             if opts.include_cgroup {
-                paths_data.as_object_mut().unwrap().insert("cgroup_memory".to_string(), json!([
-                    "/sys/fs/cgroup/memory.max",
-                    "/sys/fs/cgroup/memory.current",
-                    "/sys/fs/cgroup/memory.swap.max",
-                    "/sys/fs/cgroup/memory.swap.current"
-                ]));
+                paths_data.as_object_mut().unwrap().insert(
+                    "cgroup_memory".to_string(),
+                    json!([
+                        "/sys/fs/cgroup/memory.max",
+                        "/sys/fs/cgroup/memory.current",
+                        "/sys/fs/cgroup/memory.swap.max",
+                        "/sys/fs/cgroup/memory.swap.current"
+                    ]),
+                );
             }
-            
+
             Some(paths_data)
         } else {
             None
@@ -3639,7 +3862,11 @@ impl SystemHandle {
         }
     }
 
-    fn collect_system_memory(&self, meminfo: &HashMap<String, u64>, warnings: &mut Vec<String>) -> SystemMemorySystemMetrics {
+    fn collect_system_memory(
+        &self,
+        meminfo: &HashMap<String, u64>,
+        warnings: &mut Vec<String>,
+    ) -> SystemMemorySystemMetrics {
         let mem_total_bytes = meminfo.get("MemTotal").copied().map(|kb| kb * 1024);
         let mem_free_bytes = meminfo.get("MemFree").copied().map(|kb| kb * 1024);
         let mem_available_bytes = meminfo.get("MemAvailable").copied().map(|kb| kb * 1024);
@@ -3651,16 +3878,18 @@ impl SystemHandle {
         let swap_free_bytes = meminfo.get("SwapFree").copied().map(|kb| kb * 1024);
 
         // Calculate derived metrics
-        let mem_used_bytes = if let (Some(total), Some(available)) = (mem_total_bytes, mem_available_bytes) {
-            Some(total - available)
-        } else if let (Some(total), Some(free), Some(buffers), Some(cached)) = 
-                  (mem_total_bytes, mem_free_bytes, buffers_bytes, cached_bytes) {
-            warnings.push("MemAvailable not found, using approximation".to_string());
-            Some(total - free - buffers - cached)
-        } else {
-            warnings.push("Could not calculate memory used".to_string());
-            None
-        };
+        let mem_used_bytes =
+            if let (Some(total), Some(available)) = (mem_total_bytes, mem_available_bytes) {
+                Some(total - available)
+            } else if let (Some(total), Some(free), Some(buffers), Some(cached)) =
+                (mem_total_bytes, mem_free_bytes, buffers_bytes, cached_bytes)
+            {
+                warnings.push("MemAvailable not found, using approximation".to_string());
+                Some(total - free - buffers - cached)
+            } else {
+                warnings.push("Could not calculate memory used".to_string());
+                None
+            };
 
         let mem_used_pct = if let (Some(used), Some(total)) = (mem_used_bytes, mem_total_bytes) {
             if total > 0 {
@@ -3672,7 +3901,8 @@ impl SystemHandle {
             None
         };
 
-        let swap_used_bytes = if let (Some(total), Some(free)) = (swap_total_bytes, swap_free_bytes) {
+        let swap_used_bytes = if let (Some(total), Some(free)) = (swap_total_bytes, swap_free_bytes)
+        {
             Some(total - free)
         } else {
             None
@@ -3682,7 +3912,7 @@ impl SystemHandle {
             if total > 0 {
                 Some((used as f64 / total as f64) * 100.0)
             } else {
-                Some(0.0)  // No swap means 0% used
+                Some(0.0) // No swap means 0% used
             }
         } else {
             None
@@ -3706,7 +3936,11 @@ impl SystemHandle {
         }
     }
 
-    fn collect_hugepages_memory(&self, meminfo: &HashMap<String, u64>, warnings: &mut Vec<String>) -> SystemMemoryHugepagesMetrics {
+    fn collect_hugepages_memory(
+        &self,
+        meminfo: &HashMap<String, u64>,
+        warnings: &mut Vec<String>,
+    ) -> SystemMemoryHugepagesMetrics {
         let total = meminfo.get("HugePages_Total").copied();
         let free = meminfo.get("HugePages_Free").copied();
         let reserved = meminfo.get("HugePages_Rsvd").copied();
@@ -3715,7 +3949,7 @@ impl SystemHandle {
         let page_bytes = page_size_kb.map(|kb| kb * 1024);
 
         let available = total.is_some() || free.is_some() || page_size_kb.is_some();
-        
+
         if !available {
             warnings.push("Hugepages metrics not available in /proc/meminfo".to_string());
         }
@@ -3730,7 +3964,11 @@ impl SystemHandle {
         }
     }
 
-    fn collect_cgroup_memory(&self, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> SystemMemoryCgroupMetrics {
+    fn collect_cgroup_memory(
+        &self,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> SystemMemoryCgroupMetrics {
         let mut unified = None;
         let mut memory_limit_bytes = None;
         let mut memory_usage_bytes = None;
@@ -3742,7 +3980,7 @@ impl SystemHandle {
             unified = Some(true);
             let limit_str = content.trim();
             if limit_str == "max" {
-                memory_limit_bytes = None;  // No explicit limit
+                memory_limit_bytes = None; // No explicit limit
             } else if let Ok(limit) = limit_str.parse::<u64>() {
                 memory_limit_bytes = Some(limit);
             }
@@ -3785,17 +4023,19 @@ impl SystemHandle {
         }
 
         // Calculate usage percentages
-        let memory_used_pct = if let (Some(usage), Some(limit)) = (memory_usage_bytes, memory_limit_bytes) {
-            if limit > 0 {
-                Some((usage as f64 / limit as f64) * 100.0)
+        let memory_used_pct =
+            if let (Some(usage), Some(limit)) = (memory_usage_bytes, memory_limit_bytes) {
+                if limit > 0 {
+                    Some((usage as f64 / limit as f64) * 100.0)
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
-        let swap_used_pct = if let (Some(usage), Some(limit)) = (swap_usage_bytes, swap_limit_bytes) {
+        let swap_used_pct = if let (Some(usage), Some(limit)) = (swap_usage_bytes, swap_limit_bytes)
+        {
             if limit > 0 {
                 Some((usage as f64 / limit as f64) * 100.0)
             } else {
@@ -3806,7 +4046,7 @@ impl SystemHandle {
         };
 
         let available = memory_limit_bytes.is_some() || memory_usage_bytes.is_some();
-        
+
         if !available {
             warnings.push("Cgroup memory metrics not available on this system".to_string());
         }
@@ -3823,14 +4063,24 @@ impl SystemHandle {
         }
     }
 
-    fn generate_memory_human_summary(&self, system: &SystemMemorySystemMetrics, cgroup: &Option<SystemMemoryCgroupMetrics>) -> SystemMemoryHumanSummary {
-        let system_summary = if let (Some(total), Some(used), Some(used_pct)) = 
-            (system.mem_total_bytes, system.mem_used_bytes, system.mem_used_pct) {
+    fn generate_memory_human_summary(
+        &self,
+        system: &SystemMemorySystemMetrics,
+        cgroup: &Option<SystemMemoryCgroupMetrics>,
+    ) -> SystemMemoryHumanSummary {
+        let system_summary = if let (Some(total), Some(used), Some(used_pct)) = (
+            system.mem_total_bytes,
+            system.mem_used_bytes,
+            system.mem_used_pct,
+        ) {
             let total_gb = total as f64 / 1024.0 / 1024.0 / 1024.0;
             let used_gb = used as f64 / 1024.0 / 1024.0 / 1024.0;
-            
-            let swap_summary = if let (Some(swap_total), Some(swap_used), Some(swap_pct)) = 
-                (system.swap_total_bytes, system.swap_used_bytes, system.swap_used_pct) {
+
+            let swap_summary = if let (Some(swap_total), Some(swap_used), Some(swap_pct)) = (
+                system.swap_total_bytes,
+                system.swap_used_bytes,
+                system.swap_used_pct,
+            ) {
                 if swap_total > 0 {
                     let swap_used_gb = swap_used as f64 / 1024.0 / 1024.0 / 1024.0;
                     format!(", {:.1} GiB swap used ({:.1}%)", swap_used_gb, swap_pct)
@@ -3840,20 +4090,27 @@ impl SystemHandle {
             } else {
                 String::new()
             };
-            
-            Some(format!("{:.1} GiB total, {:.1} GiB used ({:.1}%){}", 
-                         total_gb, used_gb, used_pct, swap_summary))
+
+            Some(format!(
+                "{:.1} GiB total, {:.1} GiB used ({:.1}%){}",
+                total_gb, used_gb, used_pct, swap_summary
+            ))
         } else {
             None
         };
 
         let cgroup_summary = if let Some(cgroup) = cgroup {
-            if let (Some(limit), Some(usage), Some(used_pct)) = 
-                (cgroup.memory_limit_bytes, cgroup.memory_usage_bytes, cgroup.memory_used_pct) {
+            if let (Some(limit), Some(usage), Some(used_pct)) = (
+                cgroup.memory_limit_bytes,
+                cgroup.memory_usage_bytes,
+                cgroup.memory_used_pct,
+            ) {
                 let limit_gb = limit as f64 / 1024.0 / 1024.0 / 1024.0;
                 let usage_gb = usage as f64 / 1024.0 / 1024.0 / 1024.0;
-                Some(format!("{:.1} GiB limit, {:.1} GiB used ({:.1}%)", 
-                           limit_gb, usage_gb, used_pct))
+                Some(format!(
+                    "{:.1} GiB limit, {:.1} GiB used ({:.1}%)",
+                    limit_gb, usage_gb, used_pct
+                ))
             } else {
                 None
             }
@@ -3873,15 +4130,15 @@ impl SystemHandle {
         if let Ok(content) = provider.read_cgroup_memory_max() {
             cgroup_data.insert("memory_max".to_string(), content);
         }
-        
+
         if let Ok(content) = provider.read_cgroup_memory_current() {
             cgroup_data.insert("memory_current".to_string(), content);
         }
-        
+
         if let Ok(content) = provider.read_cgroup_memory_swap_max() {
             cgroup_data.insert("memory_swap_max".to_string(), content);
         }
-        
+
         if let Ok(content) = provider.read_cgroup_memory_swap_current() {
             cgroup_data.insert("memory_swap_current".to_string(), content);
         }
@@ -3896,7 +4153,7 @@ impl SystemHandle {
     pub fn collect_cpu(
         &self,
         opts: &SystemCpuOptions,
-        provider: &dyn SystemProvider
+        provider: &dyn SystemProvider,
     ) -> SystemCpuResponse {
         let timestamp_unix_ms = provider.now_unix_ms();
         let mut warnings = Vec::new();
@@ -4039,9 +4296,21 @@ impl SystemHandle {
         };
 
         // Calculate CPU metrics
-        let system = self.collect_system_cpu_metrics(&cpu_stats_start, &cpu_stats_end, opts, provider, &mut warnings);
+        let system = self.collect_system_cpu_metrics(
+            &cpu_stats_start,
+            &cpu_stats_end,
+            opts,
+            provider,
+            &mut warnings,
+        );
         let per_cpu = if opts.per_cpu {
-            Some(self.collect_per_cpu_metrics(&cpu_stats_start, &cpu_stats_end, opts, provider, &mut warnings))
+            Some(self.collect_per_cpu_metrics(
+                &cpu_stats_start,
+                &cpu_stats_end,
+                opts,
+                provider,
+                &mut warnings,
+            ))
         } else {
             None
         };
@@ -4069,7 +4338,8 @@ impl SystemHandle {
             });
 
             if opts.include_frequency && system.logical_count.is_some() {
-                let freq_data = self.collect_frequency_raw_data(system.logical_count.unwrap(), provider);
+                let freq_data =
+                    self.collect_frequency_raw_data(system.logical_count.unwrap(), provider);
                 if !freq_data.is_empty() {
                     raw_data["frequency"] = json!(freq_data);
                 }
@@ -4087,13 +4357,20 @@ impl SystemHandle {
             });
 
             if opts.include_frequency && system.logical_count.is_some() {
-                paths_data["cpufreq_scaling_cur_freq"] = json!(format!("/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq"));
-                paths_data["cpufreq_cpuinfo_max_freq"] = json!(format!("/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq"));
+                paths_data["cpufreq_scaling_cur_freq"] = json!(format!(
+                    "/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq"
+                ));
+                paths_data["cpufreq_cpuinfo_max_freq"] = json!(format!(
+                    "/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq"
+                ));
             }
 
             if opts.include_topology && system.logical_count.is_some() {
-                paths_data["topology_core_id"] = json!(format!("/sys/devices/system/cpu/cpu*/topology/core_id"));
-                paths_data["topology_physical_package_id"] = json!(format!("/sys/devices/system/cpu/cpu*/topology/physical_package_id"));
+                paths_data["topology_core_id"] =
+                    json!(format!("/sys/devices/system/cpu/cpu*/topology/core_id"));
+                paths_data["topology_physical_package_id"] = json!(format!(
+                    "/sys/devices/system/cpu/cpu*/topology/physical_package_id"
+                ));
             }
 
             if opts.include_cgroup {
@@ -4142,9 +4419,21 @@ impl SystemHandle {
             let iowait = parts[5].parse().unwrap_or(0);
             let irq = parts[6].parse().unwrap_or(0);
             let softirq = parts[7].parse().unwrap_or(0);
-            let steal = if parts.len() > 8 { parts[8].parse().unwrap_or(0) } else { 0 };
-            let guest = if parts.len() > 9 { parts[9].parse().unwrap_or(0) } else { 0 };
-            let guest_nice = if parts.len() > 10 { parts[10].parse().unwrap_or(0) } else { 0 };
+            let steal = if parts.len() > 8 {
+                parts[8].parse().unwrap_or(0)
+            } else {
+                0
+            };
+            let guest = if parts.len() > 9 {
+                parts[9].parse().unwrap_or(0)
+            } else {
+                0
+            };
+            let guest_nice = if parts.len() > 10 {
+                parts[10].parse().unwrap_or(0)
+            } else {
+                0
+            };
 
             cpu_stats.push(CpuStatLine {
                 name,
@@ -4164,7 +4453,24 @@ impl SystemHandle {
         Ok(cpu_stats)
     }
 
-    pub fn calculate_cpu_utilization(&self, start: &CpuStatLine, end: &CpuStatLine, warnings: &mut Vec<String>) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
+    pub fn calculate_cpu_utilization(
+        &self,
+        start: &CpuStatLine,
+        end: &CpuStatLine,
+        warnings: &mut Vec<String>,
+    ) -> (
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+    ) {
         let delta_user = end.user.saturating_sub(start.user);
         let delta_nice = end.nice.saturating_sub(start.nice);
         let delta_system = end.system.saturating_sub(start.system);
@@ -4176,12 +4482,35 @@ impl SystemHandle {
         let delta_guest = end.guest.saturating_sub(start.guest);
         let delta_guest_nice = end.guest_nice.saturating_sub(start.guest_nice);
 
-        let total_delta = delta_user + delta_nice + delta_system + delta_idle + delta_iowait + 
-                         delta_irq + delta_softirq + delta_steal + delta_guest + delta_guest_nice;
+        let total_delta = delta_user
+            + delta_nice
+            + delta_system
+            + delta_idle
+            + delta_iowait
+            + delta_irq
+            + delta_softirq
+            + delta_steal
+            + delta_guest
+            + delta_guest_nice;
 
         if total_delta == 0 {
-            warnings.push(format!("Zero CPU time delta for {}, utilization may be inaccurate", start.name));
-            return (Some(0.0), Some(0.0), Some(0.0), Some(100.0), Some(0.0), Some(0.0), Some(0.0), Some(0.0), Some(0.0), Some(0.0), Some(0.0));
+            warnings.push(format!(
+                "Zero CPU time delta for {}, utilization may be inaccurate",
+                start.name
+            ));
+            return (
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(100.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+            );
         }
 
         let total_delta_f = total_delta as f64;
@@ -4218,7 +4547,7 @@ impl SystemHandle {
         stats_end: &[CpuStatLine],
         opts: &SystemCpuOptions,
         provider: &dyn SystemProvider,
-        warnings: &mut Vec<String>
+        warnings: &mut Vec<String>,
     ) -> SystemCpuSystemMetrics {
         // Find the aggregate CPU line (should be first and named "cpu")
         let cpu_start = stats_start.iter().find(|s| s.name == "cpu");
@@ -4251,12 +4580,23 @@ impl SystemHandle {
         let cpu_end = cpu_end.unwrap();
 
         // Calculate utilization percentages
-        let (utilization_pct, user_pct, nice_pct, system_pct, idle_pct, iowait_pct, 
-             irq_pct, softirq_pct, steal_pct, guest_pct, guest_nice_pct) = 
-            self.calculate_cpu_utilization(cpu_start, cpu_end, warnings);
+        let (
+            utilization_pct,
+            user_pct,
+            nice_pct,
+            system_pct,
+            idle_pct,
+            iowait_pct,
+            irq_pct,
+            softirq_pct,
+            steal_pct,
+            guest_pct,
+            guest_nice_pct,
+        ) = self.calculate_cpu_utilization(cpu_start, cpu_end, warnings);
 
         // Count logical CPUs (all cpuN lines except "cpu")
-        let logical_count = stats_start.iter()
+        let logical_count = stats_start
+            .iter()
             .filter(|s| s.name != "cpu" && s.name.starts_with("cpu"))
             .count() as u32;
 
@@ -4268,11 +4608,12 @@ impl SystemHandle {
         };
 
         // Get frequency information if requested
-        let (frequency_current_hz, frequency_max_hz) = if opts.include_frequency && logical_count > 0 {
-            self.collect_cpu_frequencies(logical_count, provider, warnings)
-        } else {
-            (None, None)
-        };
+        let (frequency_current_hz, frequency_max_hz) =
+            if opts.include_frequency && logical_count > 0 {
+                self.collect_cpu_frequencies(logical_count, provider, warnings)
+            } else {
+                (None, None)
+            };
 
         SystemCpuSystemMetrics {
             available: true,
@@ -4301,25 +4642,29 @@ impl SystemHandle {
         stats_end: &[CpuStatLine],
         opts: &SystemCpuOptions,
         provider: &dyn SystemProvider,
-        warnings: &mut Vec<String>
+        warnings: &mut Vec<String>,
     ) -> Vec<SystemCpuCoreMetrics> {
         let mut per_cpu = Vec::new();
 
         // Get all individual CPU lines (cpuN where N is a number)
-        let cpu_lines_start: Vec<_> = stats_start.iter()
+        let cpu_lines_start: Vec<_> = stats_start
+            .iter()
             .filter(|s| s.name != "cpu" && s.name.starts_with("cpu"))
             .collect();
-        let cpu_lines_end: Vec<_> = stats_end.iter()
+        let cpu_lines_end: Vec<_> = stats_end
+            .iter()
             .filter(|s| s.name != "cpu" && s.name.starts_with("cpu"))
             .collect();
 
         for (i, cpu_start) in cpu_lines_start.iter().enumerate() {
             // Find matching CPU in end stats
-            let cpu_end = cpu_lines_end.iter()
-                .find(|s| s.name == cpu_start.name);
+            let cpu_end = cpu_lines_end.iter().find(|s| s.name == cpu_start.name);
 
             if cpu_end.is_none() {
-                warnings.push(format!("Could not find matching CPU {} in second sample", cpu_start.name));
+                warnings.push(format!(
+                    "Could not find matching CPU {} in second sample",
+                    cpu_start.name
+                ));
                 continue;
             }
 
@@ -4327,9 +4672,19 @@ impl SystemHandle {
             let cpu_id = i as u32;
 
             // Calculate utilization
-            let (utilization_pct, user_pct, nice_pct, system_pct, idle_pct, iowait_pct, 
-                 irq_pct, softirq_pct, steal_pct, guest_pct, guest_nice_pct) = 
-                self.calculate_cpu_utilization(cpu_start, cpu_end, warnings);
+            let (
+                utilization_pct,
+                user_pct,
+                nice_pct,
+                system_pct,
+                idle_pct,
+                iowait_pct,
+                irq_pct,
+                softirq_pct,
+                steal_pct,
+                guest_pct,
+                guest_nice_pct,
+            ) = self.calculate_cpu_utilization(cpu_start, cpu_end, warnings);
 
             // Get frequency for this CPU
             let (frequency_current_hz, frequency_max_hz) = if opts.include_frequency {
@@ -4368,7 +4723,12 @@ impl SystemHandle {
         per_cpu
     }
 
-    pub fn collect_cpu_topology(&self, logical_count: u32, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> (Option<u32>, Option<u32>) {
+    pub fn collect_cpu_topology(
+        &self,
+        logical_count: u32,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> (Option<u32>, Option<u32>) {
         let mut unique_cores = std::collections::HashSet::new();
         let mut unique_sockets = std::collections::HashSet::new();
 
@@ -4399,7 +4759,12 @@ impl SystemHandle {
         (physical_count, socket_count)
     }
 
-    pub fn collect_cpu_frequencies(&self, logical_count: u32, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> (Option<u64>, Option<u64>) {
+    pub fn collect_cpu_frequencies(
+        &self,
+        logical_count: u32,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> (Option<u64>, Option<u64>) {
         let mut current_freqs = Vec::new();
         let mut max_freqs = Vec::new();
 
@@ -4435,13 +4800,20 @@ impl SystemHandle {
         (frequency_current_hz, frequency_max_hz)
     }
 
-    fn collect_single_cpu_frequency(&self, cpu_id: u32, provider: &dyn SystemProvider, _warnings: &mut Vec<String>) -> (Option<u64>, Option<u64>) {
-        let frequency_current_hz = provider.read_cpu_frequency_current(cpu_id)
+    fn collect_single_cpu_frequency(
+        &self,
+        cpu_id: u32,
+        provider: &dyn SystemProvider,
+        _warnings: &mut Vec<String>,
+    ) -> (Option<u64>, Option<u64>) {
+        let frequency_current_hz = provider
+            .read_cpu_frequency_current(cpu_id)
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .map(|khz| khz * 1000);
 
-        let frequency_max_hz = provider.read_cpu_frequency_max(cpu_id)
+        let frequency_max_hz = provider
+            .read_cpu_frequency_max(cpu_id)
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .map(|khz| khz * 1000);
@@ -4449,35 +4821,45 @@ impl SystemHandle {
         (frequency_current_hz, frequency_max_hz)
     }
 
-    fn collect_single_cpu_topology(&self, cpu_id: u32, provider: &dyn SystemProvider, _warnings: &mut Vec<String>) -> (Option<u32>, Option<u32>) {
+    fn collect_single_cpu_topology(
+        &self,
+        cpu_id: u32,
+        provider: &dyn SystemProvider,
+        _warnings: &mut Vec<String>,
+    ) -> (Option<u32>, Option<u32>) {
         provider.read_cpu_topology(cpu_id).unwrap_or((None, None))
     }
 
-    pub fn collect_cpu_cgroup_metrics(&self, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> SystemCpuCgroupMetrics {
+    pub fn collect_cpu_cgroup_metrics(
+        &self,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> SystemCpuCgroupMetrics {
         // Try to read cgroup v2 cpu.max
         if let Ok(cpu_max_content) = provider.read_cgroup_cpu_max() {
             let parts: Vec<&str> = cpu_max_content.trim().split_whitespace().collect();
-            
+
             let (cpu_quota_us, cpu_period_us, unified) = if parts.len() >= 2 {
                 // cgroup v2 format: "quota period" or "max period"
                 let quota_str = parts[0];
                 let period_str = parts[1];
-                
+
                 let quota = if quota_str == "max" {
                     None
                 } else {
                     quota_str.parse::<i64>().ok()
                 };
-                
+
                 let period = period_str.parse::<u64>().ok();
-                
+
                 (quota, period, Some(true))
             } else {
                 warnings.push("Could not parse cgroup cpu.max format".to_string());
                 (None, None, Some(true))
             };
 
-            let cpu_quota_cores = if let (Some(quota), Some(period)) = (cpu_quota_us, cpu_period_us) {
+            let cpu_quota_cores = if let (Some(quota), Some(period)) = (cpu_quota_us, cpu_period_us)
+            {
                 if quota > 0 && period > 0 {
                     Some(quota as f64 / period as f64)
                 } else {
@@ -4488,12 +4870,13 @@ impl SystemHandle {
             };
 
             // Try to read cgroup v2 cpu.stat for usage
-            let (usage_seconds, usage_user_seconds, usage_system_seconds) = if let Ok(cpu_stat_content) = provider.read_cgroup_cpu_stat() {
-                self.parse_cgroup_v2_cpu_stat(&cpu_stat_content, warnings)
-            } else {
-                warnings.push("Could not read cgroup cpu.stat".to_string());
-                (None, None, None)
-            };
+            let (usage_seconds, usage_user_seconds, usage_system_seconds) =
+                if let Ok(cpu_stat_content) = provider.read_cgroup_cpu_stat() {
+                    self.parse_cgroup_v2_cpu_stat(&cpu_stat_content, warnings)
+                } else {
+                    warnings.push("Could not read cgroup cpu.stat".to_string());
+                    (None, None, None)
+                };
 
             SystemCpuCgroupMetrics {
                 available: true,
@@ -4507,15 +4890,18 @@ impl SystemHandle {
             }
         } else {
             // Try cgroup v1
-            let cpu_quota_us = provider.read_cgroup_cpu_quota()
+            let cpu_quota_us = provider
+                .read_cgroup_cpu_quota()
                 .ok()
                 .and_then(|s| s.trim().parse::<i64>().ok());
-                
-            let cpu_period_us = provider.read_cgroup_cpu_period()
+
+            let cpu_period_us = provider
+                .read_cgroup_cpu_period()
                 .ok()
                 .and_then(|s| s.trim().parse::<u64>().ok());
 
-            let cpu_quota_cores = if let (Some(quota), Some(period)) = (cpu_quota_us, cpu_period_us) {
+            let cpu_quota_cores = if let (Some(quota), Some(period)) = (cpu_quota_us, cpu_period_us)
+            {
                 if quota > 0 && period > 0 {
                     Some(quota as f64 / period as f64)
                 } else {
@@ -4525,7 +4911,8 @@ impl SystemHandle {
                 None
             };
 
-            let usage_seconds = provider.read_cgroup_cpu_usage()
+            let usage_seconds = provider
+                .read_cgroup_cpu_usage()
                 .ok()
                 .and_then(|s| s.trim().parse::<u64>().ok())
                 .map(|ns| ns as f64 / 1_000_000_000.0); // Convert nanoseconds to seconds
@@ -4557,7 +4944,11 @@ impl SystemHandle {
         }
     }
 
-    fn parse_cgroup_v2_cpu_stat(&self, content: &str, _warnings: &mut Vec<String>) -> (Option<f64>, Option<f64>, Option<f64>) {
+    fn parse_cgroup_v2_cpu_stat(
+        &self,
+        content: &str,
+        _warnings: &mut Vec<String>,
+    ) -> (Option<f64>, Option<f64>, Option<f64>) {
         let mut usage_usec = None;
         let mut user_usec = None;
         let mut system_usec = None;
@@ -4584,22 +4975,47 @@ impl SystemHandle {
     pub fn generate_cpu_human_summary(
         &self,
         system: &SystemCpuSystemMetrics,
-        per_cpu: &Option<Vec<SystemCpuCoreMetrics>>
+        per_cpu: &Option<Vec<SystemCpuCoreMetrics>>,
     ) -> SystemCpuHumanInfo {
         let utilization_pct = system.utilization_pct.unwrap_or(0.0);
-        
+
         let (status, status_reason) = if utilization_pct < 5.0 {
-            ("idle", format!("Overall CPU utilization is {:.1}%, system is idle.", utilization_pct))
+            (
+                "idle",
+                format!(
+                    "Overall CPU utilization is {:.1}%, system is idle.",
+                    utilization_pct
+                ),
+            )
         } else if utilization_pct < 60.0 {
-            ("normal", format!("Overall CPU utilization is {:.1}%, well within normal range.", utilization_pct))
+            (
+                "normal",
+                format!(
+                    "Overall CPU utilization is {:.1}%, well within normal range.",
+                    utilization_pct
+                ),
+            )
         } else if utilization_pct < 85.0 {
-            ("busy", format!("Overall CPU utilization is {:.1}%, system is busy but manageable.", utilization_pct))
+            (
+                "busy",
+                format!(
+                    "Overall CPU utilization is {:.1}%, system is busy but manageable.",
+                    utilization_pct
+                ),
+            )
         } else {
-            ("overloaded", format!("Overall CPU utilization is {:.1}%, system is overloaded.", utilization_pct))
+            (
+                "overloaded",
+                format!(
+                    "Overall CPU utilization is {:.1}%, system is overloaded.",
+                    utilization_pct
+                ),
+            )
         };
 
         let per_cpu_hotspots = if let Some(per_cpu) = per_cpu {
-            per_cpu.iter()
+            per_cpu
+                .iter()
                 .filter_map(|cpu| {
                     if let Some(util) = cpu.utilization_pct {
                         if util > 80.0 {
@@ -4623,14 +5039,18 @@ impl SystemHandle {
         }
     }
 
-    fn collect_frequency_raw_data(&self, logical_count: u32, provider: &dyn SystemProvider) -> std::collections::HashMap<String, String> {
+    fn collect_frequency_raw_data(
+        &self,
+        logical_count: u32,
+        provider: &dyn SystemProvider,
+    ) -> std::collections::HashMap<String, String> {
         let mut freq_data = std::collections::HashMap::new();
 
         for cpu_id in 0..logical_count {
             if let Ok(content) = provider.read_cpu_frequency_current(cpu_id) {
                 freq_data.insert(format!("cpu{}_scaling_cur_freq", cpu_id), content);
             }
-            
+
             if let Ok(content) = provider.read_cpu_frequency_max(cpu_id) {
                 freq_data.insert(format!("cpu{}_cpuinfo_max_freq", cpu_id), content);
             }
@@ -4641,14 +5061,17 @@ impl SystemHandle {
 
     pub fn format_cpu_text(&self, response: &SystemCpuResponse) -> Result<String> {
         let mut output = String::new();
-        
+
         output.push_str("CPU Metrics\n");
         output.push_str("===========\n\n");
-        
+
         // Timestamp
         let timestamp = chrono::DateTime::from_timestamp(response.timestamp_unix_ms / 1000, 0)
             .unwrap_or_else(|| chrono::Utc::now());
-        output.push_str(&format!("Timestamp : {}\n\n", timestamp.format("%Y-%m-%dT%H:%M:%SZ")));
+        output.push_str(&format!(
+            "Timestamp : {}\n\n",
+            timestamp.format("%Y-%m-%dT%H:%M:%SZ")
+        ));
 
         // System CPU info
         if let Some(system) = &response.system {
@@ -4663,7 +5086,7 @@ impl SystemHandle {
                 output.push_str(&format!("  Sockets      : {}\n", count));
             }
             output.push_str("\n");
-            
+
             if let Some(util) = system.utilization_pct {
                 output.push_str(&format!("  Utilization  : {:.1}%\n", util));
             }
@@ -4680,10 +5103,13 @@ impl SystemHandle {
                 output.push_str(&format!("  IOwait       : {:.1}%\n", iowait));
             }
             output.push_str("\n");
-            
+
             if let (Some(cur), Some(max)) = (system.frequency_current_hz, system.frequency_max_hz) {
-                output.push_str(&format!("  Freq (avg)   : {:.2} GHz (max {:.2} GHz)\n", 
-                    cur as f64 / 1_000_000_000.0, max as f64 / 1_000_000_000.0));
+                output.push_str(&format!(
+                    "  Freq (avg)   : {:.2} GHz (max {:.2} GHz)\n",
+                    cur as f64 / 1_000_000_000.0,
+                    max as f64 / 1_000_000_000.0
+                ));
             }
             output.push_str("\n");
         }
@@ -4691,12 +5117,17 @@ impl SystemHandle {
         // Per-CPU info
         if let Some(per_cpu) = &response.per_cpu {
             output.push_str("Per-CPU:\n");
-            for cpu in per_cpu.iter().take(16) { // Limit to first 16 CPUs for readability
-                let util_str = cpu.utilization_pct.map_or("N/A".to_string(), |u| format!("{:.1}%", u));
-                let freq_str = cpu.frequency_current_hz.map_or(String::new(), |f| format!("  ({:.2} GHz)", f as f64 / 1_000_000_000.0));
+            for cpu in per_cpu.iter().take(16) {
+                // Limit to first 16 CPUs for readability
+                let util_str = cpu
+                    .utilization_pct
+                    .map_or("N/A".to_string(), |u| format!("{:.1}%", u));
+                let freq_str = cpu.frequency_current_hz.map_or(String::new(), |f| {
+                    format!("  ({:.2} GHz)", f as f64 / 1_000_000_000.0)
+                });
                 output.push_str(&format!("  cpu{}: {}{}\n", cpu.id, util_str, freq_str));
             }
-            
+
             if per_cpu.len() > 16 {
                 output.push_str(&format!("  ... and {} more CPUs\n", per_cpu.len() - 16));
             }
@@ -4728,7 +5159,7 @@ impl SystemHandle {
         if let Some(human) = &response.human {
             output.push_str("Status:\n");
             output.push_str(&format!("  {} — {}\n", human.status, human.status_reason));
-            
+
             if !human.per_cpu_hotspots.is_empty() {
                 output.push_str("\nHotspots:\n");
                 for hotspot in &human.per_cpu_hotspots {
@@ -4751,7 +5182,13 @@ impl SystemHandle {
         Ok(output)
     }
 
-    fn classify_load(&self, load_1m: Option<f64>, load_1m_per_cpu: Option<f64>, cpu_count: u32, use_per_cpu: bool) -> SystemLoadHumanInfo {
+    fn classify_load(
+        &self,
+        load_1m: Option<f64>,
+        load_1m_per_cpu: Option<f64>,
+        cpu_count: u32,
+        use_per_cpu: bool,
+    ) -> SystemLoadHumanInfo {
         let (load_metric, description_prefix) = if use_per_cpu && load_1m_per_cpu.is_some() {
             (load_1m_per_cpu.unwrap(), "1m load per CPU")
         } else if let Some(load) = load_1m {
@@ -4773,24 +5210,51 @@ impl SystemHandle {
         let (status, status_reason) = if use_per_cpu {
             // Use per-CPU thresholds
             if load_metric < 0.1 {
-                ("idle", format!("{} is very low (< 0.1)", description_prefix))
+                (
+                    "idle",
+                    format!("{} is very low (< 0.1)", description_prefix),
+                )
             } else if load_metric < 0.7 {
-                ("normal", format!("{} is within normal range (0.1-0.7)", description_prefix))
+                (
+                    "normal",
+                    format!("{} is within normal range (0.1-0.7)", description_prefix),
+                )
             } else if load_metric <= 1.5 {
-                ("busy", format!("{} is busy but manageable (0.7-1.5)", description_prefix))
+                (
+                    "busy",
+                    format!("{} is busy but manageable (0.7-1.5)", description_prefix),
+                )
             } else {
-                ("overloaded", format!("{} exceeds safe threshold (> 1.5)", description_prefix))
+                (
+                    "overloaded",
+                    format!("{} exceeds safe threshold (> 1.5)", description_prefix),
+                )
             }
         } else {
             // Use absolute thresholds without CPU normalization
             if load_metric < 1.0 {
                 ("idle", format!("{} is low", description_prefix))
             } else if load_metric < cpu_count as f64 * 0.7 {
-                ("normal", format!("{} is within normal range for {} CPUs", description_prefix, cpu_count))
+                (
+                    "normal",
+                    format!(
+                        "{} is within normal range for {} CPUs",
+                        description_prefix, cpu_count
+                    ),
+                )
             } else if load_metric <= cpu_count as f64 * 1.5 {
-                ("busy", format!("{} is busy but manageable for {} CPUs", description_prefix, cpu_count))
+                (
+                    "busy",
+                    format!(
+                        "{} is busy but manageable for {} CPUs",
+                        description_prefix, cpu_count
+                    ),
+                )
             } else {
-                ("overloaded", format!("{} is very high for {} CPUs", description_prefix, cpu_count))
+                (
+                    "overloaded",
+                    format!("{} is very high for {} CPUs", description_prefix, cpu_count),
+                )
             }
         };
 
@@ -4811,7 +5275,10 @@ impl SystemHandle {
         let timestamp_secs = response.timestamp_unix_ms / 1000;
         let dt = chrono::DateTime::from_timestamp(timestamp_secs, 0)
             .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
-        output.push_str(&format!("Timestamp : {}\n\n", dt.format("%Y-%m-%dT%H:%M:%SZ")));
+        output.push_str(&format!(
+            "Timestamp : {}\n\n",
+            dt.format("%Y-%m-%dT%H:%M:%SZ")
+        ));
 
         // Load Averages
         output.push_str("Load Averages:\n");
@@ -4886,47 +5353,53 @@ impl SystemHandle {
         let timestamp_secs = response.timestamp_unix_ms / 1000;
         let dt = chrono::DateTime::from_timestamp(timestamp_secs, 0)
             .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
-        output.push_str(&format!("Timestamp : {}\n\n", dt.format("%Y-%m-%dT%H:%M:%SZ")));
+        output.push_str(&format!(
+            "Timestamp : {}\n\n",
+            dt.format("%Y-%m-%dT%H:%M:%SZ")
+        ));
 
         // System Memory
         if let Some(system) = &response.system {
             output.push_str("System:\n");
-            
+
             if let Some(total) = system.mem_total_bytes {
                 let total_gb = total as f64 / 1024.0 / 1024.0 / 1024.0;
                 output.push_str(&format!("  Total       : {:.1} GiB\n", total_gb));
             } else {
                 output.push_str("  Total       : (unknown)\n");
             }
-            
+
             if let (Some(used), Some(pct)) = (system.mem_used_bytes, system.mem_used_pct) {
                 let used_gb = used as f64 / 1024.0 / 1024.0 / 1024.0;
-                output.push_str(&format!("  Used        : {:.1} GiB ({:.1}%)\n", used_gb, pct));
+                output.push_str(&format!(
+                    "  Used        : {:.1} GiB ({:.1}%)\n",
+                    used_gb, pct
+                ));
             } else {
                 output.push_str("  Used        : (unknown)\n");
             }
-            
+
             if let Some(free) = system.mem_free_bytes {
                 let free_gb = free as f64 / 1024.0 / 1024.0 / 1024.0;
                 output.push_str(&format!("  Free        : {:.1} GiB\n", free_gb));
             } else {
                 output.push_str("  Free        : (unknown)\n");
             }
-            
+
             if let Some(available) = system.mem_available_bytes {
                 let available_gb = available as f64 / 1024.0 / 1024.0 / 1024.0;
                 output.push_str(&format!("  Available   : {:.1} GiB\n", available_gb));
             } else {
                 output.push_str("  Available   : (unknown)\n");
             }
-            
+
             if let Some(buffers) = system.buffers_bytes {
                 let buffers_gb = buffers as f64 / 1024.0 / 1024.0 / 1024.0;
                 output.push_str(&format!("  Buffers     : {:.1} GiB\n", buffers_gb));
             } else {
                 output.push_str("  Buffers     : (unknown)\n");
             }
-            
+
             if let Some(cached) = system.cached_bytes {
                 let cached_gb = cached as f64 / 1024.0 / 1024.0 / 1024.0;
                 output.push_str(&format!("  Cached      : {:.1} GiB\n\n", cached_gb));
@@ -4936,21 +5409,24 @@ impl SystemHandle {
 
             // Swap
             output.push_str("Swap:\n");
-            
+
             if let Some(total) = system.swap_total_bytes {
                 let total_gb = total as f64 / 1024.0 / 1024.0 / 1024.0;
                 output.push_str(&format!("  Total       : {:.1} GiB\n", total_gb));
             } else {
                 output.push_str("  Total       : (unknown)\n");
             }
-            
+
             if let (Some(used), Some(pct)) = (system.swap_used_bytes, system.swap_used_pct) {
                 let used_gb = used as f64 / 1024.0 / 1024.0 / 1024.0;
-                output.push_str(&format!("  Used        : {:.1} GiB ({:.1}%)\n", used_gb, pct));
+                output.push_str(&format!(
+                    "  Used        : {:.1} GiB ({:.1}%)\n",
+                    used_gb, pct
+                ));
             } else {
                 output.push_str("  Used        : (unknown)\n");
             }
-            
+
             if let Some(free) = system.swap_free_bytes {
                 let free_gb = free as f64 / 1024.0 / 1024.0 / 1024.0;
                 output.push_str(&format!("  Free        : {:.1} GiB\n\n", free_gb));
@@ -4962,20 +5438,24 @@ impl SystemHandle {
         // Cgroup Memory
         if let Some(cgroup) = &response.cgroup {
             output.push_str("Cgroup:\n");
-            
+
             if cgroup.available {
                 output.push_str("  Available   : yes\n");
-                
+
                 if let Some(limit) = cgroup.memory_limit_bytes {
                     let limit_gb = limit as f64 / 1024.0 / 1024.0 / 1024.0;
                     output.push_str(&format!("  Limit       : {:.1} GiB\n", limit_gb));
                 } else {
                     output.push_str("  Limit       : unlimited\n");
                 }
-                
-                if let (Some(used), Some(pct)) = (cgroup.memory_usage_bytes, cgroup.memory_used_pct) {
+
+                if let (Some(used), Some(pct)) = (cgroup.memory_usage_bytes, cgroup.memory_used_pct)
+                {
                     let used_gb = used as f64 / 1024.0 / 1024.0 / 1024.0;
-                    output.push_str(&format!("  Used        : {:.1} GiB ({:.1}%)\n\n", used_gb, pct));
+                    output.push_str(&format!(
+                        "  Used        : {:.1} GiB ({:.1}%)\n\n",
+                        used_gb, pct
+                    ));
                 } else {
                     output.push_str("  Used        : (unknown)\n\n");
                 }
@@ -4987,20 +5467,20 @@ impl SystemHandle {
         // Hugepages
         if let Some(hugepages) = &response.hugepages {
             output.push_str("Hugepages:\n");
-            
+
             if hugepages.available {
                 if let Some(total) = hugepages.total {
                     output.push_str(&format!("  Total       : {}\n", total));
                 } else {
                     output.push_str("  Total       : 0\n");
                 }
-                
+
                 if let Some(free) = hugepages.free {
                     output.push_str(&format!("  Free        : {}\n", free));
                 } else {
                     output.push_str("  Free        : 0\n");
                 }
-                
+
                 if let Some(page_bytes) = hugepages.page_bytes {
                     let page_mb = page_bytes as f64 / 1024.0 / 1024.0;
                     output.push_str(&format!("  Page Size   : {:.1} MiB\n\n", page_mb));
@@ -5032,8 +5512,16 @@ impl SystemHandle {
     pub fn validate_options(&self, opts: &SystemInfoOptions) -> Result<(), SystemError> {
         // Validate scopes
         let valid_scopes = [
-            "os", "kernel", "cpu", "memory", "load",
-            "disk", "process", "pressure", "cgroup", "virtualization"
+            "os",
+            "kernel",
+            "cpu",
+            "memory",
+            "load",
+            "disk",
+            "process",
+            "pressure",
+            "cgroup",
+            "virtualization",
         ];
 
         for scope in &opts.scopes {
@@ -5044,17 +5532,18 @@ impl SystemHandle {
 
         // Validate format
         if opts.format != "json" && opts.format != "text" {
-            return Err(SystemError::InvalidParameter(
-                format!("format must be 'json' or 'text', got '{}'", opts.format)
-            ));
+            return Err(SystemError::InvalidParameter(format!(
+                "format must be 'json' or 'text', got '{}'",
+                opts.format
+            )));
         }
 
         // Validate sample_duration_ms
         if opts.sample_duration_ms > 0 && opts.sample_duration_ms < opts.sample_min_ms {
-            return Err(SystemError::InvalidParameter(
-                format!("sample_duration_ms ({}) must be >= sample_min_ms ({})",
-                    opts.sample_duration_ms, opts.sample_min_ms)
-            ));
+            return Err(SystemError::InvalidParameter(format!(
+                "sample_duration_ms ({}) must be >= sample_min_ms ({})",
+                opts.sample_duration_ms, opts.sample_min_ms
+            )));
         }
 
         Ok(())
@@ -5063,7 +5552,7 @@ impl SystemHandle {
     pub fn collect_info(
         &self,
         opts: &SystemInfoOptions,
-        provider: &dyn SystemProvider
+        provider: &dyn SystemProvider,
     ) -> Result<SystemInfoResponse> {
         let timestamp_unix_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -5092,15 +5581,41 @@ impl SystemHandle {
         for scope in &opts.scopes {
             match scope.as_str() {
                 "os" => response.os = Some(self.collect_os_scope(provider, &mut response.warnings)),
-                "kernel" => response.kernel = Some(self.collect_kernel_scope(provider, &mut response.warnings)),
-                "cpu" => response.cpu = Some(self.collect_cpu_scope(opts, provider, &mut response.warnings)),
-                "memory" => response.memory = Some(self.collect_memory_scope(provider, &mut response.warnings)),
-                "load" => response.load = Some(self.collect_load_scope(provider, &mut response.warnings)),
-                "disk" => response.disk = Some(self.collect_disk_scope(opts, provider, &mut response.warnings)),
-                "process" => response.process = Some(self.collect_process_scope(provider, &mut response.warnings)),
-                "pressure" => response.pressure = Some(self.collect_pressure_scope(provider, &mut response.warnings)),
-                "cgroup" => response.cgroup = Some(self.collect_cgroup_scope(provider, &mut response.warnings)),
-                "virtualization" => response.virtualization = Some(self.collect_virtualization_scope(provider, &mut response.warnings)),
+                "kernel" => {
+                    response.kernel =
+                        Some(self.collect_kernel_scope(provider, &mut response.warnings))
+                }
+                "cpu" => {
+                    response.cpu =
+                        Some(self.collect_cpu_scope(opts, provider, &mut response.warnings))
+                }
+                "memory" => {
+                    response.memory =
+                        Some(self.collect_memory_scope(provider, &mut response.warnings))
+                }
+                "load" => {
+                    response.load = Some(self.collect_load_scope(provider, &mut response.warnings))
+                }
+                "disk" => {
+                    response.disk =
+                        Some(self.collect_disk_scope(opts, provider, &mut response.warnings))
+                }
+                "process" => {
+                    response.process =
+                        Some(self.collect_process_scope(provider, &mut response.warnings))
+                }
+                "pressure" => {
+                    response.pressure =
+                        Some(self.collect_pressure_scope(provider, &mut response.warnings))
+                }
+                "cgroup" => {
+                    response.cgroup =
+                        Some(self.collect_cgroup_scope(provider, &mut response.warnings))
+                }
+                "virtualization" => {
+                    response.virtualization =
+                        Some(self.collect_virtualization_scope(provider, &mut response.warnings))
+                }
                 _ => {
                     response.warnings.push(format!("unknown scope: {}", scope));
                 }
@@ -5161,7 +5676,11 @@ impl SystemHandle {
         })
     }
 
-    fn collect_kernel_scope(&self, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> Value {
+    fn collect_kernel_scope(
+        &self,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> Value {
         let mut available = true;
         let mut release = String::from("unknown");
         let mut version = String::from("unknown");
@@ -5217,7 +5736,7 @@ impl SystemHandle {
         &self,
         opts: &SystemInfoOptions,
         provider: &dyn SystemProvider,
-        warnings: &mut Vec<String>
+        warnings: &mut Vec<String>,
     ) -> Value {
         let mut available = true;
         let mut count_logical = 0;
@@ -5228,8 +5747,12 @@ impl SystemHandle {
 
         // Count CPUs from /proc/stat
         if let Ok(content) = provider.read_proc_stat() {
-            let cpu_lines: Vec<&str> = content.lines()
-                .filter(|line| line.starts_with("cpu") && line.chars().nth(3).map_or(false, |c| c.is_ascii_digit()))
+            let cpu_lines: Vec<&str> = content
+                .lines()
+                .filter(|line| {
+                    line.starts_with("cpu")
+                        && line.chars().nth(3).map_or(false, |c| c.is_ascii_digit())
+                })
                 .collect();
 
             count_logical = cpu_lines.len();
@@ -5247,7 +5770,8 @@ impl SystemHandle {
                             // Calculate total utilization
                             if let Some(total1) = stats1.get("cpu") {
                                 if let Some(total2) = stats2.get("cpu") {
-                                    utilization_pct = Some(self.calculate_cpu_usage(total1, total2));
+                                    utilization_pct =
+                                        Some(self.calculate_cpu_usage(total1, total2));
                                 }
                             }
 
@@ -5255,7 +5779,9 @@ impl SystemHandle {
                             if opts.per_cpu {
                                 for i in 0..count_logical {
                                     let cpu_key = format!("cpu{}", i);
-                                    if let (Some(cpu1), Some(cpu2)) = (stats1.get(&cpu_key), stats2.get(&cpu_key)) {
+                                    if let (Some(cpu1), Some(cpu2)) =
+                                        (stats1.get(&cpu_key), stats2.get(&cpu_key))
+                                    {
                                         let util = self.calculate_cpu_usage(cpu1, cpu2);
                                         per_cpu.push(json!({
                                             "id": i,
@@ -5332,7 +5858,11 @@ impl SystemHandle {
         usage.max(0.0).min(100.0)
     }
 
-    fn collect_memory_scope(&self, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> Value {
+    fn collect_memory_scope(
+        &self,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> Value {
         let mut available = true;
         let mut mem_total_bytes: u64 = 0;
         let mut mem_free_bytes: u64 = 0;
@@ -5385,7 +5915,11 @@ impl SystemHandle {
         })
     }
 
-    fn collect_load_scope(&self, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> Value {
+    fn collect_load_scope(
+        &self,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> Value {
         let mut available = true;
         let mut load_1m = 0.0;
         let mut load_5m = 0.0;
@@ -5426,7 +5960,7 @@ impl SystemHandle {
         &self,
         opts: &SystemInfoOptions,
         provider: &dyn SystemProvider,
-        warnings: &mut Vec<String>
+        warnings: &mut Vec<String>,
     ) -> Value {
         let mut available = true;
         let mut mounts_truncated = false;
@@ -5447,7 +5981,8 @@ impl SystemHandle {
             // Add other mounts up to limit
             for (device, mount_point, fs_type) in &mounts {
                 if !priority_mounts.contains(&mount_point.as_str())
-                    && selected_mounts.len() < opts.max_mounts as usize {
+                    && selected_mounts.len() < opts.max_mounts as usize
+                {
                     selected_mounts.push((device.clone(), mount_point.clone(), fs_type.clone()));
                 }
             }
@@ -5456,13 +5991,16 @@ impl SystemHandle {
                 mounts_truncated = true;
                 warnings.push(format!(
                     "Mount list truncated: {} mounts available, showing {}",
-                    mounts.len(), opts.max_mounts
+                    mounts.len(),
+                    opts.max_mounts
                 ));
             }
 
             // Get stats for each mount
             for (device, mount_point, fs_type) in selected_mounts {
-                if let Ok((total_bytes, used_bytes, free_bytes)) = provider.get_disk_stats(&mount_point) {
+                if let Ok((total_bytes, used_bytes, free_bytes)) =
+                    provider.get_disk_stats(&mount_point)
+                {
                     let usage_pct = if total_bytes > 0 {
                         (used_bytes as f64 / total_bytes as f64) * 100.0
                     } else {
@@ -5492,7 +6030,11 @@ impl SystemHandle {
         })
     }
 
-    fn collect_process_scope(&self, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> Value {
+    fn collect_process_scope(
+        &self,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> Value {
         let available = true;
         let mut total_processes = 0;
         let mut running = 0;
@@ -5537,7 +6079,7 @@ impl SystemHandle {
                         if let Ok(content) = fs::read_to_string(&stat_path) {
                             // State is the 3rd field after the command name in parentheses
                             if let Some(state_start) = content.rfind(')') {
-                                let after_name = &content[state_start+1..];
+                                let after_name = &content[state_start + 1..];
                                 if let Some(state_char) = after_name.trim().chars().next() {
                                     *state_counts.entry(state_char).or_insert(0) += 1;
                                 }
@@ -5550,7 +6092,8 @@ impl SystemHandle {
             if proc_count > 0 {
                 total_processes = proc_count;
                 running = *state_counts.get(&'R').unwrap_or(&0);
-                sleeping = *state_counts.get(&'S').unwrap_or(&0) + *state_counts.get(&'I').unwrap_or(&0);
+                sleeping =
+                    *state_counts.get(&'S').unwrap_or(&0) + *state_counts.get(&'I').unwrap_or(&0);
                 zombie = *state_counts.get(&'Z').unwrap_or(&0);
                 stopped = *state_counts.get(&'T').unwrap_or(&0);
                 blocked = *state_counts.get(&'D').unwrap_or(&0);
@@ -5570,7 +6113,11 @@ impl SystemHandle {
         })
     }
 
-    fn collect_pressure_scope(&self, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> Value {
+    fn collect_pressure_scope(
+        &self,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> Value {
         let mut available = false;
         let mut cpu_pressure = None;
         let mut io_pressure = None;
@@ -5593,7 +6140,8 @@ impl SystemHandle {
         }
 
         if !available {
-            warnings.push("PSI (Pressure Stall Information) not available on this system".to_string());
+            warnings
+                .push("PSI (Pressure Stall Information) not available on this system".to_string());
         }
 
         json!({
@@ -5665,7 +6213,11 @@ impl SystemHandle {
         result
     }
 
-    fn collect_cgroup_scope(&self, provider: &dyn SystemProvider, warnings: &mut Vec<String>) -> Value {
+    fn collect_cgroup_scope(
+        &self,
+        provider: &dyn SystemProvider,
+        warnings: &mut Vec<String>,
+    ) -> Value {
         let mut available = false;
         let mut unified = false;
         let mut paths: HashMap<String, String> = HashMap::new();
@@ -5696,12 +6248,12 @@ impl SystemHandle {
 
                                 let parts: Vec<&str> = content.trim().split_whitespace().collect();
                                 if parts.len() >= 2 {
-                                    if let (Ok(quota), Ok(period)) = (
-                                        parts[0].parse::<i64>(),
-                                        parts[1].parse::<i64>()
-                                    ) {
+                                    if let (Ok(quota), Ok(period)) =
+                                        (parts[0].parse::<i64>(), parts[1].parse::<i64>())
+                                    {
                                         if quota > 0 && period > 0 {
-                                            let cpu_quota_pct = (quota as f64 / period as f64) * 100.0;
+                                            let cpu_quota_pct =
+                                                (quota as f64 / period as f64) * 100.0;
                                             limits["cpu_quota_pct"] = json!(cpu_quota_pct);
                                         }
                                     }
@@ -5733,7 +6285,11 @@ impl SystemHandle {
         })
     }
 
-    fn collect_virtualization_scope(&self, provider: &dyn SystemProvider, _warnings: &mut Vec<String>) -> Value {
+    fn collect_virtualization_scope(
+        &self,
+        provider: &dyn SystemProvider,
+        _warnings: &mut Vec<String>,
+    ) -> Value {
         let mut available = false;
         let mut is_container = false;
         let mut container_type: Option<String> = None;
@@ -5803,10 +6359,16 @@ impl SystemHandle {
         // This is a simplified field filter - a full implementation would
         // recursively traverse and filter JSON objects
         // For now, we'll just note that field filtering was requested
-        response.warnings.push("Field filtering is not yet fully implemented".to_string());
+        response
+            .warnings
+            .push("Field filtering is not yet fully implemented".to_string());
     }
 
-    pub fn format_text(&self, response: &SystemInfoResponse, _opts: &SystemInfoOptions) -> Result<String> {
+    pub fn format_text(
+        &self,
+        response: &SystemInfoResponse,
+        _opts: &SystemInfoOptions,
+    ) -> Result<String> {
         let mut output = String::new();
 
         output.push_str("System Info\n");
@@ -5816,7 +6378,10 @@ impl SystemHandle {
         let timestamp_secs = response.timestamp_unix_ms / 1000;
         let dt = chrono::DateTime::from_timestamp(timestamp_secs, 0)
             .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
-        output.push_str(&format!("Timestamp: {}\n\n", dt.format("%Y-%m-%d %H:%M:%S UTC")));
+        output.push_str(&format!(
+            "Timestamp: {}\n\n",
+            dt.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
 
         // OS scope
         if let Some(os) = &response.os {
@@ -5850,7 +6415,10 @@ impl SystemHandle {
                 let days = (uptime / 86400.0) as u64;
                 let hours = ((uptime % 86400.0) / 3600.0) as u64;
                 let minutes = ((uptime % 3600.0) / 60.0) as u64;
-                output.push_str(&format!("  Uptime      : {}d {}h {}m\n", days, hours, minutes));
+                output.push_str(&format!(
+                    "  Uptime      : {}d {}h {}m\n",
+                    days, hours, minutes
+                ));
             }
             output.push('\n');
         }
@@ -5888,8 +6456,10 @@ impl SystemHandle {
                 if let Some(swap_free) = memory.get("swap_free_bytes").and_then(|v| v.as_u64()) {
                     let swap_total_gb = swap_total as f64 / 1_073_741_824.0;
                     let swap_free_gb = swap_free as f64 / 1_073_741_824.0;
-                    output.push_str(&format!("  Swap        : {:.1} GiB total, {:.1} GiB free\n",
-                        swap_total_gb, swap_free_gb));
+                    output.push_str(&format!(
+                        "  Swap        : {:.1} GiB total, {:.1} GiB free\n",
+                        swap_total_gb, swap_free_gb
+                    ));
                 }
             }
             output.push('\n');
@@ -5916,7 +6486,8 @@ impl SystemHandle {
                 if !mounts.is_empty() {
                     output.push_str("Disk:\n");
                     for mount in mounts {
-                        if let Some(mount_point) = mount.get("mount_point").and_then(|v| v.as_str()) {
+                        if let Some(mount_point) = mount.get("mount_point").and_then(|v| v.as_str())
+                        {
                             output.push_str(&format!("  {}\n", mount_point));
 
                             if let Some(total) = mount.get("total_bytes").and_then(|v| v.as_u64()) {
@@ -5965,7 +6536,7 @@ impl Handle for SystemHandle {
         if crate::core::help::HELP_ALIASES.contains(&verb) {
             return self.display_help(None, io);
         }
-        
+
         match verb {
             "info" => self.info_verb(args, io),
             "uptime" => self.uptime_verb(args, io),
@@ -5990,8 +6561,8 @@ pub fn register(reg: &mut crate::core::Registry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use serde_json::Value;
+    use std::collections::HashMap;
 
     /// Mock SystemProvider for testing
     struct MockSystemProvider {
@@ -6132,7 +6703,10 @@ mod tests {
             unimplemented!("Not needed for env.list tests")
         }
 
-        fn statvfs_mount(&self, _mount_point: &str) -> anyhow::Result<(u64, u64, u64, u64, u64, u64, u64, u64)> {
+        fn statvfs_mount(
+            &self,
+            _mount_point: &str,
+        ) -> anyhow::Result<(u64, u64, u64, u64, u64, u64, u64, u64)> {
             unimplemented!("Not needed for env.list tests")
         }
 
@@ -6145,7 +6719,9 @@ mod tests {
 
         fn get_process_env(&self, _pid: i64) -> anyhow::Result<Vec<(String, String)>> {
             if self.should_fail {
-                return Err(SystemError::EnvListPidUnavailable("Mock failure for PID".to_string()).into());
+                return Err(
+                    SystemError::EnvListPidUnavailable("Mock failure for PID".to_string()).into(),
+                );
             }
             Ok(self.env_vars.clone())
         }
@@ -6159,7 +6735,7 @@ mod tests {
     fn test_system_handle_creation() {
         let url = url::Url::parse("system://test").unwrap();
         let handle = SystemHandle::from_url(&url).unwrap();
-        
+
         // Check that env.list is included in the verbs
         let verbs = handle.verbs();
         assert!(verbs.contains(&"env.list"));
@@ -6169,12 +6745,12 @@ mod tests {
     fn test_collect_env_list_with_mock() {
         let url = url::Url::parse("system://test").unwrap();
         let handle = SystemHandle::from_url(&url).unwrap();
-        
+
         let opts = SystemEnvListOptions::default();
         let provider = MockSystemProvider::new();
-        
+
         let response = handle.collect_env_list(&opts, &provider);
-        
+
         assert!(response.ok);
         assert_eq!(response.env_count_total, Some(8)); // MockSystemProvider has 8 env vars
         assert_eq!(response.env_count_returned, 8);
@@ -6184,15 +6760,17 @@ mod tests {
 
     #[test]
     fn test_sensitive_env_var_detection() {
-        let handle = SystemHandle { alias: "test".to_string() };
-        
+        let handle = SystemHandle {
+            alias: "test".to_string(),
+        };
+
         // Test sensitive variable detection
         assert!(handle.is_sensitive_env_var("SECRET_TOKEN"));
         assert!(handle.is_sensitive_env_var("API_KEY"));
         assert!(handle.is_sensitive_env_var("PASSWORD"));
         assert!(handle.is_sensitive_env_var("auth_key"));
         assert!(handle.is_sensitive_env_var("private_key"));
-        
+
         // Test non-sensitive variables
         assert!(!handle.is_sensitive_env_var("PATH"));
         assert!(!handle.is_sensitive_env_var("HOME"));
@@ -6201,18 +6779,20 @@ mod tests {
 
     #[test]
     fn test_value_truncation() {
-        let handle = SystemHandle { alias: "test".to_string() };
-        
+        let handle = SystemHandle {
+            alias: "test".to_string(),
+        };
+
         // Test no truncation
         let (result, truncated) = handle.truncate_value("short", 10);
         assert_eq!(result, "short");
         assert!(!truncated);
-        
+
         // Test truncation
         let (result, truncated) = handle.truncate_value("this is a very long string", 10);
         assert_eq!(result, "this is a ");
         assert!(truncated);
-        
+
         // Test zero length (no truncation)
         let (result, truncated) = handle.truncate_value("any string", 0);
         assert_eq!(result, "any string");
@@ -6221,24 +6801,26 @@ mod tests {
 
     #[test]
     fn test_env_var_filtering() {
-        let handle = SystemHandle { alias: "test".to_string() };
+        let handle = SystemHandle {
+            alias: "test".to_string(),
+        };
         let regex_filters = vec![regex::Regex::new("^(PATH|HOME)$").unwrap()];
-        
+
         let mut opts = SystemEnvListOptions::default();
-        
+
         // Test exact name match
         opts.names = vec!["PATH".to_string(), "HOME".to_string()];
         assert!(handle.should_include_env_var("PATH", &opts, &[]));
         assert!(handle.should_include_env_var("HOME", &opts, &[]));
         assert!(!handle.should_include_env_var("USER", &opts, &[]));
-        
+
         // Test prefix filtering
         opts.names.clear();
         opts.prefix_filters = vec!["USER".to_string()];
         assert!(handle.should_include_env_var("USER", &opts, &[]));
         assert!(handle.should_include_env_var("USERNAME", &opts, &[]));
         assert!(!handle.should_include_env_var("PATH", &opts, &[]));
-        
+
         // Test regex filtering
         opts.prefix_filters.clear();
         assert!(handle.should_include_env_var("PATH", &opts, &regex_filters));
@@ -6248,13 +6830,15 @@ mod tests {
 
     #[test]
     fn test_env_var_sorting() {
-        let handle = SystemHandle { alias: "test".to_string() };
+        let handle = SystemHandle {
+            alias: "test".to_string(),
+        };
         let mut vars = vec![
             ("ZEBRA".to_string(), "short".to_string()),
             ("APPLE".to_string(), "very long string".to_string()),
             ("BETA".to_string(), "medium".to_string()),
         ];
-        
+
         // Test name sorting (ascending)
         let mut opts = SystemEnvListOptions::default();
         opts.sort_by = "name".to_string();
@@ -6263,22 +6847,22 @@ mod tests {
         assert_eq!(vars[0].0, "APPLE");
         assert_eq!(vars[1].0, "BETA");
         assert_eq!(vars[2].0, "ZEBRA");
-        
+
         // Test name sorting (descending)
         opts.sort_order = "desc".to_string();
         handle.sort_env_vars(&mut vars, &opts);
         assert_eq!(vars[0].0, "ZEBRA");
         assert_eq!(vars[1].0, "BETA");
         assert_eq!(vars[2].0, "APPLE");
-        
+
         // Test length sorting (ascending)
         opts.sort_by = "length".to_string();
         opts.sort_order = "asc".to_string();
         handle.sort_env_vars(&mut vars, &opts);
         assert_eq!(vars[0].0, "ZEBRA"); // "short" (5 chars)
-        assert_eq!(vars[1].0, "BETA");  // "medium" (6 chars)
+        assert_eq!(vars[1].0, "BETA"); // "medium" (6 chars)
         assert_eq!(vars[2].0, "APPLE"); // "very long string" (16 chars)
-        
+
         // Test no sorting
         opts.sort_by = "none".to_string();
         vars = vec![
@@ -6296,53 +6880,72 @@ mod tests {
     fn test_masked_sensitive_variables() {
         let url = url::Url::parse("system://test").unwrap();
         let handle = SystemHandle::from_url(&url).unwrap();
-        
+
         let mut opts = SystemEnvListOptions::default();
         opts.include_sensitive = false; // Should mask sensitive variables
         opts.names = vec!["SECRET_TOKEN".to_string(), "PATH".to_string()];
-        
+
         let provider = MockSystemProvider::new();
         let response = handle.collect_env_list(&opts, &provider);
-        
+
         assert!(response.ok);
         assert_eq!(response.env_count_masked, 1); // SECRET_TOKEN should be masked
-        
+
         // Find the variables
         let secret_var = response.variables.iter().find(|v| v.name == "SECRET_TOKEN");
         let path_var = response.variables.iter().find(|v| v.name == "PATH");
-        
+
         assert!(secret_var.is_some());
         assert!(secret_var.unwrap().masked);
-        
+
         assert!(path_var.is_some());
         assert!(!path_var.unwrap().masked);
     }
 
     fn str_args(pairs: &[(&str, &str)]) -> Args {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn test_help_request_is_exact() {
         assert_eq!(help_request(&str_args(&[("help", "")])), Some(None));
-        assert_eq!(help_request(&str_args(&[("--help", "memory")])), Some(Some("memory".to_string())));
+        assert_eq!(
+            help_request(&str_args(&[("--help", "memory")])),
+            Some(Some("memory".to_string()))
+        );
         assert_eq!(help_request(&str_args(&[("input", "--help")])), Some(None));
         assert_eq!(help_request(&str_args(&[("input", "-h")])), Some(None));
-        assert_eq!(help_request(&str_args(&[("input", "--help=cpu")])), Some(Some("cpu".to_string())));
+        assert_eq!(
+            help_request(&str_args(&[("input", "--help=cpu")])),
+            Some(Some("cpu".to_string()))
+        );
         // Input that merely contains "-h" is not a help request.
-        assert_eq!(help_request(&str_args(&[("input", r#"{"names":["my-host"]}"#)])), None);
-        assert_eq!(help_request(&str_args(&[("input", r#"{"prefix_filters":["X-HTTP"]}"#)])), None);
+        assert_eq!(
+            help_request(&str_args(&[("input", r#"{"names":["my-host"]}"#)])),
+            None
+        );
+        assert_eq!(
+            help_request(&str_args(&[("input", r#"{"prefix_filters":["X-HTTP"]}"#)])),
+            None
+        );
         assert_eq!(help_request(&str_args(&[("format", "text")])), None);
     }
 
     #[test]
     fn test_in_url_help_uses_approved_metadata() {
-        let handle = SystemHandle { alias: String::new() };
+        let handle = SystemHandle {
+            alias: String::new(),
+        };
         let mut stdin = std::io::empty();
         let mut out = Vec::new();
         let mut err = Vec::new();
         let mut io = IoStreams::new(&mut stdin, &mut out, &mut err);
-        handle.call("info", &str_args(&[("--help", "memory")]), &mut io).unwrap();
+        handle
+            .call("info", &str_args(&[("--help", "memory")]), &mut io)
+            .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("Handle: system"));
         assert!(text.contains("Verb: memory"));
@@ -6350,7 +6953,9 @@ mod tests {
 
     #[test]
     fn test_memory_options_partial_input_uses_defaults() {
-        let handle = SystemHandle { alias: String::new() };
+        let handle = SystemHandle {
+            alias: String::new(),
+        };
         let opts = handle
             .parse_memory_options(&str_args(&[("input", r#"{"format":"text"}"#)]))
             .unwrap();
@@ -6362,7 +6967,9 @@ mod tests {
 
     #[test]
     fn test_options_from_plain_key_value_args() {
-        let handle = SystemHandle { alias: String::new() };
+        let handle = SystemHandle {
+            alias: String::new(),
+        };
 
         let opts = handle
             .parse_memory_options(&str_args(&[("format", "text"), ("include_swap", "false")]))
@@ -6372,7 +6979,10 @@ mod tests {
 
         // key=value overrides the same key in input.
         let opts = handle
-            .parse_uptime_options(&str_args(&[("input", r#"{"format":"json","include_raw":true}"#), ("format", "text")]))
+            .parse_uptime_options(&str_args(&[
+                ("input", r#"{"format":"json","include_raw":true}"#),
+                ("format", "text"),
+            ]))
             .unwrap();
         assert_eq!(opts.format, "text");
         assert!(opts.include_raw);
@@ -6383,10 +6993,20 @@ mod tests {
         assert_eq!(opts.names, vec!["HOME".to_string(), "SHELL".to_string()]);
         assert_eq!(opts.max_vars, 5);
 
-        let opts = handle.parse_options(&str_args(&[("scopes", r#"["kernel","load"]"#)])).unwrap();
+        let opts = handle
+            .parse_options(&str_args(&[("scopes", r#"["kernel","load"]"#)]))
+            .unwrap();
         assert_eq!(opts.scopes, vec!["kernel".to_string(), "load".to_string()]);
 
-        assert!(handle.parse_memory_options(&str_args(&[("include_swap", "maybe")])).is_err());
-        assert!(handle.parse_memory_options(&str_args(&[("input", "[1]")])).is_err());
+        assert!(
+            handle
+                .parse_memory_options(&str_args(&[("include_swap", "maybe")]))
+                .is_err()
+        );
+        assert!(
+            handle
+                .parse_memory_options(&str_args(&[("input", "[1]")]))
+                .is_err()
+        );
     }
 }

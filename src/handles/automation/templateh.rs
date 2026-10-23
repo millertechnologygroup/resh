@@ -1,12 +1,12 @@
 use anyhow::{Context, Result, bail};
-use tera::{Tera, Context as TeraContext};
 use percent_encoding::percent_decode_str;
-use serde_json::Value;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Component, PathBuf};
+use tera::{Context as TeraContext, Tera};
 use url::Url;
 
 use crate::core::{
@@ -118,7 +118,9 @@ struct TestResult {
 }
 
 pub fn register(reg: &mut crate::core::Registry) {
-    reg.register_scheme("template", |u| Ok(Box::new(TemplateHandle::from_url(u.clone())?)));
+    reg.register_scheme("template", |u| {
+        Ok(Box::new(TemplateHandle::from_url(u.clone())?))
+    });
 }
 
 /// Metadata for `resh template --help` and `resh template <verb> --help`.
@@ -297,7 +299,8 @@ fn missing_variable_message(e: &tera::Error) -> Option<String> {
     let mut cur: Option<&dyn std::error::Error> = Some(e);
     while let Some(err) = cur {
         let msg = err.to_string();
-        if msg.contains("Variable") && (msg.contains("not found") || msg.contains("doesn't exist")) {
+        if msg.contains("Variable") && (msg.contains("not found") || msg.contains("doesn't exist"))
+        {
             return Some(msg);
         }
         cur = err.source();
@@ -329,20 +332,19 @@ impl TemplateHandle {
         };
 
         // Check for help flags in various positions
-        let is_help_request = path_str == "--help" || 
-                             path_str == "-h" ||
-                             path_str.ends_with(".--help") ||
-                             path_str.ends_with(".-h");
+        let is_help_request = path_str == "--help"
+            || path_str == "-h"
+            || path_str.ends_with(".--help")
+            || path_str.ends_with(".-h");
 
         // Extract verb-specific help if provided (e.g., --help=render)
-        let help_verb = url.query_pairs()
-            .find_map(|(k, v)| {
-                if k == "help" || (k == "--help" && !v.is_empty()) {
-                    Some(v.to_string())
-                } else {
-                    None
-                }
-            });
+        let help_verb = url.query_pairs().find_map(|(k, v)| {
+            if k == "help" || (k == "--help" && !v.is_empty()) {
+                Some(v.to_string())
+            } else {
+                None
+            }
+        });
 
         // If this is a help request, return early
         if is_help_request || help_verb.is_some() {
@@ -354,7 +356,7 @@ impl TemplateHandle {
         }
 
         // For template URLs, we want to combine host and path to get the full template path
-        // e.g., template://tests/fixtures/templates/hello.html should give us 
+        // e.g., template://tests/fixtures/templates/hello.html should give us
         // "tests/fixtures/templates/hello.html" not just "tests"
 
         // Check for special inline case
@@ -367,7 +369,9 @@ impl TemplateHandle {
         }
 
         // Decode URL encoding and escape sequences
-        let decoded = percent_decode_str(&path_str).decode_utf8_lossy().to_string();
+        let decoded = percent_decode_str(&path_str)
+            .decode_utf8_lossy()
+            .to_string();
         let unescaped = unescape_backslashes(&decoded);
         let path = PathBuf::from(unescaped);
         let normalized = normalize_path(&path);
@@ -405,7 +409,10 @@ impl TemplateHandle {
         if encoding != "utf-8" {
             return Err(ValidationError {
                 kind: "encoding".to_string(),
-                message: format!("unsupported encoding: {}. Only utf-8 is supported", encoding),
+                message: format!(
+                    "unsupported encoding: {}. Only utf-8 is supported",
+                    encoding
+                ),
                 line: None,
                 column: None,
             });
@@ -418,22 +425,26 @@ impl TemplateHandle {
             if !context_str.trim().is_empty() {
                 let context_value: Value = match serde_json::from_str(context_str) {
                     Ok(value) => value,
-                    Err(e) => return Err(ValidationError {
-                        kind: "context_parse".to_string(),
-                        message: format!("failed to parse context JSON: {}", e),
-                        line: None,
-                        column: None,
-                    }),
+                    Err(e) => {
+                        return Err(ValidationError {
+                            kind: "context_parse".to_string(),
+                            message: format!("failed to parse context JSON: {}", e),
+                            line: None,
+                            column: None,
+                        });
+                    }
                 };
-                
+
                 match TeraContext::from_serialize(&context_value) {
                     Ok(tera_context) => context = tera_context,
-                    Err(e) => return Err(ValidationError {
-                        kind: "context_parse".to_string(),
-                        message: format!("failed to convert context to Tera context: {}", e),
-                        line: None,
-                        column: None,
-                    }),
+                    Err(e) => {
+                        return Err(ValidationError {
+                            kind: "context_parse".to_string(),
+                            message: format!("failed to convert context to Tera context: {}", e),
+                            line: None,
+                            column: None,
+                        });
+                    }
                 }
             }
         }
@@ -461,7 +472,8 @@ impl TemplateHandle {
         } else if let Some(path) = &self.template_path {
             TemplateInfo {
                 source: "file".to_string(),
-                name: path.file_name()
+                name: path
+                    .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string(),
@@ -478,27 +490,28 @@ impl TemplateHandle {
         }
     }
 
-    fn parse_render_context(&self, args: &Args) -> Result<(ContextInfo, TeraContext), ValidationError> {
+    fn parse_render_context(
+        &self,
+        args: &Args,
+    ) -> Result<(ContextInfo, TeraContext), ValidationError> {
         let mut context_value = Value::Object(serde_json::Map::new());
-        
+
         // Parse context_file first (lower priority)
         if let Some(context_file_path) = args.get("context_file") {
             match std::fs::read_to_string(context_file_path) {
-                Ok(content) => {
-                    match serde_json::from_str::<Value>(&content) {
-                        Ok(file_value) => {
-                            context_value = file_value;
-                        }
-                        Err(e) => {
-                            return Err(ValidationError {
-                                kind: "context_parse".to_string(),
-                                message: format!("failed to parse context_file JSON: {}", e),
-                                line: None,
-                                column: None,
-                            });
-                        }
+                Ok(content) => match serde_json::from_str::<Value>(&content) {
+                    Ok(file_value) => {
+                        context_value = file_value;
                     }
-                }
+                    Err(e) => {
+                        return Err(ValidationError {
+                            kind: "context_parse".to_string(),
+                            message: format!("failed to parse context_file JSON: {}", e),
+                            line: None,
+                            column: None,
+                        });
+                    }
+                },
                 Err(e) => {
                     return Err(ValidationError {
                         kind: "io".to_string(),
@@ -556,7 +569,10 @@ impl TemplateHandle {
         Ok((context_info, tera_context))
     }
 
-    fn get_render_template_content(&self, args: &Args) -> Result<(String, String), ValidationError> {
+    fn get_render_template_content(
+        &self,
+        args: &Args,
+    ) -> Result<(String, String), ValidationError> {
         // Check for 'template' argument for inline template content (highest priority)
         if let Some(template_content) = args.get("template") {
             return Ok((template_content.clone(), "inline".to_string()));
@@ -585,14 +601,19 @@ impl TemplateHandle {
         } else {
             Err(ValidationError {
                 kind: "template_not_found".to_string(),
-                message: "no template source provided (missing 'template' argument or file path)".to_string(),
+                message: "no template source provided (missing 'template' argument or file path)"
+                    .to_string(),
                 line: None,
                 column: None,
             })
         }
     }
 
-    fn format_render_output(&self, rendered: String, format: &str) -> Result<BodyInfo, ValidationError> {
+    fn format_render_output(
+        &self,
+        rendered: String,
+        format: &str,
+    ) -> Result<BodyInfo, ValidationError> {
         match format {
             "text" => Ok(BodyInfo {
                 body_type: "text".to_string(),
@@ -604,20 +625,18 @@ impl TemplateHandle {
                 value: Some(Value::String(rendered)),
                 base64: None,
             }),
-            "json" => {
-                match serde_json::from_str::<Value>(&rendered) {
-                    Ok(json_value) => Ok(BodyInfo {
-                        body_type: "json".to_string(),
-                        value: Some(json_value),
-                        base64: None,
-                    }),
-                    Err(e) => Err(ValidationError {
-                        kind: "json_parse".to_string(),
-                        message: format!("failed to parse rendered output as JSON: {}", e),
-                        line: None,
-                        column: None,
-                    }),
-                }
+            "json" => match serde_json::from_str::<Value>(&rendered) {
+                Ok(json_value) => Ok(BodyInfo {
+                    body_type: "json".to_string(),
+                    value: Some(json_value),
+                    base64: None,
+                }),
+                Err(e) => Err(ValidationError {
+                    kind: "json_parse".to_string(),
+                    message: format!("failed to parse rendered output as JSON: {}", e),
+                    line: None,
+                    column: None,
+                }),
             },
             "bytes" => {
                 use base64::{Engine as _, engine::general_purpose};
@@ -627,28 +646,29 @@ impl TemplateHandle {
                     value: None,
                     base64: Some(base64_encoded),
                 })
-            },
+            }
             _ => Err(ValidationError {
                 kind: "invalid_format".to_string(),
-                message: format!("invalid format '{}'. Allowed values: text, html, json, bytes", format),
+                message: format!(
+                    "invalid format '{}'. Allowed values: text, html, json, bytes",
+                    format
+                ),
                 line: None,
                 column: None,
             }),
         }
     }
 
-        // Step 3: Merge data_file if provided
+    // Step 3: Merge data_file if provided
     fn validate(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let strict = args.get("strict")
-            .map(|s| s == "true")
-            .unwrap_or(true);
+        let strict = args.get("strict").map(|s| s == "true").unwrap_or(true);
 
         // Get template content first so we can include size in template info
         let template_content = match self.get_template_content(args) {
             Ok(content) => content,
             Err(e) => {
                 let template_info = self.create_template_info(args, None);
-                
+
                 let mut result = ValidationResult {
                     ok: false,
                     template: template_info,
@@ -661,7 +681,7 @@ impl TemplateHandle {
                     }],
                     warnings: Vec::new(),
                 };
-                
+
                 let json_output = serde_json::to_string(&result)?;
                 writeln!(io.stdout, "{}", json_output)?;
                 return Ok(Status::err(1, "Failed to read template"));
@@ -669,7 +689,7 @@ impl TemplateHandle {
         };
 
         let template_info = self.create_template_info(args, Some(&template_content));
-        
+
         let mut result = ValidationResult {
             ok: true,
             template: template_info,
@@ -684,7 +704,7 @@ impl TemplateHandle {
             Err(error) => {
                 result.ok = false;
                 result.errors.push(error);
-                
+
                 let json_output = serde_json::to_string(&result)?;
                 writeln!(io.stdout, "{}", json_output)?;
                 return Ok(Status::err(1, "Context parsing failed"));
@@ -694,7 +714,7 @@ impl TemplateHandle {
         // Create Tera instance and try to parse template
         let mut tera = Tera::default();
         let template_name = "validate_template";
-        
+
         // Try to add the template to validate syntax
         if let Err(e) = tera.add_raw_template(template_name, &template_content) {
             result.ok = false;
@@ -704,7 +724,7 @@ impl TemplateHandle {
                 line: None, // Tera errors don't always provide line numbers easily
                 column: None,
             });
-            
+
             let json_output = serde_json::to_string(&result)?;
             writeln!(io.stdout, "{}", json_output)?;
             return Ok(Status::err(1, "Template syntax error"));
@@ -726,7 +746,7 @@ impl TemplateHandle {
                         line: None,
                         column: None,
                     };
-                    
+
                     if strict {
                         result.ok = false;
                         result.errors.push(validation_error);
@@ -750,18 +770,22 @@ impl TemplateHandle {
         // Output JSON result
         let json_output = serde_json::to_string(&result)?;
         writeln!(io.stdout, "{}", json_output)?;
-        
+
         let exit_code = if result.ok { 0 } else { 1 };
-        Ok(Status { 
-            ok: result.ok, 
+        Ok(Status {
+            ok: result.ok,
             code: Some(exit_code),
-            reason: if result.ok { None } else { Some("Template validation failed".to_string()) }
+            reason: if result.ok {
+                None
+            } else {
+                Some("Template validation failed".to_string())
+            },
         })
     }
 
     fn render_template(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let format = args.get("format").map(|s| s.as_str()).unwrap_or("text");
-        
+
         // Get template content and source name
         let (template_content, _source_name) = match self.get_render_template_content(args) {
             Ok((content, name)) => (content, name),
@@ -777,10 +801,10 @@ impl TemplateHandle {
                     body: None,
                     errors: vec![error],
                 };
-                
+
                 let json_output = serde_json::to_string(&result)?;
                 writeln!(io.stdout, "{}", json_output)?;
-                
+
                 return Ok(Status {
                     ok: false,
                     code: Some(2),
@@ -804,10 +828,10 @@ impl TemplateHandle {
                     body: None,
                     errors: vec![error],
                 };
-                
+
                 let json_output = serde_json::to_string(&result)?;
                 writeln!(io.stdout, "{}", json_output)?;
-                
+
                 return Ok(Status {
                     ok: false,
                     code: Some(3),
@@ -819,7 +843,7 @@ impl TemplateHandle {
         // Create Tera instance and add template
         let mut tera = Tera::default();
         let template_name = "render_template";
-        
+
         if let Err(e) = tera.add_raw_template(template_name, &template_content) {
             let error = ValidationError {
                 kind: "render".to_string(),
@@ -827,7 +851,7 @@ impl TemplateHandle {
                 line: None,
                 column: None,
             };
-            
+
             let result = RenderResult {
                 ok: false,
                 engine: "tera".to_string(),
@@ -836,10 +860,10 @@ impl TemplateHandle {
                 body: None,
                 errors: vec![error],
             };
-            
+
             let json_output = serde_json::to_string(&result)?;
             writeln!(io.stdout, "{}", json_output)?;
-            
+
             return Ok(Status {
                 ok: false,
                 code: Some(4),
@@ -857,7 +881,7 @@ impl TemplateHandle {
                     line: None,
                     column: None,
                 };
-                
+
                 let result = RenderResult {
                     ok: false,
                     engine: "tera".to_string(),
@@ -866,10 +890,10 @@ impl TemplateHandle {
                     body: None,
                     errors: vec![error],
                 };
-                
+
                 let json_output = serde_json::to_string(&result)?;
                 writeln!(io.stdout, "{}", json_output)?;
-                
+
                 return Ok(Status {
                     ok: false,
                     code: Some(4),
@@ -890,10 +914,10 @@ impl TemplateHandle {
                     body: None,
                     errors: vec![error],
                 };
-                
+
                 let json_output = serde_json::to_string(&result)?;
                 writeln!(io.stdout, "{}", json_output)?;
-                
+
                 return Ok(Status {
                     ok: false,
                     code: Some(5),
@@ -911,20 +935,22 @@ impl TemplateHandle {
             body,
             errors: Vec::new(),
         };
-        
+
         let json_output = serde_json::to_string(&result)?;
         writeln!(io.stdout, "{}", json_output)?;
-        
+
         Ok(Status::ok())
     }
 
     fn test_template(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Parse arguments
-        let stop_on_first_fail = args.get("stop_on_first_fail")
+        let stop_on_first_fail = args
+            .get("stop_on_first_fail")
             .map(|s| s == "true")
             .unwrap_or(false);
-        
-        let capture_output = args.get("capture_output")
+
+        let capture_output = args
+            .get("capture_output")
             .map(|s| s.as_str())
             .unwrap_or("summary");
 
@@ -933,7 +959,8 @@ impl TemplateHandle {
             Ok((content, name)) => (content, name),
             Err(error) => {
                 let result = TestResult {
-                    template: self.template_path
+                    template: self
+                        .template_path
                         .as_ref()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_else(|| "inline".to_string()),
@@ -945,10 +972,10 @@ impl TemplateHandle {
                     error: Some(error.message),
                     cases: Vec::new(),
                 };
-                
+
                 let json_output = serde_json::to_string(&result)?;
                 writeln!(io.stdout, "{}", json_output)?;
-                
+
                 return Ok(Status {
                     ok: false,
                     code: Some(2),
@@ -971,10 +998,10 @@ impl TemplateHandle {
                     error: Some(e.to_string()),
                     cases: Vec::new(),
                 };
-                
+
                 let json_output = serde_json::to_string(&result)?;
                 writeln!(io.stdout, "{}", json_output)?;
-                
+
                 return Ok(Status {
                     ok: false,
                     code: Some(2),
@@ -994,10 +1021,10 @@ impl TemplateHandle {
                 error: Some("no test cases supplied".to_string()),
                 cases: Vec::new(),
             };
-            
+
             let json_output = serde_json::to_string(&result)?;
             writeln!(io.stdout, "{}", json_output)?;
-            
+
             return Ok(Status {
                 ok: false,
                 code: Some(1),
@@ -1008,7 +1035,7 @@ impl TemplateHandle {
         // Create Tera instance and add template
         let mut tera = Tera::default();
         let template_name_key = "test_template";
-        
+
         if let Err(e) = tera.add_raw_template(template_name_key, &template_content) {
             let result = TestResult {
                 template: template_name,
@@ -1020,10 +1047,10 @@ impl TemplateHandle {
                 error: Some(format!("template parse error: {}", e)),
                 cases: Vec::new(),
             };
-            
+
             let json_output = serde_json::to_string(&result)?;
             writeln!(io.stdout, "{}", json_output)?;
-            
+
             return Ok(Status {
                 ok: false,
                 code: Some(3),
@@ -1037,7 +1064,7 @@ impl TemplateHandle {
             template_name_key,
             &test_cases,
             stop_on_first_fail,
-            capture_output
+            capture_output,
         );
 
         let ok = failed == 0 && total_executed > 0;
@@ -1052,14 +1079,18 @@ impl TemplateHandle {
             error: None,
             cases: case_results,
         };
-        
+
         let json_output = serde_json::to_string(&result)?;
         writeln!(io.stdout, "{}", json_output)?;
-        
+
         Ok(Status {
             ok,
             code: if ok { Some(0) } else { Some(1) },
-            reason: if ok { None } else { Some("tests_failed".to_string()) },
+            reason: if ok {
+                None
+            } else {
+                Some("tests_failed".to_string())
+            },
         })
     }
 
@@ -1083,10 +1114,19 @@ impl TemplateHandle {
         if let Some(template_path) = &self.template_path {
             let default_test_file = template_path.with_extension("tests.json");
             if default_test_file.exists() {
-                let content = std::fs::read_to_string(&default_test_file)
-                    .with_context(|| format!("failed to read default test file: {}", default_test_file.display()))?;
-                let cases: Vec<TemplateTestCase> = serde_json::from_str(&content)
-                    .with_context(|| format!("failed to parse default test file JSON: {}", default_test_file.display()))?;
+                let content = std::fs::read_to_string(&default_test_file).with_context(|| {
+                    format!(
+                        "failed to read default test file: {}",
+                        default_test_file.display()
+                    )
+                })?;
+                let cases: Vec<TemplateTestCase> =
+                    serde_json::from_str(&content).with_context(|| {
+                        format!(
+                            "failed to parse default test file JSON: {}",
+                            default_test_file.display()
+                        )
+                    })?;
                 return Ok(cases);
             }
         }
@@ -1111,14 +1151,15 @@ impl TemplateHandle {
                 break;
             }
 
-            let result = self.execute_single_test_case(tera, template_name, test_case, capture_output);
-            
+            let result =
+                self.execute_single_test_case(tera, template_name, test_case, capture_output);
+
             if result.ok {
                 passed += 1;
             } else {
                 failed += 1;
             }
-            
+
             case_results.push(result);
         }
 
@@ -1194,19 +1235,30 @@ impl TemplateHandle {
         }
     }
 
-    fn check_expectations(&self, test_case: &TemplateTestCase, rendered: &str) -> (bool, Option<String>, Option<String>) {
+    fn check_expectations(
+        &self,
+        test_case: &TemplateTestCase,
+        rendered: &str,
+    ) -> (bool, Option<String>, Option<String>) {
         // Check exact match
         if let Some(expected) = &test_case.expected {
             if rendered != expected {
                 let diff = format!("Expected: {:?}, Got: {:?}", expected, rendered);
-                return (false, Some("expected output mismatch".to_string()), Some(diff));
+                return (
+                    false,
+                    Some("expected output mismatch".to_string()),
+                    Some(diff),
+                );
             }
         }
 
         // Check contains
         if let Some(contains) = &test_case.contains {
             if !rendered.contains(contains) {
-                let diff = format!("Expected output to contain: {:?}, but got: {:?}", contains, rendered);
+                let diff = format!(
+                    "Expected output to contain: {:?}, but got: {:?}",
+                    contains, rendered
+                );
                 return (false, Some("contains check failed".to_string()), Some(diff));
             }
         }
@@ -1214,8 +1266,15 @@ impl TemplateHandle {
         // Check not_contains
         if let Some(not_contains) = &test_case.not_contains {
             if rendered.contains(not_contains) {
-                let diff = format!("Expected output to NOT contain: {:?}, but got: {:?}", not_contains, rendered);
-                return (false, Some("not_contains check failed".to_string()), Some(diff));
+                let diff = format!(
+                    "Expected output to NOT contain: {:?}, but got: {:?}",
+                    not_contains, rendered
+                );
+                return (
+                    false,
+                    Some("not_contains check failed".to_string()),
+                    Some(diff),
+                );
             }
         }
 
@@ -1275,11 +1334,11 @@ impl Handle for TemplateHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
-    use tempfile::TempDir;
-    use std::fs::File;
-    use std::io::Write;
     use anyhow::Result;
+    use std::fs::File;
+    use std::io::Cursor;
+    use std::io::Write;
+    use tempfile::TempDir;
     use url::Url;
 
     fn create_test_io() -> (Cursor<Vec<u8>>, Cursor<Vec<u8>>, Cursor<Vec<u8>>) {
@@ -1294,9 +1353,16 @@ mod tests {
 
     #[test]
     fn validate_syntax_ok_without_data() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
-        args.insert("from".to_string(), "Hello {{ name | default(value=\"world\") }}!".to_string());
+        args.insert(
+            "from".to_string(),
+            "Hello {{ name | default(value=\"world\") }}!".to_string(),
+        );
         args.insert("strict".to_string(), "true".to_string());
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
@@ -1317,7 +1383,11 @@ mod tests {
 
     #[test]
     fn validate_syntax_error() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("from".to_string(), "Hello {{ name ".to_string()); // Missing closing braces
         args.insert("strict".to_string(), "true".to_string());
@@ -1341,7 +1411,11 @@ mod tests {
 
     #[test]
     fn validate_with_data_missing_variable_strict() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("from".to_string(), "Hello {{ name }}!".to_string());
         args.insert("context".to_string(), "{}".to_string());
@@ -1366,7 +1440,11 @@ mod tests {
 
     #[test]
     fn validate_with_data_missing_variable_non_strict() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("from".to_string(), "Hello {{ name }}!".to_string());
         args.insert("context".to_string(), "{}".to_string());
@@ -1392,7 +1470,11 @@ mod tests {
 
     #[test]
     fn validate_bad_json() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("from".to_string(), "Hello {{ name }}!".to_string());
         args.insert("context".to_string(), "{not valid json}".to_string());
@@ -1419,7 +1501,11 @@ mod tests {
 
     #[test]
     fn render_inline_basic() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}".to_string());
         args.insert("context".to_string(), r#"{"name": "Alice"}"#.to_string());
@@ -1441,7 +1527,10 @@ mod tests {
         assert_eq!(parsed.template.source, "inline");
         assert_eq!(parsed.context.keys, vec!["name"]);
         assert_eq!(parsed.body.as_ref().unwrap().body_type, "text");
-        assert_eq!(parsed.body.as_ref().unwrap().value, Some(Value::String("Hello Alice".to_string())));
+        assert_eq!(
+            parsed.body.as_ref().unwrap().value,
+            Some(Value::String("Hello Alice".to_string()))
+        );
         assert!(parsed.errors.is_empty());
     }
 
@@ -1450,7 +1539,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("welcome.tera");
         let mut template_file = File::create(&template_path).unwrap();
-        template_file.write_all(b"Hi {{ user }} from {{ env }}").unwrap();
+        template_file
+            .write_all(b"Hi {{ user }} from {{ env }}")
+            .unwrap();
 
         let handle = TemplateHandle {
             template_path: Some(template_path),
@@ -1458,7 +1549,10 @@ mod tests {
             help_verb: None,
         };
         let mut args = HashMap::new();
-        args.insert("context".to_string(), r#"{"user":"bob", "env":"prod"}"#.to_string());
+        args.insert(
+            "context".to_string(),
+            r#"{"user":"bob", "env":"prod"}"#.to_string(),
+        );
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
@@ -1474,12 +1568,19 @@ mod tests {
         let parsed: RenderResult = serde_json::from_str(&output).unwrap();
         assert!(parsed.ok);
         assert_eq!(parsed.template.source, "file");
-        assert_eq!(parsed.body.as_ref().unwrap().value, Some(Value::String("Hi bob from prod".to_string())));
+        assert_eq!(
+            parsed.body.as_ref().unwrap().value,
+            Some(Value::String("Hi bob from prod".to_string()))
+        );
     }
 
     #[test]
     fn render_format_json() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), r#"{"value": {{ n }}}"#.to_string());
         args.insert("context".to_string(), r#"{"n": 42}"#.to_string());
@@ -1499,14 +1600,18 @@ mod tests {
         let parsed: RenderResult = serde_json::from_str(&output).unwrap();
         assert!(parsed.ok);
         assert_eq!(parsed.body.as_ref().unwrap().body_type, "json");
-        
+
         let expected_value = serde_json::json!({"value": 42});
         assert_eq!(parsed.body.as_ref().unwrap().value, Some(expected_value));
     }
 
     #[test]
     fn render_format_bytes() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}".to_string());
         args.insert("context".to_string(), r#"{"name": "world"}"#.to_string());
@@ -1531,7 +1636,9 @@ mod tests {
 
         // Decode base64 and verify content
         use base64::{Engine as _, engine::general_purpose};
-        let decoded = general_purpose::STANDARD.decode(parsed.body.as_ref().unwrap().base64.as_ref().unwrap()).unwrap();
+        let decoded = general_purpose::STANDARD
+            .decode(parsed.body.as_ref().unwrap().base64.as_ref().unwrap())
+            .unwrap();
         assert_eq!(String::from_utf8(decoded).unwrap(), "Hello world");
     }
 
@@ -1540,12 +1647,26 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let context_path = temp_dir.path().join("context.json");
         let mut context_file = File::create(&context_path).unwrap();
-        write!(context_file, r##"{{"greeting": "Hi", "target": "universe"}}"##).unwrap();
+        write!(
+            context_file,
+            r##"{{"greeting": "Hi", "target": "universe"}}"##
+        )
+        .unwrap();
 
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
-        args.insert("template".to_string(), "{{ greeting }} {{ target }}!".to_string());
-        args.insert("context_file".to_string(), context_path.to_string_lossy().to_string());
+        args.insert(
+            "template".to_string(),
+            "{{ greeting }} {{ target }}!".to_string(),
+        );
+        args.insert(
+            "context_file".to_string(),
+            context_path.to_string_lossy().to_string(),
+        );
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
@@ -1560,7 +1681,10 @@ mod tests {
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let parsed: RenderResult = serde_json::from_str(&output).unwrap();
         assert!(parsed.ok);
-        assert_eq!(parsed.body.as_ref().unwrap().value, Some(Value::String("Hi universe!".to_string())));
+        assert_eq!(
+            parsed.body.as_ref().unwrap().value,
+            Some(Value::String("Hi universe!".to_string()))
+        );
         assert_eq!(parsed.context.keys.len(), 2);
         assert!(parsed.context.keys.contains(&"greeting".to_string()));
         assert!(parsed.context.keys.contains(&"target".to_string()));
@@ -1568,7 +1692,11 @@ mod tests {
 
     #[test]
     fn render_missing_variable_error() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ missing }}".to_string());
         args.insert("context".to_string(), "{}".to_string());
@@ -1593,7 +1721,11 @@ mod tests {
 
     #[test]
     fn render_missing_template_source_fails() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let args = HashMap::new(); // No 'template' or file path
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
@@ -1615,7 +1747,11 @@ mod tests {
 
     #[test]
     fn render_invalid_json_context_fails() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "{{ test }}".to_string());
         args.insert("context".to_string(), "{bad json}".to_string());
@@ -1639,7 +1775,11 @@ mod tests {
 
     #[test]
     fn render_invalid_format_fails() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello world".to_string());
         args.insert("format".to_string(), "invalid_format".to_string());
@@ -1663,7 +1803,11 @@ mod tests {
 
     #[test]
     fn render_invalid_json_output_fails() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "not valid json".to_string());
         args.insert("format".to_string(), "json".to_string());
@@ -1692,10 +1836,17 @@ mod tests {
         let mut context_file = File::create(&context_path).unwrap();
         context_file.write_all(br#"{"name": "file"}"#).unwrap();
 
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}".to_string());
-        args.insert("context_file".to_string(), context_path.to_string_lossy().to_string());
+        args.insert(
+            "context_file".to_string(),
+            context_path.to_string_lossy().to_string(),
+        );
         args.insert("context".to_string(), r#"{"name": "arg"}"#.to_string()); // Should override file
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
@@ -1711,17 +1862,26 @@ mod tests {
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let parsed: RenderResult = serde_json::from_str(&output).unwrap();
         assert!(parsed.ok);
-        assert_eq!(parsed.body.as_ref().unwrap().value, Some(Value::String("Hello arg".to_string())));
+        assert_eq!(
+            parsed.body.as_ref().unwrap().value,
+            Some(Value::String("Hello arg".to_string()))
+        );
     }
 
     // TEST VERB TESTS
 
     #[test]
     fn test_inline_cases_all_pass() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
-        args.insert("cases".to_string(), r#"[
+        args.insert(
+            "cases".to_string(),
+            r#"[
             {
                 "name": "basic_test",
                 "context": {"name": "Alice"},
@@ -1732,7 +1892,9 @@ mod tests {
                 "context": {"name": "Bob"},
                 "contains": "Bob"
             }
-        ]"#.to_string());
+        ]"#
+            .to_string(),
+        );
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
@@ -1757,10 +1919,16 @@ mod tests {
 
     #[test]
     fn test_inline_cases_with_failure() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
-        args.insert("cases".to_string(), r#"[
+        args.insert(
+            "cases".to_string(),
+            r#"[
             {
                 "name": "pass_test",
                 "context": {"name": "Alice"},
@@ -1771,7 +1939,9 @@ mod tests {
                 "context": {"name": "Bob"},
                 "expected": "Hi Bob!"
             }
-        ]"#.to_string());
+        ]"#
+            .to_string(),
+        );
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
@@ -1798,11 +1968,17 @@ mod tests {
 
     #[test]
     fn test_stop_on_first_fail() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         args.insert("stop_on_first_fail".to_string(), "true".to_string());
-        args.insert("cases".to_string(), r#"[
+        args.insert(
+            "cases".to_string(),
+            r#"[
             {
                 "name": "fail_test",
                 "context": {"name": "Bob"},
@@ -1813,7 +1989,9 @@ mod tests {
                 "context": {"name": "Charlie"},
                 "expected": "Hello Charlie!"
             }
-        ]"#.to_string());
+        ]"#
+            .to_string(),
+        );
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
@@ -1838,17 +2016,25 @@ mod tests {
 
     #[test]
     fn test_capture_output_modes() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         args.insert("capture_output".to_string(), "full".to_string());
-        args.insert("cases".to_string(), r#"[
+        args.insert(
+            "cases".to_string(),
+            r#"[
             {
                 "name": "pass_test",
                 "context": {"name": "Alice"},
                 "expected": "Hello Alice!"
             }
-        ]"#.to_string());
+        ]"#
+            .to_string(),
+        );
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
@@ -1868,10 +2054,19 @@ mod tests {
 
     #[test]
     fn test_contains_and_not_contains() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
-        args.insert("template".to_string(), "Hello {{ name }}! Welcome to {{ place }}.".to_string());
-        args.insert("cases".to_string(), r#"[
+        args.insert(
+            "template".to_string(),
+            "Hello {{ name }}! Welcome to {{ place }}.".to_string(),
+        );
+        args.insert(
+            "cases".to_string(),
+            r#"[
             {
                 "name": "contains_pass",
                 "context": {"name": "Alice", "place": "Earth"},
@@ -1887,7 +2082,9 @@ mod tests {
                 "context": {"name": "Charlie", "place": "Earth"},
                 "not_contains": "Earth"
             }
-        ]"#.to_string());
+        ]"#
+            .to_string(),
+        );
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
@@ -1911,7 +2108,11 @@ mod tests {
 
     #[test]
     fn test_no_cases_provided_error() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         // No cases, cases_file, or default file
@@ -1935,7 +2136,11 @@ mod tests {
 
     #[test]
     fn test_invalid_cases_json() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
         args.insert("cases".to_string(), "{invalid json}".to_string());
@@ -1960,15 +2165,26 @@ mod tests {
 
     #[test]
     fn test_template_render_error() {
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
-        args.insert("template".to_string(), "Hello {{ missing_var }}!".to_string());
-        args.insert("cases".to_string(), r#"[
+        args.insert(
+            "template".to_string(),
+            "Hello {{ missing_var }}!".to_string(),
+        );
+        args.insert(
+            "cases".to_string(),
+            r#"[
             {
                 "name": "missing_var",
                 "context": {}
             }
-        ]"#.to_string());
+        ]"#
+            .to_string(),
+        );
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
@@ -1995,18 +2211,29 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let cases_file_path = temp_dir.path().join("test_cases.json");
         let mut cases_file = File::create(&cases_file_path).unwrap();
-        cases_file.write_all(br#"[
+        cases_file
+            .write_all(
+                br#"[
             {
                 "name": "file_test",
                 "context": {"name": "FileTest"},
                 "expected": "Hello FileTest!"
             }
-        ]"#).unwrap();
+        ]"#,
+            )
+            .unwrap();
 
-        let handle = TemplateHandle { template_path: None, is_help_request: false, help_verb: None };
+        let handle = TemplateHandle {
+            template_path: None,
+            is_help_request: false,
+            help_verb: None,
+        };
         let mut args = HashMap::new();
         args.insert("template".to_string(), "Hello {{ name }}!".to_string());
-        args.insert("cases_file".to_string(), cases_file_path.to_string_lossy().to_string());
+        args.insert(
+            "cases_file".to_string(),
+            cases_file_path.to_string_lossy().to_string(),
+        );
 
         let (mut stdin, mut stdout, mut stderr) = create_test_io();
         let mut io = IoStreams {
@@ -2034,7 +2261,7 @@ mod tests {
         // Test: template://--help
         let url = Url::parse("template://--help")?;
         let handle = TemplateHandle::from_url(url)?;
-        
+
         assert!(handle.is_help_request);
         assert!(handle.help_verb.is_none());
         assert!(handle.template_path.is_none());
@@ -2053,7 +2280,7 @@ mod tests {
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         assert!(output.starts_with("Handle: template"));
-        
+
         Ok(())
     }
 
@@ -2062,7 +2289,7 @@ mod tests {
         // Test: template://-h
         let url = Url::parse("template://-h")?;
         let handle = TemplateHandle::from_url(url)?;
-        
+
         assert!(handle.is_help_request);
         assert!(handle.help_verb.is_none());
 
@@ -2080,7 +2307,7 @@ mod tests {
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         assert!(output.starts_with("Handle: template"));
-        
+
         Ok(())
     }
 
@@ -2184,7 +2411,7 @@ mod tests {
         // Test: template://--help?help=render
         let url = Url::parse("template://--help?help=render")?;
         let handle = TemplateHandle::from_url(url)?;
-        
+
         assert!(handle.is_help_request);
         assert_eq!(handle.help_verb, Some("render".to_string()));
 
@@ -2211,7 +2438,7 @@ mod tests {
         // Test: template://--help?help=validate
         let url = Url::parse("template://--help?help=validate")?;
         let handle = TemplateHandle::from_url(url)?;
-        
+
         assert!(handle.is_help_request);
         assert_eq!(handle.help_verb, Some("validate".to_string()));
 
@@ -2235,10 +2462,10 @@ mod tests {
 
     #[test]
     fn test_verb_specific_help_test() -> Result<()> {
-        // Test: template://--help?help=test 
+        // Test: template://--help?help=test
         let url = Url::parse("template://--help?help=test")?;
         let handle = TemplateHandle::from_url(url)?;
-        
+
         assert!(handle.is_help_request);
         assert_eq!(handle.help_verb, Some("test".to_string()));
 
@@ -2265,7 +2492,7 @@ mod tests {
         // Test: template://--help?help=unknown
         let url = Url::parse("template://--help?help=unknown")?;
         let handle = TemplateHandle::from_url(url)?;
-        
+
         assert!(handle.is_help_request);
         assert_eq!(handle.help_verb, Some("unknown".to_string()));
 
@@ -2292,7 +2519,7 @@ mod tests {
         // Test various URL patterns that should trigger help
         let test_cases = vec![
             "template://--help",
-            "template://-h", 
+            "template://-h",
             "template://myfile.html.--help",
             "template://inline.--help",
             "template:///path/to/file.txt.--help",
@@ -2301,7 +2528,11 @@ mod tests {
         for test_url in test_cases {
             let url = Url::parse(test_url)?;
             let handle = TemplateHandle::from_url(url)?;
-            assert!(handle.is_help_request, "URL {} should trigger help", test_url);
+            assert!(
+                handle.is_help_request,
+                "URL {} should trigger help",
+                test_url
+            );
         }
 
         Ok(())
@@ -2320,7 +2551,11 @@ mod tests {
         for test_url in test_cases {
             let url = Url::parse(test_url)?;
             let handle = TemplateHandle::from_url(url)?;
-            assert!(!handle.is_help_request, "URL {} should NOT trigger help", test_url);
+            assert!(
+                !handle.is_help_request,
+                "URL {} should NOT trigger help",
+                test_url
+            );
         }
 
         Ok(())
@@ -2386,4 +2621,3 @@ mod tests {
         Ok(())
     }
 }
-
