@@ -1,15 +1,15 @@
 // src/handles/logh.rs
-use anyhow::{Result, bail, Context};
-use url::Url;
+use anyhow::{Context, Result, bail};
 use serde_json::json;
-use std::path::{Path, PathBuf};
 use std::fs::{File, metadata};
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Read};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use url::Url;
 
 use crate::core::{
     help::{self, HandleHelp, VerbDetail, VerbHelp},
-    registry::{Handle, IoStreams, Args},
+    registry::{Args, Handle, IoStreams},
     status::Status,
 };
 use std::io::Write;
@@ -71,7 +71,7 @@ fn normalize_path(path: PathBuf) -> PathBuf {
             _ => {}
         }
     }
-    
+
     if components.is_empty() || (components.len() == 1 && components[0].is_empty()) {
         PathBuf::from("/")
     } else if components[0].is_empty() {
@@ -115,7 +115,11 @@ impl LogHandle {
         let path = u.path();
 
         if help::is_help_flag(host.split('=').next().unwrap_or(host)) {
-            return Ok(Self { target: LogTarget { source: LogSourceKind::File(PathBuf::new()) } });
+            return Ok(Self {
+                target: LogTarget {
+                    source: LogSourceKind::File(PathBuf::new()),
+                },
+            });
         }
 
         if host == "svc" {
@@ -123,7 +127,11 @@ impl LogHandle {
             if service.is_empty() {
                 bail!("Service name cannot be empty for log://svc/<service> URLs");
             }
-            return Ok(Self { target: LogTarget { source: LogSourceKind::Service(service.to_string()) } });
+            return Ok(Self {
+                target: LogTarget {
+                    source: LogSourceKind::Service(service.to_string()),
+                },
+            });
         }
 
         if path.is_empty() || path == "/" {
@@ -139,11 +147,20 @@ impl LogHandle {
             ),
         };
 
-        Ok(Self { target: LogTarget { source: LogSourceKind::File(normalize_path(raw)) } })
+        Ok(Self {
+            target: LogTarget {
+                source: LogSourceKind::File(normalize_path(raw)),
+            },
+        })
     }
 
     /// Writes the approved help for `help`, `--help`, `-h` and `--help=<verb>`.
-    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+    fn check_and_display_help(
+        &self,
+        verb: &str,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<Option<Status>> {
         let help_verb = if help::HELP_ALIASES.contains(&verb) {
             args.get("verb").map(String::as_str)
         } else if let Some(v) = verb.strip_prefix("--help=") {
@@ -151,7 +168,11 @@ impl LogHandle {
         } else {
             return Ok(None);
         };
-        write!(io.stdout, "{}", help::render_legacy("log", &LOG_HELP, self.verbs(), help_verb))?;
+        write!(
+            io.stdout,
+            "{}",
+            help::render_legacy("log", &LOG_HELP, self.verbs(), help_verb)
+        )?;
         Ok(Some(Status::ok()))
     }
 
@@ -170,36 +191,42 @@ impl LogHandle {
 
     fn tail(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Parse arguments
-        let lines = args.get("lines")
+        let lines = args
+            .get("lines")
             .map(|s| s.parse::<usize>().unwrap_or(100))
             .unwrap_or(100);
-            
+
         // Validate lines parameter
         if lines == 0 {
             writeln!(io.stderr, "Error: lines must be greater than 0")?;
             return Ok(Status::err(2, "invalid argument: lines"));
         }
-        
+
         let pattern = args.get("pattern");
         let mode = args.get("mode").map(|s| s.as_str()).unwrap_or("raw");
-        
+
         // Validate mode parameter
         if mode != "raw" && mode != "json" {
             writeln!(io.stderr, "Error: mode must be 'raw' or 'json'")?;
             return Ok(Status::err(2, "invalid argument: mode"));
         }
-        
+
         match &self.target.source {
-            LogSourceKind::File(path) => {
-                self.tail_file(path, lines, pattern, mode, io)
-            }
+            LogSourceKind::File(path) => self.tail_file(path, lines, pattern, mode, io),
             LogSourceKind::Service(service_name) => {
                 self.tail_service(service_name, lines, pattern, mode, io)
             }
         }
     }
 
-    fn tail_service(&self, service: &str, lines: usize, pattern: Option<&String>, mode: &str, io: &mut IoStreams) -> Result<Status> {
+    fn tail_service(
+        &self,
+        service: &str,
+        lines: usize,
+        pattern: Option<&String>,
+        mode: &str,
+        io: &mut IoStreams,
+    ) -> Result<Status> {
         let output = Command::new("journalctl")
             .args(Self::journalctl_args(service, lines))
             .stdin(Stdio::null())
@@ -216,12 +243,16 @@ impl LogHandle {
                 format!("journalctl failed for service {}: {}", service, stderr)
             };
             if mode == "json" {
-                writeln!(io.stdout, "{}", json!({
-                    "error": error_msg,
-                    "requested_lines": lines,
-                    "returned_lines": 0,
-                    "service": service
-                }))?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    json!({
+                        "error": error_msg,
+                        "requested_lines": lines,
+                        "returned_lines": 0,
+                        "service": service
+                    })
+                )?;
             } else {
                 writeln!(io.stderr, "Error: {}", error_msg)?;
             }
@@ -231,13 +262,17 @@ impl LogHandle {
         let text = String::from_utf8_lossy(&output.stdout);
         let filtered = Self::filter_lines(text.lines().map(str::to_string).collect(), pattern);
         if mode == "json" {
-            writeln!(io.stdout, "{}", json!({
-                "lines": filtered,
-                "pattern": pattern,
-                "requested_lines": lines,
-                "returned_lines": filtered.len(),
-                "service": service
-            }))?;
+            writeln!(
+                io.stdout,
+                "{}",
+                json!({
+                    "lines": filtered,
+                    "pattern": pattern,
+                    "requested_lines": lines,
+                    "returned_lines": filtered.len(),
+                    "service": service
+                })
+            )?;
         } else {
             for line in filtered {
                 writeln!(io.stdout, "{}", line)?;
@@ -249,12 +284,22 @@ impl LogHandle {
     /// Keeps only lines containing `pattern`, or all lines when it is None.
     fn filter_lines(lines: Vec<String>, pattern: Option<&String>) -> Vec<String> {
         match pattern {
-            Some(p) => lines.into_iter().filter(|l| l.contains(p.as_str())).collect(),
+            Some(p) => lines
+                .into_iter()
+                .filter(|l| l.contains(p.as_str()))
+                .collect(),
             None => lines,
         }
     }
 
-    fn tail_file(&self, path: &Path, lines: usize, pattern: Option<&String>, mode: &str, io: &mut IoStreams) -> Result<Status> {
+    fn tail_file(
+        &self,
+        path: &Path,
+        lines: usize,
+        pattern: Option<&String>,
+        mode: &str,
+        io: &mut IoStreams,
+    ) -> Result<Status> {
         // Check if file exists
         if !path.exists() {
             let error_msg = format!("Log file does not exist: {}", path.display());
@@ -271,7 +316,7 @@ impl LogHandle {
             }
             return Ok(Status::err(2, &error_msg));
         }
-        
+
         // Check if path is a file
         if !path.is_file() {
             let error_msg = format!("{} is not a file", path.display());
@@ -291,10 +336,10 @@ impl LogHandle {
 
         // Use efficient tail algorithm
         let tail_lines = self.efficient_tail(path, lines)?;
-        
+
         // Apply pattern filter if specified
         let filtered_lines = Self::filter_lines(tail_lines, pattern);
-        
+
         // Output based on mode
         if mode == "json" {
             let json_output = json!({
@@ -311,7 +356,7 @@ impl LogHandle {
                 writeln!(io.stdout, "{}", line)?;
             }
         }
-        
+
         Ok(Status::ok())
     }
 
@@ -319,40 +364,47 @@ impl LogHandle {
     fn efficient_tail(&self, path: &Path, num_lines: usize) -> Result<Vec<String>> {
         let file = File::open(path)
             .with_context(|| format!("Failed to open log file: {}", path.display()))?;
-        
+
         let file_size = metadata(path)
             .with_context(|| format!("Failed to get file metadata: {}", path.display()))?
             .len();
-            
+
         if file_size == 0 {
             return Ok(Vec::new());
         }
-        
+
         // For small files, just read all lines
-        if file_size < 64 * 1024 { // 64KB threshold
+        if file_size < 64 * 1024 {
+            // 64KB threshold
             return self.read_all_lines_and_tail(file, num_lines);
         }
-        
+
         // For larger files, use efficient backward scanning
         self.backward_scan_tail(file, file_size, num_lines)
     }
-    
+
     fn read_all_lines_and_tail(&self, file: File, num_lines: usize) -> Result<Vec<String>> {
         let reader = BufReader::new(file);
-        let all_lines: Vec<String> = reader.lines()
+        let all_lines: Vec<String> = reader
+            .lines()
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to read file lines")?;
-        
+
         let start = if all_lines.len() > num_lines {
             all_lines.len() - num_lines
         } else {
             0
         };
-        
+
         Ok(all_lines[start..].to_vec())
     }
-    
-    fn backward_scan_tail(&self, mut file: File, file_size: u64, num_lines: usize) -> Result<Vec<String>> {
+
+    fn backward_scan_tail(
+        &self,
+        mut file: File,
+        file_size: u64,
+        num_lines: usize,
+    ) -> Result<Vec<String>> {
         const CHUNK_SIZE: usize = 8192; // 8KB chunks
         let file_size_usize = file_size as usize;
         let chunk_size = std::cmp::min(CHUNK_SIZE, file_size_usize);
@@ -396,25 +448,25 @@ impl LogHandle {
 
             pos = chunk_start;
         }
-        
+
         // Convert bytes to string with lossy UTF-8 conversion
         let content = String::from_utf8_lossy(&buffer);
         let all_lines: Vec<&str> = content.lines().collect();
-        
+
         // Handle case where file doesn't end with newline
         let lines = all_lines;
         if !buffer.is_empty() && buffer[buffer.len() - 1] != b'\n' && lines_found > 0 {
             // Last line doesn't end with newline, so we have one more line than newline count
             lines_found += 1;
         }
-        
+
         // Extract the last N lines
         let start = if lines_found > num_lines {
             lines.len() - num_lines
         } else {
             0
         };
-        
+
         Ok(lines[start..].iter().map(|s| s.to_string()).collect())
     }
 }
@@ -433,9 +485,9 @@ impl Handle for LogHandle {
         if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
-        
+
         match verb {
-            "tail"   => self.tail(args, io),
+            "tail" => self.tail(args, io),
             _ => bail!("unknown verb for log://: {}", verb),
         }
     }
@@ -446,22 +498,39 @@ mod tests {
     use std::io::Cursor;
 
     fn source(u: &str) -> LogSourceKind {
-        LogHandle::from_url(&Url::parse(u).unwrap()).unwrap().target.source
+        LogHandle::from_url(&Url::parse(u).unwrap())
+            .unwrap()
+            .target
+            .source
     }
 
     fn run(h: &LogHandle, verb: &str, args: &Args) -> (Status, String) {
-        let (mut i, mut o, mut e) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()), Cursor::new(Vec::new()));
-        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+        let (mut i, mut o, mut e) = (
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+        );
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
         let st = h.call(verb, args, &mut io).unwrap();
         (st, String::from_utf8(o.into_inner()).unwrap())
     }
 
     #[test]
     fn from_url_sources() {
-        assert!(matches!(source("log:///var/log/syslog"), LogSourceKind::File(p) if p == Path::new("/var/log/syslog")));
-        assert!(matches!(source("log://./logs/app.log"), LogSourceKind::File(p) if p == Path::new("logs/app.log")));
+        assert!(
+            matches!(source("log:///var/log/syslog"), LogSourceKind::File(p) if p == Path::new("/var/log/syslog"))
+        );
+        assert!(
+            matches!(source("log://./logs/app.log"), LogSourceKind::File(p) if p == Path::new("logs/app.log"))
+        );
         assert!(matches!(source("log://svc/nginx"), LogSourceKind::Service(s) if s == "nginx"));
-        assert!(matches!(source("log:///home/x/my-hosts"), LogSourceKind::File(p) if p == Path::new("/home/x/my-hosts")));
+        assert!(
+            matches!(source("log:///home/x/my-hosts"), LogSourceKind::File(p) if p == Path::new("/home/x/my-hosts"))
+        );
         assert!(LogHandle::from_url(&Url::parse("log://svc/").unwrap()).is_err());
         assert!(LogHandle::from_url(&Url::parse("log://var/log/syslog").unwrap()).is_err());
     }
@@ -493,7 +562,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let p = dir.path().join("app.log");
         std::fs::write(&p, "a ok\nb ERROR one\nc ok\nd ERROR two\n").unwrap();
-        let h = LogHandle { target: LogTarget { source: LogSourceKind::File(p) } };
+        let h = LogHandle {
+            target: LogTarget {
+                source: LogSourceKind::File(p),
+            },
+        };
         let mut args = Args::new();
         args.insert("lines".into(), "3".into());
         args.insert("pattern".into(), "ERROR".into());

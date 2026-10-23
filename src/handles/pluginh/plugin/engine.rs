@@ -1,17 +1,18 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use super::registry::{parse_sha256, RegistryClient};
+use super::registry::{RegistryClient, parse_sha256};
 use super::store::{
-    artifact_relative_path, create_dirs_no_follow, create_new_no_follow, sanitized_mode, PluginStore,
+    PluginStore, artifact_relative_path, create_dirs_no_follow, create_new_no_follow,
+    sanitized_mode,
 };
 use super::types::{
-    action_types, error_codes, error_code_to_numeric, Action, ArtifactCandidate, Envelope,
-    Mode, PlanDecision, PluginOpArgs, PluginResult, SourceSpec, StructuredError, VerifyMode,
-    ArtifactInfo, PathInfo, TargetInfo, ArgsInfo,
+    Action, ArgsInfo, ArtifactCandidate, ArtifactInfo, Envelope, Mode, PathInfo, PlanDecision,
+    PluginOpArgs, PluginResult, SourceSpec, StructuredError, TargetInfo, VerifyMode, action_types,
+    error_code_to_numeric, error_codes,
 };
 
 /// Integrity rule for a resolved artifact (SEC-07).
@@ -24,7 +25,8 @@ use super::types::{
 /// Transport rules (HTTPS only) are enforced by the registry client and
 /// apply whatever `verify` says.
 fn check_integrity_metadata(args: &PluginOpArgs, candidate: &ArtifactCandidate) -> Result<()> {
-    if !matches!(args.verify, VerifyMode::Sha256) || matches!(args.source, SourceSpec::File { .. }) {
+    if !matches!(args.verify, VerifyMode::Sha256) || matches!(args.source, SourceSpec::File { .. })
+    {
         return Ok(());
     }
     match candidate.sha256.as_deref() {
@@ -33,7 +35,9 @@ fn check_integrity_metadata(args: &PluginOpArgs, candidate: &ArtifactCandidate) 
             "No trusted SHA-256 is available for a source=url artifact, so verify=sha256 cannot be satisfied; \
              install from a registry, or pass verify=none to install without integrity verification"
         )),
-        _ => Err(anyhow!("Registry entry has no SHA-256 for this artifact; refusing to install an unverifiable plugin")),
+        _ => Err(anyhow!(
+            "Registry entry has no SHA-256 for this artifact; refusing to install an unverifiable plugin"
+        )),
     }
 }
 
@@ -67,7 +71,7 @@ impl ExecutionEngine {
     pub fn run_plugin_op(&mut self, args: PluginOpArgs) -> Envelope {
         let start_time = Instant::now();
         let started_at = Utc::now().to_rfc3339();
-        
+
         let op = match args.mode {
             Mode::Install => "plugin.install".to_string(),
             Mode::Update => "plugin.update".to_string(),
@@ -80,14 +84,15 @@ impl ExecutionEngine {
 
         // Execute the operation
         let execution_result = self.execute_operation(&args);
-        
+
         let finished_at = Utc::now().to_rfc3339();
 
         // Build envelope based on result
         match execution_result {
             Ok((changed, result, actions, installed_metadata)) => {
-                let (target_info, args_info) = self.build_envelope_metadata(&args, installed_metadata.as_ref());
-                
+                let (target_info, args_info) =
+                    self.build_envelope_metadata(&args, installed_metadata.as_ref());
+
                 Envelope {
                     op,
                     ok: true,
@@ -104,7 +109,7 @@ impl ExecutionEngine {
             Err(err) => {
                 let (error_code, numeric_code, actions) = self.extract_error_info(&err);
                 let (target_info, args_info) = self.build_envelope_metadata(&args, None);
-                
+
                 Envelope {
                     op,
                     ok: false,
@@ -134,7 +139,15 @@ impl ExecutionEngine {
     }
 
     /// Execute the plugin operation with deterministic action ordering
-    fn execute_operation(&mut self, args: &PluginOpArgs) -> Result<(bool, PluginResult, Vec<Action>, Option<super::types::InstalledPlugin>)> {
+    fn execute_operation(
+        &mut self,
+        args: &PluginOpArgs,
+    ) -> Result<(
+        bool,
+        PluginResult,
+        Vec<Action>,
+        Option<super::types::InstalledPlugin>,
+    )> {
         let mut actions = Vec::new();
 
         match args.mode {
@@ -146,14 +159,24 @@ impl ExecutionEngine {
                 let installed_metadata = self.check_installed(args, &mut actions)?;
 
                 // Step 3: Compare versions and make plan decision
-                let plan_decision = self.make_plan_decision(args, installed_metadata.as_ref(), &candidate, &mut actions)?;
+                let plan_decision = self.make_plan_decision(
+                    args,
+                    installed_metadata.as_ref(),
+                    &candidate,
+                    &mut actions,
+                )?;
 
                 // Step 4: Execute plan
                 match plan_decision {
                     PlanDecision::Install { version, artifact } => {
                         let previous = installed_metadata.as_ref().map(|m| m.version.clone());
                         if args.dry_run {
-                            self.add_plan_action(&mut actions, &artifact, previous.as_deref(), &version);
+                            self.add_plan_action(
+                                &mut actions,
+                                &artifact,
+                                previous.as_deref(),
+                                &version,
+                            );
                             let result = PluginResult {
                                 removed: None,
                                 purged: None,
@@ -165,13 +188,23 @@ impl ExecutionEngine {
                             };
                             return Ok((false, result, actions, installed_metadata));
                         }
-                        let (mut result, metadata) = self.execute_install(args, &version, &artifact, &mut actions)?;
+                        let (mut result, metadata) =
+                            self.execute_install(args, &version, &artifact, &mut actions)?;
                         result.previous_version = previous;
                         Ok((true, result, actions, Some(metadata)))
                     }
-                    PlanDecision::Update { from_version, to_version, artifact } => {
+                    PlanDecision::Update {
+                        from_version,
+                        to_version,
+                        artifact,
+                    } => {
                         if args.dry_run {
-                            self.add_plan_action(&mut actions, &artifact, Some(&from_version), &to_version);
+                            self.add_plan_action(
+                                &mut actions,
+                                &artifact,
+                                Some(&from_version),
+                                &to_version,
+                            );
                             let result = PluginResult {
                                 removed: None,
                                 purged: None,
@@ -183,11 +216,24 @@ impl ExecutionEngine {
                             };
                             return Ok((false, result, actions, installed_metadata));
                         }
-                        let (result, metadata) = self.execute_update(args, &from_version, &to_version, &artifact, &mut actions)?;
+                        let (result, metadata) = self.execute_update(
+                            args,
+                            &from_version,
+                            &to_version,
+                            &artifact,
+                            &mut actions,
+                        )?;
                         Ok((true, result, actions, Some(metadata)))
                     }
                     PlanDecision::NoOp { reason } => {
-                        self.add_action(&mut actions, "a1", action_types::INSTALL, "noop", true, Some(serde_json::json!({"reason": reason})));
+                        self.add_action(
+                            &mut actions,
+                            "a1",
+                            action_types::INSTALL,
+                            "noop",
+                            true,
+                            Some(serde_json::json!({"reason": reason})),
+                        );
                         let result = PluginResult {
                             removed: None,
                             purged: None,
@@ -205,35 +251,46 @@ impl ExecutionEngine {
                 }
             }
             Mode::Remove => {
-                let (changed, result, installed_metadata) = self.execute_remove(args, &mut actions)?;
+                let (changed, result, installed_metadata) =
+                    self.execute_remove(args, &mut actions)?;
                 Ok((changed, result, actions, installed_metadata))
             }
             Mode::Enable => {
-                let (changed, result, installed_metadata) = self.execute_enable(args, &mut actions)?;
+                let (changed, result, installed_metadata) =
+                    self.execute_enable(args, &mut actions)?;
                 Ok((changed, result, actions, installed_metadata))
             }
             Mode::Disable => {
                 // Disable mode should not use this path - it uses the state manager directly
-                Err(anyhow!("Disable should use PluginStateManager::set_enabled_state instead"))
+                Err(anyhow!(
+                    "Disable should use PluginStateManager::set_enabled_state instead"
+                ))
             }
         }
     }
 
     /// Resolve plugin candidate from source
-    fn resolve_candidate(&mut self, args: &PluginOpArgs, actions: &mut Vec<Action>) -> Result<ArtifactCandidate> {
+    fn resolve_candidate(
+        &mut self,
+        args: &PluginOpArgs,
+        actions: &mut Vec<Action>,
+    ) -> Result<ArtifactCandidate> {
         // The id and the registry-supplied version become store path
         // components; reject unsafe values before anything is fetched.
         let result = super::store::validate_path_component("id", &args.plugin_id)
-            .and_then(|_| self.registry_client.resolve_plugin(
-                &args.plugin_id,
-                &args.source,
-                &args.requested_version,
-                &args.verify,
-            ))
+            .and_then(|_| {
+                self.registry_client.resolve_plugin(
+                    &args.plugin_id,
+                    &args.source,
+                    &args.requested_version,
+                    &args.verify,
+                )
+            })
             .and_then(|c| {
                 super::store::validate_path_component("version", &c.manifest.version)?;
-                check_integrity_metadata(args, &c)
-                    .map_err(|e| self.create_error(error_codes::PLUGIN_VERIFY_FAILED, &e.to_string()))?;
+                check_integrity_metadata(args, &c).map_err(|e| {
+                    self.create_error(error_codes::PLUGIN_VERIFY_FAILED, &e.to_string())
+                })?;
                 Ok(c)
             });
 
@@ -265,7 +322,11 @@ impl ExecutionEngine {
     }
 
     /// Check if plugin is installed
-    fn check_installed(&mut self, args: &PluginOpArgs, actions: &mut Vec<Action>) -> Result<Option<super::types::InstalledPlugin>> {
+    fn check_installed(
+        &mut self,
+        args: &PluginOpArgs,
+        actions: &mut Vec<Action>,
+    ) -> Result<Option<super::types::InstalledPlugin>> {
         let result = self.store.get_installed_metadata(&args.plugin_id);
 
         match &result {
@@ -334,8 +395,10 @@ impl ExecutionEngine {
         candidate: &ArtifactCandidate,
     ) -> Result<PlanDecision> {
         if let Some(installed_meta) = installed {
-            let comparison = self.registry_client.compare_versions(&installed_meta.version, &candidate.manifest.version);
-            
+            let comparison = self
+                .registry_client
+                .compare_versions(&installed_meta.version, &candidate.manifest.version);
+
             match comparison {
                 std::cmp::Ordering::Equal => {
                     if args.force {
@@ -345,7 +408,10 @@ impl ExecutionEngine {
                         })
                     } else {
                         Ok(PlanDecision::NoOp {
-                            reason: format!("Plugin already installed with version {}", installed_meta.version),
+                            reason: format!(
+                                "Plugin already installed with version {}",
+                                installed_meta.version
+                            ),
                         })
                     }
                 }
@@ -361,8 +427,7 @@ impl ExecutionEngine {
                             code: error_codes::PLUGIN_ALREADY_INSTALLED.to_string(),
                             message: format!(
                                 "Plugin already installed with newer version {} (requested: {})",
-                                installed_meta.version,
-                                candidate.manifest.version
+                                installed_meta.version, candidate.manifest.version
                             ),
                         })
                     }
@@ -395,7 +460,9 @@ impl ExecutionEngine {
             self.create_error(error_codes::PLUGIN_NOT_INSTALLED, "Plugin not installed")
         })?;
 
-        let comparison = self.registry_client.compare_versions(&installed_meta.version, &candidate.manifest.version);
+        let comparison = self
+            .registry_client
+            .compare_versions(&installed_meta.version, &candidate.manifest.version);
 
         match comparison {
             std::cmp::Ordering::Less => {
@@ -411,7 +478,10 @@ impl ExecutionEngine {
                 if args.strict {
                     Ok(PlanDecision::Error {
                         code: error_codes::PLUGIN_NO_UPDATE_AVAILABLE.to_string(),
-                        message: format!("No update available (current version: {})", installed_meta.version),
+                        message: format!(
+                            "No update available (current version: {})",
+                            installed_meta.version
+                        ),
                     })
                 } else {
                     Ok(PlanDecision::NoOp {
@@ -426,16 +496,14 @@ impl ExecutionEngine {
                         code: error_codes::PLUGIN_NO_UPDATE_AVAILABLE.to_string(),
                         message: format!(
                             "No update available - installed version {} is newer than available {}",
-                            installed_meta.version,
-                            candidate.manifest.version
+                            installed_meta.version, candidate.manifest.version
                         ),
                     })
                 } else {
                     Ok(PlanDecision::NoOp {
                         reason: format!(
                             "Plugin version {} is newer than available {}",
-                            installed_meta.version,
-                            candidate.manifest.version
+                            installed_meta.version, candidate.manifest.version
                         ),
                     })
                 }
@@ -510,17 +578,39 @@ impl ExecutionEngine {
             }
         };
 
-        self.add_action(actions, &format!("install-{}", actions.len()), action_types::INSTALL, "Plugin installed successfully", true, None);
+        self.add_action(
+            actions,
+            &format!("install-{}", actions.len()),
+            action_types::INSTALL,
+            "Plugin installed successfully",
+            true,
+            None,
+        );
 
         // Activate plugin
-        self.store.activate_version(&args.plugin_id, version)
+        self.store
+            .activate_version(&args.plugin_id, version)
             .map_err(|e| self.create_error(error_codes::PLUGIN_ACTIVATE_FAILED, &e.to_string()))?;
 
-        self.add_action(actions, &format!("activate-{}", actions.len()), action_types::ACTIVATE, "Plugin activated successfully", true, None);
+        self.add_action(
+            actions,
+            &format!("activate-{}", actions.len()),
+            action_types::ACTIVATE,
+            "Plugin activated successfully",
+            true,
+            None,
+        );
 
         // Cleanup
         let _ = self.store.cleanup_staging(&args.plugin_id);
-        self.add_action(actions, &format!("cleanup-{}", actions.len()), action_types::CLEANUP, "Staging cleanup completed", true, None);
+        self.add_action(
+            actions,
+            &format!("cleanup-{}", actions.len()),
+            action_types::CLEANUP,
+            "Staging cleanup completed",
+            true,
+            None,
+        );
 
         Ok((
             PluginResult {
@@ -558,7 +648,9 @@ impl ExecutionEngine {
             )),
             Err(install_error) => {
                 // Attempt rollback
-                if let Err(rollback_err) = self.store.rollback_to_previous(&args.plugin_id, to_version) {
+                if let Err(rollback_err) =
+                    self.store.rollback_to_previous(&args.plugin_id, to_version)
+                {
                     self.add_action(
                         actions,
                         &format!("rollback-{}", actions.len()),
@@ -584,7 +676,11 @@ impl ExecutionEngine {
     }
 
     /// Download artifact from URL or read from file
-    fn download_artifact(&mut self, artifact: &ArtifactCandidate, actions: &mut Vec<Action>) -> Result<Vec<u8>> {
+    fn download_artifact(
+        &mut self,
+        artifact: &ArtifactCandidate,
+        actions: &mut Vec<Action>,
+    ) -> Result<Vec<u8>> {
         if let Some(url) = &artifact.url {
             let result = self.registry_client.download_artifact(url);
             match &result {
@@ -609,7 +705,8 @@ impl ExecutionEngine {
                     );
                 }
             }
-            result.map_err(|e| self.create_error(error_codes::PLUGIN_DOWNLOAD_FAILED, &e.to_string()))
+            result
+                .map_err(|e| self.create_error(error_codes::PLUGIN_DOWNLOAD_FAILED, &e.to_string()))
         } else if let Some(path) = &artifact.path {
             let result = self.registry_client.read_file_artifact(path);
             match &result {
@@ -636,12 +733,21 @@ impl ExecutionEngine {
             }
             result.map_err(|e| self.create_error(error_codes::PLUGIN_IO_ERROR, &e.to_string()))
         } else {
-            Err(self.create_error(error_codes::PLUGIN_DOWNLOAD_FAILED, "No URL or path specified"))
+            Err(self.create_error(
+                error_codes::PLUGIN_DOWNLOAD_FAILED,
+                "No URL or path specified",
+            ))
         }
     }
 
     /// Verify artifact checksum
-    fn verify_artifact(&mut self, data: &[u8], args: &PluginOpArgs, artifact: &ArtifactCandidate, actions: &mut Vec<Action>) -> Result<()> {
+    fn verify_artifact(
+        &mut self,
+        data: &[u8],
+        args: &PluginOpArgs,
+        artifact: &ArtifactCandidate,
+        actions: &mut Vec<Action>,
+    ) -> Result<()> {
         if let Some(expected_sha256) = &artifact.sha256 {
             let result = self.registry_client.verify_checksum(data, expected_sha256);
             match &result {
@@ -668,12 +774,29 @@ impl ExecutionEngine {
             }
             result.map_err(|e| self.create_error(error_codes::PLUGIN_VERIFY_FAILED, &e.to_string()))
         } else if matches!(args.source, SourceSpec::File { .. }) {
-            self.add_action(actions, &format!("verify-{}", actions.len()), action_types::VERIFY, "Local file source: no checksum to verify", true, None);
+            self.add_action(
+                actions,
+                &format!("verify-{}", actions.len()),
+                action_types::VERIFY,
+                "Local file source: no checksum to verify",
+                true,
+                None,
+            );
             Ok(())
         } else {
             // Fail closed: a remote artifact is never installed unverified under verify=sha256
-            self.add_action(actions, &format!("verify-{}", actions.len()), action_types::VERIFY, "No trusted checksum available", false, None);
-            Err(self.create_error(error_codes::PLUGIN_VERIFY_FAILED, "No trusted SHA-256 for a remote artifact; refusing to install"))
+            self.add_action(
+                actions,
+                &format!("verify-{}", actions.len()),
+                action_types::VERIFY,
+                "No trusted checksum available",
+                false,
+                None,
+            );
+            Err(self.create_error(
+                error_codes::PLUGIN_VERIFY_FAILED,
+                "No trusted SHA-256 for a remote artifact; refusing to install",
+            ))
         }
     }
 
@@ -685,7 +808,9 @@ impl ExecutionEngine {
         artifact: &ArtifactCandidate,
         actions: &mut Vec<Action>,
     ) -> Result<std::path::PathBuf> {
-        let staging_dir = self.store.staging_dir(&args.plugin_id)
+        let staging_dir = self
+            .store
+            .staging_dir(&args.plugin_id)
             .map_err(|e| self.create_error(error_codes::PLUGIN_IO_ERROR, &e.to_string()))?;
 
         let extract_result = if artifact.kind == "tar.gz" {
@@ -717,7 +842,8 @@ impl ExecutionEngine {
             }
         }
 
-        extract_result.map_err(|e| self.create_error(error_codes::PLUGIN_EXTRACT_FAILED, &e.to_string()))
+        extract_result
+            .map_err(|e| self.create_error(error_codes::PLUGIN_EXTRACT_FAILED, &e.to_string()))
     }
 
     /// Extract tar.gz archive into the (new, empty) staging directory.
@@ -730,8 +856,8 @@ impl ExecutionEngine {
     /// 0644 or 0755 (no setuid/setgid/sticky, no group/other write).
     fn extract_tar_gz(&self, data: &[u8], staging_dir: &Path) -> Result<std::path::PathBuf> {
         use flate2::read::GzDecoder;
-        use tar::{Archive, EntryType};
         use std::io::Cursor;
+        use tar::{Archive, EntryType};
 
         let cursor = Cursor::new(data);
         let gz_decoder = GzDecoder::new(cursor);
@@ -740,7 +866,10 @@ impl ExecutionEngine {
         let entries = archive.entries().context("Failed to read tar.gz archive")?;
         for entry in entries {
             let mut entry = entry.context("Failed to read tar.gz archive entry")?;
-            let raw_path = entry.path().context("Invalid entry path in plugin artifact")?.into_owned();
+            let raw_path = entry
+                .path()
+                .context("Invalid entry path in plugin artifact")?
+                .into_owned();
             let Some(rel) = artifact_relative_path(&raw_path)? else {
                 continue; // "." / "./": the staging directory itself
             };
@@ -754,8 +883,9 @@ impl ExecutionEngine {
                         create_dirs_no_follow(staging_dir, parent)?;
                     }
                     let mode = entry.header().mode().unwrap_or(0o644);
-                    let mut out = create_new_no_follow(&staging_dir.join(&rel), sanitized_mode(mode))
-                        .with_context(|| format!("Failed to create plugin file {:?}", rel))?;
+                    let mut out =
+                        create_new_no_follow(&staging_dir.join(&rel), sanitized_mode(mode))
+                            .with_context(|| format!("Failed to create plugin file {:?}", rel))?;
                     std::io::copy(&mut entry, &mut out)
                         .with_context(|| format!("Failed to write plugin file {:?}", rel))?;
                 }
@@ -768,7 +898,8 @@ impl ExecutionEngine {
                 other => {
                     return Err(anyhow!(
                         "Refusing plugin artifact entry {:?}: unsupported entry type {:?}",
-                        raw_path, other
+                        raw_path,
+                        other
                     ));
                 }
             }
@@ -778,15 +909,26 @@ impl ExecutionEngine {
     }
 
     /// Extract single binary file
-    fn extract_binary(&self, data: &[u8], staging_dir: &Path, plugin_id: &str) -> Result<std::path::PathBuf> {
+    fn extract_binary(
+        &self,
+        data: &[u8],
+        staging_dir: &Path,
+        plugin_id: &str,
+    ) -> Result<std::path::PathBuf> {
         let binary_path = staging_dir.join(plugin_id);
         fs::write(&binary_path, data)
             .with_context(|| format!("Failed to write binary to: {}", binary_path.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&binary_path, fs::Permissions::from_mode(0o755))
-                .with_context(|| format!("Failed to make binary executable: {}", binary_path.display()))?;
+            fs::set_permissions(&binary_path, fs::Permissions::from_mode(0o755)).with_context(
+                || {
+                    format!(
+                        "Failed to make binary executable: {}",
+                        binary_path.display()
+                    )
+                },
+            )?;
         }
 
         Ok(staging_dir.to_path_buf())
@@ -846,7 +988,15 @@ impl ExecutionEngine {
     */
 
     /// Add action to actions list with deterministic ordering
-    fn add_action(&self, actions: &mut Vec<Action>, id: &str, action_type: &str, name: &str, ok: bool, details: Option<serde_json::Value>) {
+    fn add_action(
+        &self,
+        actions: &mut Vec<Action>,
+        id: &str,
+        action_type: &str,
+        name: &str,
+        ok: bool,
+        details: Option<serde_json::Value>,
+    ) {
         actions.push(Action {
             id: id.to_string(),
             action_type: action_type.to_string(),
@@ -868,9 +1018,10 @@ impl ExecutionEngine {
     /// Extract error information from error
     fn extract_error_info(&self, error: &anyhow::Error) -> (String, i32, Vec<Action>) {
         let error_str = error.to_string();
-        
+
         // Try to match known error patterns
-        let error_code = if error_str.contains("not found") || error_str.contains("not in registry") {
+        let error_code = if error_str.contains("not found") || error_str.contains("not in registry")
+        {
             error_codes::PLUGIN_NOT_FOUND
         } else if error_str.contains("timeout") {
             error_codes::PLUGIN_TIMEOUT
@@ -887,16 +1038,17 @@ impl ExecutionEngine {
         };
 
         let numeric_code = error_code_to_numeric(error_code);
-        
+
         (error_code.to_string(), numeric_code, vec![])
     }
 
     /// Check if error is retryable
     fn is_retryable_error(&self, error_code: &str) -> bool {
-        matches!(error_code, 
-            error_codes::PLUGIN_REGISTRY_UNAVAILABLE |
-            error_codes::PLUGIN_DOWNLOAD_FAILED |
-            error_codes::PLUGIN_TIMEOUT
+        matches!(
+            error_code,
+            error_codes::PLUGIN_REGISTRY_UNAVAILABLE
+                | error_codes::PLUGIN_DOWNLOAD_FAILED
+                | error_codes::PLUGIN_TIMEOUT
         )
     }
 
@@ -906,10 +1058,15 @@ impl ExecutionEngine {
     }
 
     /// Build envelope metadata (target and args info)
-    fn build_envelope_metadata(&self, args: &PluginOpArgs, installed: Option<&super::types::InstalledPlugin>) -> (TargetInfo, ArgsInfo) {
+    fn build_envelope_metadata(
+        &self,
+        args: &PluginOpArgs,
+        installed: Option<&super::types::InstalledPlugin>,
+    ) -> (TargetInfo, ArgsInfo) {
         let store = &self.store;
-        let install_root = PluginStore::default_plugins_dir().unwrap_or_else(|_| PathBuf::from("/tmp/resh-plugins"));
-        
+        let install_root = PluginStore::default_plugins_dir()
+            .unwrap_or_else(|_| PathBuf::from("/tmp/resh-plugins"));
+
         let target_info = TargetInfo {
             name: args.plugin_id.clone(),
             requested_name: args.plugin_id.clone(),
@@ -937,7 +1094,11 @@ impl ExecutionEngine {
     }
 
     /// Execute remove operation with deterministic action ordering
-    fn execute_remove(&mut self, args: &PluginOpArgs, actions: &mut Vec<Action>) -> Result<(bool, PluginResult, Option<super::types::InstalledPlugin>)> {
+    fn execute_remove(
+        &mut self,
+        args: &PluginOpArgs,
+        actions: &mut Vec<Action>,
+    ) -> Result<(bool, PluginResult, Option<super::types::InstalledPlugin>)> {
         // Step 1: Resolve installation (check if plugin exists)
         let installed_metadata = self.resolve_installation(args, actions)?;
 
@@ -949,12 +1110,33 @@ impl ExecutionEngine {
 
         if args.dry_run {
             // For dry run, simulate what would be removed
-            self.add_action(actions, "a4", "fs", "remove_manifest", true, Some(serde_json::json!({"dry_run": true})));
-            self.add_action(actions, "a5", "fs", "remove_bin", true, Some(serde_json::json!({"dry_run": true})));
+            self.add_action(
+                actions,
+                "a4",
+                "fs",
+                "remove_manifest",
+                true,
+                Some(serde_json::json!({"dry_run": true})),
+            );
+            self.add_action(
+                actions,
+                "a5",
+                "fs",
+                "remove_bin",
+                true,
+                Some(serde_json::json!({"dry_run": true})),
+            );
             if args.purge {
-                self.add_action(actions, "a7", "fs", "purge_state", true, Some(serde_json::json!({"dry_run": true})));
+                self.add_action(
+                    actions,
+                    "a7",
+                    "fs",
+                    "purge_state",
+                    true,
+                    Some(serde_json::json!({"dry_run": true})),
+                );
             }
-            
+
             let result = PluginResult {
                 removed: Some(false), // dry run, so not actually removed
                 purged: Some(false),
@@ -968,8 +1150,12 @@ impl ExecutionEngine {
         }
 
         // Acquire lock for atomic removal
-        let _lock_guard = self.store.create_lock(&args.plugin_id)
-            .map_err(|e| self.create_error(error_codes::PLUGIN_IO_ERROR, &format!("Failed to acquire lock: {}", e)))?;
+        let _lock_guard = self.store.create_lock(&args.plugin_id).map_err(|e| {
+            self.create_error(
+                error_codes::PLUGIN_IO_ERROR,
+                &format!("Failed to acquire lock: {}", e),
+            )
+        })?;
 
         // Step 4: Remove manifest
         self.remove_manifest(args, &installed_metadata, actions)?;
@@ -1002,7 +1188,11 @@ impl ExecutionEngine {
     }
 
     /// Step 1: Resolve installation
-    fn resolve_installation(&mut self, args: &PluginOpArgs, actions: &mut Vec<Action>) -> Result<super::types::InstalledPlugin> {
+    fn resolve_installation(
+        &mut self,
+        args: &PluginOpArgs,
+        actions: &mut Vec<Action>,
+    ) -> Result<super::types::InstalledPlugin> {
         match self.store.get_installed_metadata(&args.plugin_id) {
             Ok(Some(metadata)) => {
                 self.add_action(
@@ -1019,25 +1209,11 @@ impl ExecutionEngine {
                 Ok(metadata)
             }
             Ok(None) => {
-                self.add_action(
-                    actions,
-                    "a1",
-                    "check",
-                    "resolve_installation",
-                    false,
-                    None,
-                );
+                self.add_action(actions, "a1", "check", "resolve_installation", false, None);
                 Err(self.create_error(error_codes::PLUGIN_NOT_INSTALLED, "Plugin not installed"))
             }
             Err(err) => {
-                self.add_action(
-                    actions,
-                    "a1",
-                    "check",
-                    "resolve_installation",
-                    false,
-                    None,
-                );
+                self.add_action(actions, "a1", "check", "resolve_installation", false, None);
                 Err(self.create_error(error_codes::PLUGIN_IO_ERROR, &err.to_string()))
             }
         }
@@ -1045,12 +1221,13 @@ impl ExecutionEngine {
 
     /// Step 2: Check version guard
     fn check_version_guard(
-        &mut self, 
-        args: &PluginOpArgs, 
-        installed: &super::types::InstalledPlugin, 
-        actions: &mut Vec<Action>
+        &mut self,
+        args: &PluginOpArgs,
+        installed: &super::types::InstalledPlugin,
+        actions: &mut Vec<Action>,
     ) -> Result<()> {
-        if let super::types::RequestedVersion::Specific(requested_version) = &args.requested_version {
+        if let super::types::RequestedVersion::Specific(requested_version) = &args.requested_version
+        {
             if installed.version != *requested_version {
                 if args.force {
                     self.add_action(
@@ -1067,43 +1244,31 @@ impl ExecutionEngine {
                     );
                     return Ok(());
                 } else {
-                    self.add_action(
-                        actions,
-                        "a2",
-                        "check",
-                        "version_guard",
-                        false,
-                        None,
-                    );
+                    self.add_action(actions, "a2", "check", "version_guard", false, None);
                     return Err(self.create_error(
-                        error_codes::PLUGIN_VERSION_CONFLICT, 
-                        &format!("Installed version {} does not match requested version {}", 
-                                installed.version, requested_version)
+                        error_codes::PLUGIN_VERSION_CONFLICT,
+                        &format!(
+                            "Installed version {} does not match requested version {}",
+                            installed.version, requested_version
+                        ),
                     ));
                 }
             }
         }
-        
-        self.add_action(
-            actions,
-            "a2",
-            "check",
-            "version_guard",
-            true,
-            None,
-        );
+
+        self.add_action(actions, "a2", "check", "version_guard", true, None);
         Ok(())
     }
 
     /// Step 3: Check if plugin is in use
     fn check_in_use(
-        &mut self, 
-        args: &PluginOpArgs, 
-        installed: &super::types::InstalledPlugin, 
-        actions: &mut Vec<Action>
+        &mut self,
+        args: &PluginOpArgs,
+        installed: &super::types::InstalledPlugin,
+        actions: &mut Vec<Action>,
     ) -> Result<()> {
         let in_use = self.is_plugin_in_use(&args.plugin_id, installed)?;
-        
+
         if in_use {
             if args.force {
                 self.add_action(
@@ -1115,34 +1280,24 @@ impl ExecutionEngine {
                     Some(serde_json::json!({"forced": true})),
                 );
             } else {
-                self.add_action(
-                    actions,
-                    "a3",
-                    "check",
-                    "check_in_use",
-                    false,
-                    None,
-                );
+                self.add_action(actions, "a3", "check", "check_in_use", false, None);
                 return Err(self.create_error(
                     error_codes::PLUGIN_IN_USE,
-                    "Plugin is currently in use. Use force=true to remove anyway"
+                    "Plugin is currently in use. Use force=true to remove anyway",
                 ));
             }
         } else {
-            self.add_action(
-                actions,
-                "a3",
-                "check",
-                "check_in_use",
-                true,
-                None,
-            );
+            self.add_action(actions, "a3", "check", "check_in_use", true, None);
         }
         Ok(())
     }
 
     /// Check if plugin is currently in use
-    fn is_plugin_in_use(&self, plugin_id: &str, installed: &super::types::InstalledPlugin) -> Result<bool> {
+    fn is_plugin_in_use(
+        &self,
+        plugin_id: &str,
+        installed: &super::types::InstalledPlugin,
+    ) -> Result<bool> {
         // Check if binary is running (best effort)
         if let Some(ref bin_path) = installed.bin_path {
             // Use pgrep to check for running processes
@@ -1178,7 +1333,7 @@ impl ExecutionEngine {
                 }
             }
         }
-        
+
         Ok(false) // Not in use or couldn't determine
     }
 
@@ -1187,16 +1342,19 @@ impl ExecutionEngine {
         &mut self,
         args: &PluginOpArgs,
         installed: &super::types::InstalledPlugin,
-        actions: &mut Vec<Action>
+        actions: &mut Vec<Action>,
     ) -> Result<()> {
         // Remove the plugin using store
-        match self.store.remove_plugin(&args.plugin_id, Some(&installed.version)) {
+        match self
+            .store
+            .remove_plugin(&args.plugin_id, Some(&installed.version))
+        {
             Ok(removed_paths) => {
                 let paths: Vec<String> = removed_paths
                     .iter()
                     .map(|p| p.to_string_lossy().to_string())
                     .collect();
-                
+
                 self.add_action(
                     actions,
                     "a4",
@@ -1208,14 +1366,7 @@ impl ExecutionEngine {
                 Ok(())
             }
             Err(err) => {
-                self.add_action(
-                    actions,
-                    "a4",
-                    "fs",
-                    "remove_manifest",
-                    false,
-                    None,
-                );
+                self.add_action(actions, "a4", "fs", "remove_manifest", false, None);
                 Err(self.create_error(error_codes::PLUGIN_REMOVE_FAILED, &err.to_string()))
             }
         }
@@ -1226,7 +1377,7 @@ impl ExecutionEngine {
         &mut self,
         args: &PluginOpArgs,
         installed: &super::types::InstalledPlugin,
-        actions: &mut Vec<Action>
+        actions: &mut Vec<Action>,
     ) -> Result<()> {
         if let Some(ref bin_path) = installed.bin_path {
             let bin_pathbuf = PathBuf::from(bin_path);
@@ -1235,7 +1386,7 @@ impl ExecutionEngine {
                     Ok(_) => {
                         let metadata = fs::metadata(&bin_pathbuf).ok();
                         let size = metadata.map(|m| m.len()).unwrap_or(0);
-                        
+
                         self.add_action(
                             actions,
                             "a5",
@@ -1249,15 +1400,10 @@ impl ExecutionEngine {
                         );
                     }
                     Err(err) => {
-                        self.add_action(
-                            actions,
-                            "a5",
-                            "fs",
-                            "remove_bin",
-                            false,
-                            None,
+                        self.add_action(actions, "a5", "fs", "remove_bin", false, None);
+                        return Err(
+                            self.create_error(error_codes::PLUGIN_REMOVE_FAILED, &err.to_string())
                         );
-                        return Err(self.create_error(error_codes::PLUGIN_REMOVE_FAILED, &err.to_string()));
                     }
                 }
             } else {
@@ -1288,10 +1434,13 @@ impl ExecutionEngine {
         &mut self,
         args: &PluginOpArgs,
         installed: &super::types::InstalledPlugin,
-        actions: &mut Vec<Action>
+        actions: &mut Vec<Action>,
     ) -> Result<()> {
         // List and remove any additional plugin files
-        match self.store.list_plugin_files(&args.plugin_id, &installed.version) {
+        match self
+            .store
+            .list_plugin_files(&args.plugin_id, &installed.version)
+        {
             Ok(files) => {
                 let file_count = files.len();
                 self.add_action(
@@ -1326,7 +1475,7 @@ impl ExecutionEngine {
                     .iter()
                     .map(|p| p.to_string_lossy().to_string())
                     .collect();
-                
+
                 self.add_action(
                     actions,
                     "a7",
@@ -1337,14 +1486,7 @@ impl ExecutionEngine {
                 );
             }
             Err(err) => {
-                self.add_action(
-                    actions,
-                    "a7",
-                    "fs",
-                    "purge_state",
-                    false,
-                    None,
-                );
+                self.add_action(actions, "a7", "fs", "purge_state", false, None);
                 return Err(self.create_error(error_codes::PLUGIN_REMOVE_FAILED, &err.to_string()));
             }
         }
@@ -1356,14 +1498,7 @@ impl ExecutionEngine {
         // Remove lock file and cleanup
         match self.store.remove_lock(&args.plugin_id) {
             Ok(_) => {
-                self.add_action(
-                    actions,
-                    "a8",
-                    "internal",
-                    "sync_registry",
-                    true,
-                    None,
-                );
+                self.add_action(actions, "a8", "internal", "sync_registry", true, None);
             }
             Err(err) => {
                 // Non-critical error
@@ -1381,7 +1516,11 @@ impl ExecutionEngine {
     }
 
     /// Execute enable operation with deterministic action ordering
-    fn execute_enable(&mut self, args: &PluginOpArgs, _actions: &mut Vec<Action>) -> Result<(bool, PluginResult, Option<super::types::InstalledPlugin>)> {
+    fn execute_enable(
+        &mut self,
+        args: &PluginOpArgs,
+        _actions: &mut Vec<Action>,
+    ) -> Result<(bool, PluginResult, Option<super::types::InstalledPlugin>)> {
         // This method is just a stub for the main execute_operation flow
         // The actual enable logic is in run_enable_operation
         Err(anyhow!("Enable should use run_enable_operation instead"))
@@ -1389,114 +1528,222 @@ impl ExecutionEngine {
 
     /// Run enable operation and return enable-specific envelope
     pub fn run_enable_operation(&mut self, args: PluginOpArgs) -> super::types::EnableEnvelope {
-        use super::types::{action_types, error_codes, EnableEnvelope, EnableTargetInfo, EnableResult, EnableAction, EnableError};
-        
+        use super::types::{
+            EnableAction, EnableEnvelope, EnableError, EnableResult, EnableTargetInfo,
+            action_types, error_codes,
+        };
+
         let mut actions = Vec::new();
-        
+
         // Step 1: Resolve plugin ID and validate
-        self.add_enable_action(&mut actions, "resolve", None, "ok", Some("Validated plugin ID".to_string()));
-        
+        self.add_enable_action(
+            &mut actions,
+            "resolve",
+            None,
+            "ok",
+            Some("Validated plugin ID".to_string()),
+        );
+
         // Validate plugin ID format
         if args.plugin_id.is_empty() || args.plugin_id.contains("..") {
-            return self.build_enable_error_envelope(args, actions, error_codes::INVALID_ARGUMENT, "Invalid plugin ID");
+            return self.build_enable_error_envelope(
+                args,
+                actions,
+                error_codes::INVALID_ARGUMENT,
+                "Invalid plugin ID",
+            );
         }
-        
+
         // Extract scope from args - default to "user"
         let scope = match &args.source {
             super::types::SourceSpec::Registry { url } if url == "system" => "system",
             _ => "user",
         };
-        
+
         // Extract values before potentially moving args
         let plugin_id = args.plugin_id.clone();
-        
+
         // Step 2: Load installed manifest
         let installed_metadata = match self.store.get_installed_metadata(&plugin_id) {
             Ok(Some(metadata)) => {
-                self.add_enable_action(&mut actions, action_types::LOAD_MANIFEST, None, "ok", Some("Plugin manifest loaded".to_string()));
+                self.add_enable_action(
+                    &mut actions,
+                    action_types::LOAD_MANIFEST,
+                    None,
+                    "ok",
+                    Some("Plugin manifest loaded".to_string()),
+                );
                 metadata
             }
             Ok(None) => {
-                self.add_enable_action(&mut actions, action_types::LOAD_MANIFEST, None, "failed", Some("Plugin not installed".to_string()));
-                return self.build_enable_error_envelope(args, actions, error_codes::PLUGIN_NOT_INSTALLED, &format!("Plugin '{}' is not installed", plugin_id));
+                self.add_enable_action(
+                    &mut actions,
+                    action_types::LOAD_MANIFEST,
+                    None,
+                    "failed",
+                    Some("Plugin not installed".to_string()),
+                );
+                return self.build_enable_error_envelope(
+                    args,
+                    actions,
+                    error_codes::PLUGIN_NOT_INSTALLED,
+                    &format!("Plugin '{}' is not installed", plugin_id),
+                );
             }
             Err(err) => {
-                self.add_enable_action(&mut actions, action_types::LOAD_MANIFEST, None, "failed", Some(format!("Error: {}", err)));
-                return self.build_enable_error_envelope(args, actions, error_codes::PLUGIN_IO_ERROR, &format!("Failed to load plugin manifest: {}", err));
+                self.add_enable_action(
+                    &mut actions,
+                    action_types::LOAD_MANIFEST,
+                    None,
+                    "failed",
+                    Some(format!("Error: {}", err)),
+                );
+                return self.build_enable_error_envelope(
+                    args,
+                    actions,
+                    error_codes::PLUGIN_IO_ERROR,
+                    &format!("Failed to load plugin manifest: {}", err),
+                );
             }
         };
-        
+
         // Step 3: Version check if requested
-        if let super::types::RequestedVersion::Specific(ref requested_version) = args.requested_version {
+        if let super::types::RequestedVersion::Specific(ref requested_version) =
+            args.requested_version
+        {
             if installed_metadata.version != *requested_version {
                 let requested_version_str = requested_version.clone();
-                return self.build_enable_error_envelope(args, actions, error_codes::PLUGIN_VERSION_MISMATCH, 
-                    &format!("Installed version {} does not match requested version {}", 
-                             installed_metadata.version, requested_version_str));
+                return self.build_enable_error_envelope(
+                    args,
+                    actions,
+                    error_codes::PLUGIN_VERSION_MISMATCH,
+                    &format!(
+                        "Installed version {} does not match requested version {}",
+                        installed_metadata.version, requested_version_str
+                    ),
+                );
             }
         }
-        
+
         // Step 4: Validate entrypoint if requested
         if args.verify != super::types::VerifyMode::None {
             match self.validate_plugin_entrypoint(&installed_metadata) {
                 Ok(_) => {
-                    self.add_enable_action(&mut actions, action_types::VALIDATE_ENTRYPOINT, None, "ok", Some("Entrypoint validated".to_string()));
+                    self.add_enable_action(
+                        &mut actions,
+                        action_types::VALIDATE_ENTRYPOINT,
+                        None,
+                        "ok",
+                        Some("Entrypoint validated".to_string()),
+                    );
                 }
                 Err(err) => {
-                    self.add_enable_action(&mut actions, action_types::VALIDATE_ENTRYPOINT, None, "failed", Some(format!("Error: {}", err)));
-                    return self.build_enable_error_envelope(args, actions, error_codes::PLUGIN_INVALID, &format!("Plugin entrypoint validation failed: {}", err));
+                    self.add_enable_action(
+                        &mut actions,
+                        action_types::VALIDATE_ENTRYPOINT,
+                        None,
+                        "failed",
+                        Some(format!("Error: {}", err)),
+                    );
+                    return self.build_enable_error_envelope(
+                        args,
+                        actions,
+                        error_codes::PLUGIN_INVALID,
+                        &format!("Plugin entrypoint validation failed: {}", err),
+                    );
                 }
             }
         }
-        
+
         // Step 5: Load enabled registry
         let mut registry = match self.store.load_enabled_registry(scope) {
             Ok(registry) => {
-                self.add_enable_action(&mut actions, action_types::LOAD_ENABLED_REGISTRY, None, "ok", 
-                    Some(format!("Loaded registry for scope '{}'", scope)));
+                self.add_enable_action(
+                    &mut actions,
+                    action_types::LOAD_ENABLED_REGISTRY,
+                    None,
+                    "ok",
+                    Some(format!("Loaded registry for scope '{}'", scope)),
+                );
                 registry
             }
             Err(err) => {
-                self.add_enable_action(&mut actions, action_types::LOAD_ENABLED_REGISTRY, None, "failed", 
-                    Some(format!("Error: {}", err)));
-                return self.build_enable_error_envelope(args, actions, error_codes::PLUGIN_IO_ERROR, &format!("Failed to load enabled registry: {}", err));
+                self.add_enable_action(
+                    &mut actions,
+                    action_types::LOAD_ENABLED_REGISTRY,
+                    None,
+                    "failed",
+                    Some(format!("Error: {}", err)),
+                );
+                return self.build_enable_error_envelope(
+                    args,
+                    actions,
+                    error_codes::PLUGIN_IO_ERROR,
+                    &format!("Failed to load enabled registry: {}", err),
+                );
             }
         };
-        
+
         // Step 6: Check if already enabled
         let was_enabled = registry.is_enabled(&args.plugin_id);
         let changed = if was_enabled && !args.force {
             // Already enabled, idempotent operation
-            self.add_enable_action(&mut actions, action_types::WRITE_ENABLED_REGISTRY, None, "ok", 
-                Some("Plugin already enabled".to_string()));
+            self.add_enable_action(
+                &mut actions,
+                action_types::WRITE_ENABLED_REGISTRY,
+                None,
+                "ok",
+                Some("Plugin already enabled".to_string()),
+            );
             false
         } else {
             // Step 7: Enable plugin if not dry run
             if args.dry_run {
-                self.add_enable_action(&mut actions, action_types::WRITE_ENABLED_REGISTRY, None, "planned", 
-                    Some("Would enable plugin".to_string()));
+                self.add_enable_action(
+                    &mut actions,
+                    action_types::WRITE_ENABLED_REGISTRY,
+                    None,
+                    "planned",
+                    Some("Would enable plugin".to_string()),
+                );
                 false
             } else {
                 // Add/update plugin in enabled registry
                 registry.enable_plugin(args.plugin_id.clone(), installed_metadata.version.clone());
-                
+
                 // Step 8: Save enabled registry atomically
                 match self.store.save_enabled_registry(scope, &registry) {
                     Ok(_) => {
-                        let registry_path = self.store.enabled_registry_path(scope).unwrap_or_default();
-                        self.add_enable_action(&mut actions, "fs.write", Some(registry_path.to_string_lossy().to_string()), "ok", 
-                            Some("Added plugin to enabled set".to_string()));
+                        let registry_path =
+                            self.store.enabled_registry_path(scope).unwrap_or_default();
+                        self.add_enable_action(
+                            &mut actions,
+                            "fs.write",
+                            Some(registry_path.to_string_lossy().to_string()),
+                            "ok",
+                            Some("Added plugin to enabled set".to_string()),
+                        );
                         true
                     }
                     Err(err) => {
-                        self.add_enable_action(&mut actions, "fs.write", None, "failed", 
-                            Some(format!("Error: {}", err)));
-                        return self.build_enable_error_envelope(args, actions, error_codes::PLUGIN_IO_ERROR, &format!("Failed to save enabled registry: {}", err));
+                        self.add_enable_action(
+                            &mut actions,
+                            "fs.write",
+                            None,
+                            "failed",
+                            Some(format!("Error: {}", err)),
+                        );
+                        return self.build_enable_error_envelope(
+                            args,
+                            actions,
+                            error_codes::PLUGIN_IO_ERROR,
+                            &format!("Failed to save enabled registry: {}", err),
+                        );
                     }
                 }
             }
         };
-        
+
         // Build successful envelope
         EnableEnvelope {
             op: "plugin.enable".to_string(),
@@ -1517,9 +1764,16 @@ impl ExecutionEngine {
             error: None,
         }
     }
-    
+
     /// Add action to enable actions list
-    fn add_enable_action(&self, actions: &mut Vec<super::types::EnableAction>, kind: &str, path: Option<String>, status: &str, detail: Option<String>) {
+    fn add_enable_action(
+        &self,
+        actions: &mut Vec<super::types::EnableAction>,
+        kind: &str,
+        path: Option<String>,
+        status: &str,
+        detail: Option<String>,
+    ) {
         actions.push(super::types::EnableAction {
             kind: kind.to_string(),
             path,
@@ -1527,16 +1781,24 @@ impl ExecutionEngine {
             detail,
         });
     }
-    
+
     /// Build error envelope for enable operation
-    fn build_enable_error_envelope(&self, args: PluginOpArgs, actions: Vec<super::types::EnableAction>, error_code: &str, message: &str) -> super::types::EnableEnvelope {
-        use super::types::{EnableEnvelope, EnableTargetInfo, EnableResult, EnableError, error_code_to_numeric};
-        
+    fn build_enable_error_envelope(
+        &self,
+        args: PluginOpArgs,
+        actions: Vec<super::types::EnableAction>,
+        error_code: &str,
+        message: &str,
+    ) -> super::types::EnableEnvelope {
+        use super::types::{
+            EnableEnvelope, EnableError, EnableResult, EnableTargetInfo, error_code_to_numeric,
+        };
+
         let scope = match &args.source {
             super::types::SourceSpec::Registry { url } if url == "system" => "system",
             _ => "user",
         };
-        
+
         EnableEnvelope {
             op: "plugin.enable".to_string(),
             target: EnableTargetInfo {
@@ -1560,7 +1822,7 @@ impl ExecutionEngine {
             }),
         }
     }
-    
+
     /// Validate plugin entrypoint exists and is executable
     fn validate_plugin_entrypoint(&self, metadata: &super::types::InstalledPlugin) -> Result<()> {
         if let Some(ref bin_path) = metadata.bin_path {
@@ -1568,7 +1830,7 @@ impl ExecutionEngine {
             if !path.exists() {
                 return Err(anyhow!("Plugin entrypoint does not exist: {}", bin_path));
             }
-            
+
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -1580,7 +1842,7 @@ impl ExecutionEngine {
         } else {
             return Err(anyhow!("Plugin has no entrypoint defined"));
         }
-        
+
         Ok(())
     }
 }
@@ -1593,7 +1855,9 @@ mod tests {
         PluginOpArgs {
             mode,
             plugin_id: "demo".to_string(),
-            source: super::super::types::SourceSpec::File { path: path.to_string() },
+            source: super::super::types::SourceSpec::File {
+                path: path.to_string(),
+            },
             requested_version: super::super::types::RequestedVersion::Latest,
             verify: VerifyMode::None,
             force: false,
@@ -1642,7 +1906,11 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_ne!(fs::metadata(&bin).unwrap().permissions().mode() & 0o111, 0);
         }
-        assert!(dir.path().join("plugins/demo/versions/local/metadata.json").is_file());
+        assert!(
+            dir.path()
+                .join("plugins/demo/versions/local/metadata.json")
+                .is_file()
+        );
         assert!(fs::symlink_metadata(dir.path().join("plugins/demo/current")).is_ok());
 
         // Same version again is a no-op, and update finds nothing newer.
@@ -1717,9 +1985,9 @@ mod tests {
 /// temporary plugin store; network tests talk only to a loopback mock.
 #[cfg(test)]
 mod artifact_security_tests {
-    use super::*;
     use super::super::registry::allow_loopback_http_for_tests;
     use super::super::types::{RequestedVersion, SourceSpec};
+    use super::*;
     use httpmock::prelude::*;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
@@ -1760,7 +2028,14 @@ mod artifact_security_tests {
 
     /// Append an entry with a raw name/link name, bypassing the tar
     /// builder's own path checks, as a hostile artifact would.
-    fn raw(b: &mut tar::Builder<Vec<u8>>, name: &str, kind: EntryType, link: Option<&str>, mode: u32, data: &[u8]) {
+    fn raw(
+        b: &mut tar::Builder<Vec<u8>>,
+        name: &str,
+        kind: EntryType,
+        link: Option<&str>,
+        mode: u32,
+        data: &[u8],
+    ) {
         let mut h = Header::new_gnu();
         {
             let old = h.as_old_mut();
@@ -1788,35 +2063,67 @@ mod artifact_security_tests {
     fn valid_artifact() -> Vec<u8> {
         tar_gz(|b| {
             raw(b, "bin/", EntryType::Directory, None, 0o755, b"");
-            raw(b, "bin/plugin", EntryType::Regular, None, 0o4755, b"#!/bin/sh\necho ok\n");
-            raw(b, "./share/doc/README", EntryType::Regular, None, 0o666, b"readme");
+            raw(
+                b,
+                "bin/plugin",
+                EntryType::Regular,
+                None,
+                0o4755,
+                b"#!/bin/sh\necho ok\n",
+            );
+            raw(
+                b,
+                "./share/doc/README",
+                EntryType::Regular,
+                None,
+                0o666,
+                b"readme",
+            );
         })
     }
 
     fn write_artifact(dir: &TempDir, name: &str, data: &[u8]) -> SourceSpec {
         let path = dir.path().join(name);
         fs::write(&path, data).unwrap();
-        SourceSpec::File { path: path.to_string_lossy().to_string() }
+        SourceSpec::File {
+            path: path.to_string_lossy().to_string(),
+        }
     }
 
     /// True if any regular file under `root` (links not followed) holds the
     /// sentinel bytes, or any symlink exists other than the `current` links.
     fn store_leaks(root: &Path) -> bool {
-        walkdir::WalkDir::new(root).follow_links(false).into_iter().flatten().any(|e| {
-            let ft = e.file_type();
-            if ft.is_symlink() {
-                e.file_name() != "current"
-            } else {
-                ft.is_file() && fs::read(e.path()).map(|d| d.windows(SENTINEL.len()).any(|w| w == SENTINEL)).unwrap_or(false)
-            }
-        })
+        walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+            .any(|e| {
+                let ft = e.file_type();
+                if ft.is_symlink() {
+                    e.file_name() != "current"
+                } else {
+                    ft.is_file()
+                        && fs::read(e.path())
+                            .map(|d| d.windows(SENTINEL.len()).any(|w| w == SENTINEL))
+                            .unwrap_or(false)
+                }
+            })
     }
 
     fn nothing_installed(dir: &TempDir) {
         let root = dir.path().join("plugins/demo");
-        assert!(!root.join("versions").exists(), "a version directory was created");
-        assert!(fs::symlink_metadata(root.join("current")).is_err(), "a current link was created");
-        assert!(!root.join(".staging").exists(), "staging was not cleaned up");
+        assert!(
+            !root.join("versions").exists(),
+            "a version directory was created"
+        );
+        assert!(
+            fs::symlink_metadata(root.join("current")).is_err(),
+            "a current link was created"
+        );
+        assert!(
+            !root.join(".staging").exists(),
+            "staging was not cleaned up"
+        );
     }
 
     // ---------------------------------------------------------------- SEC-06
@@ -1830,9 +2137,17 @@ mod artifact_security_tests {
         let v = dir.path().join("plugins/demo/versions/local");
         let bin = fs::symlink_metadata(v.join("bin/plugin")).unwrap();
         assert!(bin.file_type().is_file());
-        assert_eq!(bin.permissions().mode() & 0o7777, 0o755, "setuid must be dropped");
+        assert_eq!(
+            bin.permissions().mode() & 0o7777,
+            0o755,
+            "setuid must be dropped"
+        );
         let readme = fs::symlink_metadata(v.join("share/doc/README")).unwrap();
-        assert_eq!(readme.permissions().mode() & 0o7022, 0, "no special or group/other write bits");
+        assert_eq!(
+            readme.permissions().mode() & 0o7022,
+            0,
+            "no special or group/other write bits"
+        );
         assert_eq!(fs::read(v.join("share/doc/README")).unwrap(), b"readme");
         assert!(!dir.path().join("plugins/demo/.staging").exists());
     }
@@ -1842,7 +2157,11 @@ mod artifact_security_tests {
         let (dir, sentinel, mut engine) = setup();
         let target = sentinel.to_string_lossy().to_string();
         let relative = "../../../../../../../../../../../../../../../../..".to_string() + &target;
-        for (name, link) in [("bin/plugin", target.as_str()), ("bin/plugin", relative.as_str()), ("key", target.as_str())] {
+        for (name, link) in [
+            ("bin/plugin", target.as_str()),
+            ("bin/plugin", relative.as_str()),
+            ("key", target.as_str()),
+        ] {
             let data = tar_gz(|b| {
                 raw(b, "bin/", EntryType::Directory, None, 0o755, b"");
                 raw(b, name, EntryType::Symlink, Some(link), 0o777, b"");
@@ -1850,12 +2169,26 @@ mod artifact_security_tests {
             let src = write_artifact(&dir, "evil.tar.gz", &data);
             let env = engine.run_plugin_op(args(src, VerifyMode::None, false, false));
             assert!(!env.ok, "{name} -> {link} was accepted");
-            assert!(env.error.as_ref().unwrap().message.contains("links are not allowed"), "{:?}", env.error);
+            assert!(
+                env.error
+                    .as_ref()
+                    .unwrap()
+                    .message
+                    .contains("links are not allowed"),
+                "{:?}",
+                env.error
+            );
             nothing_installed(&dir);
-            assert!(!store_leaks(&dir.path().join("plugins")), "sentinel reached the store");
+            assert!(
+                !store_leaks(&dir.path().join("plugins")),
+                "sentinel reached the store"
+            );
         }
         assert_eq!(fs::read(&sentinel).unwrap(), SENTINEL);
-        assert_eq!(fs::metadata(&sentinel).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&sentinel).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
@@ -1890,13 +2223,31 @@ mod artifact_security_tests {
             ("fifo".to_string(), EntryType::Fifo),
         ];
         for (name, kind) in cases {
-            let data = tar_gz(|b| raw(b, &name, kind, None, 0o644, if kind == EntryType::Regular { b"x" } else { b"" }));
+            let data = tar_gz(|b| {
+                raw(
+                    b,
+                    &name,
+                    kind,
+                    None,
+                    0o644,
+                    if kind == EntryType::Regular {
+                        b"x"
+                    } else {
+                        b""
+                    },
+                )
+            });
             let src = write_artifact(&dir, "evil.tar.gz", &data);
             let env = engine.run_plugin_op(args(src, VerifyMode::None, false, false));
             assert!(!env.ok, "{name:?} ({kind:?}) was accepted");
             nothing_installed(&dir);
             assert!(!outside.exists(), "{name:?} wrote outside the store");
-            assert!(walkdir::WalkDir::new(dir.path()).into_iter().flatten().all(|e| e.file_name() != "escaped"));
+            assert!(
+                walkdir::WalkDir::new(dir.path())
+                    .into_iter()
+                    .flatten()
+                    .all(|e| e.file_name() != "escaped")
+            );
         }
     }
 
@@ -1904,19 +2255,34 @@ mod artifact_security_tests {
     fn malicious_reinstall_leaves_existing_plugin_untouched() {
         let (dir, sentinel, mut engine) = setup();
         let good = write_artifact(&dir, "good.tar.gz", &valid_artifact());
-        assert!(engine.run_plugin_op(args(good, VerifyMode::None, false, false)).ok);
+        assert!(
+            engine
+                .run_plugin_op(args(good, VerifyMode::None, false, false))
+                .ok
+        );
         let bin = dir.path().join("plugins/demo/versions/local/bin/plugin");
         let before = fs::read(&bin).unwrap();
 
         let target = sentinel.to_string_lossy().to_string();
         let evil = tar_gz(|b| {
             raw(b, "bin/", EntryType::Directory, None, 0o755, b"");
-            raw(b, "bin/plugin", EntryType::Symlink, Some(&target), 0o777, b"");
+            raw(
+                b,
+                "bin/plugin",
+                EntryType::Symlink,
+                Some(&target),
+                0o777,
+                b"",
+            );
         });
         let src = write_artifact(&dir, "evil.tar.gz", &evil);
         let env = engine.run_plugin_op(args(src, VerifyMode::None, true, false)); // force reinstall
         assert!(!env.ok);
-        assert_eq!(fs::read(&bin).unwrap(), before, "installed plugin was modified");
+        assert_eq!(
+            fs::read(&bin).unwrap(),
+            before,
+            "installed plugin was modified"
+        );
         assert!(fs::symlink_metadata(&bin).unwrap().file_type().is_file());
         assert!(fs::symlink_metadata(dir.path().join("plugins/demo/current")).is_ok());
         assert!(!dir.path().join("plugins/demo/.staging").exists());
@@ -1940,11 +2306,20 @@ mod artifact_security_tests {
             path: None,
             sha256: None,
             manifest: super::super::types::PluginManifest {
-                name: "demo".to_string(), version: "1.0.0".to_string(), description: None, author: None,
-                license: None, homepage: None, repository: None, keywords: None, platforms: Default::default(),
+                name: "demo".to_string(),
+                version: "1.0.0".to_string(),
+                description: None,
+                author: None,
+                license: None,
+                homepage: None,
+                repository: None,
+                keywords: None,
+                platforms: Default::default(),
             },
         };
-        let err = store.install_plugin("demo", "1.0.0", &candidate, &staging, "test").unwrap_err();
+        let err = store
+            .install_plugin("demo", "1.0.0", &candidate, &staging, "test")
+            .unwrap_err();
         assert!(format!("{err:#}").contains("symlinks"), "{err:#}");
         assert!(!dir.path().join("plugins/demo/versions/1.0.0").exists());
         assert!(!store_leaks(&dir.path().join("plugins/demo/versions")));
@@ -1960,7 +2335,11 @@ mod artifact_security_tests {
 
     /// Serve a registry entry for `demo` 1.2.0 whose checksum is `sha` and
     /// whose artifact is `artifact` (or a 404 when `None`).
-    fn registry<'a>(server: &'a MockServer, sha: &str, artifact: Option<&[u8]>) -> (httpmock::Mock<'a>, httpmock::Mock<'a>) {
+    fn registry<'a>(
+        server: &'a MockServer,
+        sha: &str,
+        artifact: Option<&[u8]>,
+    ) -> (httpmock::Mock<'a>, httpmock::Mock<'a>) {
         let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
         let entry = serde_json::json!({
             "plugin_id": "demo",
@@ -1975,10 +2354,13 @@ mod artifact_security_tests {
         });
         let index = server.mock(|when, then| {
             when.method(GET).path("/v1/plugins/demo");
-            then.status(200).header("content-type", "application/json").body(entry.to_string());
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(entry.to_string());
         });
         let art = server.mock(|when, then| {
-            when.method(GET).path("/v1/artifacts/demo/1.2.0/demo.tar.gz");
+            when.method(GET)
+                .path("/v1/artifacts/demo/1.2.0/demo.tar.gz");
             match artifact {
                 Some(data) => then.status(200).body(data),
                 None => then.status(404),
@@ -2001,7 +2383,9 @@ mod artifact_security_tests {
     }
 
     fn reg(server: &MockServer) -> SourceSpec {
-        SourceSpec::Registry { url: server.base_url() }
+        SourceSpec::Registry {
+            url: server.base_url(),
+        }
     }
 
     #[test]
@@ -2009,7 +2393,14 @@ mod artifact_security_tests {
         use super::super::registry::require_https;
         assert!(require_https("https://plugins.example.org").is_ok());
         assert!(require_https("https://plugins.example.org:8443/x").is_ok());
-        for bad in ["http://plugins.example.org", "http://127.0.0.1:1/", "ftp://h/x", "file:///etc/passwd", "https://", "HTTPS"] {
+        for bad in [
+            "http://plugins.example.org",
+            "http://127.0.0.1:1/",
+            "ftp://h/x",
+            "file:///etc/passwd",
+            "https://",
+            "HTTPS",
+        ] {
             assert!(require_https(bad).is_err(), "{bad} accepted");
         }
 
@@ -2026,13 +2417,28 @@ mod artifact_security_tests {
         for dry_run in [true, false] {
             let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, dry_run));
             assert!(!env.ok);
-            assert!(env.error.as_ref().unwrap().message.contains("https"), "{:?}", env.error);
-            let url = SourceSpec::Url { url: server.url("/direct.tar.gz") };
+            assert!(
+                env.error.as_ref().unwrap().message.contains("https"),
+                "{:?}",
+                env.error
+            );
+            let url = SourceSpec::Url {
+                url: server.url("/direct.tar.gz"),
+            };
             let env = engine.run_plugin_op(args(url, VerifyMode::None, false, dry_run));
             assert!(!env.ok, "http url source accepted with verify=none");
         }
-        assert!(engine.registry_client.download_artifact(&server.url("/direct.tar.gz")).is_err());
-        assert_eq!(index.hits() + art.hits() + direct.hits(), 0, "plain HTTP was contacted");
+        assert!(
+            engine
+                .registry_client
+                .download_artifact(&server.url("/direct.tar.gz"))
+                .is_err()
+        );
+        assert_eq!(
+            index.hits() + art.hits() + direct.hits(),
+            0,
+            "plain HTTP was contacted"
+        );
         nothing_installed(&dir);
     }
 
@@ -2046,8 +2452,16 @@ mod artifact_security_tests {
         let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, false));
         assert!(env.ok, "{:?}", env.error.as_ref().map(|e| &e.message));
         assert_eq!(art.hits(), 1);
-        assert!(env.actions.iter().any(|a| a.name == "Checksum verified successfully"));
-        assert!(dir.path().join("plugins/demo/versions/1.2.0/bin/plugin").is_file());
+        assert!(
+            env.actions
+                .iter()
+                .any(|a| a.name == "Checksum verified successfully")
+        );
+        assert!(
+            dir.path()
+                .join("plugins/demo/versions/1.2.0/bin/plugin")
+                .is_file()
+        );
     }
 
     #[test]
@@ -2061,10 +2475,23 @@ mod artifact_security_tests {
                 let server = MockServer::start();
                 let (_index, art) = registry(&server, sha, Some(&data));
                 let (dir, _s, mut engine) = setup();
-                let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, dry_run));
+                let env =
+                    engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, dry_run));
                 assert!(!env.ok, "checksum {sha:?} accepted (dry_run={dry_run})");
-                assert!(env.error.as_ref().unwrap().message.contains(error_codes::PLUGIN_VERIFY_FAILED), "{:?}", env.error);
-                assert_eq!(art.hits(), 0, "artifact downloaded despite unusable checksum {sha:?}");
+                assert!(
+                    env.error
+                        .as_ref()
+                        .unwrap()
+                        .message
+                        .contains(error_codes::PLUGIN_VERIFY_FAILED),
+                    "{:?}",
+                    env.error
+                );
+                assert_eq!(
+                    art.hits(),
+                    0,
+                    "artifact downloaded despite unusable checksum {sha:?}"
+                );
                 nothing_installed(&dir);
             }
         }
@@ -2079,9 +2506,22 @@ mod artifact_security_tests {
         let (dir, _s, mut engine) = setup();
         let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, false));
         assert!(!env.ok);
-        assert!(env.error.as_ref().unwrap().message.contains("Checksum verification failed"), "{:?}", env.error);
+        assert!(
+            env.error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("Checksum verification failed"),
+            "{:?}",
+            env.error
+        );
         assert_eq!(art.hits(), 1);
-        assert!(!env.actions.iter().any(|a| a.action_type == action_types::EXTRACT || a.action_type == action_types::INSTALL));
+        assert!(
+            !env.actions
+                .iter()
+                .any(|a| a.action_type == action_types::EXTRACT
+                    || a.action_type == action_types::INSTALL)
+        );
         nothing_installed(&dir);
     }
 
@@ -2094,7 +2534,15 @@ mod artifact_security_tests {
         let (dir, _s, mut engine) = setup();
         let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, false));
         assert!(!env.ok);
-        assert!(env.error.as_ref().unwrap().message.contains(error_codes::PLUGIN_DOWNLOAD_FAILED), "{:?}", env.error);
+        assert!(
+            env.error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains(error_codes::PLUGIN_DOWNLOAD_FAILED),
+            "{:?}",
+            env.error
+        );
         assert_eq!(art.hits(), 1);
         nothing_installed(&dir);
     }
@@ -2109,10 +2557,19 @@ mod artifact_security_tests {
             then.status(200).body(&data);
         });
         let (dir, _s, mut engine) = setup();
-        let url = || SourceSpec::Url { url: server.url("/demo.tar.gz") };
+        let url = || SourceSpec::Url {
+            url: server.url("/demo.tar.gz"),
+        };
         let env = engine.run_plugin_op(args(url(), VerifyMode::Sha256, false, false));
-        assert!(!env.ok, "unverifiable url artifact accepted under verify=sha256");
-        assert!(env.error.as_ref().unwrap().message.contains("verify=none"), "{:?}", env.error);
+        assert!(
+            !env.ok,
+            "unverifiable url artifact accepted under verify=sha256"
+        );
+        assert!(
+            env.error.as_ref().unwrap().message.contains("verify=none"),
+            "{:?}",
+            env.error
+        );
         assert_eq!(direct.hits(), 0);
         nothing_installed(&dir);
 

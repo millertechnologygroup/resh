@@ -1,13 +1,13 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 use uuid::Uuid;
 
@@ -25,10 +25,14 @@ use crate::core::{
 pub trait EventHook: Send + Sync {
     /// Called when an event is emitted
     fn on_emit(&self, event: &EventEnvelope, response: &EventEmitResponse) -> Result<()>;
-    
+
     /// Called when events are subscribed/consumed
-    fn on_subscribe(&self, request: &EventSubscribeOptions, response: &EventSubscribeResponse) -> Result<()>;
-    
+    fn on_subscribe(
+        &self,
+        request: &EventSubscribeOptions,
+        response: &EventSubscribeResponse,
+    ) -> Result<()>;
+
     /// Return the hook name for identification
     fn name(&self) -> &str;
 }
@@ -45,19 +49,19 @@ impl EventHookManager {
             hooks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-    
+
     /// Register a new hook
     pub fn register_hook(&self, hook: Arc<dyn EventHook>) {
         let mut hooks = self.hooks.lock().unwrap();
         hooks.insert(hook.name().to_string(), hook);
     }
-    
+
     /// Remove a hook by name
     pub fn remove_hook(&self, name: &str) {
         let mut hooks = self.hooks.lock().unwrap();
         hooks.remove(name);
     }
-    
+
     /// Execute emit hooks
     pub fn execute_emit_hooks(&self, event: &EventEnvelope, response: &EventEmitResponse) {
         let hooks = self.hooks.lock().unwrap();
@@ -67,9 +71,13 @@ impl EventHookManager {
             }
         }
     }
-    
+
     /// Execute subscribe hooks
-    pub fn execute_subscribe_hooks(&self, request: &EventSubscribeOptions, response: &EventSubscribeResponse) {
+    pub fn execute_subscribe_hooks(
+        &self,
+        request: &EventSubscribeOptions,
+        response: &EventSubscribeResponse,
+    ) {
         let hooks = self.hooks.lock().unwrap();
         for (name, hook) in hooks.iter() {
             if let Err(e) = hook.on_subscribe(request, response) {
@@ -77,7 +85,7 @@ impl EventHookManager {
             }
         }
     }
-    
+
     /// List all registered hooks
     pub fn list_hooks(&self) -> Vec<String> {
         let hooks = self.hooks.lock().unwrap();
@@ -104,19 +112,34 @@ impl EventHook for MQHook {
     fn on_emit(&self, event: &EventEnvelope, _response: &EventEmitResponse) -> Result<()> {
         // Optionally forward events to message queues based on tags
         if event.tags.iter().any(|tag| tag.starts_with("mq:")) {
-            if let Some(mq_topic) = event.tags.iter().find(|tag| tag.starts_with("mq:")).map(|tag| &tag[3..]) {
-                eprintln!("MQ Hook: Would forward event {} to MQ topic: {}", event.id, mq_topic);
+            if let Some(mq_topic) = event
+                .tags
+                .iter()
+                .find(|tag| tag.starts_with("mq:"))
+                .map(|tag| &tag[3..])
+            {
+                eprintln!(
+                    "MQ Hook: Would forward event {} to MQ topic: {}",
+                    event.id, mq_topic
+                );
             }
         }
         Ok(())
     }
-    
-    fn on_subscribe(&self, _request: &EventSubscribeOptions, response: &EventSubscribeResponse) -> Result<()> {
+
+    fn on_subscribe(
+        &self,
+        _request: &EventSubscribeOptions,
+        response: &EventSubscribeResponse,
+    ) -> Result<()> {
         // Could pull events from MQ and inject into event stream
-        eprintln!("MQ hook processed subscription with {} events", response.events_returned);
+        eprintln!(
+            "MQ hook processed subscription with {} events",
+            response.events_returned
+        );
         Ok(())
     }
-    
+
     fn name(&self) -> &str {
         "mq"
     }
@@ -129,20 +152,34 @@ impl EventHook for LogHook {
     fn on_emit(&self, event: &EventEnvelope, _response: &EventEmitResponse) -> Result<()> {
         // Log events to configured log destinations based on tags
         if event.tags.iter().any(|tag| tag.starts_with("log:")) {
-            if let Some(log_path) = event.tags.iter().find(|tag| tag.starts_with("log:")).map(|tag| &tag[4..]) {
-                eprintln!("Log Hook: Event {}: {} -> {}", event.id, event.topic, log_path);
+            if let Some(log_path) = event
+                .tags
+                .iter()
+                .find(|tag| tag.starts_with("log:"))
+                .map(|tag| &tag[4..])
+            {
+                eprintln!(
+                    "Log Hook: Event {}: {} -> {}",
+                    event.id, event.topic, log_path
+                );
             }
         }
         Ok(())
     }
-    
-    fn on_subscribe(&self, request: &EventSubscribeOptions, response: &EventSubscribeResponse) -> Result<()> {
+
+    fn on_subscribe(
+        &self,
+        request: &EventSubscribeOptions,
+        response: &EventSubscribeResponse,
+    ) -> Result<()> {
         // Could tail log files and generate events
-        eprintln!("Log hook: subscription to {} returned {} events", 
-                   request.topic, response.events_returned);
+        eprintln!(
+            "Log hook: subscription to {} returned {} events",
+            request.topic, response.events_returned
+        );
         Ok(())
     }
-    
+
     fn name(&self) -> &str {
         "log"
     }
@@ -155,21 +192,33 @@ impl EventHook for ProcHook {
     fn on_emit(&self, event: &EventEnvelope, _response: &EventEmitResponse) -> Result<()> {
         // Monitor process events or send signals based on tags
         if event.tags.iter().any(|tag| tag.starts_with("proc:")) {
-            if let Some(proc_action) = event.tags.iter().find(|tag| tag.starts_with("proc:")).map(|tag| &tag[5..]) {
-                eprintln!("Process Hook: Action requested: {} for event {}", proc_action, event.id);
+            if let Some(proc_action) = event
+                .tags
+                .iter()
+                .find(|tag| tag.starts_with("proc:"))
+                .map(|tag| &tag[5..])
+            {
+                eprintln!(
+                    "Process Hook: Action requested: {} for event {}",
+                    proc_action, event.id
+                );
             }
         }
         Ok(())
     }
-    
-    fn on_subscribe(&self, request: &EventSubscribeOptions, _response: &EventSubscribeResponse) -> Result<()> {
+
+    fn on_subscribe(
+        &self,
+        request: &EventSubscribeOptions,
+        _response: &EventSubscribeResponse,
+    ) -> Result<()> {
         // Monitor process state changes and generate events
         if request.topic.starts_with("proc.") {
             eprintln!("Process monitoring subscription: {}", request.topic);
         }
         Ok(())
     }
-    
+
     fn name(&self) -> &str {
         "proc"
     }
@@ -182,14 +231,23 @@ impl EventHook for FsWatchHook {
     fn on_emit(&self, event: &EventEnvelope, _response: &EventEmitResponse) -> Result<()> {
         // React to filesystem events based on tags
         if event.tags.iter().any(|tag| tag.starts_with("fs:")) {
-            if let Some(fs_path) = event.tags.iter().find(|tag| tag.starts_with("fs:")).map(|tag| &tag[3..]) {
+            if let Some(fs_path) = event
+                .tags
+                .iter()
+                .find(|tag| tag.starts_with("fs:"))
+                .map(|tag| &tag[3..])
+            {
                 eprintln!("FS Hook: Filesystem event for path: {}", fs_path);
             }
         }
         Ok(())
     }
-    
-    fn on_subscribe(&self, request: &EventSubscribeOptions, _response: &EventSubscribeResponse) -> Result<()> {
+
+    fn on_subscribe(
+        &self,
+        request: &EventSubscribeOptions,
+        _response: &EventSubscribeResponse,
+    ) -> Result<()> {
         // Set up filesystem watchers for event generation
         if request.topic.starts_with("fs.") {
             eprintln!("Filesystem watch subscription: {}", request.topic);
@@ -197,7 +255,7 @@ impl EventHook for FsWatchHook {
         }
         Ok(())
     }
-    
+
     fn name(&self) -> &str {
         "fs"
     }
@@ -209,7 +267,7 @@ impl EventHook for FsWatchHook {
 
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("event", |u| Ok(Box::new(EventHandle::from_url(u)?)));
-    
+
     // Register built-in hooks
     let hook_manager = get_global_hook_manager();
     hook_manager.register_hook(Arc::new(MQHook));
@@ -695,12 +753,7 @@ pub trait EventBackend: Send + Sync + AsAny {
         filters: &EventFilter,
     ) -> Result<EventBatch>;
 
-    fn commit_offset(
-        &self,
-        topic_pattern: &str,
-        group_id: &str,
-        offset: &str,
-    ) -> Result<()>;
+    fn commit_offset(&self, topic_pattern: &str, group_id: &str, offset: &str) -> Result<()>;
 }
 
 // ===========================================================================
@@ -752,8 +805,12 @@ fn topic_matches_pattern(topic: &str, pattern: &str) -> bool {
     if !has_wildcard(pattern) {
         return false;
     }
-    let re = regex::escape(pattern).replace(r"\*", ".*").replace(r"\?", ".");
-    Regex::new(&format!("^{}$", re)).map(|r| r.is_match(topic)).unwrap_or(false)
+    let re = regex::escape(pattern)
+        .replace(r"\*", ".*")
+        .replace(r"\?", ".");
+    Regex::new(&format!("^{}$", re))
+        .map(|r| r.is_match(topic))
+        .unwrap_or(false)
 }
 
 fn has_wildcard(pattern: &str) -> bool {
@@ -761,44 +818,68 @@ fn has_wildcard(pattern: &str) -> bool {
 }
 
 /// Keeps events that pass the tag, correlation, source and age filters.
-fn apply_filters(events: &[EventEnvelope], filters: &EventFilter, now_ms: i64) -> Vec<EventEnvelope> {
-    events.iter().filter(|evt| {
-        if !filters.match_tags.iter().all(|tag| evt.tags.contains(tag)) {
-            return false;
-        }
-        if let Some(ref id) = filters.match_correlation_id {
-            if evt.correlation_id.as_ref() != Some(id) {
+fn apply_filters(
+    events: &[EventEnvelope],
+    filters: &EventFilter,
+    now_ms: i64,
+) -> Vec<EventEnvelope> {
+    events
+        .iter()
+        .filter(|evt| {
+            if !filters.match_tags.iter().all(|tag| evt.tags.contains(tag)) {
                 return false;
             }
-        }
-        if let Some(ref src) = filters.match_source {
-            if evt.source.as_ref() != Some(src) {
-                return false;
+            if let Some(ref id) = filters.match_correlation_id {
+                if evt.correlation_id.as_ref() != Some(id) {
+                    return false;
+                }
             }
-        }
-        if let Some(max_latency_ms) = filters.max_latency_ms {
-            if evt.timestamp_unix_ms < now_ms - (max_latency_ms as i64) {
-                return false;
+            if let Some(ref src) = filters.match_source {
+                if evt.source.as_ref() != Some(src) {
+                    return false;
+                }
             }
-        }
-        true
-    }).cloned().collect()
+            if let Some(max_latency_ms) = filters.max_latency_ms {
+                if evt.timestamp_unix_ms < now_ms - (max_latency_ms as i64) {
+                    return false;
+                }
+            }
+            true
+        })
+        .cloned()
+        .collect()
 }
 
 fn now_unix_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// Selects up to `limit` events of `matching` starting at `start_index`,
 /// applies `filters`, and computes the batch offsets. Offsets index
 /// `matching`, so they stay stable as new events are appended.
-fn select_batch(matching: &[EventEnvelope], start_index: usize, limit: u32, filters: &EventFilter) -> EventBatch {
+fn select_batch(
+    matching: &[EventEnvelope],
+    start_index: usize,
+    limit: u32,
+    filters: &EventFilter,
+) -> EventBatch {
     let start_index = start_index.min(matching.len());
     let end_index = std::cmp::min(start_index + limit as usize, matching.len());
     let events = apply_filters(&matching[start_index..end_index], filters, now_unix_ms());
     EventBatch {
-        offset_start: if events.is_empty() { None } else { Some(start_index.to_string()) },
-        offset_end: if events.is_empty() { None } else { Some((end_index - 1).to_string()) },
+        offset_start: if events.is_empty() {
+            None
+        } else {
+            Some(start_index.to_string())
+        },
+        offset_end: if events.is_empty() {
+            None
+        } else {
+            Some((end_index - 1).to_string())
+        },
         events,
         next_offset: Some(end_index.to_string()),
         high_watermark: Some(matching.len().to_string()),
@@ -816,7 +897,8 @@ fn resolve_start_index(
         EventOffset::Latest => matching_len,
         EventOffset::Earliest => 0,
         EventOffset::Next => {
-            let group_id = group_id.ok_or_else(|| anyhow::anyhow!("offset='next' requires group_id"))?;
+            let group_id =
+                group_id.ok_or_else(|| anyhow::anyhow!("offset='next' requires group_id"))?;
             committed(group_id)?.unwrap_or(0)
         }
         EventOffset::Explicit(offset_str) => offset_str
@@ -831,10 +913,10 @@ impl EventBackend for InMemoryEventBackend {
             .events
             .lock()
             .map_err(|_| anyhow::anyhow!("failed to acquire events lock"))?;
-        
+
         let mut evt_with_offset = evt.clone();
         evt_with_offset.offset = Some(events.len().to_string());
-        
+
         events.push(evt_with_offset);
         Ok(())
     }
@@ -864,19 +946,31 @@ impl EventBackend for InMemoryEventBackend {
         filters: &EventFilter,
     ) -> Result<EventBatch> {
         let deadline = std::time::Instant::now()
-            + Duration::from_millis(if wait { wait_timeout_ms.unwrap_or(30_000) } else { 0 });
+            + Duration::from_millis(if wait {
+                wait_timeout_ms.unwrap_or(30_000)
+            } else {
+                0
+            });
         let mut start_index: Option<usize> = None;
         loop {
             let matching: Vec<EventEnvelope> = {
-                let events = self.events.lock()
+                let events = self
+                    .events
+                    .lock()
                     .map_err(|_| anyhow::anyhow!("failed to acquire events lock"))?;
-                events.iter().filter(|e| self.topic_matches_pattern(&e.topic, topic_pattern)).cloned().collect()
+                events
+                    .iter()
+                    .filter(|e| self.topic_matches_pattern(&e.topic, topic_pattern))
+                    .cloned()
+                    .collect()
             };
             let start = match start_index {
                 Some(s) => s,
                 None => {
                     let s = resolve_start_index(offset, matching.len(), group_id, |g| {
-                        let offsets = self.consumer_offsets.lock()
+                        let offsets = self
+                            .consumer_offsets
+                            .lock()
                             .map_err(|_| anyhow::anyhow!("failed to acquire offsets lock"))?;
                         Ok(offsets.get(&format!("{}:{}", g, topic_pattern)).cloned())
                     })?;
@@ -891,21 +985,19 @@ impl EventBackend for InMemoryEventBackend {
         }
     }
 
-    fn commit_offset(
-        &self,
-        topic_pattern: &str,
-        group_id: &str,
-        offset: &str,
-    ) -> Result<()> {
-        let mut offsets = self.consumer_offsets.lock()
+    fn commit_offset(&self, topic_pattern: &str, group_id: &str, offset: &str) -> Result<()> {
+        let mut offsets = self
+            .consumer_offsets
+            .lock()
             .map_err(|_| anyhow::anyhow!("failed to acquire offsets lock"))?;
-        
-        let offset_num = offset.parse::<usize>()
+
+        let offset_num = offset
+            .parse::<usize>()
             .map_err(|_| anyhow::anyhow!("invalid offset for commit: {}", offset))?;
-        
+
         let key = format!("{}:{}", group_id, topic_pattern);
         offsets.insert(key, offset_num);
-        
+
         Ok(())
     }
 }
@@ -945,7 +1037,12 @@ impl FileEventBackend {
             .recursive(true)
             .mode(0o700)
             .create(&self.base)
-            .with_context(|| format!("event store unavailable: cannot create {}", self.base.display()))
+            .with_context(|| {
+                format!(
+                    "event store unavailable: cannot create {}",
+                    self.base.display()
+                )
+            })
     }
 
     fn open_private(path: &Path, append: bool) -> Result<std::fs::File> {
@@ -957,7 +1054,8 @@ impl FileEventBackend {
         } else {
             o.write(true).truncate(true);
         }
-        o.open(path).with_context(|| format!("event store unavailable: cannot open {}", path.display()))
+        o.open(path)
+            .with_context(|| format!("event store unavailable: cannot open {}", path.display()))
     }
 
     fn topic_path(&self, topic: &str) -> PathBuf {
@@ -993,7 +1091,10 @@ impl FileEventBackend {
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
         };
         // A line that does not parse (for example a partial write) is skipped.
-        Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+        Ok(text
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect())
     }
 
     /// All stored events whose topic matches `pattern`, ordered by timestamp
@@ -1007,13 +1108,19 @@ impl FileEventBackend {
                     .filter_map(|e| e.ok())
                     .filter_map(|e| {
                         let path = e.path();
-                        let name = path.file_name()?.to_str()?.strip_suffix(".jsonl")?.to_string();
+                        let name = path
+                            .file_name()?
+                            .to_str()?
+                            .strip_suffix(".jsonl")?
+                            .to_string();
                         Some((name, path))
                     })
                     .filter(|(t, _)| topic_matches_pattern(t, pattern))
                     .collect(),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-                Err(e) => return Err(e).with_context(|| format!("cannot read {}", self.base.display())),
+                Err(e) => {
+                    return Err(e).with_context(|| format!("cannot read {}", self.base.display()));
+                }
             };
             topics.sort();
             let mut all = Vec::new();
@@ -1073,7 +1180,11 @@ impl EventBackend for FileEventBackend {
         filters: &EventFilter,
     ) -> Result<EventBatch> {
         let deadline = std::time::Instant::now()
-            + Duration::from_millis(if wait { wait_timeout_ms.unwrap_or(30_000) } else { 0 });
+            + Duration::from_millis(if wait {
+                wait_timeout_ms.unwrap_or(30_000)
+            } else {
+                0
+            });
         let mut start_index: Option<usize> = None;
         loop {
             let matching = self.load_matching(topic_pattern)?;
@@ -1081,7 +1192,10 @@ impl EventBackend for FileEventBackend {
                 Some(s) => s,
                 None => {
                     let s = resolve_start_index(offset, matching.len(), group_id, |g| {
-                        Ok(self.read_offsets()?.get(&format!("{}:{}", g, topic_pattern)).cloned())
+                        Ok(self
+                            .read_offsets()?
+                            .get(&format!("{}:{}", g, topic_pattern))
+                            .cloned())
                     })?;
                     start_index = Some(s);
                     s
@@ -1102,7 +1216,9 @@ impl EventBackend for FileEventBackend {
         let mut offsets = self.read_offsets()?;
         offsets.insert(format!("{}:{}", group_id, topic_pattern), offset_num);
         // Write a temporary file and rename it so readers never see a partial file.
-        let tmp = self.base.join(format!("_offsets.json.{}.tmp", std::process::id()));
+        let tmp = self
+            .base
+            .join(format!("_offsets.json.{}.tmp", std::process::id()));
         {
             let mut f = Self::open_private(&tmp, false)?;
             f.write_all(serde_json::to_string(&offsets)?.as_bytes())?;
@@ -1121,7 +1237,7 @@ impl EventBackend for FileEventBackend {
 pub struct ListTopicsOptions {
     pub prefix: Option<String>,
     pub match_substr: Option<String>,
-    pub sources: Vec<String>,      // "event" | "mq" | "log" | "proc" | "fs_watch"
+    pub sources: Vec<String>, // "event" | "mq" | "log" | "proc" | "fs_watch"
     pub limit: u32,
     pub include_hidden: bool,
 
@@ -1135,9 +1251,9 @@ pub struct ListTopicsOptions {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TopicBackendRef {
-    pub r#type: String,        // "event" | "mq" | "log" | "proc" | "fs_watch"
-    pub handle: String,        // e.g. "event", "mq", "log"
-    pub id: String,            // backend-specific identifier
+    pub r#type: String, // "event" | "mq" | "log" | "proc" | "fs_watch"
+    pub handle: String, // e.g. "event", "mq", "log"
+    pub id: String,     // backend-specific identifier
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1187,7 +1303,7 @@ pub struct ListTopicsResponse {
     pub ok: bool,
     pub timestamp_unix_ms: i64,
 
-    pub filters: Value,  // echo of applied filters
+    pub filters: Value, // echo of applied filters
     pub topics_total: u32,
     pub topics_returned: u32,
     pub truncated: bool,
@@ -1250,55 +1366,53 @@ impl TopicProvider for EventBusTopicProvider {
     ) -> Result<Vec<TopicInfo>> {
         // For now, return a simple mock topic list
         // In a real implementation, this would query the actual event backend
-        let mut topics = vec![
-            TopicInfo {
-                name: "events.system".to_string(),
-                display_name: "System Events".to_string(),
-                description: Some("System-level event notifications".to_string()),
-                category: Some("system".to_string()),
-                is_hidden: false,
-                sources: vec!["event".to_string()],
-                backends: vec![TopicBackendRef {
-                    r#type: "event".to_string(),
-                    handle: "event".to_string(),
-                    id: "system".to_string(),
-                }],
-                stats: if include_stats {
-                    Some(TopicStats {
-                        approx_message_count: Some(42),
-                        last_event_unix_ms: Some(chrono::Utc::now().timestamp_millis()),
-                        partitions: Some(1),
-                        replication_factor: Some(1),
-                        throughput_per_minute: Some(1.5),
-                    })
-                } else {
-                    None
-                },
-                schema: if include_schema {
-                    Some(TopicSchemaInfo {
-                        schema_version: Some("v1".to_string()),
-                        example: Some(serde_json::json!({"type": "system", "message": "example"})),
-                        fields: vec![
-                            TopicFieldInfo {
-                                name: "type".to_string(),
-                                r#type: "string".to_string(),
-                                required: true,
-                            },
-                            TopicFieldInfo {
-                                name: "message".to_string(),
-                                r#type: "string".to_string(),
-                                required: true,
-                            },
-                        ],
-                    })
-                } else {
-                    None
-                },
-                tags: vec!["core".to_string()],
-                origin: Some("event://".to_string()),
-                first_seen_unix_ms: Some(chrono::Utc::now().timestamp_millis() - 86400000), // 1 day ago
-            }
-        ];
+        let mut topics = vec![TopicInfo {
+            name: "events.system".to_string(),
+            display_name: "System Events".to_string(),
+            description: Some("System-level event notifications".to_string()),
+            category: Some("system".to_string()),
+            is_hidden: false,
+            sources: vec!["event".to_string()],
+            backends: vec![TopicBackendRef {
+                r#type: "event".to_string(),
+                handle: "event".to_string(),
+                id: "system".to_string(),
+            }],
+            stats: if include_stats {
+                Some(TopicStats {
+                    approx_message_count: Some(42),
+                    last_event_unix_ms: Some(chrono::Utc::now().timestamp_millis()),
+                    partitions: Some(1),
+                    replication_factor: Some(1),
+                    throughput_per_minute: Some(1.5),
+                })
+            } else {
+                None
+            },
+            schema: if include_schema {
+                Some(TopicSchemaInfo {
+                    schema_version: Some("v1".to_string()),
+                    example: Some(serde_json::json!({"type": "system", "message": "example"})),
+                    fields: vec![
+                        TopicFieldInfo {
+                            name: "type".to_string(),
+                            r#type: "string".to_string(),
+                            required: true,
+                        },
+                        TopicFieldInfo {
+                            name: "message".to_string(),
+                            r#type: "string".to_string(),
+                            required: true,
+                        },
+                    ],
+                })
+            } else {
+                None
+            },
+            tags: vec!["core".to_string()],
+            origin: Some("event://".to_string()),
+            first_seen_unix_ms: Some(chrono::Utc::now().timestamp_millis() - 86400000), // 1 day ago
+        }];
 
         if !include_hidden {
             topics.retain(|t| !t.is_hidden);
@@ -1496,7 +1610,11 @@ impl TopicProvider for ProcTopicProvider {
                 }],
                 stats: None,
                 schema: None,
-                tags: vec!["process".to_string(), "cpu".to_string(), "performance".to_string()],
+                tags: vec![
+                    "process".to_string(),
+                    "cpu".to_string(),
+                    "performance".to_string(),
+                ],
                 origin: Some("proc.handle".to_string()),
                 first_seen_unix_ms: Some(1732000000000),
             },
@@ -1588,7 +1706,7 @@ pub struct EventHandle {
 
 impl EventHandle {
     pub fn new(backend: Box<dyn EventBackend>) -> Self {
-        Self { 
+        Self {
             backend,
             hook_manager: Arc::new(EventHookManager::new()),
         }
@@ -1604,20 +1722,25 @@ impl EventHandle {
         };
         Ok(Self::new(backend))
     }
-    
+
     /// Register a custom hook with this event handle
     pub fn register_hook(&self, hook: Arc<dyn EventHook>) {
         self.hook_manager.register_hook(hook);
     }
-    
+
     /// Remove a hook by name
     pub fn remove_hook(&self, name: &str) {
         self.hook_manager.remove_hook(name);
     }
-    
+
     /// Writes the approved help for `help`, `--help`, `-h`, `--help=<verb>`
     /// and `help(verb=<verb>)`; returns None for any other verb.
-    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+    fn check_and_display_help(
+        &self,
+        verb: &str,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<Option<Status>> {
         let help_verb = if help::HELP_ALIASES.contains(&verb) {
             args.get("verb").map(String::as_str)
         } else if let Some(v) = verb.strip_prefix("--help=") {
@@ -1625,7 +1748,11 @@ impl EventHandle {
         } else {
             return Ok(None);
         };
-        write!(io.stdout, "{}", help::render_legacy("event", &EVENT_HELP, self.verbs(), help_verb))?;
+        write!(
+            io.stdout,
+            "{}",
+            help::render_legacy("event", &EVENT_HELP, self.verbs(), help_verb)
+        )?;
         Ok(Some(Status::ok()))
     }
 
@@ -1782,7 +1909,8 @@ impl EventHandle {
         let limit = args
             .get("limit")
             .map(|s| {
-                let limit_val = s.parse::<u32>()
+                let limit_val = s
+                    .parse::<u32>()
                     .context("limit must be a valid positive integer")?;
                 if limit_val < 1 || limit_val > 10_000 {
                     bail!("limit must be between 1 and 10,000");
@@ -2020,13 +2148,13 @@ impl EventHandle {
                     error: None,
                     warnings,
                 };
-                
+
                 // Execute emit hooks
                 self.hook_manager.execute_emit_hooks(&envelope, &response);
                 get_global_hook_manager().execute_emit_hooks(&envelope, &response);
-                
+
                 Ok(response)
-            },
+            }
             Err(e) => {
                 let error_code = if e.to_string().contains("unavailable") {
                     "event.emit_backend_unavailable"
@@ -2063,7 +2191,10 @@ impl EventHandle {
             if opts.limit == 0 {
                 // Commit-only operation
                 if let Some(ref group_id) = opts.group_id {
-                    if let Err(e) = self.backend.commit_offset(&opts.topic, group_id, manual_offset) {
+                    if let Err(e) = self
+                        .backend
+                        .commit_offset(&opts.topic, group_id, manual_offset)
+                    {
                         return Ok(EventSubscribeResponse {
                             ok: false,
                             timestamp_unix_ms: timestamp,
@@ -2087,7 +2218,7 @@ impl EventHandle {
                             warnings: vec![],
                         });
                     }
-                    
+
                     return Ok(EventSubscribeResponse {
                         ok: true,
                         timestamp_unix_ms: timestamp,
@@ -2194,7 +2325,10 @@ impl EventHandle {
         if opts.auto_commit && opts.group_id.is_some() && !processed_events.is_empty() {
             if let Some(ref next_offset) = batch.next_offset {
                 let group_id = opts.group_id.as_ref().unwrap();
-                match self.backend.commit_offset(&opts.topic, group_id, next_offset) {
+                match self
+                    .backend
+                    .commit_offset(&opts.topic, group_id, next_offset)
+                {
                     Ok(()) => {
                         committed_offset = Some(next_offset.clone());
                         committed = true;
@@ -2225,11 +2359,11 @@ impl EventHandle {
             error: None,
             warnings,
         };
-        
+
         // Execute subscribe hooks
         self.hook_manager.execute_subscribe_hooks(&opts, &response);
         get_global_hook_manager().execute_subscribe_hooks(&opts, &response);
-        
+
         Ok(response)
     }
 
@@ -2276,7 +2410,10 @@ impl EventHandle {
         Ok(serde_json::to_string_pretty(&json_response)?)
     }
 
-    fn format_subscribe_response_as_json(&self, response: &EventSubscribeResponse) -> Result<String> {
+    fn format_subscribe_response_as_json(
+        &self,
+        response: &EventSubscribeResponse,
+    ) -> Result<String> {
         let mut json_response = json!({
             "ok": response.ok,
             "timestamp_unix_ms": response.timestamp_unix_ms,
@@ -2329,7 +2466,10 @@ impl EventHandle {
         Ok(serde_json::to_string_pretty(&json_response)?)
     }
 
-    fn format_subscribe_response_as_text(&self, response: &EventSubscribeResponse) -> Result<String> {
+    fn format_subscribe_response_as_text(
+        &self,
+        response: &EventSubscribeResponse,
+    ) -> Result<String> {
         let mut output = String::new();
 
         if response.ok {
@@ -2346,17 +2486,27 @@ impl EventHandle {
             if let Some(ref offset_start) = response.offset_start {
                 output.push_str(&format!(" (resolved to {})", offset_start));
             }
-            output.push_str(&format!("\nReturned    : {} event(s)\n", response.events_returned));
-            output.push_str(&format!("Timed Out   : {}\n\n", if response.timed_out { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "\nReturned    : {} event(s)\n",
+                response.events_returned
+            ));
+            output.push_str(&format!(
+                "Timed Out   : {}\n\n",
+                if response.timed_out { "yes" } else { "no" }
+            ));
 
             if !response.events.is_empty() {
                 output.push_str("Events:\n");
                 for event in &response.events {
-                    let offset_str = event.offset.as_ref().map(|o| format!("[{}] ", o)).unwrap_or_default();
+                    let offset_str = event
+                        .offset
+                        .as_ref()
+                        .map(|o| format!("[{}] ", o))
+                        .unwrap_or_default();
                     let datetime = chrono::DateTime::from_timestamp_millis(event.timestamp_unix_ms)
                         .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
                         .unwrap_or_else(|| "unknown".to_string());
-                    
+
                     output.push_str(&format!("  {}{} @ {}\n", offset_str, event.topic, datetime));
                     output.push_str(&format!("    ID        : {}\n", event.id));
                     if let Some(ref source) = event.source {
@@ -2373,7 +2523,10 @@ impl EventHandle {
                 }
             } else if response.timed_out {
                 let timeout = 30000; // Default timeout
-                output.push_str(&format!("No events available within timeout ({} ms).\n", timeout));
+                output.push_str(&format!(
+                    "No events available within timeout ({} ms).\n",
+                    timeout
+                ));
             } else {
                 output.push_str("No events available.\n");
             }
@@ -2568,25 +2721,26 @@ impl EventHandle {
             Ok(Status::err(1, "event subscription failed"))
         }
     }
-    
+
     fn handle_hooks_list(&self, _args: &Args, io: &mut IoStreams) -> Result<Status> {
         let hooks = self.list_hooks();
         let global_hooks = get_global_hook_manager().list_hooks();
-        
+
         let response = json!({
             "instance_hooks": hooks,
             "global_hooks": global_hooks,
             "total": hooks.len() + global_hooks.len()
         });
-        
+
         writeln!(io.stdout, "{}", response)?;
         Ok(Status::ok())
     }
-    
+
     fn handle_hooks_enable(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let hook_name = args.get("name")
+        let hook_name = args
+            .get("name")
             .ok_or_else(|| anyhow::anyhow!("hook name is required"))?;
-            
+
         let hook_manager = get_global_hook_manager();
         match hook_name.as_str() {
             "mq" => hook_manager.register_hook(Arc::new(MQHook)),
@@ -2597,23 +2751,23 @@ impl EventHandle {
                 return Ok(Status::err(1, format!("Unknown hook: {}", hook_name)));
             }
         }
-        
+
         let response = json!({
             "hook": hook_name,
             "enabled": true
         });
-        
+
         writeln!(io.stdout, "{}", response)?;
         Ok(Status::ok())
     }
-    
+
     fn parse_list_topics_options(args: &Args) -> Result<ListTopicsOptions> {
         // Parse prefix
         let prefix = args.get("prefix").cloned();
-        
+
         // Parse match substring
         let match_substr = args.get("match").cloned();
-        
+
         // Parse sources
         let sources = if let Some(sources_str) = args.get("sources") {
             if sources_str.starts_with('[') {
@@ -2622,24 +2776,37 @@ impl EventHandle {
                     .map_err(|e| anyhow::anyhow!("invalid sources JSON: {}", e))?
             } else {
                 // Comma-separated format
-                sources_str.split(',').map(|s| s.trim().to_string()).collect()
+                sources_str
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect()
             }
         } else {
-            vec!["event".to_string(), "mq".to_string(), "log".to_string(), "proc".to_string(), "fs_watch".to_string()]
+            vec![
+                "event".to_string(),
+                "mq".to_string(),
+                "log".to_string(),
+                "proc".to_string(),
+                "fs_watch".to_string(),
+            ]
         };
-        
+
         // Validate sources
         for source in &sources {
             match source.as_str() {
-                "event" | "mq" | "log" | "proc" | "fs_watch" => {},
-                _ => bail!("invalid source '{}'; supported: event, mq, log, proc, fs_watch", source),
+                "event" | "mq" | "log" | "proc" | "fs_watch" => {}
+                _ => bail!(
+                    "invalid source '{}'; supported: event, mq, log, proc, fs_watch",
+                    source
+                ),
             }
         }
-        
+
         // Parse limit
         let limit = if let Some(limit_str) = args.get("limit") {
-            let limit: u32 = limit_str.parse()
-                .map_err(|_| anyhow::anyhow!("invalid limit '{}'; must be a positive integer", limit_str))?;
+            let limit: u32 = limit_str.parse().map_err(|_| {
+                anyhow::anyhow!("invalid limit '{}'; must be a positive integer", limit_str)
+            })?;
             if limit == 0 || limit > 10000 {
                 bail!("invalid limit {}; must be between 1 and 10000", limit);
             }
@@ -2647,21 +2814,33 @@ impl EventHandle {
         } else {
             1000
         };
-        
+
         // Parse boolean flags
-        let include_hidden = args.get("include_hidden").map(|s| s == "true").unwrap_or(false);
-        let include_stats = args.get("include_stats").map(|s| s == "true").unwrap_or(false);
-        let include_schema = args.get("include_schema").map(|s| s == "true").unwrap_or(false);
-        let include_backends = args.get("include_backends").map(|s| s == "true").unwrap_or(true);
+        let include_hidden = args
+            .get("include_hidden")
+            .map(|s| s == "true")
+            .unwrap_or(false);
+        let include_stats = args
+            .get("include_stats")
+            .map(|s| s == "true")
+            .unwrap_or(false);
+        let include_schema = args
+            .get("include_schema")
+            .map(|s| s == "true")
+            .unwrap_or(false);
+        let include_backends = args
+            .get("include_backends")
+            .map(|s| s == "true")
+            .unwrap_or(true);
         let summarize = args.get("summarize").map(|s| s == "true").unwrap_or(true);
-        
+
         // Parse format
         let format = if let Some(format_str) = args.get("format") {
             OutputFormat::from_str(format_str)?
         } else {
             OutputFormat::Json
         };
-        
+
         Ok(ListTopicsOptions {
             prefix,
             match_substr,
@@ -2675,12 +2854,15 @@ impl EventHandle {
             format,
         })
     }
-    
+
     fn list_topics(&self, opts: ListTopicsOptions) -> Result<ListTopicsResponse> {
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
         let mut all_topics: Vec<TopicInfo> = Vec::new();
         let mut warnings: Vec<String> = Vec::new();
-        
+
         // Create topic providers
         let providers: Vec<Box<dyn TopicProvider>> = vec![
             Box::new(EventBusTopicProvider::new()),
@@ -2689,19 +2871,22 @@ impl EventHandle {
             Box::new(ProcTopicProvider::new()),
             Box::new(FsWatchTopicProvider::new()),
         ];
-        
+
         // Collect topics from all requested sources
         for provider in providers {
             let source_type = provider.source_type();
             if !opts.sources.contains(&source_type.to_string()) {
                 continue;
             }
-            
-            match provider.list_topics(opts.include_hidden, opts.include_stats, opts.include_schema) {
+
+            match provider.list_topics(opts.include_hidden, opts.include_stats, opts.include_schema)
+            {
                 Ok(provider_topics) => {
                     // Merge with existing topics (by name)
                     for new_topic in provider_topics {
-                        if let Some(existing_topic) = all_topics.iter_mut().find(|t| t.name == new_topic.name) {
+                        if let Some(existing_topic) =
+                            all_topics.iter_mut().find(|t| t.name == new_topic.name)
+                        {
                             // Merge sources and backends
                             for source in &new_topic.sources {
                                 if !existing_topic.sources.contains(source) {
@@ -2713,21 +2898,31 @@ impl EventHandle {
                                     existing_topic.backends.push(backend.clone());
                                 }
                             }
-                            
+
                             // Merge stats (keep most recent)
-                            if new_topic.stats.is_some() && (
-                                existing_topic.stats.is_none() ||
-                                new_topic.stats.as_ref().unwrap().last_event_unix_ms.unwrap_or(0) >
-                                existing_topic.stats.as_ref().unwrap().last_event_unix_ms.unwrap_or(0)
-                            ) {
+                            if new_topic.stats.is_some()
+                                && (existing_topic.stats.is_none()
+                                    || new_topic
+                                        .stats
+                                        .as_ref()
+                                        .unwrap()
+                                        .last_event_unix_ms
+                                        .unwrap_or(0)
+                                        > existing_topic
+                                            .stats
+                                            .as_ref()
+                                            .unwrap()
+                                            .last_event_unix_ms
+                                            .unwrap_or(0))
+                            {
                                 existing_topic.stats = new_topic.stats;
                             }
-                            
+
                             // Merge schema (prefer existing, or take new if missing)
                             if existing_topic.schema.is_none() {
                                 existing_topic.schema = new_topic.schema;
                             }
-                            
+
                             // Merge tags
                             for tag in &new_topic.tags {
                                 if !existing_topic.tags.contains(tag) {
@@ -2744,49 +2939,53 @@ impl EventHandle {
                 }
             }
         }
-        
+
         // Apply filters
         let mut filtered_topics = all_topics;
-        
+
         // Filter by prefix
         if let Some(prefix) = &opts.prefix {
             filtered_topics.retain(|t| t.name.starts_with(prefix));
         }
-        
+
         // Filter by match substring
         if let Some(match_str) = &opts.match_substr {
             let match_lower = match_str.to_lowercase();
             filtered_topics.retain(|t| t.name.to_lowercase().contains(&match_lower));
         }
-        
+
         // Filter hidden topics
         if !opts.include_hidden {
             filtered_topics.retain(|t| !t.is_hidden);
         }
-        
+
         // Sort by name (could add more sort options later)
         filtered_topics.sort_by(|a, b| a.name.cmp(&b.name));
-        
+
         // Apply limit and check truncation
         let topics_total = filtered_topics.len() as u32;
         let truncated = topics_total > opts.limit;
         if truncated {
             filtered_topics.truncate(opts.limit as usize);
-            warnings.push(format!("Result truncated to limit={}; refine filters or increase limit.", opts.limit));
+            warnings.push(format!(
+                "Result truncated to limit={}; refine filters or increase limit.",
+                opts.limit
+            ));
         }
         let topics_returned = filtered_topics.len() as u32;
-        
+
         // Check for complete failure
         let ok = if topics_returned == 0 && topics_total == 0 && !warnings.is_empty() {
             // If we have no topics and warnings, it might be complete backend failure
-            let all_backends_failed = opts.sources.iter().all(|source| {
-                warnings.iter().any(|w| w.contains(source))
-            });
+            let all_backends_failed = opts
+                .sources
+                .iter()
+                .all(|source| warnings.iter().any(|w| w.contains(source)));
             !all_backends_failed
         } else {
             true
         };
-        
+
         let error = if !ok {
             Some(EventError {
                 code: "event.list_topics_backend_unavailable".to_string(),
@@ -2795,7 +2994,7 @@ impl EventHandle {
         } else {
             None
         };
-        
+
         let filters = json!({
             "prefix": opts.prefix,
             "match": opts.match_substr,
@@ -2805,7 +3004,7 @@ impl EventHandle {
             "include_stats": opts.include_stats,
             "include_schema": opts.include_schema
         });
-        
+
         Ok(ListTopicsResponse {
             ok,
             timestamp_unix_ms: timestamp,
@@ -2818,98 +3017,117 @@ impl EventHandle {
             warnings,
         })
     }
-    
+
     fn format_list_topics_response_as_json(&self, response: &ListTopicsResponse) -> Result<String> {
         serde_json::to_string_pretty(response)
             .map_err(|e| anyhow::anyhow!("failed to format list-topics response as JSON: {}", e))
     }
-    
+
     fn format_list_topics_response_as_text(&self, response: &ListTopicsResponse) -> Result<String> {
         let mut output = String::new();
-        
+
         output.push_str("Event Topics\n");
         output.push_str("============\n\n");
-        
+
         output.push_str("Filters:\n");
         if let Some(prefix) = response.filters.get("prefix").and_then(|v| v.as_str()) {
             output.push_str(&format!("  Prefix         : {}\n", prefix));
         } else {
             output.push_str("  Prefix         : (none)\n");
         }
-        
+
         if let Some(match_str) = response.filters.get("match").and_then(|v| v.as_str()) {
             output.push_str(&format!("  Match          : {}\n", match_str));
         } else {
             output.push_str("  Match          : (none)\n");
         }
-        
+
         if let Some(sources) = response.filters.get("sources").and_then(|v| v.as_array()) {
-            let source_strs: Vec<String> = sources.iter()
+            let source_strs: Vec<String> = sources
+                .iter()
                 .filter_map(|v| v.as_str())
                 .map(|s| s.to_string())
                 .collect();
             output.push_str(&format!("  Sources        : {}\n", source_strs.join(", ")));
         }
-        
-        let include_stats = response.filters.get("include_stats").and_then(|v| v.as_bool()).unwrap_or(false);
-        let include_schema = response.filters.get("include_schema").and_then(|v| v.as_bool()).unwrap_or(false);
-        output.push_str(&format!("  Include Stats  : {}\n", if include_stats { "yes" } else { "no" }));
-        output.push_str(&format!("  Include Schema : {}\n", if include_schema { "yes" } else { "no" }));
-        
+
+        let include_stats = response
+            .filters
+            .get("include_stats")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_schema = response
+            .filters
+            .get("include_schema")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        output.push_str(&format!(
+            "  Include Stats  : {}\n",
+            if include_stats { "yes" } else { "no" }
+        ));
+        output.push_str(&format!(
+            "  Include Schema : {}\n",
+            if include_schema { "yes" } else { "no" }
+        ));
+
         output.push_str(&format!("\nTopics ({} total):\n\n", response.topics_total));
-        
+
         for (i, topic) in response.topics.iter().enumerate() {
             output.push_str(&format!("{}) {}\n", i + 1, topic.name));
-            
+
             if let Some(description) = &topic.description {
                 output.push_str(&format!("   Description : {}\n", description));
             }
-            
+
             if let Some(category) = &topic.category {
                 output.push_str(&format!("   Category    : {}\n", category));
             }
-            
+
             output.push_str(&format!("   Sources     : {}\n", topic.sources.join(", ")));
-            
+
             if !topic.backends.is_empty() {
                 output.push_str("   Backends    :\n");
                 for backend in &topic.backends {
                     output.push_str(&format!("     - {}\n", backend.id));
                 }
             }
-            
+
             if let Some(stats) = &topic.stats {
                 if let Some(last_event) = stats.last_event_unix_ms {
                     let datetime = chrono::DateTime::from_timestamp_millis(last_event)
                         .unwrap_or_else(chrono::Utc::now);
-                    output.push_str(&format!("   Last Event  : {}\n", datetime.format("%Y-%m-%dT%H:%M:%SZ")));
+                    output.push_str(&format!(
+                        "   Last Event  : {}\n",
+                        datetime.format("%Y-%m-%dT%H:%M:%SZ")
+                    ));
                 }
                 if let Some(count) = stats.approx_message_count {
                     output.push_str(&format!("   Approx Count: {}\n", count));
                 }
             }
-            
+
             if !topic.tags.is_empty() {
                 output.push_str(&format!("   Tags        : {}\n", topic.tags.join(", ")));
             }
-            
+
             if let Some(schema) = &topic.schema {
                 if let Some(example) = &schema.example {
                     output.push_str("\n   Example Payload:\n");
-                    let example_str = serde_json::to_string_pretty(example).unwrap_or_else(|_| "<invalid JSON>".to_string());
+                    let example_str = serde_json::to_string_pretty(example)
+                        .unwrap_or_else(|_| "<invalid JSON>".to_string());
                     for line in example_str.lines() {
                         output.push_str(&format!("     {}\n", line));
                     }
                 }
             }
-            
+
             output.push_str("\n");
         }
-        
+
         if response.truncated {
             output.push_str(&format!("Note: results truncated to limit={}. Refine filters or increase limit to see more.\n\n", response.filters.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000)));
         }
-        
+
         if !response.warnings.is_empty() {
             output.push_str("Warnings:\n");
             for warning in &response.warnings {
@@ -2918,14 +3136,14 @@ impl EventHandle {
         } else {
             output.push_str("Warnings:\n  (none)\n");
         }
-        
+
         if let Some(error) = &response.error {
             output.push_str(&format!("\nError: [{}] {}\n", error.code, error.message));
         }
-        
+
         Ok(output)
     }
-    
+
     fn handle_list_topics(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let opts = match Self::parse_list_topics_options(args) {
             Ok(opts) => opts,
@@ -2939,10 +3157,13 @@ impl EventHandle {
                 } else {
                     "event.list_topics_parse_error"
                 };
-                
+
                 let error_response = ListTopicsResponse {
                     ok: false,
-                    timestamp_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64,
+                    timestamp_unix_ms: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64,
                     filters: json!({}),
                     topics_total: 0,
                     topics_returned: 0,
@@ -2954,40 +3175,41 @@ impl EventHandle {
                     }),
                     warnings: vec![],
                 };
-                
+
                 let output = self.format_list_topics_response_as_json(&error_response)?;
                 write!(io.stdout, "{}", output)?;
                 return Ok(Status::err(1, e.to_string()));
             }
         };
-        
+
         let response = self.list_topics(opts.clone())?;
-        
+
         let output = match opts.format {
             OutputFormat::Json => self.format_list_topics_response_as_json(&response)?,
             OutputFormat::Text => self.format_list_topics_response_as_text(&response)?,
         };
-        
+
         write!(io.stdout, "{}", output)?;
-        
+
         if response.ok {
             Ok(Status::ok())
         } else {
             Ok(Status::err(1, "topic listing failed"))
         }
     }
-    
+
     fn handle_hooks_disable(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let hook_name = args.get("name")
+        let hook_name = args
+            .get("name")
             .ok_or_else(|| anyhow::anyhow!("hook name is required"))?;
-            
+
         get_global_hook_manager().remove_hook(hook_name);
-        
+
         let response = json!({
             "hook": hook_name,
             "disabled": true
         });
-        
+
         writeln!(io.stdout, "{}", response)?;
         Ok(Status::ok())
     }
@@ -2995,7 +3217,17 @@ impl EventHandle {
 
 impl Handle for EventHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["emit", "subscribe", "list-topics", "hooks.list", "hooks.enable", "hooks.disable", "help", "--help", "-h"]
+        &[
+            "emit",
+            "subscribe",
+            "list-topics",
+            "hooks.list",
+            "hooks.enable",
+            "hooks.disable",
+            "help",
+            "--help",
+            "-h",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -3007,7 +3239,7 @@ impl Handle for EventHandle {
         if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
-        
+
         match verb {
             "emit" => self.handle_emit(args, io),
             "subscribe" => self.handle_subscribe(args, io),
@@ -3097,20 +3329,27 @@ mod tests {
     }
 
     fn file_handle(dir: &Path) -> EventHandle {
-        EventHandle::new(Box::new(FileEventBackend::new(dir.join("resh").join("events"))))
+        EventHandle::new(Box::new(FileEventBackend::new(
+            dir.join("resh").join("events"),
+        )))
     }
 
     fn args(pairs: &[(&str, &str)]) -> Args {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn emit(h: &EventHandle, topic: &str, data: &str) -> EventEmitResponse {
-        let opts = EventHandle::parse_emit_options(&args(&[("topic", topic), ("data", data)])).unwrap();
+        let opts =
+            EventHandle::parse_emit_options(&args(&[("topic", topic), ("data", data)])).unwrap();
         h.emit(opts).unwrap()
     }
 
     fn subscribe(h: &EventHandle, pairs: &[(&str, &str)]) -> EventSubscribeResponse {
-        h.subscribe(EventHandle::parse_subscribe_options(&args(pairs)).unwrap()).unwrap()
+        h.subscribe(EventHandle::parse_subscribe_options(&args(pairs)).unwrap())
+            .unwrap()
     }
 
     #[test]
@@ -3123,7 +3362,10 @@ mod tests {
 
         // A separate handle (as in a later resh invocation) sees the events.
         let b = file_handle(dir.path());
-        let r = subscribe(&b, &[("topic", "jobs.backup.completed"), ("offset", "earliest")]);
+        let r = subscribe(
+            &b,
+            &[("topic", "jobs.backup.completed"), ("offset", "earliest")],
+        );
         assert!(r.ok);
         assert_eq!(r.events_returned, 1);
         assert_eq!(r.events[0].data, json!({"status": "success"}));
@@ -3153,12 +3395,23 @@ mod tests {
         for n in 0..3 {
             emit(&a, "q.work", &n.to_string());
         }
-        let sub = [("topic", "q.work"), ("offset", "next"), ("group_id", "g1"), ("limit", "2")];
+        let sub = [
+            ("topic", "q.work"),
+            ("offset", "next"),
+            ("group_id", "g1"),
+            ("limit", "2"),
+        ];
         let r = subscribe(&file_handle(dir.path()), &sub);
-        assert_eq!(r.events.iter().map(|e| e.data.clone()).collect::<Vec<_>>(), [json!(0), json!(1)]);
+        assert_eq!(
+            r.events.iter().map(|e| e.data.clone()).collect::<Vec<_>>(),
+            [json!(0), json!(1)]
+        );
         assert!(r.committed);
         let r = subscribe(&file_handle(dir.path()), &sub);
-        assert_eq!(r.events.iter().map(|e| e.data.clone()).collect::<Vec<_>>(), [json!(2)]);
+        assert_eq!(
+            r.events.iter().map(|e| e.data.clone()).collect::<Vec<_>>(),
+            [json!(2)]
+        );
         let r = subscribe(&file_handle(dir.path()), &sub);
         assert_eq!(r.events_returned, 0);
     }
@@ -3168,7 +3421,14 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let h = file_handle(dir.path());
         let start = std::time::Instant::now();
-        let r = subscribe(&h, &[("topic", "none"), ("wait", "true"), ("wait_timeout_ms", "250")]);
+        let r = subscribe(
+            &h,
+            &[
+                ("topic", "none"),
+                ("wait", "true"),
+                ("wait_timeout_ms", "250"),
+            ],
+        );
         assert!(r.timed_out);
         assert!(start.elapsed() >= Duration::from_millis(250));
     }
@@ -3188,7 +3448,14 @@ mod tests {
         let evt: EventEnvelope = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(evt.topic, "perm.check");
 
-        subscribe(&h, &[("topic", "perm.check"), ("offset", "earliest"), ("group_id", "g")]);
+        subscribe(
+            &h,
+            &[
+                ("topic", "perm.check"),
+                ("offset", "earliest"),
+                ("group_id", "g"),
+            ],
+        );
         assert_eq!(mode(&base.join("_offsets.json")), 0o600);
     }
 
@@ -3222,8 +3489,16 @@ mod tests {
     fn legacy_help_renders_approved_help() {
         let h = EventHandle::new(Box::new(InMemoryEventBackend::new()));
         let run = |verb: &str, a: Args| {
-            let (mut i, mut o, mut e) = (std::io::Cursor::new(Vec::new()), std::io::Cursor::new(Vec::new()), std::io::Cursor::new(Vec::new()));
-            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let (mut i, mut o, mut e) = (
+                std::io::Cursor::new(Vec::new()),
+                std::io::Cursor::new(Vec::new()),
+                std::io::Cursor::new(Vec::new()),
+            );
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
             h.call(verb, &a, &mut io).unwrap();
             String::from_utf8(o.into_inner()).unwrap()
         };
@@ -3231,5 +3506,4 @@ mod tests {
         assert!(run("help", args(&[("verb", "subscribe")])).contains("Verb: subscribe"));
         assert!(run("--help=emit", Args::new()).contains("Verb: emit"));
     }
-
 }

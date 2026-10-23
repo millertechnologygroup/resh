@@ -130,7 +130,7 @@ impl MQHandle {
     fn purge_impl(&self) -> Result<()> {
         // Ensure directory structure exists (idempotent)
         self.ensure()?;
-        
+
         // Purge .msg files from main directory
         if self.dir.exists() {
             for entry in fs::read_dir(&self.dir)? {
@@ -139,14 +139,14 @@ impl MQHandle {
                 if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("msg")) {
                     // Handle NotFound errors gracefully (file may have been deleted by concurrent operation)
                     match fs::remove_file(&path) {
-                        Ok(()) => {},
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                         Err(e) => return Err(e.into()),
                     }
                 }
             }
         }
-        
+
         // Purge .msg files from _inflight directory
         let inflight = self.dir.join("_inflight");
         if inflight.exists() {
@@ -156,37 +156,52 @@ impl MQHandle {
                 if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("msg")) {
                     // Handle NotFound errors gracefully (file may have been deleted by concurrent operation)
                     match fs::remove_file(&path) {
-                        Ok(()) => {},
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                         Err(e) => return Err(e.into()),
                     }
                 }
             }
         }
-        
+
         Ok(())
     }
 
     /// Writes the approved help for `help`, `--help`, `-h`, `--help=<verb>`,
     /// `help(verb=<verb>)`, or a `help`/`h` argument; returns None otherwise.
-    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+    fn check_and_display_help(
+        &self,
+        verb: &str,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<Option<Status>> {
         let help_verb = if let Some(v) = verb.strip_prefix("--help=") {
             Some(v.to_string())
         } else if help::HELP_ALIASES.contains(&verb)
-            || ["help", "h", "--help", "-h"].iter().any(|k| args.contains_key(*k))
+            || ["help", "h", "--help", "-h"]
+                .iter()
+                .any(|k| args.contains_key(*k))
         {
-            args.get("verb").cloned().or_else(|| args.get("help").filter(|v| !v.is_empty()).cloned())
+            args.get("verb")
+                .cloned()
+                .or_else(|| args.get("help").filter(|v| !v.is_empty()).cloned())
         } else {
             return Ok(None);
         };
-        write!(io.stdout, "{}", help::render_legacy("mq", &MQ_HELP, self.verbs(), help_verb.as_deref()))?;
+        write!(
+            io.stdout,
+            "{}",
+            help::render_legacy("mq", &MQ_HELP, self.verbs(), help_verb.as_deref())
+        )?;
         Ok(Some(Status::ok()))
     }
 }
 
 impl Handle for MQHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["create", "put", "get", "len", "purge", "peek", "help", "--help", "-h"]
+        &[
+            "create", "put", "get", "len", "purge", "peek", "help", "--help", "-h",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -200,15 +215,13 @@ impl Handle for MQHandle {
         }
 
         match verb {
-            "create" => {
-                match self.ensure() {
-                    Ok(_) => Ok(Status::ok()),
-                    Err(e) => Ok(Status::err(1, format!("mq create failed: {}", e))),
-                }
-            }
+            "create" => match self.ensure() {
+                Ok(_) => Ok(Status::ok()),
+                Err(e) => Ok(Status::err(1, format!("mq create failed: {}", e))),
+            },
             "put" => {
                 self.ensure()?;
-                
+
                 // Get message data from args or stdin
                 let data = if let Some(data_str) = args.get("data") {
                     // Use data from arguments if provided
@@ -219,18 +232,18 @@ impl Handle for MQHandle {
                     io.stdin.read_to_end(&mut buf)?;
                     buf
                 };
-                
+
                 // Use atomic write: write to temp file then rename
                 let now = Self::now_ns();
                 let tmp = self.dir.join(format!("tmp-{}.msg", now));
                 let final_path = self.dir.join(format!("{:020}.msg", now));
-                
+
                 // Write to temp file
                 fs::write(&tmp, &data)?;
-                
+
                 // Atomically move to final location
                 fs::rename(&tmp, &final_path)?;
-                
+
                 Ok(Status::ok())
             }
             "get" => {
@@ -267,12 +280,10 @@ impl Handle for MQHandle {
                 write!(io.stdout, "{}", count)?;
                 Ok(Status::ok())
             }
-            "purge" => {
-                match self.purge_impl() {
-                    Ok(()) => Ok(Status::ok()),
-                    Err(e) => Ok(Status::err(1, format!("failed to purge queue: {}", e))),
-                }
-            }
+            "purge" => match self.purge_impl() {
+                Ok(()) => Ok(Status::ok()),
+                Err(e) => Ok(Status::err(1, format!("failed to purge queue: {}", e))),
+            },
             "peek" => {
                 self.ensure()?;
                 let mut entries: Vec<_> = fs::read_dir(&self.dir)?
@@ -305,10 +316,24 @@ mod tests {
     use std::io::Cursor;
 
     fn help_out(verb: &str, args: &[(&str, &str)]) -> Option<String> {
-        let h = MQHandle { name: "t".into(), dir: PathBuf::from("/nonexistent-resh-mq-test") };
-        let args: Args = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let (mut i, mut o, mut e) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()), Cursor::new(Vec::new()));
-        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+        let h = MQHandle {
+            name: "t".into(),
+            dir: PathBuf::from("/nonexistent-resh-mq-test"),
+        };
+        let args: Args = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let (mut i, mut o, mut e) = (
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+        );
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
         let r = h.check_and_display_help(verb, &args, &mut io).unwrap();
         r.map(|_| String::from_utf8(o.into_inner()).unwrap())
     }
@@ -317,9 +342,17 @@ mod tests {
     fn legacy_help_forms_render_approved_help() {
         assert!(help_out("help", &[]).unwrap().starts_with("Handle: mq"));
         assert!(help_out("-h", &[]).unwrap().starts_with("Handle: mq"));
-        assert!(help_out("help", &[("verb", "put")]).unwrap().contains("Verb: put"));
+        assert!(
+            help_out("help", &[("verb", "put")])
+                .unwrap()
+                .contains("Verb: put")
+        );
         assert!(help_out("--help=get", &[]).unwrap().contains("Verb: get"));
-        assert!(help_out("len", &[("help", "peek")]).unwrap().contains("Verb: peek"));
+        assert!(
+            help_out("len", &[("help", "peek")])
+                .unwrap()
+                .contains("Verb: peek")
+        );
     }
 
     #[test]

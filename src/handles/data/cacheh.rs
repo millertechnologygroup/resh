@@ -1,7 +1,7 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use base64::prelude::*;
 use dashmap::DashMap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::Write;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -217,8 +217,8 @@ impl CacheBackend {
         match s.to_lowercase().as_str() {
             "redis" => Ok(CacheBackend::Redis),
             "memcached" => Ok(CacheBackend::Memcached),
-            _ => Err(CacheError::UnsupportedBackend { 
-                backend: s.to_string() 
+            _ => Err(CacheError::UnsupportedBackend {
+                backend: s.to_string(),
             }),
         }
     }
@@ -294,7 +294,9 @@ impl ConnectConfig {
             Some(other) => other.to_string(),
         };
         if raw.is_empty() {
-            return Err(CacheError::InvalidConnectConfig { message: "url cannot be empty".to_string() });
+            return Err(CacheError::InvalidConnectConfig {
+                message: "url cannot be empty".to_string(),
+            });
         }
         let timeout_ms = match args.get("connect_timeout_ms") {
             None | Some(Value::Null) => DEFAULT_CONNECT_TIMEOUT_MS,
@@ -314,14 +316,20 @@ impl ConnectConfig {
             CacheBackend::Redis => {
                 if !matches!(scheme.as_str(), "redis" | "rediss" | "redis+unix" | "unix") {
                     return Err(CacheError::InvalidConnectConfig {
-                        message: format!("url scheme '{}' is not valid for redis; use redis://host:port/db", scheme),
+                        message: format!(
+                            "url scheme '{}' is not valid for redis; use redis://host:port/db",
+                            scheme
+                        ),
                     });
                 }
             }
             CacheBackend::Memcached => {
                 if !matches!(scheme.as_str(), "memcache" | "memcached") {
                     return Err(CacheError::InvalidConnectConfig {
-                        message: format!("url scheme '{}' is not valid for memcached; use memcache://host:port", scheme),
+                        message: format!(
+                            "url scheme '{}' is not valid for memcached; use memcache://host:port",
+                            scheme
+                        ),
                     });
                 }
                 if parsed.host_str().map_or(true, |h| h.is_empty()) {
@@ -334,12 +342,16 @@ impl ConnectConfig {
                 if scheme == "memcached" {
                     let rest = &raw[raw.find("://").unwrap_or(0)..];
                     parsed = Url::parse(&format!("memcache{}", rest)).map_err(|e| {
-                        CacheError::InvalidConnectConfig { message: format!("invalid url '{}': {}", raw, e) }
+                        CacheError::InvalidConnectConfig {
+                            message: format!("invalid url '{}': {}", raw, e),
+                        }
                     })?;
                 }
                 if !parsed.query_pairs().any(|(k, _)| k == "connect_timeout") {
                     let secs = format!("{}", timeout_ms as f64 / 1000.0);
-                    parsed.query_pairs_mut().append_pair("connect_timeout", &secs);
+                    parsed
+                        .query_pairs_mut()
+                        .append_pair("connect_timeout", &secs);
                 }
             }
         }
@@ -348,8 +360,16 @@ impl ConnectConfig {
             (Some(h), None) if !h.is_empty() => h.to_string(),
             _ => parsed.path().to_string(),
         };
-        let url = if matches!(backend, CacheBackend::Memcached) { parsed.to_string() } else { raw };
-        Ok(Some(Self { url, endpoint, timeout_ms }))
+        let url = if matches!(backend, CacheBackend::Memcached) {
+            parsed.to_string()
+        } else {
+            raw
+        };
+        Ok(Some(Self {
+            url,
+            endpoint,
+            timeout_ms,
+        }))
     }
 }
 
@@ -429,76 +449,87 @@ pub struct TtlConfig {
 
 impl GetConfig {
     fn from_args(args: &Value) -> Result<Self, CacheError> {
-        let key = args.get("key").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let keys = args.get("keys")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-            });
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let keys = args.get("keys").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        });
 
         // Validation: exactly one of key or keys must be present
         match (&key, &keys) {
-            (None, None) => return Err(CacheError::InvalidGetConfig {
-                message: "exactly one of 'key' or 'keys' is required".to_string()
-            }),
-            (Some(_), Some(_)) => return Err(CacheError::InvalidGetConfig {
-                message: "cannot specify both 'key' and 'keys'".to_string()
-            }),
+            (None, None) => {
+                return Err(CacheError::InvalidGetConfig {
+                    message: "exactly one of 'key' or 'keys' is required".to_string(),
+                });
+            }
+            (Some(_), Some(_)) => {
+                return Err(CacheError::InvalidGetConfig {
+                    message: "cannot specify both 'key' and 'keys'".to_string(),
+                });
+            }
             (Some(k), None) => {
                 if k.is_empty() {
                     return Err(CacheError::InvalidGetConfig {
-                        message: "key cannot be empty".to_string()
+                        message: "key cannot be empty".to_string(),
                     });
                 }
             }
             (None, Some(ks)) => {
                 if ks.is_empty() {
                     return Err(CacheError::InvalidGetConfig {
-                        message: "keys array cannot be empty".to_string()
+                        message: "keys array cannot be empty".to_string(),
                     });
                 }
                 for k in ks {
                     if k.is_empty() {
                         return Err(CacheError::InvalidGetConfig {
-                            message: "keys cannot contain empty strings".to_string()
+                            message: "keys cannot contain empty strings".to_string(),
                         });
                     }
                 }
             }
         }
 
-        let namespace = args.get("namespace")
+        let namespace = args
+            .get("namespace")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let timeout_ms = args.get("timeout_ms")
+        let timeout_ms = args
+            .get("timeout_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(1000);
 
         if timeout_ms == 0 {
             return Err(CacheError::InvalidGetConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
-        let decode = args.get("decode")
+        let decode = args
+            .get("decode")
             .and_then(|v| v.as_str())
             .unwrap_or("utf8")
             .to_string();
 
         match decode.as_str() {
-            "utf8" | "bytes" | "json" => {},
-            _ => return Err(CacheError::InvalidGetConfig {
-                message: format!("decode must be 'utf8', 'bytes', or 'json', got '{}'", decode)
-            }),
+            "utf8" | "bytes" | "json" => {}
+            _ => {
+                return Err(CacheError::InvalidGetConfig {
+                    message: format!(
+                        "decode must be 'utf8', 'bytes', or 'json', got '{}'",
+                        decode
+                    ),
+                });
+            }
         }
 
-        let default = args.get("default")
-            .cloned()
-            .unwrap_or(Value::Null);
+        let default = args.get("default").cloned().unwrap_or(Value::Null);
 
         Ok(GetConfig {
             key,
@@ -520,24 +551,23 @@ impl GetConfig {
 
     /// Apply namespace to all keys
     fn apply_namespace_to_keys(&self, keys: &[String]) -> Vec<String> {
-        keys.iter()
-            .map(|k| self.apply_namespace(k))
-            .collect()
+        keys.iter().map(|k| self.apply_namespace(k)).collect()
     }
 }
 
 impl SetConfig {
     fn from_args(args: &Value) -> Result<Self, CacheError> {
-        let key = args.get("key").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let keys = args.get("keys")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-            });
-        
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let keys = args.get("keys").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        });
+
         let value = args.get("value").cloned();
         let values = args.get("values").and_then(|v| v.as_array()).cloned();
 
@@ -547,43 +577,44 @@ impl SetConfig {
                 // Single key mode - validate key is not empty
                 if key.as_ref().unwrap().is_empty() {
                     return Err(CacheError::InvalidSetConfig {
-                        message: "key cannot be empty".to_string()
+                        message: "key cannot be empty".to_string(),
                     });
                 }
-            },
+            }
             (None, Some(k), None, Some(v)) => {
                 // Multi key mode - validate
                 if k.is_empty() {
                     return Err(CacheError::InvalidSetConfig {
-                        message: "keys array cannot be empty".to_string()
+                        message: "keys array cannot be empty".to_string(),
                     });
                 }
                 if v.is_empty() {
                     return Err(CacheError::InvalidSetConfig {
-                        message: "values array cannot be empty".to_string()
+                        message: "values array cannot be empty".to_string(),
                     });
                 }
                 if k.len() != v.len() {
                     return Err(CacheError::InvalidSetConfig {
-                        message: "keys and values arrays must have the same length".to_string()
+                        message: "keys and values arrays must have the same length".to_string(),
                     });
                 }
                 for key in k {
                     if key.is_empty() {
                         return Err(CacheError::InvalidSetConfig {
-                            message: "keys cannot contain empty strings".to_string()
+                            message: "keys cannot contain empty strings".to_string(),
                         });
                     }
                 }
-            },
+            }
             _ => {
                 return Err(CacheError::InvalidSetConfig {
-                    message: "exactly one of key/value or keys/values is required".to_string()
+                    message: "exactly one of key/value or keys/values is required".to_string(),
                 });
             }
         }
 
-        let namespace = args.get("namespace")
+        let namespace = args
+            .get("namespace")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -591,18 +622,19 @@ impl SetConfig {
         if let Some(ttl) = ttl_ms {
             if ttl == 0 {
                 return Err(CacheError::InvalidSetConfig {
-                    message: "ttl_ms must be greater than 0".to_string()
+                    message: "ttl_ms must be greater than 0".to_string(),
                 });
             }
         }
 
-        let timeout_ms = args.get("timeout_ms")
+        let timeout_ms = args
+            .get("timeout_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(1000);
 
         if timeout_ms == 0 {
             return Err(CacheError::InvalidSetConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
@@ -610,38 +642,45 @@ impl SetConfig {
         let default_encode = if key.is_some() {
             match value.as_ref().unwrap() {
                 Value::String(_) => "utf8",
-                _ => "json"
+                _ => "json",
             }
         } else {
             // For multi-value, use json as default if any value is non-string
-            let has_non_string = values.as_ref().unwrap().iter()
-                .any(|v| !v.is_string());
+            let has_non_string = values.as_ref().unwrap().iter().any(|v| !v.is_string());
             if has_non_string { "json" } else { "utf8" }
         };
 
-        let encode = args.get("encode")
+        let encode = args
+            .get("encode")
             .and_then(|v| v.as_str())
             .unwrap_or(default_encode)
             .to_string();
 
         match encode.as_str() {
-            "utf8" | "bytes" | "json" => {},
-            _ => return Err(CacheError::InvalidSetConfig {
-                message: format!("encode must be 'utf8', 'bytes', or 'json', got '{}'", encode)
-            }),
+            "utf8" | "bytes" | "json" => {}
+            _ => {
+                return Err(CacheError::InvalidSetConfig {
+                    message: format!(
+                        "encode must be 'utf8', 'bytes', or 'json', got '{}'",
+                        encode
+                    ),
+                });
+            }
         }
 
-        let only_if_not_exists = args.get("only_if_not_exists")
+        let only_if_not_exists = args
+            .get("only_if_not_exists")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let only_if_exists = args.get("only_if_exists")
+        let only_if_exists = args
+            .get("only_if_exists")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
         if only_if_not_exists && only_if_exists {
             return Err(CacheError::InvalidSetConfig {
-                message: "only_if_not_exists and only_if_exists cannot both be true".to_string()
+                message: "only_if_not_exists and only_if_exists cannot both be true".to_string(),
             });
         }
 
@@ -669,66 +708,71 @@ impl SetConfig {
 
     /// Apply namespace to all keys
     fn apply_namespace_to_keys(&self, keys: &[String]) -> Vec<String> {
-        keys.iter()
-            .map(|k| self.apply_namespace(k))
-            .collect()
+        keys.iter().map(|k| self.apply_namespace(k)).collect()
     }
 }
 
 impl DeleteConfig {
     fn from_args(args: &Value) -> Result<Self, CacheError> {
-        let key = args.get("key").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let keys = args.get("keys")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-            });
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let keys = args.get("keys").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        });
 
         // Validation: exactly one of key or keys must be present
         match (&key, &keys) {
-            (None, None) => return Err(CacheError::InvalidDeleteConfig {
-                message: "exactly one of 'key' or 'keys' is required".to_string()
-            }),
-            (Some(_), Some(_)) => return Err(CacheError::InvalidDeleteConfig {
-                message: "cannot specify both 'key' and 'keys'".to_string()
-            }),
+            (None, None) => {
+                return Err(CacheError::InvalidDeleteConfig {
+                    message: "exactly one of 'key' or 'keys' is required".to_string(),
+                });
+            }
+            (Some(_), Some(_)) => {
+                return Err(CacheError::InvalidDeleteConfig {
+                    message: "cannot specify both 'key' and 'keys'".to_string(),
+                });
+            }
             (Some(k), None) => {
                 if k.is_empty() {
                     return Err(CacheError::InvalidDeleteConfig {
-                        message: "key cannot be empty".to_string()
+                        message: "key cannot be empty".to_string(),
                     });
                 }
             }
             (None, Some(ks)) => {
                 if ks.is_empty() {
                     return Err(CacheError::InvalidDeleteConfig {
-                        message: "keys array cannot be empty".to_string()
+                        message: "keys array cannot be empty".to_string(),
                     });
                 }
                 for k in ks {
                     if k.is_empty() {
                         return Err(CacheError::InvalidDeleteConfig {
-                            message: "keys cannot contain empty strings".to_string()
+                            message: "keys cannot contain empty strings".to_string(),
                         });
                     }
                 }
             }
         }
 
-        let namespace = args.get("namespace")
+        let namespace = args
+            .get("namespace")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let timeout_ms = args.get("timeout_ms")
+        let timeout_ms = args
+            .get("timeout_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(1000);
 
         if timeout_ms == 0 {
             return Err(CacheError::InvalidDeleteConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
@@ -750,9 +794,7 @@ impl DeleteConfig {
 
     /// Apply namespace to all keys
     fn apply_namespace_to_keys(&self, keys: &[String]) -> Vec<String> {
-        keys.iter()
-            .map(|k| self.apply_namespace(k))
-            .collect()
+        keys.iter().map(|k| self.apply_namespace(k)).collect()
     }
 }
 
@@ -764,39 +806,37 @@ impl IncrConfig {
             Some(k) if !k.is_empty() => k.to_string(),
             Some(_) => {
                 return Err(CacheError::InvalidIncrConfig {
-                    message: "key cannot be empty".to_string()
+                    message: "key cannot be empty".to_string(),
                 });
             }
             None => {
                 return Err(CacheError::InvalidIncrConfig {
-                    message: "key is required".to_string()
+                    message: "key is required".to_string(),
                 });
             }
         };
 
-        let namespace = args.get("namespace")
+        let namespace = args
+            .get("namespace")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         // by defaults to 1
-        let by = args.get("by")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1);
+        let by = args.get("by").and_then(|v| v.as_i64()).unwrap_or(1);
 
         // initial is optional
-        let initial = args.get("initial")
-            .and_then(|v| v.as_i64());
+        let initial = args.get("initial").and_then(|v| v.as_i64());
 
         // ttl_ms is optional, but if provided must be > 0
         let ttl_ms = match args.get("ttl_ms") {
             Some(Value::Null) => None,
             Some(v) => {
                 let ttl = v.as_u64().ok_or_else(|| CacheError::InvalidIncrConfig {
-                    message: "ttl_ms must be a positive integer".to_string()
+                    message: "ttl_ms must be a positive integer".to_string(),
                 })?;
                 if ttl == 0 {
                     return Err(CacheError::InvalidIncrConfig {
-                        message: "ttl_ms must be greater than 0 if provided".to_string()
+                        message: "ttl_ms must be greater than 0 if provided".to_string(),
                     });
                 }
                 Some(ttl)
@@ -804,13 +844,14 @@ impl IncrConfig {
             None => None,
         };
 
-        let timeout_ms = args.get("timeout_ms")
+        let timeout_ms = args
+            .get("timeout_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(1000);
 
         if timeout_ms == 0 {
             return Err(CacheError::InvalidIncrConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
@@ -835,58 +876,65 @@ impl IncrConfig {
 
 impl ExistsConfig {
     fn from_args(args: &Value) -> Result<Self, CacheError> {
-        let key = args.get("key").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let keys = args.get("keys")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-            });
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let keys = args.get("keys").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        });
 
         // Validation: exactly one of key or keys must be present
         match (&key, &keys) {
-            (None, None) => return Err(CacheError::InvalidExistsConfig {
-                message: "exactly one of 'key' or 'keys' is required".to_string()
-            }),
-            (Some(_), Some(_)) => return Err(CacheError::InvalidExistsConfig {
-                message: "cannot specify both 'key' and 'keys'".to_string()
-            }),
+            (None, None) => {
+                return Err(CacheError::InvalidExistsConfig {
+                    message: "exactly one of 'key' or 'keys' is required".to_string(),
+                });
+            }
+            (Some(_), Some(_)) => {
+                return Err(CacheError::InvalidExistsConfig {
+                    message: "cannot specify both 'key' and 'keys'".to_string(),
+                });
+            }
             (Some(k), None) => {
                 if k.is_empty() {
                     return Err(CacheError::InvalidExistsConfig {
-                        message: "key cannot be empty".to_string()
+                        message: "key cannot be empty".to_string(),
                     });
                 }
             }
             (None, Some(ks)) => {
                 if ks.is_empty() {
                     return Err(CacheError::InvalidExistsConfig {
-                        message: "keys array cannot be empty".to_string()
+                        message: "keys array cannot be empty".to_string(),
                     });
                 }
                 for k in ks {
                     if k.is_empty() {
                         return Err(CacheError::InvalidExistsConfig {
-                            message: "keys cannot contain empty strings".to_string()
+                            message: "keys cannot contain empty strings".to_string(),
                         });
                     }
                 }
             }
         }
 
-        let namespace = args.get("namespace")
+        let namespace = args
+            .get("namespace")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let timeout_ms = args.get("timeout_ms")
+        let timeout_ms = args
+            .get("timeout_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(1000);
 
         if timeout_ms == 0 {
             return Err(CacheError::InvalidExistsConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
@@ -915,37 +963,39 @@ impl ExistsConfig {
 impl KeysConfig {
     fn from_args(args: &Value) -> Result<Self, CacheError> {
         // Pattern defaults to "*" if not provided or empty
-        let pattern = args.get("pattern")
+        let pattern = args
+            .get("pattern")
             .and_then(|v| v.as_str())
             .map(|s| if s.is_empty() { "*" } else { s })
             .unwrap_or("*")
             .to_string();
 
-        let namespace = args.get("namespace")
+        let namespace = args
+            .get("namespace")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let cursor = args.get("cursor")
+        let cursor = args
+            .get("cursor")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let limit = args.get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(100);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100);
 
         if limit == 0 {
             return Err(CacheError::InvalidKeysConfig {
-                message: "limit must be greater than 0".to_string()
+                message: "limit must be greater than 0".to_string(),
             });
         }
 
-        let timeout_ms = args.get("timeout_ms")
+        let timeout_ms = args
+            .get("timeout_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(1000);
 
         if timeout_ms == 0 {
             return Err(CacheError::InvalidKeysConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
@@ -984,58 +1034,65 @@ impl KeysConfig {
 
 impl TtlConfig {
     fn from_args(args: &Value) -> Result<Self, CacheError> {
-        let key = args.get("key").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let keys = args.get("keys")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-            });
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let keys = args.get("keys").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        });
 
         // Validation: exactly one of key or keys must be present
         match (&key, &keys) {
-            (None, None) => return Err(CacheError::InvalidTtlConfig {
-                message: "exactly one of 'key' or 'keys' is required".to_string()
-            }),
-            (Some(_), Some(_)) => return Err(CacheError::InvalidTtlConfig {
-                message: "cannot specify both 'key' and 'keys'".to_string()
-            }),
+            (None, None) => {
+                return Err(CacheError::InvalidTtlConfig {
+                    message: "exactly one of 'key' or 'keys' is required".to_string(),
+                });
+            }
+            (Some(_), Some(_)) => {
+                return Err(CacheError::InvalidTtlConfig {
+                    message: "cannot specify both 'key' and 'keys'".to_string(),
+                });
+            }
             (Some(k), None) => {
                 if k.is_empty() {
                     return Err(CacheError::InvalidTtlConfig {
-                        message: "key cannot be empty".to_string()
+                        message: "key cannot be empty".to_string(),
                     });
                 }
             }
             (None, Some(ks)) => {
                 if ks.is_empty() {
                     return Err(CacheError::InvalidTtlConfig {
-                        message: "keys array cannot be empty".to_string()
+                        message: "keys array cannot be empty".to_string(),
                     });
                 }
                 for k in ks {
                     if k.is_empty() {
                         return Err(CacheError::InvalidTtlConfig {
-                            message: "keys cannot contain empty strings".to_string()
+                            message: "keys cannot contain empty strings".to_string(),
                         });
                     }
                 }
             }
         }
 
-        let namespace = args.get("namespace")
+        let namespace = args
+            .get("namespace")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let timeout_ms = args.get("timeout_ms")
+        let timeout_ms = args
+            .get("timeout_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(1000);
 
         if timeout_ms == 0 {
             return Err(CacheError::InvalidTtlConfig {
-                message: "timeout_ms must be greater than 0".to_string()
+                message: "timeout_ms must be greater than 0".to_string(),
             });
         }
 
@@ -1067,7 +1124,9 @@ pub enum CacheError {
     #[error("unsupported backend: {backend}")]
     UnsupportedBackend { backend: String },
 
-    #[error("connection not found for backend '{backend}' alias '{alias}'. Pass url=<connection-url> (or run connect earlier in the same pipeline)")]
+    #[error(
+        "connection not found for backend '{backend}' alias '{alias}'. Pass url=<connection-url> (or run connect earlier in the same pipeline)"
+    )]
     ConnectionNotFound { backend: String, alias: String },
 
     #[error("invalid get configuration: {message}")]
@@ -1159,125 +1218,100 @@ impl CacheError {
     /// Convert error to JSON representation
     pub fn to_json(&self) -> Value {
         let (code, details) = match self {
-            CacheError::UnsupportedBackend { backend } => (
-                "cache.unsupported_backend",
-                json!({ "backend": backend })
-            ),
+            CacheError::UnsupportedBackend { backend } => {
+                ("cache.unsupported_backend", json!({ "backend": backend }))
+            }
             CacheError::ConnectionNotFound { backend, alias } => (
-                "cache.connection_not_found", 
-                json!({ "backend": backend, "alias": alias })
+                "cache.connection_not_found",
+                json!({ "backend": backend, "alias": alias }),
             ),
-            CacheError::InvalidGetConfig { message } => (
-                "cache.invalid_get_config",
-                json!({ "message": message })
-            ),
-            CacheError::InvalidSetConfig { message } => (
-                "cache.invalid_set_config",
-                json!({ "message": message })
-            ),
-            CacheError::InvalidDeleteConfig { message } => (
-                "cache.invalid_delete_config",
-                json!({ "message": message })
-            ),
-            CacheError::InvalidIncrConfig { message } => (
-                "cache.invalid_incr_config",
-                json!({ "message": message })
-            ),
-            CacheError::InvalidExistsConfig { message } => (
-                "cache.invalid_exists_config",
-                json!({ "message": message })
-            ),
-            CacheError::InvalidKeysConfig { message } => (
-                "cache.invalid_keys_config",
-                json!({ "message": message })
-            ),
-            CacheError::InvalidTtlConfig { message } => (
-                "cache.invalid_ttl_config",
-                json!({ "message": message })
-            ),
-            CacheError::GetTimeout { timeout_ms } => (
-                "cache.get_timeout",
-                json!({ "timeout_ms": timeout_ms })
-            ),
-            CacheError::SetTimeout { timeout_ms } => (
-                "cache.set_timeout",
-                json!({ "timeout_ms": timeout_ms })
-            ),
-            CacheError::DeleteTimeout { timeout_ms } => (
-                "cache.delete_timeout",
-                json!({ "timeout_ms": timeout_ms })
-            ),
-            CacheError::IncrTimeout { timeout_ms } => (
-                "cache.incr_timeout",
-                json!({ "timeout_ms": timeout_ms })
-            ),
-            CacheError::ExistsTimeout { timeout_ms } => (
-                "cache.exists_timeout",
-                json!({ "timeout_ms": timeout_ms })
-            ),
-            CacheError::KeysTimeout { timeout_ms } => (
-                "cache.keys_timeout",
-                json!({ "timeout_ms": timeout_ms })
-            ),
-            CacheError::TtlTimeout { timeout_ms } => (
-                "cache.ttl_timeout",
-                json!({ "timeout_ms": timeout_ms })
-            ),
-            CacheError::GetFailed { message } => (
-                "cache.get_failed",
-                json!({ "message": message })
-            ),
-            CacheError::SetFailed { message } => (
-                "cache.set_failed",
-                json!({ "message": message })
-            ),
-            CacheError::DeleteFailed { message } => (
-                "cache.delete_failed",
-                json!({ "message": message })
-            ),
-            CacheError::IncrFailed { message } => (
-                "cache.incr_failed",
-                json!({ "message": message })
-            ),
-            CacheError::ExistsFailed { message } => (
-                "cache.exists_failed",
-                json!({ "message": message })
-            ),
-            CacheError::KeysFailed { message } => (
-                "cache.keys_failed",
-                json!({ "message": message })
-            ),
+            CacheError::InvalidGetConfig { message } => {
+                ("cache.invalid_get_config", json!({ "message": message }))
+            }
+            CacheError::InvalidSetConfig { message } => {
+                ("cache.invalid_set_config", json!({ "message": message }))
+            }
+            CacheError::InvalidDeleteConfig { message } => {
+                ("cache.invalid_delete_config", json!({ "message": message }))
+            }
+            CacheError::InvalidIncrConfig { message } => {
+                ("cache.invalid_incr_config", json!({ "message": message }))
+            }
+            CacheError::InvalidExistsConfig { message } => {
+                ("cache.invalid_exists_config", json!({ "message": message }))
+            }
+            CacheError::InvalidKeysConfig { message } => {
+                ("cache.invalid_keys_config", json!({ "message": message }))
+            }
+            CacheError::InvalidTtlConfig { message } => {
+                ("cache.invalid_ttl_config", json!({ "message": message }))
+            }
+            CacheError::GetTimeout { timeout_ms } => {
+                ("cache.get_timeout", json!({ "timeout_ms": timeout_ms }))
+            }
+            CacheError::SetTimeout { timeout_ms } => {
+                ("cache.set_timeout", json!({ "timeout_ms": timeout_ms }))
+            }
+            CacheError::DeleteTimeout { timeout_ms } => {
+                ("cache.delete_timeout", json!({ "timeout_ms": timeout_ms }))
+            }
+            CacheError::IncrTimeout { timeout_ms } => {
+                ("cache.incr_timeout", json!({ "timeout_ms": timeout_ms }))
+            }
+            CacheError::ExistsTimeout { timeout_ms } => {
+                ("cache.exists_timeout", json!({ "timeout_ms": timeout_ms }))
+            }
+            CacheError::KeysTimeout { timeout_ms } => {
+                ("cache.keys_timeout", json!({ "timeout_ms": timeout_ms }))
+            }
+            CacheError::TtlTimeout { timeout_ms } => {
+                ("cache.ttl_timeout", json!({ "timeout_ms": timeout_ms }))
+            }
+            CacheError::GetFailed { message } => {
+                ("cache.get_failed", json!({ "message": message }))
+            }
+            CacheError::SetFailed { message } => {
+                ("cache.set_failed", json!({ "message": message }))
+            }
+            CacheError::DeleteFailed { message } => {
+                ("cache.delete_failed", json!({ "message": message }))
+            }
+            CacheError::IncrFailed { message } => {
+                ("cache.incr_failed", json!({ "message": message }))
+            }
+            CacheError::ExistsFailed { message } => {
+                ("cache.exists_failed", json!({ "message": message }))
+            }
+            CacheError::KeysFailed { message } => {
+                ("cache.keys_failed", json!({ "message": message }))
+            }
             CacheError::KeysUnsupported => (
                 "cache.keys_unsupported",
-                json!({ "message": "Keys operation unsupported for this backend" })
+                json!({ "message": "Keys operation unsupported for this backend" }),
             ),
-            CacheError::TtlFailed { message } => (
-                "cache.ttl_failed",
-                json!({ "message": message })
-            ),
+            CacheError::TtlFailed { message } => {
+                ("cache.ttl_failed", json!({ "message": message }))
+            }
             CacheError::TtlUnsupported => (
                 "cache.ttl_unsupported",
-                json!({ "message": "TTL operation unsupported for this backend" })
+                json!({ "message": "TTL operation unsupported for this backend" }),
             ),
             CacheError::IncrTypeError => (
                 "cache.incr_type_error",
-                json!({ "message": "Cannot increment non-integer cache value" })
+                json!({ "message": "Cannot increment non-integer cache value" }),
             ),
-            CacheError::DecodeError { message } => (
-                "cache.decode_error", 
-                json!({ "message": message })
-            ),
-            CacheError::EncodeError { message } => (
-                "cache.encode_error", 
-                json!({ "message": message })
-            ),
-            CacheError::ConnectFailed { message } => (
-                "cache.connect_failed",
-                json!({ "message": message })
-            ),
+            CacheError::DecodeError { message } => {
+                ("cache.decode_error", json!({ "message": message }))
+            }
+            CacheError::EncodeError { message } => {
+                ("cache.encode_error", json!({ "message": message }))
+            }
+            CacheError::ConnectFailed { message } => {
+                ("cache.connect_failed", json!({ "message": message }))
+            }
             CacheError::InvalidConnectConfig { message } => (
                 "cache.invalid_connect_config",
-                json!({ "message": message })
+                json!({ "message": message }),
             ),
         };
 
@@ -1294,31 +1328,27 @@ impl CacheError {
 /// Decode raw bytes according to the specified mode
 fn decode_value(raw: &[u8], decode_mode: &str) -> Result<Value, CacheError> {
     match decode_mode {
-        "utf8" => {
-            match std::str::from_utf8(raw) {
-                Ok(s) => Ok(Value::String(s.to_string())),
-                Err(e) => Err(CacheError::DecodeError {
-                    message: format!("invalid UTF-8: {}", e)
-                }),
-            }
-        }
+        "utf8" => match std::str::from_utf8(raw) {
+            Ok(s) => Ok(Value::String(s.to_string())),
+            Err(e) => Err(CacheError::DecodeError {
+                message: format!("invalid UTF-8: {}", e),
+            }),
+        },
         "bytes" => {
             let encoded = BASE64_STANDARD.encode(raw);
             Ok(Value::String(encoded))
         }
         "json" => {
-            let s = std::str::from_utf8(raw)
-                .map_err(|e| CacheError::DecodeError {
-                    message: format!("invalid UTF-8 for JSON: {}", e)
-                })?;
-            
-            serde_json::from_str(s)
-                .map_err(|e| CacheError::DecodeError {
-                    message: format!("invalid JSON: {}", e)
-                })
+            let s = std::str::from_utf8(raw).map_err(|e| CacheError::DecodeError {
+                message: format!("invalid UTF-8 for JSON: {}", e),
+            })?;
+
+            serde_json::from_str(s).map_err(|e| CacheError::DecodeError {
+                message: format!("invalid JSON: {}", e),
+            })
         }
         _ => Err(CacheError::DecodeError {
-            message: format!("unsupported decode mode: {}", decode_mode)
+            message: format!("unsupported decode mode: {}", decode_mode),
         }),
     }
 }
@@ -1335,40 +1365,37 @@ fn encode_value(value: &Value, encode_mode: &str) -> Result<Vec<u8>, CacheError>
                         Value::Number(n) => n.to_string(),
                         Value::Bool(b) => b.to_string(),
                         Value::Null => "null".to_string(),
-                        _ => serde_json::to_string(value)
-                            .map_err(|e| CacheError::EncodeError {
-                                message: format!("failed to convert to string: {}", e)
-                            })?
+                        _ => serde_json::to_string(value).map_err(|e| CacheError::EncodeError {
+                            message: format!("failed to convert to string: {}", e),
+                        })?,
                     };
                     Ok(s.as_bytes().to_vec())
                 }
             }
         }
         "json" => {
-            let json_str = serde_json::to_string(value)
-                .map_err(|e| CacheError::EncodeError {
-                    message: format!("failed to serialize JSON: {}", e)
-                })?;
+            let json_str = serde_json::to_string(value).map_err(|e| CacheError::EncodeError {
+                message: format!("failed to serialize JSON: {}", e),
+            })?;
             Ok(json_str.as_bytes().to_vec())
         }
         "bytes" => {
             match value {
                 Value::String(s) => {
                     // Try to decode base64
-                    BASE64_STANDARD.decode(s)
+                    BASE64_STANDARD
+                        .decode(s)
                         .map_err(|e| CacheError::EncodeError {
-                            message: format!("invalid base64: {}", e)
+                            message: format!("invalid base64: {}", e),
                         })
                 }
-                _ => {
-                    Err(CacheError::EncodeError {
-                        message: "bytes encoding requires string value with base64 data".to_string()
-                    })
-                }
+                _ => Err(CacheError::EncodeError {
+                    message: "bytes encoding requires string value with base64 data".to_string(),
+                }),
             }
         }
         _ => Err(CacheError::EncodeError {
-            message: format!("unsupported encode mode: {}", encode_mode)
+            message: format!("unsupported encode mode: {}", encode_mode),
         }),
     }
 }
@@ -1384,7 +1411,12 @@ pub struct CacheHandle {
 impl CacheHandle {
     /// Handles the in-URL help forms (`help`, `--help`, `-h`, `--help=<verb>`,
     /// `help(verb=<verb>)`) by rendering the approved `CACHE_HELP` metadata.
-    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+    fn check_and_display_help(
+        &self,
+        verb: &str,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<Option<Status>> {
         let topic: Option<&str> = if verb == "help"
             || crate::core::help::is_help_flag(verb)
             || crate::core::help::is_help_flag(&self.alias)
@@ -1407,19 +1439,23 @@ impl CacheHandle {
     }
 
     pub fn from_url(url: Url) -> Result<Self, CacheError> {
-        let backend_str = url.host_str()
+        let backend_str = url
+            .host_str()
             .ok_or_else(|| CacheError::UnsupportedBackend {
-                backend: "missing host".to_string()
+                backend: "missing host".to_string(),
             })?;
 
         // cache://--help (exact match): a placeholder handle whose every call
         // prints help.
         if crate::core::help::is_help_flag(backend_str) {
-            return Ok(Self { backend: CacheBackend::Redis, alias: "--help".to_string() });
+            return Ok(Self {
+                backend: CacheBackend::Redis,
+                alias: "--help".to_string(),
+            });
         }
-        
+
         let backend = CacheBackend::from_str(backend_str)?;
-        
+
         let path = url.path().trim_start_matches('/');
         let alias = if path.is_empty() {
             "default".to_string()
@@ -1460,7 +1496,10 @@ impl CacheHandle {
     /// Returns the registered connection for this backend and alias. When
     /// none is registered and `url=` is present, connects on demand and
     /// registers the new client; otherwise returns `ConnectionNotFound`.
-    async fn resolve_connection(&self, args: &Value) -> Result<Arc<CacheConnectionHandle>, CacheError> {
+    async fn resolve_connection(
+        &self,
+        args: &Value,
+    ) -> Result<Arc<CacheConnectionHandle>, CacheError> {
         let conn_key = (self.backend.clone(), self.alias.clone());
         if let Some(existing) = CONNECTION_REGISTRY.get(&conn_key) {
             return Ok(Arc::clone(existing.value()));
@@ -1479,25 +1518,35 @@ impl CacheHandle {
     }
 
     /// Opens and verifies a client for `config`, bounded by its timeout.
-    async fn open_connection(&self, config: &ConnectConfig) -> Result<Arc<CacheConnectionHandle>, CacheError> {
+    async fn open_connection(
+        &self,
+        config: &ConnectConfig,
+    ) -> Result<Arc<CacheConnectionHandle>, CacheError> {
         let timeout = Duration::from_millis(config.timeout_ms);
         let client = match self.backend {
             CacheBackend::Redis => {
                 let client = redis::Client::open(config.url.as_str()).map_err(|e| {
-                    CacheError::InvalidConnectConfig { message: format!("invalid Redis url: {}", e) }
+                    CacheError::InvalidConnectConfig {
+                        message: format!("invalid Redis url: {}", e),
+                    }
                 })?;
                 let fut = async {
                     let mut manager = redis::aio::ConnectionManager::new_with_backoff_and_timeouts(
                         client, 2, 100, 1, timeout, timeout,
                     )
                     .await?;
-                    redis::cmd("PING").query_async::<_, String>(&mut manager).await?;
+                    redis::cmd("PING")
+                        .query_async::<_, String>(&mut manager)
+                        .await?;
                     Ok::<_, redis::RedisError>(manager)
                 };
                 let manager = tokio::time::timeout(timeout, fut)
                     .await
                     .map_err(|_| CacheError::ConnectFailed {
-                        message: format!("timed out after {}ms connecting to {}", config.timeout_ms, config.endpoint),
+                        message: format!(
+                            "timed out after {}ms connecting to {}",
+                            config.timeout_ms, config.endpoint
+                        ),
                     })?
                     .map_err(|e| CacheError::ConnectFailed {
                         message: format!("Redis connection to {} failed: {}", config.endpoint, e),
@@ -1515,7 +1564,10 @@ impl CacheHandle {
                 let client = tokio::time::timeout(timeout, task)
                     .await
                     .map_err(|_| CacheError::ConnectFailed {
-                        message: format!("timed out after {}ms connecting to {}", config.timeout_ms, endpoint),
+                        message: format!(
+                            "timed out after {}ms connecting to {}",
+                            config.timeout_ms, endpoint
+                        ),
                     })?
                     .map_err(|e| CacheError::ConnectFailed {
                         message: format!("Memcached connect task failed: {}", e),
@@ -1543,7 +1595,7 @@ impl CacheHandle {
 
         // Execute get operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        
+
         match tokio::time::timeout(timeout_duration, self.execute_get(&*handle, &config)).await {
             Ok(result) => result,
             Err(_) => Err(CacheError::GetTimeout {
@@ -1554,9 +1606,9 @@ impl CacheHandle {
 
     /// Execute the actual get operation
     async fn execute_get(
-        &self, 
-        handle: &CacheConnectionHandle, 
-        config: &GetConfig
+        &self,
+        handle: &CacheConnectionHandle,
+        config: &GetConfig,
     ) -> Result<Value, CacheError> {
         match &config.key {
             Some(key) => self.get_single_key(handle, config, key).await,
@@ -1575,7 +1627,7 @@ impl CacheHandle {
         key: &str,
     ) -> Result<Value, CacheError> {
         let logical_key = config.apply_namespace(key);
-        
+
         let raw_value = match &handle.client {
             CacheClient::Redis(conn) => self.redis_get(conn, &logical_key).await?,
             CacheClient::Memcached(client) => self.memcached_get(client, &logical_key).await?,
@@ -1606,10 +1658,12 @@ impl CacheHandle {
         keys: &[String],
     ) -> Result<Value, CacheError> {
         let logical_keys = config.apply_namespace_to_keys(keys);
-        
+
         let raw_values = match &handle.client {
             CacheClient::Redis(conn) => self.redis_mget(conn, &logical_keys).await?,
-            CacheClient::Memcached(client) => self.memcached_get_many(client, &logical_keys).await?,
+            CacheClient::Memcached(client) => {
+                self.memcached_get_many(client, &logical_keys).await?
+            }
         };
 
         let mut results = Vec::new();
@@ -1643,12 +1697,11 @@ impl CacheHandle {
         key: &str,
     ) -> Result<Option<Vec<u8>>, CacheError> {
         use redis::AsyncCommands;
-        
+
         let mut conn = conn.clone();
-        let result: Option<Vec<u8>> = conn.get(key).await
-            .map_err(|e| CacheError::GetFailed {
-                message: format!("Redis GET failed: {}", e)
-            })?;
+        let result: Option<Vec<u8>> = conn.get(key).await.map_err(|e| CacheError::GetFailed {
+            message: format!("Redis GET failed: {}", e),
+        })?;
 
         Ok(result)
     }
@@ -1660,11 +1713,11 @@ impl CacheHandle {
         keys: &[String],
     ) -> Result<Vec<Option<Vec<u8>>>, CacheError> {
         use redis::AsyncCommands;
-        
+
         let mut conn = conn.clone();
-        let result: Vec<Option<Vec<u8>>> = conn.get(keys).await
-            .map_err(|e| CacheError::GetFailed {
-                message: format!("Redis MGET failed: {}", e)
+        let result: Vec<Option<Vec<u8>>> =
+            conn.get(keys).await.map_err(|e| CacheError::GetFailed {
+                message: format!("Redis MGET failed: {}", e),
             })?;
 
         Ok(result)
@@ -1686,14 +1739,15 @@ impl CacheHandle {
         // Spawn a blocking task to avoid blocking the async runtime
         // The memcache crate uses synchronous I/O
         tokio::task::spawn_blocking(move || {
-            client.get::<Vec<u8>>(&key)
+            client
+                .get::<Vec<u8>>(&key)
                 .map_err(|e| CacheError::GetFailed {
-                    message: format!("Memcached GET failed for key '{}': {}", key, e)
+                    message: format!("Memcached GET failed for key '{}': {}", key, e),
                 })
         })
         .await
         .map_err(|e| CacheError::GetFailed {
-            message: format!("Memcached GET task panicked: {}", e)
+            message: format!("Memcached GET task panicked: {}", e),
         })?
     }
 
@@ -1719,7 +1773,7 @@ impl CacheHandle {
                     Ok(value) => results.push(value),
                     Err(e) => {
                         return Err(CacheError::GetFailed {
-                            message: format!("Memcached GET failed for key '{}': {}", key, e)
+                            message: format!("Memcached GET failed for key '{}': {}", key, e),
                         });
                     }
                 }
@@ -1729,7 +1783,7 @@ impl CacheHandle {
         })
         .await
         .map_err(|e| CacheError::GetFailed {
-            message: format!("Memcached MGET task panicked: {}", e)
+            message: format!("Memcached MGET task panicked: {}", e),
         })?
     }
 
@@ -1743,7 +1797,7 @@ impl CacheHandle {
 
         // Execute set operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        
+
         match tokio::time::timeout(timeout_duration, self.execute_set(&*handle, &config)).await {
             Ok(result) => result,
             Err(_) => Err(CacheError::SetTimeout {
@@ -1762,7 +1816,7 @@ impl CacheHandle {
 
         // Execute delete operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        
+
         match tokio::time::timeout(timeout_duration, self.execute_delete(&*handle, &config)).await {
             Ok(result) => result,
             Err(_) => Err(CacheError::DeleteTimeout {
@@ -1773,9 +1827,9 @@ impl CacheHandle {
 
     /// Execute the actual delete operation
     async fn execute_delete(
-        &self, 
-        handle: &CacheConnectionHandle, 
-        config: &DeleteConfig
+        &self,
+        handle: &CacheConnectionHandle,
+        config: &DeleteConfig,
     ) -> Result<Value, CacheError> {
         match &config.key {
             Some(key) => self.delete_single_key(handle, config, key).await,
@@ -1794,7 +1848,7 @@ impl CacheHandle {
         key: &str,
     ) -> Result<Value, CacheError> {
         let logical_key = config.apply_namespace(key);
-        
+
         let deleted = match &handle.client {
             CacheClient::Redis(conn) => self.redis_delete(conn, &logical_key).await?,
             CacheClient::Memcached(client) => self.memcached_delete(client, &logical_key).await?,
@@ -1816,17 +1870,19 @@ impl CacheHandle {
         keys: &[String],
     ) -> Result<Value, CacheError> {
         let logical_keys = config.apply_namespace_to_keys(keys);
-        
+
         let mut results = Vec::new();
         let mut total_deleted = 0;
 
         // For both Redis and Memcached, we loop per key for simplicity
         for (i, key) in keys.iter().enumerate() {
             let logical_key = &logical_keys[i];
-            
+
             let deleted = match &handle.client {
                 CacheClient::Redis(conn) => self.redis_delete(conn, logical_key).await?,
-                CacheClient::Memcached(client) => self.memcached_delete(client, logical_key).await?,
+                CacheClient::Memcached(client) => {
+                    self.memcached_delete(client, logical_key).await?
+                }
             };
 
             if deleted {
@@ -1854,12 +1910,11 @@ impl CacheHandle {
         key: &str,
     ) -> Result<bool, CacheError> {
         use redis::AsyncCommands;
-        
+
         let mut conn = conn.clone();
-        let result: i32 = conn.del(key).await
-            .map_err(|e| CacheError::DeleteFailed {
-                message: format!("Redis DEL failed: {}", e)
-            })?;
+        let result: i32 = conn.del(key).await.map_err(|e| CacheError::DeleteFailed {
+            message: format!("Redis DEL failed: {}", e),
+        })?;
 
         // Redis DEL returns the number of keys deleted (0 or 1 for single key)
         Ok(result > 0)
@@ -1874,21 +1929,20 @@ impl CacheHandle {
         // Note: memcache crate doesn't have async support
         // This is a basic implementation using blocking operations
         // In production, you'd want to use a proper async memcached client
-        
+
         // Clone the client and key to avoid borrowing issues
         let client = client.clone();
         let key = key.to_string();
-        
+
         // Use tokio::task::spawn_blocking for the blocking operation
-        let result = tokio::task::spawn_blocking(move || {
-            client.delete(&key)
-        }).await
-        .map_err(|e| CacheError::DeleteFailed {
-            message: format!("Failed to execute memcached delete task: {}", e)
-        })?;
+        let result = tokio::task::spawn_blocking(move || client.delete(&key))
+            .await
+            .map_err(|e| CacheError::DeleteFailed {
+                message: format!("Failed to execute memcached delete task: {}", e),
+            })?;
 
         match result {
-            Ok(_) => Ok(true),  // Delete succeeded (key existed and was removed)
+            Ok(_) => Ok(true), // Delete succeeded (key existed and was removed)
             Err(e) => {
                 // For memcache errors, we'll treat any error as a failure
                 // The specific error type handling depends on the memcache crate version
@@ -1897,7 +1951,7 @@ impl CacheHandle {
                     Ok(false) // Key didn't exist
                 } else {
                     Err(CacheError::DeleteFailed {
-                        message: format!("Memcached DELETE failed: {}", e)
+                        message: format!("Memcached DELETE failed: {}", e),
                     })
                 }
             }
@@ -1906,9 +1960,9 @@ impl CacheHandle {
 
     /// Execute the actual set operation
     async fn execute_set(
-        &self, 
-        handle: &CacheConnectionHandle, 
-        config: &SetConfig
+        &self,
+        handle: &CacheConnectionHandle,
+        config: &SetConfig,
     ) -> Result<Value, CacheError> {
         match (&config.key, &config.value) {
             (Some(key), Some(value)) => self.set_single_key(handle, config, key, value).await,
@@ -1934,24 +1988,26 @@ impl CacheHandle {
         let stored = match &handle.client {
             CacheClient::Redis(conn) => {
                 self.redis_set_single(
-                    conn, 
-                    &logical_key, 
-                    &encoded_value, 
+                    conn,
+                    &logical_key,
+                    &encoded_value,
                     config.ttl_ms,
                     config.only_if_not_exists,
-                    config.only_if_exists
-                ).await?
-            },
+                    config.only_if_exists,
+                )
+                .await?
+            }
             CacheClient::Memcached(client) => {
                 self.memcached_set_single(
-                    client, 
-                    &logical_key, 
-                    &encoded_value, 
+                    client,
+                    &logical_key,
+                    &encoded_value,
                     config.ttl_ms,
                     config.only_if_not_exists,
-                    config.only_if_exists
-                ).await?
-            },
+                    config.only_if_exists,
+                )
+                .await?
+            }
         };
 
         let mut response = json!({
@@ -1981,7 +2037,7 @@ impl CacheHandle {
         values: &[Value],
     ) -> Result<Value, CacheError> {
         let logical_keys = config.apply_namespace_to_keys(keys);
-        
+
         let mut results = Vec::new();
         for (i, (key, value)) in keys.iter().zip(values.iter()).enumerate() {
             let logical_key = &logical_keys[i];
@@ -1990,24 +2046,26 @@ impl CacheHandle {
             let stored = match &handle.client {
                 CacheClient::Redis(conn) => {
                     self.redis_set_single(
-                        conn, 
-                        logical_key, 
-                        &encoded_value, 
+                        conn,
+                        logical_key,
+                        &encoded_value,
                         config.ttl_ms,
                         config.only_if_not_exists,
-                        config.only_if_exists
-                    ).await?
-                },
+                        config.only_if_exists,
+                    )
+                    .await?
+                }
                 CacheClient::Memcached(client) => {
                     self.memcached_set_single(
-                        client, 
-                        logical_key, 
-                        &encoded_value, 
+                        client,
+                        logical_key,
+                        &encoded_value,
                         config.ttl_ms,
                         config.only_if_not_exists,
-                        config.only_if_exists
-                    ).await?
-                },
+                        config.only_if_exists,
+                    )
+                    .await?
+                }
             };
 
             let mut result = json!({
@@ -2040,18 +2098,18 @@ impl CacheHandle {
         only_if_exists: bool,
     ) -> Result<bool, CacheError> {
         use redis::AsyncCommands;
-        
+
         let mut conn = conn.clone();
 
         // Build SET command manually using the raw command interface
         let mut cmd = redis::cmd("SET");
         cmd.arg(key).arg(value);
-        
+
         // Add TTL option
         if let Some(ttl) = ttl_ms {
             cmd.arg("PX").arg(ttl);
         }
-        
+
         // Add conditional options
         if only_if_not_exists {
             cmd.arg("NX");
@@ -2059,10 +2117,12 @@ impl CacheHandle {
             cmd.arg("XX");
         }
 
-        let result: Option<String> = cmd.query_async(&mut conn).await
-            .map_err(|e| CacheError::SetFailed {
-                message: format!("Redis SET failed: {}", e)
-            })?;
+        let result: Option<String> =
+            cmd.query_async(&mut conn)
+                .await
+                .map_err(|e| CacheError::SetFailed {
+                    message: format!("Redis SET failed: {}", e),
+                })?;
 
         // Redis SET returns "OK" on success, None if NX/XX condition not met
         Ok(result.is_some())
@@ -2093,11 +2153,12 @@ impl CacheHandle {
                         let error_msg = e.to_string();
                         // Memcached returns error if key exists with ADD command
                         if error_msg.to_lowercase().contains("not stored")
-                            || error_msg.to_lowercase().contains("exists") {
+                            || error_msg.to_lowercase().contains("exists")
+                        {
                             Ok(false) // Condition not met
                         } else {
                             Err(CacheError::SetFailed {
-                                message: format!("Memcached ADD failed for key '{}': {}", key, e)
+                                message: format!("Memcached ADD failed for key '{}': {}", key, e),
                             })
                         }
                     }
@@ -2111,11 +2172,15 @@ impl CacheHandle {
                         let error_msg = e.to_string();
                         // Memcached returns error if key doesn't exist with REPLACE command
                         if error_msg.to_lowercase().contains("not stored")
-                            || error_msg.to_lowercase().contains("not found") {
+                            || error_msg.to_lowercase().contains("not found")
+                        {
                             Ok(false) // Condition not met
                         } else {
                             Err(CacheError::SetFailed {
-                                message: format!("Memcached REPLACE failed for key '{}': {}", key, e)
+                                message: format!(
+                                    "Memcached REPLACE failed for key '{}': {}",
+                                    key, e
+                                ),
                             })
                         }
                     }
@@ -2123,16 +2188,17 @@ impl CacheHandle {
             } else {
                 // SET: Store unconditionally
                 let ttl_seconds = ttl_ms.map(|ms| (ms / 1000) as u32).unwrap_or(0);
-                client.set(&key, value.as_slice(), ttl_seconds)
+                client
+                    .set(&key, value.as_slice(), ttl_seconds)
                     .map(|_| true)
                     .map_err(|e| CacheError::SetFailed {
-                        message: format!("Memcached SET failed for key '{}': {}", key, e)
+                        message: format!("Memcached SET failed for key '{}': {}", key, e),
                     })
             }
         })
         .await
         .map_err(|e| CacheError::SetFailed {
-            message: format!("Memcached SET task panicked: {}", e)
+            message: format!("Memcached SET task panicked: {}", e),
         })?
     }
 
@@ -2144,7 +2210,8 @@ impl CacheHandle {
         // For Memcached, validate that 'by' is non-negative
         if self.backend == CacheBackend::Memcached && config.by < 0 {
             return Err(CacheError::InvalidIncrConfig {
-                message: "Memcached does not support negative increments (by must be >= 0)".to_string()
+                message: "Memcached does not support negative increments (by must be >= 0)"
+                    .to_string(),
             });
         }
 
@@ -2153,7 +2220,7 @@ impl CacheHandle {
 
         // Execute incr operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        
+
         match tokio::time::timeout(timeout_duration, self.execute_incr(&*handle, &config)).await {
             Ok(result) => result,
             Err(_) => Err(CacheError::IncrTimeout {
@@ -2164,15 +2231,17 @@ impl CacheHandle {
 
     /// Execute the actual incr operation
     async fn execute_incr(
-        &self, 
-        handle: &CacheConnectionHandle, 
-        config: &IncrConfig
+        &self,
+        handle: &CacheConnectionHandle,
+        config: &IncrConfig,
     ) -> Result<Value, CacheError> {
         let logical_key = config.apply_namespace(&config.key);
-        
+
         let (value, created) = match &handle.client {
             CacheClient::Redis(conn) => self.redis_incr(conn, &logical_key, config).await?,
-            CacheClient::Memcached(client) => self.memcached_incr(client, &logical_key, config).await?,
+            CacheClient::Memcached(client) => {
+                self.memcached_incr(client, &logical_key, config).await?
+            }
         };
 
         Ok(json!({
@@ -2194,7 +2263,7 @@ impl CacheHandle {
         use redis::AsyncCommands;
 
         let mut conn = conn.clone();
-        
+
         // Use Lua script for atomic incr with initial value support
         let script = r#"
             local key = KEYS[1]
@@ -2221,7 +2290,7 @@ impl CacheHandle {
 
         let initial_value = config.initial.unwrap_or(0);
         let ttl_ms = config.ttl_ms.unwrap_or(0);
-        
+
         let result: Vec<i64> = redis::Script::new(script)
             .key(key)
             .arg(config.by)
@@ -2231,18 +2300,20 @@ impl CacheHandle {
             .await
             .map_err(|e| {
                 let error_msg = e.to_string();
-                if error_msg.contains("not an integer") || error_msg.contains("value is not an integer") {
+                if error_msg.contains("not an integer")
+                    || error_msg.contains("value is not an integer")
+                {
                     CacheError::IncrTypeError
                 } else {
                     CacheError::IncrFailed {
-                        message: format!("Redis INCR failed: {}", e)
+                        message: format!("Redis INCR failed: {}", e),
                     }
                 }
             })?;
 
         let value = result[0];
         let created = result[1] == 1;
-        
+
         Ok((value, created))
     }
 
@@ -2256,14 +2327,14 @@ impl CacheHandle {
         // Note: memcache crate doesn't have async support
         // This is a basic implementation using blocking operations
         // In production, you'd want to use a proper async memcached client
-        
+
         let client = client.clone();
         let key = key.to_string();
         let by = config.by as u64; // Safe because we validated by >= 0 earlier
         let initial_value = config.initial.unwrap_or(0);
         let ttl_seconds = config.ttl_ms.map(|ms| (ms / 1000).max(1) as u32);
         let by_i64 = config.by; // Keep the original i64 value for calculation
-        
+
         let result = tokio::task::spawn_blocking(move || -> Result<(i64, bool), CacheError> {
             // First try to increment
             match client.increment(&key, by) {
@@ -2280,22 +2351,23 @@ impl CacheHandle {
                         match client.set(&key, clamped_value, ttl_seconds.unwrap_or(0)) {
                             Ok(_) => Ok((clamped_value, true)),
                             Err(e) => Err(CacheError::IncrFailed {
-                                message: format!("Memcached SET failed: {}", e)
-                            })
+                                message: format!("Memcached SET failed: {}", e),
+                            }),
                         }
                     } else {
                         match client.set(&key, new_value, ttl_seconds.unwrap_or(0)) {
                             Ok(_) => Ok((new_value, true)),
                             Err(e) => Err(CacheError::IncrFailed {
-                                message: format!("Memcached SET failed: {}", e)
-                            })
+                                message: format!("Memcached SET failed: {}", e),
+                            }),
                         }
                     }
                 }
             }
-        }).await
+        })
+        .await
         .map_err(|e| CacheError::IncrFailed {
-            message: format!("Failed to execute memcached incr task: {}", e)
+            message: format!("Failed to execute memcached incr task: {}", e),
         })?;
 
         result
@@ -2311,7 +2383,7 @@ impl CacheHandle {
 
         // Execute exists operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        
+
         match tokio::time::timeout(timeout_duration, self.execute_exists(&*handle, &config)).await {
             Ok(result) => result,
             Err(_) => Err(CacheError::ExistsTimeout {
@@ -2322,9 +2394,9 @@ impl CacheHandle {
 
     /// Execute the actual exists operation
     async fn execute_exists(
-        &self, 
-        handle: &CacheConnectionHandle, 
-        config: &ExistsConfig
+        &self,
+        handle: &CacheConnectionHandle,
+        config: &ExistsConfig,
     ) -> Result<Value, CacheError> {
         match &config.key {
             Some(key) => self.exists_single_key(handle, config, key).await,
@@ -2335,7 +2407,7 @@ impl CacheHandle {
         }
     }
 
-    /// Keys operation for cache 
+    /// Keys operation for cache
     pub async fn keys(&self, args: Value) -> Result<Value, CacheError> {
         // Parse and validate arguments
         let config = KeysConfig::from_args(&args)?;
@@ -2345,7 +2417,7 @@ impl CacheHandle {
 
         // Execute keys operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        
+
         match tokio::time::timeout(timeout_duration, self.execute_keys(&*handle, &config)).await {
             Ok(result) => result,
             Err(_) => Err(CacheError::KeysTimeout {
@@ -2374,10 +2446,12 @@ impl CacheHandle {
         key: &str,
     ) -> Result<Value, CacheError> {
         let logical_key = config.apply_namespace(key);
-        
+
         let exists = match &handle.client {
             CacheClient::Redis(conn) => self.redis_exists_single(conn, &logical_key).await?,
-            CacheClient::Memcached(client) => self.memcached_exists_single(client, &logical_key).await?,
+            CacheClient::Memcached(client) => {
+                self.memcached_exists_single(client, &logical_key).await?
+            }
         };
 
         Ok(json!({
@@ -2396,10 +2470,13 @@ impl CacheHandle {
         keys: &[String],
     ) -> Result<Value, CacheError> {
         let logical_keys = config.apply_namespace_to_keys(keys);
-        
+
         let exists_results = match &handle.client {
             CacheClient::Redis(conn) => self.redis_exists_multiple(conn, &logical_keys).await?,
-            CacheClient::Memcached(client) => self.memcached_exists_multiple(client, &logical_keys).await?,
+            CacheClient::Memcached(client) => {
+                self.memcached_exists_multiple(client, &logical_keys)
+                    .await?
+            }
         };
 
         let mut results = Vec::new();
@@ -2433,12 +2510,12 @@ impl CacheHandle {
         use redis::AsyncCommands;
 
         let mut conn = conn.clone();
-        
+
         match conn.exists(key).await {
             Ok(exists) => Ok(exists),
             Err(e) => Err(CacheError::ExistsFailed {
-                message: format!("Redis EXISTS failed: {}", e)
-            })
+                message: format!("Redis EXISTS failed: {}", e),
+            }),
         }
     }
 
@@ -2458,9 +2535,11 @@ impl CacheHandle {
         for key in keys {
             match conn.exists(key).await {
                 Ok(exists) => results.push(exists),
-                Err(e) => return Err(CacheError::ExistsFailed {
-                    message: format!("Redis EXISTS failed for key '{}': {}", key, e)
-                })
+                Err(e) => {
+                    return Err(CacheError::ExistsFailed {
+                        message: format!("Redis EXISTS failed for key '{}': {}", key, e),
+                    });
+                }
             }
         }
 
@@ -2475,15 +2554,16 @@ impl CacheHandle {
     ) -> Result<bool, CacheError> {
         let client = client.clone();
         let key = key.to_string();
-        
+
         let result = tokio::task::spawn_blocking(move || -> Result<bool, CacheError> {
             match client.get::<Vec<u8>>(&key) {
-                Ok(_) => Ok(true),  // Key exists (ignore value)
+                Ok(_) => Ok(true),   // Key exists (ignore value)
                 Err(_) => Ok(false), // Key doesn't exist
             }
-        }).await
+        })
+        .await
         .map_err(|e| CacheError::ExistsFailed {
-            message: format!("Failed to execute memcached exists task: {}", e)
+            message: format!("Failed to execute memcached exists task: {}", e),
         })?;
 
         result
@@ -2497,21 +2577,22 @@ impl CacheHandle {
     ) -> Result<Vec<bool>, CacheError> {
         let client = client.clone();
         let keys = keys.to_vec();
-        
+
         let result = tokio::task::spawn_blocking(move || -> Result<Vec<bool>, CacheError> {
             let mut results = Vec::new();
-            
+
             for key in keys {
                 match client.get::<Vec<u8>>(&key) {
-                    Ok(_) => results.push(true),  // Key exists
+                    Ok(_) => results.push(true),   // Key exists
                     Err(_) => results.push(false), // Key doesn't exist
                 }
             }
-            
+
             Ok(results)
-        }).await
+        })
+        .await
         .map_err(|e| CacheError::ExistsFailed {
-            message: format!("Failed to execute memcached exists task: {}", e)
+            message: format!("Failed to execute memcached exists task: {}", e),
         })?;
 
         result
@@ -2527,7 +2608,7 @@ impl CacheHandle {
 
         let mut conn = conn.clone();
         let match_pattern = config.get_effective_pattern();
-        
+
         // Parse cursor - default to 0 if None or empty
         let cursor = match &config.cursor {
             Some(c) if c != "0" && !c.is_empty() => c.parse::<u64>().unwrap_or(0),
@@ -2544,11 +2625,11 @@ impl CacheHandle {
             .query_async(&mut conn)
             .await
             .map_err(|e| CacheError::KeysFailed {
-                message: format!("Redis SCAN failed: {}", e)
+                message: format!("Redis SCAN failed: {}", e),
             })?;
 
         let (next_cursor, stored_keys) = scan_result;
-        
+
         // Strip namespace from keys if needed
         let logical_keys: Vec<String> = stored_keys
             .iter()
@@ -2581,30 +2662,31 @@ impl CacheHandle {
     ) -> Result<Value, CacheError> {
         const MAX_MEMCACHED_KEYS_PER_CALL: u64 = 1000;
         let effective_limit = std::cmp::min(config.limit, MAX_MEMCACHED_KEYS_PER_CALL);
-        
+
         let client = client.clone();
         let pattern = config.pattern.clone();
         let namespace = config.namespace.clone();
         let cursor = config.cursor.clone();
-        
+
         let result = tokio::task::spawn_blocking(move || -> Result<Value, CacheError> {
             // Parse cursor to get slab info
             let (start_slab_idx, start_offset) = Self::parse_memcached_cursor(&cursor);
-            
+
             // For this implementation, we'll use a simplified approach
             // In a real implementation, you would:
             // 1. Call "stats items" to get slab IDs
-            // 2. Iterate through slabs starting from cursor position  
+            // 2. Iterate through slabs starting from cursor position
             // 3. For each slab, call "stats cachedump <slab_id> <limit>"
             // 4. Apply pattern filtering and namespace stripping
             // 5. Track position for next cursor
-            
+
             // For now, return empty results as this requires specific memcached configuration
             // and the memcache crate has limited support for stats commands
             Err(CacheError::KeysUnsupported)
-        }).await
+        })
+        .await
         .map_err(|e| CacheError::KeysFailed {
-            message: format!("Failed to execute memcached keys scan: {}", e)
+            message: format!("Failed to execute memcached keys scan: {}", e),
         })?;
 
         result
@@ -2638,7 +2720,7 @@ impl CacheHandle {
         if pattern == "*" {
             return true;
         }
-        
+
         if pattern.contains('*') {
             let parts: Vec<&str> = pattern.split('*').collect();
             if parts.len() == 2 {
@@ -2646,7 +2728,7 @@ impl CacheHandle {
                 return key.starts_with(prefix) && key.ends_with(suffix);
             }
         }
-        
+
         pattern == key
     }
 
@@ -2660,7 +2742,7 @@ impl CacheHandle {
 
         // Execute TTL operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        
+
         match tokio::time::timeout(timeout_duration, self.execute_ttl(&*handle, &config)).await {
             Ok(result) => result,
             Err(_) => Err(CacheError::TtlTimeout {
@@ -2671,9 +2753,9 @@ impl CacheHandle {
 
     /// Execute the actual TTL operation
     async fn execute_ttl(
-        &self, 
-        handle: &CacheConnectionHandle, 
-        config: &TtlConfig
+        &self,
+        handle: &CacheConnectionHandle,
+        config: &TtlConfig,
     ) -> Result<Value, CacheError> {
         match &config.key {
             Some(key) => self.ttl_single_key(handle, config, key).await,
@@ -2692,10 +2774,12 @@ impl CacheHandle {
         key: &str,
     ) -> Result<Value, CacheError> {
         let stored_key = config.apply_namespace(key);
-        
+
         let (exists, supports_ttl, has_expiry, ttl_ms) = match &handle.client {
             CacheClient::Redis(conn) => self.redis_ttl_single(conn, &stored_key).await?,
-            CacheClient::Memcached(client) => self.memcached_ttl_single(client, &stored_key).await?,
+            CacheClient::Memcached(client) => {
+                self.memcached_ttl_single(client, &stored_key).await?
+            }
         };
 
         Ok(json!({
@@ -2717,10 +2801,12 @@ impl CacheHandle {
         keys: &[String],
     ) -> Result<Value, CacheError> {
         let stored_keys = config.apply_namespace_to_keys(keys);
-        
+
         let ttl_results = match &handle.client {
             CacheClient::Redis(conn) => self.redis_ttl_multiple(conn, &stored_keys).await?,
-            CacheClient::Memcached(client) => self.memcached_ttl_multiple(client, &stored_keys).await?,
+            CacheClient::Memcached(client) => {
+                self.memcached_ttl_multiple(client, &stored_keys).await?
+            }
         };
 
         let mut results = Vec::new();
@@ -2755,12 +2841,12 @@ impl CacheHandle {
         key: &str,
     ) -> Result<(bool, bool, bool, Option<u64>), CacheError> {
         use redis::AsyncCommands;
-        
+
         let mut conn = conn.clone();
         let key = key.to_string();
-        
+
         let result: Result<i64, redis::RedisError> = conn.pttl(&key).await;
-        
+
         match result {
             Ok(pttl_result) => {
                 match pttl_result {
@@ -2779,16 +2865,14 @@ impl CacheHandle {
                     _ => {
                         // Unexpected PTTL result
                         Err(CacheError::TtlFailed {
-                            message: format!("Unexpected PTTL result: {}", pttl_result)
+                            message: format!("Unexpected PTTL result: {}", pttl_result),
                         })
                     }
                 }
             }
-            Err(e) => {
-                Err(CacheError::TtlFailed {
-                    message: format!("Redis PTTL command failed: {}", e)
-                })
-            }
+            Err(e) => Err(CacheError::TtlFailed {
+                message: format!("Redis PTTL command failed: {}", e),
+            }),
         }
     }
 
@@ -2799,12 +2883,12 @@ impl CacheHandle {
         keys: &[String],
     ) -> Result<Vec<(bool, bool, bool, Option<u64>)>, CacheError> {
         let mut results = Vec::new();
-        
+
         for key in keys {
             let result = self.redis_ttl_single(conn, key).await?;
             results.push(result);
         }
-        
+
         Ok(results)
     }
 
@@ -2816,19 +2900,20 @@ impl CacheHandle {
     ) -> Result<(bool, bool, bool, Option<u64>), CacheError> {
         let client = client.clone();
         let key = key.to_string();
-        
+
         let result = tokio::task::spawn_blocking(move || -> Result<bool, CacheError> {
             match client.get::<Vec<u8>>(&key) {
-                Ok(_) => Ok(true),  // Key exists
+                Ok(_) => Ok(true),   // Key exists
                 Err(_) => Ok(false), // Key doesn't exist
             }
-        }).await
+        })
+        .await
         .map_err(|e| CacheError::TtlFailed {
-            message: format!("Failed to execute memcached TTL task: {}", e)
+            message: format!("Failed to execute memcached TTL task: {}", e),
         })?;
 
         let exists = result?;
-        
+
         // Memcached doesn't support TTL introspection
         if exists {
             Ok((true, false, false, None))
@@ -2844,19 +2929,21 @@ impl CacheHandle {
         keys: &[String],
     ) -> Result<Vec<(bool, bool, bool, Option<u64>)>, CacheError> {
         let mut results = Vec::new();
-        
+
         for key in keys {
             let result = self.memcached_ttl_single(client, key).await?;
             results.push(result);
         }
-        
+
         Ok(results)
     }
 }
 
 impl Handle for CacheHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["connect", "get", "set", "del", "incr", "exists", "keys", "ttl", "help", "--help", "-h"]
+        &[
+            "connect", "get", "set", "del", "incr", "exists", "keys", "ttl", "help", "--help", "-h",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -2868,7 +2955,7 @@ impl Handle for CacheHandle {
         if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
-        
+
         // Use the process-wide runtime so registered connections (whose
         // background tasks live on this runtime) stay usable across calls.
         let rt = cache_runtime()?;
@@ -2886,102 +2973,86 @@ impl Handle for CacheHandle {
         };
 
         match verb {
-            "connect" => {
-                match rt.block_on(self.connect(json_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        write!(io.stdout, "{}", e.to_json())?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
+            "connect" => match rt.block_on(self.connect(json_args)) {
+                Ok(result) => {
+                    write!(io.stdout, "{}", result)?;
+                    Ok(Status::ok())
                 }
-            }
-            "get" => {
-                match rt.block_on(self.get(json_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        write!(io.stdout, "{}", e.to_json())?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
+                Err(e) => {
+                    write!(io.stdout, "{}", e.to_json())?;
+                    Ok(Status::err(1, e.to_string()))
                 }
-            }
-            "set" => {
-                match rt.block_on(self.set(json_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        write!(io.stdout, "{}", e.to_json())?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
+            },
+            "get" => match rt.block_on(self.get(json_args)) {
+                Ok(result) => {
+                    write!(io.stdout, "{}", result)?;
+                    Ok(Status::ok())
                 }
-            }
-            "del" => {
-                match rt.block_on(self.del(json_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        write!(io.stdout, "{}", e.to_json())?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
+                Err(e) => {
+                    write!(io.stdout, "{}", e.to_json())?;
+                    Ok(Status::err(1, e.to_string()))
                 }
-            }
-            "incr" => {
-                match rt.block_on(self.incr(json_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        write!(io.stdout, "{}", e.to_json())?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
+            },
+            "set" => match rt.block_on(self.set(json_args)) {
+                Ok(result) => {
+                    write!(io.stdout, "{}", result)?;
+                    Ok(Status::ok())
                 }
-            }
-            "exists" => {
-                match rt.block_on(self.exists(json_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        write!(io.stdout, "{}", e.to_json())?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
+                Err(e) => {
+                    write!(io.stdout, "{}", e.to_json())?;
+                    Ok(Status::err(1, e.to_string()))
                 }
-            }
-            "keys" => {
-                match rt.block_on(self.keys(json_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        write!(io.stdout, "{}", e.to_json())?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
+            },
+            "del" => match rt.block_on(self.del(json_args)) {
+                Ok(result) => {
+                    write!(io.stdout, "{}", result)?;
+                    Ok(Status::ok())
                 }
-            }
-            "ttl" => {
-                match rt.block_on(self.ttl(json_args)) {
-                    Ok(result) => {
-                        write!(io.stdout, "{}", result)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        write!(io.stdout, "{}", e.to_json())?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
+                Err(e) => {
+                    write!(io.stdout, "{}", e.to_json())?;
+                    Ok(Status::err(1, e.to_string()))
                 }
-            }
+            },
+            "incr" => match rt.block_on(self.incr(json_args)) {
+                Ok(result) => {
+                    write!(io.stdout, "{}", result)?;
+                    Ok(Status::ok())
+                }
+                Err(e) => {
+                    write!(io.stdout, "{}", e.to_json())?;
+                    Ok(Status::err(1, e.to_string()))
+                }
+            },
+            "exists" => match rt.block_on(self.exists(json_args)) {
+                Ok(result) => {
+                    write!(io.stdout, "{}", result)?;
+                    Ok(Status::ok())
+                }
+                Err(e) => {
+                    write!(io.stdout, "{}", e.to_json())?;
+                    Ok(Status::err(1, e.to_string()))
+                }
+            },
+            "keys" => match rt.block_on(self.keys(json_args)) {
+                Ok(result) => {
+                    write!(io.stdout, "{}", result)?;
+                    Ok(Status::ok())
+                }
+                Err(e) => {
+                    write!(io.stdout, "{}", e.to_json())?;
+                    Ok(Status::err(1, e.to_string()))
+                }
+            },
+            "ttl" => match rt.block_on(self.ttl(json_args)) {
+                Ok(result) => {
+                    write!(io.stdout, "{}", result)?;
+                    Ok(Status::ok())
+                }
+                Err(e) => {
+                    write!(io.stdout, "{}", e.to_json())?;
+                    Ok(Status::err(1, e.to_string()))
+                }
+            },
             _ => {
                 let error = json!({
                     "error": {
@@ -3010,13 +3081,28 @@ mod tests {
 
     #[test]
     fn test_cache_backend_from_str() {
-        assert_eq!(CacheBackend::from_str("redis").unwrap(), CacheBackend::Redis);
-        assert_eq!(CacheBackend::from_str("Redis").unwrap(), CacheBackend::Redis);
-        assert_eq!(CacheBackend::from_str("REDIS").unwrap(), CacheBackend::Redis);
-        
-        assert_eq!(CacheBackend::from_str("memcached").unwrap(), CacheBackend::Memcached);
-        assert_eq!(CacheBackend::from_str("Memcached").unwrap(), CacheBackend::Memcached);
-        
+        assert_eq!(
+            CacheBackend::from_str("redis").unwrap(),
+            CacheBackend::Redis
+        );
+        assert_eq!(
+            CacheBackend::from_str("Redis").unwrap(),
+            CacheBackend::Redis
+        );
+        assert_eq!(
+            CacheBackend::from_str("REDIS").unwrap(),
+            CacheBackend::Redis
+        );
+
+        assert_eq!(
+            CacheBackend::from_str("memcached").unwrap(),
+            CacheBackend::Memcached
+        );
+        assert_eq!(
+            CacheBackend::from_str("Memcached").unwrap(),
+            CacheBackend::Memcached
+        );
+
         assert!(CacheBackend::from_str("unknown").is_err());
     }
 
@@ -3055,7 +3141,10 @@ mod tests {
         let args = json!({"keys": ["key1", "key2"]});
         let config = GetConfig::from_args(&args).unwrap();
         assert_eq!(config.key, None);
-        assert_eq!(config.keys, Some(vec!["key1".to_string(), "key2".to_string()]));
+        assert_eq!(
+            config.keys,
+            Some(vec!["key1".to_string(), "key2".to_string()])
+        );
 
         // With namespace
         let args = json!({"key": "test", "namespace": "prod"});
@@ -3098,9 +3187,9 @@ mod tests {
     fn test_namespace_application() {
         let args = json!({"key": "session:123", "namespace": "prod"});
         let config = GetConfig::from_args(&args).unwrap();
-        
+
         assert_eq!(config.apply_namespace("session:123"), "prod:session:123");
-        
+
         let keys = vec!["key1".to_string(), "key2".to_string()];
         let namespaced = config.apply_namespace_to_keys(&keys);
         assert_eq!(namespaced, vec!["prod:key1", "prod:key2"]);
@@ -3185,12 +3274,15 @@ mod tests {
         let config = SetConfig::from_args(&args).unwrap();
         assert_eq!(config.key, None);
         assert_eq!(config.value, None);
-        assert_eq!(config.keys, Some(vec!["key1".to_string(), "key2".to_string()]));
+        assert_eq!(
+            config.keys,
+            Some(vec!["key1".to_string(), "key2".to_string()])
+        );
         assert_eq!(config.values, Some(vec![json!("value1"), json!("value2")]));
 
         // With namespace and TTL
         let args = json!({
-            "key": "test", 
+            "key": "test",
             "value": "test_value",
             "namespace": "prod",
             "ttl_ms": 60000,
@@ -3245,9 +3337,9 @@ mod tests {
 
         // Both condition flags true
         let args = json!({
-            "key": "test", 
-            "value": "val", 
-            "only_if_not_exists": true, 
+            "key": "test",
+            "value": "val",
+            "only_if_not_exists": true,
             "only_if_exists": true
         });
         assert!(SetConfig::from_args(&args).is_err());
@@ -3256,14 +3348,14 @@ mod tests {
     #[test]
     fn test_set_config_namespace_application() {
         let args = json!({
-            "key": "session:123", 
+            "key": "session:123",
             "value": "test",
             "namespace": "prod"
         });
         let config = SetConfig::from_args(&args).unwrap();
-        
+
         assert_eq!(config.apply_namespace("session:123"), "prod:session:123");
-        
+
         let keys = vec!["key1".to_string(), "key2".to_string()];
         let namespaced = config.apply_namespace_to_keys(&keys);
         assert_eq!(namespaced, vec!["prod:key1", "prod:key2"]);
@@ -3310,11 +3402,14 @@ mod tests {
         let args = json!({"keys": ["key1", "key2"]});
         let config = DeleteConfig::from_args(&args).unwrap();
         assert_eq!(config.key, None);
-        assert_eq!(config.keys, Some(vec!["key1".to_string(), "key2".to_string()]));
+        assert_eq!(
+            config.keys,
+            Some(vec!["key1".to_string(), "key2".to_string()])
+        );
 
         // With namespace and custom timeout
         let args = json!({
-            "key": "test", 
+            "key": "test",
             "namespace": "prod",
             "timeout_ms": 5000
         });
@@ -3353,13 +3448,13 @@ mod tests {
     #[test]
     fn test_delete_config_namespace_application() {
         let args = json!({
-            "key": "session:123", 
+            "key": "session:123",
             "namespace": "prod"
         });
         let config = DeleteConfig::from_args(&args).unwrap();
-        
+
         assert_eq!(config.apply_namespace("session:123"), "prod:session:123");
-        
+
         let keys = vec!["key1".to_string(), "key2".to_string()];
         let namespaced = config.apply_namespace_to_keys(&keys);
         assert_eq!(namespaced, vec!["prod:key1", "prod:key2"]);
@@ -3368,18 +3463,18 @@ mod tests {
     #[test]
     fn test_delete_error_to_json() {
         let error = CacheError::InvalidDeleteConfig {
-            message: "test message".to_string()
+            message: "test message".to_string(),
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.invalid_delete_config");
-        
+
         let error = CacheError::DeleteTimeout { timeout_ms: 5000 };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.delete_timeout");
         assert_eq!(json["error"]["details"]["timeout_ms"], 5000);
-        
+
         let error = CacheError::DeleteFailed {
-            message: "connection error".to_string()
+            message: "connection error".to_string(),
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.delete_failed");
@@ -3470,7 +3565,7 @@ mod tests {
     #[test]
     fn test_incr_error_to_json() {
         let error = CacheError::InvalidIncrConfig {
-            message: "key is required".to_string()
+            message: "key is required".to_string(),
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.invalid_incr_config");
@@ -3482,7 +3577,7 @@ mod tests {
         assert_eq!(json["error"]["details"]["timeout_ms"], 1500);
 
         let error = CacheError::IncrFailed {
-            message: "connection lost".to_string()
+            message: "connection lost".to_string(),
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.incr_failed");
@@ -3490,7 +3585,10 @@ mod tests {
         let error = CacheError::IncrTypeError;
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.incr_type_error");
-        assert_eq!(json["error"]["details"]["message"], "Cannot increment non-integer cache value");
+        assert_eq!(
+            json["error"]["details"]["message"],
+            "Cannot increment non-integer cache value"
+        );
     }
 
     #[test]
@@ -3593,11 +3691,14 @@ mod tests {
     #[test]
     fn test_exists_error_to_json() {
         let error = CacheError::InvalidExistsConfig {
-            message: "exactly one of 'key' or 'keys' is required".to_string()
+            message: "exactly one of 'key' or 'keys' is required".to_string(),
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.invalid_exists_config");
-        assert_eq!(json["error"]["details"]["message"], "exactly one of 'key' or 'keys' is required");
+        assert_eq!(
+            json["error"]["details"]["message"],
+            "exactly one of 'key' or 'keys' is required"
+        );
 
         let error = CacheError::ExistsTimeout { timeout_ms: 1000 };
         let json = error.to_json();
@@ -3605,7 +3706,7 @@ mod tests {
         assert_eq!(json["error"]["details"]["timeout_ms"], 1000);
 
         let error = CacheError::ExistsFailed {
-            message: "Redis EXISTS failed".to_string()
+            message: "Redis EXISTS failed".to_string(),
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.exists_failed");
@@ -3685,14 +3786,14 @@ mod tests {
             "namespace": "prod"
         });
         let config = KeysConfig::from_args(&args).unwrap();
-        
+
         // Test effective pattern
         assert_eq!(config.get_effective_pattern(), "prod:user:*");
-        
+
         // Test namespace stripping
         assert_eq!(config.strip_namespace("prod:user:123"), "user:123");
         assert_eq!(config.strip_namespace("user:123"), "user:123"); // No namespace prefix
-        
+
         // Without namespace
         let args = json!({"pattern": "user:*"});
         let config = KeysConfig::from_args(&args).unwrap();
@@ -3726,7 +3827,7 @@ mod tests {
         assert_eq!(handle.backend, CacheBackend::Redis);
         assert_eq!(handle.alias, "main.keys");
 
-        // Memcached keys 
+        // Memcached keys
         let url = url::Url::parse("cache://memcached/app.keys").unwrap();
         let handle = CacheHandle::from_url(url).unwrap();
         assert_eq!(handle.backend, CacheBackend::Memcached);
@@ -3736,11 +3837,14 @@ mod tests {
     #[test]
     fn test_keys_error_json_serialization() {
         let error = CacheError::InvalidKeysConfig {
-            message: "limit must be greater than 0".to_string()
+            message: "limit must be greater than 0".to_string(),
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.invalid_keys_config");
-        assert_eq!(json["error"]["details"]["message"], "limit must be greater than 0");
+        assert_eq!(
+            json["error"]["details"]["message"],
+            "limit must be greater than 0"
+        );
 
         let error = CacheError::KeysTimeout { timeout_ms: 1000 };
         let json = error.to_json();
@@ -3748,7 +3852,7 @@ mod tests {
         assert_eq!(json["error"]["details"]["timeout_ms"], 1000);
 
         let error = CacheError::KeysFailed {
-            message: "Redis SCAN failed".to_string()
+            message: "Redis SCAN failed".to_string(),
         };
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.keys_failed");
@@ -3757,7 +3861,10 @@ mod tests {
         let error = CacheError::KeysUnsupported;
         let json = error.to_json();
         assert_eq!(json["error"]["code"], "cache.keys_unsupported");
-        assert_eq!(json["error"]["details"]["message"], "Keys operation unsupported for this backend");
+        assert_eq!(
+            json["error"]["details"]["message"],
+            "Keys operation unsupported for this backend"
+        );
     }
 
     #[test]
@@ -3805,13 +3912,16 @@ mod tests {
         assert!(CacheHandle::glob_match("prefix:*", "prefix:"));
         assert!(!CacheHandle::glob_match("prefix:*", "other:suffix"));
 
-        // Suffix match 
+        // Suffix match
         assert!(CacheHandle::glob_match("*:suffix", "prefix:suffix"));
         assert!(CacheHandle::glob_match("*:suffix", ":suffix"));
         assert!(!CacheHandle::glob_match("*:suffix", "prefix:other"));
 
         // Prefix and suffix
-        assert!(CacheHandle::glob_match("user:*:session", "user:123:session"));
+        assert!(CacheHandle::glob_match(
+            "user:*:session",
+            "user:123:session"
+        ));
         assert!(CacheHandle::glob_match("user:*:session", "user::session"));
         assert!(!CacheHandle::glob_match("user:*:session", "user:123:other"));
     }
@@ -3821,7 +3931,7 @@ mod tests {
         let url = url::Url::parse("cache://redis/main").unwrap();
         let handle = CacheHandle::from_url(url).unwrap();
         let verbs = handle.verbs();
-        
+
         assert!(verbs.contains(&"keys"));
         assert!(verbs.contains(&"connect"));
         assert!(verbs.contains(&"get"));
@@ -3837,10 +3947,10 @@ mod tests {
     async fn test_keys_connection_not_found() {
         let url = url::Url::parse("cache://redis/nonexistent").unwrap();
         let handle = CacheHandle::from_url(url).unwrap();
-        
+
         let args = json!({"pattern": "*"});
         let result = handle.keys(args).await;
-        
+
         assert!(result.is_err());
         if let Err(CacheError::ConnectionNotFound { backend, alias }) = result {
             assert_eq!(backend, "redis");
@@ -3856,10 +3966,10 @@ mod tests {
         // we can just verify timeout is properly validated in config
         let url = url::Url::parse("cache://redis/main").unwrap();
         let handle = CacheHandle::from_url(url).unwrap();
-        
+
         let args = json!({"timeout_ms": 1}); // Very short timeout
         let result = handle.keys(args).await;
-        
+
         // Should get connection not found since we don't have a real connection
         // but this validates the timeout path exists
         assert!(result.is_err());
@@ -3891,10 +4001,10 @@ mod tests {
             // 3. Call keys() with various patterns
             // 4. Verify results match expectations
             // 5. Clean up test data
-            
+
             let url = url::Url::parse("cache://redis/test_main").unwrap();
             let handle = CacheHandle::from_url(url).unwrap();
-            
+
             // For now, just verify we get connection not found
             // since we haven't actually connected
             let args = json!({"pattern": "test:*"});
@@ -4194,10 +4304,10 @@ mod tests {
 
             let url = url::Url::parse("cache://memcached/test_main").unwrap();
             let handle = CacheHandle::from_url(url).unwrap();
-            
+
             let args = json!({"pattern": "*"});
             let result = handle.keys(args).await;
-            
+
             // Should get connection not found since we haven't connected,
             // or keys_unsupported if we had connected
             assert!(result.is_err());
@@ -4381,24 +4491,27 @@ mod tests {
         fn test_ttl_config_namespace() {
             let args = json!({"key": "k1", "namespace": "prod"});
             let config = TtlConfig::from_args(&args).unwrap();
-            
+
             // Test single key namespace application
             assert_eq!(config.apply_namespace("session"), "prod:session");
-            
+
             // Test multiple keys namespace application
             let keys = vec!["user:1".to_string(), "user:2".to_string()];
             let namespaced = config.apply_namespace_to_keys(&keys);
-            assert_eq!(namespaced, vec!["prod:user:1".to_string(), "prod:user:2".to_string()]);
+            assert_eq!(
+                namespaced,
+                vec!["prod:user:1".to_string(), "prod:user:2".to_string()]
+            );
         }
 
         #[tokio::test]
         async fn test_ttl_connection_not_found() {
             let url = Url::parse("cache://redis/test").unwrap();
             let handle = CacheHandle::from_url(url).unwrap();
-            
+
             let args = json!({"key": "test"});
             let result = handle.ttl(args).await;
-            
+
             assert!(matches!(result, Err(CacheError::ConnectionNotFound { .. })));
         }
     }
@@ -4423,7 +4536,7 @@ mod tests {
             };
 
             println!("Testing Redis TTL with URL: {}", redis_url);
-            
+
             // Parse URL and create handle
             let cache_url = Url::parse("cache://redis/main").unwrap();
             let handle = CacheHandle::from_url(cache_url).unwrap();
@@ -4435,7 +4548,7 @@ mod tests {
             // Test single key TTL
             let args = json!({"key": "test_ttl_key", "namespace": "test"});
             let result = handle.ttl(args).await;
-            
+
             // Since we don't have a real connection, expect connection error
             assert!(matches!(result, Err(CacheError::ConnectionNotFound { .. })));
         }
@@ -4455,7 +4568,9 @@ mod tests {
             let _memcached_addr = match skip_if_no_memcached() {
                 Some(addr) => addr,
                 None => {
-                    println!("Skipping Memcached TTL integration test: TEST_MEMCACHED_ADDR not set");
+                    println!(
+                        "Skipping Memcached TTL integration test: TEST_MEMCACHED_ADDR not set"
+                    );
                     return;
                 }
             };
@@ -4466,7 +4581,7 @@ mod tests {
             // Test TTL operation
             let args = json!({"key": "test_key"});
             let result = handle.ttl(args).await;
-            
+
             // Since we don't have a real connection, expect connection error
             assert!(matches!(result, Err(CacheError::ConnectionNotFound { .. })));
         }
@@ -4523,11 +4638,7 @@ mod tests {
             assert_eq!(empty_keys.len(), 0);
 
             // Test with multiple keys
-            let keys = vec![
-                "key1".to_string(),
-                "key2".to_string(),
-                "key3".to_string(),
-            ];
+            let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
             assert_eq!(keys.len(), 3);
 
             // Verify cloning works for the keys vector
@@ -4550,10 +4661,7 @@ mod tests {
         #[tokio::test]
         async fn test_spawn_blocking_panic_handling() {
             // Test that we can handle task panics correctly
-            let result = tokio::task::spawn_blocking(|| {
-                panic!("simulated panic")
-            })
-            .await;
+            let result = tokio::task::spawn_blocking(|| panic!("simulated panic")).await;
 
             // Verify that await on a panicked task returns an error
             assert!(result.is_err());
@@ -4711,7 +4819,10 @@ mod tests {
             let error_msg = "NOT_STORED";
             let lowercase = error_msg.to_lowercase();
             // Check for both "not_stored" and "not stored" patterns
-            assert!(lowercase.contains("not_stored") || lowercase.replace("_", " ").contains("not stored"));
+            assert!(
+                lowercase.contains("not_stored")
+                    || lowercase.replace("_", " ").contains("not stored")
+            );
 
             let error_msg = "Item not stored";
             assert!(error_msg.to_lowercase().contains("not stored"));
@@ -4733,7 +4844,10 @@ mod tests {
             let error_msg = "NOT_FOUND";
             let lowercase = error_msg.to_lowercase();
             // Check for both "not_found" and "not found" patterns
-            assert!(lowercase.contains("not_found") || lowercase.replace("_", " ").contains("not found"));
+            assert!(
+                lowercase.contains("not_found")
+                    || lowercase.replace("_", " ").contains("not found")
+            );
 
             let error_msg = "Key not found";
             assert!(error_msg.to_lowercase().contains("not found"));
@@ -4743,10 +4857,7 @@ mod tests {
         #[tokio::test]
         async fn test_spawn_blocking_boolean_result() {
             // Test successful set returning true
-            let result = tokio::task::spawn_blocking(|| {
-                Ok::<bool, String>(true)
-            })
-            .await;
+            let result = tokio::task::spawn_blocking(|| Ok::<bool, String>(true)).await;
 
             assert!(result.is_ok());
             let inner = result.unwrap();
@@ -4754,10 +4865,7 @@ mod tests {
             assert_eq!(inner.unwrap(), true);
 
             // Test condition not met returning false
-            let result = tokio::task::spawn_blocking(|| {
-                Ok::<bool, String>(false)
-            })
-            .await;
+            let result = tokio::task::spawn_blocking(|| Ok::<bool, String>(false)).await;
 
             assert!(result.is_ok());
             let inner = result.unwrap();
@@ -5202,11 +5310,7 @@ mod tests {
         /// Test namespace isolation (different namespaces don't interfere)
         #[test]
         fn test_namespace_isolation() {
-            let stored_keys = vec![
-                "prod:cache:key1",
-                "dev:cache:key1",
-                "staging:cache:key1",
-            ];
+            let stored_keys = vec!["prod:cache:key1", "dev:cache:key1", "staging:cache:key1"];
 
             let namespace = "prod:cache";
             let namespace_prefix = format!("{}:", namespace);
@@ -5514,13 +5618,7 @@ mod tests {
         /// Test pattern matching edge cases
         #[test]
         fn test_pattern_matching_edge_cases() {
-            let keys = vec![
-                "key",
-                "key:",
-                "key:a",
-                "key:a:b",
-                ":key",
-            ];
+            let keys = vec!["key", "key:", "key:a", "key:a:b", ":key"];
 
             // Pattern: "key:*"
             let pattern = "key:*";
@@ -5593,9 +5691,20 @@ mod tests {
         use std::io::Cursor;
 
         fn call_out(handle: &CacheHandle, verb: &str, args: &[(&str, &str)]) -> (Status, String) {
-            let args: Args = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            let (mut i, mut o, mut e) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()), Cursor::new(Vec::new()));
-            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let args: Args = args
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let (mut i, mut o, mut e) = (
+                Cursor::new(Vec::new()),
+                Cursor::new(Vec::new()),
+                Cursor::new(Vec::new()),
+            );
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
             let st = handle.call(verb, &args, &mut io).unwrap();
             (st, String::from_utf8(o.into_inner()).unwrap())
         }
@@ -5606,7 +5715,10 @@ mod tests {
 
         #[test]
         fn connect_config_absent_without_url() {
-            assert_eq!(ConnectConfig::from_args(&CacheBackend::Redis, &json!({"key": "a"})).unwrap(), None);
+            assert_eq!(
+                ConnectConfig::from_args(&CacheBackend::Redis, &json!({"key": "a"})).unwrap(),
+                None
+            );
         }
 
         #[test]
@@ -5630,7 +5742,11 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-            assert!(c.url.starts_with("memcache://mc.example:11211"), "{}", c.url);
+            assert!(
+                c.url.starts_with("memcache://mc.example:11211"),
+                "{}",
+                c.url
+            );
             assert!(c.url.contains("connect_timeout=2.5"), "{}", c.url);
             assert_eq!(c.endpoint, "mc.example:11211");
             assert_eq!(c.timeout_ms, 2500);
@@ -5638,9 +5754,13 @@ mod tests {
 
         #[test]
         fn connect_config_rejects_wrong_scheme_and_bad_timeout() {
-            let e = ConnectConfig::from_args(&CacheBackend::Redis, &json!({"url": "memcache://h:1"})).unwrap_err();
+            let e =
+                ConnectConfig::from_args(&CacheBackend::Redis, &json!({"url": "memcache://h:1"}))
+                    .unwrap_err();
             assert!(matches!(e, CacheError::InvalidConnectConfig { .. }));
-            let e = ConnectConfig::from_args(&CacheBackend::Memcached, &json!({"url": "redis://h:1"})).unwrap_err();
+            let e =
+                ConnectConfig::from_args(&CacheBackend::Memcached, &json!({"url": "redis://h:1"}))
+                    .unwrap_err();
             assert!(matches!(e, CacheError::InvalidConnectConfig { .. }));
             let e = ConnectConfig::from_args(
                 &CacheBackend::Redis,
@@ -5648,7 +5768,8 @@ mod tests {
             )
             .unwrap_err();
             assert!(matches!(e, CacheError::InvalidConnectConfig { .. }));
-            let e = ConnectConfig::from_args(&CacheBackend::Redis, &json!({"url": ""})).unwrap_err();
+            let e =
+                ConnectConfig::from_args(&CacheBackend::Redis, &json!({"url": ""})).unwrap_err();
             assert!(matches!(e, CacheError::InvalidConnectConfig { .. }));
         }
 
@@ -5658,9 +5779,14 @@ mod tests {
             let (st, out) = call_out(&h, "connect", &[]);
             assert!(!st.ok);
             assert!(out.contains("cache.invalid_connect_config"), "{}", out);
-            assert!(CONNECTION_REGISTRY
-                .get(&(CacheBackend::Redis, "resh-test-connect-requires-url".to_string()))
-                .is_none());
+            assert!(
+                CONNECTION_REGISTRY
+                    .get(&(
+                        CacheBackend::Redis,
+                        "resh-test-connect-requires-url".to_string()
+                    ))
+                    .is_none()
+            );
         }
 
         #[test]

@@ -1008,15 +1008,19 @@ impl FileHandle {
         let path_str = url_target_path(&url);
 
         // Decode URL encoding and escape sequences
-        let decoded = percent_decode_str(&path_str).decode_utf8_lossy().to_string();
+        let decoded = percent_decode_str(&path_str)
+            .decode_utf8_lossy()
+            .to_string();
         let unescaped = unescape_backslashes(&decoded);
 
         // In-URL help (file://--help, file://-h). Exact match only, so a
         // target such as my-hosts or pre-hotfix.txt is a normal file.
         if crate::core::help::is_help_flag(&unescaped) {
-            return Ok(FileHandle { path: PathBuf::from(HELP_PATH) });
+            return Ok(FileHandle {
+                path: PathBuf::from(HELP_PATH),
+            });
         }
-        
+
         let path = PathBuf::from(unescaped);
         let normalized = normalize_path(&path);
 
@@ -1027,7 +1031,7 @@ impl FileHandle {
     fn unescape_string(s: &str) -> String {
         let mut result = String::new();
         let mut chars = s.chars().peekable();
-        
+
         while let Some(c) = chars.next() {
             if c == '\\' {
                 match chars.peek() {
@@ -1055,7 +1059,12 @@ impl FileHandle {
     }
 
     /// Perform literal string replacement with optional count limit
-    fn literal_replace(content: &str, pattern: &str, replacement: &str, count_limit: Option<usize>) -> (String, usize) {
+    fn literal_replace(
+        content: &str,
+        pattern: &str,
+        replacement: &str,
+        count_limit: Option<usize>,
+    ) -> (String, usize) {
         if pattern.is_empty() {
             return (content.to_string(), 0);
         }
@@ -1067,7 +1076,7 @@ impl FileHandle {
 
         for mat in content.match_indices(pattern) {
             let start_pos = mat.0;
-            
+
             if count >= max_count {
                 break;
             }
@@ -1076,14 +1085,14 @@ impl FileHandle {
             result.push_str(&content[last_end..start_pos]);
             // Add replacement
             result.push_str(replacement);
-            
+
             last_end = start_pos + pattern.len();
             count += 1;
         }
 
         // Add remaining content
         result.push_str(&content[last_end..]);
-        
+
         (result, count)
     }
 
@@ -1360,7 +1369,8 @@ impl FileHandle {
             .transpose()?;
 
         // Parse follow_symlinks (case-insensitive)
-        let follow_symlinks = crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
+        let follow_symlinks =
+            crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
 
         // Parse include_hidden (case-insensitive)
         let include_hidden = args
@@ -1710,7 +1720,7 @@ impl FileHandle {
                 let mut count = 0;
                 let mut new_content = String::new();
                 let mut last_match_end = 0;
-                
+
                 for mat in regex.find_iter(&file_content) {
                     if count >= max {
                         break;
@@ -1830,7 +1840,10 @@ impl FileHandle {
 
         // Validate mutually exclusive arguments
         if lines_arg.is_some() && bytes_arg.is_some() {
-            writeln!(io.stderr, "Error: 'lines' and 'bytes' arguments cannot be used together")?;
+            writeln!(
+                io.stderr,
+                "Error: 'lines' and 'bytes' arguments cannot be used together"
+            )?;
             return Ok(Status::err(1, "lines and bytes are mutually exclusive"));
         }
 
@@ -1880,13 +1893,21 @@ impl FileHandle {
 
         // Check if file exists
         if !resolved_path.exists() {
-            writeln!(io.stderr, "Error: file does not exist: {}", resolved_path.display())?;
+            writeln!(
+                io.stderr,
+                "Error: file does not exist: {}",
+                resolved_path.display()
+            )?;
             return Ok(Status::err(2, "file does not exist"));
         }
 
         // Check if path is a file
         if !resolved_path.is_file() {
-            writeln!(io.stderr, "Error: {} is not a file", resolved_path.display())?;
+            writeln!(
+                io.stderr,
+                "Error: {} is not a file",
+                resolved_path.display()
+            )?;
             return Ok(Status::err(1, "path is not a file"));
         }
 
@@ -1969,7 +1990,8 @@ impl FileHandle {
             .with_context(|| "failed to read tail bytes")?;
 
         // Output raw bytes to stdout
-        io.stdout.write_all(&buffer)
+        io.stdout
+            .write_all(&buffer)
             .with_context(|| "failed to write to stdout")?;
 
         Ok(())
@@ -2034,7 +2056,8 @@ impl FileHandle {
         // Extract the last N lines from buffer
         if lines_found == 0 {
             // No newlines found - treat entire buffer as one line and output it
-            io.stdout.write_all(&buffer)
+            io.stdout
+                .write_all(&buffer)
                 .with_context(|| "failed to write to stdout")?;
         } else {
             // Calculate how many lines to skip from the beginning
@@ -2060,7 +2083,8 @@ impl FileHandle {
 
             // Output the tail portion
             let tail_bytes = &buffer[start_pos..];
-            io.stdout.write_all(tail_bytes)
+            io.stdout
+                .write_all(tail_bytes)
                 .with_context(|| "failed to write to stdout")?;
         }
 
@@ -2082,7 +2106,11 @@ impl FileHandle {
             let current_metadata = match std::fs::metadata(file_path) {
                 Ok(m) => m,
                 Err(e) => {
-                    writeln!(io.stderr, "Error: file disappeared or became unreadable: {}", e)?;
+                    writeln!(
+                        io.stderr,
+                        "Error: file disappeared or became unreadable: {}",
+                        e
+                    )?;
                     return Ok(Status::err(1, "file became unreadable during follow"));
                 }
             };
@@ -2231,7 +2259,8 @@ impl FileHandle {
                     } else {
                         text.to_string()
                     };
-                    let line_count = lines.matches('\n').count() + if lines.is_empty() { 0 } else { 1 };
+                    let line_count =
+                        lines.matches('\n').count() + if lines.is_empty() { 0 } else { 1 };
                     ("text".to_string(), lines, Some(line_count))
                 }
             }
@@ -2266,7 +2295,8 @@ impl FileHandle {
                 // Add permissions (Unix only)
                 #[cfg(unix)]
                 {
-                    metadata_obj["permissions"] = json!(format!("{:04o}", metadata.permissions().mode() & 0o777));
+                    metadata_obj["permissions"] =
+                        json!(format!("{:04o}", metadata.permissions().mode() & 0o777));
                 }
                 #[cfg(not(unix))]
                 {
@@ -2319,14 +2349,11 @@ impl FileHandle {
     /// Encode binary data according to the specified encoding
     fn encode_binary_data(&self, data: &[u8], encoding: &str) -> String {
         match encoding {
-            "hex" => {
-                data.iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect::<String>()
-            }
-            "base64" | _ => {
-                BASE64_STANDARD.encode(data)
-            }
+            "hex" => data
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>(),
+            "base64" | _ => BASE64_STANDARD.encode(data),
         }
     }
 
@@ -3416,7 +3443,12 @@ impl FileHandle {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let temp_name = format!(".resh_tmp_{}_{}_{}", pid, timestamp % 1000000, uuid::Uuid::new_v4().simple());
+        let temp_name = format!(
+            ".resh_tmp_{}_{}_{}",
+            pid,
+            timestamp % 1000000,
+            uuid::Uuid::new_v4().simple()
+        );
 
         let temp_path = if let Some(parent) = path.parent() {
             parent.join(&temp_name)
@@ -3547,7 +3579,10 @@ impl FileHandle {
 
         // Check if source exists
         if !src_path.exists() {
-            return Ok(Status::err(2, format!("source does not exist: {}", src_path.display())));
+            return Ok(Status::err(
+                2,
+                format!("source does not exist: {}", src_path.display()),
+            ));
         }
 
         // Create parent directories if requested
@@ -3556,7 +3591,9 @@ impl FileHandle {
             && !parent.exists()
         {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create parent directories: {}", parent.display()))
+                .with_context(|| {
+                    format!("failed to create parent directories: {}", parent.display())
+                })
                 .map_err(|e| anyhow::anyhow!("io error: {}", e))?;
         }
 
@@ -3567,7 +3604,10 @@ impl FileHandle {
             && let Some(parent) = dest_parent(&dest_path)
             && !parent.exists()
         {
-            return Ok(Status::err(2, format!("destination parent does not exist: {}", parent.display())));
+            return Ok(Status::err(
+                2,
+                format!("destination parent does not exist: {}", parent.display()),
+            ));
         }
 
         // Handle destination existence and overwrite logic
@@ -3575,18 +3615,25 @@ impl FileHandle {
             if !overwrite {
                 return Ok(Status::err(2, "destination exists"));
             }
-            
+
             // Remove destination if overwrite is enabled. A file replacing a
             // file needs no removal: rename(2) replaces it atomically, so a
             // failed rename leaves the old destination in place. Directories
             // (on either side) cannot be replaced that way.
             if dest_path.is_dir() {
                 remove_dir_all(&dest_path)
-                    .with_context(|| format!("failed to remove existing directory: {}", dest_path.display()))
+                    .with_context(|| {
+                        format!(
+                            "failed to remove existing directory: {}",
+                            dest_path.display()
+                        )
+                    })
                     .map_err(|e| anyhow::anyhow!("io error: {}", e))?;
             } else if src_path.is_dir() {
                 remove_file(&dest_path)
-                    .with_context(|| format!("failed to remove existing file: {}", dest_path.display()))
+                    .with_context(|| {
+                        format!("failed to remove existing file: {}", dest_path.display())
+                    })
                     .map_err(|e| anyhow::anyhow!("io error: {}", e))?;
             }
         }
@@ -3616,8 +3663,15 @@ impl FileHandle {
                     self.cross_filesystem_rename(src_path, &dest_path, io)
                 } else {
                     // Other errors (permissions, etc.)
-                    let error_msg = format!("rename {} -> {}: {}", src_path.display(), dest_path.display(), e);
-                    if e.to_string().contains("Permission denied") || e.to_string().contains("EACCES") {
+                    let error_msg = format!(
+                        "rename {} -> {}: {}",
+                        src_path.display(),
+                        dest_path.display(),
+                        e
+                    );
+                    if e.to_string().contains("Permission denied")
+                        || e.to_string().contains("EACCES")
+                    {
                         Ok(Status::err(3, error_msg))
                     } else {
                         Ok(Status::err(1, error_msg))
@@ -3678,8 +3732,10 @@ impl FileHandle {
                 // Copy succeeded but delete failed - this is a tricky situation
                 // The file/directory has been copied but the original still exists
                 let error_msg = format!(
-                    "copy succeeded but failed to remove source {}: {} (destination {} may be incomplete)", 
-                    src_path.display(), e, dest_path.display()
+                    "copy succeeded but failed to remove source {}: {} (destination {} may be incomplete)",
+                    src_path.display(),
+                    e,
+                    dest_path.display()
                 );
                 Ok(Status::err(1, error_msg))
             }
@@ -3705,9 +3761,8 @@ impl FileHandle {
                     format!("failed to remove existing directory {:?}", dest_path)
                 })?;
             } else {
-                remove_file(dest_path).with_context(|| {
-                    format!("failed to remove existing file {:?}", dest_path)
-                })?;
+                remove_file(dest_path)
+                    .with_context(|| format!("failed to remove existing file {:?}", dest_path))?;
             }
         }
 
@@ -3721,7 +3776,10 @@ impl FileHandle {
         // Only delete source after successful copy
         if src_path.is_dir() {
             remove_dir_all(src_path).with_context(|| {
-                format!("failed to remove source directory {:?} after copy", src_path)
+                format!(
+                    "failed to remove source directory {:?} after copy",
+                    src_path
+                )
             })?;
         } else {
             remove_file(src_path).with_context(|| {
@@ -3749,7 +3807,9 @@ impl FileHandle {
             .with_context(|| "failed to copy file contents")?;
 
         // Flush and sync to ensure data is written
-        dest_file.flush().context("failed to flush destination file")?;
+        dest_file
+            .flush()
+            .context("failed to flush destination file")?;
 
         // Preserve file permissions on Unix systems
         #[cfg(unix)]
@@ -3868,7 +3928,10 @@ impl FileHandle {
                         Ok(Status::ok())
                     } else {
                         writeln!(io.stderr, "extended attribute not found: {}", name)?;
-                        Ok(Status::err(2, &format!("extended attribute not found: {}", name)))
+                        Ok(Status::err(
+                            2,
+                            &format!("extended attribute not found: {}", name),
+                        ))
                     }
                 }
                 Err(e) => {
@@ -3880,8 +3943,14 @@ impl FileHandle {
 
         #[cfg(not(unix))]
         {
-            writeln!(io.stderr, "extended attributes not supported on this platform")?;
-            Ok(Status::err(1, "extended attributes not supported on this platform"))
+            writeln!(
+                io.stderr,
+                "extended attributes not supported on this platform"
+            )?;
+            Ok(Status::err(
+                1,
+                "extended attributes not supported on this platform",
+            ))
         }
     }
 
@@ -3907,7 +3976,10 @@ impl FileHandle {
         // Parse mode argument (default upsert)
         let mode = args.get("mode").map(|s| s.as_str()).unwrap_or("upsert");
         if !matches!(mode, "create" | "update" | "upsert") {
-            let error_msg = format!("invalid mode: {}; expected one of create|update|upsert", mode);
+            let error_msg = format!(
+                "invalid mode: {}; expected one of create|update|upsert",
+                mode
+            );
             writeln!(io.stderr, "{}", error_msg)?;
             return Ok(Status::err(1, &error_msg));
         }
@@ -3918,12 +3990,10 @@ impl FileHandle {
         {
             // Get previous value for response
             let previous_value = match xattr::get(&resolved_path, name) {
-                Ok(Some(prev_bytes)) => {
-                    match String::from_utf8(prev_bytes.clone()) {
-                        Ok(utf8_string) => Some((utf8_string, "utf-8")),
-                        Err(_) => Some((BASE64_STANDARD.encode(&prev_bytes), "base64")),
-                    }
-                }
+                Ok(Some(prev_bytes)) => match String::from_utf8(prev_bytes.clone()) {
+                    Ok(utf8_string) => Some((utf8_string, "utf-8")),
+                    Err(_) => Some((BASE64_STANDARD.encode(&prev_bytes), "base64")),
+                },
                 Ok(None) => None,
                 Err(_) => None, // Treat errors as "not exists" for previous value
             };
@@ -3934,7 +4004,8 @@ impl FileHandle {
                     // Check if attribute already exists
                     match xattr::get(&resolved_path, name) {
                         Ok(Some(_)) => {
-                            let error_msg = format!("ea.set(create) – attribute already exists: {}", name);
+                            let error_msg =
+                                format!("ea.set(create) – attribute already exists: {}", name);
                             writeln!(io.stderr, "{}", error_msg)?;
                             return Ok(Status::err(1, &error_msg));
                         }
@@ -3955,7 +4026,8 @@ impl FileHandle {
                             // Attribute exists, we can update it
                         }
                         Ok(None) => {
-                            let error_msg = format!("ea.set(update) – attribute does not exist: {}", name);
+                            let error_msg =
+                                format!("ea.set(update) – attribute does not exist: {}", name);
                             writeln!(io.stderr, "{}", error_msg)?;
                             return Ok(Status::err(2, &error_msg));
                         }
@@ -4008,8 +4080,14 @@ impl FileHandle {
 
         #[cfg(not(unix))]
         {
-            writeln!(io.stderr, "extended attributes not supported on this platform")?;
-            Ok(Status::err(1, "extended attributes not supported on this platform"))
+            writeln!(
+                io.stderr,
+                "extended attributes not supported on this platform"
+            )?;
+            Ok(Status::err(
+                1,
+                "extended attributes not supported on this platform",
+            ))
         }
     }
 
@@ -4018,28 +4096,30 @@ impl FileHandle {
         if tag.is_empty() {
             return false;
         }
-        
-        tag.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' || c == '.')
+
+        tag.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' || c == '.'
+        })
     }
 
     /// Parse and validate multiple tags from a comma-separated string
     fn parse_and_validate_tags(names: &str) -> Result<Vec<String>, String> {
         let mut tags = Vec::new();
-        
+
         for name in names.split(',') {
             let trimmed = name.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            
+
             let lowercase = trimmed.to_lowercase();
             if !Self::validate_tag(&lowercase) {
                 return Err(format!("invalid tag: {}", trimmed));
             }
-            
+
             tags.push(lowercase);
         }
-        
+
         Ok(tags)
     }
 
@@ -4051,7 +4131,7 @@ impl FileHandle {
                 Ok(Some(value_bytes)) => {
                     let value_str = String::from_utf8(value_bytes)
                         .with_context(|| "tag xattr contains invalid UTF-8")?;
-                    
+
                     if value_str.trim().is_empty() {
                         Ok(Vec::new())
                     } else {
@@ -4059,10 +4139,10 @@ impl FileHandle {
                     }
                 }
                 Ok(None) => Ok(Vec::new()),
-                Err(e) => Err(anyhow::anyhow!("failed to read tags: {}", e))
+                Err(e) => Err(anyhow::anyhow!("failed to read tags: {}", e)),
             }
         }
-        
+
         #[cfg(not(unix))]
         {
             Err(anyhow::anyhow!("extended attributes not supported"))
@@ -4078,7 +4158,7 @@ impl FileHandle {
                 match xattr::remove(path, "user.resh.tags") {
                     Ok(()) => Ok(()),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), // Ignore if doesn't exist
-                    Err(e) => Err(anyhow::anyhow!("failed to remove tags xattr: {}", e))
+                    Err(e) => Err(anyhow::anyhow!("failed to remove tags xattr: {}", e)),
                 }
             } else {
                 let value = tags.join(",");
@@ -4087,7 +4167,7 @@ impl FileHandle {
                 Ok(())
             }
         }
-        
+
         #[cfg(not(unix))]
         {
             Err(anyhow::anyhow!("extended attributes not supported"))
@@ -4251,9 +4331,9 @@ impl FileHandle {
 impl Handle for FileHandle {
     fn verbs(&self) -> &'static [&'static str] {
         &[
-            "read", "rename", "write", "copy", "delete", "remove", "move", "mv", "exists", "stat", "chmod",
-            "chown", "md5", "sha1", "sha256", "sha512", "verify", "append", "find", "grep",
-            "replace", "tail", "preview", "schema", "summary", "watch", "analyze", "hash",
+            "read", "rename", "write", "copy", "delete", "remove", "move", "mv", "exists", "stat",
+            "chmod", "chown", "md5", "sha1", "sha256", "sha512", "verify", "append", "find",
+            "grep", "replace", "tail", "preview", "schema", "summary", "watch", "analyze", "hash",
             "ea.get", "ea.set", "tag.add", "tag.rm", "help", "h",
         ]
     }
@@ -4268,7 +4348,7 @@ impl Handle for FileHandle {
         if self.path.as_os_str() == HELP_PATH {
             return self.write_help(args, io);
         }
-        
+
         match verb {
             "read" => {
                 let resolved_path = resolve_file_path(&self.path)?;
@@ -4343,7 +4423,7 @@ impl Handle for FileHandle {
             }
             "rename" => {
                 let resolved_path = resolve_file_path(&self.path)?;
-                
+
                 // Parse required 'to' argument
                 let to = args
                     .get("to")
@@ -4424,7 +4504,11 @@ impl Handle for FileHandle {
                 // unpredictable and the file is created new without following
                 // symlinks, so a link planted in a shared destination
                 // directory cannot redirect the write.
-                let temp_name = format!(".resh_tmp_{:x}_{}", std::process::id(), uuid::Uuid::new_v4().simple());
+                let temp_name = format!(
+                    ".resh_tmp_{:x}_{}",
+                    std::process::id(),
+                    uuid::Uuid::new_v4().simple()
+                );
                 let temp_path = dest_dir.join(&temp_name);
 
                 // Cleanup temporary file on any error
@@ -4837,7 +4921,8 @@ impl Handle for FileHandle {
                     let final_gid = target_gid.or_else(|| Some(Gid::from_raw(current_meta.gid())));
 
                     // Check if recursive operation is requested
-                    let is_recursive = crate::core::lenient::bool_arg(args, "recursive")?.unwrap_or(false);
+                    let is_recursive =
+                        crate::core::lenient::bool_arg(args, "recursive")?.unwrap_or(false);
 
                     // Perform the chown operation
                     let result = if is_recursive {
@@ -5204,7 +5289,10 @@ impl Handle for FileHandle {
                 // Check if source exists
                 if !resolved_path.exists() {
                     writeln!(io.stderr, "source not found: {}", resolved_path.display())?;
-                    return Ok(Status::err(2, &format!("source not found: {}", resolved_path.display())));
+                    return Ok(Status::err(
+                        2,
+                        &format!("source not found: {}", resolved_path.display()),
+                    ));
                 }
 
                 // Parse destination path
@@ -5250,10 +5338,22 @@ impl Handle for FileHandle {
                             // Perform cross-filesystem move (copy + delete)
                             self.cross_filesystem_move(&resolved_path, &dest_path, overwrite, io)
                         } else {
-                            writeln!(io.stderr, "move failed from {} to {}: {}", 
-                                resolved_path.display(), dest_path.display(), e)?;
-                            Ok(Status::err(1, &format!("move failed from {} to {}: {}", 
-                                resolved_path.display(), dest_path.display(), e)))
+                            writeln!(
+                                io.stderr,
+                                "move failed from {} to {}: {}",
+                                resolved_path.display(),
+                                dest_path.display(),
+                                e
+                            )?;
+                            Ok(Status::err(
+                                1,
+                                &format!(
+                                    "move failed from {} to {}: {}",
+                                    resolved_path.display(),
+                                    dest_path.display(),
+                                    e
+                                ),
+                            ))
                         }
                     }
                 }
@@ -5289,8 +5389,13 @@ fn create_new_temp_file(path: &std::path::Path) -> std::io::Result<File> {
 /// an empty `Path::parent()`, which never "exists"; it means the current
 /// directory.
 fn dest_parent(dest: &std::path::Path) -> Option<&std::path::Path> {
-    dest.parent()
-        .map(|p| if p.as_os_str().is_empty() { std::path::Path::new(".") } else { p })
+    dest.parent().map(|p| {
+        if p.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            p
+        }
+    })
 }
 
 #[cfg(test)]
@@ -5306,11 +5411,17 @@ mod tests {
         assert_eq!(target("file://./x"), PathBuf::from("x"));
         assert_eq!(target("file://./dir/x.txt"), PathBuf::from("dir/x.txt"));
         assert_eq!(target("file://dir/x"), PathBuf::from("dir/x"));
-        assert_eq!(target("file://dir/sub/x.txt"), PathBuf::from("dir/sub/x.txt"));
+        assert_eq!(
+            target("file://dir/sub/x.txt"),
+            PathBuf::from("dir/sub/x.txt")
+        );
         assert_eq!(target("file://name"), PathBuf::from("name"));
         assert_eq!(target("file://name.txt"), PathBuf::from("name.txt"));
         assert_eq!(target("file:///abs"), PathBuf::from("/abs"));
-        assert_eq!(target("file:///var/log/syslog"), PathBuf::from("/var/log/syslog"));
+        assert_eq!(
+            target("file:///var/log/syslog"),
+            PathBuf::from("/var/log/syslog")
+        );
         assert_eq!(target("file://../up/x"), PathBuf::from("../up/x"));
     }
 
@@ -5328,9 +5439,18 @@ mod tests {
     fn help_detection_is_exact() {
         assert_eq!(target("file://--help"), PathBuf::from(HELP_PATH));
         assert_eq!(target("file://-h"), PathBuf::from(HELP_PATH));
-        assert_eq!(target("file:///home/x/my-hosts"), PathBuf::from("/home/x/my-hosts"));
-        assert_eq!(target("file://pre-hotfix.txt"), PathBuf::from("pre-hotfix.txt"));
-        assert_eq!(target("file://my-httpd/conf"), PathBuf::from("my-httpd/conf"));
+        assert_eq!(
+            target("file:///home/x/my-hosts"),
+            PathBuf::from("/home/x/my-hosts")
+        );
+        assert_eq!(
+            target("file://pre-hotfix.txt"),
+            PathBuf::from("pre-hotfix.txt")
+        );
+        assert_eq!(
+            target("file://my-httpd/conf"),
+            PathBuf::from("my-httpd/conf")
+        );
     }
 
     fn run(h: &FileHandle, verb: &str, args: &Args) -> (Status, String) {
@@ -5357,7 +5477,9 @@ mod tests {
         let h = FileHandle::from_url(Url::parse("file://--help").unwrap()).unwrap();
         let (_, out) = run(&h, "help", &Args::new());
         assert!(out.starts_with("Handle: file\n"));
-        let args: Args = [("verb".to_string(), "read".to_string())].into_iter().collect();
+        let args: Args = [("verb".to_string(), "read".to_string())]
+            .into_iter()
+            .collect();
         let (_, out) = run(&h, "help", &args);
         assert!(out.starts_with("Handle: file\nVerb: read\n"));
     }
@@ -5372,14 +5494,26 @@ mod relative_dir_tests {
 
     fn run(target: &str, verb: &str, pairs: &[(&str, &str)]) -> (Status, String, String) {
         let h = FileHandle::from_url(Url::parse(target).unwrap()).unwrap();
-        let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let args: Args = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         let mut i: &[u8] = &[];
         let (mut o, mut e) = (Vec::new(), Vec::new());
         let status = {
-            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
-            h.call(verb, &args, &mut io).unwrap_or_else(|err| Status::err(1, err.to_string()))
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
+            h.call(verb, &args, &mut io)
+                .unwrap_or_else(|err| Status::err(1, err.to_string()))
         };
-        (status, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())
+        (
+            status,
+            String::from_utf8_lossy(&o).into_owned(),
+            String::from_utf8_lossy(&e).into_owned(),
+        )
     }
 
     /// SEC-08: recursive/force/overwrite go through the shared parser. A
@@ -5396,7 +5530,11 @@ mod relative_dir_tests {
         for bad in ["maybe", "", "2"] {
             let (s, _, _) = run(&url(&tree), "delete", &[("recursive", bad)]);
             assert!(!s.ok, "recursive={bad:?} accepted");
-            let (s, _, _) = run(&url(&tree), "delete", &[("recursive", "true"), ("force", bad)]);
+            let (s, _, _) = run(
+                &url(&tree),
+                "delete",
+                &[("recursive", "true"), ("force", bad)],
+            );
             assert!(!s.ok, "force={bad:?} accepted");
             assert_eq!(std::fs::read(tree.join("sub/f")).unwrap(), b"keep");
         }
@@ -5409,12 +5547,20 @@ mod relative_dir_tests {
         std::fs::write(&src, b"new").unwrap();
         std::fs::write(&dst, b"old").unwrap();
         for verb in ["copy", "move"] {
-            let (s, _, _) = run(&url(&src), verb, &[("to", &dst.to_string_lossy()), ("overwrite", "maybe")]);
+            let (s, _, _) = run(
+                &url(&src),
+                verb,
+                &[("to", &dst.to_string_lossy()), ("overwrite", "maybe")],
+            );
             assert!(!s.ok, "{verb} overwrite=maybe accepted");
             assert_eq!(std::fs::read(&dst).unwrap(), b"old");
             assert_eq!(std::fs::read(&src).unwrap(), b"new");
         }
-        let (s, _, err) = run(&url(&src), "copy", &[("to", &dst.to_string_lossy()), ("overwrite", "on")]);
+        let (s, _, err) = run(
+            &url(&src),
+            "copy",
+            &[("to", &dst.to_string_lossy()), ("overwrite", "on")],
+        );
         assert!(s.ok, "{err}");
         assert_eq!(std::fs::read(&dst).unwrap(), b"new");
     }
@@ -5422,7 +5568,11 @@ mod relative_dir_tests {
     #[test]
     fn relative_directories_are_accepted() {
         for rel in ["src", "./src", "src/core", "./src/handles/filesystem"] {
-            assert_eq!(resolve_file_path(&PathBuf::from(rel)).unwrap(), PathBuf::from(rel), "{rel}");
+            assert_eq!(
+                resolve_file_path(&PathBuf::from(rel)).unwrap(),
+                PathBuf::from(rel),
+                "{rel}"
+            );
         }
         let (status, out, err) = run("file://./src/core", "find", &[]);
         assert!(status.ok, "{err}");
@@ -5441,8 +5591,19 @@ mod relative_dir_tests {
         assert!(rs.ok && as_.ok);
         let names = |out: &str| {
             let v: serde_json::Value = serde_json::from_str(out).unwrap();
-            let mut n: Vec<String> = v.as_array().unwrap().iter()
-                .map(|e| e["path"].as_str().unwrap().rsplit('/').next().unwrap().to_string())
+            let mut n: Vec<String> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| {
+                    e["path"]
+                        .as_str()
+                        .unwrap()
+                        .rsplit('/')
+                        .next()
+                        .unwrap()
+                        .to_string()
+                })
                 .collect();
             n.sort();
             n

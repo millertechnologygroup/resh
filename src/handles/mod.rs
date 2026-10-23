@@ -7,7 +7,6 @@ mod processes;
 pub mod security;
 mod system;
 
-
 use crate::core::Registry;
 
 pub fn register_all(reg: &mut Registry) {

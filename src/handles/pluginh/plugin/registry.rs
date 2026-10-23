@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,7 +15,10 @@ use super::types::{
 /// it in lower case. Anything else is an error; nothing is trimmed or padded.
 pub fn parse_sha256(value: &str) -> Result<String> {
     if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(anyhow!("Invalid SHA-256 {:?}: expected 64 hexadecimal digits", value));
+        return Err(anyhow!(
+            "Invalid SHA-256 {:?}: expected 64 hexadecimal digits",
+            value
+        ));
     }
     Ok(value.to_ascii_lowercase())
 }
@@ -55,11 +58,16 @@ pub fn require_https(url: &str) -> Result<Url> {
     }
     match parsed.scheme() {
         "https" => Ok(parsed),
-        "http" if loopback_http_allowed()
-            && matches!(parsed.host_str(), Some("127.0.0.1") | Some("localhost")) => Ok(parsed),
+        "http"
+            if loopback_http_allowed()
+                && matches!(parsed.host_str(), Some("127.0.0.1") | Some("localhost")) =>
+        {
+            Ok(parsed)
+        }
         scheme => Err(anyhow!(
             "Refusing plugin URL {:?}: scheme {:?} is not allowed, plugin registries and artifacts must use https",
-            url, scheme
+            url,
+            scheme
         )),
     }
 }
@@ -97,7 +105,9 @@ impl RegistryClient {
         verify: &VerifyMode,
     ) -> Result<ArtifactCandidate> {
         match source {
-            SourceSpec::Registry { url } => self.resolve_from_registry(plugin_id, url, requested_version, verify),
+            SourceSpec::Registry { url } => {
+                self.resolve_from_registry(plugin_id, url, requested_version, verify)
+            }
             SourceSpec::Url { url } => self.resolve_from_url(plugin_id, url, verify),
             SourceSpec::File { path } => self.resolve_from_file(plugin_id, path, verify),
         }
@@ -127,15 +137,20 @@ impl RegistryClient {
             .ok_or_else(|| anyhow!("No artifact available for platform: {}", platform_key))?;
 
         // Construct download URL
-        let artifact_url = format!("{}/v1/artifacts/{}/{}/{}", 
-            registry_url.trim_end_matches('/'), 
-            plugin_id, 
+        let artifact_url = format!(
+            "{}/v1/artifacts/{}/{}/{}",
+            registry_url.trim_end_matches('/'),
+            plugin_id,
             version,
             &platform_spec.bin
         );
 
         Ok(ArtifactCandidate {
-            kind: if artifact_url.ends_with(".tar.gz") { "tar.gz".to_string() } else { "binary".to_string() },
+            kind: if artifact_url.ends_with(".tar.gz") {
+                "tar.gz".to_string()
+            } else {
+                "binary".to_string()
+            },
             url: Some(artifact_url),
             path: None,
             sha256: Some(platform_spec.sha256.clone()),
@@ -233,9 +248,17 @@ impl RegistryClient {
     }
 
     /// Fetch registry entry via HTTP
-    fn fetch_registry_entry_http(&self, registry_url: &Url, plugin_id: &str) -> Result<RegistryEntry> {
-        let url = format!("{}/v1/plugins/{}", registry_url.as_str().trim_end_matches('/'), plugin_id);
-        
+    fn fetch_registry_entry_http(
+        &self,
+        registry_url: &Url,
+        plugin_id: &str,
+    ) -> Result<RegistryEntry> {
+        let url = format!(
+            "{}/v1/plugins/{}",
+            registry_url.as_str().trim_end_matches('/'),
+            plugin_id
+        );
+
         let response = self
             .http_client
             .get(&url)
@@ -243,18 +266,29 @@ impl RegistryClient {
             .with_context(|| format!("Failed to fetch plugin from registry: {}", url))?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Plugin not found in registry: {} (status: {})", plugin_id, response.status()));
+            return Err(anyhow!(
+                "Plugin not found in registry: {} (status: {})",
+                plugin_id,
+                response.status()
+            ));
         }
 
-        let entry: RegistryEntry = response
-            .json()
-            .with_context(|| format!("Failed to parse registry response for plugin: {}", plugin_id))?;
+        let entry: RegistryEntry = response.json().with_context(|| {
+            format!(
+                "Failed to parse registry response for plugin: {}",
+                plugin_id
+            )
+        })?;
 
         Ok(entry)
     }
 
     /// Fetch registry entry from local file
-    fn fetch_registry_entry_file(&self, registry_path: &str, plugin_id: &str) -> Result<RegistryEntry> {
+    fn fetch_registry_entry_file(
+        &self,
+        registry_path: &str,
+        plugin_id: &str,
+    ) -> Result<RegistryEntry> {
         let content = fs::read_to_string(registry_path)
             .with_context(|| format!("Failed to read registry file: {}", registry_path))?;
 
@@ -268,7 +302,11 @@ impl RegistryClient {
     }
 
     /// Select version from available versions
-    fn select_version(&self, entry: &RegistryEntry, requested: &RequestedVersion) -> Result<String> {
+    fn select_version(
+        &self,
+        entry: &RegistryEntry,
+        requested: &RequestedVersion,
+    ) -> Result<String> {
         match requested {
             RequestedVersion::Latest => {
                 // Find the latest version (highest semver)
@@ -277,7 +315,7 @@ impl RegistryClient {
                     // Simple string sort for now - in production should use semver crate
                     b.cmp(a)
                 });
-                
+
                 versions
                     .first()
                     .map(|v| v.to_string())
@@ -303,26 +341,26 @@ impl RegistryClient {
             .with_context(|| format!("Failed to download artifact from: {}", url))?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Failed to download artifact: HTTP {}", response.status()));
+            return Err(anyhow!(
+                "Failed to download artifact: HTTP {}",
+                response.status()
+            ));
         }
 
-        let bytes = response
-            .bytes()
-            .context("Failed to read response body")?;
+        let bytes = response.bytes().context("Failed to read response body")?;
 
         Ok(bytes.to_vec())
     }
 
     /// Read artifact from local file
     pub fn read_file_artifact(&self, path: &str) -> Result<Vec<u8>> {
-        fs::read(path)
-            .with_context(|| format!("Failed to read artifact file: {}", path))
+        fs::read(path).with_context(|| format!("Failed to read artifact file: {}", path))
     }
 
     /// Verify artifact checksum
     pub fn verify_checksum(&self, data: &[u8], expected_sha256: &str) -> Result<()> {
-        use sha2::{Sha256, Digest};
-        
+        use sha2::{Digest, Sha256};
+
         let mut hasher = Sha256::new();
         hasher.update(data);
         let result = hasher.finalize();
@@ -377,30 +415,36 @@ mod tests {
     #[test]
     fn test_version_selection() {
         let client = RegistryClient::new(30000).unwrap();
-        
+
         let mut versions = HashMap::new();
-        versions.insert("1.0.0".to_string(), PluginManifest {
-            name: "test".to_string(),
-            version: "1.0.0".to_string(),
-            description: None,
-            author: None,
-            license: None,
-            homepage: None,
-            repository: None,
-            keywords: None,
-            platforms: HashMap::new(),
-        });
-        versions.insert("1.1.0".to_string(), PluginManifest {
-            name: "test".to_string(),
-            version: "1.1.0".to_string(),
-            description: None,
-            author: None,
-            license: None,
-            homepage: None,
-            repository: None,
-            keywords: None,
-            platforms: HashMap::new(),
-        });
+        versions.insert(
+            "1.0.0".to_string(),
+            PluginManifest {
+                name: "test".to_string(),
+                version: "1.0.0".to_string(),
+                description: None,
+                author: None,
+                license: None,
+                homepage: None,
+                repository: None,
+                keywords: None,
+                platforms: HashMap::new(),
+            },
+        );
+        versions.insert(
+            "1.1.0".to_string(),
+            PluginManifest {
+                name: "test".to_string(),
+                version: "1.1.0".to_string(),
+                description: None,
+                author: None,
+                license: None,
+                homepage: None,
+                repository: None,
+                keywords: None,
+                platforms: HashMap::new(),
+            },
+        );
 
         let entry = RegistryEntry {
             plugin_id: "test".to_string(),
@@ -408,24 +452,38 @@ mod tests {
         };
 
         // Test latest version selection
-        let latest = client.select_version(&entry, &RequestedVersion::Latest).unwrap();
+        let latest = client
+            .select_version(&entry, &RequestedVersion::Latest)
+            .unwrap();
         assert_eq!(latest, "1.1.0"); // Should select highest version
 
         // Test specific version selection
-        let specific = client.select_version(&entry, &RequestedVersion::Specific("1.0.0".to_string())).unwrap();
+        let specific = client
+            .select_version(&entry, &RequestedVersion::Specific("1.0.0".to_string()))
+            .unwrap();
         assert_eq!(specific, "1.0.0");
 
         // Test missing version
-        let missing = client.select_version(&entry, &RequestedVersion::Specific("2.0.0".to_string()));
+        let missing =
+            client.select_version(&entry, &RequestedVersion::Specific("2.0.0".to_string()));
         assert!(missing.is_err());
     }
 
     #[test]
     fn test_compare_versions() {
         let client = RegistryClient::new(30000).unwrap();
-        
-        assert_eq!(client.compare_versions("1.0.0", "1.0.0"), std::cmp::Ordering::Equal);
-        assert_eq!(client.compare_versions("1.0.0", "1.1.0"), std::cmp::Ordering::Less);
-        assert_eq!(client.compare_versions("1.1.0", "1.0.0"), std::cmp::Ordering::Greater);
+
+        assert_eq!(
+            client.compare_versions("1.0.0", "1.0.0"),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            client.compare_versions("1.0.0", "1.1.0"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            client.compare_versions("1.1.0", "1.0.0"),
+            std::cmp::Ordering::Greater
+        );
     }
 }

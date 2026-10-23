@@ -49,8 +49,16 @@ pub struct IoStreams<'a> {
 }
 
 impl<'a> IoStreams<'a> {
-    pub fn new(stdin: &'a mut dyn Read, stdout: &'a mut dyn Write, stderr: &'a mut dyn Write) -> Self {
-        Self { stdin, stdout, stderr }
+    pub fn new(
+        stdin: &'a mut dyn Read,
+        stdout: &'a mut dyn Write,
+        stderr: &'a mut dyn Write,
+    ) -> Self {
+        Self {
+            stdin,
+            stdout,
+            stderr,
+        }
     }
 }
 
@@ -113,7 +121,11 @@ impl Registry {
             .get(scheme)
             .cloned()
             .unwrap_or_else(|| format!("{scheme}://resh-help-probe"));
-        Some(url::Url::parse(&probe).map_err(Into::into).and_then(|u| ctor(&u)))
+        Some(
+            url::Url::parse(&probe)
+                .map_err(Into::into)
+                .and_then(|u| ctor(&u)),
+        )
     }
 
     pub fn resolve(&self, target: &str) -> Result<Box<dyn Handle>> {

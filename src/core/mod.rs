@@ -1,13 +1,13 @@
-pub mod parse;
-pub mod registry;
-pub mod status;
 pub mod envelope;
 pub mod help;
 pub mod lenient;
+pub mod parse;
+pub mod registry;
+pub mod status;
 
-pub use registry::{Handle, Registry, IoStreams, Args};
+pub use envelope::{BackendInfo, BackupEnvelope, BackupError, BackupEvent, Timer};
+pub use registry::{Args, Handle, IoStreams, Registry};
 pub use status::Status;
-pub use envelope::{BackupEnvelope, BackendInfo, BackupError, BackupEvent, Timer};
 
 use anyhow::Result;
 use std::io::{Read, Write};
@@ -21,15 +21,19 @@ pub fn dispatch_stage(
     stderr: &mut dyn Write,
 ) -> Result<Status> {
     let mut parsed = parse::parse_stage(stage_str)?;
-    
+
     // Add CLI arguments to parsed arguments
     for arg in cli_args {
         if let Some((key, value)) = arg.split_once('=') {
-            parsed.args.insert(key.trim().to_string(), value.trim().to_string());
+            parsed
+                .args
+                .insert(key.trim().to_string(), value.trim().to_string());
         } else if parse::is_bare_dry_run(arg) {
             // A bare `dry_run` asks for a dry run; dropping it would run
             // the real change.
-            parsed.args.insert("dry_run".to_string(), "true".to_string());
+            parsed
+                .args
+                .insert("dry_run".to_string(), "true".to_string());
         } else {
             // Any other bare word used to be dropped silently, so a
             // misspelled `dry-run` ran the real change.
@@ -189,7 +193,12 @@ mod tests {
         for w in ["dry_run", "dry_run=true", "dry_run=YES", "dry_run=1"] {
             let (st, calls) = run_helped("rec://x.wipe", &[w]);
             assert!(!st.ok, "{w}");
-            assert!(st.reason.as_deref().unwrap_or("").contains("does not support dry_run"));
+            assert!(
+                st.reason
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("does not support dry_run")
+            );
             assert!(calls.is_empty(), "{w}: the verb ran");
             // A verb with a dry-run mode still receives it.
             let (st, calls) = run_helped("rec://x.delete", &[w]);
@@ -215,7 +224,15 @@ mod tests {
         assert!(!st.ok);
         assert!(calls.is_empty());
         // Malformed values and misspelled keys or words are refused everywhere.
-        for w in ["dry_run=maybe", "dry-run=true", "DRY_RUN=true", "dryRun=1", "dry-run", "dryrun", "x"] {
+        for w in [
+            "dry_run=maybe",
+            "dry-run=true",
+            "DRY_RUN=true",
+            "dryRun=1",
+            "dry-run",
+            "dryrun",
+            "x",
+        ] {
             for stage in ["rec://x.wipe", "rec://x.delete"] {
                 let (st, calls) = run_helped(stage, &[w]);
                 assert!(!st.ok, "{stage} {w}");
@@ -227,9 +244,22 @@ mod tests {
     // SEC-05: `resh user://bob.delete dry_run` must not lose the flag.
     #[test]
     fn bare_dry_run_cli_word_is_kept() {
-        assert_eq!(dispatch(&["dry_run"]).get("dry_run").map(String::as_str), Some("true"));
-        assert_eq!(dispatch(&["force=true", " dry_run "]).get("dry_run").map(String::as_str), Some("true"));
-        assert_eq!(dispatch(&["dry_run=false"]).get("dry_run").map(String::as_str), Some("false"));
+        assert_eq!(
+            dispatch(&["dry_run"]).get("dry_run").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            dispatch(&["force=true", " dry_run "])
+                .get("dry_run")
+                .map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            dispatch(&["dry_run=false"])
+                .get("dry_run")
+                .map(String::as_str),
+            Some("false")
+        );
         assert!(!dispatch(&[]).contains_key("dry_run"));
         // Stage 4: other bare words are refused instead of being dropped, so
         // a misspelled `dry-run` cannot run the real change.
@@ -239,7 +269,8 @@ mod tests {
         reg.register_scheme("rec", move |_| Ok(Box::new(Recorder(rec.clone()))));
         let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
         let words = vec!["verbose".to_string()];
-        let st = dispatch_stage(&mut reg, "rec://bob.delete", &words, &mut i, &mut o, &mut e).unwrap();
+        let st =
+            dispatch_stage(&mut reg, "rec://bob.delete", &words, &mut i, &mut o, &mut e).unwrap();
         assert!(!st.ok);
         assert!(seen.lock().unwrap().is_empty());
     }

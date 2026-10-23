@@ -2,17 +2,17 @@ use anyhow::{Context, Result, bail};
 use if_addrs;
 use serde_json::json;
 use std::io::Write;
-use std::net::{TcpStream, ToSocketAddrs, SocketAddr, IpAddr};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::process::Command;
-use std::time::{Duration, Instant};
-use std::sync::{Arc, mpsc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use url::Url;
-use trust_dns_resolver::{
-    config::{ResolverConfig, ResolverOpts, NameServerConfig, Protocol},
-    TokioAsyncResolver
-};
+use std::time::{Duration, Instant};
 use trust_dns_resolver::proto::rr::{RData, RecordType as TrustDnsRecordType};
+use trust_dns_resolver::{
+    TokioAsyncResolver,
+    config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
+};
+use url::Url;
 
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
@@ -269,7 +269,7 @@ impl RecordType {
     fn as_str(&self) -> &'static str {
         match self {
             Self::A => "A",
-            Self::AAAA => "AAAA", 
+            Self::AAAA => "AAAA",
             Self::CNAME => "CNAME",
             Self::MX => "MX",
             Self::TXT => "TXT",
@@ -292,17 +292,31 @@ pub enum ResolvedKind {
     A(String),
     AAAA(String),
     CNAME(String),
-    MX { priority: u16, exchange: String },
+    MX {
+        priority: u16,
+        exchange: String,
+    },
     TXT(String),
     NS(String),
-    SRV { priority: u16, weight: u16, port: u16, target: String },
+    SRV {
+        priority: u16,
+        weight: u16,
+        port: u16,
+        target: String,
+    },
     PTR(String),
 }
 
 pub type ResolvedRecords = Vec<ResolvedRecord>;
 
 pub trait DnsResolver: Send + Sync {
-    fn lookup(&self, name: &str, rtype: RecordType, server: Option<SocketAddr>, timeout: Duration) -> Result<ResolvedRecords>;
+    fn lookup(
+        &self,
+        name: &str,
+        rtype: RecordType,
+        server: Option<SocketAddr>,
+        timeout: Duration,
+    ) -> Result<ResolvedRecords>;
 }
 
 // System DNS resolver implementation
@@ -315,9 +329,14 @@ impl SystemDnsResolver {
 }
 
 impl DnsResolver for SystemDnsResolver {
-    fn lookup(&self, name: &str, rtype: RecordType, server: Option<SocketAddr>, timeout: Duration) -> Result<ResolvedRecords> {
-        let rt = tokio::runtime::Runtime::new()
-            .context("Failed to create Tokio runtime")?;
+    fn lookup(
+        &self,
+        name: &str,
+        rtype: RecordType,
+        server: Option<SocketAddr>,
+        timeout: Duration,
+    ) -> Result<ResolvedRecords> {
+        let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
 
         rt.block_on(async {
             let resolver = if let Some(server_addr) = server {
@@ -341,28 +360,45 @@ impl DnsResolver for SystemDnsResolver {
 }
 
 impl SystemDnsResolver {
-    async fn perform_lookup(&self, resolver: &TokioAsyncResolver, name: &str, rtype: RecordType) -> Result<ResolvedRecords> {
+    async fn perform_lookup(
+        &self,
+        resolver: &TokioAsyncResolver,
+        name: &str,
+        rtype: RecordType,
+    ) -> Result<ResolvedRecords> {
         match rtype {
             RecordType::A => {
-                let response = resolver.ipv4_lookup(name).await
+                let response = resolver
+                    .ipv4_lookup(name)
+                    .await
                     .context("A record lookup failed")?;
-                Ok(response.iter().map(|ip| ResolvedRecord {
-                    name: name.to_string(),
-                    ttl: 300, // Default TTL fallback
-                    kind: ResolvedKind::A(ip.to_string()),
-                }).collect())
-            },
+                Ok(response
+                    .iter()
+                    .map(|ip| ResolvedRecord {
+                        name: name.to_string(),
+                        ttl: 300, // Default TTL fallback
+                        kind: ResolvedKind::A(ip.to_string()),
+                    })
+                    .collect())
+            }
             RecordType::AAAA => {
-                let response = resolver.ipv6_lookup(name).await
+                let response = resolver
+                    .ipv6_lookup(name)
+                    .await
                     .context("AAAA record lookup failed")?;
-                Ok(response.iter().map(|ip| ResolvedRecord {
-                    name: name.to_string(),
-                    ttl: 300, // Default TTL fallback
-                    kind: ResolvedKind::AAAA(ip.to_string()),
-                }).collect())
-            },
+                Ok(response
+                    .iter()
+                    .map(|ip| ResolvedRecord {
+                        name: name.to_string(),
+                        ttl: 300, // Default TTL fallback
+                        kind: ResolvedKind::AAAA(ip.to_string()),
+                    })
+                    .collect())
+            }
             RecordType::CNAME => {
-                let response = resolver.lookup(name, rtype.to_trust_dns()).await
+                let response = resolver
+                    .lookup(name, rtype.to_trust_dns())
+                    .await
                     .context("CNAME record lookup failed")?;
                 let mut records = Vec::new();
                 for record in response.records() {
@@ -375,35 +411,48 @@ impl SystemDnsResolver {
                     }
                 }
                 Ok(records)
-            },
+            }
             RecordType::MX => {
-                let response = resolver.mx_lookup(name).await
+                let response = resolver
+                    .mx_lookup(name)
+                    .await
                     .context("MX record lookup failed")?;
-                Ok(response.iter().map(|mx| ResolvedRecord {
-                    name: name.to_string(),
-                    ttl: 300, // Default TTL fallback
-                    kind: ResolvedKind::MX {
-                        priority: mx.preference(),
-                        exchange: mx.exchange().to_string(),
-                    },
-                }).collect())
-            },
+                Ok(response
+                    .iter()
+                    .map(|mx| ResolvedRecord {
+                        name: name.to_string(),
+                        ttl: 300, // Default TTL fallback
+                        kind: ResolvedKind::MX {
+                            priority: mx.preference(),
+                            exchange: mx.exchange().to_string(),
+                        },
+                    })
+                    .collect())
+            }
             RecordType::TXT => {
-                let response = resolver.txt_lookup(name).await
+                let response = resolver
+                    .txt_lookup(name)
+                    .await
                     .context("TXT record lookup failed")?;
-                Ok(response.iter().map(|txt| ResolvedRecord {
-                    name: name.to_string(),
-                    ttl: 300, // Default TTL fallback
-                    kind: ResolvedKind::TXT(
-                        txt.txt_data().iter()
-                           .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                           .collect::<Vec<_>>()
-                           .join("")
-                    ),
-                }).collect())
-            },
+                Ok(response
+                    .iter()
+                    .map(|txt| ResolvedRecord {
+                        name: name.to_string(),
+                        ttl: 300, // Default TTL fallback
+                        kind: ResolvedKind::TXT(
+                            txt.txt_data()
+                                .iter()
+                                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                                .collect::<Vec<_>>()
+                                .join(""),
+                        ),
+                    })
+                    .collect())
+            }
             RecordType::NS => {
-                let response = resolver.lookup(name, rtype.to_trust_dns()).await
+                let response = resolver
+                    .lookup(name, rtype.to_trust_dns())
+                    .await
                     .context("NS record lookup failed")?;
                 let mut records = Vec::new();
                 for record in response.records() {
@@ -416,9 +465,11 @@ impl SystemDnsResolver {
                     }
                 }
                 Ok(records)
-            },
+            }
             RecordType::SRV => {
-                let response = resolver.lookup(name, rtype.to_trust_dns()).await
+                let response = resolver
+                    .lookup(name, rtype.to_trust_dns())
+                    .await
                     .context("SRV record lookup failed")?;
                 let mut records = Vec::new();
                 for record in response.records() {
@@ -436,21 +487,26 @@ impl SystemDnsResolver {
                     }
                 }
                 Ok(records)
-            },
+            }
             RecordType::PTR => {
                 // For PTR records, try to parse as IP and do reverse lookup
                 if let Ok(ip) = name.parse::<IpAddr>() {
-                    let response = resolver.reverse_lookup(ip).await
+                    let response = resolver
+                        .reverse_lookup(ip)
+                        .await
                         .context("PTR record lookup failed")?;
-                    Ok(response.iter().map(|ptr| ResolvedRecord {
-                        name: name.to_string(),
-                        ttl: 300, // Default TTL fallback
-                        kind: ResolvedKind::PTR(ptr.to_string()),
-                    }).collect())
+                    Ok(response
+                        .iter()
+                        .map(|ptr| ResolvedRecord {
+                            name: name.to_string(),
+                            ttl: 300, // Default TTL fallback
+                            kind: ResolvedKind::PTR(ptr.to_string()),
+                        })
+                        .collect())
                 } else {
                     bail!("PTR lookup requires a valid IP address, got: {}", name);
                 }
-            },
+            }
         }
     }
 }
@@ -465,11 +521,12 @@ pub struct NetHandle {
 impl NetHandle {
     pub fn from_url(u: &Url) -> Result<Self> {
         // Extract host from URL
-        let host = u.host_str()
+        let host = u
+            .host_str()
             .ok_or_else(|| anyhow::anyhow!("net:// URL missing host"))?
             .to_string();
         let port = u.port();
-        
+
         // For backwards compatibility with existing functionality:
         // If host looks like a special resource name, treat it as such
         let (resource, actual_host) = if host == "if" || host == "interfaces" || host == "iface" {
@@ -479,11 +536,11 @@ impl NetHandle {
             (host.clone(), Some(host.clone()))
         };
 
-        Ok(NetHandle { 
-            resource, 
-            host: actual_host, 
-            port, 
-            resolver: Arc::new(SystemDnsResolver::new()) 
+        Ok(NetHandle {
+            resource,
+            host: actual_host,
+            port,
+            resolver: Arc::new(SystemDnsResolver::new()),
         })
     }
 
@@ -527,7 +584,12 @@ impl NetHandle {
 
     /// Check if this is a help request (`help`, `--help`, `-h`, or
     /// `--help=<verb>`) and, if so, write the approved help.
-    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+    fn check_and_display_help(
+        &self,
+        verb: &str,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<Option<Status>> {
         let specific = if crate::core::help::HELP_ALIASES.contains(&verb) {
             args.get("verb").map(String::as_str)
         } else if let Some(v) = verb.strip_prefix("--help=") {
@@ -543,7 +605,17 @@ impl NetHandle {
 
 impl Handle for NetHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["list", "ping", "tcp_check", "scan", "dns", "route.list", "help", "--help", "-h"]
+        &[
+            "list",
+            "ping",
+            "tcp_check",
+            "scan",
+            "dns",
+            "route.list",
+            "help",
+            "--help",
+            "-h",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -597,7 +669,7 @@ impl NetHandle {
                     writeln!(io.stdout, "{}", error_json)?;
                     return Ok(Status::err(2, format!("Invalid record type: {}", e)));
                 }
-            }
+            },
         };
 
         // Parse timeout
@@ -650,7 +722,7 @@ impl NetHandle {
                             None => 53, // Default DNS port
                         };
                         Some(SocketAddr::new(ip, port))
-                    },
+                    }
                     Err(e) => {
                         let error_json = json!({
                             "query": query_name,
@@ -662,14 +734,19 @@ impl NetHandle {
                         return Ok(Status::err(2, format!("Invalid server IP: {}", e)));
                     }
                 }
-            },
+            }
             None => None,
         };
 
         // Perform DNS lookup
-        match self.resolver.lookup(&query_name, rtype.clone(), server, timeout) {
+        match self
+            .resolver
+            .lookup(&query_name, rtype.clone(), server, timeout)
+        {
             Ok(records) => {
-                let server_info = server.map(|s| s.to_string()).unwrap_or_else(|| "system".to_string());
+                let server_info = server
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "system".to_string());
                 let output = json!({
                     "query": query_name,
                     "rtype": rtype.as_str(),
@@ -729,7 +806,7 @@ impl NetHandle {
                 });
                 writeln!(io.stdout, "{}", output)?;
                 Ok(Status::ok())
-            },
+            }
             Err(e) => {
                 let error_json = json!({
                     "query": query_name,
@@ -747,53 +824,53 @@ impl NetHandle {
         if self.host.is_none() {
             return Ok(Status::err(3, "net:// URL missing host"));
         }
-        
+
         let host = self.host.as_ref().unwrap();
-        
+
         // Parse arguments with validation
         let count = match self.parse_ping_count(args) {
             Ok(c) => c,
             Err(e) => {
                 writeln!(io.stderr, "bad argument: {}", e)?;
                 return Ok(Status::err(2, format!("bad argument: {}", e)));
-            },
+            }
         };
-        
+
         let timeout_ms = match self.parse_ping_timeout_ms(args) {
             Ok(t) => t,
             Err(e) => {
                 writeln!(io.stderr, "bad argument: {}", e)?;
                 return Ok(Status::err(2, format!("bad argument: {}", e)));
-            },
+            }
         };
-        
+
         let port_override = match self.parse_ping_port(args) {
             Ok(p) => p,
             Err(e) => {
                 writeln!(io.stderr, "bad argument: {}", e)?;
                 return Ok(Status::err(2, format!("bad argument: {}", e)));
-            },
+            }
         };
-        
+
         let family = match self.parse_ping_family(args) {
             Ok(f) => f,
             Err(e) => {
                 writeln!(io.stderr, "bad argument: {}", e)?;
                 return Ok(Status::err(2, format!("bad argument: {}", e)));
-            },
+            }
         };
-        
+
         let raw_output = match self.parse_ping_raw(args) {
             Ok(r) => r,
             Err(e) => {
                 writeln!(io.stderr, "bad argument: {}", e)?;
                 return Ok(Status::err(2, format!("bad argument: {}", e)));
-            },
+            }
         };
-        
+
         // Determine the port to use for TCP fallback
         let fallback_port = port_override.unwrap_or(self.port.unwrap_or(80));
-        
+
         // Try system ping first
         match self.try_system_ping(host, count, timeout_ms, &family, raw_output, io) {
             Ok(result) => {
@@ -830,7 +907,10 @@ impl NetHandle {
                         return Ok(Status::ok());
                     }
                     Err(e) => {
-                        return Ok(Status::err(1, format!("Both ping and TCP fallback failed: {}", e)));
+                        return Ok(Status::err(
+                            1,
+                            format!("Both ping and TCP fallback failed: {}", e),
+                        ));
                     }
                 }
             }
@@ -839,31 +919,34 @@ impl NetHandle {
 
     fn parse_ping_count(&self, args: &Args) -> Result<u32> {
         let count_str = args.get("count").map(String::as_str).unwrap_or("3");
-        let count: u32 = count_str.parse()
+        let count: u32 = count_str
+            .parse()
             .with_context(|| format!("count must be a number, got: {}", count_str))?;
-        
+
         if count < 1 {
             bail!("count must be >= 1, got: {}", count);
         }
-        
+
         Ok(count)
     }
 
     fn parse_ping_timeout_ms(&self, args: &Args) -> Result<u64> {
         let timeout_str = args.get("timeout_ms").map(String::as_str).unwrap_or("3000");
-        let timeout_ms: u64 = timeout_str.parse()
+        let timeout_ms: u64 = timeout_str
+            .parse()
             .with_context(|| format!("timeout_ms must be a number, got: {}", timeout_str))?;
-        
+
         if timeout_ms < 100 {
             bail!("timeout_ms must be >= 100, got: {}", timeout_ms);
         }
-        
+
         Ok(timeout_ms)
     }
 
     fn parse_ping_port(&self, args: &Args) -> Result<Option<u16>> {
         if let Some(port_str) = args.get("port") {
-            let port: u16 = port_str.parse()
+            let port: u16 = port_str
+                .parse()
                 .with_context(|| format!("port must be a number, got: {}", port_str))?;
             Ok(Some(port))
         } else {
@@ -891,7 +974,15 @@ impl NetHandle {
         }
     }
 
-    fn try_system_ping(&self, host: &str, count: u32, timeout_ms: u64, family: &str, raw: bool, io: &mut IoStreams) -> Result<PingResult> {
+    fn try_system_ping(
+        &self,
+        host: &str,
+        count: u32,
+        timeout_ms: u64,
+        family: &str,
+        raw: bool,
+        io: &mut IoStreams,
+    ) -> Result<PingResult> {
         let ping_cmd = match family {
             "ipv6" => {
                 // Try ping6 first, then ping -6
@@ -913,29 +1004,34 @@ impl NetHandle {
 
         let per_packet_timeout_s = std::cmp::max(1, timeout_ms / 1000);
         let mut cmd = Command::new(ping_cmd);
-        
+
         cmd.arg("-c").arg(count.to_string());
         cmd.arg("-W").arg(per_packet_timeout_s.to_string());
-        
+
         if family == "ipv6" && ping_cmd == "ping" {
             cmd.arg("-6");
         }
-        
+
         cmd.arg(host);
-        
-        let output = cmd.output()
+
+        let output = cmd
+            .output()
             .with_context(|| format!("Failed to execute ping command"))?;
 
         let stdout_str = String::from_utf8_lossy(&output.stdout);
         let stderr_str = String::from_utf8_lossy(&output.stderr);
-        
+
         if raw {
-            write!(io.stderr, "Raw ping output:\nSTDOUT:\n{}\nSTDERR:\n{}\n", stdout_str, stderr_str)?;
+            write!(
+                io.stderr,
+                "Raw ping output:\nSTDOUT:\n{}\nSTDERR:\n{}\n",
+                stdout_str, stderr_str
+            )?;
         }
 
         // Parse the output
         let parsed = self.parse_system_ping_output(&stdout_str, output.status.success());
-        
+
         Ok(PingResult {
             sent: count,
             received: parsed.received,
@@ -948,13 +1044,13 @@ impl NetHandle {
     fn parse_system_ping_output(&self, stdout: &str, _success: bool) -> ParsedOutput {
         let mut received = 0u32;
         let mut avg_rtt_ms: Option<f64> = None;
-        
+
         for line in stdout.lines() {
             // Count replies - look for lines like "64 bytes from" or "icmp_seq="
             if line.contains("bytes from") || line.contains("icmp_seq=") {
                 received += 1;
             }
-            
+
             // Parse RTT statistics from lines like "rtt min/avg/max/mdev = 12.345/23.456/34.567/5.678 ms"
             if let Some(rtt_pos) = line.find("rtt min/avg/max") {
                 if let Some(eq_pos) = line[rtt_pos..].find(" = ") {
@@ -971,25 +1067,35 @@ impl NetHandle {
                 }
             }
         }
-        
+
         ParsedOutput {
             received,
             avg_rtt_ms,
         }
     }
 
-    fn try_tcp_fallback(&self, host: &str, port: u16, count: u32, timeout_ms: u64, _io: &mut IoStreams) -> Result<PingResult> {
+    fn try_tcp_fallback(
+        &self,
+        host: &str,
+        port: u16,
+        count: u32,
+        timeout_ms: u64,
+        _io: &mut IoStreams,
+    ) -> Result<PingResult> {
         let per_attempt_timeout = std::cmp::max(200, timeout_ms / count as u64);
         let timeout_duration = Duration::from_millis(per_attempt_timeout);
-        
+
         let mut successes = 0u32;
         let mut total_rtt = 0.0f64;
         let mut rtt_count = 0;
-        
+
         for _ in 0..count {
             let start = Instant::now();
-            
-            match std::net::TcpStream::connect_timeout(&format!("{}:{}", host, port).parse()?, timeout_duration) {
+
+            match std::net::TcpStream::connect_timeout(
+                &format!("{}:{}", host, port).parse()?,
+                timeout_duration,
+            ) {
                 Ok(_) => {
                     let elapsed = start.elapsed();
                     total_rtt += elapsed.as_millis() as f64;
@@ -1001,13 +1107,13 @@ impl NetHandle {
                 }
             }
         }
-        
+
         let avg_rtt_ms = if rtt_count > 0 {
             Some(total_rtt / rtt_count as f64)
         } else {
             None
         };
-        
+
         Ok(PingResult {
             sent: count,
             received: successes,
@@ -1016,29 +1122,31 @@ impl NetHandle {
             reachable: successes > 0,
         })
     }
-    
+
     // Keep legacy parsing functions for backwards compatibility with other functions
     fn parse_count(&self, args: &Args) -> Result<u32> {
         let count_str = args.get("count").map(String::as_str).unwrap_or("4");
-        let count: u32 = count_str.parse()
+        let count: u32 = count_str
+            .parse()
             .with_context(|| format!("Invalid count value: {}", count_str))?;
-        
+
         if count == 0 || count > 100 {
             bail!("count must be between 1 and 100, got: {}", count);
         }
-        
+
         Ok(count)
     }
 
     fn parse_timeout_ms(&self, args: &Args) -> Result<u64> {
         let timeout_str = args.get("timeout_ms").map(String::as_str).unwrap_or("2000");
-        let timeout_ms: u64 = timeout_str.parse()
+        let timeout_ms: u64 = timeout_str
+            .parse()
             .with_context(|| format!("Invalid timeout_ms value: {}", timeout_str))?;
-        
+
         if timeout_ms == 0 {
             bail!("timeout_ms must be greater than 0, got: {}", timeout_ms);
         }
-        
+
         Ok(timeout_ms)
     }
 
@@ -1056,13 +1164,14 @@ impl NetHandle {
 
     fn parse_size(&self, args: &Args) -> Result<Option<u32>> {
         if let Some(size_str) = args.get("size") {
-            let size: u32 = size_str.parse()
+            let size: u32 = size_str
+                .parse()
                 .with_context(|| format!("Invalid size value: {}", size_str))?;
-            
+
             if size < 8 || size > 65507 {
                 bail!("size must be between 8 and 65507 bytes, got: {}", size);
             }
-            
+
             Ok(Some(size))
         } else {
             Ok(None)
@@ -1073,7 +1182,7 @@ impl NetHandle {
         if self.host.is_none() {
             bail!("No target host/IP specified for tcp_check. Use net://hostname:port.tcp_check");
         }
-        
+
         // Resolve port from args or URL
         let port = match self.resolve_port(args) {
             Ok(p) => p,
@@ -1136,7 +1245,8 @@ impl NetHandle {
     fn resolve_port(&self, args: &Args) -> Result<u16> {
         // Args port takes precedence over URL port
         if let Some(port_str) = args.get("port") {
-            let port: u16 = port_str.parse()
+            let port: u16 = port_str
+                .parse()
                 .with_context(|| format!("Invalid port value: {}", port_str))?;
             if port == 0 {
                 bail!("port must be greater than 0, got: {}", port);
@@ -1154,78 +1264,91 @@ impl NetHandle {
 
     fn parse_tcp_timeout_ms(&self, args: &Args) -> Result<u64> {
         let timeout_str = args.get("timeout_ms").map(String::as_str).unwrap_or("3000");
-        let timeout_ms: u64 = timeout_str.parse()
+        let timeout_ms: u64 = timeout_str
+            .parse()
             .with_context(|| format!("Invalid timeout_ms value: {}", timeout_str))?;
-        
+
         if timeout_ms == 0 {
             bail!("timeout_ms must be greater than 0, got: {}", timeout_ms);
         }
-        
+
         Ok(timeout_ms)
     }
 
     fn parse_retries(&self, args: &Args) -> Result<u32> {
         let retries_str = args.get("retries").map(String::as_str).unwrap_or("1");
-        let retries: u32 = retries_str.parse()
+        let retries: u32 = retries_str
+            .parse()
             .with_context(|| format!("Invalid retries value: {}", retries_str))?;
-        
+
         if retries == 0 {
             bail!("retries must be greater than 0, got: {}", retries);
         }
-        
+
         Ok(retries)
     }
 
     fn parse_backoff_ms(&self, args: &Args) -> Result<u64> {
         let backoff_str = args.get("backoff_ms").map(String::as_str).unwrap_or("0");
-        let backoff_ms: u64 = backoff_str.parse()
+        let backoff_ms: u64 = backoff_str
+            .parse()
             .with_context(|| format!("Invalid backoff_ms value: {}", backoff_str))?;
-        
+
         Ok(backoff_ms)
     }
 
     fn parse_expect_tls(&self, args: &Args) -> Result<bool> {
-        let expect_tls_str = args.get("expect_tls").map(String::as_str).unwrap_or("false");
+        let expect_tls_str = args
+            .get("expect_tls")
+            .map(String::as_str)
+            .unwrap_or("false");
         match expect_tls_str {
             "true" => Ok(true),
             "false" => Ok(false),
-            _ => bail!("expect_tls must be 'true' or 'false', got: {}", expect_tls_str),
+            _ => bail!(
+                "expect_tls must be 'true' or 'false', got: {}",
+                expect_tls_str
+            ),
         }
     }
 
-    fn execute_tcp_check(&self, port: u16, timeout_ms: u64, retries: u32, backoff_ms: u64) -> Result<(bool, serde_json::Value)> {
+    fn execute_tcp_check(
+        &self,
+        port: u16,
+        timeout_ms: u64,
+        retries: u32,
+        backoff_ms: u64,
+    ) -> Result<(bool, serde_json::Value)> {
         let timeout = Duration::from_millis(timeout_ms);
         let mut last_error = None;
 
         for attempt in 1..=retries {
             let start_time = Instant::now();
-            
+
             // Resolve hostname to socket addresses
             let target = self.target();
             let addr = match target.to_socket_addrs() {
-                Ok(mut addrs) => {
-                    match addrs.next() {
-                        Some(addr) => addr,
-                        None => {
-                            last_error = Some(std::io::Error::new(
-                                std::io::ErrorKind::NotFound,
-                                "No addresses found for hostname"
-                            ));
-                            continue;
-                        }
+                Ok(mut addrs) => match addrs.next() {
+                    Some(addr) => addr,
+                    None => {
+                        last_error = Some(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "No addresses found for hostname",
+                        ));
+                        continue;
                     }
-                }
+                },
                 Err(e) => {
                     last_error = Some(e);
                     continue;
                 }
             };
-            
+
             match TcpStream::connect_timeout(&addr, timeout) {
                 Ok(_stream) => {
                     // Connection successful
                     let latency_ms = start_time.elapsed().as_millis() as u64;
-                    
+
                     let json_output = json!({
                         "host": self.host.as_deref().unwrap_or(&self.resource),
                         "port": port,
@@ -1237,12 +1360,12 @@ impl NetHandle {
                         "backend": "tcp",
                         "tls_checked": false
                     });
-                    
+
                     return Ok((true, json_output));
                 }
                 Err(e) => {
                     last_error = Some(e);
-                    
+
                     // If not the last attempt and we have backoff, sleep
                     if attempt < retries && backoff_ms > 0 {
                         std::thread::sleep(Duration::from_millis(backoff_ms));
@@ -1273,18 +1396,18 @@ impl NetHandle {
     }
 
     /// Implements the scan verb for TCP port scanning
-    /// 
+    ///
     /// Supported arguments:
     /// - ports: comma-separated list of ports and ranges (e.g., "80,443,8000-8005")
     /// - timeout_ms: timeout per port in milliseconds (default: 500)
-    /// - concurrency: max concurrent connections (default: 32, max: 256) 
+    /// - concurrency: max concurrent connections (default: 32, max: 256)
     /// - protocol: only "tcp" supported (default: "tcp")
     /// - host: override URL host for scanning target
     ///
     /// Output JSON schema:
     /// {
     ///   "target": "example.com",
-    ///   "protocol": "tcp", 
+    ///   "protocol": "tcp",
     ///   "ports": [
     ///     { "port": 80, "state": "open" },
     ///     { "port": 22, "state": "closed", "error": "connection refused" }
@@ -1305,7 +1428,10 @@ impl NetHandle {
             host.clone()
         } else if let Some(host) = &self.host {
             host.clone()
-        } else if !self.resource.is_empty() && self.resource != "if" && self.resource != "interfaces" {
+        } else if !self.resource.is_empty()
+            && self.resource != "if"
+            && self.resource != "interfaces"
+        {
             self.resource.clone()
         } else {
             writeln!(io.stderr, "missing host")?;
@@ -1316,7 +1442,10 @@ impl NetHandle {
         let protocol = args.get("protocol").map(String::as_str).unwrap_or("tcp");
         if protocol != "tcp" {
             writeln!(io.stderr, "unsupported protocol; only tcp is supported")?;
-            return Ok(Status::err(6, "unsupported protocol; only tcp is supported"));
+            return Ok(Status::err(
+                6,
+                "unsupported protocol; only tcp is supported",
+            ));
         }
 
         // 3. Parse timeout
@@ -1345,7 +1474,10 @@ impl NetHandle {
             Ok(ports) => ports,
             Err(e) => {
                 writeln!(io.stderr, "invalid ports specification: {}", e)?;
-                return Ok(Status::err(3, format!("invalid ports specification: {}", e)));
+                return Ok(Status::err(
+                    3,
+                    format!("invalid ports specification: {}", e),
+                ));
             }
         };
 
@@ -1380,66 +1512,77 @@ impl NetHandle {
     /// Supports:
     /// - Single ports: "80"
     /// - Comma-separated: "80,443,8080"
-    /// - Ranges: "8000-8005" 
+    /// - Ranges: "8000-8005"
     /// - Mixed: "80,443,8000-8005"
     fn parse_ports(&self, args: &Args) -> Result<Vec<u16>> {
         let ports_str = args.get("ports").map(String::as_str).unwrap_or("80,443");
-        
+
         let mut ports = Vec::new();
-        
+
         for token in ports_str.split(',') {
             let token = token.trim();
             if token.is_empty() {
                 continue;
             }
-            
+
             if token.contains('-') {
                 // Parse range: "8000-8005"
                 let parts: Vec<&str> = token.split('-').collect();
                 if parts.len() != 2 {
                     bail!("invalid range format: {}", token);
                 }
-                
-                let start = parts[0].trim().parse::<u16>()
+
+                let start = parts[0]
+                    .trim()
+                    .parse::<u16>()
                     .with_context(|| format!("invalid start port in range: {}", parts[0]))?;
-                let end = parts[1].trim().parse::<u16>()
+                let end = parts[1]
+                    .trim()
+                    .parse::<u16>()
                     .with_context(|| format!("invalid end port in range: {}", parts[1]))?;
-                
+
                 if start == 0 || end == 0 {
                     bail!("port numbers must be in range 1-65535");
                 }
-                
+
                 if start > end {
                     bail!("invalid range: start port {} > end port {}", start, end);
                 }
-                
+
                 for port in start..=end {
                     ports.push(port);
                 }
             } else {
                 // Parse single port
-                let port = token.parse::<u16>()
+                let port = token
+                    .parse::<u16>()
                     .with_context(|| format!("invalid port number: {}", token))?;
-                
+
                 if port == 0 {
                     bail!("port numbers must be in range 1-65535");
                 }
-                
+
                 ports.push(port);
             }
         }
-        
+
         Ok(ports)
     }
 
     /// Perform the actual TCP port scan
     /// Returns a list of port scan results in JSON format
-    fn perform_scan(&self, host: &str, ports: &[u16], timeout_ms: u64, concurrency: usize) -> Result<Vec<serde_json::Value>> {
+    fn perform_scan(
+        &self,
+        host: &str,
+        ports: &[u16],
+        timeout_ms: u64,
+        concurrency: usize,
+    ) -> Result<Vec<serde_json::Value>> {
         let timeout = Duration::from_millis(timeout_ms);
-        
+
         // Ensure reasonable concurrency limits
         let concurrency = concurrency.max(1).min(256);
-        
+
         // If there are fewer ports than concurrency limit or very few ports, scan sequentially
         if ports.len() <= 4 || concurrency == 1 {
             return self.perform_sequential_scan(host, ports, timeout);
@@ -1449,17 +1592,17 @@ impl NetHandle {
         let (port_tx, port_rx) = mpsc::channel::<u16>();
         let port_rx = Arc::new(Mutex::new(port_rx));
         let (result_tx, result_rx) = mpsc::channel::<(usize, serde_json::Value)>();
-        
+
         // Clone host string for threads
         let host = host.to_string();
-        
+
         // Start worker threads
         let mut handles = Vec::new();
         for _ in 0..concurrency {
             let port_rx = Arc::clone(&port_rx);
             let result_tx = result_tx.clone();
             let host = host.clone();
-            
+
             let handle = thread::spawn(move || {
                 loop {
                     let port = {
@@ -1469,7 +1612,7 @@ impl NetHandle {
                             Err(_) => break, // Channel is empty or disconnected
                         }
                     };
-                    
+
                     let result = Self::scan_port_static(&host, port, timeout);
                     if let Err(_) = result_tx.send((port as usize, result)) {
                         break; // Channel closed
@@ -1478,7 +1621,7 @@ impl NetHandle {
             });
             handles.push(handle);
         }
-        
+
         // Send ports to worker threads
         for &port in ports {
             if port_tx.send(port).is_err() {
@@ -1486,20 +1629,20 @@ impl NetHandle {
             }
         }
         drop(port_tx); // Signal no more work
-        
+
         // Collect results
         let mut results_map = std::collections::HashMap::new();
         drop(result_tx); // Close sender so receiver will eventually close
-        
+
         for (port, result) in result_rx {
             results_map.insert(port, result);
         }
-        
+
         // Wait for all threads to finish
         for handle in handles {
             let _ = handle.join();
         }
-        
+
         // Reconstruct results in original port order
         let mut results = Vec::new();
         for &port in ports {
@@ -1514,26 +1657,31 @@ impl NetHandle {
                 }));
             }
         }
-        
+
         Ok(results)
     }
-    
+
     /// Fallback sequential implementation for small port lists or single-threaded operation
-    fn perform_sequential_scan(&self, host: &str, ports: &[u16], timeout: Duration) -> Result<Vec<serde_json::Value>> {
+    fn perform_sequential_scan(
+        &self,
+        host: &str,
+        ports: &[u16],
+        timeout: Duration,
+    ) -> Result<Vec<serde_json::Value>> {
         let mut results = Vec::new();
-        
+
         for &port in ports {
             let result = self.scan_port(host, port, timeout);
             results.push(result);
         }
-        
+
         Ok(results)
     }
-    
+
     /// Static version of scan_port for use in threads
     fn scan_port_static(host: &str, port: u16, timeout: Duration) -> serde_json::Value {
         let addr_str = format!("{}:{}", host, port);
-        
+
         // Try to resolve the address first
         let socket_addrs: Vec<_> = match addr_str.to_socket_addrs() {
             Ok(addrs) => addrs.collect(),
@@ -1549,7 +1697,7 @@ impl NetHandle {
         if socket_addrs.is_empty() {
             return serde_json::json!({
                 "port": port,
-                "state": "error", 
+                "state": "error",
                 "error": "no addresses resolved"
             });
         }
@@ -1567,11 +1715,13 @@ impl NetHandle {
                 Err(e) => {
                     use std::io::ErrorKind;
                     let state_and_error = match e.kind() {
-                        ErrorKind::ConnectionRefused => ("closed", Some("connection refused".to_string())),
+                        ErrorKind::ConnectionRefused => {
+                            ("closed", Some("connection refused".to_string()))
+                        }
                         ErrorKind::TimedOut => ("timeout", None),
                         _ => ("error", Some(format!("{}", e))),
                     };
-                    
+
                     // Continue to next address, but save this result as fallback
                     // If no address works, we'll use the last error
                     if Some(addr) == last_addr {
@@ -1600,7 +1750,7 @@ impl NetHandle {
     /// Scan a single port and return the result as JSON
     fn scan_port(&self, host: &str, port: u16, timeout: Duration) -> serde_json::Value {
         let addr_str = format!("{}:{}", host, port);
-        
+
         // Try to resolve the address first
         let socket_addrs: Vec<_> = match addr_str.to_socket_addrs() {
             Ok(addrs) => addrs.collect(),
@@ -1616,7 +1766,7 @@ impl NetHandle {
         if socket_addrs.is_empty() {
             return serde_json::json!({
                 "port": port,
-                "state": "error", 
+                "state": "error",
                 "error": "no addresses resolved"
             });
         }
@@ -1634,11 +1784,13 @@ impl NetHandle {
                 Err(e) => {
                     use std::io::ErrorKind;
                     let state_and_error = match e.kind() {
-                        ErrorKind::ConnectionRefused => ("closed", Some("connection refused".to_string())),
+                        ErrorKind::ConnectionRefused => {
+                            ("closed", Some("connection refused".to_string()))
+                        }
                         ErrorKind::TimedOut => ("timeout", None),
                         _ => ("error", Some(format!("{}", e))),
                     };
-                    
+
                     // Continue to next address, but save this result as fallback
                     // If no address works, we'll use the last error
                     if Some(addr) == last_addr {
@@ -1680,11 +1832,11 @@ struct ParsedOutput {
 
 impl NetHandle {
     /// Implement route.list verb to enumerate system routing table as JSON.
-    /// 
+    ///
     /// Arguments:
     /// - family (optional): "ipv4", "ipv6", or "all" (default: "ipv4")
     /// - table (optional): routing table filter (e.g. "main", "default")
-    /// 
+    ///
     /// Returns JSON array of route entries on stdout or error JSON on failure.
     fn route_list(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Handle unsupported platforms first
@@ -1701,8 +1853,8 @@ impl NetHandle {
 
         #[cfg(target_os = "linux")]
         {
-            use std::fs;
             use std::collections::HashMap;
+            use std::fs;
 
             // Parse arguments
             let family = args.get("family").map(|s| s.as_str()).unwrap_or("ipv4");
@@ -1710,7 +1862,7 @@ impl NetHandle {
 
             // Validate family argument
             match family {
-                "ipv4" | "ipv6" | "all" => {},
+                "ipv4" | "ipv6" | "all" => {}
                 _ => {
                     let error_json = json!({
                         "backend": "net",
@@ -1743,7 +1895,7 @@ impl NetHandle {
                 }
             }
 
-            // Try IPv6 routes if requested  
+            // Try IPv6 routes if requested
             if family == "ipv6" || family == "all" {
                 match self.get_ipv6_routes() {
                     Ok(mut routes) => all_routes.append(&mut routes),
@@ -1796,7 +1948,7 @@ impl NetHandle {
 
     #[cfg(target_os = "linux")]
     fn get_ipv6_routes(&self) -> Result<Vec<serde_json::Value>> {
-        // Try ip command first (preferred) 
+        // Try ip command first (preferred)
         if let Ok(ip_path) = which::which("ip") {
             match self.try_ip_command_ipv6(&ip_path) {
                 Ok(routes) => return Ok(routes),
@@ -1822,17 +1974,18 @@ impl NetHandle {
             bail!("ip command failed with status: {}", output.status);
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .context("ip command output is not valid UTF-8")?;
+        let stdout =
+            String::from_utf8(output.stdout).context("ip command output is not valid UTF-8")?;
 
         if stdout.trim().is_empty() {
             return Ok(Vec::new());
         }
 
-        let ip_routes: serde_json::Value = serde_json::from_str(&stdout)
-            .context("Failed to parse ip command JSON output")?;
+        let ip_routes: serde_json::Value =
+            serde_json::from_str(&stdout).context("Failed to parse ip command JSON output")?;
 
-        let routes_array = ip_routes.as_array()
+        let routes_array = ip_routes
+            .as_array()
             .ok_or_else(|| anyhow::anyhow!("ip command output is not an array"))?;
 
         let mut normalized_routes = Vec::new();
@@ -1854,17 +2007,18 @@ impl NetHandle {
             bail!("ip -6 command failed with status: {}", output.status);
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .context("ip -6 command output is not valid UTF-8")?;
+        let stdout =
+            String::from_utf8(output.stdout).context("ip -6 command output is not valid UTF-8")?;
 
         if stdout.trim().is_empty() {
             return Ok(Vec::new());
         }
 
-        let ip_routes: serde_json::Value = serde_json::from_str(&stdout)
-            .context("Failed to parse ip -6 command JSON output")?;
+        let ip_routes: serde_json::Value =
+            serde_json::from_str(&stdout).context("Failed to parse ip -6 command JSON output")?;
 
-        let routes_array = ip_routes.as_array()
+        let routes_array = ip_routes
+            .as_array()
             .ok_or_else(|| anyhow::anyhow!("ip -6 command output is not an array"))?;
 
         let mut normalized_routes = Vec::new();
@@ -1878,11 +2032,20 @@ impl NetHandle {
     #[cfg(target_os = "linux")]
     fn normalize_ip_route_ipv4(&self, route: &serde_json::Value) -> Result<serde_json::Value> {
         // Extract fields from ip command JSON output and normalize to our schema
-        let dst = route.get("dst").and_then(|v| v.as_str()).unwrap_or("0.0.0.0/0");
+        let dst = route
+            .get("dst")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0.0.0.0/0");
         let gateway = route.get("gateway").and_then(|v| v.as_str());
-        let dev = route.get("dev").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let dev = route
+            .get("dev")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let metric = route.get("metric").and_then(|v| v.as_u64()).unwrap_or(0);
-        let table = route.get("table").and_then(|v| v.as_str()).unwrap_or("main");
+        let table = route
+            .get("table")
+            .and_then(|v| v.as_str())
+            .unwrap_or("main");
         let protocol = route.get("protocol").and_then(|v| v.as_str());
         let scope = route.get("scope").and_then(|v| v.as_str());
 
@@ -1895,7 +2058,7 @@ impl NetHandle {
             flags.push("link");
         }
         if scope == Some("host") {
-            flags.push("host");  
+            flags.push("host");
         }
 
         Ok(json!({
@@ -1916,9 +2079,15 @@ impl NetHandle {
         // Extract fields from ip -6 command JSON output and normalize to our schema
         let dst = route.get("dst").and_then(|v| v.as_str()).unwrap_or("::/0");
         let gateway = route.get("gateway").and_then(|v| v.as_str());
-        let dev = route.get("dev").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let dev = route
+            .get("dev")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let metric = route.get("metric").and_then(|v| v.as_u64()).unwrap_or(0);
-        let table = route.get("table").and_then(|v| v.as_str()).unwrap_or("main");
+        let table = route
+            .get("table")
+            .and_then(|v| v.as_str())
+            .unwrap_or("main");
         let protocol = route.get("protocol").and_then(|v| v.as_str());
         let scope = route.get("scope").and_then(|v| v.as_str());
 
@@ -1948,16 +2117,16 @@ impl NetHandle {
 
     #[cfg(target_os = "linux")]
     fn parse_proc_net_route(&self) -> Result<Vec<serde_json::Value>> {
+        use std::fs;
         use std::net::Ipv4Addr;
         use std::str::FromStr;
-        use std::fs;
 
-        let contents = fs::read_to_string("/proc/net/route")
-            .context("Failed to read /proc/net/route")?;
+        let contents =
+            fs::read_to_string("/proc/net/route").context("Failed to read /proc/net/route")?;
 
         let mut routes = Vec::new();
         let lines: Vec<&str> = contents.lines().collect();
-        
+
         // Skip header line
         for line in lines.iter().skip(1) {
             let fields: Vec<&str> = line.split_whitespace().collect();
@@ -2026,7 +2195,7 @@ impl NetHandle {
             .context("Failed to read /proc/net/ipv6_route")?;
 
         let mut routes = Vec::new();
-        
+
         for line in contents.lines() {
             let fields: Vec<&str> = line.split_whitespace().collect();
             if fields.len() < 10 {
@@ -2068,7 +2237,7 @@ impl NetHandle {
                 "gateway": gateway,
                 "iface": dev_name,
                 "metric": metric_val,
-                "table": "main", // /proc/net/ipv6_route doesn't provide table info  
+                "table": "main", // /proc/net/ipv6_route doesn't provide table info
                 "protocol": null,
                 "scope": null,
                 "flags": route_flags
@@ -2081,20 +2250,19 @@ impl NetHandle {
     #[cfg(target_os = "linux")]
     fn hex_to_ipv4(&self, hex_str: &str) -> Result<std::net::Ipv4Addr> {
         use std::net::Ipv4Addr;
-        
+
         if hex_str.len() != 8 {
             bail!("Invalid hex string length for IPv4: {}", hex_str);
         }
-        
-        let val = u32::from_str_radix(hex_str, 16)
-            .context("Failed to parse hex string as u32")?;
-        
+
+        let val = u32::from_str_radix(hex_str, 16).context("Failed to parse hex string as u32")?;
+
         // /proc/net/route stores addresses in little-endian format
         let bytes = val.to_le_bytes();
         Ok(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]))
     }
 
-    #[cfg(target_os = "linux")]  
+    #[cfg(target_os = "linux")]
     fn mask_to_prefix_len(&self, mask: std::net::Ipv4Addr) -> u8 {
         let mask_val = u32::from(mask);
         mask_val.leading_ones() as u8
@@ -2103,15 +2271,27 @@ impl NetHandle {
     #[cfg(target_os = "linux")]
     fn parse_route_flags(&self, flags: u32) -> Vec<&'static str> {
         let mut flag_names = Vec::new();
-        
+
         // Linux route flags from include/uapi/linux/route.h
-        if flags & 0x0001 != 0 { flag_names.push("up"); }        // RTF_UP
-        if flags & 0x0002 != 0 { flag_names.push("gateway"); }   // RTF_GATEWAY  
-        if flags & 0x0004 != 0 { flag_names.push("host"); }      // RTF_HOST
-        if flags & 0x0008 != 0 { flag_names.push("reinstate"); } // RTF_REINSTATE
-        if flags & 0x0010 != 0 { flag_names.push("dynamic"); }   // RTF_DYNAMIC
-        if flags & 0x0020 != 0 { flag_names.push("modified"); }  // RTF_MODIFIED
-        
+        if flags & 0x0001 != 0 {
+            flag_names.push("up");
+        } // RTF_UP
+        if flags & 0x0002 != 0 {
+            flag_names.push("gateway");
+        } // RTF_GATEWAY  
+        if flags & 0x0004 != 0 {
+            flag_names.push("host");
+        } // RTF_HOST
+        if flags & 0x0008 != 0 {
+            flag_names.push("reinstate");
+        } // RTF_REINSTATE
+        if flags & 0x0010 != 0 {
+            flag_names.push("dynamic");
+        } // RTF_DYNAMIC
+        if flags & 0x0020 != 0 {
+            flag_names.push("modified");
+        } // RTF_MODIFIED
+
         flag_names
     }
 
@@ -2120,7 +2300,7 @@ impl NetHandle {
         if hex_str.len() != 32 {
             bail!("Invalid hex string length for IPv6: {}", hex_str);
         }
-        
+
         let mut parts = Vec::new();
         for i in 0..8 {
             let start = i * 4;
@@ -2130,19 +2310,25 @@ impl NetHandle {
                 .with_context(|| format!("Failed to parse IPv6 part: {}", part))?;
             parts.push(format!("{:x}", val));
         }
-        
+
         Ok(parts.join(":"))
     }
 
     #[cfg(target_os = "linux")]
     fn parse_ipv6_route_flags(&self, flags: u32) -> Vec<&'static str> {
         let mut flag_names = Vec::new();
-        
+
         // Simplified IPv6 route flags
-        if flags & 0x0001 != 0 { flag_names.push("up"); }
-        if flags & 0x0002 != 0 { flag_names.push("gateway"); }
-        if flags & 0x0004 != 0 { flag_names.push("host"); }
-        
+        if flags & 0x0001 != 0 {
+            flag_names.push("up");
+        }
+        if flags & 0x0002 != 0 {
+            flag_names.push("gateway");
+        }
+        if flags & 0x0004 != 0 {
+            flag_names.push("host");
+        }
+
         flag_names
     }
 }
@@ -2153,18 +2339,21 @@ fn list_interfaces(args: &Args, io: &mut IoStreams) -> Result<Status> {
         Ok(interfaces) => interfaces,
         Err(e) => {
             writeln!(io.stderr, "Failed to get network interfaces: {}", e)?;
-            return Ok(Status::err(50, format!("Failed to get network interfaces: {}", e)));
+            return Ok(Status::err(
+                50,
+                format!("Failed to get network interfaces: {}", e),
+            ));
         }
     };
 
     // Parse filtering arguments
     let up_filter = args.get("up").map(|v| v.to_lowercase() == "true");
     let family_filter = args.get("family").map(|v| v.to_lowercase());
-    
+
     // Validate arguments first
     if let Some(family) = args.get("family") {
         match family.to_lowercase().as_str() {
-            "ipv4" | "ipv6" | "all" => {}, // valid
+            "ipv4" | "ipv6" | "all" => {} // valid
             _ => {
                 let error_json = json!({
                     "error": "Invalid family argument",
@@ -2175,13 +2364,13 @@ fn list_interfaces(args: &Args, io: &mut IoStreams) -> Result<Status> {
             }
         }
     }
-    
+
     if let Some(up) = args.get("up") {
         match up.to_lowercase().as_str() {
-            "true" | "false" => {}, // valid
+            "true" | "false" => {} // valid
             _ => {
                 let error_json = json!({
-                    "error": "Invalid up argument", 
+                    "error": "Invalid up argument",
                     "detail": format!("up must be 'true' or 'false', got '{}'", up)
                 });
                 writeln!(io.stderr, "{}", error_json)?;
@@ -2191,13 +2380,14 @@ fn list_interfaces(args: &Args, io: &mut IoStreams) -> Result<Status> {
     }
 
     // Group interfaces by name and collect their addresses
-    let mut interface_map: std::collections::BTreeMap<String, InterfaceData> = std::collections::BTreeMap::new();
-    
+    let mut interface_map: std::collections::BTreeMap<String, InterfaceData> =
+        std::collections::BTreeMap::new();
+
     for iface in interfaces {
         let name = iface.name.clone();
         let is_loopback = iface.is_loopback();
         let is_up = !is_loopback; // Basic approximation - if-addrs doesn't provide detailed up/down status
-        
+
         // Apply up/down filtering
         if let Some(up_required) = up_filter {
             if up_required && is_loopback {
@@ -2205,11 +2395,11 @@ fn list_interfaces(args: &Args, io: &mut IoStreams) -> Result<Status> {
                 continue;
             }
             if !up_required && !is_loopback {
-                // Skip non-loopback when looking for "down" interfaces  
+                // Skip non-loopback when looking for "down" interfaces
                 continue;
             }
         }
-        
+
         // Apply family filtering on the address
         let addr = iface.ip();
         let (family, addr_str, scope) = match addr {
@@ -2238,29 +2428,31 @@ fn list_interfaces(args: &Args, io: &mut IoStreams) -> Result<Status> {
                 ("ipv6", ipv6.to_string(), scope)
             }
         };
-        
-        let entry = interface_map.entry(name.clone()).or_insert_with(|| InterfaceData {
-            name: name.clone(),
-            index: None, // if-addrs doesn't provide interface index
-            mac: None,   // if-addrs doesn't provide MAC address
-            flags: build_flags(is_up, is_loopback),
-            mtu: None,   // if-addrs doesn't provide MTU
-            addresses: Vec::new(),
-        });
-        
+
+        let entry = interface_map
+            .entry(name.clone())
+            .or_insert_with(|| InterfaceData {
+                name: name.clone(),
+                index: None, // if-addrs doesn't provide interface index
+                mac: None,   // if-addrs doesn't provide MAC address
+                flags: build_flags(is_up, is_loopback),
+                mtu: None, // if-addrs doesn't provide MTU
+                addresses: Vec::new(),
+            });
+
         // Create address entry
         let address_entry = json!({
             "family": family,
             "addr": addr_str,
             "scope": scope
         });
-        
+
         // Note: if-addrs doesn't provide prefix length information
         // We could enhance this with platform-specific code in the future
-        
+
         entry.addresses.push(address_entry);
     }
-    
+
     // Convert to sorted array
     let mut result: Vec<serde_json::Value> = interface_map
         .into_values()
@@ -2275,21 +2467,21 @@ fn list_interfaces(args: &Args, io: &mut IoStreams) -> Result<Status> {
             })
         })
         .collect();
-    
+
     // Sort by name
     result.sort_by(|a, b| {
         let name_a = a["name"].as_str().unwrap_or("");
         let name_b = b["name"].as_str().unwrap_or("");
         name_a.cmp(name_b)
     });
-    
+
     // Output JSON object with interfaces array (as required by spec)
     let json_output = json!({
         "interfaces": result
     });
-    
+
     writeln!(io.stdout, "{}", json_output)?;
-    
+
     Ok(Status::ok())
 }
 
@@ -2300,16 +2492,12 @@ enum AddressFamily {
 }
 
 fn parse_bool_arg(args: &Args, key: &str) -> Option<bool> {
-    args.get(key).and_then(|v| {
-        match v.to_lowercase().as_str() {
-            "true" | "1" | "yes" => Some(true),
-            "false" | "0" | "no" => Some(false),
-            _ => None,
-        }
+    args.get(key).and_then(|v| match v.to_lowercase().as_str() {
+        "true" | "1" | "yes" => Some(true),
+        "false" | "0" | "no" => Some(false),
+        _ => None,
     })
 }
-
-
 
 #[derive(Debug)]
 struct InterfaceData {
@@ -2343,11 +2531,13 @@ fn ipv4_netmask_from_prefix(prefix_len: u8) -> String {
     } else {
         !((1u32 << (32 - prefix_len)) - 1)
     };
-    format!("{}.{}.{}.{}", 
+    format!(
+        "{}.{}.{}.{}",
         (mask >> 24) & 0xff,
         (mask >> 16) & 0xff,
         (mask >> 8) & 0xff,
-        mask & 0xff)
+        mask & 0xff
+    )
 }
 
 // Mock DNS resolver for testing
@@ -2361,10 +2551,10 @@ pub struct MockResolver {
 #[cfg(test)]
 impl MockResolver {
     pub fn new(records: ResolvedRecords) -> Self {
-        Self { 
-            records, 
-            should_error: false, 
-            error_message: String::new() 
+        Self {
+            records,
+            should_error: false,
+            error_message: String::new(),
         }
     }
 
@@ -2379,7 +2569,13 @@ impl MockResolver {
 
 #[cfg(test)]
 impl DnsResolver for MockResolver {
-    fn lookup(&self, _name: &str, _rtype: RecordType, _server: Option<SocketAddr>, _timeout: Duration) -> Result<ResolvedRecords> {
+    fn lookup(
+        &self,
+        _name: &str,
+        _rtype: RecordType,
+        _server: Option<SocketAddr>,
+        _timeout: Duration,
+    ) -> Result<ResolvedRecords> {
         if self.should_error {
             bail!("{}", self.error_message);
         }
@@ -2398,10 +2594,16 @@ mod tests {
 
     fn help_output(url: &str, verb: &str, args: &[(&str, &str)]) -> Option<String> {
         let h = NetHandle::from_url(&Url::parse(url).unwrap()).unwrap();
-        let args: Args = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let args: Args = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
         let mut io = IoStreams::new(&mut i, &mut o, &mut e);
-        let shown = h.check_and_display_help(verb, &args, &mut io).unwrap().is_some();
+        let shown = h
+            .check_and_display_help(verb, &args, &mut io)
+            .unwrap()
+            .is_some();
         shown.then(|| String::from_utf8(o).unwrap())
     }
 
@@ -2419,7 +2621,7 @@ mod tests {
     fn test_dns_invalid_query_name() {
         let mock_resolver = Arc::new(MockResolver::new(vec![]));
         let handle = NetHandle::with_resolver("".into(), mock_resolver);
-        
+
         let args = Args::new();
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
@@ -2430,10 +2632,10 @@ mod tests {
         };
 
         let status = handle.call_dns(&args, &mut io).unwrap();
-        
+
         assert!(!status.ok);
         assert_eq!(status.code, Some(2));
-        
+
         let output = String::from_utf8(stdout_buf).unwrap();
         assert!(output.contains("\"error\":\"invalid_query\""));
     }
@@ -2442,10 +2644,10 @@ mod tests {
     fn test_dns_invalid_record_type() {
         let mock_resolver = Arc::new(MockResolver::new(vec![]));
         let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-        
+
         let mut args = Args::new();
         args.insert("type".into(), "FOO".into());
-        
+
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
         let mut io = IoStreams {
@@ -2455,10 +2657,10 @@ mod tests {
         };
 
         let status = handle.call_dns(&args, &mut io).unwrap();
-        
+
         assert!(!status.ok);
         assert_eq!(status.code, Some(2));
-        
+
         let output = String::from_utf8(stdout_buf).unwrap();
         assert!(output.contains("\"error\":\"invalid_type\""));
         assert!(output.contains("Unknown record type: FOO"));
@@ -2468,10 +2670,10 @@ mod tests {
     fn test_dns_invalid_timeout() {
         let mock_resolver = Arc::new(MockResolver::new(vec![]));
         let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-        
+
         let mut args = Args::new();
         args.insert("timeout_ms".into(), "-1".into());
-        
+
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
         let mut io = IoStreams {
@@ -2481,10 +2683,10 @@ mod tests {
         };
 
         let status = handle.call_dns(&args, &mut io).unwrap();
-        
+
         assert!(!status.ok);
         assert_eq!(status.code, Some(2));
-        
+
         let output = String::from_utf8(stdout_buf).unwrap();
         assert!(output.contains("\"error\":\"invalid_timeout\""));
     }
@@ -2493,10 +2695,10 @@ mod tests {
     fn test_dns_invalid_server() {
         let mock_resolver = Arc::new(MockResolver::new(vec![]));
         let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-        
+
         let mut args = Args::new();
         args.insert("server".into(), "not-an-ip".into());
-        
+
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
         let mut io = IoStreams {
@@ -2506,26 +2708,24 @@ mod tests {
         };
 
         let status = handle.call_dns(&args, &mut io).unwrap();
-        
+
         assert!(!status.ok);
         assert_eq!(status.code, Some(2));
-        
+
         let output = String::from_utf8(stdout_buf).unwrap();
         assert!(output.contains("\"error\":\"invalid_server\""));
     }
 
     #[test]
     fn test_dns_successful_a_record() {
-        let records = vec![
-            ResolvedRecord {
-                name: "example.com.".into(),
-                ttl: 300,
-                kind: ResolvedKind::A("93.184.216.34".into()),
-            }
-        ];
+        let records = vec![ResolvedRecord {
+            name: "example.com.".into(),
+            ttl: 300,
+            kind: ResolvedKind::A("93.184.216.34".into()),
+        }];
         let mock_resolver = Arc::new(MockResolver::new(records));
         let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-        
+
         let args = Args::new();
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
@@ -2536,13 +2736,13 @@ mod tests {
         };
 
         let status = handle.call_dns(&args, &mut io).unwrap();
-        
+
         assert!(status.ok);
         assert_eq!(status.code, Some(0));
-        
+
         let output = String::from_utf8(stdout_buf).unwrap();
         let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(json["query"], "example.com");
         assert_eq!(json["rtype"], "A");
         assert_eq!(json["server"], "system");
@@ -2553,22 +2753,20 @@ mod tests {
 
     #[test]
     fn test_dns_successful_mx_record() {
-        let records = vec![
-            ResolvedRecord {
-                name: "example.com.".into(),
-                ttl: 3600,
-                kind: ResolvedKind::MX {
-                    priority: 10,
-                    exchange: "mail.example.com.".into(),
-                },
-            }
-        ];
+        let records = vec![ResolvedRecord {
+            name: "example.com.".into(),
+            ttl: 3600,
+            kind: ResolvedKind::MX {
+                priority: 10,
+                exchange: "mail.example.com.".into(),
+            },
+        }];
         let mock_resolver = Arc::new(MockResolver::new(records));
         let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-        
+
         let mut args = Args::new();
         args.insert("type".into(), "MX".into());
-        
+
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
         let mut io = IoStreams {
@@ -2578,12 +2776,12 @@ mod tests {
         };
 
         let status = handle.call_dns(&args, &mut io).unwrap();
-        
+
         assert!(status.ok);
-        
+
         let output = String::from_utf8(stdout_buf).unwrap();
         let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(json["rtype"], "MX");
         assert_eq!(json["records"][0]["data"]["priority"], 10);
         assert_eq!(json["records"][0]["data"]["exchange"], "mail.example.com.");
@@ -2591,24 +2789,22 @@ mod tests {
 
     #[test]
     fn test_dns_successful_srv_record() {
-        let records = vec![
-            ResolvedRecord {
-                name: "_sip._tcp.example.com.".into(),
-                ttl: 300,
-                kind: ResolvedKind::SRV {
-                    priority: 10,
-                    weight: 20,
-                    port: 5060,
-                    target: "sip.example.com.".into(),
-                },
-            }
-        ];
+        let records = vec![ResolvedRecord {
+            name: "_sip._tcp.example.com.".into(),
+            ttl: 300,
+            kind: ResolvedKind::SRV {
+                priority: 10,
+                weight: 20,
+                port: 5060,
+                target: "sip.example.com.".into(),
+            },
+        }];
         let mock_resolver = Arc::new(MockResolver::new(records));
         let handle = NetHandle::with_resolver("_sip._tcp.example.com".into(), mock_resolver);
-        
+
         let mut args = Args::new();
         args.insert("type".into(), "SRV".into());
-        
+
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
         let mut io = IoStreams {
@@ -2618,12 +2814,12 @@ mod tests {
         };
 
         let status = handle.call_dns(&args, &mut io).unwrap();
-        
+
         assert!(status.ok);
-        
+
         let output = String::from_utf8(stdout_buf).unwrap();
         let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(json["rtype"], "SRV");
         assert_eq!(json["records"][0]["data"]["priority"], 10);
         assert_eq!(json["records"][0]["data"]["weight"], 20);
@@ -2635,7 +2831,7 @@ mod tests {
     fn test_dns_lookup_failed() {
         let mock_resolver = Arc::new(MockResolver::with_error("NXDOMAIN".into()));
         let handle = NetHandle::with_resolver("nonexistent.example.com".into(), mock_resolver);
-        
+
         let args = Args::new();
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
@@ -2646,34 +2842,32 @@ mod tests {
         };
 
         let status = handle.call_dns(&args, &mut io).unwrap();
-        
+
         assert!(!status.ok);
         assert_eq!(status.code, Some(1));
-        
+
         let output = String::from_utf8(stdout_buf).unwrap();
         let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(json["error"], "lookup_failed");
         assert!(json["detail"].as_str().unwrap().contains("NXDOMAIN"));
     }
 
     #[test]
     fn test_dns_with_custom_server_and_port() {
-        let records = vec![
-            ResolvedRecord {
-                name: "example.com.".into(),
-                ttl: 300,
-                kind: ResolvedKind::A("1.2.3.4".into()),
-            }
-        ];
+        let records = vec![ResolvedRecord {
+            name: "example.com.".into(),
+            ttl: 300,
+            kind: ResolvedKind::A("1.2.3.4".into()),
+        }];
         let mock_resolver = Arc::new(MockResolver::new(records));
         let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-        
+
         let mut args = Args::new();
         args.insert("server".into(), "8.8.8.8".into());
         args.insert("port".into(), "53".into());
         args.insert("timeout_ms".into(), "5000".into());
-        
+
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
         let mut io = IoStreams {
@@ -2683,12 +2877,12 @@ mod tests {
         };
 
         let status = handle.call_dns(&args, &mut io).unwrap();
-        
+
         assert!(status.ok);
-        
+
         let output = String::from_utf8(stdout_buf).unwrap();
         let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        
+
         assert_eq!(json["server"], "8.8.8.8:53");
     }
 
@@ -2698,7 +2892,7 @@ mod tests {
         assert_eq!(RecordType::from_str("aaaa").unwrap(), RecordType::AAAA);
         assert_eq!(RecordType::from_str("MX").unwrap(), RecordType::MX);
         assert_eq!(RecordType::from_str("txt").unwrap(), RecordType::TXT);
-        
+
         assert!(RecordType::from_str("UNKNOWN").is_err());
     }
 

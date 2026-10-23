@@ -1,11 +1,11 @@
 use anyhow::{Context, Result, bail};
 use base64::prelude::*;
-use reqwest::blocking::Client;
 use reqwest::Method;
+use reqwest::blocking::Client;
 use serde_json::json;
 use std::collections::HashMap;
-use std::time::Duration;
 use std::io::Write;
+use std::time::Duration;
 use url::Url;
 
 use crate::core::{
@@ -25,13 +25,20 @@ macro_rules! http_handle_help {
     ($scheme:literal) => {
         HandleHelp {
             description: concat!(
-                "The ", $scheme, " handle sends HTTP requests to web servers and APIs \
+                "The ",
+                $scheme,
+                " handle sends HTTP requests to web servers and APIs \
                 using the reqwest client. Verbs map to request methods, plus helpers \
                 for CORS preflight checks, JSON response envelopes, and header \
                 inspection. The stage URL is the request URL itself, such as ",
-                $scheme, "://api.example.com/v1/users, followed by the verb."
+                $scheme,
+                "://api.example.com/v1/users, followed by the verb."
             ),
-            usage: concat!("resh ", $scheme, "://<host>[:<port>]/<path>.<verb>[(key=value,...)]"),
+            usage: concat!(
+                "resh ",
+                $scheme,
+                "://<host>[:<port>]/<path>.<verb>[(key=value,...)]"
+            ),
             verbs: &[
                 VerbHelp {
                     name: "get",
@@ -39,10 +46,16 @@ macro_rules! http_handle_help {
                         raw bytes, or a JSON envelope with status and headers.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.get [accept=text|json|bytes]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.get [accept=text|json|bytes]\n",
                             "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]"
                         ),
-                        example: concat!("resh ", $scheme, "://api.example.com/v1/users/42.get accept=json"),
+                        example: concat!(
+                            "resh ",
+                            $scheme,
+                            "://api.example.com/v1/users/42.get accept=json"
+                        ),
                         example_output: Some(
                             r#"{
   "body": {
@@ -74,7 +87,9 @@ the response body as is."#,
                         headers as JSON.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.head [query=<k=v&...>]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.head [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [accept=json|text|bytes]"
                         ),
                         example: concat!("resh ", $scheme, "://example.com/index.html.head"),
@@ -88,7 +103,9 @@ the response body as is."#,
   "ok": true,
   "reason": "OK",
   "status": 200,
-  "url": ""#, $scheme, r#"://example.com/index.html"
+  "url": ""#,
+                            $scheme,
+                            r#"://example.com/index.html"
 }
 
 Shown with --json-pretty."#
@@ -101,7 +118,9 @@ Shown with --json-pretty."#
                         response headers as JSON without the body.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.headers [method=<method>]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.headers [method=<method>]\n",
                             "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
                             "  [follow_redirects=true|false]"
                         ),
@@ -118,7 +137,9 @@ Shown with --json-pretty."#
   },
   "status": 200,
   "status_text": "OK",
-  "url": ""#, $scheme, r#"://example.com/"
+  "url": ""#,
+                            $scheme,
+                            r#"://example.com/"
 }
 
 Shown with --json-pretty."#
@@ -131,7 +152,9 @@ Shown with --json-pretty."#
                         status, and response headers as JSON.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.options [headers=<Name:value;...>]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.options [headers=<Name:value;...>]\n",
                             "  [timeout_ms=<ms>] [follow_redirects=true|false]\n",
                             "  [include_body=true|false]"
                         ),
@@ -151,7 +174,9 @@ Shown with --json-pretty."#
   },
   "reason": "No Content",
   "status": 204,
-  "url": ""#, $scheme, r#"://api.example.com/v1/users"
+  "url": ""#,
+                            $scheme,
+                            r#"://api.example.com/v1/users"
 }
 
 Shown with --json-pretty. With include_body=true a non-empty body is
@@ -165,12 +190,15 @@ added as the body field."#
                         parsed Access-Control response headers as JSON.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.preflight [origin=<origin>]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.preflight [origin=<origin>]\n",
                             "  [method=<method>] [request_headers=<name,...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]"
                         ),
                         example: concat!(
-                            "resh ", $scheme,
+                            "resh ",
+                            $scheme,
                             "://api.example.com/users.preflight origin=https://example.org"
                         ),
                         example_output: Some(concat!(
@@ -199,7 +227,9 @@ added as the body field."#
     "access-control-max-age": "600"
   },
   "status": 204,
-  "url": ""#, $scheme, r#"://api.example.com/users"
+  "url": ""#,
+                            $scheme,
+                            r#"://api.example.com/users"
 }
 
 Shown with --json-pretty."#
@@ -212,7 +242,9 @@ Shown with --json-pretty."#
                         with the status, headers, and the body parsed as JSON when possible.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.json [method=<method>] [body=<data>]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.json [method=<method>] [body=<data>]\n",
                             "  [content_type=<type>] [accept=json|text|bytes]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]"
                         ),
@@ -233,7 +265,9 @@ Shown with --json-pretty."#
   },
   "status": 200,
   "status_text": "OK",
-  "url": ""#, $scheme, r#"://api.example.com/v1/users/42"
+  "url": ""#,
+                            $scheme,
+                            r#"://api.example.com/v1/users/42"
 }
 
 Shown with --json-pretty. A body that is not JSON has type text, and
@@ -247,12 +281,15 @@ accept=bytes reports type bytes with a base64 field."#
                         the raw response body.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.post [body=<data>] [body_file=<path>]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.post [body=<data>] [body_file=<path>]\n",
                             "  [content_type=<type>] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]"
                         ),
                         example: concat!(
-                            "resh ", $scheme,
+                            "resh ",
+                            $scheme,
                             "://api.example.com/v1/users.post body='{\"name\":\"alice\"}'"
                         ),
                         example_output: Some(
@@ -268,13 +305,16 @@ The response body is printed exactly as the server sent it."#,
                         the response body as text, raw bytes, or a JSON envelope.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.put [body=<data>] [body_file=<path>]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.put [body=<data>] [body_file=<path>]\n",
                             "  [content_type=<type>] [accept=text|json|bytes] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
                             "  [allow_insecure=true|false]"
                         ),
                         example: concat!(
-                            "resh ", $scheme,
+                            "resh ",
+                            $scheme,
                             "://api.example.com/v1/users/42.put body='{\"name\":\"alice\"}'"
                         ),
                         example_output: Some(
@@ -290,12 +330,15 @@ Shown for the default accept=text, which prints the response body."#,
                         the response body as raw bytes, text, or compact JSON.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.patch [body=<data>] [body_file=<path>]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.patch [body=<data>] [body_file=<path>]\n",
                             "  [content_type=<type>] [accept=bytes|text|json] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>]"
                         ),
                         example: concat!(
-                            "resh ", $scheme,
+                            "resh ",
+                            $scheme,
                             "://api.example.com/v1/users/42.patch body='{\"name\":\"bob\"}'"
                         ),
                         example_output: Some(
@@ -311,12 +354,16 @@ Shown for the default accept=bytes, which prints the response body."#,
                         the response body as text, raw bytes, or pretty JSON.",
                     detail: Some(VerbDetail {
                         usage: concat!(
-                            "resh ", $scheme, "://<host>/<path>.delete [accept=text|json|bytes]\n",
+                            "resh ",
+                            $scheme,
+                            "://<host>/<path>.delete [accept=text|json|bytes]\n",
                             "  [body=<data>] [body_file=<path>] [content_type=<type>]\n",
                             "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]"
                         ),
                         example: concat!(
-                            "resh ", $scheme, "://api.example.com/v1/users/42.delete accept=json"
+                            "resh ",
+                            $scheme,
+                            "://api.example.com/v1/users/42.delete accept=json"
                         ),
                         example_output: Some(
                             r#"{
@@ -346,14 +393,17 @@ pub struct HttpHandle {
 
 impl HttpHandle {
     pub fn from_url(url: &Url) -> Result<Self> {
-        Ok(HttpHandle {
-            url: url.clone(),
-        })
+        Ok(HttpHandle { url: url.clone() })
     }
 
     /// Check if this is a help request (`help`, `--help`, `-h`, or
     /// `--help=<verb>`) and, if so, write the approved help.
-    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+    fn check_and_display_help(
+        &self,
+        verb: &str,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<Option<Status>> {
         let specific = if crate::core::help::HELP_ALIASES.contains(&verb) {
             args.get("verb").map(String::as_str)
         } else if let Some(v) = verb.strip_prefix("--help=") {
@@ -362,7 +412,8 @@ impl HttpHandle {
             return Ok(None);
         };
         let help = self.help().unwrap_or(&HTTP_HELP);
-        let text = crate::core::help::render_legacy(self.url.scheme(), help, self.verbs(), specific);
+        let text =
+            crate::core::help::render_legacy(self.url.scheme(), help, self.verbs(), specific);
         write!(io.stdout, "{}", text)?;
         Ok(Some(Status::ok()))
     }
@@ -380,7 +431,9 @@ impl HttpHandle {
                 if !key.is_empty() {
                     // Filter out hop-by-hop headers
                     let key_lower = key.to_lowercase();
-                    if !["host", "content-length", "connection", "transfer-encoding"].contains(&key_lower.as_str()) {
+                    if !["host", "content-length", "connection", "transfer-encoding"]
+                        .contains(&key_lower.as_str())
+                    {
                         headers.insert(key.to_string(), value.to_string());
                     }
                 }
@@ -415,11 +468,11 @@ impl HttpHandle {
 
     fn merge_query_params(mut url: Url, query_str: &str) -> Result<Url> {
         let new_params = Self::parse_query_params(query_str);
-        
+
         for (key, value) in new_params {
             url.query_pairs_mut().append_pair(&key, &value);
         }
-        
+
         Ok(url)
     }
 
@@ -427,7 +480,7 @@ impl HttpHandle {
         if raw_query.is_empty() {
             return base_url;
         }
-        
+
         // If URL already has a query, append with &, otherwise with ?
         let current_query = base_url.query().unwrap_or("");
         if current_query.is_empty() {
@@ -436,7 +489,7 @@ impl HttpHandle {
             let merged = format!("{}&{}", current_query, raw_query);
             base_url.set_query(Some(&merged));
         }
-        
+
         base_url
     }
 
@@ -445,15 +498,16 @@ impl HttpHandle {
             .get("timeout_ms")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(30_000);
-        
-        let mut builder = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms));
-        
+
+        let mut builder = Client::builder().timeout(Duration::from_millis(timeout_ms));
+
         // Handle allow_insecure for HTTPS
-        if crate::core::lenient::bool_arg(args, "allow_insecure")?.unwrap_or(false) && scheme == "https" {
+        if crate::core::lenient::bool_arg(args, "allow_insecure")?.unwrap_or(false)
+            && scheme == "https"
+        {
             builder = builder.danger_accept_invalid_certs(true);
         }
-        
+
         builder.build().context("Failed to create HTTP client")
     }
 
@@ -486,7 +540,7 @@ impl HttpHandle {
     fn verb_head(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Start with the original URL
         let mut request_url = self.url.clone();
-        
+
         // Merge query parameters if provided
         if let Some(query) = args.get("query") {
             request_url = Self::merge_query_params(request_url, query)
@@ -536,7 +590,7 @@ impl HttpHandle {
                 } else {
                     format!("Network error: {}", e)
                 };
-                
+
                 writeln!(io.stderr, "{}", error_msg)?;
                 return Ok(Status::err(1, error_msg));
             }
@@ -546,14 +600,18 @@ impl HttpHandle {
         let final_url = response.url().to_string();
         let status_code = response.status().as_u16();
         let is_ok = response.status().is_success();
-        let reason = response.status().canonical_reason().unwrap_or("Unknown").to_string();
+        let reason = response
+            .status()
+            .canonical_reason()
+            .unwrap_or("Unknown")
+            .to_string();
 
         // Extract headers (lowercase keys)
         let mut response_headers = HashMap::new();
         for (name, value) in response.headers() {
             let header_name = name.to_string().to_lowercase();
             let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-            
+
             // For multi-valued headers, join with ", "
             if let Some(existing) = response_headers.get(&header_name) {
                 response_headers.insert(header_name, format!("{}, {}", existing, header_value));
@@ -589,12 +647,18 @@ impl HttpHandle {
         // Parse accept mode (default "text")
         let accept = args.get("accept").map(|s| s.as_str()).unwrap_or("text");
         if !["json", "bytes", "text"].contains(&accept) {
-            return Ok(Status::err(1, format!("Invalid accept mode: {}. Must be json, bytes, or text", accept)));
+            return Ok(Status::err(
+                1,
+                format!(
+                    "Invalid accept mode: {}. Must be json, bytes, or text",
+                    accept
+                ),
+            ));
         }
 
         // Start with the original URL
         let mut request_url = self.url.clone();
-        
+
         // Merge query parameters if provided
         if let Some(query) = args.get("query") {
             request_url = Self::merge_query_params(request_url, query)
@@ -634,7 +698,7 @@ impl HttpHandle {
                 } else {
                     format!("Request failed: {}", e)
                 };
-                
+
                 return Ok(Status::err(1, error_msg));
             }
         };
@@ -648,7 +712,7 @@ impl HttpHandle {
         for (name, value) in response.headers() {
             let header_name = name.to_string();
             let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-            
+
             response_headers
                 .entry(header_name)
                 .or_insert_with(Vec::new)
@@ -659,7 +723,10 @@ impl HttpHandle {
         let body_bytes = match response.bytes() {
             Ok(bytes) => bytes.to_vec(),
             Err(e) => {
-                return Ok(Status::err(1, format!("Failed to read response body: {}", e)));
+                return Ok(Status::err(
+                    1,
+                    format!("Failed to read response body: {}", e),
+                ));
             }
         };
 
@@ -667,14 +734,14 @@ impl HttpHandle {
         match accept {
             "json" => {
                 // Create structured JSON response like other HTTP methods
-                
+
                 // Determine if response content is JSON
                 let content_type = response_headers
                     .get("content-type")
                     .and_then(|v| v.first())
                     .map(|s| s.to_lowercase())
                     .unwrap_or_default();
-                
+
                 let body_value = if content_type.contains("application/json") {
                     // Try to parse as JSON
                     match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
@@ -690,7 +757,7 @@ impl HttpHandle {
                     let text = String::from_utf8_lossy(&body_bytes).to_string();
                     serde_json::Value::String(text)
                 };
-                
+
                 let response_json = json!({
                     "status": status_code.as_u16(),
                     "ok": is_success,
@@ -699,7 +766,7 @@ impl HttpHandle {
                     "body": body_value,
                     "body_text": String::from_utf8_lossy(&body_bytes).to_string()
                 });
-                
+
                 write!(io.stdout, "{}", serde_json::to_string(&response_json)?)?;
             }
             "bytes" => {
@@ -727,7 +794,7 @@ impl HttpHandle {
         } else {
             Ok(Status::err(
                 status_code.as_u16() as i32,
-                format!("HTTP {}", status_code)
+                format!("HTTP {}", status_code),
             ))
         }
     }
@@ -742,7 +809,7 @@ impl HttpHandle {
 
         // Start with the original URL
         let mut request_url = self.url.clone();
-        
+
         // Merge query parameters if provided
         if let Some(query) = args.get("query") {
             request_url = Self::merge_query_params(request_url, query)
@@ -808,7 +875,7 @@ impl HttpHandle {
                 } else {
                     format!("Request failed: {}", e)
                 };
-                
+
                 writeln!(io.stderr, "{}", error_msg)?;
                 return Ok(Status::err(1, error_msg));
             }
@@ -837,7 +904,7 @@ impl HttpHandle {
         } else {
             Ok(Status::err(
                 status_code.as_u16() as i32,
-                format!("HTTP {}", status_code.as_u16())
+                format!("HTTP {}", status_code.as_u16()),
             ))
         }
     }
@@ -846,7 +913,7 @@ impl HttpHandle {
     // Implement the put verb for the http handle so that the shell can perform real HTTP PUT requests
     // against arbitrary HTTP/HTTPS URLs, with proper headers, body handling, and structured output.
     // This must be production-ready, use strong error handling, and include tests that pass and compile.
-    
+
     /// Implements the put verb according to spec
     fn verb_put(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Start with the original URL and apply query if provided
@@ -859,7 +926,7 @@ impl HttpHandle {
 
         // Build client with timeout and TLS settings
         let client = Self::build_client(args, self.url.scheme())?;
-        
+
         // Start building the PUT request
         let mut request_builder = client.put(request_url.clone());
 
@@ -875,7 +942,7 @@ impl HttpHandle {
                 request_builder = request_builder.header(&key, &value);
             }
         }
-        
+
         // Handle request body with body_file taking precedence over body
         let request_body: Vec<u8> = if let Some(body_file) = args.get("body_file") {
             if !body_file.is_empty() {
@@ -894,7 +961,7 @@ impl HttpHandle {
         } else {
             Vec::new()
         };
-        
+
         // Set Content-Type header
         if let Some(content_type) = args.get("content_type") {
             if !content_type.is_empty() {
@@ -906,10 +973,11 @@ impl HttpHandle {
                 // For body_file, do not guess content type; leave unset
             } else if args.get("body").is_some() {
                 // For body, default to text/plain
-                request_builder = request_builder.header("Content-Type", "text/plain; charset=utf-8");
+                request_builder =
+                    request_builder.header("Content-Type", "text/plain; charset=utf-8");
             }
         }
-        
+
         // Attach the body to the request
         request_builder = request_builder.body(request_body);
 
@@ -924,7 +992,7 @@ impl HttpHandle {
                 } else {
                     format!("{}", e)
                 };
-                
+
                 writeln!(io.stderr, "{}", error_message)?;
                 return Ok(Status::err(1, error_message));
             }
@@ -933,19 +1001,19 @@ impl HttpHandle {
         // Extract response data
         let status_code = response.status().as_u16();
         let is_ok = response.status().is_success();
-        
+
         // Extract headers as Map<String, Vec<String>>
         let mut response_headers = std::collections::HashMap::new();
         for (name, value) in response.headers() {
             let header_name = name.to_string();
             let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-            
+
             response_headers
                 .entry(header_name)
                 .or_insert_with(Vec::new)
                 .push(header_value);
         }
-        
+
         // Get response body
         let body_bytes = match response.bytes() {
             Ok(bytes) => bytes.to_vec(),
@@ -958,7 +1026,7 @@ impl HttpHandle {
 
         // Parse accept mode (default "text")
         let accept = args.get("accept").map(|s| s.as_str()).unwrap_or("text");
-        
+
         match accept {
             "bytes" => {
                 // Stream raw response body bytes directly to stdout
@@ -979,7 +1047,7 @@ impl HttpHandle {
                     .and_then(|v| v.first())
                     .map(|s| s.to_lowercase())
                     .unwrap_or_default();
-                
+
                 let body_value = if content_type.contains("application/json") {
                     // Try to parse as JSON
                     match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
@@ -995,14 +1063,14 @@ impl HttpHandle {
                     let text = String::from_utf8_lossy(&body_bytes).to_string();
                     serde_json::Value::String(text)
                 };
-                
+
                 let response_json = json!({
                     "status": status_code,
                     "ok": is_ok,
                     "headers": response_headers,
                     "body": body_value
                 });
-                
+
                 write!(io.stdout, "{}", serde_json::to_string(&response_json)?)?;
             }
             _ => {
@@ -1019,10 +1087,7 @@ impl HttpHandle {
         if is_ok {
             Ok(Status::ok())
         } else {
-            Ok(Status::err(
-                status_code as i32,
-                "http error".to_string()
-            ))
+            Ok(Status::err(status_code as i32, "http error".to_string()))
         }
     }
 
@@ -1036,7 +1101,7 @@ impl HttpHandle {
 
         // Start with the original URL
         let mut request_url = self.url.clone();
-        
+
         // Merge query parameters if provided
         if let Some(query) = args.get("query") {
             request_url = Self::merge_query_params(request_url, query)
@@ -1098,7 +1163,7 @@ impl HttpHandle {
                 } else {
                     format!("network error: {}", e)
                 };
-                
+
                 return Ok(Status::err(1, error_msg));
             }
         };
@@ -1106,12 +1171,15 @@ impl HttpHandle {
         // Extract response data
         let status_code = response.status();
         let is_success = status_code.is_success();
-        
+
         // Get response body
         let body_bytes = match response.bytes() {
             Ok(bytes) => bytes.to_vec(),
             Err(e) => {
-                return Ok(Status::err(1, format!("Failed to read response body: {}", e)));
+                return Ok(Status::err(
+                    1,
+                    format!("Failed to read response body: {}", e),
+                ));
             }
         };
 
@@ -1146,7 +1214,7 @@ impl HttpHandle {
         } else {
             Ok(Status::err(
                 status_code.as_u16() as i32,
-                format!("HTTP {}", status_code.as_u16())
+                format!("HTTP {}", status_code.as_u16()),
             ))
         }
     }
@@ -1156,7 +1224,11 @@ impl HttpHandle {
         // Parse accept mode (default "text")
         let accept = args.get("accept").map(|s| s.as_str()).unwrap_or("text");
         if !["json", "text", "bytes"].contains(&accept) {
-            writeln!(io.stderr, "unsupported accept value: {}, defaulting to text", accept)?;
+            writeln!(
+                io.stderr,
+                "unsupported accept value: {}, defaulting to text",
+                accept
+            )?;
             // Fall back to text instead of erroring out
         }
 
@@ -1226,7 +1298,8 @@ impl HttpHandle {
                 }
             } else {
                 // Default Content-Type if body is present and content_type is missing
-                request_builder = request_builder.header("Content-Type", "application/octet-stream");
+                request_builder =
+                    request_builder.header("Content-Type", "application/octet-stream");
             }
         }
 
@@ -1246,7 +1319,7 @@ impl HttpHandle {
                 } else {
                     format!("http delete error: {}", e)
                 };
-                
+
                 writeln!(io.stderr, "{}", error_message)?;
                 return Ok(Status::err(2, error_message));
             }
@@ -1326,14 +1399,9 @@ impl HttpHandle {
         }
     }
 
-    fn execute_request(
-        &self,
-        verb: &str,
-        args: &Args,
-        io: &mut IoStreams,
-    ) -> Result<Status> {
+    fn execute_request(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let method = Self::verb_to_method(verb)?;
-        
+
         // Parse timeout
         let timeout_ms = args
             .get("timeout_ms")
@@ -1342,7 +1410,7 @@ impl HttpHandle {
 
         // Start with the original URL
         let mut request_url = self.url.clone();
-        
+
         // Merge query parameters if provided
         if let Some(query) = args.get("query") {
             request_url = Self::merge_query_params(request_url, query)
@@ -1393,9 +1461,9 @@ impl HttpHandle {
                     "method": method.to_string(),
                     "error": format!("Request failed: {}", e)
                 });
-                
+
                 write!(io.stdout, "{}", error_json)?;
-                
+
                 let code = if e.is_timeout() { 124 } else { 1 };
                 return Ok(Status::err(code, format!("Request failed: {}", e)));
             }
@@ -1404,13 +1472,13 @@ impl HttpHandle {
         // Extract response data
         let status_code = response.status().as_u16();
         let is_ok = response.status().is_success();
-        
+
         // Extract headers
         let mut response_headers = HashMap::new();
         for (name, value) in response.headers() {
             let header_name = name.to_string();
             let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-            
+
             response_headers
                 .entry(header_name)
                 .or_insert_with(Vec::new)
@@ -1426,9 +1494,12 @@ impl HttpHandle {
                     "method": method.to_string(),
                     "error": format!("Failed to read response body: {}", e)
                 });
-                
+
                 write!(io.stdout, "{}", error_json)?;
-                return Ok(Status::err(1, format!("Failed to read response body: {}", e)));
+                return Ok(Status::err(
+                    1,
+                    format!("Failed to read response body: {}", e),
+                ));
             }
         };
 
@@ -1440,9 +1511,9 @@ impl HttpHandle {
                 Ok(text) => json!(text),
                 Err(_) => json!(null),
             };
-            
+
             let body_base64_value = json!(BASE64_STANDARD.encode(&body_bytes));
-            
+
             (body_text_value, body_base64_value)
         };
 
@@ -1468,14 +1539,15 @@ impl HttpHandle {
     fn verb_options(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Parse timeout_ms (default 10 seconds)
         let timeout_ms = match args.get("timeout_ms") {
-            Some(timeout_str) => {
-                match timeout_str.parse::<u64>() {
-                    Ok(ms) => ms,
-                    Err(_) => {
-                        return Ok(Status::err(1, format!("invalid timeout_ms: {}", timeout_str)));
-                    }
+            Some(timeout_str) => match timeout_str.parse::<u64>() {
+                Ok(ms) => ms,
+                Err(_) => {
+                    return Ok(Status::err(
+                        1,
+                        format!("invalid timeout_ms: {}", timeout_str),
+                    ));
                 }
-            }
+            },
             None => 10_000,
         };
 
@@ -1492,13 +1564,12 @@ impl HttpHandle {
         };
 
         // Build client with timeout and redirect policy
-        let mut client_builder = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms));
-        
+        let mut client_builder = Client::builder().timeout(Duration::from_millis(timeout_ms));
+
         if !follow_redirects {
             client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
         }
-        
+
         let client = client_builder
             .build()
             .context("Failed to create HTTP client")?;
@@ -1538,14 +1609,18 @@ impl HttpHandle {
         // Extract response data
         let final_url = response.url().to_string();
         let status_code = response.status().as_u16();
-        let reason = response.status().canonical_reason().unwrap_or("").to_string();
+        let reason = response
+            .status()
+            .canonical_reason()
+            .unwrap_or("")
+            .to_string();
 
         // Extract headers (lowercase keys)
         let mut response_headers = HashMap::new();
         for (name, value) in response.headers() {
             let header_name = name.to_string().to_lowercase();
             let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-            
+
             // For multi-valued headers, join with ", "
             if let Some(existing) = response_headers.get(&header_name) {
                 response_headers.insert(header_name, format!("{}, {}", existing, header_value));
@@ -1568,7 +1643,7 @@ impl HttpHandle {
         // Read response body
         let body_bytes = response.bytes().unwrap_or_default();
         let has_body = !body_bytes.is_empty();
-        
+
         // Build JSON response
         let mut response_json = json!({
             "url": final_url,
@@ -1597,7 +1672,7 @@ impl HttpHandle {
         } else {
             Ok(Status::err(
                 status_code as i32,
-                format!("HTTP {}", status_code)
+                format!("HTTP {}", status_code),
             ))
         }
     }
@@ -1631,7 +1706,8 @@ impl HttpHandle {
         if let Some(request_headers) = args.get("request_headers") {
             let normalized_headers = Self::parse_request_headers_arg(request_headers);
             if !normalized_headers.is_empty() {
-                request_builder = request_builder.header("Access-Control-Request-Headers", &normalized_headers);
+                request_builder =
+                    request_builder.header("Access-Control-Request-Headers", &normalized_headers);
             }
         }
 
@@ -1669,7 +1745,7 @@ impl HttpHandle {
                     "cors": null,
                     "raw_headers": {}
                 });
-                
+
                 write!(io.stdout, "{}", serde_json::to_string(&error_json)?)?;
                 return Ok(Status::err(1, format!("Request failed: {}", e)));
             }
@@ -1683,18 +1759,21 @@ impl HttpHandle {
         // Extract headers (case-insensitive lookup for CORS headers)
         let mut raw_headers = HashMap::new();
         let mut cors_headers = HashMap::new();
-        
+
         for (name, value) in response.headers() {
             let header_name = name.to_string().to_lowercase();
             let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-            
+
             // Store in raw_headers with lowercase key
             if let Some(existing) = raw_headers.get(&header_name) {
-                raw_headers.insert(header_name.clone(), format!("{}, {}", existing, header_value));
+                raw_headers.insert(
+                    header_name.clone(),
+                    format!("{}, {}", existing, header_value),
+                );
             } else {
                 raw_headers.insert(header_name.clone(), header_value.clone());
             }
-            
+
             // Extract CORS-specific headers
             match header_name.as_str() {
                 "access-control-allow-origin" => {
@@ -1759,7 +1838,7 @@ impl HttpHandle {
         } else {
             Ok(Status::err(
                 status_code as i32,
-                format!("HTTP {}", status_code)
+                format!("HTTP {}", status_code),
             ))
         }
     }
@@ -1796,7 +1875,7 @@ impl HttpHandle {
         // Parse method argument (default to "GET")
         let method_str = args.get("method").map(|s| s.as_str()).unwrap_or("GET");
         let method_upper = method_str.to_uppercase();
-        
+
         // Validate method
         let method = match method_upper.as_str() {
             "GET" => reqwest::Method::GET,
@@ -1807,7 +1886,10 @@ impl HttpHandle {
             "HEAD" => reqwest::Method::HEAD,
             "OPTIONS" => reqwest::Method::OPTIONS,
             _ => {
-                return Ok(Status::err(1, format!("Unsupported method: {}", method_str)));
+                return Ok(Status::err(
+                    1,
+                    format!("Unsupported method: {}", method_str),
+                ));
             }
         };
 
@@ -1820,7 +1902,13 @@ impl HttpHandle {
         // Parse accept mode (default "json")
         let accept_mode = args.get("accept").map(|s| s.as_str()).unwrap_or("json");
         if !["json", "text", "bytes"].contains(&accept_mode) {
-            return Ok(Status::err(1, format!("Invalid accept mode: {}. Must be json, text, or bytes", accept_mode)));
+            return Ok(Status::err(
+                1,
+                format!(
+                    "Invalid accept mode: {}. Must be json, text, or bytes",
+                    accept_mode
+                ),
+            ));
         }
 
         // Parse body and content_type
@@ -1861,7 +1949,15 @@ impl HttpHandle {
         }
 
         // Add body if provided and method supports it
-        if !body.is_empty() && matches!(method, reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH | reqwest::Method::DELETE) {
+        if !body.is_empty()
+            && matches!(
+                method,
+                reqwest::Method::POST
+                    | reqwest::Method::PUT
+                    | reqwest::Method::PATCH
+                    | reqwest::Method::DELETE
+            )
+        {
             request_builder = request_builder.body(body);
         }
 
@@ -1873,7 +1969,7 @@ impl HttpHandle {
                 let error_msg = if e.is_timeout() {
                     "Request timed out"
                 } else if e.is_connect() {
-                    "Connection failed" 
+                    "Connection failed"
                 } else {
                     "Network error"
                 };
@@ -1898,14 +1994,18 @@ impl HttpHandle {
         // Extract response details
         let final_url = response.url().to_string();
         let status_code = response.status().as_u16();
-        let status_text = response.status().canonical_reason().unwrap_or("").to_string();
+        let status_text = response
+            .status()
+            .canonical_reason()
+            .unwrap_or("")
+            .to_string();
 
         // Extract headers - convert to lowercase keys with arrays of values
         let mut headers = std::collections::HashMap::<String, Vec<String>>::new();
         for (name, value) in response.headers() {
             let header_name = name.to_string().to_lowercase();
             let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-            
+
             headers
                 .entry(header_name)
                 .or_insert_with(Vec::new)
@@ -1929,7 +2029,10 @@ impl HttpHandle {
                 });
 
                 write!(io.stdout, "{}", serde_json::to_string(&error_envelope)?)?;
-                return Ok(Status::err(1, format!("Failed to read response body: {}", e)));
+                return Ok(Status::err(
+                    1,
+                    format!("Failed to read response body: {}", e),
+                ));
             }
         };
 
@@ -1946,7 +2049,7 @@ impl HttpHandle {
                         // Fallback to text for invalid JSON
                         let text_value = String::from_utf8_lossy(&body_bytes).to_string();
                         json!({
-                            "type": "text", 
+                            "type": "text",
                             "value": text_value
                         })
                     }
@@ -1991,7 +2094,7 @@ impl HttpHandle {
         // Parse method argument (default to "GET")
         let method_str = args.get("method").map(|s| s.as_str()).unwrap_or("GET");
         let method_upper = method_str.to_uppercase();
-        
+
         // Validate method
         let method = match method_upper.as_str() {
             "GET" => Method::GET,
@@ -2010,7 +2113,10 @@ impl HttpHandle {
                     }
                 });
                 write!(io.stdout, "{}", serde_json::to_string(&error_json)?)?;
-                return Ok(Status::err(2, format!("Unsupported method: {}", method_str)));
+                return Ok(Status::err(
+                    2,
+                    format!("Unsupported method: {}", method_str),
+                ));
             }
         };
 
@@ -2028,7 +2134,7 @@ impl HttpHandle {
 
         // Start with the original URL
         let mut request_url = self.url.clone();
-        
+
         // Merge query parameters if provided
         if let Some(query) = args.get("query") {
             request_url = Self::apply_query(request_url, query);
@@ -2077,7 +2183,7 @@ impl HttpHandle {
                 let (kind, message) = if e.is_timeout() {
                     ("timeout", "Request timed out".to_string())
                 } else if e.is_connect() {
-                    ("network", "Connection failed".to_string()) 
+                    ("network", "Connection failed".to_string())
                 } else if e.is_request() {
                     ("invalid_url", "Invalid URL or request".to_string())
                 } else {
@@ -2100,14 +2206,18 @@ impl HttpHandle {
         // Extract response details
         let final_url = response.url().to_string();
         let status_code = response.status().as_u16();
-        let status_text = response.status().canonical_reason().unwrap_or("").to_string();
+        let status_text = response
+            .status()
+            .canonical_reason()
+            .unwrap_or("")
+            .to_string();
 
         // Extract headers - convert to lowercase keys with arrays of values
         let mut headers = std::collections::HashMap::<String, Vec<String>>::new();
         for (name, value) in response.headers() {
             let header_name = name.to_string().to_lowercase();
             let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-            
+
             headers
                 .entry(header_name)
                 .or_insert_with(Vec::new)
@@ -2133,7 +2243,21 @@ impl HttpHandle {
 
 impl Handle for HttpHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["get", "head", "post", "put", "patch", "delete", "options", "preflight", "json", "headers", "help", "--help", "-h"]
+        &[
+            "get",
+            "head",
+            "post",
+            "put",
+            "patch",
+            "delete",
+            "options",
+            "preflight",
+            "json",
+            "headers",
+            "help",
+            "--help",
+            "-h",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -2148,7 +2272,7 @@ impl Handle for HttpHandle {
         if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
-        
+
         match verb {
             "get" => self.verb_get(args, io),
             "head" => self.verb_head(args, io),
@@ -2170,10 +2294,16 @@ mod help_tests {
 
     fn help_output(url: &str, verb: &str, args: &[(&str, &str)]) -> Option<String> {
         let h = HttpHandle::from_url(&Url::parse(url).unwrap()).unwrap();
-        let args: Args = args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let args: Args = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
         let mut io = IoStreams::new(&mut i, &mut o, &mut e);
-        let shown = h.check_and_display_help(verb, &args, &mut io).unwrap().is_some();
+        let shown = h
+            .check_and_display_help(verb, &args, &mut io)
+            .unwrap()
+            .is_some();
         shown.then(|| String::from_utf8(o).unwrap())
     }
 
@@ -2204,17 +2334,24 @@ mod allow_insecure_tests {
     use super::*;
 
     fn args(pairs: &[(&str, &str)]) -> Args {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn allow_insecure_parses_strictly() {
         for v in ["true", "yes", "1", "on", "false", "no", "0", "off"] {
-            assert!(HttpHandle::build_client(&args(&[("allow_insecure", v)]), "https").is_ok(), "{v}");
+            assert!(
+                HttpHandle::build_client(&args(&[("allow_insecure", v)]), "https").is_ok(),
+                "{v}"
+            );
         }
         assert!(HttpHandle::build_client(&args(&[]), "https").is_ok());
         for bad in ["maybe", "", "2", "insecure"] {
-            let err = HttpHandle::build_client(&args(&[("allow_insecure", bad)]), "https").unwrap_err();
+            let err =
+                HttpHandle::build_client(&args(&[("allow_insecure", bad)]), "https").unwrap_err();
             assert!(err.to_string().contains("allow_insecure"), "{err}");
         }
     }

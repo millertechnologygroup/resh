@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -634,15 +634,18 @@ pub struct FirewallHandle {
 
 impl FirewallHandle {
     pub fn from_url(url: &Url) -> Result<Self> {
-        Ok(FirewallHandle {
-            _url: url.clone(),
-        })
+        Ok(FirewallHandle { _url: url.clone() })
     }
 
     /// Handles the in-URL help forms (`firewall://--help`, `firewall://-h`,
     /// `firewall://--help=VERB`, and a `help` verb with optional `verb=`),
     /// rendering the same text as `resh firewall [<verb>] --help`.
-    fn check_and_display_help(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Option<Status>> {
+    fn check_and_display_help(
+        &self,
+        verb: &str,
+        args: &Args,
+        io: &mut IoStreams,
+    ) -> Result<Option<Status>> {
         let requested: Option<String> = if verb == "help" || crate::core::help::is_help_flag(verb) {
             Some(args.get("verb").cloned().unwrap_or_default())
         } else {
@@ -651,8 +654,13 @@ impl FirewallHandle {
         let Some(requested) = requested else {
             return Ok(None);
         };
-        let verb_opt = if requested.is_empty() { None } else { Some(requested.as_str()) };
-        let text = crate::core::help::render_legacy("firewall", &FIREWALL_HELP, self.verbs(), verb_opt);
+        let verb_opt = if requested.is_empty() {
+            None
+        } else {
+            Some(requested.as_str())
+        };
+        let text =
+            crate::core::help::render_legacy("firewall", &FIREWALL_HELP, self.verbs(), verb_opt);
         write!(io.stdout, "{}", text)?;
         Ok(Some(Status::ok()))
     }
@@ -660,7 +668,16 @@ impl FirewallHandle {
 
 impl Handle for FirewallHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["rules.list", "rules.add", "rules.delete", "rules.save", "rules.reload", "status", "enable", "disable"]
+        &[
+            "rules.list",
+            "rules.add",
+            "rules.delete",
+            "rules.save",
+            "rules.reload",
+            "status",
+            "enable",
+            "disable",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -699,7 +716,7 @@ impl Handle for FirewallHandle {
 pub enum FirewallBackend {
     Auto,
     Iptables,
-    Nftables, 
+    Nftables,
     Ufw,
     Firewalld,
 }
@@ -712,7 +729,10 @@ impl FirewallBackend {
             "nftables" => Ok(Self::Nftables),
             "ufw" => Ok(Self::Ufw),
             "firewalld" => Ok(Self::Firewalld),
-            _ => bail!("Invalid backend: {}. Must be 'auto', 'iptables', 'nftables', 'ufw', or 'firewalld'", s),
+            _ => bail!(
+                "Invalid backend: {}. Must be 'auto', 'iptables', 'nftables', 'ufw', or 'firewalld'",
+                s
+            ),
         }
     }
 
@@ -747,7 +767,7 @@ impl IpFamily {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Any => "any",
-            Self::Ipv4 => "ipv4", 
+            Self::Ipv4 => "ipv4",
             Self::Ipv6 => "ipv6",
         }
     }
@@ -782,7 +802,10 @@ impl RulesSaveFormat {
             "normalized_json" => Ok(Self::NormalizedJson),
             "backend_native" => Ok(Self::BackendNative),
             "both" => Ok(Self::Both),
-            _ => bail!("Invalid format: {}. Must be 'normalized_json', 'backend_native', or 'both'", s),
+            _ => bail!(
+                "Invalid format: {}. Must be 'normalized_json', 'backend_native', or 'both'",
+                s
+            ),
         }
     }
 
@@ -831,7 +854,10 @@ impl RulesReloadSourceFormat {
             "auto" => Ok(Self::Auto),
             "backend_native" => Ok(Self::BackendNative),
             "normalized_json" => Ok(Self::NormalizedJson),
-            _ => bail!("Invalid source format: {}. Must be 'auto', 'backend_native', or 'normalized_json'", s),
+            _ => bail!(
+                "Invalid source format: {}. Must be 'auto', 'backend_native', or 'normalized_json'",
+                s
+            ),
         }
     }
 
@@ -870,14 +896,17 @@ impl StatusBackend {
             "nftables" => Ok(Self::Nftables),
             "ufw" => Ok(Self::Ufw),
             "firewalld" => Ok(Self::Firewalld),
-            _ => Err(FirewallError::StatusInvalidBackend { backend: s.to_string() }.into()),
+            _ => Err(FirewallError::StatusInvalidBackend {
+                backend: s.to_string(),
+            }
+            .into()),
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::All => "all", 
+            Self::All => "all",
             Self::Iptables => "iptables",
             Self::Nftables => "nftables",
             Self::Ufw => "ufw",
@@ -899,7 +928,10 @@ impl StatusFamily {
             "any" => Ok(Self::Any),
             "ipv4" => Ok(Self::Ipv4),
             "ipv6" => Ok(Self::Ipv6),
-            _ => Err(FirewallError::StatusInvalidFamily { family: s.to_string() }.into()),
+            _ => Err(FirewallError::StatusInvalidFamily {
+                family: s.to_string(),
+            }
+            .into()),
         }
     }
 
@@ -951,7 +983,10 @@ impl StatusResponse {
         let output_format = options.output_format.clone();
         Self {
             ok: true,
-            timestamp_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64,
+            timestamp_unix_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64,
             query: options,
             backends,
             error: None,
@@ -964,7 +999,10 @@ impl StatusResponse {
         let output_format = options.output_format.clone();
         Self {
             ok: false,
-            timestamp_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64,
+            timestamp_unix_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64,
             query: options,
             backends: Vec::new(),
             error: Some(error),
@@ -1014,7 +1052,8 @@ impl StatusResponse {
                 let error_json = error.to_json();
                 if let Some(code) = error_json.get("code") {
                     if let Some(message) = error_json.get("message") {
-                        output.push_str(&format!("  [{}] {}\n",
+                        output.push_str(&format!(
+                            "  [{}] {}\n",
                             code.as_str().unwrap_or("unknown"),
                             message.as_str().unwrap_or("Unknown error")
                         ));
@@ -1026,10 +1065,19 @@ impl StatusResponse {
 
         for backend in &self.backends {
             output.push_str(&format!("Backend: {}\n", backend.backend));
-            output.push_str(&format!("  Available : {}\n", if backend.available { "yes" } else { "no" }));
-            output.push_str(&format!("  Active    : {}\n", if backend.active { "yes" } else { "no" }));
-            output.push_str(&format!("  Enabled   : {}\n", if backend.enabled { "yes" } else { "no" }));
-            
+            output.push_str(&format!(
+                "  Available : {}\n",
+                if backend.available { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Active    : {}\n",
+                if backend.active { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Enabled   : {}\n",
+                if backend.enabled { "yes" } else { "no" }
+            ));
+
             if let Some(policy) = &backend.default_policy {
                 output.push_str(&format!("  Default   : {}\n", policy));
             } else {
@@ -1062,7 +1110,7 @@ impl StatusResponse {
                     output.push_str(&format!("    - {}\n", warning));
                 }
             }
-            
+
             output.push('\n');
         }
 
@@ -1118,7 +1166,11 @@ pub enum FirewallError {
     BackendUnavailable { backend: String },
 
     #[error("Command '{command}' failed with exit code {code}: {stderr}")]
-    CommandFailed { command: String, code: i32, stderr: String },
+    CommandFailed {
+        command: String,
+        code: i32,
+        stderr: String,
+    },
 
     #[error("Failed to parse output from '{backend}': {message}")]
     ParseError { backend: String, message: String },
@@ -1160,7 +1212,11 @@ pub enum FirewallError {
     RuleIdUnavailable { message: String },
 
     #[error("Option '{option}' is not supported for backend '{backend}': {message}")]
-    UnsupportedOption { option: String, backend: String, message: String },
+    UnsupportedOption {
+        option: String,
+        backend: String,
+        message: String,
+    },
 
     #[error("Address {address} does not belong to family {family}")]
     FamilyMismatch { family: String, address: String },
@@ -1307,7 +1363,7 @@ impl FirewallError {
             Self::UnsupportedOption { .. } => "firewall.unsupported_option",
             Self::FamilyMismatch { .. } => "firewall.rules_add_family_mismatch",
             Self::InvalidSaveFormat { .. } => "firewall.rules_save_invalid_format",
-            Self::InvalidCompress { .. } => "firewall.rules_save_invalid_compress", 
+            Self::InvalidCompress { .. } => "firewall.rules_save_invalid_compress",
             Self::MissingPath => "firewall.rules_save_missing_path",
             Self::PathExists { .. } => "firewall.rules_save_path_exists",
             Self::MissingDirectory { .. } => "firewall.rules_save_missing_directory",
@@ -1318,10 +1374,14 @@ impl FirewallError {
             Self::InvalidReloadSourceFormat { .. } => "firewall.rules_reload_invalid_source_format",
             Self::ReloadPathRequired { .. } => "firewall.rules_reload_path_required",
             Self::ReloadPathNotFound { .. } => "firewall.rules_reload_path_not_found",
-            Self::ReloadFileModeNotSupported { .. } => "firewall.rules_reload_file_mode_not_supported",
+            Self::ReloadFileModeNotSupported { .. } => {
+                "firewall.rules_reload_file_mode_not_supported"
+            }
             Self::ReloadFailed { .. } => "firewall.rules_reload_command_failed",
             Self::ReloadFormatMismatch { .. } => "firewall.rules_reload_format_mismatch",
-            Self::ReloadBackendNativeMissing { .. } => "firewall.rules_reload_backend_native_missing",
+            Self::ReloadBackendNativeMissing { .. } => {
+                "firewall.rules_reload_backend_native_missing"
+            }
             Self::ReloadTimeout { .. } => "firewall.rules_reload_timeout",
 
             // Disable operation error codes
@@ -1464,7 +1524,7 @@ impl FirewallError {
 }
 
 // ===========================================================================
-// Core Data Structures  
+// Core Data Structures
 // ===========================================================================
 
 #[derive(Clone, Debug)]
@@ -1472,7 +1532,7 @@ pub struct RulesListOptions {
     pub backend: FirewallBackend,
     pub family: IpFamily,
 
-    // Filters 
+    // Filters
     pub table: Option<String>,
     pub chain: Option<String>,
     pub direction: Option<String>,
@@ -1590,7 +1650,7 @@ pub struct RulesSaveResponse {
 
     pub error: Option<Value>,
     pub warnings: Vec<String>,
-    
+
     #[serde(skip)]
     pub format_output: OutputFormat,
 }
@@ -1636,15 +1696,24 @@ impl RulesSaveResponse {
         if self.ok {
             if let Some(summary) = &self.summary {
                 output.push_str(&format!("Status: success\n"));
-                output.push_str(&format!("Path: {}\n", summary.path.as_deref().unwrap_or("(dry run)")));
-                output.push_str(&format!("Compressed: {}\n", if summary.compressed { "yes" } else { "no" }));
+                output.push_str(&format!(
+                    "Path: {}\n",
+                    summary.path.as_deref().unwrap_or("(dry run)")
+                ));
+                output.push_str(&format!(
+                    "Compressed: {}\n",
+                    if summary.compressed { "yes" } else { "no" }
+                ));
                 output.push_str(&format!("Bytes Written: {}\n\n", summary.bytes_written));
 
                 output.push_str("Backends:\n");
                 for backend in &summary.backends {
                     output.push_str(&format!("  - {} ({})\n", backend.backend, backend.family));
                     output.push_str(&format!("      Rules     : {}\n", backend.rules_count));
-                    output.push_str(&format!("      Native    : {}\n", if backend.has_native { "yes" } else { "no" }));
+                    output.push_str(&format!(
+                        "      Native    : {}\n",
+                        if backend.has_native { "yes" } else { "no" }
+                    ));
                 }
             }
         } else if let Some(error) = &self.error {
@@ -1653,9 +1722,11 @@ impl RulesSaveResponse {
                 if let Some(error_details) = error_obj.get("error") {
                     if let Some(code) = error_details.get("code") {
                         if let Some(message) = error_details.get("message") {
-                            output.push_str(&format!("  [{}] {}\n", 
-                                code.as_str().unwrap_or("unknown"), 
-                                message.as_str().unwrap_or("unknown error")));
+                            output.push_str(&format!(
+                                "  [{}] {}\n",
+                                code.as_str().unwrap_or("unknown"),
+                                message.as_str().unwrap_or("unknown error")
+                            ));
                         }
                     }
                 }
@@ -1837,23 +1908,49 @@ impl EnableResponse {
 
         if let Some(prev) = &self.previous_state {
             output.push_str("Previous State:\n");
-            output.push_str(&format!("  Available : {}\n", if prev.available { "yes" } else { "no" }));
-            output.push_str(&format!("  Active    : {}\n", if prev.active { "yes" } else { "no" }));
-            output.push_str(&format!("  Enabled   : {}\n\n", if prev.enabled { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "  Available : {}\n",
+                if prev.available { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Active    : {}\n",
+                if prev.active { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Enabled   : {}\n\n",
+                if prev.enabled { "yes" } else { "no" }
+            ));
         }
 
         if let Some(current) = &self.current_state {
             output.push_str("Current State:\n");
-            output.push_str(&format!("  Available : {}\n", if current.available { "yes" } else { "no" }));
-            output.push_str(&format!("  Active    : {}\n", if current.active { "yes" } else { "no" }));
-            output.push_str(&format!("  Enabled   : {}\n\n", if current.enabled { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "  Available : {}\n",
+                if current.available { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Active    : {}\n",
+                if current.active { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Enabled   : {}\n\n",
+                if current.enabled { "yes" } else { "no" }
+            ));
         }
 
         if let Some(result) = &self.result {
-            output.push_str(&format!("Changed         : {}\n", if result.changed { "yes" } else { "no" }));
-            output.push_str(&format!("Already Enabled : {}\n", if result.already_enabled { "yes" } else { "no" }));
-            output.push_str(&format!("Backup Path     : {}\n\n", 
-                result.backup_path.as_deref().unwrap_or("(none)")));
+            output.push_str(&format!(
+                "Changed         : {}\n",
+                if result.changed { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "Already Enabled : {}\n",
+                if result.already_enabled { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "Backup Path     : {}\n\n",
+                result.backup_path.as_deref().unwrap_or("(none)")
+            ));
         }
 
         if !self.actions.is_empty() {
@@ -1871,9 +1968,11 @@ impl EnableResponse {
                     if let Some(error_details) = error_obj.get("error") {
                         if let Some(code) = error_details.get("code") {
                             if let Some(message) = error_details.get("message") {
-                                output.push_str(&format!("  [{}] {}\n", 
-                                    code.as_str().unwrap_or("unknown"), 
-                                    message.as_str().unwrap_or("unknown error")));
+                                output.push_str(&format!(
+                                    "  [{}] {}\n",
+                                    code.as_str().unwrap_or("unknown"),
+                                    message.as_str().unwrap_or("unknown error")
+                                ));
                             }
                         }
                     }
@@ -1893,7 +1992,7 @@ impl EnableResponse {
 }
 
 // ===========================================================================
-// Disable Data Structures  
+// Disable Data Structures
 // ===========================================================================
 
 #[derive(Clone, Debug)]
@@ -2012,31 +2111,56 @@ impl DisableResponse {
 
         if let Some(prev) = &self.previous_state {
             output.push_str("Previous State:\n");
-            output.push_str(&format!("  Available : {}\n", if prev.available { "yes" } else { "no" }));
-            output.push_str(&format!("  Active    : {}\n", if prev.active { "yes" } else { "no" }));
-            output.push_str(&format!("  Enabled   : {}\n\n", if prev.enabled { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "  Available : {}\n",
+                if prev.available { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Active    : {}\n",
+                if prev.active { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Enabled   : {}\n\n",
+                if prev.enabled { "yes" } else { "no" }
+            ));
         }
 
         if let Some(current) = &self.current_state {
             output.push_str("Current State:\n");
-            output.push_str(&format!("  Available : {}\n", if current.available { "yes" } else { "no" }));
-            output.push_str(&format!("  Active    : {}\n", if current.active { "yes" } else { "no" }));
-            output.push_str(&format!("  Enabled   : {}\n\n", 
-                if current.enabled { 
-                    "yes" 
-                } else { 
+            output.push_str(&format!(
+                "  Available : {}\n",
+                if current.available { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Active    : {}\n",
+                if current.active { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "  Enabled   : {}\n\n",
+                if current.enabled {
+                    "yes"
+                } else {
                     match self.backend.as_str() {
                         "nftables" => "false (no nftables ruleset loaded)",
-                        _ => "no"
+                        _ => "no",
                     }
-                }));
+                }
+            ));
         }
 
         if let Some(result) = &self.result {
-            output.push_str(&format!("Changed          : {}\n", if result.changed { "yes" } else { "no" }));
-            output.push_str(&format!("Already Disabled : {}\n", if result.already_disabled { "yes" } else { "no" }));
-            output.push_str(&format!("Backup Path      : {}\n\n", 
-                result.backup_path.as_deref().unwrap_or("(none)")));
+            output.push_str(&format!(
+                "Changed          : {}\n",
+                if result.changed { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "Already Disabled : {}\n",
+                if result.already_disabled { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "Backup Path      : {}\n\n",
+                result.backup_path.as_deref().unwrap_or("(none)")
+            ));
         }
 
         if !self.actions.is_empty() {
@@ -2054,9 +2178,11 @@ impl DisableResponse {
                     if let Some(error_details) = error_obj.get("error") {
                         if let Some(code) = error_details.get("code") {
                             if let Some(message) = error_details.get("message") {
-                                output.push_str(&format!("  [{}] {}\n", 
-                                    code.as_str().unwrap_or("unknown"), 
-                                    message.as_str().unwrap_or("unknown error")));
+                                output.push_str(&format!(
+                                    "  [{}] {}\n",
+                                    code.as_str().unwrap_or("unknown"),
+                                    message.as_str().unwrap_or("unknown error")
+                                ));
                             }
                         }
                     }
@@ -2227,7 +2353,11 @@ impl RulesAddResponse {
         response
     }
 
-    pub fn success(rule: FirewallRuleSpec, backend_commands: Vec<String>, result: RulesAddResult) -> Self {
+    pub fn success(
+        rule: FirewallRuleSpec,
+        backend_commands: Vec<String>,
+        result: RulesAddResult,
+    ) -> Self {
         let mut response = Self::new();
         response.ok = true;
         response.rules = vec![rule.clone()];
@@ -2287,8 +2417,14 @@ impl RulesAddResponse {
             }
 
             if let Some(result) = &self.result {
-                output.push_str(&format!("Changed        : {}\n", if result.changed { "yes" } else { "no" }));
-                output.push_str(&format!("Already Exists : {}\n", if result.already_exists { "yes" } else { "no" }));
+                output.push_str(&format!(
+                    "Changed        : {}\n",
+                    if result.changed { "yes" } else { "no" }
+                ));
+                output.push_str(&format!(
+                    "Already Exists : {}\n",
+                    if result.already_exists { "yes" } else { "no" }
+                ));
                 output.push('\n');
             }
 
@@ -2301,7 +2437,8 @@ impl RulesAddResponse {
         } else {
             if let Some(error) = &self.error {
                 output.push_str("Error:\n");
-                output.push_str(&format!("  [{}] {}\n",
+                output.push_str(&format!(
+                    "  [{}] {}\n",
                     error["code"].as_str().unwrap_or("unknown"),
                     error["message"].as_str().unwrap_or("Unknown error")
                 ));
@@ -2365,7 +2502,7 @@ pub struct RulesListResponse {
 
     pub error: Option<Value>,
     pub warnings: Vec<String>,
-    
+
     #[serde(skip)]
     pub format_output: OutputFormat,
 }
@@ -2433,11 +2570,11 @@ impl RulesListResponse {
             output.push_str("Rules:\n");
             for (i, rule) in self.rules.iter().enumerate() {
                 output.push_str(&format!("  [{}] ", i + 1));
-                
+
                 if let Some(table) = &rule.table {
                     output.push_str(&format!("{}/", table));
                 }
-                
+
                 if let Some(chain) = &rule.chain {
                     output.push_str(chain);
                 }
@@ -2485,7 +2622,10 @@ impl RulesListResponse {
                 }
 
                 if let (Some(packets), Some(bytes)) = (&rule.packets, &rule.bytes) {
-                    output.push_str(&format!("      Counters: pkts={} bytes={}\n", packets, bytes));
+                    output.push_str(&format!(
+                        "      Counters: pkts={} bytes={}\n",
+                        packets, bytes
+                    ));
                 }
 
                 if !self.rules.is_empty() && i < self.rules.len() - 1 {
@@ -2498,8 +2638,9 @@ impl RulesListResponse {
 
             if let Some(error) = &self.error {
                 output.push_str("Error:\n");
-                output.push_str(&format!("  [{}] {}\n", 
-                    error["code"].as_str().unwrap_or("unknown"), 
+                output.push_str(&format!(
+                    "  [{}] {}\n",
+                    error["code"].as_str().unwrap_or("unknown"),
                     error["message"].as_str().unwrap_or("Unknown error")
                 ));
             }
@@ -2660,7 +2801,11 @@ impl RulesDeleteResponse {
         response
     }
 
-    pub fn success(matched_rules: Vec<MatchedFirewallRule>, backend_commands: Vec<String>, result: RulesDeleteResult) -> Self {
+    pub fn success(
+        matched_rules: Vec<MatchedFirewallRule>,
+        backend_commands: Vec<String>,
+        result: RulesDeleteResult,
+    ) -> Self {
         let mut response = Self::new();
         response.ok = true;
         response.matched_rules = matched_rules;
@@ -2746,7 +2891,8 @@ impl RulesDeleteResponse {
         } else {
             if let Some(error) = &self.error {
                 output.push_str("Error:\n");
-                output.push_str(&format!("  [{}] {}\n",
+                output.push_str(&format!(
+                    "  [{}] {}\n",
                     error["code"].as_str().unwrap_or("unknown"),
                     error["message"].as_str().unwrap_or("Unknown error")
                 ));
@@ -2897,7 +3043,10 @@ impl RulesReloadResponse {
             }
 
             if let Some(result) = &self.result {
-                output.push_str(&format!("Changed : {}\n\n", if result.changed { "yes" } else { "no" }));
+                output.push_str(&format!(
+                    "Changed : {}\n\n",
+                    if result.changed { "yes" } else { "no" }
+                ));
 
                 if let Some(backup) = &result.backup_path {
                     output.push_str(&format!("Backup  : {}\n\n", backup));
@@ -2912,7 +3061,8 @@ impl RulesReloadResponse {
             }
         } else if let Some(error) = &self.error {
             output.push_str("Error:\n");
-            output.push_str(&format!("  [{}] {}\n",
+            output.push_str(&format!(
+                "  [{}] {}\n",
                 error["code"].as_str().unwrap_or("unknown"),
                 error["message"].as_str().unwrap_or("unknown error")
             ));
@@ -2936,15 +3086,17 @@ impl RulesReloadResponse {
 impl FirewallHandle {
     fn handle_rules_list(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(async {
-            self.rules_list_async(args).await
-        });
+        let result = rt.block_on(async { self.rules_list_async(args).await });
 
         match result {
             Ok(response) => {
                 match response.format_output {
                     OutputFormat::Json => {
-                        writeln!(io.stdout, "{}", serde_json::to_string_pretty(&response.to_json())?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string_pretty(&response.to_json())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stdout, "{}", response.to_text())?;
@@ -2958,13 +3110,15 @@ impl FirewallHandle {
                 }
             }
             Err(e) => {
-                let error_response = RulesListResponse::with_error(
-                    FirewallError::InternalError { 
-                        message: e.to_string() 
-                    }
-                );
+                let error_response = RulesListResponse::with_error(FirewallError::InternalError {
+                    message: e.to_string(),
+                });
                 writeln!(io.stderr, "Error: {}", e)?;
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&error_response.to_json())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&error_response.to_json())?
+                )?;
                 Ok(Status::err(1, &e.to_string()))
             }
         }
@@ -3006,7 +3160,8 @@ impl FirewallHandle {
         let backend_to_use = if opts.backend == FirewallBackend::Auto {
             self.detect_available_backend(opts.timeout_ms).await?
         } else {
-            self.check_backend_availability(&opts.backend, opts.timeout_ms).await?;
+            self.check_backend_availability(&opts.backend, opts.timeout_ms)
+                .await?;
             opts.backend.clone()
         };
 
@@ -3020,10 +3175,10 @@ impl FirewallHandle {
         // Check max rules limit
         if all_rules.len() as u64 > opts.max_rules {
             return Ok(RulesListResponse::with_error(
-                FirewallError::MaxRulesExceeded { 
-                    count: all_rules.len() as u64, 
-                    max: opts.max_rules 
-                }
+                FirewallError::MaxRulesExceeded {
+                    count: all_rules.len() as u64,
+                    max: opts.max_rules,
+                },
             ));
         }
 
@@ -3079,7 +3234,8 @@ impl FirewallHandle {
         }
 
         if let Some(max_rules_str) = args.get("max_rules") {
-            let max_rules: u64 = max_rules_str.parse()
+            let max_rules: u64 = max_rules_str
+                .parse()
                 .with_context(|| format!("Invalid max_rules: {}", max_rules_str))?;
             if max_rules == 0 {
                 return Err(FirewallError::InvalidMaxRules { max_rules }.into());
@@ -3088,7 +3244,8 @@ impl FirewallHandle {
         }
 
         if let Some(timeout_str) = args.get("timeout_ms") {
-            let timeout_ms: u64 = timeout_str.parse()
+            let timeout_ms: u64 = timeout_str
+                .parse()
                 .with_context(|| format!("Invalid timeout_ms: {}", timeout_str))?;
             if timeout_ms == 0 {
                 return Err(FirewallError::InvalidTimeout { timeout_ms }.into());
@@ -3105,15 +3262,26 @@ impl FirewallHandle {
         if let Some(direction) = &opts.direction {
             match direction.to_lowercase().as_str() {
                 "input" | "output" | "forward" | "prerouting" | "postrouting" => {}
-                _ => return Err(FirewallError::InvalidDirection { direction: direction.clone() }.into()),
+                _ => {
+                    return Err(FirewallError::InvalidDirection {
+                        direction: direction.clone(),
+                    }
+                    .into());
+                }
             }
         }
 
         // Validate action values
         if let Some(action) = &opts.action {
             match action.to_lowercase().as_str() {
-                "accept" | "drop" | "reject" | "log" | "masquerade" | "dnat" | "snat" | "redirect" => {}
-                _ => return Err(FirewallError::InvalidAction { action: action.clone() }.into()),
+                "accept" | "drop" | "reject" | "log" | "masquerade" | "dnat" | "snat"
+                | "redirect" => {}
+                _ => {
+                    return Err(FirewallError::InvalidAction {
+                        action: action.clone(),
+                    }
+                    .into());
+                }
             }
         }
 
@@ -3133,20 +3301,31 @@ impl FirewallHandle {
         if port.contains('-') {
             let parts: Vec<&str> = port.split('-').collect();
             if parts.len() != 2 {
-                return Err(FirewallError::InvalidPort { port: port.to_string() }.into());
+                return Err(FirewallError::InvalidPort {
+                    port: port.to_string(),
+                }
+                .into());
             }
             for part in parts {
-                let port_num: u16 = part.parse()
-                    .map_err(|_| FirewallError::InvalidPort { port: port.to_string() })?;
+                let port_num: u16 = part.parse().map_err(|_| FirewallError::InvalidPort {
+                    port: port.to_string(),
+                })?;
                 if port_num == 0 {
-                    return Err(FirewallError::InvalidPort { port: port.to_string() }.into());
+                    return Err(FirewallError::InvalidPort {
+                        port: port.to_string(),
+                    }
+                    .into());
                 }
             }
         } else {
-            let port_num: u16 = port.parse()
-                .map_err(|_| FirewallError::InvalidPort { port: port.to_string() })?;
+            let port_num: u16 = port.parse().map_err(|_| FirewallError::InvalidPort {
+                port: port.to_string(),
+            })?;
             if port_num == 0 {
-                return Err(FirewallError::InvalidPort { port: port.to_string() }.into());
+                return Err(FirewallError::InvalidPort {
+                    port: port.to_string(),
+                }
+                .into());
             }
         }
         Ok(())
@@ -3158,35 +3337,52 @@ impl FirewallHandle {
 
     async fn detect_available_backend(&self, timeout_ms: u64) -> Result<FirewallBackend> {
         // Try backends in priority order: nftables, firewalld, ufw, iptables
-        
+
         // Check nftables first
-        if self.is_backend_available(&FirewallBackend::Nftables, timeout_ms).await {
+        if self
+            .is_backend_available(&FirewallBackend::Nftables, timeout_ms)
+            .await
+        {
             return Ok(FirewallBackend::Nftables);
         }
 
         // Check firewalld
-        if self.is_backend_available(&FirewallBackend::Firewalld, timeout_ms).await {
+        if self
+            .is_backend_available(&FirewallBackend::Firewalld, timeout_ms)
+            .await
+        {
             return Ok(FirewallBackend::Firewalld);
         }
 
         // Check ufw
-        if self.is_backend_available(&FirewallBackend::Ufw, timeout_ms).await {
+        if self
+            .is_backend_available(&FirewallBackend::Ufw, timeout_ms)
+            .await
+        {
             return Ok(FirewallBackend::Ufw);
         }
 
         // Check iptables last
-        if self.is_backend_available(&FirewallBackend::Iptables, timeout_ms).await {
+        if self
+            .is_backend_available(&FirewallBackend::Iptables, timeout_ms)
+            .await
+        {
             return Ok(FirewallBackend::Iptables);
         }
 
         Err(FirewallError::NoBackendAvailable.into())
     }
 
-    async fn check_backend_availability(&self, backend: &FirewallBackend, timeout_ms: u64) -> Result<()> {
+    async fn check_backend_availability(
+        &self,
+        backend: &FirewallBackend,
+        timeout_ms: u64,
+    ) -> Result<()> {
         if !self.is_backend_available(backend, timeout_ms).await {
-            return Err(FirewallError::BackendUnavailable { 
-                backend: backend.as_str().to_string() 
-            }.into());
+            return Err(FirewallError::BackendUnavailable {
+                backend: backend.as_str().to_string(),
+            }
+            .into());
         }
         Ok(())
     }
@@ -3235,13 +3431,19 @@ impl FirewallHandle {
     // Rule Retrieval from Backends
     // ===========================================================================
 
-    async fn get_rules_from_backend(&self, backend: &FirewallBackend, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
+    async fn get_rules_from_backend(
+        &self,
+        backend: &FirewallBackend,
+        opts: &RulesListOptions,
+    ) -> Result<Vec<FirewallRule>> {
         match backend {
             FirewallBackend::Iptables => self.get_iptables_rules(opts).await,
             FirewallBackend::Nftables => self.get_nftables_rules(opts).await,
             FirewallBackend::Ufw => self.get_ufw_rules(opts).await,
             FirewallBackend::Firewalld => self.get_firewalld_rules(opts).await,
-            FirewallBackend::Auto => Err(anyhow::anyhow!("Auto backend should be resolved before calling get_rules_from_backend")),
+            FirewallBackend::Auto => Err(anyhow::anyhow!(
+                "Auto backend should be resolved before calling get_rules_from_backend"
+            )),
         }
     }
 
@@ -3250,7 +3452,10 @@ impl FirewallHandle {
 
         match opts.family {
             IpFamily::Ipv4 | IpFamily::Any => {
-                if let Ok(rules) = self.parse_iptables_save("iptables-save", "ipv4", opts).await {
+                if let Ok(rules) = self
+                    .parse_iptables_save("iptables-save", "ipv4", opts)
+                    .await
+                {
                     all_rules.extend(rules);
                 }
             }
@@ -3259,7 +3464,10 @@ impl FirewallHandle {
 
         match opts.family {
             IpFamily::Ipv6 | IpFamily::Any => {
-                if let Ok(rules) = self.parse_iptables_save("ip6tables-save", "ipv6", opts).await {
+                if let Ok(rules) = self
+                    .parse_iptables_save("ip6tables-save", "ipv6", opts)
+                    .await
+                {
                     all_rules.extend(rules);
                 }
             }
@@ -3269,15 +3477,22 @@ impl FirewallHandle {
         Ok(all_rules)
     }
 
-    async fn parse_iptables_save(&self, command: &str, family: &str, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
-        let (exit_code, stdout, stderr) = run_command_with_timeout(command, &[], opts.timeout_ms).await?;
-        
+    async fn parse_iptables_save(
+        &self,
+        command: &str,
+        family: &str,
+        opts: &RulesListOptions,
+    ) -> Result<Vec<FirewallRule>> {
+        let (exit_code, stdout, stderr) =
+            run_command_with_timeout(command, &[], opts.timeout_ms).await?;
+
         if exit_code != 0 {
             return Err(FirewallError::CommandFailed {
                 command: command.to_string(),
                 code: exit_code,
                 stderr,
-            }.into());
+            }
+            .into());
         }
 
         Ok(self.parse_iptables_save_output(&stdout, family, opts))
@@ -3286,14 +3501,20 @@ impl FirewallHandle {
     /// Parses `iptables-save` / `ip6tables-save` output. Each rule's
     /// `priority` is its 1-based line number within its own table and chain,
     /// the number `iptables -t <table> -L <chain> --line-numbers` shows.
-    fn parse_iptables_save_output(&self, stdout: &str, family: &str, opts: &RulesListOptions) -> Vec<FirewallRule> {
+    fn parse_iptables_save_output(
+        &self,
+        stdout: &str,
+        family: &str,
+        opts: &RulesListOptions,
+    ) -> Vec<FirewallRule> {
         let mut rules = Vec::new();
         let mut current_table = String::new();
-        let mut chain_lines: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        let mut chain_lines: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
 
         for line in stdout.lines() {
             let line = line.trim();
-            
+
             // Skip comments and empty lines
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -3318,7 +3539,9 @@ impl FirewallHandle {
                 let counter = chain_lines.entry(chain.clone()).or_insert(0);
                 *counter += 1;
                 let line_number = *counter;
-                if let Some(rule) = self.parse_iptables_rule(line, &current_table, family, line_number, opts) {
+                if let Some(rule) =
+                    self.parse_iptables_rule(line, &current_table, family, line_number, opts)
+                {
                     rules.push(rule);
                 }
             }
@@ -3327,7 +3550,14 @@ impl FirewallHandle {
         rules
     }
 
-    fn parse_iptables_rule(&self, line: &str, table: &str, family: &str, priority: i64, opts: &RulesListOptions) -> Option<FirewallRule> {
+    fn parse_iptables_rule(
+        &self,
+        line: &str,
+        table: &str,
+        family: &str,
+        priority: i64,
+        opts: &RulesListOptions,
+    ) -> Option<FirewallRule> {
         let parts = tokenize_rule_line(line);
         if parts.len() < 2 {
             return None;
@@ -3351,7 +3581,11 @@ impl FirewallHandle {
             comment: None,
             packets: None,
             bytes: None,
-            raw: if opts.include_backend_raw { Some(line.to_string()) } else { None },
+            raw: if opts.include_backend_raw {
+                Some(line.to_string())
+            } else {
+                None
+            },
         };
 
         // Parse chain name (after -A)
@@ -3365,7 +3599,11 @@ impl FirewallHandle {
         let mut negate = false;
         while i < parts.len() {
             let value = |idx: usize| -> String {
-                if negate { format!("!{}", parts[idx]) } else { parts[idx].clone() }
+                if negate {
+                    format!("!{}", parts[idx])
+                } else {
+                    parts[idx].clone()
+                }
             };
             match parts[i].as_str() {
                 "!" => {
@@ -3412,7 +3650,9 @@ impl FirewallHandle {
                 "-c" if i + 2 < parts.len() => {
                     // Parse counters: -c packets bytes
                     if opts.include_counters {
-                        if let (Ok(packets), Ok(bytes)) = (parts[i + 1].parse::<u64>(), parts[i + 2].parse::<u64>()) {
+                        if let (Ok(packets), Ok(bytes)) =
+                            (parts[i + 1].parse::<u64>(), parts[i + 2].parse::<u64>())
+                        {
                             rule.packets = Some(packets);
                             rule.bytes = Some(bytes);
                         }
@@ -3440,14 +3680,16 @@ impl FirewallHandle {
 
     async fn get_nftables_rules(&self, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
         // -a adds "# handle N" to each rule, the id rules.delete deletes by.
-        let (exit_code, stdout, stderr) = run_command_with_timeout("nft", &["-a", "list", "ruleset"], opts.timeout_ms).await?;
-        
+        let (exit_code, stdout, stderr) =
+            run_command_with_timeout("nft", &["-a", "list", "ruleset"], opts.timeout_ms).await?;
+
         if exit_code != 0 {
             return Err(FirewallError::CommandFailed {
                 command: "nft -a list ruleset".to_string(),
                 code: exit_code,
                 stderr,
-            }.into());
+            }
+            .into());
         }
 
         let mut rules = Vec::new();
@@ -3457,7 +3699,7 @@ impl FirewallHandle {
 
         for line in stdout.lines() {
             let line = line.trim();
-            
+
             // Skip empty lines and comments
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -3496,13 +3738,27 @@ impl FirewallHandle {
             }
 
             // Parse rule lines (not starting with keywords and containing actions)
-            if !line.starts_with("table") && !line.starts_with("chain") && 
-               (line.contains(" accept") || line.contains(" drop") || line.contains(" reject") || 
-                line.contains(" log") || line.contains(" masquerade") || line.contains(" dnat") ||
-                line.contains(" snat") || line.contains(" return") || line.contains(" jump") ||
-                line.contains(" goto")) {
+            if !line.starts_with("table")
+                && !line.starts_with("chain")
+                && (line.contains(" accept")
+                    || line.contains(" drop")
+                    || line.contains(" reject")
+                    || line.contains(" log")
+                    || line.contains(" masquerade")
+                    || line.contains(" dnat")
+                    || line.contains(" snat")
+                    || line.contains(" return")
+                    || line.contains(" jump")
+                    || line.contains(" goto"))
+            {
                 rule_priority += 1;
-                if let Some(rule) = self.parse_nftables_rule(line, &current_table_info, &current_chain_info, rule_priority, opts) {
+                if let Some(rule) = self.parse_nftables_rule(
+                    line,
+                    &current_table_info,
+                    &current_chain_info,
+                    rule_priority,
+                    opts,
+                ) {
                     rules.push(rule);
                 }
             }
@@ -3523,12 +3779,12 @@ impl FirewallHandle {
     }
 
     fn parse_nft_chain_line(&self, line: &str) -> Option<(String, String)> {
-        // Expected formats: 
+        // Expected formats:
         // "chain INPUT {" or "chain INPUT { type filter hook input priority 0; policy accept; }"
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 && parts[0] == "chain" {
             let chain_name = parts[1].to_string();
-            
+
             // Try to extract hook type from the line if present
             let hook_type = if line.contains(" hook ") {
                 for (i, part) in parts.iter().enumerate() {
@@ -3540,14 +3796,20 @@ impl FirewallHandle {
             } else {
                 "custom".to_string()
             };
-            
+
             return Some((chain_name, hook_type));
         }
         None
     }
 
-    fn parse_nftables_rule(&self, line: &str, table_info: &Option<(String, String)>, 
-                          chain_info: &Option<(String, String)>, priority: i64, opts: &RulesListOptions) -> Option<FirewallRule> {
+    fn parse_nftables_rule(
+        &self,
+        line: &str,
+        table_info: &Option<(String, String)>,
+        chain_info: &Option<(String, String)>,
+        priority: i64,
+        opts: &RulesListOptions,
+    ) -> Option<FirewallRule> {
         let (family, table) = table_info.as_ref()?;
         let (chain, hook_type) = chain_info.as_ref()?;
 
@@ -3581,7 +3843,11 @@ impl FirewallHandle {
             comment: None,
             packets: None,
             bytes: None,
-            raw: if opts.include_backend_raw { Some(line.to_string()) } else { None },
+            raw: if opts.include_backend_raw {
+                Some(line.to_string())
+            } else {
+                None
+            },
         };
 
         // Parse rule components from the line
@@ -3650,11 +3916,17 @@ impl FirewallHandle {
 
     fn extract_nft_protocol(&self, line: &str) -> Option<String> {
         // Look for protocol specifications like "tcp", "udp", "icmp"
-        if line.contains(" tcp ") { Some("tcp".to_string()) }
-        else if line.contains(" udp ") { Some("udp".to_string()) }
-        else if line.contains(" icmp ") { Some("icmp".to_string()) }
-        else if line.contains(" icmpv6 ") { Some("icmpv6".to_string()) }
-        else { None }
+        if line.contains(" tcp ") {
+            Some("tcp".to_string())
+        } else if line.contains(" udp ") {
+            Some("udp".to_string())
+        } else if line.contains(" icmp ") {
+            Some("icmp".to_string())
+        } else if line.contains(" icmpv6 ") {
+            Some("icmpv6".to_string())
+        } else {
+            None
+        }
     }
 
     fn extract_nft_dport(&self, line: &str) -> Option<String> {
@@ -3759,7 +4031,18 @@ impl FirewallHandle {
 
     fn extract_nft_action(&self, line: &str) -> Option<String> {
         // Look for common actions
-        let actions = ["accept", "drop", "reject", "log", "masquerade", "dnat", "snat", "return", "jump", "goto"];
+        let actions = [
+            "accept",
+            "drop",
+            "reject",
+            "log",
+            "masquerade",
+            "dnat",
+            "snat",
+            "return",
+            "jump",
+            "goto",
+        ];
         for action in &actions {
             if line.contains(&format!(" {} ", action)) || line.ends_with(&format!(" {}", action)) {
                 return Some(action.to_string());
@@ -3785,7 +4068,8 @@ impl FirewallHandle {
             let after_packets = &line[start + 16..];
             let parts: Vec<&str> = after_packets.split_whitespace().collect();
             if parts.len() >= 3 && parts[1] == "bytes" {
-                if let (Ok(packets), Ok(bytes)) = (parts[0].parse::<u64>(), parts[2].parse::<u64>()) {
+                if let (Ok(packets), Ok(bytes)) = (parts[0].parse::<u64>(), parts[2].parse::<u64>())
+                {
                     return Some((packets, bytes));
                 }
             }
@@ -3794,14 +4078,16 @@ impl FirewallHandle {
     }
 
     async fn get_ufw_rules(&self, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
-        let (exit_code, stdout, stderr) = run_command_with_timeout("ufw", &["status", "numbered"], opts.timeout_ms).await?;
-        
+        let (exit_code, stdout, stderr) =
+            run_command_with_timeout("ufw", &["status", "numbered"], opts.timeout_ms).await?;
+
         if exit_code != 0 {
             return Err(FirewallError::CommandFailed {
                 command: "ufw status numbered".to_string(),
                 code: exit_code,
                 stderr,
-            }.into());
+            }
+            .into());
         }
 
         let mut rules = Vec::new();
@@ -3809,13 +4095,14 @@ impl FirewallHandle {
 
         for line in stdout.lines() {
             let line = line.trim();
-            
+
             // Skip empty lines, status lines, and headers
-            if line.is_empty() || 
-               line.starts_with("Status:") || 
-               line.starts_with("To") ||
-               line.starts_with("--") ||
-               line.contains("Action") {
+            if line.is_empty()
+                || line.starts_with("Status:")
+                || line.starts_with("To")
+                || line.starts_with("--")
+                || line.contains("Action")
+            {
                 continue;
             }
 
@@ -3829,14 +4116,19 @@ impl FirewallHandle {
         Ok(rules)
     }
 
-    fn parse_ufw_rule(&self, line: &str, priority: i64, opts: &RulesListOptions) -> Option<FirewallRule> {
+    fn parse_ufw_rule(
+        &self,
+        line: &str,
+        priority: i64,
+        opts: &RulesListOptions,
+    ) -> Option<FirewallRule> {
         // Expected format: "[ 1] 22/tcp                    ALLOW IN    Anywhere"
         // or:              "[ 2] Anywhere                 ALLOW OUT   22/tcp on eth0"
-        
+
         // Remove brackets and split by whitespace
         let line_clean = line.replace(['[', ']'], "");
         let parts: Vec<&str> = line_clean.split_whitespace().collect();
-        
+
         if parts.len() < 4 {
             return None;
         }
@@ -3844,12 +4136,12 @@ impl FirewallHandle {
         // The rule number (first part) is what `ufw delete` takes.
         let priority = parts[0].parse::<i64>().unwrap_or(priority);
         let parts = &parts[1..];
-        
+
         let mut rule = FirewallRule {
             backend: "ufw".to_string(),
             family: "ipv4".to_string(), // Default, will be updated if IPv6 detected
-            table: None, // UFW abstracts this
-            chain: None, // UFW abstracts this  
+            table: None,                // UFW abstracts this
+            chain: None,                // UFW abstracts this
             direction: None,
             priority: Some(priority),
             action: None,
@@ -3863,7 +4155,11 @@ impl FirewallHandle {
             comment: None,
             packets: None,
             bytes: None,
-            raw: if opts.include_backend_raw { Some(line.to_string()) } else { None },
+            raw: if opts.include_backend_raw {
+                Some(line.to_string())
+            } else {
+                None
+            },
         };
 
         // Check for IPv6 indicator
@@ -3872,7 +4168,7 @@ impl FirewallHandle {
         }
 
         // Parse the rule format:
-        // Format 1: "22/tcp ALLOW IN Anywhere"  
+        // Format 1: "22/tcp ALLOW IN Anywhere"
         // Format 2: "Anywhere ALLOW OUT 22/tcp"
 
         // Find the action (ALLOW, DENY, REJECT)
@@ -3881,9 +4177,13 @@ impl FirewallHandle {
         for (i, part) in parts.iter().enumerate() {
             if part.contains("ALLOW") || part.contains("DENY") || part.contains("REJECT") {
                 action_idx = Some(i);
-                action_str = if part.contains("ALLOW") { "allow" }
-                           else if part.contains("DENY") { "deny" } 
-                           else { "reject" };
+                action_str = if part.contains("ALLOW") {
+                    "allow"
+                } else if part.contains("DENY") {
+                    "deny"
+                } else {
+                    "reject"
+                };
                 break;
             }
         }
@@ -3898,8 +4198,12 @@ impl FirewallHandle {
                     rule.direction = Some("input".to_string());
                     // Format: "22/tcp ALLOW IN Anywhere"
                     let to_spec = parts[0];
-                    let from_spec = if parts.len() > action_idx + 2 { parts[action_idx + 2] } else { "Anywhere" };
-                    
+                    let from_spec = if parts.len() > action_idx + 2 {
+                        parts[action_idx + 2]
+                    } else {
+                        "Anywhere"
+                    };
+
                     self.parse_ufw_port_spec(to_spec, &mut rule, true); // true = destination
                     self.parse_ufw_address_spec(from_spec, &mut rule, true); // true = source
                 }
@@ -3907,8 +4211,12 @@ impl FirewallHandle {
                     rule.direction = Some("output".to_string());
                     // Format: "Anywhere ALLOW OUT 22/tcp"
                     let from_spec = parts[0];
-                    let to_spec = if parts.len() > action_idx + 2 { parts[action_idx + 2] } else { "Anywhere" };
-                    
+                    let to_spec = if parts.len() > action_idx + 2 {
+                        parts[action_idx + 2]
+                    } else {
+                        "Anywhere"
+                    };
+
                     self.parse_ufw_address_spec(from_spec, &mut rule, true); // true = source
                     self.parse_ufw_port_spec(to_spec, &mut rule, true); // true = destination
                 }
@@ -3939,15 +4247,18 @@ impl FirewallHandle {
         if let Some(slash_idx) = spec.find('/') {
             let port_part = &spec[..slash_idx];
             let proto_part = &spec[slash_idx + 1..];
-            
+
             rule.proto = Some(proto_part.to_string());
-            
+
             if is_destination {
                 rule.dport = Some(port_part.to_string());
             } else {
                 rule.sport = Some(port_part.to_string());
             }
-        } else if spec.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '-') {
+        } else if spec
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == ',' || c == '-')
+        {
             // Just a port number without protocol
             if is_destination {
                 rule.dport = Some(spec.to_string());
@@ -3961,9 +4272,23 @@ impl FirewallHandle {
         if spec == "Anywhere" || spec.contains("Anywhere") {
             // Set default addresses
             if is_source {
-                rule.saddr = Some(if rule.family == "ipv6" { "::/0" } else { "0.0.0.0/0" }.to_string());
+                rule.saddr = Some(
+                    if rule.family == "ipv6" {
+                        "::/0"
+                    } else {
+                        "0.0.0.0/0"
+                    }
+                    .to_string(),
+                );
             } else {
-                rule.daddr = Some(if rule.family == "ipv6" { "::/0" } else { "0.0.0.0/0" }.to_string());
+                rule.daddr = Some(
+                    if rule.family == "ipv6" {
+                        "::/0"
+                    } else {
+                        "0.0.0.0/0"
+                    }
+                    .to_string(),
+                );
             }
             return;
         }
@@ -3983,7 +4308,7 @@ impl FirewallHandle {
 
         // Get all zones
         let zones = self.get_firewalld_zones(opts.timeout_ms).await?;
-        
+
         for zone in zones {
             // Get rules for this zone
             let mut zone_rules = self.get_firewalld_zone_rules(&zone, opts).await?;
@@ -3994,14 +4319,16 @@ impl FirewallHandle {
     }
 
     async fn get_firewalld_zones(&self, timeout_ms: u64) -> Result<Vec<String>> {
-        let (exit_code, stdout, stderr) = run_command_with_timeout("firewall-cmd", &["--list-all-zones"], timeout_ms).await?;
-        
+        let (exit_code, stdout, stderr) =
+            run_command_with_timeout("firewall-cmd", &["--list-all-zones"], timeout_ms).await?;
+
         if exit_code != 0 {
             return Err(FirewallError::CommandFailed {
                 command: "firewall-cmd --list-all-zones".to_string(),
                 code: exit_code,
                 stderr,
-            }.into());
+            }
+            .into());
         }
 
         let mut zones = Vec::new();
@@ -4018,8 +4345,9 @@ impl FirewallHandle {
 
         // Fallback: get zones with simpler command
         if zones.is_empty() {
-            let (exit_code, stdout, _stderr) = run_command_with_timeout("firewall-cmd", &["--get-zones"], timeout_ms).await?;
-            
+            let (exit_code, stdout, _stderr) =
+                run_command_with_timeout("firewall-cmd", &["--get-zones"], timeout_ms).await?;
+
             if exit_code == 0 {
                 zones = stdout.split_whitespace().map(|s| s.to_string()).collect();
             }
@@ -4028,40 +4356,62 @@ impl FirewallHandle {
         Ok(zones)
     }
 
-    async fn get_firewalld_zone_rules(&self, zone: &str, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
+    async fn get_firewalld_zone_rules(
+        &self,
+        zone: &str,
+        opts: &RulesListOptions,
+    ) -> Result<Vec<FirewallRule>> {
         let mut rules = Vec::new();
         let mut rule_priority = 0i64;
 
         // Get services for the zone
-        if let Ok(service_rules) = self.get_firewalld_services(zone, &mut rule_priority, opts).await {
+        if let Ok(service_rules) = self
+            .get_firewalld_services(zone, &mut rule_priority, opts)
+            .await
+        {
             rules.extend(service_rules);
         }
 
-        // Get ports for the zone  
-        if let Ok(port_rules) = self.get_firewalld_ports(zone, &mut rule_priority, opts).await {
+        // Get ports for the zone
+        if let Ok(port_rules) = self
+            .get_firewalld_ports(zone, &mut rule_priority, opts)
+            .await
+        {
             rules.extend(port_rules);
         }
 
         // Get rich rules for the zone
-        if let Ok(rich_rules) = self.get_firewalld_rich_rules(zone, &mut rule_priority, opts).await {
+        if let Ok(rich_rules) = self
+            .get_firewalld_rich_rules(zone, &mut rule_priority, opts)
+            .await
+        {
             rules.extend(rich_rules);
         }
 
         // Get sources for the zone
-        if let Ok(source_rules) = self.get_firewalld_sources(zone, &mut rule_priority, opts).await {
+        if let Ok(source_rules) = self
+            .get_firewalld_sources(zone, &mut rule_priority, opts)
+            .await
+        {
             rules.extend(source_rules);
         }
 
         Ok(rules)
     }
 
-    async fn get_firewalld_services(&self, zone: &str, rule_priority: &mut i64, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
+    async fn get_firewalld_services(
+        &self,
+        zone: &str,
+        rule_priority: &mut i64,
+        opts: &RulesListOptions,
+    ) -> Result<Vec<FirewallRule>> {
         let (exit_code, stdout, _stderr) = run_command_with_timeout(
-            "firewall-cmd", 
-            &["--zone", zone, "--list-services"], 
-            opts.timeout_ms
-        ).await?;
-        
+            "firewall-cmd",
+            &["--zone", zone, "--list-services"],
+            opts.timeout_ms,
+        )
+        .await?;
+
         if exit_code != 0 {
             return Ok(Vec::new()); // Continue with other rule types
         }
@@ -4069,7 +4419,7 @@ impl FirewallHandle {
         let mut rules = Vec::new();
         for service in stdout.split_whitespace() {
             *rule_priority += 1;
-            
+
             let rule = FirewallRule {
                 backend: "firewalld".to_string(),
                 family: "any".to_string(), // Services can apply to both IPv4/IPv6
@@ -4078,7 +4428,7 @@ impl FirewallHandle {
                 direction: Some("input".to_string()), // Services are typically for incoming traffic
                 priority: Some(*rule_priority),
                 action: Some("accept".to_string()), // Services in allowed list are accepted
-                proto: None, // Service definitions contain protocol info
+                proto: None,                        // Service definitions contain protocol info
                 sport: None,
                 dport: None,
                 saddr: None,
@@ -4088,10 +4438,10 @@ impl FirewallHandle {
                 comment: Some(format!("service: {}", service)),
                 packets: None,
                 bytes: None,
-                raw: if opts.include_backend_raw { 
-                    Some(format!("--zone {} --add-service {}", zone, service)) 
-                } else { 
-                    None 
+                raw: if opts.include_backend_raw {
+                    Some(format!("--zone {} --add-service {}", zone, service))
+                } else {
+                    None
                 },
             };
             rules.push(rule);
@@ -4100,13 +4450,19 @@ impl FirewallHandle {
         Ok(rules)
     }
 
-    async fn get_firewalld_ports(&self, zone: &str, rule_priority: &mut i64, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
+    async fn get_firewalld_ports(
+        &self,
+        zone: &str,
+        rule_priority: &mut i64,
+        opts: &RulesListOptions,
+    ) -> Result<Vec<FirewallRule>> {
         let (exit_code, stdout, _stderr) = run_command_with_timeout(
-            "firewall-cmd", 
-            &["--zone", zone, "--list-ports"], 
-            opts.timeout_ms
-        ).await?;
-        
+            "firewall-cmd",
+            &["--zone", zone, "--list-ports"],
+            opts.timeout_ms,
+        )
+        .await?;
+
         if exit_code != 0 {
             return Ok(Vec::new());
         }
@@ -4114,7 +4470,7 @@ impl FirewallHandle {
         let mut rules = Vec::new();
         for port_spec in stdout.split_whitespace() {
             *rule_priority += 1;
-            
+
             // Parse port spec like "80/tcp" or "443/tcp" or "1000-2000/udp"
             let (port, proto) = if let Some(slash_idx) = port_spec.find('/') {
                 let port_part = &port_spec[..slash_idx];
@@ -4142,10 +4498,10 @@ impl FirewallHandle {
                 comment: Some(format!("port: {}", port_spec)),
                 packets: None,
                 bytes: None,
-                raw: if opts.include_backend_raw { 
-                    Some(format!("--zone {} --add-port {}", zone, port_spec)) 
-                } else { 
-                    None 
+                raw: if opts.include_backend_raw {
+                    Some(format!("--zone {} --add-port {}", zone, port_spec))
+                } else {
+                    None
                 },
             };
             rules.push(rule);
@@ -4154,13 +4510,19 @@ impl FirewallHandle {
         Ok(rules)
     }
 
-    async fn get_firewalld_rich_rules(&self, zone: &str, rule_priority: &mut i64, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
+    async fn get_firewalld_rich_rules(
+        &self,
+        zone: &str,
+        rule_priority: &mut i64,
+        opts: &RulesListOptions,
+    ) -> Result<Vec<FirewallRule>> {
         let (exit_code, stdout, _stderr) = run_command_with_timeout(
-            "firewall-cmd", 
-            &["--zone", zone, "--list-rich-rules"], 
-            opts.timeout_ms
-        ).await?;
-        
+            "firewall-cmd",
+            &["--zone", zone, "--list-rich-rules"],
+            opts.timeout_ms,
+        )
+        .await?;
+
         if exit_code != 0 {
             return Ok(Vec::new());
         }
@@ -4173,7 +4535,7 @@ impl FirewallHandle {
             }
 
             *rule_priority += 1;
-            
+
             // Parse rich rule format: 'rule family="ipv4" source address="192.168.1.0/24" accept'
             let mut rule = FirewallRule {
                 backend: "firewalld".to_string(),
@@ -4193,10 +4555,13 @@ impl FirewallHandle {
                 comment: Some("rich rule".to_string()),
                 packets: None,
                 bytes: None,
-                raw: if opts.include_backend_raw { 
-                    Some(format!("--zone {} --add-rich-rule '{}'", zone, rich_rule_line)) 
-                } else { 
-                    None 
+                raw: if opts.include_backend_raw {
+                    Some(format!(
+                        "--zone {} --add-rich-rule '{}'",
+                        zone, rich_rule_line
+                    ))
+                } else {
+                    None
                 },
             };
 
@@ -4210,7 +4575,7 @@ impl FirewallHandle {
                 rule.saddr = Some(source);
             }
 
-            // Parse destination address  
+            // Parse destination address
             if let Some(dest) = self.extract_rich_rule_destination(rich_rule_line) {
                 rule.daddr = Some(dest);
             }
@@ -4232,13 +4597,19 @@ impl FirewallHandle {
         Ok(rules)
     }
 
-    async fn get_firewalld_sources(&self, zone: &str, rule_priority: &mut i64, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
+    async fn get_firewalld_sources(
+        &self,
+        zone: &str,
+        rule_priority: &mut i64,
+        opts: &RulesListOptions,
+    ) -> Result<Vec<FirewallRule>> {
         let (exit_code, stdout, _stderr) = run_command_with_timeout(
-            "firewall-cmd", 
-            &["--zone", zone, "--list-sources"], 
-            opts.timeout_ms
-        ).await?;
-        
+            "firewall-cmd",
+            &["--zone", zone, "--list-sources"],
+            opts.timeout_ms,
+        )
+        .await?;
+
         if exit_code != 0 {
             return Ok(Vec::new());
         }
@@ -4246,10 +4617,14 @@ impl FirewallHandle {
         let mut rules = Vec::new();
         for source in stdout.split_whitespace() {
             *rule_priority += 1;
-            
+
             let rule = FirewallRule {
                 backend: "firewalld".to_string(),
-                family: if source.contains(':') { "ipv6".to_string() } else { "ipv4".to_string() },
+                family: if source.contains(':') {
+                    "ipv6".to_string()
+                } else {
+                    "ipv4".to_string()
+                },
                 table: None,
                 chain: Some(format!("zone:{}", zone)),
                 direction: Some("input".to_string()),
@@ -4265,10 +4640,10 @@ impl FirewallHandle {
                 comment: Some(format!("source: {}", source)),
                 packets: None,
                 bytes: None,
-                raw: if opts.include_backend_raw { 
-                    Some(format!("--zone {} --add-source {}", zone, source)) 
-                } else { 
-                    None 
+                raw: if opts.include_backend_raw {
+                    Some(format!("--zone {} --add-source {}", zone, source))
+                } else {
+                    None
                 },
             };
             rules.push(rule);
@@ -4347,7 +4722,7 @@ impl FirewallHandle {
                 if quote_char == '"' || quote_char == '\'' {
                     if let Some(end) = after_port[1..].find(quote_char) {
                         let port = after_port[1..end + 1].to_string();
-                        
+
                         // Look for protocol
                         if let Some(proto_start) = rule.find("protocol=") {
                             let after_proto = &rule[proto_start + 9..];
@@ -4360,7 +4735,7 @@ impl FirewallHandle {
                                 }
                             }
                         }
-                        
+
                         return Some(("tcp".to_string(), port));
                     }
                 }
@@ -4387,7 +4762,11 @@ impl FirewallHandle {
     // Rule Filtering
     // ===========================================================================
 
-    fn apply_filters(&self, mut rules: Vec<FirewallRule>, opts: &RulesListOptions) -> Result<Vec<FirewallRule>> {
+    fn apply_filters(
+        &self,
+        mut rules: Vec<FirewallRule>,
+        opts: &RulesListOptions,
+    ) -> Result<Vec<FirewallRule>> {
         rules.retain(|rule| {
             // Apply family filter
             if opts.family != IpFamily::Any {
@@ -4398,35 +4777,45 @@ impl FirewallHandle {
 
             // Apply table filter
             if let Some(table_filter) = &opts.table {
-                if rule.table.as_ref().map(|t| t.to_lowercase()) != Some(table_filter.to_lowercase()) {
+                if rule.table.as_ref().map(|t| t.to_lowercase())
+                    != Some(table_filter.to_lowercase())
+                {
                     return false;
                 }
             }
 
             // Apply chain filter
             if let Some(chain_filter) = &opts.chain {
-                if rule.chain.as_ref().map(|c| c.to_lowercase()) != Some(chain_filter.to_lowercase()) {
+                if rule.chain.as_ref().map(|c| c.to_lowercase())
+                    != Some(chain_filter.to_lowercase())
+                {
                     return false;
                 }
             }
 
             // Apply direction filter
             if let Some(direction_filter) = &opts.direction {
-                if rule.direction.as_ref().map(|d| d.to_lowercase()) != Some(direction_filter.to_lowercase()) {
+                if rule.direction.as_ref().map(|d| d.to_lowercase())
+                    != Some(direction_filter.to_lowercase())
+                {
                     return false;
                 }
             }
 
             // Apply action filter
             if let Some(action_filter) = &opts.action {
-                if rule.action.as_ref().map(|a| a.to_lowercase()) != Some(action_filter.to_lowercase()) {
+                if rule.action.as_ref().map(|a| a.to_lowercase())
+                    != Some(action_filter.to_lowercase())
+                {
                     return false;
                 }
             }
 
             // Apply protocol filter
             if let Some(proto_filter) = &opts.proto {
-                if rule.proto.as_ref().map(|p| p.to_lowercase()) != Some(proto_filter.to_lowercase()) {
+                if rule.proto.as_ref().map(|p| p.to_lowercase())
+                    != Some(proto_filter.to_lowercase())
+                {
                     return false;
                 }
             }
@@ -4473,7 +4862,10 @@ impl FirewallHandle {
             // Apply comment filter
             if let Some(comment_filter) = &opts.comment_contains {
                 if let Some(comment) = &rule.comment {
-                    if !comment.to_lowercase().contains(&comment_filter.to_lowercase()) {
+                    if !comment
+                        .to_lowercase()
+                        .contains(&comment_filter.to_lowercase())
+                    {
                         return false;
                     }
                 } else {
@@ -4493,15 +4885,17 @@ impl FirewallHandle {
 
     fn handle_rules_save(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(async {
-            self.rules_save_async(args).await
-        });
+        let result = rt.block_on(async { self.rules_save_async(args).await });
 
         match result {
             Ok(response) => {
                 match response.format_output {
                     OutputFormat::Json => {
-                        writeln!(io.stdout, "{}", serde_json::to_string_pretty(&response.to_json())?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string_pretty(&response.to_json())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stdout, "{}", response.to_text())?;
@@ -4515,13 +4909,15 @@ impl FirewallHandle {
                 }
             }
             Err(e) => {
-                let error_response = RulesSaveResponse::with_error(
-                    FirewallError::InternalError { 
-                        message: e.to_string() 
-                    }
-                );
+                let error_response = RulesSaveResponse::with_error(FirewallError::InternalError {
+                    message: e.to_string(),
+                });
                 writeln!(io.stderr, "Error: {}", e)?;
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&error_response.to_json())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&error_response.to_json())?
+                )?;
                 Ok(Status::err(1, &e.to_string()))
             }
         }
@@ -4560,20 +4956,22 @@ impl FirewallHandle {
         // Check file existence and overwrite permission
         if let Some(path) = &opts.path {
             if Path::new(path).exists() && !opts.overwrite {
-                return Ok(RulesSaveResponse::with_error(
-                    FirewallError::PathExists { path: path.clone() }
-                ));
+                return Ok(RulesSaveResponse::with_error(FirewallError::PathExists {
+                    path: path.clone(),
+                }));
             }
         }
 
         // Determine which backends to snapshot
-        let backends_to_save = if opts.include_all_backends && opts.backend == FirewallBackend::Auto {
+        let backends_to_save = if opts.include_all_backends && opts.backend == FirewallBackend::Auto
+        {
             self.get_all_available_backends(opts.timeout_ms).await?
         } else {
             let backend_to_use = if opts.backend == FirewallBackend::Auto {
                 self.detect_available_backend(opts.timeout_ms).await?
             } else {
-                self.check_backend_availability(&opts.backend, opts.timeout_ms).await?;
+                self.check_backend_availability(&opts.backend, opts.timeout_ms)
+                    .await?;
                 opts.backend.clone()
             };
             vec![(backend_to_use, opts.family.clone())]
@@ -4591,7 +4989,7 @@ impl FirewallHandle {
         } else {
             json!({
                 "version": 1,
-                "backend_mode": "single", 
+                "backend_mode": "single",
                 "backends": [],
                 "metadata": {}
             })
@@ -4599,7 +4997,7 @@ impl FirewallHandle {
 
         for (backend, family) in backends_to_save {
             let backend_data = self.collect_backend_data(&backend, &family, &opts).await?;
-            
+
             backend_summaries.push(RulesSaveBackendSummary {
                 backend: backend.as_str().to_string(),
                 family: family.as_str().to_string(),
@@ -4607,7 +5005,10 @@ impl FirewallHandle {
                 has_native: backend_data.native_data.is_some(),
             });
 
-            save_document["backends"].as_array_mut().unwrap().push(backend_data.to_json());
+            save_document["backends"]
+                .as_array_mut()
+                .unwrap()
+                .push(backend_data.to_json());
         }
 
         // Add metadata if requested
@@ -4627,8 +5028,11 @@ impl FirewallHandle {
         }
 
         // Serialize to JSON
-        let json_data = serde_json::to_string_pretty(&save_document)
-            .map_err(|e| FirewallError::SerializeFailed { message: e.to_string() })?;
+        let json_data = serde_json::to_string_pretty(&save_document).map_err(|e| {
+            FirewallError::SerializeFailed {
+                message: e.to_string(),
+            }
+        })?;
 
         // Apply compression if requested
         let final_data = if opts.compress == CompressMode::Gzip {
@@ -4642,11 +5046,14 @@ impl FirewallHandle {
         } else {
             // Write file atomically
             let path_ref = opts.path.as_ref().unwrap();
-            self.write_file_atomic(path_ref, &final_data, opts.create_dirs).await?
+            self.write_file_atomic(path_ref, &final_data, opts.create_dirs)
+                .await?
         };
 
         if opts.dry_run {
-            response.warnings.push("Dry run: no file was created.".to_string());
+            response
+                .warnings
+                .push("Dry run: no file was created.".to_string());
         }
 
         // Create successful response
@@ -4683,8 +5090,11 @@ impl FirewallHandle {
 
         // Parse format
         if let Some(format_str) = args.get("format") {
-            opts.format = RulesSaveFormat::from_str(format_str)
-                .map_err(|_e| FirewallError::InvalidSaveFormat { format: format_str.to_string() })?;
+            opts.format = RulesSaveFormat::from_str(format_str).map_err(|_e| {
+                FirewallError::InvalidSaveFormat {
+                    format: format_str.to_string(),
+                }
+            })?;
         }
 
         // Parse path
@@ -4692,8 +5102,11 @@ impl FirewallHandle {
 
         // Parse compression
         if let Some(compress_str) = args.get("compress") {
-            opts.compress = CompressMode::from_str(compress_str)
-                .map_err(|_e| FirewallError::InvalidCompress { compress: compress_str.to_string() })?;
+            opts.compress = CompressMode::from_str(compress_str).map_err(|_e| {
+                FirewallError::InvalidCompress {
+                    compress: compress_str.to_string(),
+                }
+            })?;
         }
 
         // Parse metadata flag
@@ -4716,7 +5129,8 @@ impl FirewallHandle {
 
         // Parse timeout
         if let Some(timeout_str) = args.get("timeout_ms") {
-            let timeout_ms: u64 = timeout_str.parse()
+            let timeout_ms: u64 = timeout_str
+                .parse()
                 .with_context(|| format!("Invalid timeout_ms: {}", timeout_str))?;
             if timeout_ms == 0 {
                 return Err(FirewallError::InvalidTimeout { timeout_ms }.into());
@@ -4732,7 +5146,10 @@ impl FirewallHandle {
         Ok(opts)
     }
 
-    async fn get_all_available_backends(&self, timeout_ms: u64) -> Result<Vec<(FirewallBackend, IpFamily)>> {
+    async fn get_all_available_backends(
+        &self,
+        timeout_ms: u64,
+    ) -> Result<Vec<(FirewallBackend, IpFamily)>> {
         let backends = vec![
             FirewallBackend::Nftables,
             FirewallBackend::Firewalld,
@@ -4741,7 +5158,7 @@ impl FirewallHandle {
         ];
 
         let mut available = Vec::new();
-        
+
         for backend in backends {
             if let Ok(_) = self.check_backend_availability(&backend, timeout_ms).await {
                 // For each available backend, include both IPv4 and IPv6 families
@@ -4757,7 +5174,12 @@ impl FirewallHandle {
         Ok(available)
     }
 
-    async fn collect_backend_data(&self, backend: &FirewallBackend, family: &IpFamily, opts: &RulesSaveOptions) -> Result<BackendSaveData> {
+    async fn collect_backend_data(
+        &self,
+        backend: &FirewallBackend,
+        family: &IpFamily,
+        opts: &RulesSaveOptions,
+    ) -> Result<BackendSaveData> {
         let mut backend_data = BackendSaveData {
             backend: backend.as_str().to_string(),
             family: family.as_str().to_string(),
@@ -4799,13 +5221,21 @@ impl FirewallHandle {
 
         // Collect native data if requested
         if opts.format == RulesSaveFormat::BackendNative || opts.format == RulesSaveFormat::Both {
-            backend_data.native_data = Some(self.get_native_backend_data(backend, family, opts.timeout_ms).await?);
+            backend_data.native_data = Some(
+                self.get_native_backend_data(backend, family, opts.timeout_ms)
+                    .await?,
+            );
         }
 
         Ok(backend_data)
     }
 
-    async fn get_native_backend_data(&self, backend: &FirewallBackend, family: &IpFamily, timeout_ms: u64) -> Result<NativeSaveData> {
+    async fn get_native_backend_data(
+        &self,
+        backend: &FirewallBackend,
+        family: &IpFamily,
+        timeout_ms: u64,
+    ) -> Result<NativeSaveData> {
         match backend {
             FirewallBackend::Iptables => {
                 let command = match family {
@@ -4817,124 +5247,151 @@ impl FirewallHandle {
                     }
                 };
 
-                let (exit_code, stdout, _stderr) = run_command_with_timeout(command, &[], timeout_ms).await?;
-                
+                let (exit_code, stdout, _stderr) =
+                    run_command_with_timeout(command, &[], timeout_ms).await?;
+
                 if exit_code != 0 {
                     return Err(FirewallError::CommandFailed {
                         command: command.to_string(),
                         code: exit_code,
                         stderr: _stderr,
-                    }.into());
+                    }
+                    .into());
                 }
 
                 Ok(NativeSaveData {
                     format: format!("{}-save", command.split('-').next().unwrap()),
                     data: stdout,
                 })
-            },
+            }
             FirewallBackend::Nftables => {
-                let (exit_code, stdout, _stderr) = run_command_with_timeout("nft", &["list", "ruleset"], timeout_ms).await?;
-                
+                let (exit_code, stdout, _stderr) =
+                    run_command_with_timeout("nft", &["list", "ruleset"], timeout_ms).await?;
+
                 if exit_code != 0 {
                     return Err(FirewallError::CommandFailed {
                         command: "nft list ruleset".to_string(),
                         code: exit_code,
                         stderr: _stderr,
-                    }.into());
+                    }
+                    .into());
                 }
 
                 Ok(NativeSaveData {
                     format: "nft-list-ruleset".to_string(),
                     data: stdout,
                 })
-            },
+            }
             FirewallBackend::Ufw => {
-                let (exit_code, stdout, _stderr) = run_command_with_timeout("ufw", &["status", "numbered"], timeout_ms).await?;
-                
+                let (exit_code, stdout, _stderr) =
+                    run_command_with_timeout("ufw", &["status", "numbered"], timeout_ms).await?;
+
                 if exit_code != 0 {
                     return Err(FirewallError::CommandFailed {
                         command: "ufw status numbered".to_string(),
                         code: exit_code,
                         stderr: _stderr,
-                    }.into());
+                    }
+                    .into());
                 }
 
                 Ok(NativeSaveData {
                     format: "ufw-status".to_string(),
                     data: stdout,
                 })
-            },
+            }
             FirewallBackend::Firewalld => {
-                let (exit_code, stdout, _stderr) = run_command_with_timeout("firewall-cmd", &["--list-all-zones"], timeout_ms).await?;
-                
+                let (exit_code, stdout, _stderr) =
+                    run_command_with_timeout("firewall-cmd", &["--list-all-zones"], timeout_ms)
+                        .await?;
+
                 if exit_code != 0 {
                     return Err(FirewallError::CommandFailed {
                         command: "firewall-cmd --list-all-zones".to_string(),
                         code: exit_code,
                         stderr: _stderr,
-                    }.into());
+                    }
+                    .into());
                 }
 
                 Ok(NativeSaveData {
                     format: "firewall-cmd-list-all-zones".to_string(),
                     data: stdout,
                 })
-            },
+            }
             FirewallBackend::Auto => {
                 return Err(FirewallError::InternalError {
-                    message: "Cannot get native data for Auto backend".to_string()
-                }.into());
+                    message: "Cannot get native data for Auto backend".to_string(),
+                }
+                .into());
             }
         }
     }
 
     fn compress_gzip(&self, data: &[u8]) -> Result<Vec<u8>, FirewallError> {
         use std::io::Write;
-        
+
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(data)
-            .map_err(|e| FirewallError::CompressFailed { message: e.to_string() })?;
-        
-        encoder.finish()
-            .map_err(|e| FirewallError::CompressFailed { message: e.to_string() })
+        encoder
+            .write_all(data)
+            .map_err(|e| FirewallError::CompressFailed {
+                message: e.to_string(),
+            })?;
+
+        encoder.finish().map_err(|e| FirewallError::CompressFailed {
+            message: e.to_string(),
+        })
     }
 
-    async fn write_file_atomic(&self, path: &str, data: &[u8], create_dirs: bool) -> Result<u64, FirewallError> {
+    async fn write_file_atomic(
+        &self,
+        path: &str,
+        data: &[u8],
+        create_dirs: bool,
+    ) -> Result<u64, FirewallError> {
         let target_path = Path::new(path);
-        
+
         // Create parent directories if requested
         if create_dirs {
             if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| FirewallError::IoError { message: format!("Failed to create directories: {}", e) })?;
+                fs::create_dir_all(parent).map_err(|e| FirewallError::IoError {
+                    message: format!("Failed to create directories: {}", e),
+                })?;
             }
         } else {
             // Check if parent directory exists
             if let Some(parent) = target_path.parent() {
                 if !parent.exists() {
-                    return Err(FirewallError::MissingDirectory { path: parent.to_string_lossy().to_string() });
+                    return Err(FirewallError::MissingDirectory {
+                        path: parent.to_string_lossy().to_string(),
+                    });
                 }
             }
         }
 
         // Create temporary file in same directory
         let temp_path = {
-            let mut temp_name = target_path.file_name()
+            let mut temp_name = target_path
+                .file_name()
                 .unwrap_or_else(|| std::ffi::OsStr::new("temp"))
                 .to_string_lossy()
                 .to_string();
             temp_name.push_str(".tmp-");
-            temp_name.push_str(&format!("{}", SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()));
-            
+            temp_name.push_str(&format!(
+                "{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+
             target_path.with_file_name(temp_name)
         };
 
         // Write to temporary file
-        fs::write(&temp_path, data)
-            .map_err(|e| FirewallError::IoError { message: format!("Failed to write temp file: {}", e) })?;
+        fs::write(&temp_path, data).map_err(|e| FirewallError::IoError {
+            message: format!("Failed to write temp file: {}", e),
+        })?;
 
         // Sync to disk (best effort)
         if let Ok(file) = fs::File::open(&temp_path) {
@@ -4942,12 +5399,13 @@ impl FirewallHandle {
         }
 
         // Atomically rename to target
-        fs::rename(&temp_path, target_path)
-            .map_err(|e| {
-                // Clean up temp file on error
-                let _ = fs::remove_file(&temp_path);
-                FirewallError::IoError { message: format!("Failed to rename temp file: {}", e) }
-            })?;
+        fs::rename(&temp_path, target_path).map_err(|e| {
+            // Clean up temp file on error
+            let _ = fs::remove_file(&temp_path);
+            FirewallError::IoError {
+                message: format!("Failed to rename temp file: {}", e),
+            }
+        })?;
 
         Ok(data.len() as u64)
     }
@@ -4958,15 +5416,17 @@ impl FirewallHandle {
 
     fn handle_rules_add(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(async {
-            self.rules_add_async(args).await
-        });
+        let result = rt.block_on(async { self.rules_add_async(args).await });
 
         match result {
             Ok(response) => {
                 match response.format_output {
                     OutputFormat::Json => {
-                        writeln!(io.stdout, "{}", serde_json::to_string_pretty(&response.to_json())?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string_pretty(&response.to_json())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stdout, "{}", response.to_text())?;
@@ -4985,13 +5445,17 @@ impl FirewallHandle {
                     fw_err.clone()
                 } else {
                     FirewallError::InternalError {
-                        message: e.to_string()
+                        message: e.to_string(),
                     }
                 };
 
                 let error_response = RulesAddResponse::with_error(firewall_error);
                 writeln!(io.stderr, "Error: {}", e)?;
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&error_response.to_json())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&error_response.to_json())?
+                )?;
                 Ok(Status::err(1, &e.to_string()))
             }
         }
@@ -5010,7 +5474,8 @@ impl FirewallHandle {
         let backend_to_use = if opts.backend == FirewallBackend::Auto {
             self.detect_available_backend(opts.timeout_ms).await?
         } else {
-            self.check_backend_availability(&opts.backend, opts.timeout_ms).await?;
+            self.check_backend_availability(&opts.backend, opts.timeout_ms)
+                .await?;
             opts.backend.clone()
         };
 
@@ -5036,8 +5501,8 @@ impl FirewallHandle {
                     Err(e) => {
                         return Ok(RulesAddResponse::with_error(
                             FirewallError::IdempotencyCheckFailed {
-                                message: e.to_string()
-                            }
+                                message: e.to_string(),
+                            },
                         ));
                     }
                 }
@@ -5045,7 +5510,11 @@ impl FirewallHandle {
             planned = to_add;
         }
 
-        response.rule = if rule_specs.len() == 1 { rule_specs.first().cloned() } else { None };
+        response.rule = if rule_specs.len() == 1 {
+            rule_specs.first().cloned()
+        } else {
+            None
+        };
         response.rules = rule_specs;
 
         if planned.is_empty() {
@@ -5054,7 +5523,9 @@ impl FirewallHandle {
                 changed: false,
                 already_exists: true,
             });
-            response.warnings.push("Matching rule already exists; no changes applied (idempotent=true).".to_string());
+            response.warnings.push(
+                "Matching rule already exists; no changes applied (idempotent=true).".to_string(),
+            );
             return Ok(response);
         }
         if existing > 0 {
@@ -5074,13 +5545,11 @@ impl FirewallHandle {
                 let (exit_code, _stdout, stderr) = run_argv(argv, opts.timeout_ms).await?;
 
                 if exit_code != 0 {
-                    return Ok(RulesAddResponse::with_error(
-                        FirewallError::CommandFailed {
-                            command: line.clone(),
-                            code: exit_code,
-                            stderr,
-                        }
-                    ));
+                    return Ok(RulesAddResponse::with_error(FirewallError::CommandFailed {
+                        command: line.clone(),
+                        code: exit_code,
+                        stderr,
+                    }));
                 }
             }
 
@@ -5093,7 +5562,9 @@ impl FirewallHandle {
                 changed: false,
                 already_exists: false,
             });
-            response.warnings.push("Dry run: no firewall changes applied.".to_string());
+            response
+                .warnings
+                .push("Dry run: no firewall changes applied.".to_string());
         }
 
         response.ok = true;
@@ -5181,7 +5652,8 @@ impl FirewallHandle {
         opts.after_rule_id = args.get("after_rule_id").cloned();
 
         if let Some(timeout_str) = args.get("timeout_ms") {
-            let timeout_ms: u64 = timeout_str.parse()
+            let timeout_ms: u64 = timeout_str
+                .parse()
                 .with_context(|| format!("Invalid timeout_ms: {}", timeout_str))?;
             if timeout_ms == 0 {
                 return Err(FirewallError::InvalidTimeout { timeout_ms }.into());
@@ -5200,14 +5672,22 @@ impl FirewallHandle {
     fn validate_direction(&self, direction: &str) -> Result<()> {
         match direction.to_lowercase().as_str() {
             "input" | "output" | "forward" | "prerouting" | "postrouting" => Ok(()),
-            _ => Err(FirewallError::InvalidDirection { direction: direction.to_string() }.into()),
+            _ => Err(FirewallError::InvalidDirection {
+                direction: direction.to_string(),
+            }
+            .into()),
         }
     }
 
     fn validate_action(&self, action: &str) -> Result<()> {
         match action.to_lowercase().as_str() {
-            "accept" | "drop" | "reject" | "log" | "masquerade" | "dnat" | "snat" | "redirect" => Ok(()),
-            _ => Err(FirewallError::InvalidAction { action: action.to_string() }.into()),
+            "accept" | "drop" | "reject" | "log" | "masquerade" | "dnat" | "snat" | "redirect" => {
+                Ok(())
+            }
+            _ => Err(FirewallError::InvalidAction {
+                action: action.to_string(),
+            }
+            .into()),
         }
     }
 
@@ -5219,7 +5699,10 @@ impl FirewallHandle {
                 if proto.parse::<u8>().is_ok() {
                     Ok(())
                 } else {
-                    Err(FirewallError::InvalidProto { proto: proto.to_string() }.into())
+                    Err(FirewallError::InvalidProto {
+                        proto: proto.to_string(),
+                    }
+                    .into())
                 }
             }
         }
@@ -5230,23 +5713,38 @@ impl FirewallHandle {
         if cidr.contains('/') {
             let parts: Vec<&str> = cidr.split('/').collect();
             if parts.len() != 2 {
-                return Err(FirewallError::InvalidCidr { cidr: cidr.to_string() }.into());
+                return Err(FirewallError::InvalidCidr {
+                    cidr: cidr.to_string(),
+                }
+                .into());
             }
             // Validate prefix length
             if let Ok(prefix) = parts[1].parse::<u8>() {
                 // IPv4 max prefix is 32, IPv6 max is 128
                 if parts[0].contains(':') && prefix > 128 {
-                    return Err(FirewallError::InvalidCidr { cidr: cidr.to_string() }.into());
+                    return Err(FirewallError::InvalidCidr {
+                        cidr: cidr.to_string(),
+                    }
+                    .into());
                 } else if !parts[0].contains(':') && prefix > 32 {
-                    return Err(FirewallError::InvalidCidr { cidr: cidr.to_string() }.into());
+                    return Err(FirewallError::InvalidCidr {
+                        cidr: cidr.to_string(),
+                    }
+                    .into());
                 }
             } else {
-                return Err(FirewallError::InvalidCidr { cidr: cidr.to_string() }.into());
+                return Err(FirewallError::InvalidCidr {
+                    cidr: cidr.to_string(),
+                }
+                .into());
             }
         }
         // Basic IP format check (simplified)
         if !cidr.contains('.') && !cidr.contains(':') {
-            return Err(FirewallError::InvalidCidr { cidr: cidr.to_string() }.into());
+            return Err(FirewallError::InvalidCidr {
+                cidr: cidr.to_string(),
+            }
+            .into());
         }
         Ok(())
     }
@@ -5254,7 +5752,10 @@ impl FirewallHandle {
     fn validate_position(&self, position: &str) -> Result<()> {
         match position.to_lowercase().as_str() {
             "append" | "insert" | "before" | "after" => Ok(()),
-            _ => Err(FirewallError::InvalidPosition { position: position.to_string() }.into()),
+            _ => Err(FirewallError::InvalidPosition {
+                position: position.to_string(),
+            }
+            .into()),
         }
     }
 
@@ -5264,13 +5765,18 @@ impl FirewallHandle {
     /// address yields an IPv4 and an IPv6 rule. ufw and firewalld cover both
     /// families with a single rule, reported with family "any". When an
     /// address is given, the family follows the address.
-    fn normalize_rule_specs(&self, opts: &RulesAddOptions, backend: &FirewallBackend) -> Result<Vec<FirewallRuleSpec>> {
+    fn normalize_rule_specs(
+        &self,
+        opts: &RulesAddOptions,
+        backend: &FirewallBackend,
+    ) -> Result<Vec<FirewallRuleSpec>> {
         if opts.zone.is_some() && *backend != FirewallBackend::Firewalld {
             return Err(FirewallError::UnsupportedOption {
                 option: "zone".to_string(),
                 backend: backend.as_str().to_string(),
                 message: "zone applies only to firewalld".to_string(),
-            }.into());
+            }
+            .into());
         }
 
         let families = resolve_add_families(
@@ -5280,7 +5786,8 @@ impl FirewallHandle {
             opts.daddr.as_ref(),
         )?;
 
-        let single_rule_backend = matches!(backend, FirewallBackend::Ufw | FirewallBackend::Firewalld);
+        let single_rule_backend =
+            matches!(backend, FirewallBackend::Ufw | FirewallBackend::Firewalld);
         let families: Vec<&str> = if single_rule_backend && families.len() > 1 {
             vec!["any"]
         } else {
@@ -5327,7 +5834,11 @@ impl FirewallHandle {
         Ok(specs)
     }
 
-    fn get_default_table_chain(&self, direction: &str, backend: &FirewallBackend) -> (Option<String>, Option<String>) {
+    fn get_default_table_chain(
+        &self,
+        direction: &str,
+        backend: &FirewallBackend,
+    ) -> (Option<String>, Option<String>) {
         match backend {
             FirewallBackend::Iptables | FirewallBackend::Nftables => {
                 match direction.to_lowercase().as_str() {
@@ -5343,7 +5854,11 @@ impl FirewallHandle {
         }
     }
 
-    async fn check_rule_exists(&self, rule_spec: &FirewallRuleSpec, opts: &RulesAddOptions) -> Result<bool> {
+    async fn check_rule_exists(
+        &self,
+        rule_spec: &FirewallRuleSpec,
+        opts: &RulesAddOptions,
+    ) -> Result<bool> {
         let backend = FirewallBackend::from_str(&rule_spec.backend)?;
         let list_opts = RulesListOptions {
             backend: backend.clone(),
@@ -5357,7 +5872,9 @@ impl FirewallHandle {
         };
 
         let existing_rules = self.get_rules_from_backend(&backend, &list_opts).await?;
-        Ok(existing_rules.iter().any(|rule| self.rules_match(rule_spec, rule)))
+        Ok(existing_rules
+            .iter()
+            .any(|rule| self.rules_match(rule_spec, rule)))
     }
 
     fn rules_match(&self, spec: &FirewallRuleSpec, rule: &FirewallRule) -> bool {
@@ -5371,14 +5888,16 @@ impl FirewallHandle {
             "deny" => "drop".to_string(),
             other => other.to_string(),
         };
-        let proto = |p: Option<&String>| p.filter(|p| !matches!(p.as_str(), "any" | "all")).cloned();
+        let proto =
+            |p: Option<&String>| p.filter(|p| !matches!(p.as_str(), "any" | "all")).cloned();
 
         spec.backend == rule.backend
             && (spec.family == rule.family || spec.family == "any" || rule.family == "any")
             && eq_ci(spec.table.as_deref(), rule.table.as_deref())
             && eq_ci(spec.chain.as_deref(), rule.chain.as_deref())
             && eq_ci(Some(spec.direction.as_str()), rule.direction.as_deref())
-            && canon_action(&spec.action) == canon_action(rule.action.as_deref().unwrap_or_default())
+            && canon_action(&spec.action)
+                == canon_action(rule.action.as_deref().unwrap_or_default())
             && proto(spec.proto.as_ref()) == proto(rule.proto.as_ref())
             && spec.sport == rule.sport
             && spec.dport == rule.dport
@@ -5389,13 +5908,19 @@ impl FirewallHandle {
     }
 
     /// Builds the commands (as argument vectors) that add `rule_spec`.
-    fn generate_add_commands(&self, rule_spec: &FirewallRuleSpec, opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
+    fn generate_add_commands(
+        &self,
+        rule_spec: &FirewallRuleSpec,
+        opts: &RulesAddOptions,
+    ) -> Result<Vec<Vec<String>>> {
         match FirewallBackend::from_str(&rule_spec.backend)? {
             FirewallBackend::Iptables => self.generate_iptables_add_command(rule_spec, opts),
             FirewallBackend::Nftables => self.generate_nftables_add_command(rule_spec, opts),
             FirewallBackend::Ufw => self.generate_ufw_add_command(rule_spec, opts),
             FirewallBackend::Firewalld => self.generate_firewalld_add_command(rule_spec, opts),
-            FirewallBackend::Auto => Err(anyhow::anyhow!("Backend should be resolved before generating commands")),
+            FirewallBackend::Auto => Err(anyhow::anyhow!(
+                "Backend should be resolved before generating commands"
+            )),
         }
     }
 
@@ -5405,20 +5930,34 @@ impl FirewallHandle {
     fn require_port_proto(&self, rule_spec: &FirewallRuleSpec) -> Result<()> {
         let has_port = rule_spec.sport.is_some() || rule_spec.dport.is_some();
         let port_proto = matches!(
-            rule_spec.proto.as_deref().map(|p| p.to_lowercase()).as_deref(),
+            rule_spec
+                .proto
+                .as_deref()
+                .map(|p| p.to_lowercase())
+                .as_deref(),
             Some("tcp") | Some("udp")
         );
         if has_port && !port_proto {
             return Err(FirewallError::UnsupportedOption {
-                option: if rule_spec.dport.is_some() { "dport" } else { "sport" }.to_string(),
+                option: if rule_spec.dport.is_some() {
+                    "dport"
+                } else {
+                    "sport"
+                }
+                .to_string(),
                 backend: rule_spec.backend.clone(),
                 message: "ports require proto=tcp or proto=udp".to_string(),
-            }.into());
+            }
+            .into());
         }
         Ok(())
     }
 
-    fn generate_iptables_add_command(&self, rule_spec: &FirewallRuleSpec, opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
+    fn generate_iptables_add_command(
+        &self,
+        rule_spec: &FirewallRuleSpec,
+        opts: &RulesAddOptions,
+    ) -> Result<Vec<Vec<String>>> {
         self.require_port_proto(rule_spec)?;
         let binary = match rule_spec.family.as_str() {
             "ipv4" => "iptables",
@@ -5426,7 +5965,8 @@ impl FirewallHandle {
             other => {
                 return Err(FirewallError::InternalError {
                     message: format!("iptables rule needs a single family, got '{}'", other),
-                }.into())
+                }
+                .into());
             }
         };
         let mut cmd: Vec<String> = vec![binary.to_string()];
@@ -5436,7 +5976,10 @@ impl FirewallHandle {
             push(&["-t", table]);
         }
 
-        let chain = rule_spec.chain.clone().unwrap_or_else(|| "INPUT".to_string());
+        let chain = rule_spec
+            .chain
+            .clone()
+            .unwrap_or_else(|| "INPUT".to_string());
         match opts.position.to_lowercase().as_str() {
             "insert" => push(&["-I", &chain, "1"]),
             _ => push(&["-A", &chain]),
@@ -5477,7 +6020,11 @@ impl FirewallHandle {
         Ok(vec![cmd])
     }
 
-    fn generate_nftables_add_command(&self, rule_spec: &FirewallRuleSpec, _opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
+    fn generate_nftables_add_command(
+        &self,
+        rule_spec: &FirewallRuleSpec,
+        _opts: &RulesAddOptions,
+    ) -> Result<Vec<Vec<String>>> {
         self.require_port_proto(rule_spec)?;
         let family = match rule_spec.family.as_str() {
             "ipv4" => "ip",
@@ -5485,11 +6032,19 @@ impl FirewallHandle {
             other => {
                 return Err(FirewallError::InternalError {
                     message: format!("nftables rule needs a single family, got '{}'", other),
-                }.into())
+                }
+                .into());
             }
         };
-        let table = rule_spec.table.clone().unwrap_or_else(|| "filter".to_string());
-        let chain = rule_spec.chain.clone().unwrap_or_else(|| "input".to_string()).to_lowercase();
+        let table = rule_spec
+            .table
+            .clone()
+            .unwrap_or_else(|| "filter".to_string());
+        let chain = rule_spec
+            .chain
+            .clone()
+            .unwrap_or_else(|| "input".to_string())
+            .to_lowercase();
 
         let mut cmd: Vec<String> = ["nft", "add", "rule", family, &table, &chain]
             .iter()
@@ -5540,7 +6095,11 @@ impl FirewallHandle {
         Ok(vec![cmd])
     }
 
-    fn generate_ufw_add_command(&self, rule_spec: &FirewallRuleSpec, _opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
+    fn generate_ufw_add_command(
+        &self,
+        rule_spec: &FirewallRuleSpec,
+        _opts: &RulesAddOptions,
+    ) -> Result<Vec<Vec<String>>> {
         let ufw_action = match rule_spec.action.to_lowercase().as_str() {
             "accept" => "allow",
             "drop" => "deny",
@@ -5578,7 +6137,11 @@ impl FirewallHandle {
         Ok(vec![cmd])
     }
 
-    fn generate_firewalld_add_command(&self, rule_spec: &FirewallRuleSpec, _opts: &RulesAddOptions) -> Result<Vec<Vec<String>>> {
+    fn generate_firewalld_add_command(
+        &self,
+        rule_spec: &FirewallRuleSpec,
+        _opts: &RulesAddOptions,
+    ) -> Result<Vec<Vec<String>>> {
         let zone = rule_spec.zone.as_ref().ok_or(FirewallError::ZoneRequired)?;
 
         let mut rich_rule = String::from("rule");
@@ -5639,15 +6202,17 @@ impl FirewallHandle {
 
     fn handle_rules_delete(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(async {
-            self.rules_delete_async(args).await
-        });
+        let result = rt.block_on(async { self.rules_delete_async(args).await });
 
         match result {
             Ok(response) => {
                 match response.format_output {
                     OutputFormat::Json => {
-                        writeln!(io.stdout, "{}", serde_json::to_string_pretty(&response.to_json())?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string_pretty(&response.to_json())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stdout, "{}", response.to_text())?;
@@ -5665,13 +6230,17 @@ impl FirewallHandle {
                     fw_err.clone()
                 } else {
                     FirewallError::InternalError {
-                        message: e.to_string()
+                        message: e.to_string(),
                     }
                 };
 
                 let error_response = RulesDeleteResponse::with_error(firewall_error);
                 writeln!(io.stderr, "Error: {}", e)?;
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&error_response.to_json())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&error_response.to_json())?
+                )?;
                 Ok(Status::err(1, &e.to_string()))
             }
         }
@@ -5690,7 +6259,8 @@ impl FirewallHandle {
         let backend_to_use = if opts.backend == FirewallBackend::Auto {
             self.detect_available_backend(opts.timeout_ms).await?
         } else {
-            self.check_backend_availability(&opts.backend, opts.timeout_ms).await?;
+            self.check_backend_availability(&opts.backend, opts.timeout_ms)
+                .await?;
             opts.backend.clone()
         };
 
@@ -5703,16 +6273,22 @@ impl FirewallHandle {
         // Check if we have matches
         if matched_rules.is_empty() {
             if opts.require_match {
-                return Ok(RulesDeleteResponse::with_error(FirewallError::NoRulesMatched));
+                return Ok(RulesDeleteResponse::with_error(
+                    FirewallError::NoRulesMatched,
+                ));
             } else {
                 response.ok = true;
                 response.result = Some(RulesDeleteResult {
                     deleted_count: 0,
                     skipped_count: 0,
                 });
-                response.warnings.push("No matching rules found to delete.".to_string());
+                response
+                    .warnings
+                    .push("No matching rules found to delete.".to_string());
                 if opts.dry_run {
-                    response.warnings.push("Dry run: no firewall changes applied.".to_string());
+                    response
+                        .warnings
+                        .push("Dry run: no firewall changes applied.".to_string());
                 }
                 return Ok(response);
             }
@@ -5736,13 +6312,12 @@ impl FirewallHandle {
                 let (exit_code, _stdout, stderr) = run_argv(argv, opts.timeout_ms).await?;
 
                 if exit_code != 0 {
-                    let mut failed = RulesDeleteResponse::with_error(
-                        FirewallError::CommandFailed {
+                    let mut failed =
+                        RulesDeleteResponse::with_error(FirewallError::CommandFailed {
                             command: line.clone(),
                             code: exit_code,
                             stderr,
-                        }
-                    );
+                        });
                     failed.query = response.query.clone();
                     failed.format_output = response.format_output.clone();
                     failed.backend_commands = command_lines.clone();
@@ -5755,7 +6330,9 @@ impl FirewallHandle {
             }
             commands.len() as u64
         } else {
-            response.warnings.push("Dry run: no firewall changes applied.".to_string());
+            response
+                .warnings
+                .push("Dry run: no firewall changes applied.".to_string());
             0
         };
 
@@ -5835,15 +6412,17 @@ impl FirewallHandle {
         if let Some(match_mode) = args.get("match_mode") {
             if match_mode != "exact" && match_mode != "subset" {
                 return Err(FirewallError::InvalidMatchMode {
-                    match_mode: match_mode.clone()
-                }.into());
+                    match_mode: match_mode.clone(),
+                }
+                .into());
             }
             opts.match_mode = match_mode.clone();
         }
 
         // Parse limit
         if let Some(limit_str) = args.get("limit") {
-            let limit: u64 = limit_str.parse()
+            let limit: u64 = limit_str
+                .parse()
                 .with_context(|| format!("Invalid limit: {}", limit_str))?;
             opts.limit = Some(limit);
         }
@@ -5858,7 +6437,8 @@ impl FirewallHandle {
         }
 
         if let Some(timeout_str) = args.get("timeout_ms") {
-            let timeout_ms: u64 = timeout_str.parse()
+            let timeout_ms: u64 = timeout_str
+                .parse()
                 .with_context(|| format!("Invalid timeout_ms: {}", timeout_str))?;
             if timeout_ms == 0 {
                 return Err(FirewallError::InvalidTimeout { timeout_ms }.into());
@@ -5874,9 +6454,19 @@ impl FirewallHandle {
         // Refuse a delete that names no rule at all, which would otherwise
         // select every rule (subset) or an arbitrary set (exact).
         let has_criteria = [
-            &opts.table, &opts.chain, &opts.direction, &opts.action, &opts.proto,
-            &opts.sport, &opts.dport, &opts.saddr, &opts.daddr, &opts.in_iface,
-            &opts.out_iface, &opts.comment_contains, &opts.zone,
+            &opts.table,
+            &opts.chain,
+            &opts.direction,
+            &opts.action,
+            &opts.proto,
+            &opts.sport,
+            &opts.dport,
+            &opts.saddr,
+            &opts.daddr,
+            &opts.in_iface,
+            &opts.out_iface,
+            &opts.comment_contains,
+            &opts.zone,
         ]
         .iter()
         .any(|v| v.is_some());
@@ -5888,17 +6478,25 @@ impl FirewallHandle {
     }
 
     /// Rejects delete options the resolved backend cannot honor.
-    fn validate_delete_options_for_backend(&self, backend: &FirewallBackend, opts: &RulesDeleteOptions) -> Result<()> {
+    fn validate_delete_options_for_backend(
+        &self,
+        backend: &FirewallBackend,
+        opts: &RulesDeleteOptions,
+    ) -> Result<()> {
         if opts.zone.is_some() && *backend != FirewallBackend::Firewalld {
             return Err(FirewallError::UnsupportedOption {
                 option: "zone".to_string(),
                 backend: backend.as_str().to_string(),
                 message: "zone applies only to firewalld".to_string(),
-            }.into());
+            }
+            .into());
         }
         if let Some(rule_id) = &opts.rule_id {
             if !rule_id_is_valid(backend, rule_id) {
-                return Err(FirewallError::InvalidRuleId { rule_id: rule_id.clone() }.into());
+                return Err(FirewallError::InvalidRuleId {
+                    rule_id: rule_id.clone(),
+                }
+                .into());
             }
         }
         Ok(())
@@ -5934,7 +6532,11 @@ impl FirewallHandle {
         })
     }
 
-    async fn find_matching_rules(&self, backend: &FirewallBackend, opts: &RulesDeleteOptions) -> Result<Vec<MatchedFirewallRule>> {
+    async fn find_matching_rules(
+        &self,
+        backend: &FirewallBackend,
+        opts: &RulesDeleteOptions,
+    ) -> Result<Vec<MatchedFirewallRule>> {
         // List every rule of the requested family with raw backend data, so
         // rule ids reflect the backend's own numbering, not the filtered list.
         let list_opts = RulesListOptions {
@@ -5952,8 +6554,9 @@ impl FirewallHandle {
             Ok(rules) => rules,
             Err(e) => {
                 return Err(FirewallError::ListFailedForDelete {
-                    message: e.to_string()
-                }.into());
+                    message: e.to_string(),
+                }
+                .into());
             }
         };
 
@@ -6011,13 +6614,17 @@ impl FirewallHandle {
                 return Err(FirewallError::AmbiguousRuleId {
                     rule_id: wanted.clone(),
                     count: by_id.len(),
-                }.into());
+                }
+                .into());
             }
             by_id
         } else {
             let subset = self.apply_filters(candidates, &filter_opts)?;
             if opts.match_mode == "exact" {
-                subset.into_iter().filter(|r| rule_matches_exactly(r, opts)).collect()
+                subset
+                    .into_iter()
+                    .filter(|r| rule_matches_exactly(r, opts))
+                    .collect()
             } else {
                 subset
             }
@@ -6048,17 +6655,20 @@ impl FirewallHandle {
     }
 
     /// Builds the commands (argument vectors) that delete exactly `rules`.
-    fn generate_delete_commands(&self, backend: &FirewallBackend, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
+    fn generate_delete_commands(
+        &self,
+        backend: &FirewallBackend,
+        rules: &[MatchedFirewallRule],
+    ) -> Result<Vec<Vec<String>>> {
         match backend {
             FirewallBackend::Iptables => self.generate_iptables_delete_commands(rules),
             FirewallBackend::Nftables => self.generate_nftables_delete_commands(rules),
             FirewallBackend::Ufw => self.generate_ufw_delete_commands(rules),
             FirewallBackend::Firewalld => self.generate_firewalld_delete_commands(rules),
-            FirewallBackend::Auto => {
-                Err(FirewallError::InternalError {
-                    message: "Backend should have been resolved before command generation".to_string()
-                }.into())
+            FirewallBackend::Auto => Err(FirewallError::InternalError {
+                message: "Backend should have been resolved before command generation".to_string(),
             }
+            .into()),
         }
     }
 
@@ -6067,7 +6677,10 @@ impl FirewallHandle {
     /// line numbers. Without the listed spec, the rule's line number in its
     /// own chain is used, highest first so earlier deletions do not shift
     /// later ones.
-    fn generate_iptables_delete_commands(&self, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
+    fn generate_iptables_delete_commands(
+        &self,
+        rules: &[MatchedFirewallRule],
+    ) -> Result<Vec<Vec<String>>> {
         let mut ordered: Vec<&MatchedFirewallRule> = rules.iter().collect();
         ordered.sort_by(|a, b| {
             (&a.family, &a.table, &a.chain)
@@ -6077,26 +6690,39 @@ impl FirewallHandle {
 
         let mut commands = Vec::new();
         for rule in ordered {
-            let binary = if rule.family == "ipv6" { "ip6tables" } else { "iptables" };
+            let binary = if rule.family == "ipv6" {
+                "ip6tables"
+            } else {
+                "iptables"
+            };
             let table = rule.table.as_deref().unwrap_or("filter");
-            let chain = rule.chain.as_deref().ok_or_else(|| FirewallError::RuleIdUnavailable {
-                message: "iptables rule has no chain".to_string(),
-            })?;
+            let chain = rule
+                .chain
+                .as_deref()
+                .ok_or_else(|| FirewallError::RuleIdUnavailable {
+                    message: "iptables rule has no chain".to_string(),
+                })?;
             let mut argv: Vec<String> = [binary, "-t", table, "-D", chain]
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
 
-            let spec = rule.raw.as_deref().map(tokenize_rule_line).filter(|t| {
-                t.len() > 2 && t[0] == "-A" && t[1] == chain
-            });
+            let spec = rule
+                .raw
+                .as_deref()
+                .map(tokenize_rule_line)
+                .filter(|t| t.len() > 2 && t[0] == "-A" && t[1] == chain);
             match (spec, rule.line_number) {
                 (Some(tokens), _) => argv.extend(tokens.into_iter().skip(2)),
                 (None, Some(line)) if line > 0 => argv.push(line.to_string()),
                 _ => {
                     return Err(FirewallError::RuleIdUnavailable {
-                        message: format!("no rule specification or line number for a rule in chain {}", chain),
-                    }.into())
+                        message: format!(
+                            "no rule specification or line number for a rule in chain {}",
+                            chain
+                        ),
+                    }
+                    .into());
                 }
             }
             commands.push(argv);
@@ -6104,7 +6730,10 @@ impl FirewallHandle {
         Ok(commands)
     }
 
-    fn generate_nftables_delete_commands(&self, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
+    fn generate_nftables_delete_commands(
+        &self,
+        rules: &[MatchedFirewallRule],
+    ) -> Result<Vec<Vec<String>>> {
         let mut commands = Vec::new();
         for rule in rules {
             let family = match rule.family.as_str() {
@@ -6113,50 +6742,82 @@ impl FirewallHandle {
                 other => other,
             };
             let table = rule.table.as_deref().unwrap_or("filter");
-            let chain = rule.chain.as_deref().ok_or_else(|| FirewallError::RuleIdUnavailable {
-                message: "nftables rule has no chain".to_string(),
-            })?;
-            let handle = rule.rule_id.as_deref().ok_or_else(|| FirewallError::RuleIdUnavailable {
-                message: format!("nftables rule in chain {} has no handle", chain),
-            })?;
+            let chain = rule
+                .chain
+                .as_deref()
+                .ok_or_else(|| FirewallError::RuleIdUnavailable {
+                    message: "nftables rule has no chain".to_string(),
+                })?;
+            let handle =
+                rule.rule_id
+                    .as_deref()
+                    .ok_or_else(|| FirewallError::RuleIdUnavailable {
+                        message: format!("nftables rule in chain {} has no handle", chain),
+                    })?;
             commands.push(
-                ["nft", "delete", "rule", family, table, chain, "handle", handle]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
+                [
+                    "nft", "delete", "rule", family, table, chain, "handle", handle,
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             );
         }
         Ok(commands)
     }
 
     /// ufw renumbers after each delete, so rules go highest number first.
-    fn generate_ufw_delete_commands(&self, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
+    fn generate_ufw_delete_commands(
+        &self,
+        rules: &[MatchedFirewallRule],
+    ) -> Result<Vec<Vec<String>>> {
         let mut numbers = Vec::new();
         for rule in rules {
-            let n = rule.rule_id.as_deref().and_then(|id| id.parse::<u64>().ok()).ok_or_else(|| {
-                FirewallError::RuleIdUnavailable { message: "ufw rule has no rule number".to_string() }
-            })?;
+            let n = rule
+                .rule_id
+                .as_deref()
+                .and_then(|id| id.parse::<u64>().ok())
+                .ok_or_else(|| FirewallError::RuleIdUnavailable {
+                    message: "ufw rule has no rule number".to_string(),
+                })?;
             numbers.push(n);
         }
         numbers.sort_unstable_by(|a, b| b.cmp(a));
         numbers.dedup();
         Ok(numbers
             .into_iter()
-            .map(|n| vec!["ufw".to_string(), "--force".to_string(), "delete".to_string(), n.to_string()])
+            .map(|n| {
+                vec![
+                    "ufw".to_string(),
+                    "--force".to_string(),
+                    "delete".to_string(),
+                    n.to_string(),
+                ]
+            })
             .collect())
     }
 
     /// firewalld rules are removed from their own zone by kind and value,
     /// taken from the rule id `<zone>:<kind>:<value>`.
-    fn generate_firewalld_delete_commands(&self, rules: &[MatchedFirewallRule]) -> Result<Vec<Vec<String>>> {
+    fn generate_firewalld_delete_commands(
+        &self,
+        rules: &[MatchedFirewallRule],
+    ) -> Result<Vec<Vec<String>>> {
         let mut commands = Vec::new();
         for rule in rules {
-            let id = rule.rule_id.as_deref().ok_or_else(|| FirewallError::RuleIdUnavailable {
-                message: "firewalld rule has no zone, kind, and value".to_string(),
-            })?;
+            let id = rule
+                .rule_id
+                .as_deref()
+                .ok_or_else(|| FirewallError::RuleIdUnavailable {
+                    message: "firewalld rule has no zone, kind, and value".to_string(),
+                })?;
             let mut parts = id.splitn(3, ':');
-            let (Some(zone), Some(kind), Some(value)) = (parts.next(), parts.next(), parts.next()) else {
-                return Err(FirewallError::RuleIdUnavailable { message: format!("bad firewalld rule id {}", id) }.into());
+            let (Some(zone), Some(kind), Some(value)) = (parts.next(), parts.next(), parts.next())
+            else {
+                return Err(FirewallError::RuleIdUnavailable {
+                    message: format!("bad firewalld rule id {}", id),
+                }
+                .into());
             };
             commands.push(vec![
                 "firewall-cmd".to_string(),
@@ -6173,15 +6834,17 @@ impl FirewallHandle {
 
     fn handle_rules_reload(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(async {
-            self.rules_reload_async(args).await
-        });
+        let result = rt.block_on(async { self.rules_reload_async(args).await });
 
         match result {
             Ok(response) => {
                 match response.format_output {
                     OutputFormat::Json => {
-                        writeln!(io.stdout, "{}", serde_json::to_string_pretty(&response.to_json())?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string_pretty(&response.to_json())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stdout, "{}", response.to_text())?;
@@ -6199,13 +6862,17 @@ impl FirewallHandle {
                     fw_err.clone()
                 } else {
                     FirewallError::InternalError {
-                        message: e.to_string()
+                        message: e.to_string(),
                     }
                 };
 
                 let error_response = RulesReloadResponse::with_error(firewall_error);
                 writeln!(io.stderr, "Error: {}", e)?;
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&error_response.to_json())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&error_response.to_json())?
+                )?;
                 Ok(Status::err(1, &e.to_string()))
             }
         }
@@ -6235,7 +6902,8 @@ impl FirewallHandle {
         let backend_to_use = if opts.backend == FirewallBackend::Auto {
             self.detect_available_backend(opts.timeout_ms).await?
         } else {
-            self.check_backend_availability(&opts.backend, opts.timeout_ms).await?;
+            self.check_backend_availability(&opts.backend, opts.timeout_ms)
+                .await?;
             opts.backend.clone()
         };
 
@@ -6245,10 +6913,12 @@ impl FirewallHandle {
         // Determine reload mode
         if opts.path.is_none() {
             // Backend-managed reload
-            self.backend_managed_reload(&backend_to_use, &opts, &mut response).await?;
+            self.backend_managed_reload(&backend_to_use, &opts, &mut response)
+                .await?;
         } else {
             // File-based reload
-            self.file_based_reload(&backend_to_use, &opts, &mut response).await?;
+            self.file_based_reload(&backend_to_use, &opts, &mut response)
+                .await?;
         }
 
         Ok(response)
@@ -6269,24 +6939,23 @@ impl FirewallHandle {
         match backend {
             FirewallBackend::Iptables | FirewallBackend::Nftables => {
                 return Err(FirewallError::ReloadPathRequired {
-                    backend: backend.as_str().to_string()
-                }.into());
+                    backend: backend.as_str().to_string(),
+                }
+                .into());
             }
             FirewallBackend::Ufw => {
                 let command = "ufw reload";
                 response.actions.push(command.to_string());
 
                 if !opts.dry_run && !opts.validate_only {
-                    let (exit_code, stdout, stderr) = run_command_with_timeout(
-                        "ufw",
-                        &["reload"],
-                        opts.timeout_ms
-                    ).await?;
+                    let (exit_code, stdout, stderr) =
+                        run_command_with_timeout("ufw", &["reload"], opts.timeout_ms).await?;
 
                     if exit_code != 0 {
                         return Err(FirewallError::ReloadFailed {
-                            message: format!("ufw reload failed: {}", stderr)
-                        }.into());
+                            message: format!("ufw reload failed: {}", stderr),
+                        }
+                        .into());
                     }
 
                     response.result = Some(RulesReloadResult {
@@ -6299,10 +6968,14 @@ impl FirewallHandle {
                         backup_path: None,
                     });
                     if opts.dry_run {
-                        response.warnings.push("Dry run: ufw reload not executed.".to_string());
+                        response
+                            .warnings
+                            .push("Dry run: ufw reload not executed.".to_string());
                     }
                     if opts.validate_only {
-                        response.warnings.push("Validate-only: ufw does not support true validation mode.".to_string());
+                        response.warnings.push(
+                            "Validate-only: ufw does not support true validation mode.".to_string(),
+                        );
                     }
                 }
 
@@ -6314,16 +6987,15 @@ impl FirewallHandle {
                 response.actions.push(command.to_string());
 
                 if !opts.dry_run && !opts.validate_only {
-                    let (exit_code, stdout, stderr) = run_command_with_timeout(
-                        "firewall-cmd",
-                        &["--reload"],
-                        opts.timeout_ms
-                    ).await?;
+                    let (exit_code, stdout, stderr) =
+                        run_command_with_timeout("firewall-cmd", &["--reload"], opts.timeout_ms)
+                            .await?;
 
                     if exit_code != 0 {
                         return Err(FirewallError::ReloadFailed {
-                            message: format!("firewall-cmd --reload failed: {}", stderr)
-                        }.into());
+                            message: format!("firewall-cmd --reload failed: {}", stderr),
+                        }
+                        .into());
                     }
 
                     response.result = Some(RulesReloadResult {
@@ -6336,21 +7008,25 @@ impl FirewallHandle {
                         backup_path: None,
                     });
                     if opts.dry_run {
-                        response.warnings.push("Dry run: firewall-cmd --reload not executed.".to_string());
+                        response
+                            .warnings
+                            .push("Dry run: firewall-cmd --reload not executed.".to_string());
                     }
                     if opts.validate_only {
-                        response.warnings.push("Validate-only: firewalld does not support true validation mode.".to_string());
+                        response.warnings.push(
+                            "Validate-only: firewalld does not support true validation mode."
+                                .to_string(),
+                        );
                     }
                 }
 
                 response.ok = true;
                 Ok(())
             }
-            FirewallBackend::Auto => {
-                Err(FirewallError::InternalError {
-                    message: "Auto backend should have been resolved".to_string()
-                }.into())
+            FirewallBackend::Auto => Err(FirewallError::InternalError {
+                message: "Auto backend should have been resolved".to_string(),
             }
+            .into()),
         }
     }
 
@@ -6366,9 +7042,7 @@ impl FirewallHandle {
 
         // Check if file exists
         if !Path::new(path).exists() {
-            return Err(FirewallError::ReloadPathNotFound {
-                path: path.clone()
-            }.into());
+            return Err(FirewallError::ReloadPathNotFound { path: path.clone() }.into());
         }
 
         // Detect source format if Auto
@@ -6387,8 +7061,9 @@ impl FirewallHandle {
         match backend {
             FirewallBackend::Ufw | FirewallBackend::Firewalld => {
                 return Err(FirewallError::ReloadFileModeNotSupported {
-                    backend: backend.as_str().to_string()
-                }.into());
+                    backend: backend.as_str().to_string(),
+                }
+                .into());
             }
             _ => {}
         }
@@ -6404,16 +7079,21 @@ impl FirewallHandle {
                 }
                 _ => {
                     return Err(FirewallError::ReloadFileModeNotSupported {
-                        backend: backend.as_str().to_string()
-                    }.into());
+                        backend: backend.as_str().to_string(),
+                    }
+                    .into());
                 }
             }
         } else if source_format == RulesReloadSourceFormat::NormalizedJson {
             // For now, normalized JSON reload is not fully supported
             // This would require converting JSON back to backend commands
-            response.warnings.push("Normalized JSON reload support is limited. Backend-native format recommended.".to_string());
+            response.warnings.push(
+                "Normalized JSON reload support is limited. Backend-native format recommended."
+                    .to_string(),
+            );
             // Try to extract backend_native from JSON if available
-            self.reload_from_normalized_json(backend, opts, response, path).await?;
+            self.reload_from_normalized_json(backend, opts, response, path)
+                .await?;
         }
 
         Ok(())
@@ -6421,10 +7101,9 @@ impl FirewallHandle {
 
     fn detect_source_format(&self, path: &str) -> Result<RulesReloadSourceFormat> {
         // Try to read the file and detect format
-        let content = fs::read_to_string(path)
-            .map_err(|e| FirewallError::ReloadPathNotFound {
-                path: path.to_string()
-            })?;
+        let content = fs::read_to_string(path).map_err(|e| FirewallError::ReloadPathNotFound {
+            path: path.to_string(),
+        })?;
 
         // Check if it's JSON
         if content.trim_start().starts_with('{') {
@@ -6453,14 +7132,18 @@ impl FirewallHandle {
             IpFamily::Ipv6 => ("ip6tables-restore", "ipv6"),
             IpFamily::Any => {
                 return Err(FirewallError::InvalidFamily {
-                    family: "any (must specify ipv4 or ipv6 for iptables file reload)".to_string()
-                }.into());
+                    family: "any (must specify ipv4 or ipv6 for iptables file reload)".to_string(),
+                }
+                .into());
             }
         };
 
         // Create backup if requested
         let backup_path = if opts.backup_before_apply && !opts.dry_run && !opts.validate_only {
-            Some(self.create_iptables_backup(cmd_family, opts.timeout_ms).await?)
+            Some(
+                self.create_iptables_backup(cmd_family, opts.timeout_ms)
+                    .await?,
+            )
         } else {
             None
         };
@@ -6470,7 +7153,10 @@ impl FirewallHandle {
 
         if opts.validate_only {
             // Try to validate if possible (some systems have --test flag)
-            response.warnings.push("iptables-restore does not have standard validation mode on all systems.".to_string());
+            response.warnings.push(
+                "iptables-restore does not have standard validation mode on all systems."
+                    .to_string(),
+            );
             response.result = Some(RulesReloadResult {
                 changed: false,
                 backup_path: None,
@@ -6481,10 +7167,9 @@ impl FirewallHandle {
 
         if !opts.dry_run {
             // Execute iptables-restore
-            let file_content = fs::read_to_string(path)
-                .map_err(|e| FirewallError::IoError {
-                    message: format!("Failed to read file: {}", e)
-                })?;
+            let file_content = fs::read_to_string(path).map_err(|e| FirewallError::IoError {
+                message: format!("Failed to read file: {}", e),
+            })?;
 
             let mut child = Command::new(resolve_program(restore_cmd))
                 .stdin(std::process::Stdio::piped())
@@ -6492,26 +7177,29 @@ impl FirewallHandle {
                 .stderr(std::process::Stdio::piped())
                 .spawn()
                 .map_err(|e| FirewallError::ReloadFailed {
-                    message: format!("Failed to spawn {}: {}", restore_cmd, e)
+                    message: format!("Failed to spawn {}: {}", restore_cmd, e),
                 })?;
 
             if let Some(stdin) = child.stdin.as_mut() {
-                stdin.write_all(file_content.as_bytes())
+                stdin
+                    .write_all(file_content.as_bytes())
                     .map_err(|e| FirewallError::IoError {
-                        message: format!("Failed to write to stdin: {}", e)
+                        message: format!("Failed to write to stdin: {}", e),
                     })?;
             }
 
-            let output = child.wait_with_output()
+            let output = child
+                .wait_with_output()
                 .map_err(|e| FirewallError::ReloadFailed {
-                    message: format!("Failed to wait for {}: {}", restore_cmd, e)
+                    message: format!("Failed to wait for {}: {}", restore_cmd, e),
                 })?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(FirewallError::ReloadFailed {
-                    message: format!("{} failed: {}", restore_cmd, stderr)
-                }.into());
+                    message: format!("{} failed: {}", restore_cmd, stderr),
+                }
+                .into());
             }
 
             response.result = Some(RulesReloadResult {
@@ -6523,7 +7211,9 @@ impl FirewallHandle {
                 changed: false,
                 backup_path: None,
             });
-            response.warnings.push("Dry run: iptables-restore not executed.".to_string());
+            response
+                .warnings
+                .push("Dry run: iptables-restore not executed.".to_string());
         }
 
         response.ok = true;
@@ -6548,23 +7238,23 @@ impl FirewallHandle {
             let command_str = format!("nft -c -f {}", path);
             response.actions.push(command_str.clone());
 
-            let (exit_code, _, stderr) = run_command_with_timeout(
-                "nft",
-                &["-c", "-f", path],
-                opts.timeout_ms
-            ).await?;
+            let (exit_code, _, stderr) =
+                run_command_with_timeout("nft", &["-c", "-f", path], opts.timeout_ms).await?;
 
             if exit_code != 0 {
                 return Err(FirewallError::ReloadFailed {
-                    message: format!("nft validation failed: {}", stderr)
-                }.into());
+                    message: format!("nft validation failed: {}", stderr),
+                }
+                .into());
             }
 
             response.result = Some(RulesReloadResult {
                 changed: false,
                 backup_path: None,
             });
-            response.warnings.push("Validate-only: nft ruleset not applied.".to_string());
+            response
+                .warnings
+                .push("Validate-only: nft ruleset not applied.".to_string());
             response.ok = true;
             return Ok(());
         }
@@ -6573,16 +7263,14 @@ impl FirewallHandle {
         response.actions.push(command_str.clone());
 
         if !opts.dry_run {
-            let (exit_code, _, stderr) = run_command_with_timeout(
-                "nft",
-                &["-f", path],
-                opts.timeout_ms
-            ).await?;
+            let (exit_code, _, stderr) =
+                run_command_with_timeout("nft", &["-f", path], opts.timeout_ms).await?;
 
             if exit_code != 0 {
                 return Err(FirewallError::ReloadFailed {
-                    message: format!("nft -f failed: {}", stderr)
-                }.into());
+                    message: format!("nft -f failed: {}", stderr),
+                }
+                .into());
             }
 
             response.result = Some(RulesReloadResult {
@@ -6594,7 +7282,9 @@ impl FirewallHandle {
                 changed: false,
                 backup_path: None,
             });
-            response.warnings.push("Dry run: nft -f not executed.".to_string());
+            response
+                .warnings
+                .push("Dry run: nft -f not executed.".to_string());
         }
 
         response.ok = true;
@@ -6605,18 +7295,20 @@ impl FirewallHandle {
     /// writes them to a new file in the backup directory. Returns the path
     /// only once the backup is on disk.
     async fn create_iptables_backup(&self, family: &str, timeout_ms: u64) -> Result<String> {
-        let save_cmd = if family == "ipv6" { "ip6tables-save" } else { "iptables-save" };
+        let save_cmd = if family == "ipv6" {
+            "ip6tables-save"
+        } else {
+            "iptables-save"
+        };
 
-        let (exit_code, stdout, stderr) = run_command_with_timeout(
-            save_cmd,
-            &[],
-            timeout_ms
-        ).await?;
+        let (exit_code, stdout, stderr) =
+            run_command_with_timeout(save_cmd, &[], timeout_ms).await?;
 
         if exit_code != 0 {
             return Err(FirewallError::SaveFailed {
-                message: format!("{} failed: {}", save_cmd, stderr)
-            }.into());
+                message: format!("{} failed: {}", save_cmd, stderr),
+            }
+            .into());
         }
 
         write_rules_backup(
@@ -6629,16 +7321,14 @@ impl FirewallHandle {
     /// Captures the live nftables ruleset and writes it to a new file in
     /// the backup directory. Returns the path only once it is on disk.
     async fn create_nftables_backup(&self, timeout_ms: u64) -> Result<String> {
-        let (exit_code, stdout, stderr) = run_command_with_timeout(
-            "nft",
-            &["list", "ruleset"],
-            timeout_ms
-        ).await?;
+        let (exit_code, stdout, stderr) =
+            run_command_with_timeout("nft", &["list", "ruleset"], timeout_ms).await?;
 
         if exit_code != 0 {
             return Err(FirewallError::SaveFailed {
-                message: format!("nft list ruleset failed: {}", stderr)
-            }.into());
+                message: format!("nft list ruleset failed: {}", stderr),
+            }
+            .into());
         }
 
         write_rules_backup(
@@ -6656,14 +7346,13 @@ impl FirewallHandle {
         path: &str,
     ) -> Result<()> {
         // Read and parse JSON
-        let content = fs::read_to_string(path)
-            .map_err(|e| FirewallError::IoError {
-                message: format!("Failed to read file: {}", e)
-            })?;
+        let content = fs::read_to_string(path).map_err(|e| FirewallError::IoError {
+            message: format!("Failed to read file: {}", e),
+        })?;
 
-        let snapshot: Value = serde_json::from_str(&content)
-            .map_err(|e| FirewallError::SerializeFailed {
-                message: format!("Failed to parse JSON: {}", e)
+        let snapshot: Value =
+            serde_json::from_str(&content).map_err(|e| FirewallError::SerializeFailed {
+                message: format!("Failed to parse JSON: {}", e),
             })?;
 
         // Check if backend_native data is present
@@ -6681,19 +7370,25 @@ impl FirewallHandle {
                                 .prefix(&format!(".resh-reload-{}-", backend.as_str()))
                                 .suffix(".rules")
                                 .tempfile()
-                                .and_then(|mut t| t.write_all(native_data.as_bytes()).and_then(|_| t.flush()).map(|_| t))
+                                .and_then(|mut t| {
+                                    t.write_all(native_data.as_bytes())
+                                        .and_then(|_| t.flush())
+                                        .map(|_| t)
+                                })
                                 .map_err(|e| FirewallError::IoError {
-                                    message: format!("Failed to write temp file: {}", e)
+                                    message: format!("Failed to write temp file: {}", e),
                                 })?;
                             let temp_path = temp.path().to_string_lossy().to_string();
 
                             // Reload using the temp file
                             match backend {
                                 FirewallBackend::Iptables => {
-                                    self.iptables_file_reload(opts, response, &temp_path).await?;
+                                    self.iptables_file_reload(opts, response, &temp_path)
+                                        .await?;
                                 }
                                 FirewallBackend::Nftables => {
-                                    self.nftables_file_reload(opts, response, &temp_path).await?;
+                                    self.nftables_file_reload(opts, response, &temp_path)
+                                        .await?;
                                 }
                                 _ => {}
                             }
@@ -6710,8 +7405,9 @@ impl FirewallHandle {
         }
 
         Err(FirewallError::ReloadBackendNativeMissing {
-            backend: backend.as_str().to_string()
-        }.into())
+            backend: backend.as_str().to_string(),
+        }
+        .into())
     }
 
     fn parse_rules_reload_options(&self, args: &Args) -> Result<RulesReloadOptions> {
@@ -6732,10 +7428,11 @@ impl FirewallHandle {
 
         // Parse source_format
         if let Some(format_str) = args.get("source_format") {
-            opts.source_format = RulesReloadSourceFormat::from_str(format_str)
-                .map_err(|_e| FirewallError::InvalidReloadSourceFormat {
-                    format: format_str.to_string()
-                })?;
+            opts.source_format = RulesReloadSourceFormat::from_str(format_str).map_err(|_e| {
+                FirewallError::InvalidReloadSourceFormat {
+                    format: format_str.to_string(),
+                }
+            })?;
         }
 
         // Parse behavior flags
@@ -6753,7 +7450,8 @@ impl FirewallHandle {
 
         // Parse timeout
         if let Some(timeout_str) = args.get("timeout_ms") {
-            let timeout_ms: u64 = timeout_str.parse()
+            let timeout_ms: u64 = timeout_str
+                .parse()
                 .with_context(|| format!("Invalid timeout_ms: {}", timeout_str))?;
             if timeout_ms == 0 {
                 return Err(FirewallError::InvalidTimeout { timeout_ms }.into());
@@ -6771,15 +7469,17 @@ impl FirewallHandle {
 
     fn handle_status(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(async {
-            self.status_async(args).await
-        });
+        let result = rt.block_on(async { self.status_async(args).await });
 
         match result {
             Ok(response) => {
                 match response.output_format {
                     OutputFormat::Json => {
-                        writeln!(io.stdout, "{}", serde_json::to_string_pretty(&response.json_format())?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string_pretty(&response.json_format())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stdout, "{}", response.text_format())?;
@@ -6792,7 +7492,7 @@ impl FirewallHandle {
                     fw_err.clone()
                 } else {
                     FirewallError::StatusInternalError {
-                        message: e.to_string()
+                        message: e.to_string(),
                     }
                 };
 
@@ -6808,7 +7508,11 @@ impl FirewallHandle {
 
                 let error_response = StatusResponse::with_error(error_opts, firewall_error);
                 writeln!(io.stderr, "Error: {}", e)?;
-                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&error_response.json_format())?)?;
+                writeln!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string_pretty(&error_response.json_format())?
+                )?;
                 Ok(Status::err(1, &e.to_string()))
             }
         }
@@ -6816,14 +7520,26 @@ impl FirewallHandle {
 
     async fn status_async(&self, args: &Args) -> Result<StatusResponse> {
         let opts = self.parse_status_options(args)?;
-        
+
         match opts.backend {
             StatusBackend::Auto => self.execute_status_auto(&opts).await,
             StatusBackend::All => self.execute_status_all(&opts).await,
-            StatusBackend::Iptables => self.execute_status_specific(&opts, &FirewallBackend::Iptables).await,
-            StatusBackend::Nftables => self.execute_status_specific(&opts, &FirewallBackend::Nftables).await,
-            StatusBackend::Ufw => self.execute_status_specific(&opts, &FirewallBackend::Ufw).await,
-            StatusBackend::Firewalld => self.execute_status_specific(&opts, &FirewallBackend::Firewalld).await,
+            StatusBackend::Iptables => {
+                self.execute_status_specific(&opts, &FirewallBackend::Iptables)
+                    .await
+            }
+            StatusBackend::Nftables => {
+                self.execute_status_specific(&opts, &FirewallBackend::Nftables)
+                    .await
+            }
+            StatusBackend::Ufw => {
+                self.execute_status_specific(&opts, &FirewallBackend::Ufw)
+                    .await
+            }
+            StatusBackend::Firewalld => {
+                self.execute_status_specific(&opts, &FirewallBackend::Firewalld)
+                    .await
+            }
         }
     }
 
@@ -6834,7 +7550,12 @@ impl FirewallHandle {
         let family_str = args.get("family").map(|s| s.as_str()).unwrap_or("any");
         let family = StatusFamily::from_str(family_str)?;
 
-        let output_format = if args.get("format_output").map(|s| s.as_str()).unwrap_or("json") == "text" {
+        let output_format = if args
+            .get("format_output")
+            .map(|s| s.as_str())
+            .unwrap_or("json")
+            == "text"
+        {
             OutputFormat::Text
         } else {
             OutputFormat::Json
@@ -6843,9 +7564,18 @@ impl FirewallHandle {
         Ok(StatusOptions {
             backend,
             family,
-            include_metrics: args.get("include_metrics").map(|s| s.parse().unwrap_or(true)).unwrap_or(true),
-            include_rules_summary: args.get("include_rules_summary").map(|s| s.parse().unwrap_or(false)).unwrap_or(false),
-            timeout_ms: args.get("timeout_ms").map(|s| s.parse().unwrap_or(5000)).unwrap_or(5000),
+            include_metrics: args
+                .get("include_metrics")
+                .map(|s| s.parse().unwrap_or(true))
+                .unwrap_or(true),
+            include_rules_summary: args
+                .get("include_rules_summary")
+                .map(|s| s.parse().unwrap_or(false))
+                .unwrap_or(false),
+            timeout_ms: args
+                .get("timeout_ms")
+                .map(|s| s.parse().unwrap_or(5000))
+                .unwrap_or(5000),
             output_format,
         })
     }
@@ -6857,9 +7587,7 @@ impl FirewallHandle {
                 let backend_status = self.get_backend_status(&backend, opts).await?;
                 Ok(StatusResponse::success(opts.clone(), vec![backend_status]))
             }
-            Err(_) => {
-                Err(FirewallError::StatusNoBackendAvailable.into())
-            }
+            Err(_) => Err(FirewallError::StatusNoBackendAvailable.into()),
         }
     }
 
@@ -6872,10 +7600,12 @@ impl FirewallHandle {
         ];
 
         let mut backend_statuses = Vec::new();
-        
+
         for backend in all_backends {
-            let status = self.get_backend_status(&backend, opts).await.unwrap_or_else(|_| {
-                FirewallBackendStatus {
+            let status = self
+                .get_backend_status(&backend, opts)
+                .await
+                .unwrap_or_else(|_| FirewallBackendStatus {
                     backend: backend.as_str().to_string(),
                     available: false,
                     active: false,
@@ -6884,48 +7614,60 @@ impl FirewallHandle {
                     rule_count_ipv4: None,
                     rule_count_ipv6: None,
                     details: None,
-                    warnings: vec![format!("{} not available or failed to check", backend.as_str())],
-                }
-            });
+                    warnings: vec![format!(
+                        "{} not available or failed to check",
+                        backend.as_str()
+                    )],
+                });
             backend_statuses.push(status);
         }
 
         Ok(StatusResponse::success(opts.clone(), backend_statuses))
     }
 
-    async fn execute_status_specific(&self, opts: &StatusOptions, backend: &FirewallBackend) -> Result<StatusResponse> {
+    async fn execute_status_specific(
+        &self,
+        opts: &StatusOptions,
+        backend: &FirewallBackend,
+    ) -> Result<StatusResponse> {
         match self.get_backend_status(backend, opts).await {
             Ok(status) => Ok(StatusResponse::success(opts.clone(), vec![status])),
             Err(e) => {
                 if let Some(fw_err) = e.downcast_ref::<FirewallError>() {
                     Err(fw_err.clone().into())
                 } else {
-                    Err(FirewallError::StatusInternalError { 
-                        message: e.to_string() 
-                    }.into())
+                    Err(FirewallError::StatusInternalError {
+                        message: e.to_string(),
+                    }
+                    .into())
                 }
             }
         }
     }
 
-    async fn get_backend_status(&self, backend: &FirewallBackend, opts: &StatusOptions) -> Result<FirewallBackendStatus> {
+    async fn get_backend_status(
+        &self,
+        backend: &FirewallBackend,
+        opts: &StatusOptions,
+    ) -> Result<FirewallBackendStatus> {
         match backend {
             FirewallBackend::Iptables => self.get_iptables_status(opts).await,
             FirewallBackend::Nftables => self.get_nftables_status(opts).await,
             FirewallBackend::Ufw => self.get_ufw_status(opts).await,
             FirewallBackend::Firewalld => self.get_firewalld_status(opts).await,
             FirewallBackend::Auto => Err(FirewallError::StatusInternalError {
-                message: "Auto backend should be resolved before getting status".to_string()
-            }.into()),
+                message: "Auto backend should be resolved before getting status".to_string(),
+            }
+            .into()),
         }
     }
 
     async fn get_iptables_status(&self, opts: &StatusOptions) -> Result<FirewallBackendStatus> {
         let mut warnings = Vec::new();
-        
+
         // Check availability
         let available = is_command_available("iptables") || is_command_available("ip6tables");
-        
+
         if !available {
             return Ok(FirewallBackendStatus {
                 backend: "iptables".to_string(),
@@ -6941,16 +7683,22 @@ impl FirewallHandle {
         }
 
         // Get IPv4 status
-        let (ipv4_active, ipv4_count, ipv4_policy) = self.get_iptables_family_status("iptables-save", opts).await;
-        
-        // Get IPv6 status  
-        let (ipv6_active, ipv6_count, ipv6_policy) = self.get_iptables_family_status("ip6tables-save", opts).await;
+        let (ipv4_active, ipv4_count, ipv4_policy) =
+            self.get_iptables_family_status("iptables-save", opts).await;
+
+        // Get IPv6 status
+        let (ipv6_active, ipv6_count, ipv6_policy) = self
+            .get_iptables_family_status("ip6tables-save", opts)
+            .await;
 
         let active = ipv4_active || ipv6_active;
         let enabled = active; // iptables doesn't have separate enabled/active states
 
         if !active {
-            warnings.push("No iptables rules active; system may rely on another firewall backend.".to_string());
+            warnings.push(
+                "No iptables rules active; system may rely on another firewall backend."
+                    .to_string(),
+            );
         }
 
         let default_policy = match (ipv4_policy, ipv6_policy) {
@@ -6983,7 +7731,11 @@ impl FirewallHandle {
         })
     }
 
-    async fn get_iptables_family_status(&self, command: &str, opts: &StatusOptions) -> (bool, Option<u64>, Option<String>) {
+    async fn get_iptables_family_status(
+        &self,
+        command: &str,
+        opts: &StatusOptions,
+    ) -> (bool, Option<u64>, Option<String>) {
         match run_command_with_timeout(command, &[], opts.timeout_ms).await {
             Ok((0, stdout, _)) => {
                 let mut rule_count = 0u64;
@@ -6992,14 +7744,18 @@ impl FirewallHandle {
 
                 for line in stdout.lines() {
                     let line = line.trim();
-                    
-                    if line.starts_with(":INPUT ") || line.starts_with(":OUTPUT ") || line.starts_with(":FORWARD ") {
+
+                    if line.starts_with(":INPUT ")
+                        || line.starts_with(":OUTPUT ")
+                        || line.starts_with(":FORWARD ")
+                    {
                         if let Some(policy_part) = line.split_whitespace().nth(1) {
                             default_policy = Some(policy_part.to_string());
                         }
                     } else if line.starts_with("-A ") {
                         rule_count += 1;
-                        if !line.contains("state --state") && !line.contains("RELATED,ESTABLISHED") {
+                        if !line.contains("state --state") && !line.contains("RELATED,ESTABLISHED")
+                        {
                             has_custom_rules = true;
                         }
                     }
@@ -7016,7 +7772,7 @@ impl FirewallHandle {
 
         // Check availability
         let available = is_command_available("nft");
-        
+
         if !available {
             return Ok(FirewallBackendStatus {
                 backend: "nftables".to_string(),
@@ -7033,7 +7789,7 @@ impl FirewallHandle {
 
         match run_command_with_timeout("nft", &["list", "ruleset"], opts.timeout_ms).await {
             Ok((0, stdout, _)) => {
-                let (active, ipv4_count, ipv6_count, tables, default_policy) = 
+                let (active, ipv4_count, ipv6_count, tables, default_policy) =
                     self.parse_nftables_status(&stdout, opts).await;
 
                 let enabled = active; // nftables doesn't have separate enabled/active states
@@ -7042,7 +7798,11 @@ impl FirewallHandle {
                     Some(format!(
                         "nftables ruleset {} (tables: {}; rules: ipv4={}, ipv6={})",
                         if active { "present" } else { "empty" },
-                        if tables.is_empty() { "none".to_string() } else { tables.join(",") },
+                        if tables.is_empty() {
+                            "none".to_string()
+                        } else {
+                            tables.join(",")
+                        },
                         ipv4_count.unwrap_or(0),
                         ipv6_count.unwrap_or(0)
                     ))
@@ -7063,7 +7823,10 @@ impl FirewallHandle {
                 })
             }
             Ok((code, _, stderr)) => {
-                warnings.push(format!("nft list ruleset failed with exit code {}: {}", code, stderr));
+                warnings.push(format!(
+                    "nft list ruleset failed with exit code {}: {}",
+                    code, stderr
+                ));
                 Ok(FirewallBackendStatus {
                     backend: "nftables".to_string(),
                     available,
@@ -7076,15 +7839,18 @@ impl FirewallHandle {
                     warnings,
                 })
             }
-            Err(_) => {
-                Err(FirewallError::StatusTimeout { 
-                    backend: "nftables".to_string() 
-                }.into())
+            Err(_) => Err(FirewallError::StatusTimeout {
+                backend: "nftables".to_string(),
             }
+            .into()),
         }
     }
 
-    async fn parse_nftables_status(&self, stdout: &str, _opts: &StatusOptions) -> (bool, Option<u64>, Option<u64>, Vec<String>, Option<String>) {
+    async fn parse_nftables_status(
+        &self,
+        stdout: &str,
+        _opts: &StatusOptions,
+    ) -> (bool, Option<u64>, Option<u64>, Vec<String>, Option<String>) {
         let mut active = false;
         let mut ipv4_count = 0u64;
         let mut ipv6_count = 0u64;
@@ -7094,7 +7860,7 @@ impl FirewallHandle {
 
         for line in stdout.lines() {
             let line = line.trim();
-            
+
             if line.starts_with("table ip ") {
                 current_family = Some("ip");
                 if let Some(table_name) = line.split_whitespace().nth(2) {
@@ -7107,13 +7873,19 @@ impl FirewallHandle {
                     tables.push(table_name.to_string());
                 }
                 active = true;
-            } else if line.contains("chain ") && (line.contains("type filter") || line.contains("hook input")) {
+            } else if line.contains("chain ")
+                && (line.contains("type filter") || line.contains("hook input"))
+            {
                 if line.contains("policy drop") {
                     default_policy = Some("DROP".to_string());
                 } else if line.contains("policy accept") {
                     default_policy = Some("ACCEPT".to_string());
                 }
-            } else if line.starts_with("jump ") || line.starts_with("accept") || line.starts_with("drop") || line.starts_with("reject") {
+            } else if line.starts_with("jump ")
+                || line.starts_with("accept")
+                || line.starts_with("drop")
+                || line.starts_with("reject")
+            {
                 if let Some(family) = current_family {
                     match family {
                         "ip" => ipv4_count += 1,
@@ -7124,7 +7896,13 @@ impl FirewallHandle {
             }
         }
 
-        (active, Some(ipv4_count), Some(ipv6_count), tables, default_policy)
+        (
+            active,
+            Some(ipv4_count),
+            Some(ipv6_count),
+            tables,
+            default_policy,
+        )
     }
 
     async fn get_ufw_status(&self, opts: &StatusOptions) -> Result<FirewallBackendStatus> {
@@ -7132,7 +7910,7 @@ impl FirewallHandle {
 
         // Check availability
         let available = is_command_available("ufw");
-        
+
         if !available {
             return Ok(FirewallBackendStatus {
                 backend: "ufw".to_string(),
@@ -7156,7 +7934,15 @@ impl FirewallHandle {
                 let (default_policy, rule_counts, details_msg) = if active && opts.include_metrics {
                     self.get_ufw_detailed_status(opts).await
                 } else {
-                    (None, (None, None), if active { None } else { Some("UFW installed but inactive.".to_string()) })
+                    (
+                        None,
+                        (None, None),
+                        if active {
+                            None
+                        } else {
+                            Some("UFW installed but inactive.".to_string())
+                        },
+                    )
                 };
 
                 Ok(FirewallBackendStatus {
@@ -7172,7 +7958,10 @@ impl FirewallHandle {
                 })
             }
             Ok((code, _, stderr)) => {
-                warnings.push(format!("ufw status failed with exit code {}: {}", code, stderr));
+                warnings.push(format!(
+                    "ufw status failed with exit code {}: {}",
+                    code, stderr
+                ));
                 Ok(FirewallBackendStatus {
                     backend: "ufw".to_string(),
                     available,
@@ -7185,18 +7974,23 @@ impl FirewallHandle {
                     warnings,
                 })
             }
-            Err(_) => {
-                Err(FirewallError::StatusTimeout { 
-                    backend: "ufw".to_string() 
-                }.into())
+            Err(_) => Err(FirewallError::StatusTimeout {
+                backend: "ufw".to_string(),
             }
+            .into()),
         }
     }
 
-    async fn get_ufw_detailed_status(&self, opts: &StatusOptions) -> (Option<String>, (Option<u64>, Option<u64>), Option<String>) {
+    async fn get_ufw_detailed_status(
+        &self,
+        opts: &StatusOptions,
+    ) -> (Option<String>, (Option<u64>, Option<u64>), Option<String>) {
         // Get verbose status for default policies
-        let default_policy = if let Ok((0, stdout, _)) = run_command_with_timeout("ufw", &["status", "verbose"], opts.timeout_ms).await {
-            stdout.lines()
+        let default_policy = if let Ok((0, stdout, _)) =
+            run_command_with_timeout("ufw", &["status", "verbose"], opts.timeout_ms).await
+        {
+            stdout
+                .lines()
                 .find(|line| line.contains("Default:"))
                 .map(|line| {
                     let policy_part = line.replace("Default:", "").trim().to_string();
@@ -7207,12 +8001,16 @@ impl FirewallHandle {
         };
 
         // Get numbered status for rule counts
-        let rule_counts = if let Ok((0, stdout, _)) = run_command_with_timeout("ufw", &["status", "numbered"], opts.timeout_ms).await {
+        let rule_counts = if let Ok((0, stdout, _)) =
+            run_command_with_timeout("ufw", &["status", "numbered"], opts.timeout_ms).await
+        {
             let mut ipv4_count = 0u64;
             let mut ipv6_count = 0u64;
-            
+
             for line in stdout.lines() {
-                if line.contains("]") && (line.contains("ALLOW") || line.contains("DENY") || line.contains("REJECT")) {
+                if line.contains("]")
+                    && (line.contains("ALLOW") || line.contains("DENY") || line.contains("REJECT"))
+                {
                     if line.contains("(v6)") {
                         ipv6_count += 1;
                     } else {
@@ -7220,14 +8018,19 @@ impl FirewallHandle {
                     }
                 }
             }
-            
+
             (Some(ipv4_count), Some(ipv6_count))
         } else {
             (None, None)
         };
 
-        let details = if let (Some(policy), Some(v4), Some(v6)) = (&default_policy, rule_counts.0, rule_counts.1) {
-            Some(format!("UFW active: {}; rules: v4={}, v6={}", policy, v4, v6))
+        let details = if let (Some(policy), Some(v4), Some(v6)) =
+            (&default_policy, rule_counts.0, rule_counts.1)
+        {
+            Some(format!(
+                "UFW active: {}; rules: v4={}, v6={}",
+                policy, v4, v6
+            ))
         } else {
             Some("UFW active but unable to get detailed metrics".to_string())
         };
@@ -7240,7 +8043,7 @@ impl FirewallHandle {
 
         // Check availability
         let available = is_command_available("firewall-cmd");
-        
+
         if !available {
             return Ok(FirewallBackendStatus {
                 backend: "firewalld".to_string(),
@@ -7264,7 +8067,15 @@ impl FirewallHandle {
                 let (default_policy, rule_counts, details_msg) = if active && opts.include_metrics {
                     self.get_firewalld_detailed_status(opts).await
                 } else {
-                    (None, (None, None), if active { None } else { Some("firewalld daemon not running".to_string()) })
+                    (
+                        None,
+                        (None, None),
+                        if active {
+                            None
+                        } else {
+                            Some("firewalld daemon not running".to_string())
+                        },
+                    )
                 };
 
                 Ok(FirewallBackendStatus {
@@ -7293,7 +8104,10 @@ impl FirewallHandle {
                         warnings,
                     })
                 } else {
-                    warnings.push(format!("firewall-cmd --state failed with exit code {}: {}", code, stderr));
+                    warnings.push(format!(
+                        "firewall-cmd --state failed with exit code {}: {}",
+                        code, stderr
+                    ));
                     Ok(FirewallBackendStatus {
                         backend: "firewalld".to_string(),
                         available,
@@ -7307,25 +8121,34 @@ impl FirewallHandle {
                     })
                 }
             }
-            Err(_) => {
-                Err(FirewallError::StatusTimeout { 
-                    backend: "firewalld".to_string() 
-                }.into())
+            Err(_) => Err(FirewallError::StatusTimeout {
+                backend: "firewalld".to_string(),
             }
+            .into()),
         }
     }
 
-    async fn get_firewalld_detailed_status(&self, opts: &StatusOptions) -> (Option<String>, (Option<u64>, Option<u64>), Option<String>) {
+    async fn get_firewalld_detailed_status(
+        &self,
+        opts: &StatusOptions,
+    ) -> (Option<String>, (Option<u64>, Option<u64>), Option<String>) {
         // Get default zone
-        let default_zone = if let Ok((0, stdout, _)) = run_command_with_timeout("firewall-cmd", &["--get-default-zone"], opts.timeout_ms).await {
+        let default_zone = if let Ok((0, stdout, _)) =
+            run_command_with_timeout("firewall-cmd", &["--get-default-zone"], opts.timeout_ms).await
+        {
             Some(stdout.trim().to_string())
         } else {
             None
         };
 
         // Get zone count and services/ports
-        let (zone_count, port_count, service_count) = if let Ok((0, stdout, _)) = run_command_with_timeout("firewall-cmd", &["--list-all-zones"], opts.timeout_ms).await {
-            let zones = stdout.split("\n\n").filter(|s| s.contains("(active)") || s.contains("(default)")).count();
+        let (zone_count, port_count, service_count) = if let Ok((0, stdout, _)) =
+            run_command_with_timeout("firewall-cmd", &["--list-all-zones"], opts.timeout_ms).await
+        {
+            let zones = stdout
+                .split("\n\n")
+                .filter(|s| s.contains("(active)") || s.contains("(default)"))
+                .count();
             let ports = stdout.matches("ports:").count();
             let services = stdout.matches("services:").count();
             (zones, ports, services)
@@ -7343,7 +8166,10 @@ impl FirewallHandle {
                 zone, zone_count, port_count, service_count
             ))
         } else {
-            Some(format!("firewalld running: zones={}, ports={}, services={}", zone_count, port_count, service_count))
+            Some(format!(
+                "firewalld running: zones={}, ports={}, services={}",
+                zone_count, port_count, service_count
+            ))
         };
 
         (default_zone, rule_counts, details)
@@ -7355,15 +8181,17 @@ impl FirewallHandle {
 
     fn handle_enable(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(async {
-            self.enable_async(args).await
-        });
+        let result = rt.block_on(async { self.enable_async(args).await });
 
         match result {
             Ok(response) => {
                 match response.format_output {
                     OutputFormat::Json => {
-                        writeln!(io.stdout, "{}", serde_json::to_string_pretty(&response.to_json())?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string_pretty(&response.to_json())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stdout, "{}", response.to_text())?;
@@ -7372,7 +8200,10 @@ impl FirewallHandle {
                 if response.ok {
                     Ok(Status::ok())
                 } else {
-                    Ok(Status::err(1, response_error_message(response.error.as_ref(), "firewall enable failed")))
+                    Ok(Status::err(
+                        1,
+                        response_error_message(response.error.as_ref(), "firewall enable failed"),
+                    ))
                 }
             }
             Err(e) => {
@@ -7380,15 +8211,20 @@ impl FirewallHandle {
                     fw_err.clone()
                 } else {
                     FirewallError::InternalError {
-                        message: e.to_string()
+                        message: e.to_string(),
                     }
                 };
 
-                let response = EnableResponse::with_error("unknown", firewall_error, OutputFormat::Json);
-                
+                let response =
+                    EnableResponse::with_error("unknown", firewall_error, OutputFormat::Json);
+
                 match response.format_output {
                     OutputFormat::Json => {
-                        writeln!(io.stderr, "{}", serde_json::to_string_pretty(&response.to_json())?)?;
+                        writeln!(
+                            io.stderr,
+                            "{}",
+                            serde_json::to_string_pretty(&response.to_json())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stderr, "{}", response.to_text())?;
@@ -7409,29 +8245,34 @@ impl FirewallHandle {
                     fw_err.clone()
                 } else {
                     FirewallError::InternalError {
-                        message: e.to_string()
+                        message: e.to_string(),
                     }
                 };
 
-                let format_output = args.get("format_output")
+                let format_output = args
+                    .get("format_output")
                     .and_then(|s| OutputFormat::from_str(s).ok())
                     .unwrap_or(OutputFormat::Json);
 
-                return Ok(EnableResponse::with_error("unknown", firewall_error, format_output));
+                return Ok(EnableResponse::with_error(
+                    "unknown",
+                    firewall_error,
+                    format_output,
+                ));
             }
         };
-        
+
         let backend = match &opts.backend {
-            FirewallBackend::Auto => {
-                match self.detect_available_backend(opts.timeout_ms).await {
-                    Ok(detected) => detected,
-                    Err(_) => return Ok(EnableResponse::with_error(
+            FirewallBackend::Auto => match self.detect_available_backend(opts.timeout_ms).await {
+                Ok(detected) => detected,
+                Err(_) => {
+                    return Ok(EnableResponse::with_error(
                         "auto",
                         FirewallError::NoBackendAvailable,
-                        opts.format_output.clone()
-                    )),
+                        opts.format_output.clone(),
+                    ));
                 }
-            }
+            },
             other => other.clone(),
         };
 
@@ -7441,11 +8282,16 @@ impl FirewallHandle {
         }
 
         // Check backend availability
-        if let Err(_) = self.check_backend_availability(&backend, opts.timeout_ms).await {
+        if let Err(_) = self
+            .check_backend_availability(&backend, opts.timeout_ms)
+            .await
+        {
             return Ok(EnableResponse::with_error(
                 backend.as_str(),
-                FirewallError::BackendUnavailable { backend: backend.as_str().to_string() },
-                opts.format_output.clone()
+                FirewallError::BackendUnavailable {
+                    backend: backend.as_str().to_string(),
+                },
+                opts.format_output.clone(),
             ));
         }
 
@@ -7456,8 +8302,10 @@ impl FirewallHandle {
         if previous_state.enabled && opts.fail_if_already_enabled {
             return Ok(EnableResponse::with_error(
                 backend.as_str(),
-                FirewallError::InternalError { message: "Backend already enabled".to_string() },
-                opts.format_output.clone()
+                FirewallError::InternalError {
+                    message: "Backend already enabled".to_string(),
+                },
+                opts.format_output.clone(),
             ));
         }
 
@@ -7473,7 +8321,9 @@ impl FirewallHandle {
                 already_enabled: true,
                 backup_path: None,
             });
-            response.warnings.push("Firewall backend was already enabled; no changes applied.".to_string());
+            response
+                .warnings
+                .push("Firewall backend was already enabled; no changes applied.".to_string());
             return Ok(response);
         }
 
@@ -7481,7 +8331,11 @@ impl FirewallHandle {
         self.enable_backend(&backend, &opts, &previous_state).await
     }
 
-    async fn handle_dry_run_or_validate(&self, backend: &FirewallBackend, opts: &EnableOptions) -> Result<EnableResponse> {
+    async fn handle_dry_run_or_validate(
+        &self,
+        backend: &FirewallBackend,
+        opts: &EnableOptions,
+    ) -> Result<EnableResponse> {
         let mut response = EnableResponse::new(backend.as_str(), opts.format_output.clone());
         response.query = self.enable_options_to_json(opts, backend);
         response.ok = true;
@@ -7513,15 +8367,20 @@ impl FirewallHandle {
                     return Ok(EnableResponse::with_error(
                         backend.as_str(),
                         FirewallError::MissingPath,
-                        opts.format_output.clone()
+                        opts.format_output.clone(),
                     ));
                 }
                 // Add backup action if backup is enabled
                 if opts.backup_before_apply {
-                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
-                        FIREWALL_BACKUP_DIR));
+                    actions.push(format!(
+                        "firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR
+                    ));
                 }
-                actions.push(format!("iptables-restore < {}", opts.path.as_ref().unwrap()));
+                actions.push(format!(
+                    "iptables-restore < {}",
+                    opts.path.as_ref().unwrap()
+                ));
             } else {
                 // Add the action that would be performed
                 match backend {
@@ -7535,7 +8394,9 @@ impl FirewallHandle {
                         if opts.backup_before_apply {
                             response.warnings.push("backup_before_apply is not supported for firewalld; no backup would be taken".to_string());
                         }
-                        actions.push("systemctl enable firewalld && systemctl start firewalld".to_string());
+                        actions.push(
+                            "systemctl enable firewalld && systemctl start firewalld".to_string(),
+                        );
                     }
                     FirewallBackend::Nftables => {
                         if opts.backup_before_apply {
@@ -7544,11 +8405,13 @@ impl FirewallHandle {
                         }
                         actions.push("nft rules would be applied".to_string());
                     }
-                    FirewallBackend::Auto => actions.push("auto-detected backend would be enabled".to_string()),
+                    FirewallBackend::Auto => {
+                        actions.push("auto-detected backend would be enabled".to_string())
+                    }
                     FirewallBackend::Iptables => {} // Already handled above
                 }
             }
-            
+
             response.actions = actions;
             response.result = Some(EnableResult {
                 changed: false, // dry run doesn't change anything
@@ -7620,10 +8483,16 @@ impl FirewallHandle {
         })
     }
 
-    async fn get_current_state(&self, backend: &FirewallBackend, timeout_ms: u64) -> Result<FirewallStateSnapshot> {
+    async fn get_current_state(
+        &self,
+        backend: &FirewallBackend,
+        timeout_ms: u64,
+    ) -> Result<FirewallStateSnapshot> {
         let status_opts = StatusOptions {
             backend: match backend {
-                FirewallBackend::Auto => return Err(anyhow::anyhow!("Auto backend should be resolved")),
+                FirewallBackend::Auto => {
+                    return Err(anyhow::anyhow!("Auto backend should be resolved"));
+                }
                 FirewallBackend::Iptables => StatusBackend::Iptables,
                 FirewallBackend::Nftables => StatusBackend::Nftables,
                 FirewallBackend::Ufw => StatusBackend::Ufw,
@@ -7637,7 +8506,7 @@ impl FirewallHandle {
         };
 
         let backend_status = self.get_backend_status(backend, &status_opts).await?;
-        
+
         Ok(FirewallStateSnapshot {
             available: backend_status.available,
             active: backend_status.active,
@@ -7645,20 +8514,33 @@ impl FirewallHandle {
         })
     }
 
-    async fn enable_backend(&self, backend: &FirewallBackend, opts: &EnableOptions, previous_state: &FirewallStateSnapshot) -> Result<EnableResponse> {
+    async fn enable_backend(
+        &self,
+        backend: &FirewallBackend,
+        opts: &EnableOptions,
+        previous_state: &FirewallStateSnapshot,
+    ) -> Result<EnableResponse> {
         match backend {
             FirewallBackend::Ufw => self.enable_ufw(opts, previous_state).await,
             FirewallBackend::Firewalld => self.enable_firewalld(opts, previous_state).await,
             FirewallBackend::Iptables => self.enable_iptables(opts, previous_state).await,
             FirewallBackend::Nftables => self.enable_nftables(opts, previous_state).await,
-            FirewallBackend::Auto => Err(anyhow::anyhow!("Auto backend should be resolved before enable")),
+            FirewallBackend::Auto => Err(anyhow::anyhow!(
+                "Auto backend should be resolved before enable"
+            )),
         }
     }
 
-    async fn enable_ufw(&self, opts: &EnableOptions, previous_state: &FirewallStateSnapshot) -> Result<EnableResponse> {
+    async fn enable_ufw(
+        &self,
+        opts: &EnableOptions,
+        previous_state: &FirewallStateSnapshot,
+    ) -> Result<EnableResponse> {
         let mut response = EnableResponse::new("ufw", opts.format_output.clone());
         if opts.backup_before_apply {
-            response.warnings.push("backup_before_apply is not supported for ufw; no backup was taken".to_string());
+            response.warnings.push(
+                "backup_before_apply is not supported for ufw; no backup was taken".to_string(),
+            );
         }
         response.query = self.enable_options_to_json(opts, &FirewallBackend::Ufw);
         response.previous_state = Some(previous_state.clone());
@@ -7695,9 +8577,10 @@ impl FirewallHandle {
 
         // Execute enable
         actions.push("ufw --force enable".to_string());
-        
-        let (exit_code, stdout, stderr) = run_command_with_timeout("ufw", &["--force", "enable"], opts.timeout_ms).await?;
-        
+
+        let (exit_code, stdout, stderr) =
+            run_command_with_timeout("ufw", &["--force", "enable"], opts.timeout_ms).await?;
+
         if exit_code != 0 {
             return Ok(EnableResponse::with_error(
                 "ufw",
@@ -7706,12 +8589,14 @@ impl FirewallHandle {
                     code: exit_code,
                     stderr,
                 },
-                opts.format_output.clone()
+                opts.format_output.clone(),
             ));
         }
 
         // Get new state
-        let current_state = self.get_current_state(&FirewallBackend::Ufw, opts.timeout_ms).await?;
+        let current_state = self
+            .get_current_state(&FirewallBackend::Ufw, opts.timeout_ms)
+            .await?;
 
         response.actions = actions;
         response.current_state = Some(current_state);
@@ -7725,10 +8610,17 @@ impl FirewallHandle {
         Ok(response)
     }
 
-    async fn enable_firewalld(&self, opts: &EnableOptions, previous_state: &FirewallStateSnapshot) -> Result<EnableResponse> {
+    async fn enable_firewalld(
+        &self,
+        opts: &EnableOptions,
+        previous_state: &FirewallStateSnapshot,
+    ) -> Result<EnableResponse> {
         let mut response = EnableResponse::new("firewalld", opts.format_output.clone());
         if opts.backup_before_apply {
-            response.warnings.push("backup_before_apply is not supported for firewalld; no backup was taken".to_string());
+            response.warnings.push(
+                "backup_before_apply is not supported for firewalld; no backup was taken"
+                    .to_string(),
+            );
         }
         response.query = self.enable_options_to_json(opts, &FirewallBackend::Firewalld);
         response.previous_state = Some(previous_state.clone());
@@ -7762,11 +8654,14 @@ impl FirewallHandle {
         }
 
         // Check if firewalld is already running
-        let (state_code, state_stdout, _) = run_command_with_timeout("firewall-cmd", &["--state"], opts.timeout_ms).await?;
-        
+        let (state_code, state_stdout, _) =
+            run_command_with_timeout("firewall-cmd", &["--state"], opts.timeout_ms).await?;
+
         if state_code == 0 && state_stdout.trim() == "running" {
             // Already running
-            let current_state = self.get_current_state(&FirewallBackend::Firewalld, opts.timeout_ms).await?;
+            let current_state = self
+                .get_current_state(&FirewallBackend::Firewalld, opts.timeout_ms)
+                .await?;
             response.actions = actions;
             response.current_state = Some(current_state);
             response.result = Some(EnableResult {
@@ -7775,15 +8670,18 @@ impl FirewallHandle {
                 backup_path: None,
             });
             response.ok = true;
-            response.warnings.push("firewalld was already running".to_string());
+            response
+                .warnings
+                .push("firewalld was already running".to_string());
             return Ok(response);
         }
 
         // Try to start firewalld
         actions.push("systemctl start firewalld".to_string());
-        
-        let (exit_code, _stdout, stderr) = run_command_with_timeout("systemctl", &["start", "firewalld"], opts.timeout_ms).await?;
-        
+
+        let (exit_code, _stdout, stderr) =
+            run_command_with_timeout("systemctl", &["start", "firewalld"], opts.timeout_ms).await?;
+
         if exit_code != 0 {
             return Ok(EnableResponse::with_error(
                 "firewalld",
@@ -7792,12 +8690,14 @@ impl FirewallHandle {
                     code: exit_code,
                     stderr,
                 },
-                opts.format_output.clone()
+                opts.format_output.clone(),
             ));
         }
 
         // Get new state
-        let current_state = self.get_current_state(&FirewallBackend::Firewalld, opts.timeout_ms).await?;
+        let current_state = self
+            .get_current_state(&FirewallBackend::Firewalld, opts.timeout_ms)
+            .await?;
 
         response.actions = actions;
         response.current_state = Some(current_state);
@@ -7811,14 +8711,18 @@ impl FirewallHandle {
         Ok(response)
     }
 
-    async fn enable_iptables(&self, opts: &EnableOptions, previous_state: &FirewallStateSnapshot) -> Result<EnableResponse> {
+    async fn enable_iptables(
+        &self,
+        opts: &EnableOptions,
+        previous_state: &FirewallStateSnapshot,
+    ) -> Result<EnableResponse> {
         let mut response = EnableResponse::new("iptables", opts.format_output.clone());
         response.query = self.enable_options_to_json(opts, &FirewallBackend::Iptables);
         response.previous_state = Some(previous_state.clone());
 
         // Check if we have existing rules
         let has_rules = previous_state.active || previous_state.enabled;
-        
+
         // If we don't have rules and no path provided, error
         if !has_rules && opts.path.is_none() {
             return Ok(EnableResponse::with_error(
@@ -7851,13 +8755,18 @@ impl FirewallHandle {
         if opts.dry_run {
             if let Some(path) = &opts.path {
                 if opts.backup_before_apply {
-                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
-                        FIREWALL_BACKUP_DIR));
+                    actions.push(format!(
+                        "firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR
+                    ));
                 }
                 let command = match opts.family {
                     IpFamily::Ipv4 => format!("iptables-restore < {}", path),
                     IpFamily::Ipv6 => format!("ip6tables-restore < {}", path),
-                    IpFamily::Any => format!("iptables-restore < {} && ip6tables-restore < {}", path, path),
+                    IpFamily::Any => format!(
+                        "iptables-restore < {} && ip6tables-restore < {}",
+                        path, path
+                    ),
                 };
                 actions.push(command);
             }
@@ -7874,7 +8783,9 @@ impl FirewallHandle {
 
         // If rules exist and no path, treat as already enabled
         if has_rules && opts.path.is_none() {
-            let current_state = self.get_current_state(&FirewallBackend::Iptables, opts.timeout_ms).await?;
+            let current_state = self
+                .get_current_state(&FirewallBackend::Iptables, opts.timeout_ms)
+                .await?;
             response.actions = actions;
             response.current_state = Some(current_state);
             response.result = Some(EnableResult {
@@ -7883,7 +8794,9 @@ impl FirewallHandle {
                 backup_path: None,
             });
             response.ok = true;
-            response.warnings.push("iptables already has active rules; treated as enabled".to_string());
+            response
+                .warnings
+                .push("iptables already has active rules; treated as enabled".to_string());
             return Ok(response);
         }
 
@@ -7893,8 +8806,10 @@ impl FirewallHandle {
             if !std::path::Path::new(path).exists() {
                 return Ok(EnableResponse::with_error(
                     "iptables",
-                    FirewallError::InternalError { message: format!("Rules file not found: {}", path) },
-                    opts.format_output.clone()
+                    FirewallError::InternalError {
+                        message: format!("Rules file not found: {}", path),
+                    },
+                    opts.format_output.clone(),
                 ));
             }
 
@@ -7916,7 +8831,7 @@ impl FirewallHandle {
                             return Ok(EnableResponse::with_error(
                                 "iptables",
                                 backup_failure(e),
-                                opts.format_output.clone()
+                                opts.format_output.clone(),
                             ));
                         }
                     }
@@ -7928,18 +8843,19 @@ impl FirewallHandle {
             let restore_commands = match opts.family {
                 IpFamily::Ipv4 => vec![("iptables-restore", path.clone())],
                 IpFamily::Ipv6 => vec![("ip6tables-restore", path.clone())],
-                IpFamily::Any => vec![("iptables-restore", path.clone()), ("ip6tables-restore", path.clone())],
+                IpFamily::Any => vec![
+                    ("iptables-restore", path.clone()),
+                    ("ip6tables-restore", path.clone()),
+                ],
             };
 
             for (command, file_path) in restore_commands {
                 actions.push(format!("{} < {}", command, file_path));
-                
-                let (exit_code, _stdout, stderr) = run_command_with_timeout(
-                    command,
-                    &[file_path.as_str()],
-                    opts.timeout_ms
-                ).await?;
-                
+
+                let (exit_code, _stdout, stderr) =
+                    run_command_with_timeout(command, &[file_path.as_str()], opts.timeout_ms)
+                        .await?;
+
                 if exit_code != 0 {
                     return Ok(EnableResponse::with_error(
                         "iptables",
@@ -7948,14 +8864,16 @@ impl FirewallHandle {
                             code: exit_code,
                             stderr,
                         },
-                        opts.format_output.clone()
+                        opts.format_output.clone(),
                     ));
                 }
             }
         }
 
         // Get new state
-        let current_state = self.get_current_state(&FirewallBackend::Iptables, opts.timeout_ms).await?;
+        let current_state = self
+            .get_current_state(&FirewallBackend::Iptables, opts.timeout_ms)
+            .await?;
 
         response.actions = actions;
         response.current_state = Some(current_state);
@@ -7969,14 +8887,18 @@ impl FirewallHandle {
         Ok(response)
     }
 
-    async fn enable_nftables(&self, opts: &EnableOptions, previous_state: &FirewallStateSnapshot) -> Result<EnableResponse> {
+    async fn enable_nftables(
+        &self,
+        opts: &EnableOptions,
+        previous_state: &FirewallStateSnapshot,
+    ) -> Result<EnableResponse> {
         let mut response = EnableResponse::new("nftables", opts.format_output.clone());
         response.query = self.enable_options_to_json(opts, &FirewallBackend::Nftables);
         response.previous_state = Some(previous_state.clone());
 
         // Check if we have existing rules
         let has_rules = previous_state.active || previous_state.enabled;
-        
+
         // If we don't have rules and no path provided, error
         if !has_rules && opts.path.is_none() {
             return Ok(EnableResponse::with_error(
@@ -7992,9 +8914,10 @@ impl FirewallHandle {
         if opts.validate_only {
             if let Some(path) = &opts.path {
                 actions.push(format!("nft -c -f {}", path));
-                
+
                 // Actually run the validation if path is provided
-                let (exit_code, _stdout, stderr) = run_command_with_timeout("nft", &["-c", "-f", path], opts.timeout_ms).await?;
+                let (exit_code, _stdout, stderr) =
+                    run_command_with_timeout("nft", &["-c", "-f", path], opts.timeout_ms).await?;
                 if exit_code != 0 {
                     return Ok(EnableResponse::with_error(
                         "nftables",
@@ -8003,7 +8926,7 @@ impl FirewallHandle {
                             code: exit_code,
                             stderr,
                         },
-                        opts.format_output.clone()
+                        opts.format_output.clone(),
                     ));
                 }
             } else {
@@ -8023,8 +8946,10 @@ impl FirewallHandle {
         if opts.dry_run {
             if let Some(path) = &opts.path {
                 if opts.backup_before_apply {
-                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
-                        FIREWALL_BACKUP_DIR));
+                    actions.push(format!(
+                        "firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR
+                    ));
                 }
                 actions.push(format!("nft -f {}", path));
             }
@@ -8041,7 +8966,9 @@ impl FirewallHandle {
 
         // If rules exist and no path, treat as already enabled
         if has_rules && opts.path.is_none() {
-            let current_state = self.get_current_state(&FirewallBackend::Nftables, opts.timeout_ms).await?;
+            let current_state = self
+                .get_current_state(&FirewallBackend::Nftables, opts.timeout_ms)
+                .await?;
             response.actions = actions;
             response.current_state = Some(current_state);
             response.result = Some(EnableResult {
@@ -8050,7 +8977,9 @@ impl FirewallHandle {
                 backup_path: None,
             });
             response.ok = true;
-            response.warnings.push("nftables already has active rules; treated as enabled".to_string());
+            response
+                .warnings
+                .push("nftables already has active rules; treated as enabled".to_string());
             return Ok(response);
         }
 
@@ -8060,8 +8989,10 @@ impl FirewallHandle {
             if !std::path::Path::new(path).exists() {
                 return Ok(EnableResponse::with_error(
                     "nftables",
-                    FirewallError::InternalError { message: format!("Rules file not found: {}", path) },
-                    opts.format_output.clone()
+                    FirewallError::InternalError {
+                        message: format!("Rules file not found: {}", path),
+                    },
+                    opts.format_output.clone(),
                 ));
             }
 
@@ -8076,7 +9007,7 @@ impl FirewallHandle {
                         return Ok(EnableResponse::with_error(
                             "nftables",
                             backup_failure(e),
-                            opts.format_output.clone()
+                            opts.format_output.clone(),
                         ));
                     }
                 }
@@ -8084,9 +9015,10 @@ impl FirewallHandle {
 
             // Load rules
             actions.push(format!("nft -f {}", path));
-            
-            let (exit_code, _stdout, stderr) = run_command_with_timeout("nft", &["-f", path], opts.timeout_ms).await?;
-            
+
+            let (exit_code, _stdout, stderr) =
+                run_command_with_timeout("nft", &["-f", path], opts.timeout_ms).await?;
+
             if exit_code != 0 {
                 return Ok(EnableResponse::with_error(
                     "nftables",
@@ -8095,13 +9027,15 @@ impl FirewallHandle {
                         code: exit_code,
                         stderr,
                     },
-                    opts.format_output.clone()
+                    opts.format_output.clone(),
                 ));
             }
         }
 
         // Get new state
-        let current_state = self.get_current_state(&FirewallBackend::Nftables, opts.timeout_ms).await?;
+        let current_state = self
+            .get_current_state(&FirewallBackend::Nftables, opts.timeout_ms)
+            .await?;
 
         response.actions = actions;
         response.current_state = Some(current_state);
@@ -8121,15 +9055,17 @@ impl FirewallHandle {
 
     fn handle_disable(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(async {
-            self.disable_async(args).await
-        });
+        let result = rt.block_on(async { self.disable_async(args).await });
 
         match result {
             Ok(response) => {
                 match response.format_output {
                     OutputFormat::Json => {
-                        writeln!(io.stdout, "{}", serde_json::to_string_pretty(&response.to_json())?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string_pretty(&response.to_json())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stdout, "{}", response.to_text())?;
@@ -8138,7 +9074,10 @@ impl FirewallHandle {
                 if response.ok {
                     Ok(Status::ok())
                 } else {
-                    Ok(Status::err(1, response_error_message(response.error.as_ref(), "firewall disable failed")))
+                    Ok(Status::err(
+                        1,
+                        response_error_message(response.error.as_ref(), "firewall disable failed"),
+                    ))
                 }
             }
             Err(e) => {
@@ -8146,15 +9085,20 @@ impl FirewallHandle {
                     fw_err.clone()
                 } else {
                     FirewallError::DisableInternalError {
-                        message: e.to_string()
+                        message: e.to_string(),
                     }
                 };
 
-                let response = DisableResponse::with_error("unknown", firewall_error, OutputFormat::Json);
-                
+                let response =
+                    DisableResponse::with_error("unknown", firewall_error, OutputFormat::Json);
+
                 match response.format_output {
                     OutputFormat::Json => {
-                        writeln!(io.stderr, "{}", serde_json::to_string_pretty(&response.to_json())?)?;
+                        writeln!(
+                            io.stderr,
+                            "{}",
+                            serde_json::to_string_pretty(&response.to_json())?
+                        )?;
                     }
                     OutputFormat::Text => {
                         writeln!(io.stderr, "{}", response.to_text())?;
@@ -8175,30 +9119,35 @@ impl FirewallHandle {
                     fw_err.clone()
                 } else {
                     FirewallError::DisableInternalError {
-                        message: e.to_string()
+                        message: e.to_string(),
                     }
                 };
 
-                let format_output = args.get("format_output")
+                let format_output = args
+                    .get("format_output")
                     .and_then(|s| OutputFormat::from_str(s).ok())
                     .unwrap_or(OutputFormat::Json);
 
-                return Ok(DisableResponse::with_error("unknown", firewall_error, format_output));
+                return Ok(DisableResponse::with_error(
+                    "unknown",
+                    firewall_error,
+                    format_output,
+                ));
             }
         };
-        
+
         // Get backend
         let backend = match &opts.backend {
-            FirewallBackend::Auto => {
-                match self.detect_available_backend(opts.timeout_ms).await {
-                    Ok(detected) => detected,
-                    Err(_) => return Ok(DisableResponse::with_error(
+            FirewallBackend::Auto => match self.detect_available_backend(opts.timeout_ms).await {
+                Ok(detected) => detected,
+                Err(_) => {
+                    return Ok(DisableResponse::with_error(
                         "auto",
                         FirewallError::DisableNoBackendAvailable,
-                        opts.format_output.clone()
-                    )),
+                        opts.format_output.clone(),
+                    ));
                 }
-            }
+            },
             other => other.clone(),
         };
 
@@ -8210,23 +9159,28 @@ impl FirewallHandle {
                     return Ok(DisableResponse::with_error(
                         backend.as_str(),
                         FirewallError::DisableBackendUnavailable {
-                            backend: backend.as_str().to_string()
+                            backend: backend.as_str().to_string(),
                         },
-                        opts.format_output.clone()
+                        opts.format_output.clone(),
                     ));
                 }
             };
-            return self.handle_disable_dry_run_or_validate(&backend, &opts, &previous_state).await;
+            return self
+                .handle_disable_dry_run_or_validate(&backend, &opts, &previous_state)
+                .await;
         }
 
         // Check backend availability
-        if let Err(_) = self.check_backend_availability(&backend, opts.timeout_ms).await {
+        if let Err(_) = self
+            .check_backend_availability(&backend, opts.timeout_ms)
+            .await
+        {
             return Ok(DisableResponse::with_error(
                 backend.as_str(),
                 FirewallError::DisableBackendUnavailable {
-                    backend: backend.as_str().to_string()
+                    backend: backend.as_str().to_string(),
                 },
-                opts.format_output.clone()
+                opts.format_output.clone(),
             ));
         }
 
@@ -8237,9 +9191,9 @@ impl FirewallHandle {
                 return Ok(DisableResponse::with_error(
                     backend.as_str(),
                     FirewallError::DisableBackendUnavailable {
-                        backend: backend.as_str().to_string()
+                        backend: backend.as_str().to_string(),
                     },
-                    opts.format_output.clone()
+                    opts.format_output.clone(),
                 ));
             }
         };
@@ -8255,9 +9209,9 @@ impl FirewallHandle {
                 return Ok(DisableResponse::with_error(
                     backend.as_str(),
                     FirewallError::DisableAlreadyDisabled {
-                        backend: backend.as_str().to_string()
+                        backend: backend.as_str().to_string(),
                     },
-                    opts.format_output.clone()
+                    opts.format_output.clone(),
                 ));
             } else {
                 response.current_state = Some(previous_state);
@@ -8267,7 +9221,7 @@ impl FirewallHandle {
                     backup_path: None,
                 });
                 response.warnings.push(format!(
-                    "Firewall backend '{}' was already disabled; no changes applied.", 
+                    "Firewall backend '{}' was already disabled; no changes applied.",
                     backend.as_str()
                 ));
                 response.ok = true;
@@ -8280,10 +9234,10 @@ impl FirewallHandle {
     }
 
     async fn handle_disable_dry_run_or_validate(
-        &self, 
-        backend: &FirewallBackend, 
+        &self,
+        backend: &FirewallBackend,
         opts: &DisableOptions,
-        previous_state: &FirewallStateSnapshot
+        previous_state: &FirewallStateSnapshot,
     ) -> Result<DisableResponse> {
         let mut response = DisableResponse::new(backend.as_str(), opts.format_output.clone());
         response.query = self.disable_options_to_json(opts, backend);
@@ -8301,12 +9255,16 @@ impl FirewallHandle {
             }
             FirewallBackend::Iptables => {
                 if opts.backup_before_apply {
-                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
-                        FIREWALL_BACKUP_DIR));
+                    actions.push(format!(
+                        "firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR
+                    ));
                 }
                 if let Some(path) = &opts.path {
                     match opts.family {
-                        IpFamily::Ipv4 | IpFamily::Any => actions.push(format!("iptables-restore < {}", path)),
+                        IpFamily::Ipv4 | IpFamily::Any => {
+                            actions.push(format!("iptables-restore < {}", path))
+                        }
                         IpFamily::Ipv6 => actions.push(format!("ip6tables-restore < {}", path)),
                     }
                 } else {
@@ -8314,7 +9272,7 @@ impl FirewallHandle {
                         IpFamily::Ipv4 | IpFamily::Any => {
                             actions.extend_from_slice(&[
                                 "iptables -P INPUT ACCEPT".to_string(),
-                                "iptables -P OUTPUT ACCEPT".to_string(), 
+                                "iptables -P OUTPUT ACCEPT".to_string(),
                                 "iptables -P FORWARD ACCEPT".to_string(),
                                 "iptables -F".to_string(),
                                 "iptables -t nat -F".to_string(),
@@ -8336,8 +9294,10 @@ impl FirewallHandle {
             }
             FirewallBackend::Nftables => {
                 if opts.backup_before_apply {
-                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
-                        FIREWALL_BACKUP_DIR));
+                    actions.push(format!(
+                        "firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR
+                    ));
                 }
                 if let Some(path) = &opts.path {
                     actions.push(format!("nft -f {}", path));
@@ -8349,9 +9309,9 @@ impl FirewallHandle {
                 return Ok(DisableResponse::with_error(
                     backend.as_str(),
                     FirewallError::DisableBackendUnavailable {
-                        backend: backend.as_str().to_string()
+                        backend: backend.as_str().to_string(),
                     },
-                    opts.format_output.clone()
+                    opts.format_output.clone(),
                 ));
             }
         }
@@ -8362,10 +9322,8 @@ impl FirewallHandle {
                 if !Path::new(path).exists() {
                     return Ok(DisableResponse::with_error(
                         backend.as_str(),
-                        FirewallError::DisablePathNotFound {
-                            path: path.clone()
-                        },
-                        opts.format_output.clone()
+                        FirewallError::DisablePathNotFound { path: path.clone() },
+                        opts.format_output.clone(),
                     ));
                 }
             }
@@ -8402,37 +9360,49 @@ impl FirewallHandle {
             opts.source_format = RulesSourceFormat::from_str(source_format_str)?;
         }
 
-        let dry_run = crate::core::lenient::bool_arg(args, "dry_run")
-            .map_err(|e| FirewallError::DisableInternalError { message: e.to_string() })?;
+        let dry_run = crate::core::lenient::bool_arg(args, "dry_run").map_err(|e| {
+            FirewallError::DisableInternalError {
+                message: e.to_string(),
+            }
+        })?;
         if let Some(dry_run) = dry_run {
             opts.dry_run = dry_run;
         }
 
         if let Some(validate_only_str) = args.get("validate_only") {
-            opts.validate_only = validate_only_str.parse::<bool>()
-                .map_err(|_| FirewallError::DisableInternalError {
-                    message: "Invalid validate_only value".to_string()
-                })?;
+            opts.validate_only = validate_only_str.parse::<bool>().map_err(|_| {
+                FirewallError::DisableInternalError {
+                    message: "Invalid validate_only value".to_string(),
+                }
+            })?;
         }
 
-        if let Some(backup) = crate::core::lenient::bool_arg(args, "backup_before_apply")
-            .map_err(|e| FirewallError::DisableInternalError { message: e.to_string() })?
+        if let Some(backup) =
+            crate::core::lenient::bool_arg(args, "backup_before_apply").map_err(|e| {
+                FirewallError::DisableInternalError {
+                    message: e.to_string(),
+                }
+            })?
         {
             opts.backup_before_apply = backup;
         }
 
         if let Some(fail_str) = args.get("fail_if_already_disabled") {
-            opts.fail_if_already_disabled = fail_str.parse::<bool>()
-                .map_err(|_| FirewallError::DisableInternalError {
-                    message: "Invalid fail_if_already_disabled value".to_string()
-                })?;
+            opts.fail_if_already_disabled =
+                fail_str
+                    .parse::<bool>()
+                    .map_err(|_| FirewallError::DisableInternalError {
+                        message: "Invalid fail_if_already_disabled value".to_string(),
+                    })?;
         }
 
         if let Some(timeout_str) = args.get("timeout_ms") {
-            opts.timeout_ms = timeout_str.parse::<u64>()
-                .map_err(|_| FirewallError::DisableInternalError {
-                    message: "Invalid timeout_ms value".to_string()
-                })?;
+            opts.timeout_ms =
+                timeout_str
+                    .parse::<u64>()
+                    .map_err(|_| FirewallError::DisableInternalError {
+                        message: "Invalid timeout_ms value".to_string(),
+                    })?;
         }
 
         if let Some(format_str) = args.get("format_output") {
@@ -8461,10 +9431,10 @@ impl FirewallHandle {
     }
 
     async fn disable_backend(
-        &self, 
-        backend: &FirewallBackend, 
-        opts: &DisableOptions, 
-        previous_state: &FirewallStateSnapshot
+        &self,
+        backend: &FirewallBackend,
+        opts: &DisableOptions,
+        previous_state: &FirewallStateSnapshot,
     ) -> Result<DisableResponse> {
         match backend {
             FirewallBackend::Ufw => self.disable_ufw(opts, previous_state).await,
@@ -8474,28 +9444,35 @@ impl FirewallHandle {
             _ => Ok(DisableResponse::with_error(
                 backend.as_str(),
                 FirewallError::DisableBackendUnavailable {
-                    backend: backend.as_str().to_string()
+                    backend: backend.as_str().to_string(),
                 },
-                opts.format_output.clone()
-            ))
+                opts.format_output.clone(),
+            )),
         }
     }
 
-    async fn disable_ufw(&self, opts: &DisableOptions, previous_state: &FirewallStateSnapshot) -> Result<DisableResponse> {
+    async fn disable_ufw(
+        &self,
+        opts: &DisableOptions,
+        previous_state: &FirewallStateSnapshot,
+    ) -> Result<DisableResponse> {
         let mut response = DisableResponse::new("ufw", opts.format_output.clone());
         if opts.backup_before_apply {
-            response.warnings.push("backup_before_apply is not supported for ufw; no backup was taken".to_string());
+            response.warnings.push(
+                "backup_before_apply is not supported for ufw; no backup was taken".to_string(),
+            );
         }
         response.query = self.disable_options_to_json(opts, &FirewallBackend::Ufw);
         response.previous_state = Some(previous_state.clone());
-        
+
         let mut actions = Vec::new();
 
         // Execute disable command
         actions.push("ufw --force disable".to_string());
-        
-        let (exit_code, _stdout, stderr) = run_command_with_timeout("ufw", &["--force", "disable"], opts.timeout_ms).await?;
-        
+
+        let (exit_code, _stdout, stderr) =
+            run_command_with_timeout("ufw", &["--force", "disable"], opts.timeout_ms).await?;
+
         if exit_code != 0 {
             return Ok(DisableResponse::with_error(
                 "ufw",
@@ -8503,12 +9480,14 @@ impl FirewallHandle {
                     backend: "ufw".to_string(),
                     message: stderr,
                 },
-                opts.format_output.clone()
+                opts.format_output.clone(),
             ));
         }
 
         // Get new state
-        let current_state = self.get_current_state(&FirewallBackend::Ufw, opts.timeout_ms).await?;
+        let current_state = self
+            .get_current_state(&FirewallBackend::Ufw, opts.timeout_ms)
+            .await?;
 
         response.actions = actions;
         response.current_state = Some(current_state);
@@ -8522,33 +9501,41 @@ impl FirewallHandle {
         Ok(response)
     }
 
-    async fn disable_firewalld(&self, opts: &DisableOptions, previous_state: &FirewallStateSnapshot) -> Result<DisableResponse> {
+    async fn disable_firewalld(
+        &self,
+        opts: &DisableOptions,
+        previous_state: &FirewallStateSnapshot,
+    ) -> Result<DisableResponse> {
         let mut response = DisableResponse::new("firewalld", opts.format_output.clone());
         if opts.backup_before_apply {
-            response.warnings.push("backup_before_apply is not supported for firewalld; no backup was taken".to_string());
+            response.warnings.push(
+                "backup_before_apply is not supported for firewalld; no backup was taken"
+                    .to_string(),
+            );
         }
         response.query = self.disable_options_to_json(opts, &FirewallBackend::Firewalld);
         response.previous_state = Some(previous_state.clone());
-        
+
         let mut actions = Vec::new();
 
         // Stop firewalld service
         actions.push("systemctl stop firewalld".to_string());
-        
-        let (exit_code, _stdout, stderr) = run_command_with_timeout("systemctl", &["stop", "firewalld"], opts.timeout_ms).await?;
-        
+
+        let (exit_code, _stdout, stderr) =
+            run_command_with_timeout("systemctl", &["stop", "firewalld"], opts.timeout_ms).await?;
+
         if exit_code != 0 {
             return Ok(DisableResponse::with_error(
                 "firewalld",
-                FirewallError::DisableFirewalldStopFailed {
-                    message: stderr,
-                },
-                opts.format_output.clone()
+                FirewallError::DisableFirewalldStopFailed { message: stderr },
+                opts.format_output.clone(),
             ));
         }
 
         // Get new state
-        let current_state = self.get_current_state(&FirewallBackend::Firewalld, opts.timeout_ms).await?;
+        let current_state = self
+            .get_current_state(&FirewallBackend::Firewalld, opts.timeout_ms)
+            .await?;
 
         response.actions = actions;
         response.current_state = Some(current_state);
@@ -8562,18 +9549,26 @@ impl FirewallHandle {
         Ok(response)
     }
 
-    async fn disable_iptables(&self, opts: &DisableOptions, previous_state: &FirewallStateSnapshot) -> Result<DisableResponse> {
+    async fn disable_iptables(
+        &self,
+        opts: &DisableOptions,
+        previous_state: &FirewallStateSnapshot,
+    ) -> Result<DisableResponse> {
         let mut response = DisableResponse::new("iptables", opts.format_output.clone());
         response.query = self.disable_options_to_json(opts, &FirewallBackend::Iptables);
         response.previous_state = Some(previous_state.clone());
-        
+
         let mut actions = Vec::new();
         let mut backup_path: Option<String> = None;
 
         // Take backup if requested, of the family about to be changed
         // (ipv4 for Ipv4/Any, as below). No change without it.
         if opts.backup_before_apply {
-            let family = if matches!(opts.family, IpFamily::Ipv6) { "ipv6" } else { "ipv4" };
+            let family = if matches!(opts.family, IpFamily::Ipv6) {
+                "ipv6"
+            } else {
+                "ipv4"
+            };
             match self.create_iptables_backup(family, opts.timeout_ms).await {
                 Ok(written) => {
                     actions.push(format!("firewall.rules.save(...) -> {}", written));
@@ -8583,7 +9578,7 @@ impl FirewallHandle {
                     return Ok(DisableResponse::with_error(
                         "iptables",
                         backup_failure(e),
-                        opts.format_output.clone()
+                        opts.format_output.clone(),
                     ));
                 }
             }
@@ -8595,7 +9590,9 @@ impl FirewallHandle {
             match opts.family {
                 IpFamily::Ipv4 | IpFamily::Any => {
                     actions.push(format!("iptables-restore < {}", path));
-                    let (exit_code, _stdout, stderr) = run_command_with_timeout("iptables-restore", &[path], opts.timeout_ms).await?;
+                    let (exit_code, _stdout, stderr) =
+                        run_command_with_timeout("iptables-restore", &[path], opts.timeout_ms)
+                            .await?;
                     if exit_code != 0 {
                         return Ok(DisableResponse::with_error(
                             "iptables",
@@ -8603,13 +9600,15 @@ impl FirewallHandle {
                                 backend: "iptables".to_string(),
                                 message: stderr,
                             },
-                            opts.format_output.clone()
+                            opts.format_output.clone(),
                         ));
                     }
                 }
                 IpFamily::Ipv6 => {
                     actions.push(format!("ip6tables-restore < {}", path));
-                    let (exit_code, _stdout, stderr) = run_command_with_timeout("ip6tables-restore", &[path], opts.timeout_ms).await?;
+                    let (exit_code, _stdout, stderr) =
+                        run_command_with_timeout("ip6tables-restore", &[path], opts.timeout_ms)
+                            .await?;
                     if exit_code != 0 {
                         return Ok(DisableResponse::with_error(
                             "iptables",
@@ -8617,7 +9616,7 @@ impl FirewallHandle {
                                 backend: "iptables".to_string(),
                                 message: stderr,
                             },
-                            opts.format_output.clone()
+                            opts.format_output.clone(),
                         ));
                     }
                 }
@@ -8637,7 +9636,8 @@ impl FirewallHandle {
 
                     for (cmd, args) in &commands {
                         actions.push(format!("{} {}", cmd, args.join(" ")));
-                        let (exit_code, _stdout, stderr) = run_command_with_timeout(cmd, args, opts.timeout_ms).await?;
+                        let (exit_code, _stdout, stderr) =
+                            run_command_with_timeout(cmd, args, opts.timeout_ms).await?;
                         if exit_code != 0 {
                             return Ok(DisableResponse::with_error(
                                 "iptables",
@@ -8645,7 +9645,7 @@ impl FirewallHandle {
                                     backend: "iptables".to_string(),
                                     message: stderr,
                                 },
-                                opts.format_output.clone()
+                                opts.format_output.clone(),
                             ));
                         }
                     }
@@ -8662,7 +9662,8 @@ impl FirewallHandle {
 
                     for (cmd, args) in &commands {
                         actions.push(format!("{} {}", cmd, args.join(" ")));
-                        let (exit_code, _stdout, stderr) = run_command_with_timeout(cmd, args, opts.timeout_ms).await?;
+                        let (exit_code, _stdout, stderr) =
+                            run_command_with_timeout(cmd, args, opts.timeout_ms).await?;
                         if exit_code != 0 {
                             return Ok(DisableResponse::with_error(
                                 "iptables",
@@ -8670,7 +9671,7 @@ impl FirewallHandle {
                                     backend: "iptables".to_string(),
                                     message: stderr,
                                 },
-                                opts.format_output.clone()
+                                opts.format_output.clone(),
                             ));
                         }
                     }
@@ -8679,7 +9680,9 @@ impl FirewallHandle {
         }
 
         // Get new state
-        let current_state = self.get_current_state(&FirewallBackend::Iptables, opts.timeout_ms).await?;
+        let current_state = self
+            .get_current_state(&FirewallBackend::Iptables, opts.timeout_ms)
+            .await?;
 
         response.actions = actions;
         response.current_state = Some(current_state);
@@ -8693,11 +9696,15 @@ impl FirewallHandle {
         Ok(response)
     }
 
-    async fn disable_nftables(&self, opts: &DisableOptions, previous_state: &FirewallStateSnapshot) -> Result<DisableResponse> {
+    async fn disable_nftables(
+        &self,
+        opts: &DisableOptions,
+        previous_state: &FirewallStateSnapshot,
+    ) -> Result<DisableResponse> {
         let mut response = DisableResponse::new("nftables", opts.format_output.clone());
         response.query = self.disable_options_to_json(opts, &FirewallBackend::Nftables);
         response.previous_state = Some(previous_state.clone());
-        
+
         let mut actions = Vec::new();
         let mut backup_path: Option<String> = None;
 
@@ -8712,7 +9719,7 @@ impl FirewallHandle {
                     return Ok(DisableResponse::with_error(
                         "nftables",
                         backup_failure(e),
-                        opts.format_output.clone()
+                        opts.format_output.clone(),
                     ));
                 }
             }
@@ -8722,7 +9729,8 @@ impl FirewallHandle {
         if let Some(path) = &opts.path {
             // File-based restore
             actions.push(format!("nft -f {}", path));
-            let (exit_code, _stdout, stderr) = run_command_with_timeout("nft", &["-f", path], opts.timeout_ms).await?;
+            let (exit_code, _stdout, stderr) =
+                run_command_with_timeout("nft", &["-f", path], opts.timeout_ms).await?;
             if exit_code != 0 {
                 return Ok(DisableResponse::with_error(
                     "nftables",
@@ -8730,27 +9738,30 @@ impl FirewallHandle {
                         backend: "nftables".to_string(),
                         message: stderr,
                     },
-                    opts.format_output.clone()
+                    opts.format_output.clone(),
                 ));
             }
         } else {
             // Flush mode - clear all rules
             actions.push("nft flush ruleset".to_string());
-            let (exit_code, _stdout, stderr) = run_command_with_timeout("nft", &["flush", "ruleset"], opts.timeout_ms).await?;
+            let (exit_code, _stdout, stderr) =
+                run_command_with_timeout("nft", &["flush", "ruleset"], opts.timeout_ms).await?;
             if exit_code != 0 {
                 return Ok(DisableResponse::with_error(
-                    "nftables", 
+                    "nftables",
                     FirewallError::DisableCommandFailed {
                         backend: "nftables".to_string(),
                         message: stderr,
                     },
-                    opts.format_output.clone()
+                    opts.format_output.clone(),
                 ));
             }
         }
 
         // Get new state
-        let current_state = self.get_current_state(&FirewallBackend::Nftables, opts.timeout_ms).await?;
+        let current_state = self
+            .get_current_state(&FirewallBackend::Nftables, opts.timeout_ms)
+            .await?;
 
         response.actions = actions;
         response.current_state = Some(current_state);
@@ -8775,7 +9786,11 @@ fn response_error_message(error: Option<&Value>, fallback: &str) -> String {
     // Responses carry either `{message}` or `{error: {message}}`.
     let error = error.map(|e| e.get("error").unwrap_or(e));
     error
-        .and_then(|e| e.get("message").and_then(Value::as_str).or_else(|| e.as_str()))
+        .and_then(|e| {
+            e.get("message")
+                .and_then(Value::as_str)
+                .or_else(|| e.as_str())
+        })
         .map(|m| format!("{}: {}", fallback, m))
         .unwrap_or_else(|| fallback.to_string())
 }
@@ -8784,7 +9799,9 @@ fn response_error_message(error: Option<&Value>, fallback: &str) -> String {
 fn backup_failure(e: anyhow::Error) -> FirewallError {
     match e.downcast_ref::<FirewallError>() {
         Some(fw) => fw.clone(),
-        None => FirewallError::SaveFailed { message: format!("Backup failed: {}", e) },
+        None => FirewallError::SaveFailed {
+            message: format!("Backup failed: {}", e),
+        },
     }
 }
 
@@ -8817,7 +9834,12 @@ fn write_rules_backup(dir: &Path, file_name: &str, contents: &[u8]) -> Result<St
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 
     let io_err = |what: &str, e: std::io::Error| FirewallError::IoError {
-        message: format!("Failed to write backup ({}): {}: {}", what, dir.display(), e),
+        message: format!(
+            "Failed to write backup ({}): {}: {}",
+            what,
+            dir.display(),
+            e
+        ),
     };
 
     fs::DirBuilder::new()
@@ -8828,8 +9850,12 @@ fn write_rules_backup(dir: &Path, file_name: &str, contents: &[u8]) -> Result<St
     let meta = fs::symlink_metadata(dir).map_err(|e| io_err("stat directory", e))?;
     if !meta.is_dir() {
         return Err(FirewallError::IoError {
-            message: format!("Backup directory {} is not a directory (or is a symlink)", dir.display()),
-        }.into());
+            message: format!(
+                "Backup directory {} is not a directory (or is a symlink)",
+                dir.display()
+            ),
+        }
+        .into());
     }
 
     let path = dir.join(file_name);
@@ -8857,8 +9883,21 @@ fn backup_file_name(backend: &str, family: Option<&str>, ext: &str) -> String {
         .unwrap_or_default()
         .as_millis();
     match family {
-        Some(f) => format!(".resh-backup-{}-{}-{}-{}.{}", backend, f, millis, std::process::id(), ext),
-        None => format!(".resh-backup-{}-{}-{}.{}", backend, millis, std::process::id(), ext),
+        Some(f) => format!(
+            ".resh-backup-{}-{}-{}-{}.{}",
+            backend,
+            f,
+            millis,
+            std::process::id(),
+            ext
+        ),
+        None => format!(
+            ".resh-backup-{}-{}-{}.{}",
+            backend,
+            millis,
+            std::process::id(),
+            ext
+        ),
     }
 }
 
@@ -8903,7 +9942,11 @@ pub(crate) mod test_seam {
 /// enforced by polling the child (the backup handle's `wait_with_deadline`),
 /// not by an async timeout that a blocking call would never yield to.
 #[allow(dead_code)]
-async fn run_command_with_timeout(command: &str, args: &[&str], timeout_ms: u64) -> Result<(i32, String, String)> {
+async fn run_command_with_timeout(
+    command: &str,
+    args: &[&str],
+    timeout_ms: u64,
+) -> Result<(i32, String, String)> {
     use std::process::Stdio;
 
     let child = Command::new(resolve_program(command))
@@ -8914,7 +9957,10 @@ async fn run_command_with_timeout(command: &str, args: &[&str], timeout_ms: u64)
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to execute command: {}", e))?;
 
-    match crate::handles::automation::backuph::wait_with_deadline(child, Duration::from_millis(timeout_ms))? {
+    match crate::handles::automation::backuph::wait_with_deadline(
+        child,
+        Duration::from_millis(timeout_ms),
+    )? {
         Some(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -8957,7 +10003,9 @@ fn display_command(argv: &[String]) -> String {
     argv.iter()
         .map(|arg| {
             let safe = !arg.is_empty()
-                && arg.chars().all(|c| c.is_ascii_alphanumeric() || "_./:,=@%+-".contains(c));
+                && arg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_./:,=@%+-".contains(c));
             if safe {
                 arg.clone()
             } else {
@@ -9014,7 +10062,11 @@ fn address_family(addr: &str) -> &'static str {
 
 /// The "any address" CIDR for a family.
 fn any_address(family: &str) -> &'static str {
-    if family == "ipv6" { "::/0" } else { "0.0.0.0/0" }
+    if family == "ipv6" {
+        "::/0"
+    } else {
+        "0.0.0.0/0"
+    }
 }
 
 /// Normalizes an address for comparison: unset and "any" addresses
@@ -9059,7 +10111,11 @@ fn resolve_add_families(
     if let Some(f) = addr_family {
         let requested = family.as_str();
         if family_explicit && requested != "any" && requested != f {
-            let addr = addrs.iter().find(|a| address_family(a) == f).map(|a| (*a).clone()).unwrap_or_default();
+            let addr = addrs
+                .iter()
+                .find(|a| address_family(a) == f)
+                .map(|a| (*a).clone())
+                .unwrap_or_default();
             return Err(FirewallError::FamilyMismatch {
                 family: requested.to_string(),
                 address: addr,
@@ -9114,8 +10170,15 @@ fn rule_id_for(backend: &FirewallBackend, rule: &FirewallRule) -> Option<String>
         FirewallBackend::Nftables => {
             let raw = rule.raw.as_ref()?;
             let pos = raw.rfind("# handle ")?;
-            let handle: String = raw[pos + 9..].chars().take_while(|c| c.is_ascii_digit()).collect();
-            if handle.is_empty() { None } else { Some(handle) }
+            let handle: String = raw[pos + 9..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if handle.is_empty() {
+                None
+            } else {
+                Some(handle)
+            }
         }
         FirewallBackend::Ufw => rule.priority.filter(|n| *n > 0).map(|n| n.to_string()),
         FirewallBackend::Firewalld => {
@@ -9160,7 +10223,8 @@ fn rule_id_is_valid(backend: &FirewallBackend, rule_id: &str) -> bool {
 /// other match conditions.
 fn rule_matches_exactly(rule: &FirewallRule, opts: &RulesDeleteOptions) -> bool {
     let proto = |p: Option<&String>| {
-        p.map(|p| p.to_lowercase()).filter(|p| !matches!(p.as_str(), "any" | "all"))
+        p.map(|p| p.to_lowercase())
+            .filter(|p| !matches!(p.as_str(), "any" | "all"))
     };
     if proto(rule.proto.as_ref()) != proto(opts.proto.as_ref())
         || rule.sport != opts.sport
@@ -9186,11 +10250,26 @@ mod tests {
 
     #[test]
     fn test_firewall_backend_from_str() {
-        assert_eq!(FirewallBackend::from_str("auto").unwrap(), FirewallBackend::Auto);
-        assert_eq!(FirewallBackend::from_str("iptables").unwrap(), FirewallBackend::Iptables);
-        assert_eq!(FirewallBackend::from_str("nftables").unwrap(), FirewallBackend::Nftables);
-        assert_eq!(FirewallBackend::from_str("ufw").unwrap(), FirewallBackend::Ufw);
-        assert_eq!(FirewallBackend::from_str("firewalld").unwrap(), FirewallBackend::Firewalld);
+        assert_eq!(
+            FirewallBackend::from_str("auto").unwrap(),
+            FirewallBackend::Auto
+        );
+        assert_eq!(
+            FirewallBackend::from_str("iptables").unwrap(),
+            FirewallBackend::Iptables
+        );
+        assert_eq!(
+            FirewallBackend::from_str("nftables").unwrap(),
+            FirewallBackend::Nftables
+        );
+        assert_eq!(
+            FirewallBackend::from_str("ufw").unwrap(),
+            FirewallBackend::Ufw
+        );
+        assert_eq!(
+            FirewallBackend::from_str("firewalld").unwrap(),
+            FirewallBackend::Firewalld
+        );
         assert!(FirewallBackend::from_str("invalid").is_err());
     }
 
@@ -9211,13 +10290,18 @@ mod tests {
 
     #[test]
     fn test_firewall_error_codes() {
-        let error = FirewallError::InvalidBackend { backend: "test".to_string() };
+        let error = FirewallError::InvalidBackend {
+            backend: "test".to_string(),
+        };
         assert_eq!(error.to_error_code(), "firewall.invalid_backend");
 
         let error = FirewallError::NoBackendAvailable;
         assert_eq!(error.to_error_code(), "firewall.no_backend_available");
 
-        let error = FirewallError::MaxRulesExceeded { count: 15000, max: 10000 };
+        let error = FirewallError::MaxRulesExceeded {
+            count: 15000,
+            max: 10000,
+        };
         assert_eq!(error.to_error_code(), "firewall.max_rules_exceeded");
     }
 
@@ -9255,7 +10339,10 @@ mod tests {
     }
 
     fn args(pairs: &[(&str, &str)]) -> Args {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     const IPTABLES_V4: &str = "\
@@ -9289,7 +10376,10 @@ COMMIT
 ";
 
     fn raw_list_opts() -> RulesListOptions {
-        RulesListOptions { include_backend_raw: true, ..RulesListOptions::default() }
+        RulesListOptions {
+            include_backend_raw: true,
+            ..RulesListOptions::default()
+        }
     }
 
     fn iptables_rules() -> Vec<FirewallRule> {
@@ -9303,7 +10393,11 @@ COMMIT
         handle().parse_rules_delete_options(&args(pairs)).unwrap()
     }
 
-    fn select(backend: &FirewallBackend, rules: Vec<FirewallRule>, pairs: &[(&str, &str)]) -> Result<Vec<MatchedFirewallRule>> {
+    fn select(
+        backend: &FirewallBackend,
+        rules: Vec<FirewallRule>,
+        pairs: &[(&str, &str)],
+    ) -> Result<Vec<MatchedFirewallRule>> {
         handle().select_rules_for_delete(backend, rules, &delete_opts(pairs))
     }
 
@@ -9324,9 +10418,16 @@ COMMIT
         let rules = iptables_rules();
         let ids: Vec<(String, String, Option<String>)> = rules
             .iter()
-            .map(|r| (r.family.clone(), r.table.clone().unwrap(), rule_id_for(&FirewallBackend::Iptables, r)))
+            .map(|r| {
+                (
+                    r.family.clone(),
+                    r.table.clone().unwrap(),
+                    rule_id_for(&FirewallBackend::Iptables, r),
+                )
+            })
             .collect();
-        let expect = |f: &str, t: &str, id: &str| (f.to_string(), t.to_string(), Some(id.to_string()));
+        let expect =
+            |f: &str, t: &str, id: &str| (f.to_string(), t.to_string(), Some(id.to_string()));
         assert_eq!(
             ids,
             vec![
@@ -9368,7 +10469,9 @@ COMMIT
         .unwrap();
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].rule_id.as_deref(), Some("FORWARD:1"));
-        let cmds = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap();
+        let cmds = handle()
+            .generate_delete_commands(&FirewallBackend::Iptables, &matched)
+            .unwrap();
         assert_eq!(
             lines(&cmds),
             vec!["iptables -t filter -D FORWARD -p tcp -m tcp --dport 22 -j DROP"]
@@ -9384,12 +10487,33 @@ COMMIT
         )
         .unwrap();
         assert_eq!(matched.len(), 1);
-        let cmds = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap();
+        let cmds = handle()
+            .generate_delete_commands(&FirewallBackend::Iptables, &matched)
+            .unwrap();
         assert_eq!(
             cmds[0],
-            ["iptables", "-t", "filter", "-D", "OUTPUT", "-p", "tcp", "-m", "tcp", "--dport", "22",
-             "-m", "comment", "--comment", "allow ssh out", "-j", "ACCEPT"]
-                .iter().map(|s| s.to_string()).collect::<Vec<_>>()
+            [
+                "iptables",
+                "-t",
+                "filter",
+                "-D",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "-m",
+                "tcp",
+                "--dport",
+                "22",
+                "-m",
+                "comment",
+                "--comment",
+                "allow ssh out",
+                "-j",
+                "ACCEPT"
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
         );
         assert_eq!(
             display_command(&cmds[0]),
@@ -9404,14 +10528,21 @@ COMMIT
         let mut matched = select(
             &FirewallBackend::Iptables,
             iptables_rules(),
-            &[("family", "ipv4"), ("table", "filter"), ("chain", "INPUT"), ("match_mode", "subset")],
+            &[
+                ("family", "ipv4"),
+                ("table", "filter"),
+                ("chain", "INPUT"),
+                ("match_mode", "subset"),
+            ],
         )
         .unwrap();
         assert_eq!(matched.len(), 3);
         for m in &mut matched {
             m.raw = None;
         }
-        let cmds = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap();
+        let cmds = handle()
+            .generate_delete_commands(&FirewallBackend::Iptables, &matched)
+            .unwrap();
         assert_eq!(
             lines(&cmds),
             vec![
@@ -9430,7 +10561,9 @@ COMMIT
             &[("chain", "OUTPUT"), ("proto", "udp"), ("dport", "53")],
         )
         .unwrap();
-        let cmds = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap();
+        let cmds = handle()
+            .generate_delete_commands(&FirewallBackend::Iptables, &matched)
+            .unwrap();
         assert_eq!(
             lines(&cmds),
             vec![
@@ -9443,8 +10576,16 @@ COMMIT
     #[test]
     fn rule_id_selects_one_rule_and_rejects_ambiguity() {
         // INPUT:1 exists in IPv4 and IPv6.
-        let err = select(&FirewallBackend::Iptables, iptables_rules(), &[("rule_id", "INPUT:1")]).unwrap_err();
-        assert!(matches!(fw_err(err), FirewallError::AmbiguousRuleId { count: 2, .. }));
+        let err = select(
+            &FirewallBackend::Iptables,
+            iptables_rules(),
+            &[("rule_id", "INPUT:1")],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fw_err(err),
+            FirewallError::AmbiguousRuleId { count: 2, .. }
+        ));
 
         let one = select(
             &FirewallBackend::Iptables,
@@ -9472,12 +10613,20 @@ COMMIT
         assert!(!rule_id_is_valid(&FirewallBackend::Iptables, "INPUT:0"));
         assert!(rule_id_is_valid(&FirewallBackend::Nftables, "12"));
         assert!(!rule_id_is_valid(&FirewallBackend::Ufw, "x"));
-        assert!(rule_id_is_valid(&FirewallBackend::Firewalld, "public:port:80/tcp"));
-        assert!(!rule_id_is_valid(&FirewallBackend::Firewalld, "public:bogus:80/tcp"));
+        assert!(rule_id_is_valid(
+            &FirewallBackend::Firewalld,
+            "public:port:80/tcp"
+        ));
+        assert!(!rule_id_is_valid(
+            &FirewallBackend::Firewalld,
+            "public:bogus:80/tcp"
+        ));
 
         let h = handle();
         let opts = delete_opts(&[("rule_id", "INPUT")]);
-        let err = h.validate_delete_options_for_backend(&FirewallBackend::Iptables, &opts).unwrap_err();
+        let err = h
+            .validate_delete_options_for_backend(&FirewallBackend::Iptables, &opts)
+            .unwrap_err();
         assert!(matches!(fw_err(err), FirewallError::InvalidRuleId { .. }));
     }
 
@@ -9488,7 +10637,12 @@ COMMIT
         let exact = select(
             &FirewallBackend::Iptables,
             iptables_rules(),
-            &[("family", "ipv4"), ("chain", "INPUT"), ("proto", "tcp"), ("dport", "22")],
+            &[
+                ("family", "ipv4"),
+                ("chain", "INPUT"),
+                ("proto", "tcp"),
+                ("dport", "22"),
+            ],
         )
         .unwrap();
         assert!(exact.is_empty());
@@ -9496,7 +10650,12 @@ COMMIT
         let subset = select(
             &FirewallBackend::Iptables,
             iptables_rules(),
-            &[("family", "ipv4"), ("chain", "INPUT"), ("dport", "22"), ("match_mode", "subset")],
+            &[
+                ("family", "ipv4"),
+                ("chain", "INPUT"),
+                ("dport", "22"),
+                ("match_mode", "subset"),
+            ],
         )
         .unwrap();
         assert_eq!(subset.len(), 1);
@@ -9506,12 +10665,24 @@ COMMIT
         let exact_lo = select(
             &FirewallBackend::Iptables,
             iptables_rules(),
-            &[("family", "ipv4"), ("table", "filter"), ("chain", "INPUT"), ("action", "accept")],
+            &[
+                ("family", "ipv4"),
+                ("table", "filter"),
+                ("chain", "INPUT"),
+                ("action", "accept"),
+            ],
         )
         .unwrap();
-        assert!(exact_lo.is_empty(), "INPUT:1 has -i lo, INPUT:2 has conntrack");
-        assert!(iptables_has_unmodeled_match("-A INPUT -m conntrack --ctstate NEW -j ACCEPT"));
-        assert!(!iptables_has_unmodeled_match("-A INPUT -p tcp -m tcp --dport 22 -j REJECT --reject-with tcp-reset"));
+        assert!(
+            exact_lo.is_empty(),
+            "INPUT:1 has -i lo, INPUT:2 has conntrack"
+        );
+        assert!(iptables_has_unmodeled_match(
+            "-A INPUT -m conntrack --ctstate NEW -j ACCEPT"
+        ));
+        assert!(!iptables_has_unmodeled_match(
+            "-A INPUT -p tcp -m tcp --dport 22 -j REJECT --reject-with tcp-reset"
+        ));
 
         // Negated address does not match a plain saddr filter.
         let negated = select(
@@ -9525,7 +10696,9 @@ COMMIT
 
     #[test]
     fn delete_requires_rule_id_or_criteria() {
-        let err = handle().parse_rules_delete_options(&args(&[("dry_run", "true")])).unwrap_err();
+        let err = handle()
+            .parse_rules_delete_options(&args(&[("dry_run", "true")]))
+            .unwrap_err();
         assert!(matches!(fw_err(err), FirewallError::MissingDeleteCriteria));
     }
 
@@ -9533,9 +10706,17 @@ COMMIT
     fn zone_is_rejected_outside_firewalld() {
         let h = handle();
         let opts = delete_opts(&[("zone", "public")]);
-        let err = h.validate_delete_options_for_backend(&FirewallBackend::Iptables, &opts).unwrap_err();
-        assert!(matches!(fw_err(err), FirewallError::UnsupportedOption { .. }));
-        assert!(h.validate_delete_options_for_backend(&FirewallBackend::Firewalld, &opts).is_ok());
+        let err = h
+            .validate_delete_options_for_backend(&FirewallBackend::Iptables, &opts)
+            .unwrap_err();
+        assert!(matches!(
+            fw_err(err),
+            FirewallError::UnsupportedOption { .. }
+        ));
+        assert!(
+            h.validate_delete_options_for_backend(&FirewallBackend::Firewalld, &opts)
+                .is_ok()
+        );
     }
 
     fn firewalld_rule(zone: &str, raw: &str, dport: Option<&str>) -> FirewallRule {
@@ -9580,17 +10761,27 @@ COMMIT
         .unwrap();
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].rule_id.as_deref(), Some("internal:port:80/tcp"));
-        let cmds = handle().generate_delete_commands(&FirewallBackend::Firewalld, &matched).unwrap();
-        assert_eq!(lines(&cmds), vec!["firewall-cmd --zone=internal --remove-port=80/tcp"]);
+        let cmds = handle()
+            .generate_delete_commands(&FirewallBackend::Firewalld, &matched)
+            .unwrap();
+        assert_eq!(
+            lines(&cmds),
+            vec!["firewall-cmd --zone=internal --remove-port=80/tcp"]
+        );
 
         let rich = select(
             &FirewallBackend::Firewalld,
             rules,
-            &[("rule_id", "internal:rich-rule:rule family=\"ipv4\" source address=\"10.0.0.0/8\" accept")],
+            &[(
+                "rule_id",
+                "internal:rich-rule:rule family=\"ipv4\" source address=\"10.0.0.0/8\" accept",
+            )],
         )
         .unwrap();
         assert_eq!(rich.len(), 1);
-        let cmds = handle().generate_delete_commands(&FirewallBackend::Firewalld, &rich).unwrap();
+        let cmds = handle()
+            .generate_delete_commands(&FirewallBackend::Firewalld, &rich)
+            .unwrap();
         assert_eq!(
             cmds[0][2],
             "--remove-rich-rule=rule family=\"ipv4\" source address=\"10.0.0.0/8\" accept"
@@ -9609,10 +10800,18 @@ COMMIT
                 &raw_list_opts(),
             )
             .unwrap();
-        assert_eq!(rule_id_for(&FirewallBackend::Nftables, &rule).as_deref(), Some("7"));
+        assert_eq!(
+            rule_id_for(&FirewallBackend::Nftables, &rule).as_deref(),
+            Some("7")
+        );
         let matched = select(&FirewallBackend::Nftables, vec![rule], &[("rule_id", "7")]).unwrap();
-        let cmds = h.generate_delete_commands(&FirewallBackend::Nftables, &matched).unwrap();
-        assert_eq!(lines(&cmds), vec!["nft delete rule inet filter input handle 7"]);
+        let cmds = h
+            .generate_delete_commands(&FirewallBackend::Nftables, &matched)
+            .unwrap();
+        assert_eq!(
+            lines(&cmds),
+            vec!["nft delete rule inet filter input handle 7"]
+        );
     }
 
     #[test]
@@ -9627,10 +10826,23 @@ COMMIT
         .iter()
         .filter_map(|l| h.parse_ufw_rule(l, 99, &opts))
         .collect();
-        assert_eq!(rules.iter().map(|r| r.priority).collect::<Vec<_>>(), vec![Some(1), Some(2), Some(3)]);
-        let matched = select(&FirewallBackend::Ufw, rules, &[("dport", "22"), ("match_mode", "subset")]).unwrap();
-        let cmds = h.generate_delete_commands(&FirewallBackend::Ufw, &matched).unwrap();
-        assert_eq!(lines(&cmds), vec!["ufw --force delete 3", "ufw --force delete 1"]);
+        assert_eq!(
+            rules.iter().map(|r| r.priority).collect::<Vec<_>>(),
+            vec![Some(1), Some(2), Some(3)]
+        );
+        let matched = select(
+            &FirewallBackend::Ufw,
+            rules,
+            &[("dport", "22"), ("match_mode", "subset")],
+        )
+        .unwrap();
+        let cmds = h
+            .generate_delete_commands(&FirewallBackend::Ufw, &matched)
+            .unwrap();
+        assert_eq!(
+            lines(&cmds),
+            vec!["ufw --force delete 3", "ufw --force delete 1"]
+        );
     }
 
     #[test]
@@ -9643,15 +10855,29 @@ COMMIT
         .unwrap();
         matched[0].raw = None;
         matched[0].line_number = None;
-        let err = handle().generate_delete_commands(&FirewallBackend::Iptables, &matched).unwrap_err();
-        assert!(matches!(fw_err(err), FirewallError::RuleIdUnavailable { .. }));
+        let err = handle()
+            .generate_delete_commands(&FirewallBackend::Iptables, &matched)
+            .unwrap_err();
+        assert!(matches!(
+            fw_err(err),
+            FirewallError::RuleIdUnavailable { .. }
+        ));
     }
 
     #[test]
     fn tokenizer_and_display_round_trip() {
         assert_eq!(
             tokenize_rule_line(r#"-A INPUT -m comment --comment "say \"hi\" now" -j ACCEPT"#),
-            vec!["-A", "INPUT", "-m", "comment", "--comment", "say \"hi\" now", "-j", "ACCEPT"]
+            vec![
+                "-A",
+                "INPUT",
+                "-m",
+                "comment",
+                "--comment",
+                "say \"hi\" now",
+                "-j",
+                "ACCEPT"
+            ]
         );
         assert_eq!(
             display_command(&["a".to_string(), "it's here".to_string(), "".to_string()]),
@@ -9663,7 +10889,10 @@ COMMIT
     // C3: rules.add family handling
     // -----------------------------------------------------------------------
 
-    fn add_plan(backend: FirewallBackend, pairs: &[(&str, &str)]) -> Result<(Vec<FirewallRuleSpec>, Vec<String>)> {
+    fn add_plan(
+        backend: FirewallBackend,
+        pairs: &[(&str, &str)],
+    ) -> Result<(Vec<FirewallRuleSpec>, Vec<String>)> {
         let h = handle();
         let opts = h.parse_rules_add_options(&args(pairs))?;
         let specs = h.normalize_rule_specs(&opts, &backend)?;
@@ -9689,8 +10918,14 @@ COMMIT
             ]
         );
         assert_eq!(specs.len(), 2);
-        assert_eq!((specs[0].family.as_str(), specs[0].saddr.as_deref()), ("ipv4", Some("0.0.0.0/0")));
-        assert_eq!((specs[1].family.as_str(), specs[1].saddr.as_deref()), ("ipv6", Some("::/0")));
+        assert_eq!(
+            (specs[0].family.as_str(), specs[0].saddr.as_deref()),
+            ("ipv4", Some("0.0.0.0/0"))
+        );
+        assert_eq!(
+            (specs[1].family.as_str(), specs[1].saddr.as_deref()),
+            ("ipv6", Some("::/0"))
+        );
         assert_eq!(specs[1].daddr.as_deref(), Some("::/0"));
 
         let (_, nft) = add_plan(
@@ -9711,25 +10946,47 @@ COMMIT
     fn add_family_follows_address() {
         let (specs, cmds) = add_plan(
             FirewallBackend::Iptables,
-            &[("family", "any"), ("saddr", "2001:db8::/32"), ("proto", "tcp"), ("dport", "443")],
+            &[
+                ("family", "any"),
+                ("saddr", "2001:db8::/32"),
+                ("proto", "tcp"),
+                ("dport", "443"),
+            ],
         )
         .unwrap();
-        assert_eq!(cmds, vec!["ip6tables -t filter -A INPUT -p tcp -s 2001:db8::/32 --dport 443 -j ACCEPT"]);
+        assert_eq!(
+            cmds,
+            vec!["ip6tables -t filter -A INPUT -p tcp -s 2001:db8::/32 --dport 443 -j ACCEPT"]
+        );
         assert_eq!(specs[0].family, "ipv6");
         assert_eq!(specs[0].daddr.as_deref(), Some("::/0"));
 
         // Without family=, an IPv6 address also selects IPv6.
         let (_, cmds) = add_plan(FirewallBackend::Iptables, &[("saddr", "2001:db8::1")]).unwrap();
-        assert_eq!(cmds, vec!["ip6tables -t filter -A INPUT -s 2001:db8::1 -j ACCEPT"]);
+        assert_eq!(
+            cmds,
+            vec!["ip6tables -t filter -A INPUT -s 2001:db8::1 -j ACCEPT"]
+        );
 
         // An IPv4 address with family=any goes to iptables, never ip6tables.
-        let (_, cmds) = add_plan(FirewallBackend::Iptables, &[("family", "any"), ("saddr", "198.51.100.7")]).unwrap();
-        assert_eq!(cmds, vec!["iptables -t filter -A INPUT -s 198.51.100.7 -j ACCEPT"]);
+        let (_, cmds) = add_plan(
+            FirewallBackend::Iptables,
+            &[("family", "any"), ("saddr", "198.51.100.7")],
+        )
+        .unwrap();
+        assert_eq!(
+            cmds,
+            vec!["iptables -t filter -A INPUT -s 198.51.100.7 -j ACCEPT"]
+        );
     }
 
     #[test]
     fn add_rejects_family_address_mismatch() {
-        let err = add_plan(FirewallBackend::Iptables, &[("family", "ipv4"), ("saddr", "2001:db8::/32")]).unwrap_err();
+        let err = add_plan(
+            FirewallBackend::Iptables,
+            &[("family", "ipv4"), ("saddr", "2001:db8::/32")],
+        )
+        .unwrap_err();
         assert!(matches!(fw_err(err), FirewallError::FamilyMismatch { .. }));
         let err = add_plan(
             FirewallBackend::Iptables,
@@ -9751,26 +11008,47 @@ COMMIT
         assert_eq!(specs[0].saddr, None);
         assert_eq!(cmds, vec!["ufw allow proto tcp from any to any port 22"]);
 
-        let (_, cmds) = add_plan(FirewallBackend::Ufw, &[("proto", "tcp"), ("dport", "22")]).unwrap();
-        assert_eq!(cmds, vec!["ufw allow proto tcp from 0.0.0.0/0 to 0.0.0.0/0 port 22"]);
+        let (_, cmds) =
+            add_plan(FirewallBackend::Ufw, &[("proto", "tcp"), ("dport", "22")]).unwrap();
+        assert_eq!(
+            cmds,
+            vec!["ufw allow proto tcp from 0.0.0.0/0 to 0.0.0.0/0 port 22"]
+        );
 
         let (_, cmds) = add_plan(
             FirewallBackend::Firewalld,
-            &[("family", "any"), ("zone", "public"), ("proto", "tcp"), ("dport", "22")],
+            &[
+                ("family", "any"),
+                ("zone", "public"),
+                ("proto", "tcp"),
+                ("dport", "22"),
+            ],
         )
         .unwrap();
         assert_eq!(
             cmds,
-            vec!["firewall-cmd --zone=public '--add-rich-rule=rule port protocol=\"tcp\" port=\"22\" accept'"]
+            vec![
+                "firewall-cmd --zone=public '--add-rich-rule=rule port protocol=\"tcp\" port=\"22\" accept'"
+            ]
         );
     }
 
     #[test]
     fn add_rejects_port_without_protocol_and_zone_outside_firewalld() {
         let err = add_plan(FirewallBackend::Iptables, &[("dport", "22")]).unwrap_err();
-        assert!(matches!(fw_err(err), FirewallError::UnsupportedOption { .. }));
-        let err = add_plan(FirewallBackend::Iptables, &[("zone", "public"), ("proto", "tcp")]).unwrap_err();
-        assert!(matches!(fw_err(err), FirewallError::UnsupportedOption { .. }));
+        assert!(matches!(
+            fw_err(err),
+            FirewallError::UnsupportedOption { .. }
+        ));
+        let err = add_plan(
+            FirewallBackend::Iptables,
+            &[("zone", "public"), ("proto", "tcp")],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            fw_err(err),
+            FirewallError::UnsupportedOption { .. }
+        ));
     }
 
     #[test]
@@ -9782,18 +11060,35 @@ COMMIT
         .unwrap();
         assert_eq!(
             cmds,
-            vec!["iptables -t filter -A INPUT -p tcp --dport 22 -m comment --comment 'allow ssh' -j ACCEPT"]
+            vec![
+                "iptables -t filter -A INPUT -p tcp --dport 22 -m comment --comment 'allow ssh' -j ACCEPT"
+            ]
         );
     }
 
     #[test]
     fn idempotency_match_ignores_any_address() {
         let h = handle();
-        let opts = h.parse_rules_add_options(&args(&[("proto", "udp"), ("dport", "53"), ("direction", "output")])).unwrap();
-        let spec = h.normalize_rule_specs(&opts, &FirewallBackend::Iptables).unwrap().remove(0);
+        let opts = h
+            .parse_rules_add_options(&args(&[
+                ("proto", "udp"),
+                ("dport", "53"),
+                ("direction", "output"),
+            ]))
+            .unwrap();
+        let spec = h
+            .normalize_rule_specs(&opts, &FirewallBackend::Iptables)
+            .unwrap()
+            .remove(0);
         let rules = iptables_rules();
-        assert!(h.rules_match(&spec, &rules[5]), "OUTPUT udp 53 ACCEPT exists");
-        assert!(!h.rules_match(&spec, &rules[9]), "the IPv6 rule is a different family");
+        assert!(
+            h.rules_match(&spec, &rules[5]),
+            "OUTPUT udp 53 ACCEPT exists"
+        );
+        assert!(
+            !h.rules_match(&spec, &rules[9]),
+            "the IPv6 rule is a different family"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -9806,7 +11101,11 @@ COMMIT
         let mut o: Vec<u8> = Vec::new();
         let mut e: Vec<u8> = Vec::new();
         let status = {
-            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
             h.call(verb, &args(pairs), &mut io).unwrap()
         };
         (status, String::from_utf8(o).unwrap())
@@ -9840,7 +11139,10 @@ mod dry_run_tests {
     use super::*;
 
     fn args(pairs: &[(&str, &str)]) -> Args {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     fn with(base: &[(&str, &str)], dry_run: Option<&str>) -> Args {
@@ -9854,15 +11156,43 @@ mod dry_run_tests {
     type DryRunParser = Box<dyn Fn(&Args) -> Result<bool>>;
 
     /// (verb, minimal valid args, parser returning the parsed dry_run)
-    fn parsers() -> Vec<(&'static str, Vec<(&'static str, &'static str)>, DryRunParser)> {
+    fn parsers() -> Vec<(
+        &'static str,
+        Vec<(&'static str, &'static str)>,
+        DryRunParser,
+    )> {
         let h = || FirewallHandle::from_url(&Url::parse("firewall://").unwrap()).unwrap();
         vec![
-            ("rules.save", vec![], Box::new(move |a: &Args| Ok(h().parse_rules_save_options(a)?.dry_run))),
-            ("rules.add", vec![("proto", "tcp"), ("dport", "22")], Box::new(move |a: &Args| Ok(h().parse_rules_add_options(a)?.dry_run))),
-            ("rules.delete", vec![("rule_id", "INPUT")], Box::new(move |a: &Args| Ok(h().parse_rules_delete_options(a)?.dry_run))),
-            ("rules.reload", vec![], Box::new(move |a: &Args| Ok(h().parse_rules_reload_options(a)?.dry_run))),
-            ("enable", vec![], Box::new(move |a: &Args| Ok(h().parse_enable_options(a)?.dry_run))),
-            ("disable", vec![], Box::new(move |a: &Args| Ok(h().parse_disable_options(a)?.dry_run))),
+            (
+                "rules.save",
+                vec![],
+                Box::new(move |a: &Args| Ok(h().parse_rules_save_options(a)?.dry_run)),
+            ),
+            (
+                "rules.add",
+                vec![("proto", "tcp"), ("dport", "22")],
+                Box::new(move |a: &Args| Ok(h().parse_rules_add_options(a)?.dry_run)),
+            ),
+            (
+                "rules.delete",
+                vec![("rule_id", "INPUT")],
+                Box::new(move |a: &Args| Ok(h().parse_rules_delete_options(a)?.dry_run)),
+            ),
+            (
+                "rules.reload",
+                vec![],
+                Box::new(move |a: &Args| Ok(h().parse_rules_reload_options(a)?.dry_run)),
+            ),
+            (
+                "enable",
+                vec![],
+                Box::new(move |a: &Args| Ok(h().parse_enable_options(a)?.dry_run)),
+            ),
+            (
+                "disable",
+                vec![],
+                Box::new(move |a: &Args| Ok(h().parse_disable_options(a)?.dry_run)),
+            ),
         ]
     }
 
@@ -9876,7 +11206,10 @@ mod dry_run_tests {
                 assert!(!parse(&with(&base, Some(v))).unwrap(), "{verb} dry_run={v}");
             }
             for v in ["maybe", "", "2", "tru"] {
-                assert!(parse(&with(&base, Some(v))).is_err(), "{verb} accepted dry_run={v:?}");
+                assert!(
+                    parse(&with(&base, Some(v))).is_err(),
+                    "{verb} accepted dry_run={v:?}"
+                );
             }
             // Missing: the parser's own default, which is not a dry run.
             assert!(parse(&with(&base, None)).is_ok(), "{verb}");
@@ -9894,7 +11227,8 @@ mod backup_tests {
     use tempfile::TempDir;
 
     const NFT_RULES: &str = "table ip filter {\n\tchain input {\n\t\ttype filter hook input priority 0; policy drop;\n\t\ttcp dport 22 accept\n\t}\n}\n";
-    const IPT_RULES_EMPTY: &str = "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\nCOMMIT\n";
+    const IPT_RULES_EMPTY: &str =
+        "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\nCOMMIT\n";
     const IPT_RULES: &str = "*filter\n:INPUT DROP [0:0]\n:FORWARD DROP [0:0]\n:OUTPUT ACCEPT [0:0]\n-A INPUT -p tcp --dport 22 -j ACCEPT\nCOMMIT\n";
 
     struct Fixture {
@@ -9922,7 +11256,15 @@ mod backup_tests {
                 log = log.display(),
                 d = dir.path().display(),
             );
-            for tool in ["nft", "iptables", "ip6tables", "iptables-save", "ip6tables-save", "iptables-restore", "ip6tables-restore"] {
+            for tool in [
+                "nft",
+                "iptables",
+                "ip6tables",
+                "iptables-save",
+                "ip6tables-save",
+                "iptables-restore",
+                "ip6tables-restore",
+            ] {
                 let p = bin.join(tool);
                 fs::write(&p, &script).unwrap();
                 fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
@@ -9956,11 +11298,18 @@ mod backup_tests {
         fn run(&self, verb: &str, pairs: &[(&str, &str)]) -> (Status, Value) {
             let _seam = test_seam::install(self.dir.path().join("bin"), self.backups.clone());
             let h = FirewallHandle::from_url(&Url::parse("firewall://").unwrap()).unwrap();
-            let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let args: Args = pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
             let mut i: &[u8] = &[];
             let (mut o, mut e) = (Vec::new(), Vec::new());
             let status = {
-                let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+                let mut io = IoStreams {
+                    stdin: &mut i,
+                    stdout: &mut o,
+                    stderr: &mut e,
+                };
                 h.call(verb, &args, &mut io).unwrap()
             };
             let text = if o.is_empty() { e } else { o };
@@ -9979,32 +11328,57 @@ mod backup_tests {
         assert!(status.ok, "{json}");
         assert_eq!(json["ok"], true);
 
-        let reported = json["result"]["backup_path"].as_str().unwrap_or_else(|| panic!("no backup_path: {json} {:?}", fx.calls()));
+        let reported = json["result"]["backup_path"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no backup_path: {json} {:?}", fx.calls()));
         let files = fx.backup_files();
-        assert_eq!(files, vec![std::path::PathBuf::from(reported)], "reported path is the file on disk");
+        assert_eq!(
+            files,
+            vec![std::path::PathBuf::from(reported)],
+            "reported path is the file on disk"
+        );
         assert_eq!(fs::read_to_string(reported).unwrap(), NFT_RULES);
-        assert_eq!(fs::metadata(reported).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(reported).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
 
         let calls = fx.calls();
         let flush = position(&calls, "nft flush ruleset").expect("flush ran");
         // The last ruleset listing before the flush is the backup capture.
-        assert!(calls[..flush].iter().any(|c| c == "nft list ruleset"), "{calls:?}");
+        assert!(
+            calls[..flush].iter().any(|c| c == "nft list ruleset"),
+            "{calls:?}"
+        );
     }
 
     #[test]
     fn iptables_enable_backs_up_then_restores_without_a_shell() {
         let fx = Fixture::new("", IPT_RULES_EMPTY, 0);
         let rules = fx.rules_file();
-        let (status, json) = fx.run("enable", &[("backend", "iptables"), ("family", "ipv4"), ("path", &rules)]);
+        let (status, json) = fx.run(
+            "enable",
+            &[
+                ("backend", "iptables"),
+                ("family", "ipv4"),
+                ("path", &rules),
+            ],
+        );
         assert!(status.ok, "{json}");
 
-        let reported = json["result"]["backup_path"].as_str().unwrap_or_else(|| panic!("no backup_path: {json} {:?}", fx.calls()));
+        let reported = json["result"]["backup_path"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no backup_path: {json} {:?}", fx.calls()));
         assert_eq!(fs::read_to_string(reported).unwrap(), IPT_RULES_EMPTY);
         assert!(reported.starts_with(fx.backups.to_str().unwrap()));
 
         let calls = fx.calls();
         let restore = position(&calls, "iptables-restore").expect("restore ran");
-        assert_eq!(calls[restore], format!("iptables-restore {}", rules), "rules file is one argument");
+        assert_eq!(
+            calls[restore],
+            format!("iptables-restore {}", rules),
+            "rules file is one argument"
+        );
         assert!(position(&calls, "iptables-save").unwrap() < restore);
         assert!(!calls.iter().any(|c| c.starts_with("sh ")));
     }
@@ -10021,10 +11395,17 @@ mod backup_tests {
             let (status, json) = fx.run("disable", &[("backend", backend)]);
             assert!(!status.ok, "{backend}: {json}");
             assert_ne!(status.code, Some(0));
-            assert!(status.reason.as_deref().unwrap_or("").contains("backup"), "{:?}", status.reason);
+            assert!(
+                status.reason.as_deref().unwrap_or("").contains("backup"),
+                "{:?}",
+                status.reason
+            );
             assert_eq!(json["ok"], false);
             let calls = fx.calls();
-            assert!(!calls.iter().any(|c| c.starts_with(change)), "{backend} changed rules: {calls:?}");
+            assert!(
+                !calls.iter().any(|c| c.starts_with(change)),
+                "{backend} changed rules: {calls:?}"
+            );
         }
     }
 
@@ -10037,11 +11418,20 @@ mod backup_tests {
         let locked = fx.dir.path().join("locked");
         fs::create_dir(&locked).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
-        let fx = Fixture { backups: locked.join("backups"), ..fx };
+        let fx = Fixture {
+            backups: locked.join("backups"),
+            ..fx
+        };
 
         let (status, json) = fx.run("disable", &[("backend", "nftables")]);
         assert!(!status.ok, "{json}");
-        assert!(json["error"]["error"]["message"].as_str().unwrap().contains("Permission denied"), "{json}");
+        assert!(
+            json["error"]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Permission denied"),
+            "{json}"
+        );
         assert!(!fx.calls().iter().any(|c| c.starts_with("nft flush")));
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
     }
@@ -10067,8 +11457,15 @@ mod backup_tests {
         assert!(!status.ok, "{json}");
         assert_ne!(status.code, Some(0));
         assert_eq!(json["ok"], false);
-        assert_eq!(json["error"]["error"]["code"], "firewall.command_failed", "{json}");
-        assert!(status.reason.as_deref().unwrap().contains("exit code 3"), "{:?}", status.reason);
+        assert_eq!(
+            json["error"]["error"]["code"], "firewall.command_failed",
+            "{json}"
+        );
+        assert!(
+            status.reason.as_deref().unwrap().contains("exit code 3"),
+            "{:?}",
+            status.reason
+        );
         // The backup taken before the failed change is still there.
         assert_eq!(fx.backup_files().len(), 1);
     }
@@ -10076,20 +11473,38 @@ mod backup_tests {
     #[test]
     fn no_backup_requested_means_none_reported() {
         let fx = Fixture::new(NFT_RULES, IPT_RULES_EMPTY, 0);
-        let (status, json) = fx.run("disable", &[("backend", "nftables"), ("backup_before_apply", "no")]);
+        let (status, json) = fx.run(
+            "disable",
+            &[("backend", "nftables"), ("backup_before_apply", "no")],
+        );
         assert!(status.ok, "{json}");
         assert!(json["result"]["backup_path"].is_null());
         assert!(fx.backup_files().is_empty());
-        assert!(!fx.run("disable", &[("backend", "nftables"), ("backup_before_apply", "maybe")]).0.ok);
+        assert!(
+            !fx.run(
+                "disable",
+                &[("backend", "nftables"), ("backup_before_apply", "maybe")]
+            )
+            .0
+            .ok
+        );
     }
 
     #[test]
     fn dry_run_writes_no_backup_and_changes_nothing() {
         let fx = Fixture::new(NFT_RULES, IPT_RULES, 0);
         let rules = fx.rules_file();
-        for (verb, backend) in [("disable", "nftables"), ("disable", "iptables"), ("enable", "nftables"), ("enable", "iptables")] {
+        for (verb, backend) in [
+            ("disable", "nftables"),
+            ("disable", "iptables"),
+            ("enable", "nftables"),
+            ("enable", "iptables"),
+        ] {
             for dry in ["true", "1", "yes"] {
-                let (status, json) = fx.run(verb, &[("backend", backend), ("path", &rules), ("dry_run", dry)]);
+                let (status, json) = fx.run(
+                    verb,
+                    &[("backend", backend), ("path", &rules), ("dry_run", dry)],
+                );
                 assert!(status.ok, "{verb} {backend}: {json}");
                 assert!(json["result"]["backup_path"].is_null());
             }
@@ -10097,8 +11512,10 @@ mod backup_tests {
         assert!(fx.backup_files().is_empty());
         let calls = fx.calls();
         assert!(
-            !calls.iter().any(|c| c.starts_with("nft -f") || c.starts_with("nft flush")
-                || c.starts_with("iptables-restore") || c.starts_with("iptables -")),
+            !calls.iter().any(|c| c.starts_with("nft -f")
+                || c.starts_with("nft flush")
+                || c.starts_with("iptables-restore")
+                || c.starts_with("iptables -")),
             "dry run changed rules: {calls:?}"
         );
     }
@@ -10141,26 +11558,49 @@ mod timeout_tests {
     }
 
     fn rt() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
     }
 
     #[test]
     fn hung_command_is_killed_and_reaped_at_the_deadline() {
         let (dir, bin) = fixture();
         let pidfile = dir.path().join("pid");
-        mock_tool(&bin, "nft", &format!("echo $$ > '{}'\nexec sleep 30", pidfile.display()));
+        mock_tool(
+            &bin,
+            "nft",
+            &format!("echo $$ > '{}'\nexec sleep 30", pidfile.display()),
+        );
         let _seam = test_seam::install(bin, dir.path().join("backups"));
 
         let start = Instant::now();
-        let err = rt().block_on(run_command_with_timeout("nft", &["list", "ruleset"], 300)).unwrap_err();
+        let err = rt()
+            .block_on(run_command_with_timeout("nft", &["list", "ruleset"], 300))
+            .unwrap_err();
         let elapsed = start.elapsed();
         assert!(err.to_string().contains("timed out after 300ms"), "{err}");
-        assert!(elapsed >= Duration::from_millis(300), "returned before the deadline: {elapsed:?}");
-        assert!(elapsed < Duration::from_secs(5), "timeout did not fire: {elapsed:?}");
+        assert!(
+            elapsed >= Duration::from_millis(300),
+            "returned before the deadline: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout did not fire: {elapsed:?}"
+        );
 
-        let pid: libc::pid_t = fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        let pid: libc::pid_t = fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         // The child was killed and reaped: the pid no longer exists.
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "timed-out command {pid} is still running");
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "timed-out command {pid} is still running"
+        );
     }
 
     #[test]
@@ -10168,7 +11608,9 @@ mod timeout_tests {
         let (dir, bin) = fixture();
         mock_tool(&bin, "nft", "echo out; echo err >&2; exit 3");
         let _seam = test_seam::install(bin, dir.path().join("backups"));
-        let (code, out, err) = rt().block_on(run_command_with_timeout("nft", &["list", "ruleset"], 5000)).unwrap();
+        let (code, out, err) = rt()
+            .block_on(run_command_with_timeout("nft", &["list", "ruleset"], 5000))
+            .unwrap();
         assert_eq!((code, out.as_str(), err.as_str()), (3, "out\n", "err\n"));
     }
 
@@ -10177,7 +11619,9 @@ mod timeout_tests {
         let (dir, bin) = fixture();
         mock_tool(&bin, "nft", "head -c 400000 /dev/zero | tr '\\0' 'x'");
         let _seam = test_seam::install(bin, dir.path().join("backups"));
-        let (code, out, _) = rt().block_on(run_command_with_timeout("nft", &[], 5000)).unwrap();
+        let (code, out, _) = rt()
+            .block_on(run_command_with_timeout("nft", &[], 5000))
+            .unwrap();
         assert_eq!(code, 0);
         assert_eq!(out.len(), 400000);
     }
@@ -10186,6 +11630,9 @@ mod timeout_tests {
     fn missing_command_is_an_error() {
         let (dir, bin) = fixture();
         let _seam = test_seam::install(bin, dir.path().join("backups"));
-        assert!(rt().block_on(run_command_with_timeout("nft", &[], 1000)).is_err());
+        assert!(
+            rt().block_on(run_command_with_timeout("nft", &[], 1000))
+                .is_err()
+        );
     }
 }

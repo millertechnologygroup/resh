@@ -1,13 +1,13 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::Utc;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::core::registry::Args;
 use super::model::*;
+use crate::core::registry::Args;
 
 /// Helper functions for creating envelope responses
 pub struct EnvelopeHelper;
@@ -83,7 +83,10 @@ impl ArgsHelper {
         // Parse channel with validation
         if let Some(channel) = args.get("channel") {
             if !["stable", "beta", "nightly"].contains(&channel.as_str()) {
-                return Err(anyhow!("Invalid channel '{}'. Must be one of: stable, beta, nightly", channel));
+                return Err(anyhow!(
+                    "Invalid channel '{}'. Must be one of: stable, beta, nightly",
+                    channel
+                ));
             }
             parsed.channel = channel.clone();
         }
@@ -116,12 +119,18 @@ impl ArgsHelper {
         // Basic semver validation - could be more sophisticated
         let parts: Vec<&str> = version.split('.').collect();
         if parts.len() < 2 || parts.len() > 3 {
-            return Err(anyhow!("Invalid version format: '{}'. Expected format like '1.2.3'", version));
+            return Err(anyhow!(
+                "Invalid version format: '{}'. Expected format like '1.2.3'",
+                version
+            ));
         }
 
         for part in parts {
             if part.parse::<u32>().is_err() {
-                return Err(anyhow!("Invalid version format: '{}'. All parts must be numeric", version));
+                return Err(anyhow!(
+                    "Invalid version format: '{}'. All parts must be numeric",
+                    version
+                ));
             }
         }
 
@@ -166,8 +175,10 @@ impl CacheHelper {
         let state_dir = std::env::var("RESH_STATE_DIR")
             .or_else(|_| std::env::var("HOME").map(|h| format!("{}/.resh", h)))
             .map_err(|_| anyhow!("Unable to determine state directory"))?;
-        
-        let cache_dir = PathBuf::from(state_dir).join("cache").join("plugin-indexes");
+
+        let cache_dir = PathBuf::from(state_dir)
+            .join("cache")
+            .join("plugin-indexes");
         fs::create_dir_all(&cache_dir)?;
         Ok(cache_dir)
     }
@@ -221,7 +232,7 @@ impl SelectionHelper {
         for i in 0..std::cmp::max(a_parts.len(), b_parts.len()) {
             let a_part = a_parts.get(i).unwrap_or(&0);
             let b_part = b_parts.get(i).unwrap_or(&0);
-            
+
             match a_part.cmp(b_part) {
                 std::cmp::Ordering::Equal => continue,
                 other => return other,
@@ -233,11 +244,9 @@ impl SelectionHelper {
 
     /// Sort indexes by priority (official > community > custom)
     pub fn sort_indexes(indexes: &mut Vec<IndexSnapshot>) {
-        indexes.sort_by(|a, b| {
-            match a.kind.priority().cmp(&b.kind.priority()) {
-                std::cmp::Ordering::Equal => a.id.cmp(&b.id),
-                other => other,
-            }
+        indexes.sort_by(|a, b| match a.kind.priority().cmp(&b.kind.priority()) {
+            std::cmp::Ordering::Equal => a.id.cmp(&b.id),
+            other => other,
         });
     }
 }
@@ -257,10 +266,22 @@ mod tests {
     #[test]
     fn test_version_comparison() {
         use std::cmp::Ordering;
-        
-        assert_eq!(SelectionHelper::compare_versions("1.2.3", "1.2.3"), Ordering::Equal);
-        assert_eq!(SelectionHelper::compare_versions("1.2.3", "1.2.2"), Ordering::Greater);
-        assert_eq!(SelectionHelper::compare_versions("1.2.2", "1.2.3"), Ordering::Less);
-        assert_eq!(SelectionHelper::compare_versions("2.0.0", "1.9.9"), Ordering::Greater);
+
+        assert_eq!(
+            SelectionHelper::compare_versions("1.2.3", "1.2.3"),
+            Ordering::Equal
+        );
+        assert_eq!(
+            SelectionHelper::compare_versions("1.2.3", "1.2.2"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            SelectionHelper::compare_versions("1.2.2", "1.2.3"),
+            Ordering::Less
+        );
+        assert_eq!(
+            SelectionHelper::compare_versions("2.0.0", "1.9.9"),
+            Ordering::Greater
+        );
     }
 }

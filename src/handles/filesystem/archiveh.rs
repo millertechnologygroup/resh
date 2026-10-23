@@ -1,15 +1,15 @@
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
+use globset::{Glob, GlobSetBuilder};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs::{self, File, create_dir_all};
-use std::io::{Write, Read, BufWriter, copy};
-use std::path::{Path, PathBuf, Component};
-use std::time::{SystemTime, UNIX_EPOCH, Instant};
+use std::io::{BufWriter, Read, Write, copy};
+use std::path::{Component, Path, PathBuf};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use url::Url;
 use walkdir::WalkDir;
-use globset::{Glob, GlobSetBuilder};
-use chrono::{DateTime, Utc};
 
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
@@ -18,14 +18,14 @@ use crate::core::{
 };
 
 // Archive format imports
-use zip::write::{FileOptions, ZipWriter};
-use zip::{CompressionMethod, ZipArchive};
 use flate2::Compression;
-use flate2::write::GzEncoder;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use tar::Archive;
 use xz2::read::XzDecoder;
 use xz2::write::XzEncoder;
+use zip::write::{FileOptions, ZipWriter};
+use zip::{CompressionMethod, ZipArchive};
 use zstd::stream::read::Decoder as ZstdDecoder;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
@@ -493,9 +493,7 @@ pub struct ArchiveHandle {
 
 impl ArchiveHandle {
     pub fn from_url(url: &Url) -> Result<Self> {
-        Ok(ArchiveHandle {
-            _url: url.clone(),
-        })
+        Ok(ArchiveHandle { _url: url.clone() })
     }
 }
 
@@ -503,7 +501,7 @@ impl ArchiveHandle {
 pub enum ArchiveFormat {
     Auto,
     Tar,
-    TarGz, 
+    TarGz,
     TarXz,
     TarZstd,
     Zip,
@@ -558,7 +556,7 @@ impl ArchiveFormat {
             Self::Auto => "auto",
             Self::Tar => "tar",
             Self::TarGz => "tar.gz",
-            Self::TarXz => "tar.xz", 
+            Self::TarXz => "tar.xz",
             Self::TarZstd => "tar.zstd",
             Self::Zip => "zip",
             Self::SevenZ => "7z",
@@ -568,7 +566,16 @@ impl ArchiveFormat {
     }
 
     pub fn supports_compression_level(&self) -> bool {
-        matches!(self, Self::TarGz | Self::TarXz | Self::TarZstd | Self::Zip | Self::SevenZ | Self::Gzip | Self::Raw)
+        matches!(
+            self,
+            Self::TarGz
+                | Self::TarXz
+                | Self::TarZstd
+                | Self::Zip
+                | Self::SevenZ
+                | Self::Gzip
+                | Self::Raw
+        )
     }
 
     /// Whether `create` can write a password-protected archive in this
@@ -1034,7 +1041,7 @@ pub struct FileEntry {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ArchiveExtractManifestEntry {
-    pub path: String,   // destination-relative
+    pub path: String, // destination-relative
     pub size: u64,
     pub is_dir: bool,
     pub is_symlink: bool,
@@ -1098,7 +1105,8 @@ pub struct ArchiveExtractResponse {
 
 impl ArchiveCreateOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let output = args.get("output")
+        let output = args
+            .get("output")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: output"))?
             .clone();
 
@@ -1106,9 +1114,10 @@ impl ArchiveCreateOptions {
             bail!("Output path cannot be empty");
         }
 
-        let sources_str = args.get("sources")
+        let sources_str = args
+            .get("sources")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: sources"))?;
-        
+
         let sources: Vec<String> = serde_json::from_str(sources_str)
             .context("Invalid sources format - must be JSON array")?;
 
@@ -1130,16 +1139,24 @@ impl ArchiveCreateOptions {
         };
 
         let compression_level = if let Some(level_str) = args.get("compression_level") {
-            let level = level_str.parse::<u32>()
+            let level = level_str
+                .parse::<u32>()
                 .context("Invalid compression_level - must be integer")?;
-            
+
             if format.supports_compression_level() {
                 if level < 1 || level > format.max_compression_level() {
-                    bail!("Invalid compression level {} for format {}. Must be 1-{}", 
-                         level, format.as_str(), format.max_compression_level());
+                    bail!(
+                        "Invalid compression level {} for format {}. Must be 1-{}",
+                        level,
+                        format.as_str(),
+                        format.max_compression_level()
+                    );
                 }
             } else if level != 0 {
-                bail!("Compression level not supported for format {}", format.as_str());
+                bail!(
+                    "Compression level not supported for format {}",
+                    format.as_str()
+                );
             }
             Some(level)
         } else {
@@ -1160,11 +1177,13 @@ impl ArchiveCreateOptions {
             vec![]
         };
 
-        let include_hidden = args.get("include_hidden")
+        let include_hidden = args
+            .get("include_hidden")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let follow_symlinks = crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
+        let follow_symlinks =
+            crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
 
         let password = args.get("password").cloned();
         if password.is_some() && !format.supports_password() {
@@ -1176,23 +1195,28 @@ impl ArchiveCreateOptions {
 
         let overwrite = crate::core::lenient::bool_arg(args, "overwrite")?.unwrap_or(false);
 
-        let preserve_permissions = args.get("preserve_permissions")
+        let preserve_permissions = args
+            .get("preserve_permissions")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let preserve_timestamps = args.get("preserve_timestamps")
+        let preserve_timestamps = args
+            .get("preserve_timestamps")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let max_files = args.get("max_files")
+        let max_files = args
+            .get("max_files")
             .map(|s| s.parse::<u64>().unwrap_or(100000))
             .unwrap_or(100000);
 
-        let max_size_mb = args.get("max_size_mb")
+        let max_size_mb = args
+            .get("max_size_mb")
             .map(|s| s.parse::<u64>().unwrap_or(10240))
             .unwrap_or(10240);
 
-        let progress = args.get("progress")
+        let progress = args
+            .get("progress")
             .map(|s| s.parse::<bool>().unwrap_or(false))
             .unwrap_or(false);
 
@@ -1232,7 +1256,8 @@ impl ArchiveCreateOptions {
 
 impl ArchiveExtractOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let archive = args.get("archive")
+        let archive = args
+            .get("archive")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: archive"))?
             .clone();
 
@@ -1240,7 +1265,8 @@ impl ArchiveExtractOptions {
             bail!("Archive path cannot be empty");
         }
 
-        let destination = args.get("destination")
+        let destination = args
+            .get("destination")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: destination"))?
             .clone();
 
@@ -1297,39 +1323,50 @@ impl ArchiveExtractOptions {
 
         let overwrite = crate::core::lenient::bool_arg(args, "overwrite")?.unwrap_or(false);
 
-        let create_destination = args.get("create_destination")
+        let create_destination = args
+            .get("create_destination")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let fail_on_missing_archive = args.get("fail_on_missing_archive")
+        let fail_on_missing_archive = args
+            .get("fail_on_missing_archive")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let strip_components = args.get("strip_components")
+        let strip_components = args
+            .get("strip_components")
             .map(|s| s.parse::<u32>().unwrap_or(0))
             .unwrap_or(0);
 
-        let allow_absolute_paths = crate::core::lenient::bool_arg(args, "allow_absolute_paths")?.unwrap_or(false);
+        let allow_absolute_paths =
+            crate::core::lenient::bool_arg(args, "allow_absolute_paths")?.unwrap_or(false);
 
-        let allow_parent_traversal = crate::core::lenient::bool_arg(args, "allow_parent_traversal")?.unwrap_or(false);
+        let allow_parent_traversal =
+            crate::core::lenient::bool_arg(args, "allow_parent_traversal")?.unwrap_or(false);
 
-        let allow_symlinks = crate::core::lenient::bool_arg(args, "allow_symlinks")?.unwrap_or(true);
+        let allow_symlinks =
+            crate::core::lenient::bool_arg(args, "allow_symlinks")?.unwrap_or(true);
 
-        let follow_symlinks = crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
+        let follow_symlinks =
+            crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
 
-        let max_entries = args.get("max_entries")
+        let max_entries = args
+            .get("max_entries")
             .map(|s| s.parse::<u64>().unwrap_or(1000000))
             .unwrap_or(1000000);
 
-        let max_total_bytes = args.get("max_total_bytes")
+        let max_total_bytes = args
+            .get("max_total_bytes")
             .map(|s| s.parse::<u64>().ok())
             .flatten();
 
-        let max_file_bytes = args.get("max_file_bytes")
+        let max_file_bytes = args
+            .get("max_file_bytes")
             .map(|s| s.parse::<u64>().ok())
             .flatten();
 
-        let include_manifest = args.get("include_manifest")
+        let include_manifest = args
+            .get("include_manifest")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
@@ -1369,7 +1406,8 @@ impl ArchiveExtractOptions {
 
 impl ArchiveListOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let archive = args.get("archive")
+        let archive = args
+            .get("archive")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: archive"))?
             .clone();
 
@@ -1424,23 +1462,28 @@ impl ArchiveListOptions {
             vec![]
         };
 
-        let max_entries = args.get("max_entries")
+        let max_entries = args
+            .get("max_entries")
             .map(|s| s.parse::<u64>().unwrap_or(1000000))
             .unwrap_or(1000000);
 
-        let max_total_bytes = args.get("max_total_bytes")
+        let max_total_bytes = args
+            .get("max_total_bytes")
             .map(|s| s.parse::<u64>().ok())
             .flatten();
 
-        let fail_on_missing_archive = args.get("fail_on_missing_archive")
+        let fail_on_missing_archive = args
+            .get("fail_on_missing_archive")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let include_metadata = args.get("include_metadata")
+        let include_metadata = args
+            .get("include_metadata")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let include_compressed_size = args.get("include_compressed_size")
+        let include_compressed_size = args
+            .get("include_compressed_size")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
@@ -1472,7 +1515,8 @@ impl ArchiveListOptions {
 
 impl ArchiveTestOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let archive = args.get("archive")
+        let archive = args
+            .get("archive")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: archive"))?
             .clone();
 
@@ -1513,31 +1557,38 @@ impl ArchiveTestOptions {
             _ => {}
         }
 
-        let stop_on_first_error = args.get("stop_on_first_error")
+        let stop_on_first_error = args
+            .get("stop_on_first_error")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let report_entries = args.get("report_entries")
+        let report_entries = args
+            .get("report_entries")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let verify_data = args.get("verify_data")
+        let verify_data = args
+            .get("verify_data")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let max_entries = args.get("max_entries")
+        let max_entries = args
+            .get("max_entries")
             .map(|s| s.parse::<u64>().unwrap_or(1000000))
             .unwrap_or(1000000);
 
-        let max_total_bytes = args.get("max_total_bytes")
+        let max_total_bytes = args
+            .get("max_total_bytes")
             .map(|s| s.parse::<u64>().ok())
             .flatten();
 
-        let max_file_bytes = args.get("max_file_bytes")
+        let max_file_bytes = args
+            .get("max_file_bytes")
             .map(|s| s.parse::<u64>().ok())
             .flatten();
 
-        let fail_on_missing_archive = args.get("fail_on_missing_archive")
+        let fail_on_missing_archive = args
+            .get("fail_on_missing_archive")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
@@ -1569,7 +1620,8 @@ impl ArchiveTestOptions {
 
 impl ArchiveInfoOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let archive = args.get("archive")
+        let archive = args
+            .get("archive")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: archive"))?
             .clone();
 
@@ -1610,19 +1662,23 @@ impl ArchiveInfoOptions {
             _ => {}
         }
 
-        let scan_entries = args.get("scan_entries")
+        let scan_entries = args
+            .get("scan_entries")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let max_entries = args.get("max_entries")
+        let max_entries = args
+            .get("max_entries")
             .map(|s| s.parse::<u64>().unwrap_or(1000000))
             .unwrap_or(1000000);
 
-        let max_total_bytes = args.get("max_total_bytes")
+        let max_total_bytes = args
+            .get("max_total_bytes")
             .map(|s| s.parse::<u64>().ok())
             .flatten();
 
-        let fail_on_missing_archive = args.get("fail_on_missing_archive")
+        let fail_on_missing_archive = args
+            .get("fail_on_missing_archive")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
@@ -1651,7 +1707,8 @@ impl ArchiveInfoOptions {
 
 impl ArchiveAddOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let archive = args.get("archive")
+        let archive = args
+            .get("archive")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: archive"))?
             .clone();
 
@@ -1719,35 +1776,43 @@ impl ArchiveAddOptions {
             vec![]
         };
 
-        let follow_symlinks = crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
+        let follow_symlinks =
+            crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
 
         let overwrite = crate::core::lenient::bool_arg(args, "overwrite")?.unwrap_or(false);
 
-        let keep_existing_dirs = args.get("keep_existing_dirs")
+        let keep_existing_dirs = args
+            .get("keep_existing_dirs")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let preserve_owner = args.get("preserve_owner")
+        let preserve_owner = args
+            .get("preserve_owner")
             .map(|s| s.parse::<bool>().unwrap_or(false))
             .unwrap_or(false);
 
-        let preserve_permissions = args.get("preserve_permissions")
+        let preserve_permissions = args
+            .get("preserve_permissions")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let preserve_timestamps = args.get("preserve_timestamps")
+        let preserve_timestamps = args
+            .get("preserve_timestamps")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let deterministic = args.get("deterministic")
+        let deterministic = args
+            .get("deterministic")
             .map(|s| s.parse::<bool>().unwrap_or(false))
             .unwrap_or(false);
 
-        let max_entries = args.get("max_entries")
+        let max_entries = args
+            .get("max_entries")
             .map(|s| s.parse::<u64>().unwrap_or(1000000))
             .unwrap_or(1000000);
 
-        let max_total_bytes = args.get("max_total_bytes")
+        let max_total_bytes = args
+            .get("max_total_bytes")
             .map(|s| s.parse::<u64>().ok())
             .flatten();
 
@@ -1790,7 +1855,8 @@ impl ArchiveAddOptions {
 
 impl ArchiveRemoveOptions {
     pub fn from_args(args: &Args) -> Result<Self> {
-        let archive = args.get("archive")
+        let archive = args
+            .get("archive")
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: archive"))?
             .clone();
 
@@ -1823,7 +1889,9 @@ impl ArchiveRemoveOptions {
         // Validate format/compression combination
         match (&format, &compression) {
             (ArchiveFormat::Raw, _) => {
-                bail!("Removing entries from raw compressed streams (gzip/xz/zstd) is not supported");
+                bail!(
+                    "Removing entries from raw compressed streams (gzip/xz/zstd) is not supported"
+                );
             }
             (ArchiveFormat::SevenZ, _) => {
                 bail!("7z archive removal not yet supported");
@@ -1854,24 +1922,30 @@ impl ArchiveRemoveOptions {
 
         // Check if we have at least one selector
         if paths.is_empty() && patterns.is_empty() && dir_prefixes.is_empty() {
-            bail!("Nothing to remove - must specify at least one of: paths, patterns, or dir_prefixes");
+            bail!(
+                "Nothing to remove - must specify at least one of: paths, patterns, or dir_prefixes"
+            );
         }
 
-        let remove_empty_dirs = args.get("remove_empty_dirs")
+        let remove_empty_dirs = args
+            .get("remove_empty_dirs")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
         let dry_run = crate::core::lenient::dry_run(args)?;
 
-        let max_entries = args.get("max_entries")
+        let max_entries = args
+            .get("max_entries")
             .map(|s| s.parse::<u64>().unwrap_or(1000000))
             .unwrap_or(1000000);
 
-        let max_total_bytes = args.get("max_total_bytes")
+        let max_total_bytes = args
+            .get("max_total_bytes")
             .map(|s| s.parse::<u64>().ok())
             .flatten();
 
-        let fail_on_missing_archive = args.get("fail_on_missing_archive")
+        let fail_on_missing_archive = args
+            .get("fail_on_missing_archive")
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
@@ -1959,19 +2033,20 @@ impl ArchiveListResponse {
             if self.ok {
                 output.push_str(&format!("Entries Total : {}\n", summary.entries_total));
                 output.push_str(&format!("Entries Listed: {}\n", summary.entries_listed));
-                
+
                 let mb = summary.bytes_total as f64 / 1024.0 / 1024.0;
                 output.push_str(&format!("Bytes Total   : {:.1} MB\n", mb));
-                
+
                 if let Some(compressed_bytes) = summary.bytes_compressed {
                     let compressed_mb = compressed_bytes as f64 / 1024.0 / 1024.0;
                     output.push_str(&format!("Archive Size  : {:.1} MB\n", compressed_mb));
                 }
-                
+
                 output.push_str("\nEntries:\n");
 
                 if let Some(ref manifest) = self.manifest {
-                    for entry in manifest.iter().take(20) { // Limit display to first 20
+                    for entry in manifest.iter().take(20) {
+                        // Limit display to first 20
                         let type_char = if entry.is_dir {
                             "[D]"
                         } else if entry.is_symlink {
@@ -1979,32 +2054,35 @@ impl ArchiveListResponse {
                         } else {
                             "[F]"
                         };
-                        
+
                         output.push_str(&format!("  {} {:<30}", type_char, entry.path));
-                        
+
                         if !entry.is_dir {
                             output.push_str(&format!(" size={:<8}", entry.size));
                         } else {
                             output.push_str(&format!(" size={:<8}", ""));
                         }
-                        
+
                         if let Some(ref mode) = entry.mode {
                             output.push_str(&format!(" mode={}", mode));
                         }
-                        
+
                         if let Some(mtime) = entry.mtime_unix {
                             // Convert to human readable time
                             if let Some(datetime) = chrono::DateTime::from_timestamp(mtime, 0) {
-                                output.push_str(&format!(" mtime={}", 
-                                    datetime.format("%Y-%m-%dT%H:%M:%SZ")));
+                                output.push_str(&format!(
+                                    " mtime={}",
+                                    datetime.format("%Y-%m-%dT%H:%M:%SZ")
+                                ));
                             }
                         }
-                        
+
                         output.push('\n');
                     }
-                    
+
                     if manifest.len() > 20 {
-                        output.push_str(&format!("  ... and {} more entries\n", manifest.len() - 20));
+                        output
+                            .push_str(&format!("  ... and {} more entries\n", manifest.len() - 20));
                     }
                 }
             }
@@ -2087,26 +2165,42 @@ impl ArchiveTestResponse {
 
             output.push_str(&format!("Entries Tested : {}\n", summary.entries_tested));
             output.push_str(&format!("Entries Failed : {}\n", summary.entries_failed));
-            
+
             let mb = summary.bytes_tested as f64 / 1024.0 / 1024.0;
             output.push_str(&format!("Bytes Tested   : {:.1} MB\n", mb));
-            output.push_str(&format!("Valid          : {}\n", if summary.valid { "yes" } else { "no" }));
-            output.push_str(&format!("Stopped Early  : {}\n", if summary.stopped_early { "yes" } else { "no" }));
+            output.push_str(&format!(
+                "Valid          : {}\n",
+                if summary.valid { "yes" } else { "no" }
+            ));
+            output.push_str(&format!(
+                "Stopped Early  : {}\n",
+                if summary.stopped_early { "yes" } else { "no" }
+            ));
 
             if let Some(ref entries) = self.entries {
                 if !entries.is_empty() {
-                    let failed_entries: Vec<_> = entries.iter().filter(|e| e.status == "error").collect();
+                    let failed_entries: Vec<_> =
+                        entries.iter().filter(|e| e.status == "error").collect();
                     if !failed_entries.is_empty() {
                         output.push_str("\nFailed Entries:\n");
-                        for entry in failed_entries.iter().take(10) { // Limit to first 10 failed
-                            if let (Some(code), Some(message)) = (&entry.error_code, &entry.error_message) {
-                                output.push_str(&format!("  - {}: [{}] {}\n", entry.path, code, message));
+                        for entry in failed_entries.iter().take(10) {
+                            // Limit to first 10 failed
+                            if let (Some(code), Some(message)) =
+                                (&entry.error_code, &entry.error_message)
+                            {
+                                output.push_str(&format!(
+                                    "  - {}: [{}] {}\n",
+                                    entry.path, code, message
+                                ));
                             } else {
                                 output.push_str(&format!("  - {}: failed\n", entry.path));
                             }
                         }
                         if failed_entries.len() > 10 {
-                            output.push_str(&format!("  ... and {} more failed entries\n", failed_entries.len() - 10));
+                            output.push_str(&format!(
+                                "  ... and {} more failed entries\n",
+                                failed_entries.len() - 10
+                            ));
                         }
                     }
                 }
@@ -2188,11 +2282,14 @@ impl ArchiveInfoResponse {
             // File size
             let mb = summary.archive_size_bytes as f64 / 1024.0 / 1024.0;
             output.push_str(&format!("Archive Size    : {:.1} MB\n", mb));
-            
+
             if let Some(mtime) = summary.archive_mtime_unix {
                 let dt = DateTime::<Utc>::from_timestamp(mtime, 0);
                 if let Some(dt) = dt {
-                    output.push_str(&format!("Archive Mtime   : {}\n", dt.format("%Y-%m-%dT%H:%M:%SZ")));
+                    output.push_str(&format!(
+                        "Archive Mtime   : {}\n",
+                        dt.format("%Y-%m-%dT%H:%M:%SZ")
+                    ));
                 }
             }
 
@@ -2224,13 +2321,19 @@ impl ArchiveInfoResponse {
             if let Some(min_mtime) = summary.min_mtime_unix {
                 let dt = DateTime::<Utc>::from_timestamp(min_mtime, 0);
                 if let Some(dt) = dt {
-                    output.push_str(&format!("Min Mtime       : {}\n", dt.format("%Y-%m-%dT%H:%M:%SZ")));
+                    output.push_str(&format!(
+                        "Min Mtime       : {}\n",
+                        dt.format("%Y-%m-%dT%H:%M:%SZ")
+                    ));
                 }
             }
             if let Some(max_mtime) = summary.max_mtime_unix {
                 let dt = DateTime::<Utc>::from_timestamp(max_mtime, 0);
                 if let Some(dt) = dt {
-                    output.push_str(&format!("Max Mtime       : {}\n", dt.format("%Y-%m-%dT%H:%M:%SZ")));
+                    output.push_str(&format!(
+                        "Max Mtime       : {}\n",
+                        dt.format("%Y-%m-%dT%H:%M:%SZ")
+                    ));
                 }
             }
 
@@ -2328,19 +2431,27 @@ impl ArchiveCreateResponse {
         output.push_str("================\n\n");
 
         if self.ok {
-            output.push_str(&format!("Output      : {} ({} format)\n", 
-                                   self.result.output_path, self.result.format_detected));
-            output.push_str(&format!("Files       : {} files, {} directories\n", 
-                                   self.result.files_archived, self.result.directories_archived));
-            
+            output.push_str(&format!(
+                "Output      : {} ({} format)\n",
+                self.result.output_path, self.result.format_detected
+            ));
+            output.push_str(&format!(
+                "Files       : {} files, {} directories\n",
+                self.result.files_archived, self.result.directories_archived
+            ));
+
             let total_mb = self.result.total_size_bytes as f64 / 1024.0 / 1024.0;
             let compressed_mb = self.result.compressed_size_bytes as f64 / 1024.0 / 1024.0;
             let compression = (self.result.compression_ratio * 100.0) as i32;
-            
-            output.push_str(&format!("Size        : {:.1} MB → {:.1} MB ({}% compression)\n", 
-                                   total_mb, compressed_mb, compression));
-            output.push_str(&format!("Duration    : {:.2} seconds\n\n", 
-                                   self.result.duration_ms as f64 / 1000.0));
+
+            output.push_str(&format!(
+                "Size        : {:.1} MB → {:.1} MB ({}% compression)\n",
+                total_mb, compressed_mb, compression
+            ));
+            output.push_str(&format!(
+                "Duration    : {:.2} seconds\n\n",
+                self.result.duration_ms as f64 / 1000.0
+            ));
         } else {
             if let Some((ref code, ref message)) = self.error {
                 output.push_str(&format!("Error: [{}] {}\n\n", code, message));
@@ -2413,13 +2524,18 @@ impl ArchiveExtractResponse {
 
             if self.ok {
                 output.push_str(&format!("Entries Total    : {}\n", summary.entries_total));
-                output.push_str(&format!("Entries Extracted: {}\n", summary.entries_extracted));
+                output.push_str(&format!(
+                    "Entries Extracted: {}\n",
+                    summary.entries_extracted
+                ));
                 output.push_str(&format!("Entries Skipped  : {}\n", summary.entries_skipped));
-                
+
                 let mb = summary.bytes_written as f64 / 1024.0 / 1024.0;
                 output.push_str(&format!("Bytes Written    : {:.1} MB\n", mb));
-                output.push_str(&format!("Duration         : {:.2} s\n\n", 
-                                       summary.duration_ms as f64 / 1000.0));
+                output.push_str(&format!(
+                    "Duration         : {:.2} s\n\n",
+                    summary.duration_ms as f64 / 1000.0
+                ));
             }
         }
 
@@ -2510,11 +2626,17 @@ impl ArchiveAddResponse {
                 let mb_after = summary.uncompressed_bytes_after as f64 / 1024.0 / 1024.0;
                 let archive_mb_before = summary.archive_size_bytes_before as f64 / 1024.0 / 1024.0;
                 let archive_mb_after = summary.archive_size_bytes_after as f64 / 1024.0 / 1024.0;
-                
+
                 output.push_str(&format!("Uncompressed Before : {:.1} MB\n", mb_before));
                 output.push_str(&format!("Uncompressed After  : {:.1} MB\n", mb_after));
-                output.push_str(&format!("Archive Size Before : {:.1} MB\n", archive_mb_before));
-                output.push_str(&format!("Archive Size After  : {:.1} MB\n\n", archive_mb_after));
+                output.push_str(&format!(
+                    "Archive Size Before : {:.1} MB\n",
+                    archive_mb_before
+                ));
+                output.push_str(&format!(
+                    "Archive Size After  : {:.1} MB\n\n",
+                    archive_mb_after
+                ));
             }
         }
 
@@ -2599,24 +2721,45 @@ impl ArchiveRemoveResponse {
                 let mb_after = summary.uncompressed_bytes_after as f64 / 1024.0 / 1024.0;
                 let archive_mb_before = summary.archive_size_bytes_before as f64 / 1024.0 / 1024.0;
                 let archive_mb_after = summary.archive_size_bytes_after as f64 / 1024.0 / 1024.0;
-                
+
                 if mb_before >= 1024.0 {
-                    output.push_str(&format!("Uncompressed Before : {:.2} GB\n", mb_before / 1024.0));
-                    output.push_str(&format!("Uncompressed After  : {:.2} GB\n", mb_after / 1024.0));
+                    output.push_str(&format!(
+                        "Uncompressed Before : {:.2} GB\n",
+                        mb_before / 1024.0
+                    ));
+                    output.push_str(&format!(
+                        "Uncompressed After  : {:.2} GB\n",
+                        mb_after / 1024.0
+                    ));
                 } else {
                     output.push_str(&format!("Uncompressed Before : {:.1} MB\n", mb_before));
                     output.push_str(&format!("Uncompressed After  : {:.1} MB\n", mb_after));
                 }
-                
+
                 if archive_mb_before >= 1024.0 {
-                    output.push_str(&format!("Archive Size Before : {:.2} GB\n", archive_mb_before / 1024.0));
-                    output.push_str(&format!("Archive Size After  : {:.2} GB\n", archive_mb_after / 1024.0));
+                    output.push_str(&format!(
+                        "Archive Size Before : {:.2} GB\n",
+                        archive_mb_before / 1024.0
+                    ));
+                    output.push_str(&format!(
+                        "Archive Size After  : {:.2} GB\n",
+                        archive_mb_after / 1024.0
+                    ));
                 } else {
-                    output.push_str(&format!("Archive Size Before : {:.1} MB\n", archive_mb_before));
-                    output.push_str(&format!("Archive Size After  : {:.1} MB\n", archive_mb_after));
+                    output.push_str(&format!(
+                        "Archive Size Before : {:.1} MB\n",
+                        archive_mb_before
+                    ));
+                    output.push_str(&format!(
+                        "Archive Size After  : {:.1} MB\n",
+                        archive_mb_after
+                    ));
                 }
 
-                output.push_str(&format!("Dry Run            : {}\n\n", if summary.dry_run { "yes" } else { "no" }));
+                output.push_str(&format!(
+                    "Dry Run            : {}\n\n",
+                    if summary.dry_run { "yes" } else { "no" }
+                ));
             }
         }
 
@@ -2687,7 +2830,8 @@ pub const ARCHIVE_TEST_INTERNAL_ERROR: &str = "archive.test_internal_error";
 pub const ARCHIVE_CREATE_INVALID_OUTPUT: &str = "archive.create_invalid_output";
 pub const ARCHIVE_CREATE_INVALID_SOURCES: &str = "archive.create_invalid_sources";
 pub const ARCHIVE_CREATE_INVALID_FORMAT: &str = "archive.create_invalid_format";
-pub const ARCHIVE_CREATE_INVALID_COMPRESSION_LEVEL: &str = "archive.create_invalid_compression_level";
+pub const ARCHIVE_CREATE_INVALID_COMPRESSION_LEVEL: &str =
+    "archive.create_invalid_compression_level";
 pub const ARCHIVE_CREATE_INVALID_BASE_DIR: &str = "archive.create_invalid_base_dir";
 pub const ARCHIVE_CREATE_INVALID_PATTERN: &str = "archive.create_invalid_pattern";
 pub const ARCHIVE_CREATE_PASSWORD_NOT_SUPPORTED: &str = "archive.create_password_not_supported";
@@ -2701,19 +2845,22 @@ pub const ARCHIVE_CREATE_COMPRESSION_FAILED: &str = "archive.create_compression_
 pub const ARCHIVE_CREATE_DISK_FULL: &str = "archive.create_disk_full";
 pub const ARCHIVE_CREATE_INTERNAL_ERROR: &str = "archive.create_internal_error";
 
-// Extract error constants  
+// Extract error constants
 pub const ARCHIVE_EXTRACT_INVALID_ARCHIVE_PATH: &str = "archive.extract_invalid_archive_path";
 pub const ARCHIVE_EXTRACT_MISSING_ARCHIVE: &str = "archive.extract_missing_archive";
 pub const ARCHIVE_EXTRACT_INVALID_DESTINATION: &str = "archive.extract_invalid_destination";
 pub const ARCHIVE_EXTRACT_DESTINATION_MISSING: &str = "archive.extract_destination_missing";
-pub const ARCHIVE_EXTRACT_DESTINATION_CREATE_FAILED: &str = "archive.extract_destination_create_failed";
+pub const ARCHIVE_EXTRACT_DESTINATION_CREATE_FAILED: &str =
+    "archive.extract_destination_create_failed";
 pub const ARCHIVE_EXTRACT_INVALID_FORMAT: &str = "archive.extract_invalid_format";
 pub const ARCHIVE_EXTRACT_INVALID_FORMAT_INFER: &str = "archive.extract_invalid_format_infer";
 pub const ARCHIVE_EXTRACT_INVALID_COMPRESSION: &str = "archive.extract_invalid_compression";
-pub const ARCHIVE_EXTRACT_INVALID_FORMAT_COMPRESSION: &str = "archive.extract_invalid_format_compression";
+pub const ARCHIVE_EXTRACT_INVALID_FORMAT_COMPRESSION: &str =
+    "archive.extract_invalid_format_compression";
 pub const ARCHIVE_EXTRACT_INVALID_INCLUDE_PATTERN: &str = "archive.extract_invalid_include_pattern";
 pub const ARCHIVE_EXTRACT_INVALID_EXCLUDE_PATTERN: &str = "archive.extract_invalid_exclude_pattern";
-pub const ARCHIVE_EXTRACT_INVALID_STRIP_COMPONENTS: &str = "archive.extract_invalid_strip_components";
+pub const ARCHIVE_EXTRACT_INVALID_STRIP_COMPONENTS: &str =
+    "archive.extract_invalid_strip_components";
 pub const ARCHIVE_EXTRACT_INVALID_MAX_ENTRIES: &str = "archive.extract_invalid_max_entries";
 pub const ARCHIVE_EXTRACT_INVALID_MAX_SIZE: &str = "archive.extract_invalid_max_size";
 pub const ARCHIVE_EXTRACT_INVALID_MAX_FILE_SIZE: &str = "archive.extract_invalid_max_file_size";
@@ -2777,7 +2924,8 @@ pub const ARCHIVE_REMOVE_NOTHING_TO_REMOVE: &str = "archive.remove_nothing_to_re
 pub const ARCHIVE_REMOVE_INVALID_FORMAT: &str = "archive.remove_invalid_format";
 pub const ARCHIVE_REMOVE_INVALID_FORMAT_INFER: &str = "archive.remove_invalid_format_infer";
 pub const ARCHIVE_REMOVE_INVALID_COMPRESSION: &str = "archive.remove_invalid_compression";
-pub const ARCHIVE_REMOVE_INVALID_FORMAT_COMPRESSION: &str = "archive.remove_invalid_format_compression";
+pub const ARCHIVE_REMOVE_INVALID_FORMAT_COMPRESSION: &str =
+    "archive.remove_invalid_format_compression";
 pub const ARCHIVE_REMOVE_INVALID_MAX_ENTRIES: &str = "archive.remove_invalid_max_entries";
 pub const ARCHIVE_REMOVE_INVALID_MAX_SIZE: &str = "archive.remove_invalid_max_size";
 pub const ARCHIVE_REMOVE_UNSUPPORTED_FOR_RAW: &str = "archive.remove_unsupported_for_raw";
@@ -2812,7 +2960,7 @@ impl Handle for ArchiveHandle {
             )?;
             return Ok(Status::ok());
         }
-        
+
         match verb {
             "create" => self.verb_create(args, io),
             "extract" => self.verb_extract(args, io),
@@ -3096,11 +3244,15 @@ impl ArchiveHandle {
 
 fn map_remove_validation_error(err: &anyhow::Error) -> String {
     let err_str = err.to_string();
-    if err_str.contains("Missing required parameter: archive") || err_str.contains("Archive path cannot be empty") {
+    if err_str.contains("Missing required parameter: archive")
+        || err_str.contains("Archive path cannot be empty")
+    {
         format!("[{}] {}", ARCHIVE_REMOVE_INVALID_ARCHIVE_PATH, err_str)
     } else if err_str.contains("Nothing to remove") {
         format!("[{}] {}", ARCHIVE_REMOVE_NOTHING_TO_REMOVE, err_str)
-    } else if err_str.contains("Unsupported archive format") || err_str.contains("Cannot detect archive format") {
+    } else if err_str.contains("Unsupported archive format")
+        || err_str.contains("Cannot detect archive format")
+    {
         format!("[{}] {}", ARCHIVE_REMOVE_INVALID_FORMAT, err_str)
     } else if err_str.contains("Invalid paths format") {
         format!("[{}] {}", ARCHIVE_REMOVE_INVALID_ARCHIVE_PATH, err_str)
@@ -3123,9 +3275,13 @@ fn map_validation_error(err: &anyhow::Error) -> String {
         format!("[{}] {}", ARCHIVE_CREATE_INVALID_OUTPUT, err_str)
     } else if err_str.contains("Output path cannot be empty") {
         format!("[{}] {}", ARCHIVE_CREATE_INVALID_OUTPUT, err_str)
-    } else if err_str.contains("Missing required parameter: sources") || err_str.contains("Sources list cannot be empty") {
+    } else if err_str.contains("Missing required parameter: sources")
+        || err_str.contains("Sources list cannot be empty")
+    {
         format!("[{}] {}", ARCHIVE_CREATE_INVALID_SOURCES, err_str)
-    } else if err_str.contains("Unsupported archive format") || err_str.contains("Cannot detect archive format") {
+    } else if err_str.contains("Unsupported archive format")
+        || err_str.contains("Cannot detect archive format")
+    {
         format!("[{}] {}", ARCHIVE_CREATE_INVALID_FORMAT, err_str)
     } else if err_str.contains("Invalid compression level") {
         format!("[{}] {}", ARCHIVE_CREATE_INVALID_COMPRESSION_LEVEL, err_str)
@@ -3146,12 +3302,17 @@ fn map_extract_validation_error(err: &anyhow::Error) -> String {
         format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_DESTINATION, err_str)
     } else if err_str.contains("Destination path cannot be empty") {
         format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_DESTINATION, err_str)
-    } else if err_str.contains("Unsupported archive format") || err_str.contains("Cannot detect archive format") {
+    } else if err_str.contains("Unsupported archive format")
+        || err_str.contains("Cannot detect archive format")
+    {
         format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_FORMAT_INFER, err_str)
     } else if err_str.contains("Unsupported compression") {
         format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_COMPRESSION, err_str)
     } else if err_str.contains("Raw format requires") {
-        format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_FORMAT_COMPRESSION, err_str)
+        format!(
+            "[{}] {}",
+            ARCHIVE_EXTRACT_INVALID_FORMAT_COMPRESSION, err_str
+        )
     } else if err_str.contains("Invalid includes") {
         format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_INCLUDE_PATTERN, err_str)
     } else if err_str.contains("Invalid excludes") {
@@ -3230,8 +3391,10 @@ pub fn create_archive(opts: ArchiveCreateOptions) -> Result<ArchiveCreateRespons
     let output_path = Path::new(&opts.output);
     if output_path.exists() && !opts.overwrite {
         response.ok = false;
-        response.error = Some((ARCHIVE_CREATE_OUTPUT_EXISTS.to_string(), 
-                             "Output file exists and overwrite=false".to_string()));
+        response.error = Some((
+            ARCHIVE_CREATE_OUTPUT_EXISTS.to_string(),
+            "Output file exists and overwrite=false".to_string(),
+        ));
         return Ok(response);
     }
 
@@ -3239,8 +3402,10 @@ pub fn create_archive(opts: ArchiveCreateOptions) -> Result<ArchiveCreateRespons
     if let Some(ref base_dir) = opts.base_dir {
         if !Path::new(base_dir).exists() {
             response.ok = false;
-            response.error = Some((ARCHIVE_CREATE_INVALID_BASE_DIR.to_string(),
-                                 format!("Base directory does not exist: {}", base_dir)));
+            response.error = Some((
+                ARCHIVE_CREATE_INVALID_BASE_DIR.to_string(),
+                format!("Base directory does not exist: {}", base_dir),
+            ));
             return Ok(response);
         }
     }
@@ -3258,8 +3423,14 @@ pub fn create_archive(opts: ArchiveCreateOptions) -> Result<ArchiveCreateRespons
     // Check limits
     if files.len() > opts.max_files as usize {
         response.ok = false;
-        response.error = Some((ARCHIVE_CREATE_MAX_FILES_EXCEEDED.to_string(),
-                             format!("Number of files ({}) exceeds limit ({})", files.len(), opts.max_files)));
+        response.error = Some((
+            ARCHIVE_CREATE_MAX_FILES_EXCEEDED.to_string(),
+            format!(
+                "Number of files ({}) exceeds limit ({})",
+                files.len(),
+                opts.max_files
+            ),
+        ));
         return Ok(response);
     }
 
@@ -3267,8 +3438,13 @@ pub fn create_archive(opts: ArchiveCreateOptions) -> Result<ArchiveCreateRespons
     let total_size_mb = total_size / (1024 * 1024);
     if total_size_mb > opts.max_size_mb {
         response.ok = false;
-        response.error = Some((ARCHIVE_CREATE_MAX_SIZE_EXCEEDED.to_string(),
-                             format!("Total size ({} MB) exceeds limit ({} MB)", total_size_mb, opts.max_size_mb)));
+        response.error = Some((
+            ARCHIVE_CREATE_MAX_SIZE_EXCEEDED.to_string(),
+            format!(
+                "Total size ({} MB) exceeds limit ({} MB)",
+                total_size_mb, opts.max_size_mb
+            ),
+        ));
         return Ok(response);
     }
 
@@ -3299,7 +3475,7 @@ pub fn create_archive(opts: ArchiveCreateOptions) -> Result<ArchiveCreateRespons
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            
+
             *files_by_type.entry(ext).or_insert(0) += 1;
         }
 
@@ -3336,7 +3512,9 @@ pub fn create_archive(opts: ArchiveCreateOptions) -> Result<ArchiveCreateRespons
 
 pub fn collect_source_files(opts: &ArchiveCreateOptions) -> Result<Vec<FileEntry>> {
     let mut files = Vec::new();
-    let base_path = opts.base_dir.as_ref()
+    let base_path = opts
+        .base_dir
+        .as_ref()
         .map(|p| Path::new(p))
         .unwrap_or_else(|| Path::new("."));
 
@@ -3344,8 +3522,8 @@ pub fn collect_source_files(opts: &ArchiveCreateOptions) -> Result<Vec<FileEntry
     let include_set = if !opts.include_patterns.is_empty() {
         let mut builder = GlobSetBuilder::new();
         for pattern in &opts.include_patterns {
-            let glob = Glob::new(pattern)
-                .context(format!("Invalid include pattern: {}", pattern))?;
+            let glob =
+                Glob::new(pattern).context(format!("Invalid include pattern: {}", pattern))?;
             builder.add(glob);
         }
         Some(builder.build()?)
@@ -3356,8 +3534,8 @@ pub fn collect_source_files(opts: &ArchiveCreateOptions) -> Result<Vec<FileEntry
     let exclude_set = if !opts.exclude_patterns.is_empty() {
         let mut builder = GlobSetBuilder::new();
         for pattern in &opts.exclude_patterns {
-            let glob = Glob::new(pattern)
-                .context(format!("Invalid exclude pattern: {}", pattern))?;
+            let glob =
+                Glob::new(pattern).context(format!("Invalid exclude pattern: {}", pattern))?;
             builder.add(glob);
         }
         Some(builder.build()?)
@@ -3376,15 +3554,20 @@ pub fn collect_source_files(opts: &ArchiveCreateOptions) -> Result<Vec<FileEntry
             // Handle as glob pattern
             let glob = Glob::new(source)?;
             let glob_set = GlobSetBuilder::new().add(glob).build()?;
-            
+
             // Walk from base directory
             for entry in WalkDir::new(base_path).follow_links(opts.follow_symlinks) {
                 let entry = entry?;
-                let relative_path = entry.path().strip_prefix(base_path)
-                    .unwrap_or(entry.path());
-                
+                let relative_path = entry.path().strip_prefix(base_path).unwrap_or(entry.path());
+
                 if glob_set.is_match(relative_path) {
-                    if let Some(file_entry) = process_path_entry(entry.path(), base_path, &opts, &include_set, &exclude_set)? {
+                    if let Some(file_entry) = process_path_entry(
+                        entry.path(),
+                        base_path,
+                        &opts,
+                        &include_set,
+                        &exclude_set,
+                    )? {
                         files.push(file_entry);
                     }
                 }
@@ -3393,13 +3576,25 @@ pub fn collect_source_files(opts: &ArchiveCreateOptions) -> Result<Vec<FileEntry
             // Handle as regular file/directory
             if source_path.exists() {
                 if source_path.is_file() {
-                    if let Some(file_entry) = process_path_entry(&source_path, base_path, &opts, &include_set, &exclude_set)? {
+                    if let Some(file_entry) = process_path_entry(
+                        &source_path,
+                        base_path,
+                        &opts,
+                        &include_set,
+                        &exclude_set,
+                    )? {
                         files.push(file_entry);
                     }
                 } else if source_path.is_dir() {
                     for entry in WalkDir::new(&source_path).follow_links(opts.follow_symlinks) {
                         let entry = entry?;
-                        if let Some(file_entry) = process_path_entry(entry.path(), base_path, &opts, &include_set, &exclude_set)? {
+                        if let Some(file_entry) = process_path_entry(
+                            entry.path(),
+                            base_path,
+                            &opts,
+                            &include_set,
+                            &exclude_set,
+                        )? {
                             files.push(file_entry);
                         }
                     }
@@ -3414,15 +3609,14 @@ pub fn collect_source_files(opts: &ArchiveCreateOptions) -> Result<Vec<FileEntry
 }
 
 pub fn process_path_entry(
-    path: &Path, 
-    base_path: &Path, 
+    path: &Path,
+    base_path: &Path,
     opts: &ArchiveCreateOptions,
     include_set: &Option<globset::GlobSet>,
-    exclude_set: &Option<globset::GlobSet>
+    exclude_set: &Option<globset::GlobSet>,
 ) -> Result<Option<FileEntry>> {
-    let relative_path = path.strip_prefix(base_path)
-        .unwrap_or(path);
-    
+    let relative_path = path.strip_prefix(base_path).unwrap_or(path);
+
     let path_str = relative_path.to_string_lossy().to_string();
 
     // Check hidden files
@@ -3450,9 +3644,7 @@ pub fn process_path_entry(
 
     let metadata = path.metadata()?;
     let size_bytes = metadata.len();
-    let modified_unix_ms = metadata.modified()?
-        .duration_since(UNIX_EPOCH)?
-        .as_millis() as i64;
+    let modified_unix_ms = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_millis() as i64;
 
     let file_type = if path.is_file() {
         "file"
@@ -3460,7 +3652,8 @@ pub fn process_path_entry(
         "directory"
     } else {
         "other"
-    }.to_string();
+    }
+    .to_string();
 
     Ok(Some(FileEntry {
         path: path_str,
@@ -3472,27 +3665,34 @@ pub fn process_path_entry(
 
 fn create_archive_file(opts: &ArchiveCreateOptions, files: &[FileEntry]) -> Result<u64> {
     let output_path = Path::new(&opts.output);
-    let base_path = opts.base_dir.as_ref()
+    let base_path = opts
+        .base_dir
+        .as_ref()
         .map(|p| Path::new(p))
         .unwrap_or_else(|| Path::new("."));
 
     match opts.format {
         ArchiveFormat::Tar => create_tar_archive(output_path, base_path, files, None),
         ArchiveFormat::TarGz => {
-            let level = opts.compression_level.unwrap_or(opts.format.default_compression_level());
+            let level = opts
+                .compression_level
+                .unwrap_or(opts.format.default_compression_level());
             create_tar_archive(output_path, base_path, files, Some(Compression::new(level)))
-        },
+        }
         ArchiveFormat::Zip => create_zip_archive(output_path, base_path, files, opts),
         ArchiveFormat::Gzip => create_gzip_archive(output_path, base_path, files, opts),
-        _ => bail!("Archive format {} not yet implemented", opts.format.as_str()),
+        _ => bail!(
+            "Archive format {} not yet implemented",
+            opts.format.as_str()
+        ),
     }
 }
 
 fn create_tar_archive(
-    output_path: &Path, 
-    base_path: &Path, 
-    files: &[FileEntry], 
-    compression: Option<Compression>
+    output_path: &Path,
+    base_path: &Path,
+    files: &[FileEntry],
+    compression: Option<Compression>,
 ) -> Result<u64> {
     let file = File::create(output_path)?;
     let writer = BufWriter::new(file);
@@ -3524,15 +3724,17 @@ fn create_tar_archive(
 }
 
 fn create_zip_archive(
-    output_path: &Path, 
-    base_path: &Path, 
-    files: &[FileEntry], 
-    opts: &ArchiveCreateOptions
+    output_path: &Path,
+    base_path: &Path,
+    files: &[FileEntry],
+    opts: &ArchiveCreateOptions,
 ) -> Result<u64> {
     let file = File::create(output_path)?;
     let mut archive = ZipWriter::new(file);
 
-    let compression_level = opts.compression_level.unwrap_or(opts.format.default_compression_level());
+    let compression_level = opts
+        .compression_level
+        .unwrap_or(opts.format.default_compression_level());
     let options = FileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .compression_level(Some(compression_level as i32));
@@ -3541,7 +3743,7 @@ fn create_zip_archive(
         if file_entry.file_type == "file" {
             let full_path = base_path.join(&file_entry.path);
             archive.start_file(&file_entry.path, options)?;
-            
+
             let mut file = File::open(&full_path)?;
             let mut buffer = Vec::new();
             file.read_to_end(&mut buffer)?;
@@ -3556,10 +3758,10 @@ fn create_zip_archive(
 }
 
 fn create_gzip_archive(
-    output_path: &Path, 
-    base_path: &Path, 
-    files: &[FileEntry], 
-    opts: &ArchiveCreateOptions
+    output_path: &Path,
+    base_path: &Path,
+    files: &[FileEntry],
+    opts: &ArchiveCreateOptions,
 ) -> Result<u64> {
     if files.len() != 1 || files[0].file_type != "file" {
         bail!("GZIP format only supports single file compression");
@@ -3569,7 +3771,9 @@ fn create_gzip_archive(
     let mut input_file = File::open(&input_path)?;
     let output_file = File::create(output_path)?;
 
-    let compression_level = opts.compression_level.unwrap_or(opts.format.default_compression_level());
+    let compression_level = opts
+        .compression_level
+        .unwrap_or(opts.format.default_compression_level());
     let mut encoder = GzEncoder::new(output_file, Compression::new(compression_level));
 
     std::io::copy(&mut input_file, &mut encoder)?;
@@ -3608,7 +3812,7 @@ fn list_raw_compressed(
     let path = Path::new(archive_path);
     let file_metadata = path.metadata()?;
     let compressed_size = file_metadata.len();
-    
+
     // Strip compression extension for virtual entry name
     let virtual_name = match compression {
         CompressionKind::Gzip if archive_path.ends_with(".gz") => {
@@ -3623,7 +3827,7 @@ fn list_raw_compressed(
         CompressionKind::Zstd if archive_path.ends_with(".zstd") => {
             archive_path.strip_suffix(".zstd").unwrap_or(archive_path)
         }
-        _ => archive_path
+        _ => archive_path,
     };
 
     // For virtual name, use just the filename part
@@ -3633,7 +3837,8 @@ fn list_raw_compressed(
         .unwrap_or("unknown")
         .to_string();
 
-    let mtime_unix = file_metadata.modified()
+    let mtime_unix = file_metadata
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
@@ -3670,9 +3875,7 @@ fn list_tar_archive(
 
     // Create appropriate reader based on compression
     let mut archive: Archive<Box<dyn Read>> = match compression {
-        CompressionKind::None => {
-            Archive::new(Box::new(file))
-        }
+        CompressionKind::None => Archive::new(Box::new(file)),
         CompressionKind::Gzip => {
             let decoder = GzDecoder::new(file);
             Archive::new(Box::new(decoder))
@@ -3898,23 +4101,22 @@ pub fn test_archive(opts: ArchiveTestOptions) -> Result<ArchiveTestResponse> {
         response.ok = false;
         response.error = Some((
             ARCHIVE_TEST_MISSING_ARCHIVE.to_string(),
-            format!("Archive '{}' does not exist.", opts.archive)
+            format!("Archive '{}' does not exist.", opts.archive),
         ));
         return Ok(response);
     }
 
     // Determine format and compression
-    let (final_format, final_compression) = match resolve_format_and_compression(&opts.format, &opts.compression, &opts.archive) {
-        Ok((f, c)) => (f, c),
-        Err(e) => {
-            response.ok = false;
-            response.error = Some((
-                ARCHIVE_TEST_INVALID_FORMAT_INFER.to_string(),
-                e.to_string()
-            ));
-            return Ok(response);
-        }
-    };
+    let (final_format, final_compression) =
+        match resolve_format_and_compression(&opts.format, &opts.compression, &opts.archive) {
+            Ok((f, c)) => (f, c),
+            Err(e) => {
+                response.ok = false;
+                response.error =
+                    Some((ARCHIVE_TEST_INVALID_FORMAT_INFER.to_string(), e.to_string()));
+                return Ok(response);
+            }
+        };
 
     let _archive_size = if archive_path.exists() {
         archive_path.metadata()?.len()
@@ -3924,20 +4126,17 @@ pub fn test_archive(opts: ArchiveTestOptions) -> Result<ArchiveTestResponse> {
 
     // Test archive entries based on format
     let test_result = match final_format {
-        ArchiveFormat::Raw => {
-            test_raw_compressed(&opts.archive, &final_compression, &opts)
-        }
-        ArchiveFormat::Tar | ArchiveFormat::TarGz | ArchiveFormat::TarXz | ArchiveFormat::TarZstd => {
-            test_tar_archive(&opts.archive, &final_compression, &opts)
-        }
-        ArchiveFormat::Zip => {
-            test_zip_archive(&opts.archive, &opts)
-        }
+        ArchiveFormat::Raw => test_raw_compressed(&opts.archive, &final_compression, &opts),
+        ArchiveFormat::Tar
+        | ArchiveFormat::TarGz
+        | ArchiveFormat::TarXz
+        | ArchiveFormat::TarZstd => test_tar_archive(&opts.archive, &final_compression, &opts),
+        ArchiveFormat::Zip => test_zip_archive(&opts.archive, &opts),
         ArchiveFormat::SevenZ => {
             response.ok = false;
             response.error = Some((
                 ARCHIVE_TEST_7Z_UNSUPPORTED.to_string(),
-                "7z archive testing is not supported in this build.".to_string()
+                "7z archive testing is not supported in this build.".to_string(),
             ));
             return Ok(response);
         }
@@ -3945,7 +4144,7 @@ pub fn test_archive(opts: ArchiveTestOptions) -> Result<ArchiveTestResponse> {
             response.ok = false;
             response.error = Some((
                 ARCHIVE_TEST_INVALID_FORMAT.to_string(),
-                format!("Unsupported format for testing: {:?}", final_format)
+                format!("Unsupported format for testing: {:?}", final_format),
             ));
             return Ok(response);
         }
@@ -3972,16 +4171,13 @@ pub fn test_archive(opts: ArchiveTestOptions) -> Result<ArchiveTestResponse> {
                 response.ok = false;
                 response.error = Some((
                     ARCHIVE_TEST_ENTRY_FAILED.to_string(),
-                    "One or more entries failed integrity checks.".to_string()
+                    "One or more entries failed integrity checks.".to_string(),
                 ));
             }
         }
         Err(e) => {
             response.ok = false;
-            response.error = Some((
-                ARCHIVE_TEST_INTERNAL_ERROR.to_string(),
-                e.to_string()
-            ));
+            response.error = Some((ARCHIVE_TEST_INTERNAL_ERROR.to_string(), e.to_string()));
         }
     }
 
@@ -4045,24 +4241,28 @@ fn test_raw_compressed(
     if opts.verify_data {
         let mut buffer = [0u8; 8192];
         let mut total_size = 0u64;
-        
+
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break, // EOF
                 Ok(n) => {
                     total_size += n as u64;
                     bytes_tested += n as u64;
-                    
+
                     // Check limits
                     if let Some(max_file_bytes) = opts.max_file_bytes {
                         if total_size > max_file_bytes {
                             entry_result.status = "error".to_string();
-                            entry_result.error_code = Some(ARCHIVE_TEST_MAX_FILE_SIZE_EXCEEDED.to_string());
-                            entry_result.error_message = Some(format!("Entry size {} exceeds max_file_bytes {}", total_size, max_file_bytes));
+                            entry_result.error_code =
+                                Some(ARCHIVE_TEST_MAX_FILE_SIZE_EXCEEDED.to_string());
+                            entry_result.error_message = Some(format!(
+                                "Entry size {} exceeds max_file_bytes {}",
+                                total_size, max_file_bytes
+                            ));
                             break;
                         }
                     }
-                    
+
                     if let Some(max_total_bytes) = opts.max_total_bytes {
                         if bytes_tested > max_total_bytes {
                             return Err(anyhow::anyhow!(ARCHIVE_TEST_MAX_SIZE_EXCEEDED));
@@ -4071,25 +4271,29 @@ fn test_raw_compressed(
                 }
                 Err(e) => {
                     entry_result.status = "error".to_string();
-                    entry_result.error_code = Some(ARCHIVE_TEST_ENTRY_COMPRESSION_ERROR.to_string());
+                    entry_result.error_code =
+                        Some(ARCHIVE_TEST_ENTRY_COMPRESSION_ERROR.to_string());
                     entry_result.error_message = Some(e.to_string());
                     break;
                 }
             }
         }
-        
+
         entry_result.size = total_size;
     }
 
     let entries_failed = if entry_result.status == "error" { 1 } else { 0 };
     entries.push(entry_result);
 
-    Ok((entries, TestSummary {
-        entries_tested: 1,
-        entries_failed,
-        bytes_tested,
-        stopped_early: false,
-    }))
+    Ok((
+        entries,
+        TestSummary {
+            entries_tested: 1,
+            entries_failed,
+            bytes_tested,
+            stopped_early: false,
+        },
+    ))
 }
 
 // Test tar archive with optional compression
@@ -4153,7 +4357,7 @@ fn test_tar_archive(
                 entries.push(err_entry);
                 entries_failed += 1;
                 entries_tested += 1;
-                
+
                 if opts.stop_on_first_error {
                     stopped_early = true;
                     break;
@@ -4163,7 +4367,8 @@ fn test_tar_archive(
         };
 
         let header = entry.header();
-        let path = entry.path()
+        let path = entry
+            .path()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| format!("entry_{}", entries_tested));
 
@@ -4188,7 +4393,10 @@ fn test_tar_archive(
                 if size > max_file_bytes {
                     entry_result.status = "error".to_string();
                     entry_result.error_code = Some(ARCHIVE_TEST_MAX_FILE_SIZE_EXCEEDED.to_string());
-                    entry_result.error_message = Some(format!("Entry size {} exceeds max_file_bytes {}", size, max_file_bytes));
+                    entry_result.error_message = Some(format!(
+                        "Entry size {} exceeds max_file_bytes {}",
+                        size, max_file_bytes
+                    ));
                     entries_failed += 1;
                 }
             }
@@ -4207,8 +4415,10 @@ fn test_tar_archive(
                         bytes_tested += bytes_read;
                         if bytes_read != size {
                             entry_result.status = "error".to_string();
-                            entry_result.error_code = Some(ARCHIVE_TEST_ENTRY_SIZE_MISMATCH.to_string());
-                            entry_result.error_message = Some(format!("Expected {} bytes, read {}", size, bytes_read));
+                            entry_result.error_code =
+                                Some(ARCHIVE_TEST_ENTRY_SIZE_MISMATCH.to_string());
+                            entry_result.error_message =
+                                Some(format!("Expected {} bytes, read {}", size, bytes_read));
                             entries_failed += 1;
                         }
                     }
@@ -4231,12 +4441,15 @@ fn test_tar_archive(
         }
     }
 
-    Ok((entries, TestSummary {
-        entries_tested,
-        entries_failed,
-        bytes_tested,
-        stopped_early,
-    }))
+    Ok((
+        entries,
+        TestSummary {
+            entries_tested,
+            entries_failed,
+            bytes_tested,
+            stopped_early,
+        },
+    ))
 }
 
 // Test zip archive
@@ -4248,7 +4461,7 @@ fn test_zip_archive(
 
     let file = File::open(archive_path)?;
     let mut archive = ZipArchive::new(file)?;
-    
+
     let mut entries = Vec::new();
     let mut bytes_tested = 0u64;
     let mut entries_failed = 0u64;
@@ -4277,7 +4490,7 @@ fn test_zip_archive(
                 };
                 entries.push(err_entry);
                 entries_failed += 1;
-                
+
                 if opts.stop_on_first_error {
                     stopped_early = true;
                     break;
@@ -4307,7 +4520,10 @@ fn test_zip_archive(
                 if size > max_file_bytes {
                     entry_result.status = "error".to_string();
                     entry_result.error_code = Some(ARCHIVE_TEST_MAX_FILE_SIZE_EXCEEDED.to_string());
-                    entry_result.error_message = Some(format!("Entry size {} exceeds max_file_bytes {}", size, max_file_bytes));
+                    entry_result.error_message = Some(format!(
+                        "Entry size {} exceeds max_file_bytes {}",
+                        size, max_file_bytes
+                    ));
                     entries_failed += 1;
                 }
             }
@@ -4326,15 +4542,18 @@ fn test_zip_archive(
                         bytes_tested += bytes_read;
                         if bytes_read != size {
                             entry_result.status = "error".to_string();
-                            entry_result.error_code = Some(ARCHIVE_TEST_ENTRY_SIZE_MISMATCH.to_string());
-                            entry_result.error_message = Some(format!("Expected {} bytes, read {}", size, bytes_read));
+                            entry_result.error_code =
+                                Some(ARCHIVE_TEST_ENTRY_SIZE_MISMATCH.to_string());
+                            entry_result.error_message =
+                                Some(format!("Expected {} bytes, read {}", size, bytes_read));
                             entries_failed += 1;
                         }
                     }
                     Err(e) => {
                         // This will catch CRC errors and other integrity issues
                         entry_result.status = "error".to_string();
-                        entry_result.error_code = Some(ARCHIVE_TEST_ENTRY_CHECKSUM_ERROR.to_string());
+                        entry_result.error_code =
+                            Some(ARCHIVE_TEST_ENTRY_CHECKSUM_ERROR.to_string());
                         entry_result.error_message = Some(e.to_string());
                         entries_failed += 1;
                     }
@@ -4350,12 +4569,15 @@ fn test_zip_archive(
         }
     }
 
-    Ok((entries, TestSummary {
-        entries_tested,
-        entries_failed,
-        bytes_tested,
-        stopped_early,
-    }))
+    Ok((
+        entries,
+        TestSummary {
+            entries_tested,
+            entries_failed,
+            bytes_tested,
+            stopped_early,
+        },
+    ))
 }
 
 // List functionality
@@ -4368,7 +4590,7 @@ pub fn list_archive(opts: ArchiveListOptions) -> Result<ArchiveListResponse> {
         response.ok = false;
         response.error = Some((
             ARCHIVE_LIST_MISSING_ARCHIVE.to_string(),
-            format!("Archive '{}' does not exist.", opts.archive)
+            format!("Archive '{}' does not exist.", opts.archive),
         ));
         return Ok(response);
     }
@@ -4380,9 +4602,7 @@ pub fn list_archive(opts: ArchiveListOptions) -> Result<ArchiveListResponse> {
         let mut builder = GlobSetBuilder::new();
         for pattern in &opts.includes {
             let glob = Glob::new(pattern)
-                .map_err(|_| {
-                    anyhow::anyhow!("Invalid include pattern: {}", pattern)
-                })?;
+                .map_err(|_| anyhow::anyhow!("Invalid include pattern: {}", pattern))?;
             builder.add(glob);
         }
         Some(builder.build()?)
@@ -4394,15 +4614,14 @@ pub fn list_archive(opts: ArchiveListOptions) -> Result<ArchiveListResponse> {
         let mut builder = GlobSetBuilder::new();
         for pattern in &opts.excludes {
             let glob = Glob::new(pattern)
-                .map_err(|_| {
-                    anyhow::anyhow!("Invalid exclude pattern: {}", pattern)
-                })?;
+                .map_err(|_| anyhow::anyhow!("Invalid exclude pattern: {}", pattern))?;
             builder.add(glob);
         }
         Some(builder.build()?)
     };
 
-    let (final_format, final_compression) = resolve_format_and_compression(&opts.format, &opts.compression, &opts.archive)?;
+    let (final_format, final_compression) =
+        resolve_format_and_compression(&opts.format, &opts.compression, &opts.archive)?;
 
     let archive_size = if archive_path.exists() {
         archive_path.metadata()?.len()
@@ -4412,12 +4631,17 @@ pub fn list_archive(opts: ArchiveListOptions) -> Result<ArchiveListResponse> {
 
     // List archive entries based on format
     let (manifest, entries_total, bytes_total) = match final_format {
-        ArchiveFormat::Raw => {
-            list_raw_compressed(&opts.archive, &final_compression, &opts)?
-        }
-        ArchiveFormat::Tar | ArchiveFormat::TarGz | ArchiveFormat::TarXz | ArchiveFormat::TarZstd => {
-            list_tar_archive(&opts.archive, &final_compression, &opts, &include_globset, &exclude_globset)?
-        }
+        ArchiveFormat::Raw => list_raw_compressed(&opts.archive, &final_compression, &opts)?,
+        ArchiveFormat::Tar
+        | ArchiveFormat::TarGz
+        | ArchiveFormat::TarXz
+        | ArchiveFormat::TarZstd => list_tar_archive(
+            &opts.archive,
+            &final_compression,
+            &opts,
+            &include_globset,
+            &exclude_globset,
+        )?,
         ArchiveFormat::Zip => {
             list_zip_archive(&opts.archive, &opts, &include_globset, &exclude_globset)?
         }
@@ -4425,7 +4649,7 @@ pub fn list_archive(opts: ArchiveListOptions) -> Result<ArchiveListResponse> {
             response.ok = false;
             response.error = Some((
                 ARCHIVE_LIST_7Z_UNSUPPORTED.to_string(),
-                "7z archive listing is not supported in this build.".to_string()
+                "7z archive listing is not supported in this build.".to_string(),
             ));
             return Ok(response);
         }
@@ -4433,7 +4657,7 @@ pub fn list_archive(opts: ArchiveListOptions) -> Result<ArchiveListResponse> {
             response.ok = false;
             response.error = Some((
                 ARCHIVE_LIST_INVALID_FORMAT.to_string(),
-                format!("Unsupported format for listing: {:?}", final_format)
+                format!("Unsupported format for listing: {:?}", final_format),
             ));
             return Ok(response);
         }
@@ -4448,7 +4672,11 @@ pub fn list_archive(opts: ArchiveListOptions) -> Result<ArchiveListResponse> {
         entries_total,
         entries_listed,
         bytes_total,
-        bytes_compressed: if archive_size > 0 { Some(archive_size) } else { None },
+        bytes_compressed: if archive_size > 0 {
+            Some(archive_size)
+        } else {
+            None
+        },
     });
 
     response.manifest = Some(manifest);
@@ -4465,8 +4693,10 @@ pub fn extract_archive(opts: ArchiveExtractOptions) -> Result<ArchiveExtractResp
     let archive_path = Path::new(&opts.archive);
     if !archive_path.exists() && opts.fail_on_missing_archive {
         response.ok = false;
-        response.error = Some((ARCHIVE_EXTRACT_MISSING_ARCHIVE.to_string(),
-                             format!("Archive '{}' does not exist.", opts.archive)));
+        response.error = Some((
+            ARCHIVE_EXTRACT_MISSING_ARCHIVE.to_string(),
+            format!("Archive '{}' does not exist.", opts.archive),
+        ));
         return Ok(response);
     }
 
@@ -4476,14 +4706,21 @@ pub fn extract_archive(opts: ArchiveExtractOptions) -> Result<ArchiveExtractResp
         if opts.create_destination {
             if let Err(e) = create_dir_all(&dest_path) {
                 response.ok = false;
-                response.error = Some((ARCHIVE_EXTRACT_DESTINATION_CREATE_FAILED.to_string(),
-                                     format!("Failed to create destination directory: {}", e)));
+                response.error = Some((
+                    ARCHIVE_EXTRACT_DESTINATION_CREATE_FAILED.to_string(),
+                    format!("Failed to create destination directory: {}", e),
+                ));
                 return Ok(response);
             }
         } else {
             response.ok = false;
-            response.error = Some((ARCHIVE_EXTRACT_DESTINATION_MISSING.to_string(),
-                                 format!("Destination '{}' does not exist and create_destination=false.", opts.destination)));
+            response.error = Some((
+                ARCHIVE_EXTRACT_DESTINATION_MISSING.to_string(),
+                format!(
+                    "Destination '{}' does not exist and create_destination=false.",
+                    opts.destination
+                ),
+            ));
             return Ok(response);
         }
     }
@@ -4494,19 +4731,14 @@ pub fn extract_archive(opts: ArchiveExtractOptions) -> Result<ArchiveExtractResp
 
     // Extract based on format and compression
     let extract_result = match (&opts.format, &opts.compression) {
-        (ArchiveFormat::Auto, _) | (ArchiveFormat::Tar, _) |
-        (ArchiveFormat::TarGz, _) | (ArchiveFormat::TarXz, _) | (ArchiveFormat::TarZstd, _) => {
-            extract_tar_archive(&opts, &include_set, &exclude_set)
-        }
-        (ArchiveFormat::Zip, _) => {
-            extract_zip_archive(&opts, &include_set, &exclude_set)
-        }
-        (ArchiveFormat::SevenZ, _) => {
-            Err(anyhow::anyhow!("7z extraction not yet supported"))
-        }
-        (ArchiveFormat::Raw, _) | (ArchiveFormat::Gzip, _) => {
-            extract_raw_compressed_file(&opts)
-        }
+        (ArchiveFormat::Auto, _)
+        | (ArchiveFormat::Tar, _)
+        | (ArchiveFormat::TarGz, _)
+        | (ArchiveFormat::TarXz, _)
+        | (ArchiveFormat::TarZstd, _) => extract_tar_archive(&opts, &include_set, &exclude_set),
+        (ArchiveFormat::Zip, _) => extract_zip_archive(&opts, &include_set, &exclude_set),
+        (ArchiveFormat::SevenZ, _) => Err(anyhow::anyhow!("7z extraction not yet supported")),
+        (ArchiveFormat::Raw, _) | (ArchiveFormat::Gzip, _) => extract_raw_compressed_file(&opts),
     };
 
     match extract_result {
@@ -4520,7 +4752,8 @@ pub fn extract_archive(opts: ArchiveExtractOptions) -> Result<ArchiveExtractResp
         }
         Err(e) => {
             response.ok = false;
-            let code = e.downcast_ref::<UnsafeEntryError>()
+            let code = e
+                .downcast_ref::<UnsafeEntryError>()
                 .map(|u| u.code)
                 .unwrap_or(ARCHIVE_EXTRACT_ARCHIVE_READ_ERROR);
             response.error = Some((code.to_string(), e.to_string()));
@@ -4545,29 +4778,30 @@ pub fn add_archive(opts: ArchiveAddOptions) -> Result<ArchiveAddResponse> {
         response.ok = false;
         response.error = Some((
             ARCHIVE_ADD_MISSING_ARCHIVE.to_string(),
-            format!("Archive '{}' does not exist.", opts.archive)
+            format!("Archive '{}' does not exist.", opts.archive),
         ));
         return Ok(response);
     }
 
-    let (final_format, final_compression) = match resolve_format_and_compression(&opts.format, &opts.compression, &opts.archive) {
-        Ok(result) => result,
-        Err(e) => {
-            response.ok = false;
-            response.error = Some((
-                ARCHIVE_ADD_INVALID_FORMAT_INFER.to_string(),
-                format!("Cannot determine archive format: {}", e)
-            ));
-            return Ok(response);
-        }
-    };
+    let (final_format, final_compression) =
+        match resolve_format_and_compression(&opts.format, &opts.compression, &opts.archive) {
+            Ok(result) => result,
+            Err(e) => {
+                response.ok = false;
+                response.error = Some((
+                    ARCHIVE_ADD_INVALID_FORMAT_INFER.to_string(),
+                    format!("Cannot determine archive format: {}", e),
+                ));
+                return Ok(response);
+            }
+        };
 
     // Check if raw format (not supported for add)
     if final_format == ArchiveFormat::Raw {
         response.ok = false;
         response.error = Some((
             ARCHIVE_ADD_UNSUPPORTED_FOR_RAW.to_string(),
-            "Adding entries to raw compressed streams (gzip/xz/zstd) is not supported.".to_string()
+            "Adding entries to raw compressed streams (gzip/xz/zstd) is not supported.".to_string(),
         ));
         return Ok(response);
     }
@@ -4577,7 +4811,7 @@ pub fn add_archive(opts: ArchiveAddOptions) -> Result<ArchiveAddResponse> {
         response.ok = false;
         response.error = Some((
             ARCHIVE_ADD_7Z_UNSUPPORTED.to_string(),
-            "7z archive modification not yet supported.".to_string()
+            "7z archive modification not yet supported.".to_string(),
         ));
         return Ok(response);
     }
@@ -4589,7 +4823,7 @@ pub fn add_archive(opts: ArchiveAddOptions) -> Result<ArchiveAddResponse> {
             response.ok = false;
             response.error = Some((
                 ARCHIVE_ADD_INVALID_INCLUDE_PATTERN.to_string(),
-                e.to_string()
+                e.to_string(),
             ));
             return Ok(response);
         }
@@ -4601,7 +4835,7 @@ pub fn add_archive(opts: ArchiveAddOptions) -> Result<ArchiveAddResponse> {
             response.ok = false;
             response.error = Some((
                 ARCHIVE_ADD_INVALID_EXCLUDE_PATTERN.to_string(),
-                e.to_string()
+                e.to_string(),
             ));
             return Ok(response);
         }
@@ -4614,7 +4848,7 @@ pub fn add_archive(opts: ArchiveAddOptions) -> Result<ArchiveAddResponse> {
             response.ok = false;
             response.error = Some((
                 ARCHIVE_ADD_IO_ERROR.to_string(),
-                format!("Failed to process inputs: {}", e)
+                format!("Failed to process inputs: {}", e),
             ));
             return Ok(response);
         }
@@ -4625,18 +4859,19 @@ pub fn add_archive(opts: ArchiveAddOptions) -> Result<ArchiveAddResponse> {
 
     // Perform the add operation based on format
     let add_result = match (&final_format, &final_compression) {
-        (ArchiveFormat::Auto, _) | (ArchiveFormat::Tar, _) |
-        (ArchiveFormat::TarGz, _) | (ArchiveFormat::TarXz, _) | (ArchiveFormat::TarZstd, _) => {
+        (ArchiveFormat::Auto, _)
+        | (ArchiveFormat::Tar, _)
+        | (ArchiveFormat::TarGz, _)
+        | (ArchiveFormat::TarXz, _)
+        | (ArchiveFormat::TarZstd, _) => {
             add_to_tar_archive(&opts, &final_format, &final_compression, &new_entries)
         }
-        (ArchiveFormat::Zip, _) => {
-            add_to_zip_archive(&opts, &new_entries)
-        }
+        (ArchiveFormat::Zip, _) => add_to_zip_archive(&opts, &new_entries),
         _ => {
             response.ok = false;
             response.error = Some((
                 ARCHIVE_ADD_INTERNAL_ERROR.to_string(),
-                format!("Unsupported format for add: {:?}", final_format)
+                format!("Unsupported format for add: {:?}", final_format),
             ));
             return Ok(response);
         }
@@ -4681,13 +4916,24 @@ pub fn collect_new_entries(
         } else {
             // Handle regular path
             let path = Path::new(input);
-            collect_entries_from_path(path, &entries.len(), opts, include_set, exclude_set, &mut entries)?;
+            collect_entries_from_path(
+                path,
+                &entries.len(),
+                opts,
+                include_set,
+                exclude_set,
+                &mut entries,
+            )?;
         }
     }
 
     // Check safety limits
     if entries.len() as u64 > opts.max_entries {
-        bail!("Too many entries collected: {} > {}", entries.len(), opts.max_entries);
+        bail!(
+            "Too many entries collected: {} > {}",
+            entries.len(),
+            opts.max_entries
+        );
     }
 
     if let Some(max_bytes) = opts.max_total_bytes {
@@ -4708,10 +4954,9 @@ fn expand_glob_pattern(
     entries: &mut Vec<NewArchiveEntry>,
 ) -> Result<()> {
     // Create a glob matcher for the pattern
-    let glob = Glob::new(pattern)
-        .with_context(|| format!("Invalid glob pattern: {}", pattern))?;
+    let glob = Glob::new(pattern).with_context(|| format!("Invalid glob pattern: {}", pattern))?;
     let matcher = glob.compile_matcher();
-    
+
     // Determine the base directory to search from
     // Extract the static prefix from the glob pattern to minimize search space
     let base_dir = extract_glob_base_dir(pattern);
@@ -4720,21 +4965,22 @@ fn expand_glob_pattern(
     } else {
         PathBuf::from(&base_dir)
     };
-    
+
     // If the search root doesn't exist, no matches
     if !search_root.exists() {
         return Ok(());
     }
-    
+
     // Walk the directory tree and test against the glob pattern
     let walker = WalkDir::new(&search_root)
         .follow_links(opts.follow_symlinks)
         .min_depth(0);
-    
+
     for entry in walker {
-        let entry = entry.with_context(|| "Failed to read directory entry during glob expansion")?;
+        let entry =
+            entry.with_context(|| "Failed to read directory entry during glob expansion")?;
         let path = entry.path();
-        
+
         // Convert to relative path for pattern matching
         let relative_path = if let Ok(rel) = path.strip_prefix(&search_root) {
             if base_dir.is_empty() || base_dir == "." {
@@ -4745,16 +4991,23 @@ fn expand_glob_pattern(
         } else {
             path.to_path_buf()
         };
-        
+
         // Test if the path matches the glob pattern
         let path_str = relative_path.to_string_lossy();
         if matcher.is_match(path_str.as_ref()) {
             // Found a match, add it to entries
-            collect_entries_from_path(path, &entries.len(), opts, include_set, exclude_set, entries)
-                .with_context(|| format!("Failed to process glob match: {}", path_str))?;
+            collect_entries_from_path(
+                path,
+                &entries.len(),
+                opts,
+                include_set,
+                exclude_set,
+                entries,
+            )
+            .with_context(|| format!("Failed to process glob match: {}", path_str))?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -4762,14 +5015,18 @@ fn extract_glob_base_dir(pattern: &str) -> String {
     // Find the first component that contains glob metacharacters
     let components = pattern.split('/');
     let mut base_parts = Vec::new();
-    
+
     for component in components {
-        if component.contains('*') || component.contains('?') || component.contains('[') || component.contains('{') {
+        if component.contains('*')
+            || component.contains('?')
+            || component.contains('[')
+            || component.contains('{')
+        {
             break;
         }
         base_parts.push(component);
     }
-    
+
     if base_parts.is_empty() {
         ".".to_string()
     } else {
@@ -4805,7 +5062,10 @@ fn collect_entries_from_path(
         }
 
         // Walk directory recursively
-        for entry in WalkDir::new(path).min_depth(1).follow_links(opts.follow_symlinks) {
+        for entry in WalkDir::new(path)
+            .min_depth(1)
+            .follow_links(opts.follow_symlinks)
+        {
             let entry = entry?;
             let entry_path = entry.path();
             let entry_metadata = if opts.follow_symlinks {
@@ -4820,7 +5080,11 @@ fn collect_entries_from_path(
                     archive_path,
                     source_path: entry_path.to_path_buf(),
                     is_dir: entry_metadata.is_dir(),
-                    size: if entry_metadata.is_file() { entry_metadata.len() } else { 0 },
+                    size: if entry_metadata.is_file() {
+                        entry_metadata.len()
+                    } else {
+                        0
+                    },
                 });
             }
         }
@@ -4907,10 +5171,15 @@ fn add_to_tar_archive(
 
     // Create backup if requested
     if let Some(ref suffix) = opts.backup_suffix {
-        let backup_path = PathBuf::from(&opts.archive).with_extension(&format!("{}.{}", 
-            archive_path.extension().unwrap_or_default().to_string_lossy(), suffix));
-        std::fs::copy(&opts.archive, &backup_path)
-            .context("Failed to create backup")?;
+        let backup_path = PathBuf::from(&opts.archive).with_extension(&format!(
+            "{}.{}",
+            archive_path
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            suffix
+        ));
+        std::fs::copy(&opts.archive, &backup_path).context("Failed to create backup")?;
     }
 
     // Build index of existing entries for conflict detection
@@ -4943,8 +5212,10 @@ fn add_to_tar_archive(
                     path: new_entry.archive_path.clone(),
                     reason: "already exists and overwrite=false".to_string(),
                 });
-                warnings.push(format!("Skipped '{}' because overwrite=false and entry exists.", 
-                                    new_entry.archive_path));
+                warnings.push(format!(
+                    "Skipped '{}' because overwrite=false and entry exists.",
+                    new_entry.archive_path
+                ));
             }
         } else {
             // New entry to add
@@ -4954,13 +5225,26 @@ fn add_to_tar_archive(
     }
 
     // Write new archive
-    write_tar_archive(&tmp_path, &final_entries, &entries_to_add, format, compression, opts)?;
+    write_tar_archive(
+        &tmp_path,
+        &final_entries,
+        &entries_to_add,
+        format,
+        compression,
+        opts,
+    )?;
 
     // Get new archive size
     let archive_size_after = tmp_path.metadata()?.len();
-    let entries_after = (final_entries.len() - final_entries.iter().filter(|e| e.replaced).count() + entries_to_add.len()) as u64;
-    let uncompressed_bytes_after = uncompressed_bytes_before + entries_to_add.iter().map(|e| e.size).sum::<u64>() 
-        - final_entries.iter().filter(|e| e.replaced).map(|e| e.size).sum::<u64>();
+    let entries_after = (final_entries.len() - final_entries.iter().filter(|e| e.replaced).count()
+        + entries_to_add.len()) as u64;
+    let uncompressed_bytes_after = uncompressed_bytes_before
+        + entries_to_add.iter().map(|e| e.size).sum::<u64>()
+        - final_entries
+            .iter()
+            .filter(|e| e.replaced)
+            .map(|e| e.size)
+            .sum::<u64>();
 
     // Atomic replace
     std::fs::rename(&tmp_path, &opts.archive)?;
@@ -4996,7 +5280,10 @@ struct ExistingTarEntry {
     replaced: bool,
 }
 
-fn read_existing_tar_entries(archive_path: &str, compression: &CompressionKind) -> Result<Vec<ExistingTarEntry>> {
+fn read_existing_tar_entries(
+    archive_path: &str,
+    compression: &CompressionKind,
+) -> Result<Vec<ExistingTarEntry>> {
     let file = File::open(archive_path)?;
     let reader: Box<dyn Read> = match compression {
         CompressionKind::None => Box::new(file),
@@ -5058,16 +5345,24 @@ fn write_tar_archive(
             new_entries,
         )?
         .finish()?,
-        CompressionKind::Xz => {
-            fill_tar(tar::Builder::new(XzEncoder::new(file, 6)), existing_entries, new_entries)?.finish()?
-        }
+        CompressionKind::Xz => fill_tar(
+            tar::Builder::new(XzEncoder::new(file, 6)),
+            existing_entries,
+            new_entries,
+        )?
+        .finish()?,
         CompressionKind::Zstd => fill_tar(
             tar::Builder::new(ZstdEncoder::new(file, 3)?),
             existing_entries,
             new_entries,
         )?
         .finish()?,
-        _ => return Err(anyhow::anyhow!("Unsupported compression: {:?}", compression)),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported compression: {:?}",
+                compression
+            ));
+        }
     };
     file.sync_all()?;
     Ok(())
@@ -5108,7 +5403,9 @@ fn fill_tar<W: Write>(
 /// archive does not become world-readable when it is replaced.
 fn create_temp_output(path: &Path, original: &Path) -> Result<File> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mode = std::fs::metadata(original).map(|m| m.permissions().mode() & 0o777).unwrap_or(0o600);
+    let mode = std::fs::metadata(original)
+        .map(|m| m.permissions().mode() & 0o777)
+        .unwrap_or(0o600);
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -5121,7 +5418,11 @@ fn create_temp_output(path: &Path, original: &Path) -> Result<File> {
 
 /// A temporary-file name that another local user cannot predict.
 fn temp_archive_name(prefix: &str) -> String {
-    format!("{prefix}{}_{}", std::process::id(), uuid::Uuid::new_v4().simple())
+    format!(
+        "{prefix}{}_{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 fn add_to_zip_archive(
@@ -5147,10 +5448,15 @@ fn add_to_zip_archive(
 
     // Create backup if requested
     if let Some(ref suffix) = opts.backup_suffix {
-        let backup_path = PathBuf::from(&opts.archive).with_extension(&format!("{}.{}", 
-            archive_path.extension().unwrap_or_default().to_string_lossy(), suffix));
-        std::fs::copy(&opts.archive, &backup_path)
-            .context("Failed to create backup")?;
+        let backup_path = PathBuf::from(&opts.archive).with_extension(&format!(
+            "{}.{}",
+            archive_path
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            suffix
+        ));
+        std::fs::copy(&opts.archive, &backup_path).context("Failed to create backup")?;
     }
 
     // Build index of existing entries for conflict detection
@@ -5183,8 +5489,10 @@ fn add_to_zip_archive(
                     path: new_entry.archive_path.clone(),
                     reason: "already exists and overwrite=false".to_string(),
                 });
-                warnings.push(format!("Skipped '{}' because overwrite=false and entry exists.", 
-                                    new_entry.archive_path));
+                warnings.push(format!(
+                    "Skipped '{}' because overwrite=false and entry exists.",
+                    new_entry.archive_path
+                ));
             }
         } else {
             // New entry to add
@@ -5198,9 +5506,15 @@ fn add_to_zip_archive(
 
     // Get new archive size
     let archive_size_after = tmp_path.metadata()?.len();
-    let entries_after = (final_entries.len() - final_entries.iter().filter(|e| e.replaced).count() + entries_to_add.len()) as u64;
-    let uncompressed_bytes_after = uncompressed_bytes_before + entries_to_add.iter().map(|e| e.size).sum::<u64>() 
-        - final_entries.iter().filter(|e| e.replaced).map(|e| e.size).sum::<u64>();
+    let entries_after = (final_entries.len() - final_entries.iter().filter(|e| e.replaced).count()
+        + entries_to_add.len()) as u64;
+    let uncompressed_bytes_after = uncompressed_bytes_before
+        + entries_to_add.iter().map(|e| e.size).sum::<u64>()
+        - final_entries
+            .iter()
+            .filter(|e| e.replaced)
+            .map(|e| e.size)
+            .sum::<u64>();
 
     // Atomic replace
     std::fs::rename(&tmp_path, &opts.archive)?;
@@ -5308,8 +5622,8 @@ fn build_glob_set(patterns: &[String], pattern_type: &str) -> Result<Option<glob
 
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        let glob = Glob::new(pattern)
-            .context(format!("Invalid {} pattern: {}", pattern_type, pattern))?;
+        let glob =
+            Glob::new(pattern).context(format!("Invalid {} pattern: {}", pattern_type, pattern))?;
         builder.add(glob);
     }
     Ok(Some(builder.build()?))
@@ -5319,7 +5633,11 @@ fn extract_tar_archive(
     opts: &ArchiveExtractOptions,
     include_set: &Option<globset::GlobSet>,
     exclude_set: &Option<globset::GlobSet>,
-) -> Result<(ArchiveExtractSummary, Vec<ArchiveExtractManifestEntry>, Vec<String>)> {
+) -> Result<(
+    ArchiveExtractSummary,
+    Vec<ArchiveExtractManifestEntry>,
+    Vec<String>,
+)> {
     let archive_file = File::open(&opts.archive)?;
     let mut archive: Box<dyn Read> = Box::new(archive_file);
 
@@ -5381,7 +5699,10 @@ fn extract_tar_archive(
         let entry_type = entry.header().entry_type();
         if matches!(entry_type, tar::EntryType::Char | tar::EntryType::Block) {
             return Err(stop_unsafe(
-                unsafe_entry(ARCHIVE_EXTRACT_UNSUPPORTED_ENTRY_TYPE, "device nodes are not extracted".to_string()),
+                unsafe_entry(
+                    ARCHIVE_EXTRACT_UNSUPPORTED_ENTRY_TYPE,
+                    "device nodes are not extracted".to_string(),
+                ),
                 &path_str,
                 entries_extracted,
             ));
@@ -5395,7 +5716,10 @@ fn extract_tar_archive(
 
         // Check if target exists (a dangling symlink counts) and handle overwrite
         if fs::symlink_metadata(&safe_path).is_ok() && !opts.overwrite {
-            warnings.push(format!("Skipped existing file '{}' (overwrite=false)", stripped_path));
+            warnings.push(format!(
+                "Skipped existing file '{}' (overwrite=false)",
+                stripped_path
+            ));
             entries_skipped += 1;
             continue;
         }
@@ -5408,7 +5732,12 @@ fn extract_tar_archive(
         // Check file size limits
         if let Some(max_size) = opts.max_file_bytes {
             if size > max_size {
-                bail!("File '{}' size ({}) exceeds maximum file size ({})", path_str, size, max_size);
+                bail!(
+                    "File '{}' size ({}) exceeds maximum file size ({})",
+                    path_str,
+                    size,
+                    max_size
+                );
             }
         }
 
@@ -5421,25 +5750,36 @@ fn extract_tar_archive(
 
         // Handle symlinks
         if is_symlink && !opts.allow_symlinks {
-            warnings.push(format!("Skipped symlink '{}' (allow_symlinks=false)", stripped_path));
+            warnings.push(format!(
+                "Skipped symlink '{}' (allow_symlinks=false)",
+                stripped_path
+            ));
             entries_skipped += 1;
             continue;
         }
 
         // Validate link targets before anything on disk is changed
         let hard_link_src = if entry_type.is_hard_link() {
-            Some(hard_link_source(&entry, dest_path, opts)
-                .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?)
+            Some(
+                hard_link_source(&entry, dest_path, opts)
+                    .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?,
+            )
         } else {
             None
         };
         if entry_type.is_symlink() {
-            let target = entry.link_name()?.map(|t| t.into_owned()).unwrap_or_default();
+            let target = entry
+                .link_name()?
+                .map(|t| t.into_owned())
+                .unwrap_or_default();
             if !symlink_target_stays_inside(dest_path, &safe_path, &target) {
                 return Err(stop_unsafe(
                     unsafe_entry(
                         ARCHIVE_EXTRACT_SYMLINK_REJECTED,
-                        format!("symlink target '{}' points outside the destination", target.display()),
+                        format!(
+                            "symlink target '{}' points outside the destination",
+                            target.display()
+                        ),
                     ),
                     &path_str,
                     entries_extracted,
@@ -5499,7 +5839,11 @@ fn extract_zip_archive(
     opts: &ArchiveExtractOptions,
     include_set: &Option<globset::GlobSet>,
     exclude_set: &Option<globset::GlobSet>,
-) -> Result<(ArchiveExtractSummary, Vec<ArchiveExtractManifestEntry>, Vec<String>)> {
+) -> Result<(
+    ArchiveExtractSummary,
+    Vec<ArchiveExtractManifestEntry>,
+    Vec<String>,
+)> {
     let archive_file = File::open(&opts.archive)?;
     let mut zip = ZipArchive::new(archive_file)?;
     let dest_path = Path::new(&opts.destination);
@@ -5545,7 +5889,10 @@ fn extract_zip_archive(
 
         // Check if target exists (a dangling symlink counts) and handle overwrite
         if fs::symlink_metadata(&safe_path).is_ok() && !opts.overwrite {
-            warnings.push(format!("Skipped existing file '{}' (overwrite=false)", stripped_path));
+            warnings.push(format!(
+                "Skipped existing file '{}' (overwrite=false)",
+                stripped_path
+            ));
             entries_skipped += 1;
             continue;
         }
@@ -5556,7 +5903,12 @@ fn extract_zip_archive(
         // Check file size limits
         if let Some(max_size) = opts.max_file_bytes {
             if size > max_size {
-                bail!("File '{}' size ({}) exceeds maximum file size ({})", path_str, size, max_size);
+                bail!(
+                    "File '{}' size ({}) exceeds maximum file size ({})",
+                    path_str,
+                    size,
+                    max_size
+                );
             }
         }
 
@@ -5578,7 +5930,10 @@ fn extract_zip_archive(
                 fs::create_dir(&safe_path)?;
             }
         } else {
-            let mut output = fs::OpenOptions::new().write(true).create_new(true).open(&safe_path)?;
+            let mut output = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&safe_path)?;
             std::io::copy(&mut file, &mut output)?;
             bytes_written += size;
         }
@@ -5610,15 +5965,20 @@ fn extract_zip_archive(
 
 fn extract_raw_compressed_file(
     opts: &ArchiveExtractOptions,
-) -> Result<(ArchiveExtractSummary, Vec<ArchiveExtractManifestEntry>, Vec<String>)> {
+) -> Result<(
+    ArchiveExtractSummary,
+    Vec<ArchiveExtractManifestEntry>,
+    Vec<String>,
+)> {
     let archive_path = Path::new(&opts.archive);
     let dest_path = Path::new(&opts.destination);
-    
+
     // Determine output filename (remove compression extension)
-    let output_name = archive_path.file_stem()
+    let output_name = archive_path
+        .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("extracted_file");
-    
+
     let output_path = dest_path.join(output_name);
 
     // Check if target exists (a dangling symlink counts) and handle overwrite
@@ -5636,7 +5996,10 @@ fn extract_raw_compressed_file(
                 duration_ms: 0,
             },
             vec![],
-            vec![format!("Skipped existing file '{}' (overwrite=false)", output_name)],
+            vec![format!(
+                "Skipped existing file '{}' (overwrite=false)",
+                output_name
+            )],
         ));
     }
 
@@ -5645,24 +6008,38 @@ fn extract_raw_compressed_file(
         CompressionKind::Gzip => Box::new(GzDecoder::new(input_file)),
         CompressionKind::Xz => Box::new(XzDecoder::new(input_file)),
         CompressionKind::Zstd => Box::new(ZstdDecoder::new(input_file)?),
-        _ => bail!("Invalid compression for raw format: {}", opts.compression.as_str()),
+        _ => bail!(
+            "Invalid compression for raw format: {}",
+            opts.compression.as_str()
+        ),
     };
 
     // Do not write through a planted symlink at the output name
     clear_existing_target(&output_path, false)?;
-    let mut output_file = fs::OpenOptions::new().write(true).create_new(true).open(&output_path)?;
+    let mut output_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output_path)?;
     let bytes_written = std::io::copy(&mut decoder, &mut output_file)? as u64;
 
     // Check size limits
     if let Some(max_total) = opts.max_total_bytes {
         if bytes_written > max_total {
-            bail!("Extracted size ({}) exceeds maximum total size ({})", bytes_written, max_total);
+            bail!(
+                "Extracted size ({}) exceeds maximum total size ({})",
+                bytes_written,
+                max_total
+            );
         }
     }
 
     if let Some(max_file) = opts.max_file_bytes {
         if bytes_written > max_file {
-            bail!("Extracted file size ({}) exceeds maximum file size ({})", bytes_written, max_file);
+            bail!(
+                "Extracted file size ({}) exceeds maximum file size ({})",
+                bytes_written,
+                max_file
+            );
         }
     }
 
@@ -5746,13 +6123,17 @@ fn unsafe_entry(code: &'static str, message: String) -> anyhow::Error {
 /// Name the entry in an unsafe-entry error and say how much was already
 /// written, so a stopped extraction is never mistaken for a clean one.
 fn stop_unsafe(err: anyhow::Error, entry: &str, extracted: u64) -> anyhow::Error {
-    let code = err.downcast_ref::<UnsafeEntryError>()
+    let code = err
+        .downcast_ref::<UnsafeEntryError>()
         .map(|u| u.code)
         .unwrap_or(ARCHIVE_EXTRACT_IO_ERROR);
-    unsafe_entry(code, format!(
-        "Unsafe archive entry '{}': {}; extraction stopped after {} entries were written",
-        entry, err, extracted
-    ))
+    unsafe_entry(
+        code,
+        format!(
+            "Unsafe archive entry '{}': {}; extraction stopped after {} entries were written",
+            entry, err, extracted
+        ),
+    )
 }
 
 // Made public for testing
@@ -5761,9 +6142,13 @@ fn stop_unsafe(err: anyhow::Error, entry: &str, extracted: u64) -> anyhow::Error
 /// they are re-rooted under the destination; `..` is rejected unless
 /// `allow_parent_traversal`, and may then never climb above the destination.
 /// Symlinks on disk are handled separately by `prepare_parent_dirs`.
-pub fn sanitize_path(path: &str, dest_path: &Path, opts: &ArchiveExtractOptions) -> Result<PathBuf> {
+pub fn sanitize_path(
+    path: &str,
+    dest_path: &Path,
+    opts: &ArchiveExtractOptions,
+) -> Result<PathBuf> {
     let path_buf = Path::new(path);
-    
+
     // Handle absolute paths
     let relative_path = if path_buf.has_root() {
         if !opts.allow_absolute_paths {
@@ -5783,7 +6168,7 @@ pub fn sanitize_path(path: &str, dest_path: &Path, opts: &ArchiveExtractOptions)
     for component in relative_path.components() {
         match component {
             Component::Normal(name) => safe_path.push(name),
-            Component::CurDir => {}, // Skip current dir
+            Component::CurDir => {} // Skip current dir
             Component::ParentDir => {
                 if !opts.allow_parent_traversal {
                     return Err(unsafe_entry(
@@ -5824,10 +6209,12 @@ pub fn sanitize_path(path: &str, dest_path: &Path, opts: &ArchiveExtractOptions)
 /// be a real directory: a symlink, whether created earlier by the archive or
 /// already present in the destination, is refused rather than followed.
 fn prepare_parent_dirs(dest: &Path, target: &Path) -> Result<()> {
-    let rel = target.strip_prefix(dest).map_err(|_| unsafe_entry(
-        ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED,
-        "Path escapes destination directory".to_string(),
-    ))?;
+    let rel = target.strip_prefix(dest).map_err(|_| {
+        unsafe_entry(
+            ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED,
+            "Path escapes destination directory".to_string(),
+        )
+    })?;
     let parents: Vec<_> = rel.components().collect();
     let mut cur = dest.to_path_buf();
     for comp in parents.iter().take(parents.len().saturating_sub(1)) {
@@ -5845,7 +6232,9 @@ fn prepare_parent_dirs(dest: &Path, target: &Path) -> Result<()> {
                 if let Err(e) = fs::create_dir(&cur) {
                     // Lost a race with another creator: accept only a real directory
                     let ok = e.kind() == std::io::ErrorKind::AlreadyExists
-                        && fs::symlink_metadata(&cur).map(|m| m.is_dir()).unwrap_or(false);
+                        && fs::symlink_metadata(&cur)
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false);
                     if !ok {
                         return Err(e.into());
                     }
@@ -5906,14 +6295,12 @@ fn symlink_target_stays_inside(dest: &Path, link: &Path, target: &Path) -> bool 
 fn physical_location(p: &Path) -> std::io::Result<PathBuf> {
     match p.canonicalize() {
         Ok(c) => Ok(c),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            match (p.parent(), p.file_name()) {
-                (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
-                    Ok(physical_location(parent)?.join(name))
-                }
-                _ => Err(e),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match (p.parent(), p.file_name()) {
+            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+                Ok(physical_location(parent)?.join(name))
             }
-        }
+            _ => Err(e),
+        },
         Err(e) => Err(e),
     }
 }
@@ -5943,7 +6330,10 @@ fn verify_symlinks_inside(dest: &Path, links: &[PathBuf]) -> Result<()> {
     } else {
         Err(unsafe_entry(
             ARCHIVE_EXTRACT_SYMLINK_REJECTED,
-            format!("symlinks resolving outside the destination were removed: {}", bad.join(", ")),
+            format!(
+                "symlinks resolving outside the destination were removed: {}",
+                bad.join(", ")
+            ),
         ))
     }
 }
@@ -5956,22 +6346,31 @@ fn hard_link_source<R: Read>(
     dest: &Path,
     opts: &ArchiveExtractOptions,
 ) -> Result<PathBuf> {
-    let name = entry.link_name()?
+    let name = entry
+        .link_name()?
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let name = apply_strip_components(&name, opts.strip_components);
     if name.is_empty() {
-        return Err(unsafe_entry(ARCHIVE_EXTRACT_SYMLINK_REJECTED, "hard link has no target".to_string()));
+        return Err(unsafe_entry(
+            ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+            "hard link has no target".to_string(),
+        ));
     }
     let src = sanitize_path(&name, dest, opts)?;
     let rel = src.strip_prefix(dest)?;
     let mut cur = dest.to_path_buf();
     for comp in rel.components() {
         cur.push(comp);
-        let m = fs::symlink_metadata(&cur).map_err(|_| unsafe_entry(
-            ARCHIVE_EXTRACT_SYMLINK_REJECTED,
-            format!("hard link target '{}' does not exist in the destination", name),
-        ))?;
+        let m = fs::symlink_metadata(&cur).map_err(|_| {
+            unsafe_entry(
+                ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+                format!(
+                    "hard link target '{}' does not exist in the destination",
+                    name
+                ),
+            )
+        })?;
         if m.file_type().is_symlink() {
             return Err(unsafe_entry(
                 ARCHIVE_EXTRACT_SYMLINK_REJECTED,
@@ -5991,19 +6390,40 @@ fn hard_link_source<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_archive_format_detection() {
-        assert_eq!(ArchiveFormat::detect_from_extension("test.tar").unwrap(), ArchiveFormat::Tar);
-        assert_eq!(ArchiveFormat::detect_from_extension("test.tar.gz").unwrap(), ArchiveFormat::TarGz);
-        assert_eq!(ArchiveFormat::detect_from_extension("test.zip").unwrap(), ArchiveFormat::Zip);
-        assert_eq!(ArchiveFormat::detect_from_extension("test.7z").unwrap(), ArchiveFormat::SevenZ);
-        assert_eq!(ArchiveFormat::detect_from_extension("test.gz").unwrap(), ArchiveFormat::Raw);
-        assert_eq!(ArchiveFormat::detect_from_extension("test.xz").unwrap(), ArchiveFormat::Raw);
-        assert_eq!(ArchiveFormat::detect_from_extension("test.zst").unwrap(), ArchiveFormat::Raw);
-        
+        assert_eq!(
+            ArchiveFormat::detect_from_extension("test.tar").unwrap(),
+            ArchiveFormat::Tar
+        );
+        assert_eq!(
+            ArchiveFormat::detect_from_extension("test.tar.gz").unwrap(),
+            ArchiveFormat::TarGz
+        );
+        assert_eq!(
+            ArchiveFormat::detect_from_extension("test.zip").unwrap(),
+            ArchiveFormat::Zip
+        );
+        assert_eq!(
+            ArchiveFormat::detect_from_extension("test.7z").unwrap(),
+            ArchiveFormat::SevenZ
+        );
+        assert_eq!(
+            ArchiveFormat::detect_from_extension("test.gz").unwrap(),
+            ArchiveFormat::Raw
+        );
+        assert_eq!(
+            ArchiveFormat::detect_from_extension("test.xz").unwrap(),
+            ArchiveFormat::Raw
+        );
+        assert_eq!(
+            ArchiveFormat::detect_from_extension("test.zst").unwrap(),
+            ArchiveFormat::Raw
+        );
+
         assert!(ArchiveFormat::detect_from_extension("test.unknown").is_err());
     }
 
@@ -6031,11 +6451,11 @@ mod tests {
     fn test_create_simple_tar() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let temp_path = temp_dir.path();
-        
+
         // Create test files
         let test_file = temp_path.join("test.txt");
         fs::write(&test_file, "Hello, World!")?;
-        
+
         let opts = ArchiveCreateOptions {
             output: temp_path.join("test.tar").to_string_lossy().to_string(),
             sources: vec![test_file.to_string_lossy().to_string()],
@@ -6055,28 +6475,49 @@ mod tests {
             progress: false,
             output_format: OutputFormat::Json,
         };
-        
+
         let response = create_archive(opts)?;
         assert!(response.ok);
         assert_eq!(response.result.files_archived, 1);
         assert!(response.result.total_size_bytes > 0);
-        
+
         Ok(())
     }
 
     #[test]
     fn test_compression_detection() {
-        assert_eq!(CompressionKind::detect_from_extension("file.gz"), CompressionKind::Gzip);
-        assert_eq!(CompressionKind::detect_from_extension("file.xz"), CompressionKind::Xz);
-        assert_eq!(CompressionKind::detect_from_extension("file.zst"), CompressionKind::Zstd);
-        assert_eq!(CompressionKind::detect_from_extension("file.zstd"), CompressionKind::Zstd);
-        assert_eq!(CompressionKind::detect_from_extension("file.tar"), CompressionKind::None);
-        assert_eq!(CompressionKind::detect_from_extension("file.txt"), CompressionKind::None);
+        assert_eq!(
+            CompressionKind::detect_from_extension("file.gz"),
+            CompressionKind::Gzip
+        );
+        assert_eq!(
+            CompressionKind::detect_from_extension("file.xz"),
+            CompressionKind::Xz
+        );
+        assert_eq!(
+            CompressionKind::detect_from_extension("file.zst"),
+            CompressionKind::Zstd
+        );
+        assert_eq!(
+            CompressionKind::detect_from_extension("file.zstd"),
+            CompressionKind::Zstd
+        );
+        assert_eq!(
+            CompressionKind::detect_from_extension("file.tar"),
+            CompressionKind::None
+        );
+        assert_eq!(
+            CompressionKind::detect_from_extension("file.txt"),
+            CompressionKind::None
+        );
     }
 
     #[test]
     fn test_strip_components() {
-        assert_eq!(apply_strip_components("a/b/c/file.txt", 0), "a/b/c/file.txt");
+        assert_eq!(
+            apply_strip_components("a/b/c/file.txt", 0),
+            "a/b/c/file.txt"
+        );
         assert_eq!(apply_strip_components("a/b/c/file.txt", 1), "b/c/file.txt");
         assert_eq!(apply_strip_components("a/b/c/file.txt", 2), "c/file.txt");
         assert_eq!(apply_strip_components("a/b/c/file.txt", 3), "file.txt");
@@ -6087,10 +6528,10 @@ mod tests {
     #[test]
     fn test_path_sanitization() -> Result<()> {
         use tempfile::TempDir;
-        
+
         let temp_dir = TempDir::new()?;
         let dest_path = temp_dir.path();
-        
+
         let opts = ArchiveExtractOptions {
             archive: "test.tar".to_string(),
             destination: dest_path.to_string_lossy().to_string(),
@@ -6131,7 +6572,8 @@ mod tests {
 
     #[test]
     fn test_filter_matching() {
-        let includes = build_glob_set(&vec!["*.txt".to_string(), "docs/*".to_string()], "include").unwrap();
+        let includes =
+            build_glob_set(&vec!["*.txt".to_string(), "docs/*".to_string()], "include").unwrap();
         let excludes = build_glob_set(&vec!["*.tmp".to_string()], "exclude").unwrap();
 
         assert!(should_extract_path("file.txt", &includes, &excludes));
@@ -6142,15 +6584,29 @@ mod tests {
 
     #[test]
     fn tgz_extension_implies_gzip() {
-        assert_eq!(CompressionKind::detect_from_extension("logs.tgz"), CompressionKind::Gzip);
-        assert_eq!(CompressionKind::detect_from_extension("logs.TGZ"), CompressionKind::Gzip);
-        assert_eq!(CompressionKind::detect_from_extension("logs.txz"), CompressionKind::Xz);
-        let (f, c) = resolve_format_and_compression(&ArchiveFormat::Auto, &CompressionKind::Auto, "a.tgz").unwrap();
+        assert_eq!(
+            CompressionKind::detect_from_extension("logs.tgz"),
+            CompressionKind::Gzip
+        );
+        assert_eq!(
+            CompressionKind::detect_from_extension("logs.TGZ"),
+            CompressionKind::Gzip
+        );
+        assert_eq!(
+            CompressionKind::detect_from_extension("logs.txz"),
+            CompressionKind::Xz
+        );
+        let (f, c) =
+            resolve_format_and_compression(&ArchiveFormat::Auto, &CompressionKind::Auto, "a.tgz")
+                .unwrap();
         assert_eq!((f, c), (ArchiveFormat::TarGz, CompressionKind::Gzip));
     }
 
     fn create_args(pairs: &[(&str, &str)]) -> Args {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -6179,10 +6635,22 @@ mod tests {
             };
             let mut names: Vec<String> = Archive::new(reader)
                 .entries()?
-                .map(|e| e.unwrap().path().unwrap().to_string_lossy().trim_end_matches('/').to_string())
+                .map(|e| {
+                    e.unwrap()
+                        .path()
+                        .unwrap()
+                        .to_string_lossy()
+                        .trim_end_matches('/')
+                        .to_string()
+                })
                 .collect();
             names.sort();
-            assert_eq!(names, vec!["data", "data/a.txt", "data/sub", "data/sub/b.txt"], "{}", name);
+            assert_eq!(
+                names,
+                vec!["data", "data/a.txt", "data/sub", "data/sub/b.txt"],
+                "{}",
+                name
+            );
         }
         Ok(())
     }
@@ -6197,12 +6665,14 @@ mod tests {
         ]))?;
         assert_eq!(opts.format, ArchiveFormat::Tar);
         assert!(matches!(opts.output_format, OutputFormat::Text));
-        assert!(ArchiveCreateOptions::from_args(&create_args(&[
-            ("output", "x.zip"),
-            ("sources", r#"["a"]"#),
-            ("format", "json"),
-        ]))
-        .is_err());
+        assert!(
+            ArchiveCreateOptions::from_args(&create_args(&[
+                ("output", "x.zip"),
+                ("sources", r#"["a"]"#),
+                ("format", "json"),
+            ]))
+            .is_err()
+        );
         Ok(())
     }
 
@@ -6215,7 +6685,11 @@ mod tests {
         let args = create_args(&[("verb", "create")]);
         h.call("help", &args, &mut io)?;
         let text = String::from_utf8(out)?;
-        assert!(text.starts_with("Handle: archive\nVerb: create\n"), "{}", text);
+        assert!(
+            text.starts_with("Handle: archive\nVerb: create\n"),
+            "{}",
+            text
+        );
         Ok(())
     }
 }
@@ -6226,8 +6700,10 @@ pub fn info_archive(opts: ArchiveInfoOptions) -> Result<ArchiveInfoResponse> {
     // Validate input
     if opts.archive.is_empty() {
         response.ok = false;
-        response.error = Some((ARCHIVE_INFO_INVALID_ARCHIVE_PATH.to_string(), 
-                             "Archive path cannot be empty".to_string()));
+        response.error = Some((
+            ARCHIVE_INFO_INVALID_ARCHIVE_PATH.to_string(),
+            "Archive path cannot be empty".to_string(),
+        ));
         return Ok(response);
     }
 
@@ -6237,8 +6713,10 @@ pub fn info_archive(opts: ArchiveInfoOptions) -> Result<ArchiveInfoResponse> {
     if !archive_path.exists() {
         if opts.fail_on_missing_archive {
             response.ok = false;
-            response.error = Some((ARCHIVE_INFO_MISSING_ARCHIVE.to_string(),
-                                 format!("Archive '{}' does not exist.", opts.archive)));
+            response.error = Some((
+                ARCHIVE_INFO_MISSING_ARCHIVE.to_string(),
+                format!("Archive '{}' does not exist.", opts.archive),
+            ));
             return Ok(response);
         }
     }
@@ -6248,14 +6726,17 @@ pub fn info_archive(opts: ArchiveInfoOptions) -> Result<ArchiveInfoResponse> {
         Ok(meta) => meta,
         Err(e) => {
             response.ok = false;
-            response.error = Some((ARCHIVE_INFO_IO_ERROR.to_string(),
-                                 format!("Failed to read archive metadata: {}", e)));
+            response.error = Some((
+                ARCHIVE_INFO_IO_ERROR.to_string(),
+                format!("Failed to read archive metadata: {}", e),
+            ));
             return Ok(response);
         }
     };
 
     let archive_size_bytes = metadata.len();
-    let archive_mtime_unix = metadata.modified()
+    let archive_mtime_unix = metadata
+        .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs() as i64);
@@ -6309,8 +6790,15 @@ pub fn info_archive(opts: ArchiveInfoOptions) -> Result<ArchiveInfoResponse> {
     }
 
     // Scan archive entries
-    match scan_archive_entries(&opts, &format, &compression, archive_path, &mut summary, &mut details) {
-        Ok(_) => {},
+    match scan_archive_entries(
+        &opts,
+        &format,
+        &compression,
+        archive_path,
+        &mut summary,
+        &mut details,
+    ) {
+        Ok(_) => {}
         Err(e) => {
             response.ok = false;
             response.error = Some((ARCHIVE_INFO_ARCHIVE_READ_ERROR.to_string(), e.to_string()));
@@ -6330,7 +6818,9 @@ pub fn info_archive(opts: ArchiveInfoOptions) -> Result<ArchiveInfoResponse> {
     Ok(response)
 }
 
-fn detect_format_and_compression(opts: &ArchiveInfoOptions) -> Result<(ArchiveFormat, CompressionKind)> {
+fn detect_format_and_compression(
+    opts: &ArchiveInfoOptions,
+) -> Result<(ArchiveFormat, CompressionKind)> {
     let format = match &opts.format {
         ArchiveFormat::Auto => ArchiveFormat::detect_from_extension(&opts.archive)?,
         other => other.clone(),
@@ -6365,9 +6855,10 @@ fn scan_archive_entries(
 ) -> Result<()> {
     match format {
         ArchiveFormat::Raw => scan_raw_entries(opts, compression, archive_path, summary),
-        ArchiveFormat::TarGz | ArchiveFormat::TarXz | ArchiveFormat::TarZstd | ArchiveFormat::Tar => {
-            scan_tar_entries(opts, format, archive_path, summary)
-        }
+        ArchiveFormat::TarGz
+        | ArchiveFormat::TarXz
+        | ArchiveFormat::TarZstd
+        | ArchiveFormat::Tar => scan_tar_entries(opts, format, archive_path, summary),
         ArchiveFormat::Zip => scan_zip_entries(opts, archive_path, summary, details),
         ArchiveFormat::SevenZ => scan_7z_entries(opts, archive_path, summary, details),
         _ => bail!("Unsupported format for scanning: {}", format.as_str()),
@@ -6403,7 +6894,7 @@ fn scan_tar_entries(
     summary: &mut ArchiveInfoSummary,
 ) -> Result<()> {
     let file = File::open(archive_path)?;
-    
+
     let archive: Box<dyn Read> = match format {
         ArchiveFormat::TarGz => Box::new(GzDecoder::new(file)),
         ArchiveFormat::TarXz => Box::new(XzDecoder::new(file)),
@@ -6413,7 +6904,7 @@ fn scan_tar_entries(
     };
 
     let mut tar = Archive::new(archive);
-    
+
     let mut entries_count = 0u64;
     let mut files_count = 0u64;
     let mut dirs_count = 0u64;
@@ -6431,7 +6922,10 @@ fn scan_tar_entries(
 
         // Check limits
         if entries_count > opts.max_entries {
-            return Err(anyhow::anyhow!("Max entries limit exceeded: {}", opts.max_entries));
+            return Err(anyhow::anyhow!(
+                "Max entries limit exceeded: {}",
+                opts.max_entries
+            ));
         }
 
         // Count by type
@@ -6446,7 +6940,10 @@ fn scan_tar_entries(
                 // Check size limits
                 if let Some(max_size) = opts.max_total_bytes {
                     if total_uncompressed > max_size {
-                        return Err(anyhow::anyhow!("Max total bytes limit exceeded: {}", max_size));
+                        return Err(anyhow::anyhow!(
+                            "Max total bytes limit exceeded: {}",
+                            max_size
+                        ));
                     }
                 }
             }
@@ -6498,7 +6995,10 @@ fn scan_zip_entries(
 
         // Check limits
         if entries_count > opts.max_entries {
-            return Err(anyhow::anyhow!("Max entries limit exceeded: {}", opts.max_entries));
+            return Err(anyhow::anyhow!(
+                "Max entries limit exceeded: {}",
+                opts.max_entries
+            ));
         }
 
         let entry = zip.by_index(i)?;
@@ -6514,7 +7014,10 @@ fn scan_zip_entries(
             // Check size limits
             if let Some(max_size) = opts.max_total_bytes {
                 if total_uncompressed > max_size {
-                    return Err(anyhow::anyhow!("Max total bytes limit exceeded: {}", max_size));
+                    return Err(anyhow::anyhow!(
+                        "Max total bytes limit exceeded: {}",
+                        max_size
+                    ));
                 }
             }
         }
@@ -6522,7 +7025,7 @@ fn scan_zip_entries(
         // Check if entry is encrypted (this is an approximation)
         // The zip crate doesn't expose encryption status directly
         // We'll skip encryption detection for now and set it to false
-        
+
         // Track modification times - simplified for now
         // The zip crate's time handling is complex and version-dependent
         // We'll skip time tracking for zip files for now
@@ -6558,11 +7061,17 @@ fn scan_7z_entries(
 
 fn map_add_validation_error(err: &anyhow::Error) -> String {
     let err_str = err.to_string();
-    if err_str.contains("Missing required parameter: archive") || err_str.contains("Archive path cannot be empty") {
+    if err_str.contains("Missing required parameter: archive")
+        || err_str.contains("Archive path cannot be empty")
+    {
         format!("[{}] {}", ARCHIVE_ADD_INVALID_ARCHIVE_PATH, err_str)
-    } else if err_str.contains("Missing required parameter: inputs") || err_str.contains("Inputs list cannot be empty") {
+    } else if err_str.contains("Missing required parameter: inputs")
+        || err_str.contains("Inputs list cannot be empty")
+    {
         format!("[{}] {}", ARCHIVE_ADD_INVALID_INPUT, err_str)
-    } else if err_str.contains("Unsupported archive format") || err_str.contains("Cannot detect archive format") {
+    } else if err_str.contains("Unsupported archive format")
+        || err_str.contains("Cannot detect archive format")
+    {
         format!("[{}] {}", ARCHIVE_ADD_INVALID_FORMAT, err_str)
     } else if err_str.contains("Invalid includes format") {
         format!("[{}] {}", ARCHIVE_ADD_INVALID_INCLUDE_PATTERN, err_str)
@@ -6588,37 +7097,39 @@ pub fn remove_archive(opts: ArchiveRemoveOptions) -> Result<ArchiveRemoveRespons
             response.ok = false;
             response.error = Some((
                 ARCHIVE_REMOVE_MISSING_ARCHIVE.to_string(),
-                format!("Archive '{}' does not exist.", opts.archive)
+                format!("Archive '{}' does not exist.", opts.archive),
             ));
             return Ok(response);
         } else {
             response.ok = false;
             response.error = Some((
                 ARCHIVE_REMOVE_MISSING_ARCHIVE.to_string(),
-                format!("Archive '{}' does not exist.", opts.archive)
+                format!("Archive '{}' does not exist.", opts.archive),
             ));
             return Ok(response);
         }
     }
 
-    let (final_format, final_compression) = match resolve_format_and_compression(&opts.format, &opts.compression, &opts.archive) {
-        Ok(result) => result,
-        Err(e) => {
-            response.ok = false;
-            response.error = Some((
-                ARCHIVE_REMOVE_INVALID_FORMAT_INFER.to_string(),
-                format!("Cannot determine archive format: {}", e)
-            ));
-            return Ok(response);
-        }
-    };
+    let (final_format, final_compression) =
+        match resolve_format_and_compression(&opts.format, &opts.compression, &opts.archive) {
+            Ok(result) => result,
+            Err(e) => {
+                response.ok = false;
+                response.error = Some((
+                    ARCHIVE_REMOVE_INVALID_FORMAT_INFER.to_string(),
+                    format!("Cannot determine archive format: {}", e),
+                ));
+                return Ok(response);
+            }
+        };
 
     // Check if raw format (not supported for remove)
     if final_format == ArchiveFormat::Raw {
         response.ok = false;
         response.error = Some((
             ARCHIVE_REMOVE_UNSUPPORTED_FOR_RAW.to_string(),
-            "Removing entries from raw compressed streams (gzip/xz/zstd) is not supported.".to_string()
+            "Removing entries from raw compressed streams (gzip/xz/zstd) is not supported."
+                .to_string(),
         ));
         return Ok(response);
     }
@@ -6628,7 +7139,7 @@ pub fn remove_archive(opts: ArchiveRemoveOptions) -> Result<ArchiveRemoveRespons
         response.ok = false;
         response.error = Some((
             ARCHIVE_REMOVE_7Z_UNSUPPORTED.to_string(),
-            "7z archive removal not yet supported.".to_string()
+            "7z archive removal not yet supported.".to_string(),
         ));
         return Ok(response);
     }
@@ -6641,7 +7152,7 @@ pub fn remove_archive(opts: ArchiveRemoveOptions) -> Result<ArchiveRemoveRespons
                 response.ok = false;
                 response.error = Some((
                     ARCHIVE_REMOVE_INVALID_ARCHIVE_PATH.to_string(),
-                    format!("Invalid pattern: {}", e)
+                    format!("Invalid pattern: {}", e),
                 ));
                 return Ok(response);
             }
@@ -6651,7 +7162,12 @@ pub fn remove_archive(opts: ArchiveRemoveOptions) -> Result<ArchiveRemoveRespons
     };
 
     // Process the archive removal
-    match perform_archive_removal(&opts, &final_format, &final_compression, pattern_set.as_ref()) {
+    match perform_archive_removal(
+        &opts,
+        &final_format,
+        &final_compression,
+        pattern_set.as_ref(),
+    ) {
         Ok((summary, details, warnings)) => {
             response.ok = true;
             response.summary = Some(summary);
@@ -6674,35 +7190,37 @@ fn perform_archive_removal(
     pattern_set: Option<&globset::GlobSet>,
 ) -> Result<(ArchiveRemoveSummary, ArchiveRemoveDetails, Vec<String>)> {
     let archive_path = Path::new(&opts.archive);
-    
+
     // Get original archive size
     let archive_size_before = archive_path.metadata()?.len();
-    
+
     // Read and analyze the archive
     let (entries_before, entries_to_keep, entries_to_remove) = match format {
-        ArchiveFormat::Tar | ArchiveFormat::TarGz | ArchiveFormat::TarXz | ArchiveFormat::TarZstd => {
-            analyze_tar_archive(opts, compression, pattern_set)?
-        }
-        ArchiveFormat::Zip => {
-            analyze_zip_archive(opts, pattern_set)?
-        }
+        ArchiveFormat::Tar
+        | ArchiveFormat::TarGz
+        | ArchiveFormat::TarXz
+        | ArchiveFormat::TarZstd => analyze_tar_archive(opts, compression, pattern_set)?,
+        ArchiveFormat::Zip => analyze_zip_archive(opts, pattern_set)?,
         _ => bail!("Unsupported archive format for removal"),
     };
 
     let mut warnings = Vec::new();
-    
+
     // Check if any selectors didn't match anything
     let mut not_found = Vec::new();
     for path in &opts.paths {
         if !entries_to_remove.iter().any(|e| e.path == *path) {
             not_found.push(path.clone());
-            warnings.push(format!("Path '{}' did not match any entries in archive.", path));
+            warnings.push(format!(
+                "Path '{}' did not match any entries in archive.",
+                path
+            ));
         }
     }
 
     let entries_removed = entries_to_remove.len() as u64;
     let dirs_removed = entries_to_remove.iter().filter(|e| e.is_dir).count() as u64;
-    
+
     // Calculate bytes
     let uncompressed_bytes_before = entries_before.iter().map(|e| e.size).sum::<u64>();
     let uncompressed_bytes_after = entries_to_keep.iter().map(|e| e.size).sum::<u64>();
@@ -6719,17 +7237,16 @@ fn perform_archive_removal(
         // Actually perform the removal and get the real size
         let temp_path = perform_actual_removal(opts, format, compression, &entries_to_keep)?;
         let new_size = temp_path.metadata()?.len();
-        
+
         // Handle backup and replacement
         if let Some(backup_suffix) = &opts.backup_suffix {
             let backup_path = format!("{}{}", opts.archive, backup_suffix);
             std::fs::rename(&opts.archive, &backup_path)
                 .with_context(|| format!("Failed to create backup at {}", backup_path))?;
         }
-        
-        std::fs::rename(&temp_path, &opts.archive)
-            .context("Failed to replace original archive")?;
-            
+
+        std::fs::rename(&temp_path, &opts.archive).context("Failed to replace original archive")?;
+
         new_size
     };
 
@@ -6753,7 +7270,11 @@ fn perform_archive_removal(
         not_found,
         kept: if entries_to_keep.len() > 100 {
             // Truncate for large archives
-            entries_to_keep.iter().take(100).map(|e| e.path.clone()).collect()
+            entries_to_keep
+                .iter()
+                .take(100)
+                .map(|e| e.path.clone())
+                .collect()
         } else {
             entries_to_keep.iter().map(|e| e.path.clone()).collect()
         },
@@ -6776,7 +7297,7 @@ fn analyze_tar_archive(
 ) -> Result<(Vec<ArchiveEntry>, Vec<ArchiveEntry>, Vec<ArchiveEntry>)> {
     let file = File::open(&opts.archive)?;
     let mut entries_before = Vec::new();
-    
+
     // Read the archive based on compression
     match compression {
         CompressionKind::Gzip => {
@@ -6807,13 +7328,16 @@ fn analyze_tar_archive(
     Ok((entries_before, entries_to_keep, entries_to_remove))
 }
 
-fn read_tar_entries<R: Read>(archive: &mut tar::Archive<R>, entries: &mut Vec<ArchiveEntry>) -> Result<()> {
+fn read_tar_entries<R: Read>(
+    archive: &mut tar::Archive<R>,
+    entries: &mut Vec<ArchiveEntry>,
+) -> Result<()> {
     for entry in archive.entries()? {
         let entry = entry?;
         let path = entry.header().path()?.to_string_lossy().to_string();
         let size = entry.header().size()?;
         let is_dir = entry.header().entry_type() == tar::EntryType::Directory;
-        
+
         entries.push(ArchiveEntry {
             path: normalize_archive_path(&path),
             size,
@@ -6830,13 +7354,13 @@ fn analyze_zip_archive(
     let file = File::open(&opts.archive)?;
     let mut zip = ZipArchive::new(file)?;
     let mut entries_before = Vec::new();
-    
+
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
         let path = entry.name().to_string();
         let size = entry.size();
         let is_dir = entry.is_dir();
-        
+
         entries_before.push(ArchiveEntry {
             path: normalize_archive_path(&path),
             size,
@@ -6857,15 +7381,19 @@ fn filter_entries(
 ) -> (Vec<ArchiveEntry>, Vec<ArchiveEntry>) {
     let mut entries_to_keep = Vec::new();
     let mut entries_to_remove = Vec::new();
-    
+
     for entry in entries {
         let mut should_remove = false;
-        
+
         // Check exact paths
-        if opts.paths.iter().any(|p| normalize_archive_path(p) == entry.path) {
+        if opts
+            .paths
+            .iter()
+            .any(|p| normalize_archive_path(p) == entry.path)
+        {
             should_remove = true;
         }
-        
+
         // Check directory prefixes
         if !should_remove {
             for prefix in &opts.dir_prefixes {
@@ -6875,14 +7403,14 @@ fn filter_entries(
                 } else {
                     format!("{}/", normalized_prefix)
                 };
-                
+
                 if entry.path.starts_with(&prefix_with_slash) || entry.path == normalized_prefix {
                     should_remove = true;
                     break;
                 }
             }
         }
-        
+
         // Check patterns
         if !should_remove {
             if let Some(pattern_set) = pattern_set {
@@ -6891,18 +7419,18 @@ fn filter_entries(
                 }
             }
         }
-        
+
         if should_remove {
             entries_to_remove.push(entry.clone());
         } else {
             entries_to_keep.push(entry.clone());
         }
     }
-    
+
     // Handle empty directories removal
     if opts.remove_empty_dirs {
         let mut final_entries_to_keep = Vec::new();
-        
+
         for entry in entries_to_keep {
             if entry.is_dir {
                 // Check if this directory has any children in the kept entries
@@ -6911,13 +7439,13 @@ fn filter_entries(
                 } else {
                     format!("{}/", entry.path)
                 };
-                
+
                 let has_children = entries.iter().any(|e| {
-                    !e.is_dir && 
-                    e.path.starts_with(&dir_path) && 
-                    !entries_to_remove.iter().any(|r| r.path == e.path)
+                    !e.is_dir
+                        && e.path.starts_with(&dir_path)
+                        && !entries_to_remove.iter().any(|r| r.path == e.path)
                 });
-                
+
                 if has_children {
                     final_entries_to_keep.push(entry);
                 } else {
@@ -6928,7 +7456,7 @@ fn filter_entries(
                 final_entries_to_keep.push(entry);
             }
         }
-        
+
         (final_entries_to_keep, entries_to_remove)
     } else {
         (entries_to_keep, entries_to_remove)
@@ -6943,18 +7471,21 @@ fn perform_actual_removal(
 ) -> Result<PathBuf> {
     let archive_path = Path::new(&opts.archive);
     let archive_dir = archive_path.parent().unwrap_or(Path::new("."));
-    
+
     // Create temp file in the same directory or specified tmp_dir
     let temp_dir = if let Some(tmp_dir) = &opts.tmp_dir {
         Path::new(tmp_dir)
     } else {
         archive_dir
     };
-    
+
     let temp_path = temp_dir.join(temp_archive_name(".tmp_archive_"));
-    
+
     match format {
-        ArchiveFormat::Tar | ArchiveFormat::TarGz | ArchiveFormat::TarXz | ArchiveFormat::TarZstd => {
+        ArchiveFormat::Tar
+        | ArchiveFormat::TarGz
+        | ArchiveFormat::TarXz
+        | ArchiveFormat::TarZstd => {
             create_new_tar_archive(&opts.archive, &temp_path, compression, entries_to_keep)?;
         }
         ArchiveFormat::Zip => {
@@ -6962,7 +7493,7 @@ fn perform_actual_removal(
         }
         _ => bail!("Unsupported format for archive creation"),
     }
-    
+
     Ok(temp_path)
 }
 
@@ -6980,7 +7511,7 @@ fn create_new_tar_archive(
 ) -> Result<()> {
     let new_file = create_temp_output(new_path, Path::new(original_path))?;
     let new_file = BufWriter::new(new_file);
-    
+
     // Create the new archive with appropriate compression
     match compression {
         // Each compressor is finished explicitly and the file synced, so an
@@ -6990,29 +7521,49 @@ fn create_new_tar_archive(
         CompressionKind::Gzip => {
             let encoder = GzEncoder::new(new_file, Compression::default());
             let mut new_archive = tar::Builder::new(encoder);
-            copy_tar_entries(original_path, &mut new_archive, compression, entries_to_keep)?;
+            copy_tar_entries(
+                original_path,
+                &mut new_archive,
+                compression,
+                entries_to_keep,
+            )?;
             finish_output(new_archive.into_inner()?.finish()?)?;
         }
         CompressionKind::Xz => {
             let encoder = XzEncoder::new(new_file, 6);
             let mut new_archive = tar::Builder::new(encoder);
-            copy_tar_entries(original_path, &mut new_archive, compression, entries_to_keep)?;
+            copy_tar_entries(
+                original_path,
+                &mut new_archive,
+                compression,
+                entries_to_keep,
+            )?;
             finish_output(new_archive.into_inner()?.finish()?)?;
         }
         CompressionKind::Zstd => {
             let encoder = ZstdEncoder::new(new_file, 3)?;
             let mut new_archive = tar::Builder::new(encoder);
-            copy_tar_entries(original_path, &mut new_archive, compression, entries_to_keep)?;
+            copy_tar_entries(
+                original_path,
+                &mut new_archive,
+                compression,
+                entries_to_keep,
+            )?;
             finish_output(new_archive.into_inner()?.finish()?)?;
         }
         CompressionKind::None => {
             let mut new_archive = tar::Builder::new(new_file);
-            copy_tar_entries(original_path, &mut new_archive, compression, entries_to_keep)?;
+            copy_tar_entries(
+                original_path,
+                &mut new_archive,
+                compression,
+                entries_to_keep,
+            )?;
             finish_output(new_archive.into_inner()?)?;
         }
         _ => bail!("Unsupported compression for tar archive"),
     }
-    
+
     Ok(())
 }
 
@@ -7023,7 +7574,7 @@ fn copy_tar_entries<W: Write>(
     entries_to_keep: &[ArchiveEntry],
 ) -> Result<()> {
     let file = File::open(original_path)?;
-    
+
     // Open original archive for reading
     match compression {
         CompressionKind::Gzip => {
@@ -7047,7 +7598,7 @@ fn copy_tar_entries<W: Write>(
         }
         _ => bail!("Unsupported compression for tar archive"),
     }
-    
+
     Ok(())
 }
 
@@ -7060,7 +7611,7 @@ fn copy_tar_entries_from_archive<R: Read, W: Write>(
         let mut entry = entry?;
         let path = entry.header().path()?.to_string_lossy().to_string();
         let normalized_path = normalize_archive_path(&path);
-        
+
         // Check if this entry should be kept
         if entries_to_keep.iter().any(|e| e.path == normalized_path) {
             dest_archive.append(&entry.header().clone(), &mut entry)?;
@@ -7076,37 +7627,37 @@ fn create_new_zip_archive(
 ) -> Result<()> {
     let new_file = create_temp_output(new_path, Path::new(original_path))?;
     let mut new_zip = ZipWriter::new(new_file);
-    
+
     // Open original zip for reading
     let original_file = File::open(original_path)?;
     let mut original_zip = ZipArchive::new(original_file)?;
-    
+
     for i in 0..original_zip.len() {
         let mut file = original_zip.by_index(i)?;
         let path = file.name().to_string();
         let normalized_path = normalize_archive_path(&path);
-        
+
         // Check if this entry should be kept
         if entries_to_keep.iter().any(|e| e.path == normalized_path) {
             let options = FileOptions::default()
                 .compression_method(file.compression())
                 .unix_permissions(file.unix_mode().unwrap_or(0o755));
-                
+
             new_zip.start_file(&path, options)?;
-            
+
             if !file.is_dir() {
                 copy(&mut file, &mut new_zip)?;
             }
         }
     }
-    
+
     new_zip.finish()?;
     Ok(())
 }
 
 fn normalize_archive_path(path: &str) -> String {
     let mut normalized = path.replace('\\', "/");
-    
+
     // Remove leading ./ or /
     while normalized.starts_with("./") {
         normalized = normalized[2..].to_string();
@@ -7114,14 +7665,17 @@ fn normalize_archive_path(path: &str) -> String {
     while normalized.starts_with('/') {
         normalized = normalized[1..].to_string();
     }
-    
+
     normalized
 }
 
 // Help functionality
 fn should_show_help(verb: &str, args: &Args) -> bool {
-    verb == "--help" || verb == "-h" || verb == "help" ||
-    args.get("help").is_some() || args.get("h").is_some()
+    verb == "--help"
+        || verb == "-h"
+        || verb == "help"
+        || args.get("help").is_some()
+        || args.get("h").is_some()
 }
 
 // SEC-01: extraction must never write outside the destination. Each test
@@ -7133,7 +7687,7 @@ fn should_show_help(verb: &str, args: &Args) -> bool {
 mod extract_safety_tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::{symlink, MetadataExt};
+    use std::os::unix::fs::{MetadataExt, symlink};
     use tar::{Builder, EntryType, Header};
     use tempfile::TempDir;
 
@@ -7152,18 +7706,28 @@ mod extract_safety_tests {
         fs::create_dir_all(&dest).unwrap();
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("keep.txt"), b"sentinel").unwrap();
-        Sandbox { _tmp: tmp, root, dest, outside }
+        Sandbox {
+            _tmp: tmp,
+            root,
+            dest,
+            outside,
+        }
     }
 
     impl Sandbox {
         fn assert_outside_intact(&self) {
-            let names: Vec<_> = fs::read_dir(&self.outside).unwrap()
+            let names: Vec<_> = fs::read_dir(&self.outside)
+                .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
                 .collect();
             assert_eq!(names, vec!["keep.txt"], "outside dir was modified");
-            assert_eq!(fs::read(self.outside.join("keep.txt")).unwrap(), b"sentinel");
+            assert_eq!(
+                fs::read(self.outside.join("keep.txt")).unwrap(),
+                b"sentinel"
+            );
             // nothing may appear next to dest either
-            let mut top: Vec<_> = fs::read_dir(&self.root).unwrap()
+            let mut top: Vec<_> = fs::read_dir(&self.root)
+                .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
                 .filter(|n| !n.ends_with(".tar") && !n.ends_with(".zip") && !n.ends_with(".gz"))
                 .collect();
@@ -7194,7 +7758,11 @@ mod extract_safety_tests {
         }
         h.set_entry_type(kind);
         h.set_size(size);
-        h.set_mode(if kind == EntryType::Directory { 0o755 } else { 0o644 });
+        h.set_mode(if kind == EntryType::Directory {
+            0o755
+        } else {
+            0o644
+        });
         h.set_mtime(1);
         h.set_cksum();
         h
@@ -7204,11 +7772,24 @@ mod extract_safety_tests {
         let mut b = Builder::new(File::create(path).unwrap());
         for e in entries {
             match e {
-                E::File(n, data) => b.append(&raw_header(n, EntryType::Regular, "", data.len() as u64), *data).unwrap(),
-                E::Dir(n) => b.append(&raw_header(n, EntryType::Directory, "", 0), &[][..]).unwrap(),
-                E::Symlink(n, t) => b.append(&raw_header(n, EntryType::Symlink, t, 0), &[][..]).unwrap(),
-                E::HardLink(n, t) => b.append(&raw_header(n, EntryType::Link, t, 0), &[][..]).unwrap(),
-                E::Device(n) => b.append(&raw_header(n, EntryType::Char, "", 0), &[][..]).unwrap(),
+                E::File(n, data) => b
+                    .append(
+                        &raw_header(n, EntryType::Regular, "", data.len() as u64),
+                        *data,
+                    )
+                    .unwrap(),
+                E::Dir(n) => b
+                    .append(&raw_header(n, EntryType::Directory, "", 0), &[][..])
+                    .unwrap(),
+                E::Symlink(n, t) => b
+                    .append(&raw_header(n, EntryType::Symlink, t, 0), &[][..])
+                    .unwrap(),
+                E::HardLink(n, t) => b
+                    .append(&raw_header(n, EntryType::Link, t, 0), &[][..])
+                    .unwrap(),
+                E::Device(n) => b
+                    .append(&raw_header(n, EntryType::Char, "", 0), &[][..])
+                    .unwrap(),
             }
         }
         b.finish().unwrap();
@@ -7238,7 +7819,11 @@ mod extract_safety_tests {
         }
     }
 
-    fn extract_tar(sb: &Sandbox, entries: &[E], tweak: impl Fn(&mut ArchiveExtractOptions)) -> ArchiveExtractResponse {
+    fn extract_tar(
+        sb: &Sandbox,
+        entries: &[E],
+        tweak: impl Fn(&mut ArchiveExtractOptions),
+    ) -> ArchiveExtractResponse {
         let archive = sb.root.join("t.tar");
         write_tar(&archive, entries);
         let mut o = opts(&archive, &sb.dest, ArchiveFormat::Tar);
@@ -7253,21 +7838,28 @@ mod extract_safety_tests {
         let (c, msg) = r.error.clone().unwrap();
         assert_eq!(c, code, "{msg}");
         assert!(msg.contains("extraction stopped"), "{msg}");
-        assert!(r.summary.is_none() && r.manifest.is_none(), "no success summary on failure");
+        assert!(
+            r.summary.is_none() && r.manifest.is_none(),
+            "no success summary on failure"
+        );
     }
 
     #[test]
     fn normal_archive_with_nested_dirs_extracts() {
         let sb = sandbox();
-        let r = extract_tar(&sb, &[
-            E::Dir("./"),
-            E::Dir("dir/"),
-            E::File("a.txt", b"a"),
-            E::File("./rel.txt", b"r"),
-            E::File("dir/sub/deep/b.txt", b"b"),
-            E::Symlink("dir/link", "sub/deep/b.txt"),
-            E::HardLink("hard.txt", "a.txt"),
-        ], |_| {});
+        let r = extract_tar(
+            &sb,
+            &[
+                E::Dir("./"),
+                E::Dir("dir/"),
+                E::File("a.txt", b"a"),
+                E::File("./rel.txt", b"r"),
+                E::File("dir/sub/deep/b.txt", b"b"),
+                E::Symlink("dir/link", "sub/deep/b.txt"),
+                E::HardLink("hard.txt", "a.txt"),
+            ],
+            |_| {},
+        );
         assert!(r.ok, "{:?}", r.error);
         assert_eq!(fs::read(sb.dest.join("a.txt")).unwrap(), b"a");
         assert_eq!(fs::read(sb.dest.join("rel.txt")).unwrap(), b"r");
@@ -7291,10 +7883,14 @@ mod extract_safety_tests {
         }
         // allow_parent_traversal=true still cannot climb above dest
         let sb = sandbox();
-        let r = extract_tar(&sb, &[E::File("../outside/evil.txt", b"x")], |o| o.allow_parent_traversal = true);
+        let r = extract_tar(&sb, &[E::File("../outside/evil.txt", b"x")], |o| {
+            o.allow_parent_traversal = true
+        });
         assert_rejected(&r, ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED);
         sb.assert_outside_intact();
-        let r = extract_tar(&sb, &[E::File("a/../ok.txt", b"x")], |o| o.allow_parent_traversal = true);
+        let r = extract_tar(&sb, &[E::File("a/../ok.txt", b"x")], |o| {
+            o.allow_parent_traversal = true
+        });
         assert!(r.ok, "{:?}", r.error);
         assert!(sb.dest.join("ok.txt").is_file());
     }
@@ -7308,7 +7904,9 @@ mod extract_safety_tests {
         sb.assert_outside_intact();
 
         // allow_absolute_paths=true re-roots under dest; never writes there
-        let r = extract_tar(&sb, &[E::File(&abs, b"x")], |o| o.allow_absolute_paths = true);
+        let r = extract_tar(&sb, &[E::File(&abs, b"x")], |o| {
+            o.allow_absolute_paths = true
+        });
         assert!(r.ok, "{:?}", r.error);
         let rerooted = sb.dest.join(abs.trim_start_matches('/'));
         assert_eq!(fs::read(rerooted).unwrap(), b"x");
@@ -7320,19 +7918,36 @@ mod extract_safety_tests {
     #[test]
     fn archive_symlink_cannot_redirect_later_entries() {
         let sb = sandbox();
-        let r = extract_tar(&sb, &[
-            E::Symlink("lnk", ".."),
-            E::File("lnk/escaped_via_symlink.txt", b"x"),
-        ], |_| {});
+        let r = extract_tar(
+            &sb,
+            &[
+                E::Symlink("lnk", ".."),
+                E::File("lnk/escaped_via_symlink.txt", b"x"),
+            ],
+            |_| {},
+        );
         assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
         assert!(!sb.root.join("escaped_via_symlink.txt").exists());
         sb.assert_outside_intact();
 
-        for target in ["../outside", "../outside/keep.txt", "/etc", "a/../../outside", ""] {
+        for target in [
+            "../outside",
+            "../outside/keep.txt",
+            "/etc",
+            "a/../../outside",
+            "",
+        ] {
             let sb = sandbox();
-            let r = extract_tar(&sb, &[E::Symlink("lnk", target), E::File("lnk/keep.txt", b"pwned")], |_| {});
+            let r = extract_tar(
+                &sb,
+                &[E::Symlink("lnk", target), E::File("lnk/keep.txt", b"pwned")],
+                |_| {},
+            );
             assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
-            assert!(fs::symlink_metadata(sb.dest.join("lnk")).is_err(), "{target}");
+            assert!(
+                fs::symlink_metadata(sb.dest.join("lnk")).is_err(),
+                "{target}"
+            );
             sb.assert_outside_intact();
         }
     }
@@ -7340,11 +7955,15 @@ mod extract_safety_tests {
     #[test]
     fn in_destination_symlink_is_never_written_through() {
         let sb = sandbox();
-        let r = extract_tar(&sb, &[
-            E::Dir("sub/"),
-            E::Symlink("inner", "sub"),
-            E::File("inner/x.txt", b"x"),
-        ], |_| {});
+        let r = extract_tar(
+            &sb,
+            &[
+                E::Dir("sub/"),
+                E::Symlink("inner", "sub"),
+                E::File("inner/x.txt", b"x"),
+            ],
+            |_| {},
+        );
         assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
         assert!(!sb.dest.join("sub/x.txt").exists());
         sb.assert_outside_intact();
@@ -7355,14 +7974,24 @@ mod extract_safety_tests {
         // sub/x -> ..  (dest) and y -> sub/x/..  (lexically "sub", but
         // physically the parent of dest)
         let sb = sandbox();
-        let r = extract_tar(&sb, &[
-            E::Dir("sub/"),
-            E::Symlink("sub/x", ".."),
-            E::Symlink("y", "sub/x/.."),
-        ], |_| {});
+        let r = extract_tar(
+            &sb,
+            &[
+                E::Dir("sub/"),
+                E::Symlink("sub/x", ".."),
+                E::Symlink("y", "sub/x/.."),
+            ],
+            |_| {},
+        );
         assert!(!r.ok);
-        assert_eq!(r.error.as_ref().unwrap().0, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
-        assert!(fs::symlink_metadata(sb.dest.join("y")).is_err(), "escaping link left behind");
+        assert_eq!(
+            r.error.as_ref().unwrap().0,
+            ARCHIVE_EXTRACT_SYMLINK_REJECTED
+        );
+        assert!(
+            fs::symlink_metadata(sb.dest.join("y")).is_err(),
+            "escaping link left behind"
+        );
         sb.assert_outside_intact();
     }
 
@@ -7371,16 +8000,30 @@ mod extract_safety_tests {
         // parent component planted in dest
         let sb = sandbox();
         symlink(&sb.outside, sb.dest.join("pre")).unwrap();
-        let r = extract_tar(&sb, &[E::File("pre/keep.txt", b"pwned"), E::File("pre/new.txt", b"x")], |o| o.overwrite = true);
+        let r = extract_tar(
+            &sb,
+            &[
+                E::File("pre/keep.txt", b"pwned"),
+                E::File("pre/new.txt", b"x"),
+            ],
+            |o| o.overwrite = true,
+        );
         assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
         sb.assert_outside_intact();
 
         // final component planted in dest, overwrite=true: replaced, not followed
         let sb = sandbox();
         symlink(sb.outside.join("keep.txt"), sb.dest.join("target.txt")).unwrap();
-        let r = extract_tar(&sb, &[E::File("target.txt", b"new")], |o| o.overwrite = true);
+        let r = extract_tar(&sb, &[E::File("target.txt", b"new")], |o| {
+            o.overwrite = true
+        });
         assert!(r.ok, "{:?}", r.error);
-        assert!(!fs::symlink_metadata(sb.dest.join("target.txt")).unwrap().file_type().is_symlink());
+        assert!(
+            !fs::symlink_metadata(sb.dest.join("target.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(fs::read(sb.dest.join("target.txt")).unwrap(), b"new");
         sb.assert_outside_intact();
 
@@ -7417,14 +8060,30 @@ mod extract_safety_tests {
         let a = abs(&sb);
         let r = extract_tar(&sb, &[E::HardLink("hl", &a)], |_| {});
         assert_rejected(&r, ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED);
-        let r = extract_tar(&sb, &[E::HardLink("hl", &a)], |o| o.allow_absolute_paths = true);
-        assert!(!r.ok, "re-rooted target does not exist, so it must not link outside");
-        assert_eq!(fs::metadata(sb.outside.join("keep.txt")).unwrap().nlink(), 1);
+        let r = extract_tar(&sb, &[E::HardLink("hl", &a)], |o| {
+            o.allow_absolute_paths = true
+        });
+        assert!(
+            !r.ok,
+            "re-rooted target does not exist, so it must not link outside"
+        );
+        assert_eq!(
+            fs::metadata(sb.outside.join("keep.txt")).unwrap().nlink(),
+            1
+        );
         sb.assert_outside_intact();
 
         // hard link through an in-dest symlink
         let sb = sandbox();
-        let r = extract_tar(&sb, &[E::Symlink("s", "."), E::File("f", b"f"), E::HardLink("hl", "s/f")], |_| {});
+        let r = extract_tar(
+            &sb,
+            &[
+                E::Symlink("s", "."),
+                E::File("f", b"f"),
+                E::HardLink("hl", "s/f"),
+            ],
+            |_| {},
+        );
         assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
         sb.assert_outside_intact();
     }
@@ -7440,10 +8099,18 @@ mod extract_safety_tests {
     #[test]
     fn allow_symlinks_false_still_skips_links() {
         let sb = sandbox();
-        let r = extract_tar(&sb, &[E::Symlink("lnk", "../outside"), E::File("a", b"a")], |o| o.allow_symlinks = false);
+        let r = extract_tar(
+            &sb,
+            &[E::Symlink("lnk", "../outside"), E::File("a", b"a")],
+            |o| o.allow_symlinks = false,
+        );
         assert!(r.ok, "{:?}", r.error);
         assert!(fs::symlink_metadata(sb.dest.join("lnk")).is_err());
-        assert!(r.warnings.iter().any(|w| w.contains("allow_symlinks=false")));
+        assert!(
+            r.warnings
+                .iter()
+                .any(|w| w.contains("allow_symlinks=false"))
+        );
         sb.assert_outside_intact();
     }
 
@@ -7466,18 +8133,34 @@ mod extract_safety_tests {
             let sb = sandbox();
             let archive = sb.root.join("t.tar");
             write_tar(&archive, &[E::File("a", b"a"), E::Symlink("lnk", "a")]);
-            let o = ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[("allow_symlinks", v)])).unwrap();
+            let o = ArchiveExtractOptions::from_args(&extract_args(
+                &sb,
+                &archive,
+                &[("allow_symlinks", v)],
+            ))
+            .unwrap();
             assert!(!o.allow_symlinks, "allow_symlinks={v} parsed as true");
             let r = extract_archive(o).unwrap();
             assert!(r.ok, "{:?}", r.error);
-            assert!(fs::symlink_metadata(sb.dest.join("lnk")).is_err(), "allow_symlinks={v} still extracted a link");
+            assert!(
+                fs::symlink_metadata(sb.dest.join("lnk")).is_err(),
+                "allow_symlinks={v} still extracted a link"
+            );
             assert!(sb.dest.join("a").is_file());
         }
         for v in ["true", "yes", "1", "on"] {
             let sb = sandbox();
             let archive = sb.root.join("t.tar");
             write_tar(&archive, &[E::File("a", b"a")]);
-            assert!(ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[("allow_symlinks", v)])).unwrap().allow_symlinks);
+            assert!(
+                ArchiveExtractOptions::from_args(&extract_args(
+                    &sb,
+                    &archive,
+                    &[("allow_symlinks", v)]
+                ))
+                .unwrap()
+                .allow_symlinks
+            );
         }
     }
 
@@ -7488,16 +8171,28 @@ mod extract_safety_tests {
         let sb = sandbox();
         let archive = sb.root.join("t.tar");
         write_tar(&archive, &[E::File("a", b"a")]);
-        for key in ["allow_symlinks", "allow_absolute_paths", "allow_parent_traversal", "overwrite", "follow_symlinks"] {
+        for key in [
+            "allow_symlinks",
+            "allow_absolute_paths",
+            "allow_parent_traversal",
+            "overwrite",
+            "follow_symlinks",
+        ] {
             for bad in ["maybe", "", "2", "y"] {
-                let err = ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[(key, bad)]))
-                    .expect_err(&format!("{key}={bad:?} accepted"));
+                let err =
+                    ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[(key, bad)]))
+                        .expect_err(&format!("{key}={bad:?} accepted"));
                 assert!(err.to_string().contains(key), "{err}");
             }
         }
-        let o = ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[("overwrite", "yes")])).unwrap();
+        let o =
+            ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[("overwrite", "yes")]))
+                .unwrap();
         assert!(o.overwrite, "overwrite=yes was ignored");
-        assert!(fs::read_dir(&sb.dest).unwrap().next().is_none(), "parsing extracted something");
+        assert!(
+            fs::read_dir(&sb.dest).unwrap().next().is_none(),
+            "parsing extracted something"
+        );
         sb.assert_outside_intact();
     }
 
@@ -7514,7 +8209,11 @@ mod extract_safety_tests {
         z.finish().unwrap();
     }
 
-    fn extract_zip(sb: &Sandbox, entries: &[(&str, &[u8])], tweak: impl Fn(&mut ArchiveExtractOptions)) -> ArchiveExtractResponse {
+    fn extract_zip(
+        sb: &Sandbox,
+        entries: &[(&str, &[u8])],
+        tweak: impl Fn(&mut ArchiveExtractOptions),
+    ) -> ArchiveExtractResponse {
         let archive = sb.root.join("t.zip");
         write_zip(&archive, entries);
         let mut o = opts(&archive, &sb.dest, ArchiveFormat::Zip);
@@ -7527,7 +8226,11 @@ mod extract_safety_tests {
     #[test]
     fn zip_extraction_is_contained() {
         let sb = sandbox();
-        let r = extract_zip(&sb, &[("d/", b""), ("d/e/f.txt", b"f"), ("top.txt", b"t")], |_| {});
+        let r = extract_zip(
+            &sb,
+            &[("d/", b""), ("d/e/f.txt", b"f"), ("top.txt", b"t")],
+            |_| {},
+        );
         assert!(r.ok, "{:?}", r.error);
         assert_eq!(fs::read(sb.dest.join("d/e/f.txt")).unwrap(), b"f");
 
@@ -7552,7 +8255,10 @@ mod extract_safety_tests {
     fn raw_decompression_does_not_follow_planted_link() {
         let sb = sandbox();
         let gz = sb.root.join("data.gz");
-        let mut enc = flate2::write::GzEncoder::new(File::create(&gz).unwrap(), flate2::Compression::default());
+        let mut enc = flate2::write::GzEncoder::new(
+            File::create(&gz).unwrap(),
+            flate2::Compression::default(),
+        );
         enc.write_all(b"payload").unwrap();
         enc.finish().unwrap();
         symlink(sb.outside.join("keep.txt"), sb.dest.join("data")).unwrap();
@@ -7570,11 +8276,19 @@ mod extract_safety_tests {
     fn sanitize_path_codes() {
         let sb = sandbox();
         let o = opts(Path::new("x.tar"), &sb.dest, ArchiveFormat::Tar);
-        let code = |p: &str| sanitize_path(p, &sb.dest, &o).unwrap_err()
-            .downcast_ref::<UnsafeEntryError>().unwrap().code;
+        let code = |p: &str| {
+            sanitize_path(p, &sb.dest, &o)
+                .unwrap_err()
+                .downcast_ref::<UnsafeEntryError>()
+                .unwrap()
+                .code
+        };
         assert_eq!(code("/etc/passwd"), ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED);
         assert_eq!(code("../x"), ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED);
-        assert_eq!(sanitize_path("a/./b", &sb.dest, &o).unwrap(), sb.dest.join("a/b"));
+        assert_eq!(
+            sanitize_path("a/./b", &sb.dest, &o).unwrap(),
+            sb.dest.join("a/b")
+        );
     }
 }
 
@@ -7637,9 +8351,18 @@ mod zstd_rewrite_tests {
         let h = ArchiveHandle::from_url(&Url::parse("archive://").unwrap()).unwrap();
         let args: Args = kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
         let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
         let st = h.call(verb, &args, &mut io).unwrap();
-        assert!(st.ok, "{verb}: {} {}", String::from_utf8_lossy(&o), String::from_utf8_lossy(&e));
+        assert!(
+            st.ok,
+            "{verb}: {} {}",
+            String::from_utf8_lossy(&o),
+            String::from_utf8_lossy(&e)
+        );
         st
     }
 
@@ -7689,20 +8412,48 @@ mod zstd_rewrite_tests {
             let extra = tmp.path().join("three.txt");
             std::fs::write(&extra, "three").unwrap();
             let a = archive.display().to_string();
-            call("add", &[("archive", a.clone()), ("inputs", format!("[\"{}\"]", extra.display())),
-                ("base_dir", tmp.path().display().to_string())]);
+            call(
+                "add",
+                &[
+                    ("archive", a.clone()),
+                    ("inputs", format!("[\"{}\"]", extra.display())),
+                    ("base_dir", tmp.path().display().to_string()),
+                ],
+            );
             let after_add = entries(&archive);
             assert_eq!(after_add.len(), 4, "{name}");
             for m in &before {
-                assert!(after_add.contains(m), "{name}: add changed {m:?}; now {after_add:?}");
+                assert!(
+                    after_add.contains(m),
+                    "{name}: add changed {m:?}; now {after_add:?}"
+                );
             }
-            assert_eq!(std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
+            assert_eq!(
+                std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "{name}"
+            );
 
-            call("remove", &[("archive", a.clone()), ("paths", "[\"three.txt\"]".to_string())]);
-            assert_eq!(entries(&archive), before, "{name}: remove changed the kept entries");
-            assert_eq!(std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
+            call(
+                "remove",
+                &[
+                    ("archive", a.clone()),
+                    ("paths", "[\"three.txt\"]".to_string()),
+                ],
+            );
+            assert_eq!(
+                entries(&archive),
+                before,
+                "{name}: remove changed the kept entries"
+            );
+            assert_eq!(
+                std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "{name}"
+            );
             // No temporary file is left behind.
-            let left: Vec<_> = std::fs::read_dir(tmp.path()).unwrap()
+            let left: Vec<_> = std::fs::read_dir(tmp.path())
+                .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
                 .filter(|n| n.contains("tmp"))
                 .collect();
@@ -7725,7 +8476,13 @@ mod zip_add_metadata_tests {
         let when = zip::DateTime::from_date_and_time(2020, 1, 2, 3, 4, 6).unwrap();
         {
             let mut z = ZipWriter::new(File::create(&archive).unwrap());
-            z.start_file("run.sh", FileOptions::default().unix_permissions(0o755).last_modified_time(when)).unwrap();
+            z.start_file(
+                "run.sh",
+                FileOptions::default()
+                    .unix_permissions(0o755)
+                    .last_modified_time(when),
+            )
+            .unwrap();
             z.write_all(b"#!x").unwrap();
             z.finish().unwrap();
         }
@@ -7740,14 +8497,25 @@ mod zip_add_metadata_tests {
         .into_iter()
         .collect();
         let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
-        assert!(h.call("add", &args, &mut io).unwrap().ok, "{}", String::from_utf8_lossy(&e));
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        assert!(
+            h.call("add", &args, &mut io).unwrap().ok,
+            "{}",
+            String::from_utf8_lossy(&e)
+        );
         let mut z = ZipArchive::new(File::open(&archive).unwrap()).unwrap();
         assert_eq!(z.len(), 2);
         let f = z.by_name("run.sh").unwrap();
         assert_eq!(f.unix_mode().map(|m| m & 0o777), Some(0o755));
         let t = f.last_modified();
-        assert_eq!((t.year(), t.month(), t.day(), t.hour(), t.minute()), (2020, 1, 2, 3, 4));
+        assert_eq!(
+            (t.year(), t.month(), t.day(), t.hour(), t.minute()),
+            (2020, 1, 2, 3, 4)
+        );
     }
 }
 
@@ -7765,17 +8533,28 @@ mod zip_password_tests {
             ("output", dir.join("out.zip").to_string_lossy().into_owned()),
             ("sources", format!("[\"{}\"]", src.display())),
             ("format", "zip".to_string()),
-        ].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
         for (k, v) in extra {
             args.insert(k.to_string(), v.to_string());
         }
         let mut i: &[u8] = &[];
         let (mut o, mut e) = (Vec::new(), Vec::new());
         let status = {
-            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
             h.call("create", &args, &mut io).unwrap()
         };
-        (status, String::from_utf8(o).unwrap(), String::from_utf8(e).unwrap())
+        (
+            status,
+            String::from_utf8(o).unwrap(),
+            String::from_utf8(e).unwrap(),
+        )
     }
 
     #[test]
@@ -7783,7 +8562,8 @@ mod zip_password_tests {
         let dir = TempDir::new().unwrap();
         let (status, out, _) = create(dir.path(), &[]);
         assert!(status.ok, "{out}");
-        let mut zip = zip::ZipArchive::new(fs::File::open(dir.path().join("out.zip")).unwrap()).unwrap();
+        let mut zip =
+            zip::ZipArchive::new(fs::File::open(dir.path().join("out.zip")).unwrap()).unwrap();
         assert_eq!(zip.len(), 1);
         let mut body = String::new();
         std::io::Read::read_to_string(&mut zip.by_index(0).unwrap(), &mut body).unwrap();
@@ -7797,9 +8577,20 @@ mod zip_password_tests {
             let (status, out, err) = create(dir.path(), &[("password", pw)]);
             assert!(!status.ok, "password={pw:?} must fail: {out}");
             assert_ne!(status.exit_code(), 0);
-            let text = format!("{}{}{}", out, err, status.reason.clone().unwrap_or_default());
-            assert!(text.contains(ARCHIVE_CREATE_PASSWORD_NOT_SUPPORTED), "{text}");
-            assert!(!dir.path().join("out.zip").exists(), "no plaintext fallback archive");
+            let text = format!(
+                "{}{}{}",
+                out,
+                err,
+                status.reason.clone().unwrap_or_default()
+            );
+            assert!(
+                text.contains(ARCHIVE_CREATE_PASSWORD_NOT_SUPPORTED),
+                "{text}"
+            );
+            assert!(
+                !dir.path().join("out.zip").exists(),
+                "no plaintext fallback archive"
+            );
             assert!(!text.contains("hunter2"), "password must not be echoed");
         }
     }

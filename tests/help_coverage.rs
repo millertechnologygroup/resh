@@ -88,14 +88,20 @@ fn check_example(handle: &str, verb: &str, example: &str) -> Result<(), String> 
     // the function-call form or trailing key=value arguments.
     let parsed = parse_stage(stage).map_err(|e| format!("stage does not parse: {e}"))?;
     if !parsed.target.starts_with(&format!("{handle}://")) {
-        return Err(format!("stage target {:?} is not a {handle}:// URL", parsed.target));
+        return Err(format!(
+            "stage target {:?} is not a {handle}:// URL",
+            parsed.target
+        ));
     }
     let ok_verb = parsed.verb == verb
         // plugin:// encodes the verb in the host; parse_stage reports it
         // as the URL host.
         || (handle == "plugin" && parsed.target.starts_with(&format!("plugin://{verb}")));
     if !ok_verb {
-        return Err(format!("stage parses to verb {:?}, expected {verb:?}", parsed.verb));
+        return Err(format!(
+            "stage parses to verb {:?}, expected {verb:?}",
+            parsed.verb
+        ));
     }
     Ok(())
 }
@@ -148,8 +154,12 @@ fn every_handle_and_verb_has_help() {
             fail("Handle::help() returns None".into());
             continue;
         };
-        let ops: Vec<&str> =
-            h.verbs().iter().copied().filter(|v| !HELP_ALIASES.contains(v)).collect();
+        let ops: Vec<&str> = h
+            .verbs()
+            .iter()
+            .copied()
+            .filter(|v| !HELP_ALIASES.contains(v))
+            .collect();
 
         let n = sentences(meta.description);
         if !(2..=3).contains(&n) || !meta.description.ends_with('.') {
@@ -194,20 +204,27 @@ fn every_handle_and_verb_has_help() {
                 continue;
             };
             let first_usage = d.usage.lines().next().unwrap_or("");
-            if !first_usage.starts_with(&format!("resh {scheme}://")) || !first_usage.contains(verb) {
-                fail(format!("usage must start with `resh {scheme}://` and name the verb"));
+            if !first_usage.starts_with(&format!("resh {scheme}://")) || !first_usage.contains(verb)
+            {
+                fail(format!(
+                    "usage must start with `resh {scheme}://` and name the verb"
+                ));
             }
             if d.usage.lines().skip(1).any(|l| !l.starts_with("  ")) {
                 fail("usage continuation lines must start with two spaces".into());
             }
-            if let Some((_, _, pointer)) =
-                UNREACHABLE.iter().find(|(h, v, _)| *h == scheme && v == verb)
+            if let Some((_, _, pointer)) = UNREACHABLE
+                .iter()
+                .find(|(h, v, _)| *h == scheme && v == verb)
             {
                 if d.example != *pointer {
                     fail(format!("unreachable verb's example must be {pointer:?}"));
                 }
                 let stage = format!("{scheme}://x.{verb}");
-                if parse_stage(&stage).map(|p| p.verb == *verb).unwrap_or(false) {
+                if parse_stage(&stage)
+                    .map(|p| p.verb == *verb)
+                    .unwrap_or(false)
+                {
                     fail("verb is now reachable; remove it from UNREACHABLE".into());
                 }
             } else if let Err(e) = check_example(&scheme, verb, d.example) {
@@ -229,7 +246,12 @@ fn every_handle_and_verb_has_help() {
         }
     }
 
-    assert!(problems.is_empty(), "{} problem(s):\n{}", problems.len(), problems.join("\n"));
+    assert!(
+        problems.is_empty(),
+        "{} problem(s):\n{}",
+        problems.len(),
+        problems.join("\n")
+    );
     assert!(checked > 0, "no verbs checked");
 }
 

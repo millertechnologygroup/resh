@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use serde_json::json;
-use url::Url;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
+use url::Url;
 
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
@@ -12,7 +12,7 @@ use crate::core::{
 };
 
 #[cfg(unix)]
-use nix::sys::resource::{getrlimit, setrlimit, Resource};
+use nix::sys::resource::{Resource, getrlimit, setrlimit};
 
 #[derive(Debug)]
 struct StreamData {
@@ -372,13 +372,17 @@ pub struct ProcHandle {
 /// values and anything that would wrap on conversion address process groups
 /// or every process (`kill(-1, ..)`), never one process.
 fn parse_pid(s: &str) -> anyhow::Result<libc::pid_t> {
-    let pid: u64 = s.parse()
-        .with_context(|| format!("invalid pid: {}", s))?;
+    let pid: u64 = s.parse().with_context(|| format!("invalid pid: {}", s))?;
     if pid == 0 {
         return Err(anyhow!("invalid pid: must be positive"));
     }
-    libc::pid_t::try_from(pid)
-        .map_err(|_| anyhow!("invalid pid: {} is out of range (max {})", s, libc::pid_t::MAX))
+    libc::pid_t::try_from(pid).map_err(|_| {
+        anyhow!(
+            "invalid pid: {} is out of range (max {})",
+            s,
+            libc::pid_t::MAX
+        )
+    })
 }
 
 impl ProcHandle {
@@ -422,12 +426,12 @@ impl ProcHandle {
     #[cfg(unix)]
     fn get_nice(&self) -> anyhow::Result<i32> {
         let pid = self.resolve_pid()?;
-        
+
         // Clear errno before the call
         unsafe { *libc::__errno_location() = 0 };
-        
+
         let nice_value = unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as u32) };
-        
+
         // Check if an error occurred (getpriority can return -1 as a valid value)
         let errno = unsafe { *libc::__errno_location() };
         if errno != 0 {
@@ -444,7 +448,9 @@ impl ProcHandle {
 
     #[cfg(not(unix))]
     fn get_nice(&self) -> anyhow::Result<i32> {
-        Err(anyhow!("proc:// nice operations only supported on Unix-like systems"))
+        Err(anyhow!(
+            "proc:// nice operations only supported on Unix-like systems"
+        ))
     }
 
     /// Set the nice value for the process
@@ -456,9 +462,9 @@ impl ProcHandle {
         }
 
         let pid = self.resolve_pid()?;
-        
+
         let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as u32, value) };
-        
+
         if result != 0 {
             let error = std::io::Error::last_os_error();
             match error.raw_os_error() {
@@ -474,7 +480,9 @@ impl ProcHandle {
 
     #[cfg(not(unix))]
     fn set_nice(&self, _value: i32) -> anyhow::Result<()> {
-        Err(anyhow!("proc:// nice operations only supported on Unix-like systems"))
+        Err(anyhow!(
+            "proc:// nice operations only supported on Unix-like systems"
+        ))
     }
 
     /// Handle nice-related operations
@@ -495,29 +503,27 @@ impl ProcHandle {
         };
 
         match verb {
-            "nice.get" => {
-                match self.get_nice() {
-                    Ok(nice_value) => {
-                        let success_json = json!({
-                            "pid": pid,
-                            "nice": nice_value
-                        });
-                        writeln!(io.stdout, "{}", success_json)?;
-                        Ok(Status::ok())
-                    }
-                    Err(e) => {
-                        let error_json = json!({
-                            "pid": pid,
-                            "verb": verb,
-                            "ok": false,
-                            "error": e.to_string()
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        writeln!(io.stderr, "Error: {}", e)?;
-                        Ok(Status::err(1, e.to_string()))
-                    }
+            "nice.get" => match self.get_nice() {
+                Ok(nice_value) => {
+                    let success_json = json!({
+                        "pid": pid,
+                        "nice": nice_value
+                    });
+                    writeln!(io.stdout, "{}", success_json)?;
+                    Ok(Status::ok())
                 }
-            }
+                Err(e) => {
+                    let error_json = json!({
+                        "pid": pid,
+                        "verb": verb,
+                        "ok": false,
+                        "error": e.to_string()
+                    });
+                    writeln!(io.stdout, "{}", error_json)?;
+                    writeln!(io.stderr, "Error: {}", e)?;
+                    Ok(Status::err(1, e.to_string()))
+                }
+            },
             "nice.set" => {
                 let value_str = match args.get("value") {
                     Some(v) => v,
@@ -568,7 +574,7 @@ impl ProcHandle {
                         });
                         writeln!(io.stdout, "{}", error_json)?;
                         writeln!(io.stderr, "Error: {}", e)?;
-                        
+
                         let code = if e.to_string().contains("out of range") {
                             3
                         } else if e.to_string().contains("permission denied") {
@@ -647,8 +653,12 @@ impl ProcHandle {
                                 });
                                 writeln!(io.stdout, "{}", error_json)?;
                                 writeln!(io.stderr, "Error: {}", e)?;
-                                
-                                let code = if e.to_string().contains("permission denied") { 4 } else { 1 };
+
+                                let code = if e.to_string().contains("permission denied") {
+                                    4
+                                } else {
+                                    1
+                                };
                                 Ok(Status::err(code, e.to_string()))
                             }
                         }
@@ -733,8 +743,12 @@ impl ProcHandle {
                                 });
                                 writeln!(io.stdout, "{}", error_json)?;
                                 writeln!(io.stderr, "Error: {}", e)?;
-                                
-                                let code = if e.to_string().contains("permission denied") { 4 } else { 1 };
+
+                                let code = if e.to_string().contains("permission denied") {
+                                    4
+                                } else {
+                                    1
+                                };
                                 Ok(Status::err(code, e.to_string()))
                             }
                         }
@@ -802,11 +816,11 @@ impl ProcHandle {
                     let clamped = nice_val.clamp(-20, 19);
                     let class = match clamped {
                         19 => "idle",
-                        10 => "background", 
+                        10 => "background",
                         0 => "normal",
                         -5 => "high",
                         -10 => "realtime",
-                        _ => "custom"
+                        _ => "custom",
                     };
                     (clamped, class.to_string())
                 }
@@ -863,16 +877,23 @@ impl ProcHandle {
 
     #[cfg(not(unix))]
     fn verb_set_priority(&self, _args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        writeln!(io.stderr, "Error: setPriority not supported on this platform")?;
+        writeln!(
+            io.stderr,
+            "Error: setPriority not supported on this platform"
+        )?;
         Ok(Status::err(5, "setPriority not supported on this platform"))
     }
 
     #[cfg(unix)]
-    fn send_signal_internal(&self, _signal_name: &str, signal_num: libc::c_int) -> anyhow::Result<bool> {
+    fn send_signal_internal(
+        &self,
+        _signal_name: &str,
+        signal_num: libc::c_int,
+    ) -> anyhow::Result<bool> {
         // Use libc::kill to send the signal
         let pid = self.resolve_pid()?;
         let result = unsafe { libc::kill(pid, signal_num) };
-        
+
         if result == 0 {
             Ok(true)
         } else {
@@ -886,15 +907,18 @@ impl ProcHandle {
     }
 
     #[cfg(not(unix))]
-    fn send_signal_internal(&self, _signal_name: &str, _signal_num: libc::c_int) -> anyhow::Result<bool> {
+    fn send_signal_internal(
+        &self,
+        _signal_name: &str,
+        _signal_num: libc::c_int,
+    ) -> anyhow::Result<bool> {
         Err(anyhow!("proc:// only supported on Unix-like systems"))
     }
 
     fn resolve_signal(verb: &str, args: &Args) -> anyhow::Result<(String, libc::c_int)> {
         match verb {
             "signal" => {
-                let sig = args.get("sig")
-                    .ok_or_else(|| anyhow!("missing arg: sig"))?;
+                let sig = args.get("sig").ok_or_else(|| anyhow!("missing arg: sig"))?;
                 parse_signal_arg(sig)
             }
             "kill" => Ok(("KILL".to_string(), libc::SIGKILL)),
@@ -921,7 +945,10 @@ impl ProcHandle {
                 "error": "proc:// only supported on Unix-like systems"
             });
             writeln!(io.stdout, "{}", error_json)?;
-            return Ok(Status::err(1, "proc:// only supported on Unix-like systems"));
+            return Ok(Status::err(
+                1,
+                "proc:// only supported on Unix-like systems",
+            ));
         }
 
         #[cfg(unix)]
@@ -988,8 +1015,12 @@ impl ProcHandle {
                         "error": e.to_string()
                     });
                     writeln!(io.stdout, "{}", error_json)?;
-                    
-                    let code = if e.to_string().contains("permission denied") { 4 } else { 1 };
+
+                    let code = if e.to_string().contains("permission denied") {
+                        4
+                    } else {
+                        1
+                    };
                     Ok(Status::err(code, e.to_string()))
                 }
             }
@@ -1011,7 +1042,7 @@ impl ProcHandle {
 
         // Parse arguments
         let stream = args.get("stream").map(|s| s.as_str()).unwrap_or("stdout");
-        
+
         // Parse max_bytes with error handling
         let max_bytes = match args.get("max_bytes") {
             Some(s) => match s.parse::<usize>() {
@@ -1020,33 +1051,36 @@ impl ProcHandle {
                     let error_json = json!({
                         "error": "max_bytes must be a positive integer",
                         "pid": pid
-                    }).to_string();
+                    })
+                    .to_string();
                     writeln!(io.stdout, "{}", error_json)?;
                     return Ok(Status::err(3, "invalid max_bytes parameter".to_string()));
                 }
             },
-            None => 4096
+            None => 4096,
         };
-        
+
         let encoding = args.get("encoding").map(|s| s.as_str()).unwrap_or("auto");
-        
+
         // Parse tail with error handling
         let tail = match args.get("tail") {
             Some(s) => match s.parse::<usize>() {
                 Ok(val) => val,
                 Err(_) => {
                     let error_json = json!({
-                        "error": "tail must be a positive integer", 
+                        "error": "tail must be a positive integer",
                         "pid": pid
-                    }).to_string();
+                    })
+                    .to_string();
                     writeln!(io.stdout, "{}", error_json)?;
                     return Ok(Status::err(3, "invalid tail parameter".to_string()));
                 }
             },
-            None => max_bytes
+            None => max_bytes,
         };
-        
-        let json_mode = args.get("json")
+
+        let json_mode = args
+            .get("json")
             .map(|s| !matches!(s.as_str(), "false" | "0" | "no"))
             .unwrap_or(true);
 
@@ -1065,7 +1099,10 @@ impl ProcHandle {
                 "error": format!("invalid encoding value: {}", encoding)
             });
             writeln!(io.stdout, "{}", error_json)?;
-            return Ok(Status::err(3, format!("invalid encoding value: {}", encoding)));
+            return Ok(Status::err(
+                3,
+                format!("invalid encoding value: {}", encoding),
+            ));
         }
 
         // Check for raw mode constraints
@@ -1080,7 +1117,7 @@ impl ProcHandle {
         // Get state directory and construct log paths
         let base = dirs::state_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         let dir = base.join("resh").join("proc").join(pid.to_string());
-        
+
         match stream {
             "stdout" => {
                 let stdout_log = dir.join("stdout.log");
@@ -1140,7 +1177,7 @@ impl ProcHandle {
             "both" => {
                 let stdout_log = dir.join("stdout.log");
                 let stderr_log = dir.join("stderr.log");
-                
+
                 let stdout_result = self.read_log_file(&stdout_log, max_bytes, tail, encoding);
                 let stderr_result = self.read_log_file(&stderr_log, max_bytes, tail, encoding);
 
@@ -1176,14 +1213,20 @@ impl ProcHandle {
                 writeln!(io.stdout, "{}", response)?;
                 Ok(Status::ok())
             }
-            _ => unreachable!("stream validation should prevent this")
+            _ => unreachable!("stream validation should prevent this"),
         }
     }
 
     /// Read and process a log file according to the specified parameters
-    fn read_log_file(&self, path: &PathBuf, max_bytes: usize, tail: usize, encoding: &str) -> anyhow::Result<StreamData> {
+    fn read_log_file(
+        &self,
+        path: &PathBuf,
+        max_bytes: usize,
+        tail: usize,
+        encoding: &str,
+    ) -> anyhow::Result<StreamData> {
         use base64::Engine as _;
-        
+
         if !path.exists() {
             return Err(anyhow!("log file not found: {}", path.display()));
         }
@@ -1192,7 +1235,8 @@ impl ProcHandle {
             .with_context(|| format!("failed to open log file: {}", path.display()))?;
 
         // Get file length
-        let file_len = file.metadata()
+        let file_len = file
+            .metadata()
             .with_context(|| format!("failed to get file metadata: {}", path.display()))?
             .len();
 
@@ -1208,7 +1252,7 @@ impl ProcHandle {
 
         // Determine how many bytes to read from the end
         let bytes_to_read = std::cmp::min(file_len, tail as u64);
-        
+
         if bytes_to_read > 0 {
             // Seek to the tail position
             file.seek(SeekFrom::End(-(bytes_to_read as i64)))
@@ -1217,7 +1261,8 @@ impl ProcHandle {
 
         // Read the bytes
         let mut buffer = vec![0u8; bytes_to_read as usize];
-        let bytes_read = file.read(&mut buffer)
+        let bytes_read = file
+            .read(&mut buffer)
             .with_context(|| format!("failed to read log file: {}", path.display()))?;
         buffer.truncate(bytes_read);
 
@@ -1250,35 +1295,32 @@ impl ProcHandle {
                     data,
                 })
             }
-            "auto" => {
-                match String::from_utf8(buffer.clone()) {
-                    Ok(utf8_string) => Ok(StreamData {
-                        encoding: "utf8".to_string(),
-                        auto_fallback: false,
+            "auto" => match String::from_utf8(buffer.clone()) {
+                Ok(utf8_string) => Ok(StreamData {
+                    encoding: "utf8".to_string(),
+                    auto_fallback: false,
+                    bytes_read: buffer.len(),
+                    truncated,
+                    data: utf8_string,
+                }),
+                Err(_) => {
+                    let data = base64::engine::general_purpose::STANDARD.encode(&buffer);
+                    Ok(StreamData {
+                        encoding: "base64".to_string(),
+                        auto_fallback: true,
                         bytes_read: buffer.len(),
                         truncated,
-                        data: utf8_string,
-                    }),
-                    Err(_) => {
-                        let data = base64::engine::general_purpose::STANDARD.encode(&buffer);
-                        Ok(StreamData {
-                            encoding: "base64".to_string(),
-                            auto_fallback: true,
-                            bytes_read: buffer.len(),
-                            truncated,
-                            data,
-                        })
-                    }
+                        data,
+                    })
                 }
-            }
-            _ => Err(anyhow!("invalid encoding: {}", encoding))
+            },
+            _ => Err(anyhow!("invalid encoding: {}", encoding)),
         }
     }
 
     /// Main implementation of limits.set verb
     #[cfg(unix)]
     fn limits_set(&self, args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        
         // Determine target PID
         let target_pid = if let Some(pid_str) = args.get("pid") {
             match pid_str.parse::<i32>() {
@@ -1291,7 +1333,10 @@ impl ProcHandle {
                         "resource": "pid"
                     });
                     writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(2, format!("invalid pid argument: '{}'", pid_str)));
+                    return Ok(Status::err(
+                        2,
+                        format!("invalid pid argument: '{}'", pid_str),
+                    ));
                 }
             }
         } else {
@@ -1335,29 +1380,40 @@ impl ProcHandle {
         });
 
         writeln!(io.stdout, "{}", response)?;
-        
+
         if overall_success {
             Ok(Status::ok())
         } else {
-            Ok(Status::err(1, "one or more resource limit operations failed"))
+            Ok(Status::err(
+                1,
+                "one or more resource limit operations failed",
+            ))
         }
     }
 
     #[cfg(not(unix))]
     fn limits_set(&self, _args: &Args, io: &mut IoStreams) -> anyhow::Result<Status> {
-        
         let error_json = json!({
             "backend": "limits",
             "supported": false,
             "error": "resource limits not supported on this platform"
         });
         writeln!(io.stdout, "{}", error_json)?;
-        Ok(Status::err(1, "resource limits not supported on this platform"))
+        Ok(Status::err(
+            1,
+            "resource limits not supported on this platform",
+        ))
     }
 
     /// Process a single resource limit setting
     #[cfg(unix)]
-    fn process_resource_limit(&self, name: &str, value: &str, _pid: i32, check_only: bool) -> anyhow::Result<serde_json::Value> {
+    fn process_resource_limit(
+        &self,
+        name: &str,
+        value: &str,
+        _pid: i32,
+        check_only: bool,
+    ) -> anyhow::Result<serde_json::Value> {
         // Map resource name to nix Resource enum
         let resource = match self.map_resource_name(name)? {
             Some(r) => r,
@@ -1373,7 +1429,11 @@ impl ProcHandle {
 
         // Validate that soft <= hard
         if new_soft > new_hard {
-            return Err(anyhow!("soft limit ({}) cannot exceed hard limit ({})", new_soft, new_hard));
+            return Err(anyhow!(
+                "soft limit ({}) cannot exceed hard limit ({})",
+                new_soft,
+                new_hard
+            ));
         }
 
         // Apply the limits if not in check-only mode
@@ -1418,7 +1478,12 @@ impl ProcHandle {
 
     /// Parse limit value in various formats
     #[cfg(unix)]
-    fn parse_limit_value(&self, value: &str, current_soft: u64, current_hard: u64) -> anyhow::Result<(u64, u64)> {
+    fn parse_limit_value(
+        &self,
+        value: &str,
+        current_soft: u64,
+        current_hard: u64,
+    ) -> anyhow::Result<(u64, u64)> {
         if value.contains(':') {
             // Format: "soft:hard"
             let parts: Vec<&str> = value.splitn(2, ':').collect();
@@ -1455,42 +1520,63 @@ impl ProcHandle {
         // Handle time suffixes for CPU
         if value.ends_with('s') {
             let num_str = &value[..value.len() - 1];
-            return num_str.parse::<u64>()
+            return num_str
+                .parse::<u64>()
                 .map_err(|_| anyhow!("invalid time value: '{}'", value));
         }
 
         // Handle SI suffixes for byte values
         if value.ends_with('K') {
             let num_str = &value[..value.len() - 1];
-            let base: u64 = num_str.parse()
+            let base: u64 = num_str
+                .parse()
                 .map_err(|_| anyhow!("invalid byte value: '{}'", value))?;
             return Ok(base * 1_000);
         }
 
         if value.ends_with('M') {
             let num_str = &value[..value.len() - 1];
-            let base: u64 = num_str.parse()
+            let base: u64 = num_str
+                .parse()
                 .map_err(|_| anyhow!("invalid byte value: '{}'", value))?;
             return Ok(base * 1_000_000);
         }
 
         if value.ends_with('G') {
             let num_str = &value[..value.len() - 1];
-            let base: u64 = num_str.parse()
+            let base: u64 = num_str
+                .parse()
                 .map_err(|_| anyhow!("invalid byte value: '{}'", value))?;
             return Ok(base * 1_000_000_000);
         }
 
         // Plain number
-        value.parse::<u64>()
+        value
+            .parse::<u64>()
             .map_err(|_| anyhow!("invalid limit value: '{}'", value))
     }
 }
 
 impl Handle for ProcHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["signal", "kill", "term", "int", "hup", "stop", "cont", "usr1", "usr2", 
-          "nice.get", "nice.set", "nice.inc", "nice.dec", "setPriority", "io.peek", "limits.set"]
+        &[
+            "signal",
+            "kill",
+            "term",
+            "int",
+            "hup",
+            "stop",
+            "cont",
+            "usr1",
+            "usr2",
+            "nice.get",
+            "nice.set",
+            "nice.inc",
+            "nice.dec",
+            "setPriority",
+            "io.peek",
+            "limits.set",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -1507,18 +1593,10 @@ impl Handle for ProcHandle {
             "signal" | "kill" | "term" | "int" | "hup" | "stop" | "cont" | "usr1" | "usr2" => {
                 self.handle_signal(verb, args, io)
             }
-            "nice.get" | "nice.set" | "nice.inc" | "nice.dec" => {
-                self.handle_nice(verb, args, io)
-            }
-            "setPriority" => {
-                self.verb_set_priority(args, io)
-            }
-            "io.peek" => {
-                self.handle_io_peek(args, io)
-            }
-            "limits.set" => {
-                self.limits_set(args, io)
-            }
+            "nice.get" | "nice.set" | "nice.inc" | "nice.dec" => self.handle_nice(verb, args, io),
+            "setPriority" => self.verb_set_priority(args, io),
+            "io.peek" => self.handle_io_peek(args, io),
+            "limits.set" => self.limits_set(args, io),
             _ => {
                 let pid = self.resolve_pid().unwrap_or(-1);
                 let error_json = json!({
@@ -1658,9 +1736,15 @@ mod tests {
             (libc::SIGCONT, "CONT"),
             (libc::SIGSTOP, "STOP"),
         ] {
-            assert_eq!(parse_signal_arg(&num.to_string()).unwrap(), (name.to_string(), num));
+            assert_eq!(
+                parse_signal_arg(&num.to_string()).unwrap(),
+                (name.to_string(), num)
+            );
         }
-        assert_eq!(parse_signal_arg("999").unwrap(), ("UNKNOWN".to_string(), 999));
+        assert_eq!(
+            parse_signal_arg("999").unwrap(),
+            ("UNKNOWN".to_string(), 999)
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -1680,8 +1764,14 @@ mod tests {
 
     #[test]
     fn named_signals_round_trip() {
-        assert_eq!(parse_signal_arg("sigusr1").unwrap(), ("USR1".to_string(), libc::SIGUSR1));
-        assert_eq!(parse_signal_arg("TERM").unwrap(), ("TERM".to_string(), libc::SIGTERM));
+        assert_eq!(
+            parse_signal_arg("sigusr1").unwrap(),
+            ("USR1".to_string(), libc::SIGUSR1)
+        );
+        assert_eq!(
+            parse_signal_arg("TERM").unwrap(),
+            ("TERM".to_string(), libc::SIGTERM)
+        );
         assert!(parse_signal_arg("bogus").is_err());
     }
 
@@ -1713,7 +1803,10 @@ mod tests {
     fn pid_parsing_rejects_out_of_range_values() {
         assert_eq!(parse_pid("1").unwrap(), 1);
         assert_eq!(parse_pid("4242").unwrap(), 4242);
-        assert_eq!(parse_pid(&libc::pid_t::MAX.to_string()).unwrap(), libc::pid_t::MAX);
+        assert_eq!(
+            parse_pid(&libc::pid_t::MAX.to_string()).unwrap(),
+            libc::pid_t::MAX
+        );
         for bad in [
             "0",
             "-1",
@@ -1736,8 +1829,16 @@ mod tests {
 
     #[test]
     fn proc_url_rejects_wrapping_pids() {
-        for url in ["proc://4294967295", "proc://2147483648", "proc://0", "proc://-1"] {
-            assert!(ProcHandle::from_url(&Url::parse(url).unwrap()).is_err(), "{url}");
+        for url in [
+            "proc://4294967295",
+            "proc://2147483648",
+            "proc://0",
+            "proc://-1",
+        ] {
+            assert!(
+                ProcHandle::from_url(&Url::parse(url).unwrap()).is_err(),
+                "{url}"
+            );
         }
         let h = ProcHandle::from_url(&Url::parse("proc://2147483647").unwrap()).unwrap();
         assert_eq!(h.resolve_pid().unwrap(), 2147483647);
@@ -1748,9 +1849,13 @@ mod tests {
     #[test]
     fn resolve_pid_rechecks_range_without_from_url() {
         // A handle built without from_url must still never yield -1.
-        let h = ProcHandle { name: "4294967295".to_string() };
+        let h = ProcHandle {
+            name: "4294967295".to_string(),
+        };
         assert!(h.resolve_pid().is_err());
-        let h = ProcHandle { name: "0".to_string() };
+        let h = ProcHandle {
+            name: "0".to_string(),
+        };
         assert!(h.resolve_pid().is_err());
     }
 

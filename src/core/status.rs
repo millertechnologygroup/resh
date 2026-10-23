@@ -26,7 +26,7 @@ impl Status {
             reason: Some(reason.into()),
         }
     }
-    
+
     pub fn is_success(&self) -> bool {
         self.ok
     }
@@ -53,7 +53,10 @@ pub struct TrackingWriter<W> {
 
 impl<W> TrackingWriter<W> {
     pub fn new(inner: W) -> Self {
-        Self { inner, written: false }
+        Self {
+            inner,
+            written: false,
+        }
     }
 }
 
@@ -82,9 +85,18 @@ pub fn report_failure(
     if status.ok || handle_wrote_stderr {
         return Ok(());
     }
-    match status.reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+    match status
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         Some(reason) => writeln!(stderr, "Error: {}", reason),
-        None => writeln!(stderr, "Error: command failed (exit code {})", status.exit_code()),
+        None => writeln!(
+            stderr,
+            "Error: command failed (exit code {})",
+            status.exit_code()
+        ),
     }
 }
 
@@ -114,8 +126,6 @@ impl std::fmt::Display for ShellError {
 
 impl std::error::Error for ShellError {}
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,7 +139,11 @@ mod tests {
         for code in [0, -1, 256, 404, 512, i32::MIN] {
             assert_eq!(Status::err(code, "x").exit_code(), 1, "code {code}");
         }
-        let no_code = Status { ok: false, code: None, reason: None };
+        let no_code = Status {
+            ok: false,
+            code: None,
+            reason: None,
+        };
         assert_eq!(no_code.exit_code(), 1);
     }
 
@@ -138,7 +152,10 @@ mod tests {
     fn failure_reason_reaches_stderr_once() {
         let mut out = Vec::new();
         report_failure(&Status::err(2, "file not found: /x"), false, &mut out).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "Error: file not found: /x\n");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "Error: file not found: /x\n"
+        );
 
         // The handle already explained itself: no duplicate.
         let mut out = Vec::new();
@@ -147,8 +164,20 @@ mod tests {
 
         // No reason given: still a diagnostic, naming the exit code.
         let mut out = Vec::new();
-        report_failure(&Status { ok: false, code: Some(0), reason: Some("  ".into()) }, false, &mut out).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "Error: command failed (exit code 1)\n");
+        report_failure(
+            &Status {
+                ok: false,
+                code: Some(0),
+                reason: Some("  ".into()),
+            },
+            false,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "Error: command failed (exit code 1)\n"
+        );
 
         // Success prints nothing.
         let mut out = Vec::new();

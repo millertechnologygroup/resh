@@ -1,14 +1,14 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
-use std::io::Write;
 use thiserror::Error;
 use tokio::process::Command as AsyncCommand;
 use tokio::time::timeout;
@@ -1221,9 +1221,15 @@ pub struct RawMountInfo {
 }
 
 // Helper functions for default values
-fn default_true() -> bool { true }
-fn default_json_format() -> SnapshotFormat { SnapshotFormat::Json }
-fn default_timeout() -> u64 { 5000 }
+fn default_true() -> bool {
+    true
+}
+fn default_json_format() -> SnapshotFormat {
+    SnapshotFormat::Json
+}
+fn default_timeout() -> u64 {
+    5000
+}
 
 /// Subject type for quota queries
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -1830,12 +1836,17 @@ pub struct ListMountsResult {
 }
 
 // Helper functions for default values
-fn default_false() -> bool { false }
-fn default_list_mounts_timeout() -> u64 { 3000 }
+fn default_false() -> bool {
+    false
+}
+fn default_list_mounts_timeout() -> u64 {
+    3000
+}
 
 impl FsHandle {
     pub fn from_url(url: Url) -> Result<Self> {
-        let alias = url.host_str()
+        let alias = url
+            .host_str()
             .unwrap_or("default")
             .trim_end_matches(".mount")
             .to_string();
@@ -1896,7 +1907,9 @@ impl FsHandle {
 
         // Handle dry run
         if config.dry_run {
-            return Ok(json!(self.create_mount_plan(&config, existing_mount.is_some())?));
+            return Ok(json!(
+                self.create_mount_plan(&config, existing_mount.is_some())?
+            ));
         }
 
         // Execute mount operation
@@ -1911,7 +1924,7 @@ impl FsHandle {
             Err(_) => {
                 // If that fails, we need to manually convert string values to proper types
                 let mut config = MountConfig::default();
-                
+
                 if let Some(obj) = args.as_object() {
                     for (key, value) in obj {
                         match key.as_str() {
@@ -1926,7 +1939,8 @@ impl FsHandle {
                             }
                             "options" => {
                                 if let Some(opts_str) = value.as_str() {
-                                    config.options = opts_str.split(',').map(|s| s.trim().to_string()).collect();
+                                    config.options =
+                                        opts_str.split(',').map(|s| s.trim().to_string()).collect();
                                 }
                             }
                             "read_only" => {
@@ -1954,7 +1968,8 @@ impl FsHandle {
                                 config.dry_run = self.parse_dry_run_value(value)?;
                             }
                             "timeout_ms" => {
-                                config.timeout_ms = value.as_str()
+                                config.timeout_ms = value
+                                    .as_str()
                                     .and_then(|s| s.parse::<u64>().ok())
                                     .unwrap_or(5000);
                             }
@@ -2012,22 +2027,34 @@ impl FsHandle {
     fn validate_mount_config(&self, config: &MountConfig) -> Result<(), anyhow::Error> {
         // Required target
         if config.target.is_empty() || config.target.trim().is_empty() {
-            return Err(FsError::InvalidMountConfig("target is required and cannot be empty".to_string()).into());
+            return Err(FsError::InvalidMountConfig(
+                "target is required and cannot be empty".to_string(),
+            )
+            .into());
         }
 
         // Timeout validation
         if config.timeout_ms == 0 {
-            return Err(FsError::InvalidMountConfig("timeout_ms must be greater than 0".to_string()).into());
+            return Err(FsError::InvalidMountConfig(
+                "timeout_ms must be greater than 0".to_string(),
+            )
+            .into());
         }
 
         // Bind mount requires source
         if config.bind && config.source.as_ref().map_or(true, |s| s.is_empty()) {
-            return Err(FsError::InvalidMountConfig("bind mounts require a source path".to_string()).into());
+            return Err(FsError::InvalidMountConfig(
+                "bind mounts require a source path".to_string(),
+            )
+            .into());
         }
 
         // Contradictory flags
         if config.remount && config.fail_if_mounted {
-            return Err(FsError::InvalidMountConfig("remount and fail_if_mounted are contradictory".to_string()).into());
+            return Err(FsError::InvalidMountConfig(
+                "remount and fail_if_mounted are contradictory".to_string(),
+            )
+            .into());
         }
 
         // Target should be absolute path (warning level for flexibility)
@@ -2044,7 +2071,8 @@ impl FsHandle {
 
         #[cfg(target_os = "linux")]
         {
-            let content = tokio::fs::read_to_string("/proc/mounts").await
+            let content = tokio::fs::read_to_string("/proc/mounts")
+                .await
                 .context("Failed to read /proc/mounts")?;
 
             for line in content.lines() {
@@ -2079,7 +2107,7 @@ impl FsHandle {
                 for line in content.lines() {
                     if let Some(caps) = regex::Regex::new(r"^(.+?) on (.+?) \((.+?)\)")
                         .unwrap()
-                        .captures(line) 
+                        .captures(line)
                     {
                         let source = caps[1].to_string();
                         let target = caps[2].to_string();
@@ -2110,8 +2138,13 @@ impl FsHandle {
     }
 
     /// Find existing mount for the given target
-    fn find_existing_mount(&self, mounts: &[ExistingMount], config: &MountConfig) -> Option<ExistingMount> {
-        mounts.iter()
+    fn find_existing_mount(
+        &self,
+        mounts: &[ExistingMount],
+        config: &MountConfig,
+    ) -> Option<ExistingMount> {
+        mounts
+            .iter()
             .find(|mount| mount.target == config.target)
             .cloned()
     }
@@ -2136,7 +2169,11 @@ impl FsHandle {
     }
 
     /// Create a plan for dry-run mode
-    fn create_mount_plan(&self, config: &MountConfig, already_mounted: bool) -> Result<MountResult, anyhow::Error> {
+    fn create_mount_plan(
+        &self,
+        config: &MountConfig,
+        already_mounted: bool,
+    ) -> Result<MountResult, anyhow::Error> {
         let mut plan = MountPlan {
             create_directory: Vec::new(),
             mount_commands: Vec::new(),
@@ -2145,9 +2182,11 @@ impl FsHandle {
         // Directory creation plan
         if config.create_target && !Path::new(&config.target).exists() {
             if config.make_parents {
-                plan.create_directory.push(format!("mkdir -p {}", config.target));
+                plan.create_directory
+                    .push(format!("mkdir -p {}", config.target));
             } else {
-                plan.create_directory.push(format!("mkdir {}", config.target));
+                plan.create_directory
+                    .push(format!("mkdir {}", config.target));
             }
         }
 
@@ -2195,7 +2234,12 @@ impl FsHandle {
             read_only: config.read_only,
             bind: config.bind,
             remount: config.remount,
-            action: if already_mounted { "already_mounted" } else { "planned" }.to_string(),
+            action: if already_mounted {
+                "already_mounted"
+            } else {
+                "planned"
+            }
+            .to_string(),
             created_target: false,
             details: MountDetails {
                 device: config.source.clone(),
@@ -2209,7 +2253,11 @@ impl FsHandle {
     }
 
     /// Execute the actual mount operation
-    async fn execute_mount(&self, config: &MountConfig, is_remount: bool) -> Result<Value, anyhow::Error> {
+    async fn execute_mount(
+        &self,
+        config: &MountConfig,
+        is_remount: bool,
+    ) -> Result<Value, anyhow::Error> {
         let mut created_target = false;
 
         // Create target directory if needed
@@ -2217,11 +2265,15 @@ impl FsHandle {
             let target_path = Path::new(&config.target);
             if !target_path.exists() {
                 if config.make_parents {
-                    tokio::fs::create_dir_all(&target_path).await
-                        .with_context(|| format!("Failed to create target directory: {}", config.target))?;
+                    tokio::fs::create_dir_all(&target_path)
+                        .await
+                        .with_context(|| {
+                            format!("Failed to create target directory: {}", config.target)
+                        })?;
                 } else {
-                    tokio::fs::create_dir(&target_path).await
-                        .with_context(|| format!("Failed to create target directory: {}", config.target))?;
+                    tokio::fs::create_dir(&target_path).await.with_context(|| {
+                        format!("Failed to create target directory: {}", config.target)
+                    })?;
                 }
                 created_target = true;
             }
@@ -2264,21 +2316,24 @@ impl FsHandle {
 
         // Execute with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        let output = timeout(timeout_duration, cmd.output()).await
+        let output = timeout(timeout_duration, cmd.output())
+            .await
             .map_err(|_| FsError::MountTimeout)?
             .context("Failed to execute mount command")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            
+
             // Map specific error patterns to appropriate error types
             let error_msg = format!("Mount failed: {} {}", stderr, stdout);
-            
-            if error_msg.contains("Permission denied") || error_msg.contains("Operation not permitted") {
+
+            if error_msg.contains("Permission denied")
+                || error_msg.contains("Operation not permitted")
+            {
                 return Err(FsError::MountPermissionDenied.into());
             }
-            
+
             return Err(FsError::MountFailure(error_msg).into());
         }
 
@@ -2321,7 +2376,7 @@ impl FsHandle {
 
         // Get current mount table
         let existing_mounts = self.get_existing_mounts().await?;
-        
+
         // Find matching mounts based on `by` strategy
         let matched_mounts = self.find_mounts_to_unmount(&existing_mounts, &config)?;
 
@@ -2345,13 +2400,21 @@ impl FsHandle {
                 skipped: vec![],
                 errors: vec![],
                 dry_run: if config.dry_run { Some(true) } else { None },
-                plan: if config.dry_run { Some(UnmountPlan { order: vec![], commands: vec![] }) } else { None },
+                plan: if config.dry_run {
+                    Some(UnmountPlan {
+                        order: vec![],
+                        commands: vec![],
+                    })
+                } else {
+                    None
+                },
                 matched_mounts: None,
             }));
         }
 
         // Compute unmount order (including children if requested)
-        let unmount_order = self.compute_unmount_order(&matched_mounts, &existing_mounts, &config)?;
+        let unmount_order =
+            self.compute_unmount_order(&matched_mounts, &existing_mounts, &config)?;
 
         // Handle dry run
         if config.dry_run {
@@ -2369,7 +2432,7 @@ impl FsHandle {
             Err(_) => {
                 // Manual conversion for string-based inputs
                 let mut config = UnmountConfig::default();
-                
+
                 if let Some(obj) = args.as_object() {
                     for (key, value) in obj {
                         match key.as_str() {
@@ -2399,7 +2462,8 @@ impl FsHandle {
                                 config.dry_run = self.parse_dry_run_value(value)?;
                             }
                             "timeout_ms" => {
-                                config.timeout_ms = value.as_str()
+                                config.timeout_ms = value
+                                    .as_str()
                                     .and_then(|s| s.parse::<u64>().ok())
                                     .or_else(|| value.as_u64())
                                     .unwrap_or(5000);
@@ -2435,12 +2499,18 @@ impl FsHandle {
     fn validate_unmount_config(&self, config: &UnmountConfig) -> Result<(), anyhow::Error> {
         // Required target
         if config.target.is_empty() || config.target.trim().is_empty() {
-            return Err(FsError::InvalidUnmountConfig("target is required and cannot be empty".to_string()).into());
+            return Err(FsError::InvalidUnmountConfig(
+                "target is required and cannot be empty".to_string(),
+            )
+            .into());
         }
 
         // Timeout validation
         if config.timeout_ms == 0 {
-            return Err(FsError::InvalidUnmountConfig("timeout_ms must be greater than 0".to_string()).into());
+            return Err(FsError::InvalidUnmountConfig(
+                "timeout_ms must be greater than 0".to_string(),
+            )
+            .into());
         }
 
         // Platform compatibility checks
@@ -2453,7 +2523,10 @@ impl FsHandle {
         if let Some(ref env) = config.env {
             for (key, value) in env {
                 if key.is_empty() {
-                    return Err(FsError::InvalidUnmountConfig("environment variable keys cannot be empty".to_string()).into());
+                    return Err(FsError::InvalidUnmountConfig(
+                        "environment variable keys cannot be empty".to_string(),
+                    )
+                    .into());
                 }
                 // Values can be empty, so no validation needed for value
             }
@@ -2463,7 +2536,11 @@ impl FsHandle {
     }
 
     /// Find mounts to unmount based on the target and strategy
-    fn find_mounts_to_unmount(&self, existing_mounts: &[ExistingMount], config: &UnmountConfig) -> Result<Vec<ExistingMount>, anyhow::Error> {
+    fn find_mounts_to_unmount(
+        &self,
+        existing_mounts: &[ExistingMount],
+        config: &UnmountConfig,
+    ) -> Result<Vec<ExistingMount>, anyhow::Error> {
         let mut matched = Vec::new();
 
         match config.by {
@@ -2506,7 +2583,12 @@ impl FsHandle {
     }
 
     /// Compute the order of unmount operations, including children if requested
-    fn compute_unmount_order(&self, matched_mounts: &[ExistingMount], all_mounts: &[ExistingMount], config: &UnmountConfig) -> Result<Vec<ExistingMount>, anyhow::Error> {
+    fn compute_unmount_order(
+        &self,
+        matched_mounts: &[ExistingMount],
+        all_mounts: &[ExistingMount],
+        config: &UnmountConfig,
+    ) -> Result<Vec<ExistingMount>, anyhow::Error> {
         let mut unmount_list = Vec::new();
 
         for matched_mount in matched_mounts {
@@ -2514,8 +2596,11 @@ impl FsHandle {
                 // Find child mounts under this target
                 let mut children = Vec::new();
                 for mount in all_mounts {
-                    if mount.target != matched_mount.target && 
-                       mount.target.starts_with(&format!("{}/", matched_mount.target)) {
+                    if mount.target != matched_mount.target
+                        && mount
+                            .target
+                            .starts_with(&format!("{}/", matched_mount.target))
+                    {
                         children.push(mount.clone());
                     }
                 }
@@ -2538,7 +2623,11 @@ impl FsHandle {
     }
 
     /// Create unmount plan for dry-run
-    fn create_unmount_plan(&self, config: &UnmountConfig, unmount_order: &[ExistingMount]) -> Result<UnmountResult, anyhow::Error> {
+    fn create_unmount_plan(
+        &self,
+        config: &UnmountConfig,
+        unmount_order: &[ExistingMount],
+    ) -> Result<UnmountResult, anyhow::Error> {
         let mut order = Vec::new();
         let mut commands = Vec::new();
 
@@ -2546,28 +2635,29 @@ impl FsHandle {
             order.push(mount.target.clone());
 
             let mut cmd_parts = vec!["umount".to_string()];
-            
+
             if config.lazy {
                 cmd_parts.push("-l".to_string());
             }
-            
+
             if config.force {
                 cmd_parts.push("-f".to_string());
             }
-            
+
             cmd_parts.push(mount.target.clone());
-            
+
             commands.push(cmd_parts.join(" "));
         }
 
-        let matched_mounts: Vec<MountInfo> = unmount_order.iter().map(|mount| {
-            MountInfo {
+        let matched_mounts: Vec<MountInfo> = unmount_order
+            .iter()
+            .map(|mount| MountInfo {
                 source: mount.source.clone(),
                 target: mount.target.clone(),
                 fs_type: mount.fs_type.clone(),
                 options: Some(mount.options.clone()),
-            }
-        }).collect();
+            })
+            .collect();
 
         Ok(UnmountResult {
             backend: "fs".to_string(),
@@ -2589,7 +2679,11 @@ impl FsHandle {
     }
 
     /// Execute the actual unmount operations
-    async fn execute_unmount(&self, config: &UnmountConfig, unmount_order: &[ExistingMount]) -> Result<Value, anyhow::Error> {
+    async fn execute_unmount(
+        &self,
+        config: &UnmountConfig,
+        unmount_order: &[ExistingMount],
+    ) -> Result<Value, anyhow::Error> {
         let mut unmounted = Vec::new();
         let mut skipped = Vec::new();
         let mut errors = Vec::new();
@@ -2642,7 +2736,11 @@ impl FsHandle {
     }
 
     /// Execute a single unmount operation
-    async fn execute_single_unmount(&self, config: &UnmountConfig, mount: &ExistingMount) -> Result<(), anyhow::Error> {
+    async fn execute_single_unmount(
+        &self,
+        config: &UnmountConfig,
+        mount: &ExistingMount,
+    ) -> Result<(), anyhow::Error> {
         let mut cmd = AsyncCommand::new("umount");
 
         // Add flags based on configuration
@@ -2668,25 +2766,28 @@ impl FsHandle {
 
         // Execute with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        let output = timeout(timeout_duration, cmd.output()).await
+        let output = timeout(timeout_duration, cmd.output())
+            .await
             .map_err(|_| FsError::UnmountTimeout)?
             .context("Failed to execute umount command")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            
+
             // Map specific error patterns to appropriate error types
             let error_msg = format!("Unmount failed: {} {}", stderr, stdout);
-            
-            if error_msg.contains("Permission denied") || error_msg.contains("Operation not permitted") {
+
+            if error_msg.contains("Permission denied")
+                || error_msg.contains("Operation not permitted")
+            {
                 return Err(FsError::UnmountPermissionDenied.into());
             } else if error_msg.contains("busy") || error_msg.contains("Device or resource busy") {
                 return Err(FsError::UnmountBusy(mount.target.clone()).into());
             } else if error_msg.contains("not mounted") {
                 return Err(FsError::NotMounted(mount.target.clone()).into());
             }
-            
+
             return Err(FsError::UnmountFailure(error_msg).into());
         }
 
@@ -2701,7 +2802,7 @@ impl FsHandle {
                 FsError::InvalidUnmountConfig(_) => "fs.invalid_unmount_config",
                 FsError::InvalidSnapshotConfig(_) => "fs.invalid_snapshot_config",
                 FsError::InvalidQuotaConfig(_) => "fs.invalid_quota_config",
-                FsError::ProfileNotFound(_) => "fs.profile_not_found", 
+                FsError::ProfileNotFound(_) => "fs.profile_not_found",
                 FsError::MountUnsupported => "fs.mount_unsupported",
                 FsError::UnmountUnsupported => "fs.unmount_unsupported",
                 FsError::SnapshotUnsupported => "fs.snapshot_unsupported",
@@ -2739,12 +2840,16 @@ impl FsHandle {
                 FsError::ResizeTargetNotFound(_) => "fs.resize_target_not_found",
                 FsError::ResizeUnsupportedFilesystem(_) => "fs.resize_unsupported_filesystem",
                 FsError::ResizeShrinkNotAllowed => "fs.resize_shrink_not_allowed",
-                FsError::ResizeShrinkNotSupportedForFilesystem(_) => "fs.resize_shrink_not_supported_for_filesystem",
+                FsError::ResizeShrinkNotSupportedForFilesystem(_) => {
+                    "fs.resize_shrink_not_supported_for_filesystem"
+                }
                 FsError::ResizeShrinkRequiresUnmount(_) => "fs.resize_shrink_requires_unmount",
                 FsError::ResizeWouldViolateMinFree => "fs.resize_would_violate_min_free",
                 FsError::ResizeTargetExceedsDevice => "fs.resize_target_exceeds_device",
                 FsError::ResizeInvalidTargetSize(_) => "fs.resize_invalid_target_size",
-                FsError::ResizeVolumeManagementUnsupported => "fs.resize_volume_management_unsupported",
+                FsError::ResizeVolumeManagementUnsupported => {
+                    "fs.resize_volume_management_unsupported"
+                }
                 FsError::ResizeTimeout => "fs.resize_timeout",
                 FsError::ResizeFailed(_) => "fs.resize_failed",
                 FsError::InvalidCheckConfig(_) => "fs.invalid_check_config",
@@ -2764,7 +2869,8 @@ impl FsHandle {
             }
         } else {
             "fs.unknown_error"
-        }.to_string()
+        }
+        .to_string()
     }
 
     /// Main snapshot operation implementation
@@ -2775,7 +2881,8 @@ impl FsHandle {
 
         // Execute snapshot with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        let snapshot_result = timeout(timeout_duration, self.execute_snapshot(&config)).await
+        let snapshot_result = timeout(timeout_duration, self.execute_snapshot(&config))
+            .await
             .map_err(|_| FsError::SnapshotTimeout)?;
 
         match snapshot_result {
@@ -2800,7 +2907,10 @@ impl FsHandle {
     /// Validate snapshot configuration
     fn validate_snapshot_config(&self, config: &SnapshotConfig) -> Result<(), anyhow::Error> {
         if config.timeout_ms == 0 {
-            return Err(FsError::InvalidSnapshotConfig("timeout_ms must be greater than 0".to_string()).into());
+            return Err(FsError::InvalidSnapshotConfig(
+                "timeout_ms must be greater than 0".to_string(),
+            )
+            .into());
         }
 
         Ok(())
@@ -2853,7 +2963,8 @@ impl FsHandle {
 
         // 4. Sort deterministically
         mount_entries.sort_by(|a, b| {
-            a.target.cmp(&b.target)
+            a.target
+                .cmp(&b.target)
                 .then_with(|| a.source.cmp(&b.source))
                 .then_with(|| a.fstype.cmp(&b.fstype))
         });
@@ -2901,7 +3012,8 @@ impl FsHandle {
                 SnapshotFormat::Json => "json",
                 SnapshotFormat::Yaml => "yaml",
                 SnapshotFormat::Text => "text",
-            }.to_string(),
+            }
+            .to_string(),
             lockfile: lockfile_content,
             parsed: summary,
         };
@@ -2914,7 +3026,12 @@ impl FsHandle {
         // Try different sources for mount information
         if cfg!(target_os = "linux") {
             self.read_linux_mounts().await
-        } else if cfg!(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd")) {
+        } else if cfg!(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd"
+        )) {
             self.read_bsd_mounts().await
         } else {
             Err(FsError::SnapshotUnsupported.into())
@@ -2925,8 +3042,8 @@ impl FsHandle {
     async fn read_linux_mounts(&self) -> Result<Vec<RawMountInfo>, anyhow::Error> {
         // Try /proc/mounts first, fall back to mount command
         if Path::new("/proc/mounts").exists() {
-            let content = fs::read_to_string("/proc/mounts")
-                .context("Failed to read /proc/mounts")?;
+            let content =
+                fs::read_to_string("/proc/mounts").context("Failed to read /proc/mounts")?;
             self.parse_proc_mounts(&content)
         } else {
             self.read_mount_command().await
@@ -2936,7 +3053,7 @@ impl FsHandle {
     /// Parse /proc/mounts content
     fn parse_proc_mounts(&self, content: &str) -> Result<Vec<RawMountInfo>, anyhow::Error> {
         let mut mounts = Vec::new();
-        
+
         for line in content.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 4 {
@@ -2951,7 +3068,7 @@ impl FsHandle {
                 mounts.push(mount);
             }
         }
-        
+
         Ok(mounts)
     }
 
@@ -2978,13 +3095,13 @@ impl FsHandle {
     /// Parse mount command output
     fn parse_mount_output(&self, content: &str) -> Result<Vec<RawMountInfo>, anyhow::Error> {
         let mut mounts = Vec::new();
-        
+
         for line in content.lines() {
             if let Some(mount) = self.parse_mount_line(line) {
                 mounts.push(mount);
             }
         }
-        
+
         Ok(mounts)
     }
 
@@ -2992,17 +3109,17 @@ impl FsHandle {
     fn parse_mount_line(&self, line: &str) -> Option<RawMountInfo> {
         // Example: /dev/disk1s1 on / (apfs, local, read-only, journaled, noatime)
         // Example: /dev/sda1 on /boot type ext2 (rw,relatime)
-        
+
         if let Some(on_pos) = line.find(" on ") {
             let source = line[..on_pos].to_string();
             let rest = &line[on_pos + 4..];
-            
+
             // Find the mount point and type/options
             if let Some(open_paren) = rest.find('(') {
                 let target_and_type = &rest[..open_paren].trim();
                 let options_part = &rest[open_paren + 1..];
                 let options = options_part.trim_end_matches(')').to_string();
-                
+
                 // Try to separate target and type
                 let (target, fstype) = if let Some(type_pos) = target_and_type.rfind(" type ") {
                     let target = target_and_type[..type_pos].trim().to_string();
@@ -3011,10 +3128,12 @@ impl FsHandle {
                 } else {
                     // No explicit type, try to extract from options or use unknown
                     let target = target_and_type.trim().to_string();
-                    let fstype = self.extract_fstype_from_options(&options).unwrap_or("unknown".to_string());
+                    let fstype = self
+                        .extract_fstype_from_options(&options)
+                        .unwrap_or("unknown".to_string());
                     (target, fstype)
                 };
-                
+
                 return Some(RawMountInfo {
                     source,
                     target,
@@ -3025,7 +3144,7 @@ impl FsHandle {
                 });
             }
         }
-        
+
         None
     }
 
@@ -3042,20 +3161,30 @@ impl FsHandle {
     }
 
     /// Apply filters to mount list
-    fn apply_snapshot_filters(&self, mounts: &[RawMountInfo], config: &SnapshotConfig) -> Result<Vec<RawMountInfo>, anyhow::Error> {
+    fn apply_snapshot_filters(
+        &self,
+        mounts: &[RawMountInfo],
+        config: &SnapshotConfig,
+    ) -> Result<Vec<RawMountInfo>, anyhow::Error> {
         let mut filtered = mounts.to_vec();
 
         // Apply include_mountpoints filter
         if !config.include_mountpoints.is_empty() {
             filtered.retain(|mount| {
-                config.include_mountpoints.iter().any(|prefix| mount.target.starts_with(prefix))
+                config
+                    .include_mountpoints
+                    .iter()
+                    .any(|prefix| mount.target.starts_with(prefix))
             });
         }
 
         // Apply exclude_mountpoints filter
         if !config.exclude_mountpoints.is_empty() {
             filtered.retain(|mount| {
-                !config.exclude_mountpoints.iter().any(|prefix| mount.target.starts_with(prefix))
+                !config
+                    .exclude_mountpoints
+                    .iter()
+                    .any(|prefix| mount.target.starts_with(prefix))
             });
         }
 
@@ -3134,7 +3263,7 @@ impl FsHandle {
 
         let content = String::from_utf8_lossy(&output.stdout);
         let lines: Vec<&str> = content.lines().collect();
-        
+
         if lines.len() < 2 {
             return None;
         }
@@ -3142,12 +3271,12 @@ impl FsHandle {
         // Parse df output (skip header)
         let data_line = lines[1];
         let parts: Vec<&str> = data_line.split_whitespace().collect();
-        
+
         if parts.len() >= 4 {
             if let (Ok(size), Ok(used), Ok(available)) = (
                 parts[1].parse::<u64>(),
                 parts[2].parse::<u64>(),
-                parts[3].parse::<u64>()
+                parts[3].parse::<u64>(),
             ) {
                 let used_percent = if size > 0 {
                     (used as f64 / size as f64) * 100.0
@@ -3183,19 +3312,19 @@ impl FsHandle {
 
         let content = String::from_utf8_lossy(&output.stdout);
         let lines: Vec<&str> = content.lines().collect();
-        
+
         if lines.len() < 2 {
             return None;
         }
 
         let data_line = lines[1];
         let parts: Vec<&str> = data_line.split_whitespace().collect();
-        
+
         if parts.len() >= 4 {
             if let (Ok(total), Ok(used), Ok(available)) = (
                 parts[1].parse::<u64>(),
                 parts[2].parse::<u64>(),
-                parts[3].parse::<u64>()
+                parts[3].parse::<u64>(),
             ) {
                 let used_percent = if total > 0 {
                     (used as f64 / total as f64) * 100.0
@@ -3252,12 +3381,12 @@ impl FsHandle {
             if output.status.success() {
                 let uname_output = String::from_utf8_lossy(&output.stdout);
                 let parts: Vec<&str> = uname_output.split_whitespace().collect();
-                
+
                 if parts.len() >= 3 {
                     os_family = parts[0].to_string(); // Linux, Darwin, etc.
-                    kernel = parts[2].to_string();    // Kernel version
+                    kernel = parts[2].to_string(); // Kernel version
                 }
-                
+
                 if parts.len() >= 13 {
                     architecture = parts[12].to_string(); // Architecture
                 } else if let Some(last) = parts.last() {
@@ -3279,7 +3408,11 @@ impl FsHandle {
             }
         } else if cfg!(target_os = "macos") {
             os_name = "macOS".to_string();
-            if let Ok(output) = AsyncCommand::new("sw_vers").arg("-productVersion").output().await {
+            if let Ok(output) = AsyncCommand::new("sw_vers")
+                .arg("-productVersion")
+                .output()
+                .await
+            {
                 if output.status.success() {
                     os_version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 }
@@ -3306,73 +3439,97 @@ impl FsHandle {
 
     /// Check if any filters are applied
     fn has_filters(&self, config: &SnapshotConfig) -> bool {
-        !config.include_mountpoints.is_empty() ||
-        !config.exclude_mountpoints.is_empty() ||
-        !config.include_types.is_empty() ||
-        !config.exclude_types.is_empty() ||
-        !config.include_sources.is_empty() ||
-        !config.exclude_sources.is_empty()
+        !config.include_mountpoints.is_empty()
+            || !config.exclude_mountpoints.is_empty()
+            || !config.include_types.is_empty()
+            || !config.exclude_types.is_empty()
+            || !config.include_sources.is_empty()
+            || !config.exclude_sources.is_empty()
     }
 
     /// Serialize lockfile to requested format
-    fn serialize_lockfile(&self, lockfile: &SnapshotLockfile, format: &SnapshotFormat) -> Result<String, anyhow::Error> {
+    fn serialize_lockfile(
+        &self,
+        lockfile: &SnapshotLockfile,
+        format: &SnapshotFormat,
+    ) -> Result<String, anyhow::Error> {
         match format {
-            SnapshotFormat::Json => {
-                serde_json::to_string_pretty(lockfile)
-                    .context("Failed to serialize lockfile to JSON")
-            }
+            SnapshotFormat::Json => serde_json::to_string_pretty(lockfile)
+                .context("Failed to serialize lockfile to JSON"),
             SnapshotFormat::Yaml => {
                 // For now, return JSON format as YAML serialization requires additional dependency
                 // In a full implementation, you would add serde_yaml dependency
                 serde_json::to_string_pretty(lockfile)
                     .context("Failed to serialize lockfile to YAML")
             }
-            SnapshotFormat::Text => {
-                self.serialize_lockfile_text(lockfile)
-            }
+            SnapshotFormat::Text => self.serialize_lockfile_text(lockfile),
         }
     }
 
     /// Serialize lockfile to human-readable text format
-    fn serialize_lockfile_text(&self, lockfile: &SnapshotLockfile) -> Result<String, anyhow::Error> {
+    fn serialize_lockfile_text(
+        &self,
+        lockfile: &SnapshotLockfile,
+    ) -> Result<String, anyhow::Error> {
         let mut output = String::new();
-        
+
         output.push_str(&format!("# {}\n", lockfile.lockfile_version));
-        
+
         if let Some(host) = &lockfile.host {
-            output.push_str(&format!("host: {} ({} {} {}, kernel {})\n", 
-                host.hostname, host.os_name, host.os_version, host.architecture, host.kernel));
+            output.push_str(&format!(
+                "host: {} ({} {} {}, kernel {})\n",
+                host.hostname, host.os_name, host.os_version, host.architecture, host.kernel
+            ));
         }
-        
+
         output.push_str("filters:\n");
         if !lockfile.filters.include_mountpoints.is_empty() {
-            output.push_str(&format!("  include_mountpoints: {:?}\n", lockfile.filters.include_mountpoints));
+            output.push_str(&format!(
+                "  include_mountpoints: {:?}\n",
+                lockfile.filters.include_mountpoints
+            ));
         }
         if !lockfile.filters.exclude_mountpoints.is_empty() {
-            output.push_str(&format!("  exclude_mountpoints: {:?}\n", lockfile.filters.exclude_mountpoints));
+            output.push_str(&format!(
+                "  exclude_mountpoints: {:?}\n",
+                lockfile.filters.exclude_mountpoints
+            ));
         }
         if !lockfile.filters.include_types.is_empty() {
-            output.push_str(&format!("  include_types: {:?}\n", lockfile.filters.include_types));
+            output.push_str(&format!(
+                "  include_types: {:?}\n",
+                lockfile.filters.include_types
+            ));
         }
         if !lockfile.filters.exclude_types.is_empty() {
-            output.push_str(&format!("  exclude_types: {:?}\n", lockfile.filters.exclude_types));
+            output.push_str(&format!(
+                "  exclude_types: {:?}\n",
+                lockfile.filters.exclude_types
+            ));
         }
-        
+
         output.push_str("\n");
-        
+
         for mount in &lockfile.mounts {
-            output.push_str(&format!("{} on {} type={} opts={}", 
-                mount.source, mount.target, mount.fstype, mount.options.join(",")));
-            
+            output.push_str(&format!(
+                "{} on {} type={} opts={}",
+                mount.source,
+                mount.target,
+                mount.fstype,
+                mount.options.join(",")
+            ));
+
             if let Some(usage) = &mount.usage {
-                output.push_str(&format!(" size={}G used={}G", 
+                output.push_str(&format!(
+                    " size={}G used={}G",
                     usage.size_bytes / (1024 * 1024 * 1024),
-                    usage.used_bytes / (1024 * 1024 * 1024)));
+                    usage.used_bytes / (1024 * 1024 * 1024)
+                ));
             }
-            
+
             output.push('\n');
         }
-        
+
         Ok(output)
     }
 
@@ -3384,7 +3541,8 @@ impl FsHandle {
 
         // Execute quota operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        let quota_result = timeout(timeout_duration, self.execute_quota(&config)).await
+        let quota_result = timeout(timeout_duration, self.execute_quota(&config))
+            .await
             .map_err(|_| FsError::QuotaTimeout)?;
 
         match quota_result {
@@ -3409,18 +3567,27 @@ impl FsHandle {
     /// Validate quota configuration
     fn validate_quota_config(&self, config: &FsQuotaConfig) -> Result<(), anyhow::Error> {
         if config.timeout_ms == 0 {
-            return Err(FsError::InvalidQuotaConfig("timeout_ms must be greater than 0".to_string()).into());
+            return Err(FsError::InvalidQuotaConfig(
+                "timeout_ms must be greater than 0".to_string(),
+            )
+            .into());
         }
 
         if !config.include_space && !config.include_inodes {
-            return Err(FsError::InvalidQuotaConfig("Either include_space or include_inodes must be true".to_string()).into());
+            return Err(FsError::InvalidQuotaConfig(
+                "Either include_space or include_inodes must be true".to_string(),
+            )
+            .into());
         }
 
         // Validate env is string->string map if present
         if let Some(env) = &config.env {
             for (key, value) in env {
                 if key.is_empty() {
-                    return Err(FsError::InvalidQuotaConfig("Environment variable key cannot be empty".to_string()).into());
+                    return Err(FsError::InvalidQuotaConfig(
+                        "Environment variable key cannot be empty".to_string(),
+                    )
+                    .into());
                 }
                 // Value can be empty but must be a string (validated by type)
             }
@@ -3443,17 +3610,23 @@ impl FsHandle {
         };
 
         // 3. Check if quotas are enabled on the filesystem
-        let (space_quota_enabled, inode_quota_enabled) = self.check_quota_support(&filesystem_info).await?;
+        let (space_quota_enabled, inode_quota_enabled) =
+            self.check_quota_support(&filesystem_info).await?;
 
         if !space_quota_enabled && !inode_quota_enabled {
-            return Err(FsError::QuotaNotEnabled(format!("Filesystem {} ({}) does not have quotas enabled", 
-                filesystem_info.source, filesystem_info.target)).into());
+            return Err(FsError::QuotaNotEnabled(format!(
+                "Filesystem {} ({}) does not have quotas enabled",
+                filesystem_info.source, filesystem_info.target
+            ))
+            .into());
         }
 
         // 4. Query quotas for each subject
         let mut quota_subjects = Vec::new();
         for subject_info in subjects_to_query {
-            let quota_data = self.query_subject_quota(&subject_info, &filesystem_info, config).await?;
+            let quota_data = self
+                .query_subject_quota(&subject_info, &filesystem_info, config)
+                .await?;
             quota_subjects.push(quota_data);
         }
 
@@ -3473,7 +3646,10 @@ impl FsHandle {
                 }
             } else {
                 QuotaSubjectQuery {
-                    subject: config.subject.clone().unwrap_or_else(|| "unknown".to_string()),
+                    subject: config
+                        .subject
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
                     subject_type: format!("{:?}", config.subject_type).to_lowercase(),
                     resolved_uid: None,
                     resolved_gid: None,
@@ -3492,7 +3668,7 @@ impl FsHandle {
     async fn resolve_filesystem(&self, path: &str) -> Result<QuotaFilesystem, anyhow::Error> {
         // Use 'df' command to get filesystem information
         let output = AsyncCommand::new("df")
-            .arg("-P")  // POSIX format
+            .arg("-P") // POSIX format
             .arg(path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -3502,12 +3678,16 @@ impl FsHandle {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(FsError::QuotaFailed(format!("Failed to resolve filesystem for path {}: {}", path, stderr)).into());
+            return Err(FsError::QuotaFailed(format!(
+                "Failed to resolve filesystem for path {}: {}",
+                path, stderr
+            ))
+            .into());
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let lines: Vec<&str> = stdout.trim().split('\n').collect();
-        
+
         if lines.len() < 2 {
             return Err(FsError::QuotaFailed("Unexpected df output format".to_string()).into());
         }
@@ -3536,7 +3716,7 @@ impl FsHandle {
         let output = AsyncCommand::new("stat")
             .arg("-f")
             .arg("-c")
-            .arg("%T")  // Filesystem type
+            .arg("%T") // Filesystem type
             .arg(mount_point)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -3562,7 +3742,10 @@ impl FsHandle {
     }
 
     /// Resolve a single subject based on config
-    async fn resolve_single_subject(&self, config: &FsQuotaConfig) -> Result<QuotaSubject, anyhow::Error> {
+    async fn resolve_single_subject(
+        &self,
+        config: &FsQuotaConfig,
+    ) -> Result<QuotaSubject, anyhow::Error> {
         let subject_name = match &config.subject {
             Some(s) => s.clone(),
             None => {
@@ -3578,7 +3761,11 @@ impl FsHandle {
                     // Numeric, try as UID first
                     if let Ok(uid) = subject_name.parse::<u32>() {
                         if let Some(username) = self.uid_to_username(uid).await {
-                            (Some(uid), self.username_to_gid(&username).await, "user".to_string())
+                            (
+                                Some(uid),
+                                self.username_to_gid(&username).await,
+                                "user".to_string(),
+                            )
                         } else {
                             // Try as GID
                             (None, Some(uid), "group".to_string())
@@ -3600,12 +3787,15 @@ impl FsHandle {
             }
             SubjectType::User => {
                 if subject_name.chars().all(|c| c.is_ascii_digit()) {
-                    let uid = subject_name.parse::<u32>()
+                    let uid = subject_name
+                        .parse::<u32>()
                         .map_err(|_| FsError::QuotaSubjectNotFound(subject_name.clone()))?;
                     let gid = self.uid_to_gid(uid).await;
                     (Some(uid), gid, "user".to_string())
                 } else {
-                    let uid = self.username_to_uid(&subject_name).await
+                    let uid = self
+                        .username_to_uid(&subject_name)
+                        .await
                         .ok_or_else(|| FsError::QuotaSubjectNotFound(subject_name.clone()))?;
                     let gid = self.username_to_gid(&subject_name).await;
                     (Some(uid), gid, "user".to_string())
@@ -3613,11 +3803,14 @@ impl FsHandle {
             }
             SubjectType::Group => {
                 if subject_name.chars().all(|c| c.is_ascii_digit()) {
-                    let gid = subject_name.parse::<u32>()
+                    let gid = subject_name
+                        .parse::<u32>()
                         .map_err(|_| FsError::QuotaSubjectNotFound(subject_name.clone()))?;
                     (None, Some(gid), "group".to_string())
                 } else {
-                    let gid = self.groupname_to_gid(&subject_name).await
+                    let gid = self
+                        .groupname_to_gid(&subject_name)
+                        .await
                         .ok_or_else(|| FsError::QuotaSubjectNotFound(subject_name.clone()))?;
                     (None, Some(gid), "group".to_string())
                 }
@@ -3625,11 +3818,16 @@ impl FsHandle {
             SubjectType::Project => {
                 // For now, treat project IDs as numeric only
                 if subject_name.chars().all(|c| c.is_ascii_digit()) {
-                    let project_id = subject_name.parse::<u32>()
+                    let project_id = subject_name
+                        .parse::<u32>()
                         .map_err(|_| FsError::QuotaSubjectNotFound(subject_name.clone()))?;
                     (None, Some(project_id), "project".to_string())
                 } else {
-                    return Err(FsError::QuotaSubjectNotFound(format!("Project ID must be numeric: {}", subject_name)).into());
+                    return Err(FsError::QuotaSubjectNotFound(format!(
+                        "Project ID must be numeric: {}",
+                        subject_name
+                    ))
+                    .into());
                 }
             }
         };
@@ -3645,18 +3843,25 @@ impl FsHandle {
     }
 
     /// Resolve all subjects (for all_subjects=true)
-    async fn resolve_all_subjects(&self, _filesystem_info: &QuotaFilesystem, _config: &FsQuotaConfig) -> Result<Vec<QuotaSubject>, anyhow::Error> {
+    async fn resolve_all_subjects(
+        &self,
+        _filesystem_info: &QuotaFilesystem,
+        _config: &FsQuotaConfig,
+    ) -> Result<Vec<QuotaSubject>, anyhow::Error> {
         // For now, return an error indicating this is not yet implemented
         Err(FsError::QuotaFailed("all_subjects=true is not yet implemented".to_string()).into())
     }
 
     /// Check if quotas are supported/enabled on filesystem
-    async fn check_quota_support(&self, _filesystem_info: &QuotaFilesystem) -> Result<(bool, bool), anyhow::Error> {
+    async fn check_quota_support(
+        &self,
+        _filesystem_info: &QuotaFilesystem,
+    ) -> Result<(bool, bool), anyhow::Error> {
         // This is a simplified check - in a real implementation, we'd check:
         // - If quota tools are installed
         // - If quotas are enabled on the filesystem
         // - What types of quotas are supported
-        
+
         // For now, assume quotas are supported if quota command exists
         let output = AsyncCommand::new("which")
             .arg("quota")
@@ -3672,32 +3877,53 @@ impl FsHandle {
     }
 
     /// Query quota for a specific subject
-    async fn query_subject_quota(&self, subject: &QuotaSubject, filesystem_info: &QuotaFilesystem, config: &FsQuotaConfig) -> Result<QuotaSubject, anyhow::Error> {
+    async fn query_subject_quota(
+        &self,
+        subject: &QuotaSubject,
+        filesystem_info: &QuotaFilesystem,
+        config: &FsQuotaConfig,
+    ) -> Result<QuotaSubject, anyhow::Error> {
         let mut result = subject.clone();
 
         // Query space quotas if requested and enabled
         if config.include_space {
-            result.space = self.query_space_quota(subject, filesystem_info, config).await.ok();
+            result.space = self
+                .query_space_quota(subject, filesystem_info, config)
+                .await
+                .ok();
         }
 
-        // Query inode quotas if requested and enabled  
+        // Query inode quotas if requested and enabled
         if config.include_inodes {
-            result.inodes = self.query_inode_quota(subject, filesystem_info, config).await.ok();
+            result.inodes = self
+                .query_inode_quota(subject, filesystem_info, config)
+                .await
+                .ok();
         }
 
         Ok(result)
     }
 
     /// Query space quota for subject
-    async fn query_space_quota(&self, subject: &QuotaSubject, _filesystem_info: &QuotaFilesystem, config: &FsQuotaConfig) -> Result<SpaceQuota, anyhow::Error> {
+    async fn query_space_quota(
+        &self,
+        subject: &QuotaSubject,
+        _filesystem_info: &QuotaFilesystem,
+        config: &FsQuotaConfig,
+    ) -> Result<SpaceQuota, anyhow::Error> {
         let quota_arg = match subject.subject_type.as_str() {
             "user" => format!("-u {}", subject.uid.unwrap_or(0)),
             "group" => format!("-g {}", subject.gid.unwrap_or(0)),
-            _ => return Err(FsError::QuotaFailed("Unsupported subject type for quota query".to_string()).into()),
+            _ => {
+                return Err(FsError::QuotaFailed(
+                    "Unsupported subject type for quota query".to_string(),
+                )
+                .into());
+            }
         };
 
         let mut cmd = AsyncCommand::new("quota");
-        cmd.arg("-p")  // Parseable output
+        cmd.arg("-p") // Parseable output
             .args(quota_arg.split_whitespace())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -3709,7 +3935,9 @@ impl FsHandle {
             }
         }
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .context("Failed to execute quota command")?;
 
         if !output.status.success() {
@@ -3725,17 +3953,27 @@ impl FsHandle {
     }
 
     /// Query inode quota for subject
-    async fn query_inode_quota(&self, subject: &QuotaSubject, _filesystem_info: &QuotaFilesystem, config: &FsQuotaConfig) -> Result<InodeQuota, anyhow::Error> {
+    async fn query_inode_quota(
+        &self,
+        subject: &QuotaSubject,
+        _filesystem_info: &QuotaFilesystem,
+        config: &FsQuotaConfig,
+    ) -> Result<InodeQuota, anyhow::Error> {
         // Similar to space quota but for inodes
         let quota_arg = match subject.subject_type.as_str() {
             "user" => format!("-u {}", subject.uid.unwrap_or(0)),
             "group" => format!("-g {}", subject.gid.unwrap_or(0)),
-            _ => return Err(FsError::QuotaFailed("Unsupported subject type for quota query".to_string()).into()),
+            _ => {
+                return Err(FsError::QuotaFailed(
+                    "Unsupported subject type for quota query".to_string(),
+                )
+                .into());
+            }
         };
 
         let mut cmd = AsyncCommand::new("quota");
-        cmd.arg("-p")  // Parseable output
-            .arg("-i")  // Inode information
+        cmd.arg("-p") // Parseable output
+            .arg("-i") // Inode information
             .args(quota_arg.split_whitespace())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -3747,7 +3985,9 @@ impl FsHandle {
             }
         }
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .context("Failed to execute quota command")?;
 
         if !output.status.success() {
@@ -3755,7 +3995,9 @@ impl FsHandle {
             if stderr.contains("not found") || stderr.contains("No such user") {
                 return Err(FsError::QuotaSubjectNotFound(subject.subject.clone()).into());
             }
-            return Err(FsError::QuotaFailed(format!("Inode quota query failed: {}", stderr)).into());
+            return Err(
+                FsError::QuotaFailed(format!("Inode quota query failed: {}", stderr)).into(),
+            );
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -3766,16 +4008,16 @@ impl FsHandle {
     /// Handles various formats like "7days", "23:59:59", "expired", "never", "none", etc.
     fn parse_grace_time(&self, grace_str: &str) -> Option<u64> {
         let grace_str = grace_str.trim().to_lowercase();
-        
+
         // Handle special cases
         match grace_str.as_str() {
             "none" | "never" | "-" | "0" | "" => return None,
             "expired" | "exceeded" => return Some(0),
             _ => {}
         }
-        
+
         // Try to parse different time formats
-        
+
         // Format: "7days", "14days", etc.
         if grace_str.ends_with("days") || grace_str.ends_with("day") {
             let day_str = grace_str.replace("days", "").replace("day", "");
@@ -3783,9 +4025,13 @@ impl FsHandle {
                 return Some(days * 24 * 60 * 60); // Convert to seconds
             }
         }
-        
-        // Format: "2hours", "5hrs", etc.  
-        if grace_str.ends_with("hours") || grace_str.ends_with("hour") || grace_str.ends_with("hrs") || grace_str.ends_with("hr") {
+
+        // Format: "2hours", "5hrs", etc.
+        if grace_str.ends_with("hours")
+            || grace_str.ends_with("hour")
+            || grace_str.ends_with("hrs")
+            || grace_str.ends_with("hr")
+        {
             let hour_str = grace_str
                 .replace("hours", "")
                 .replace("hour", "")
@@ -3795,7 +4041,7 @@ impl FsHandle {
                 return Some(hours * 60 * 60); // Convert to seconds
             }
         }
-        
+
         // Format: "30mins", "45min", etc.
         if grace_str.ends_with("minutes") {
             let min_str = grace_str.replace("minutes", "");
@@ -3813,7 +4059,7 @@ impl FsHandle {
                 return Some(mins * 60); // Convert to seconds
             }
         }
-        
+
         // Format: "HH:MM:SS" or "HH:MM"
         if grace_str.contains(':') {
             let parts: Vec<&str> = grace_str.split(':').collect();
@@ -3833,10 +4079,9 @@ impl FsHandle {
                 }
                 2 => {
                     // HH:MM format (assume seconds are 0)
-                    if let (Ok(hours), Ok(minutes)) = (
-                        parts[0].parse::<u64>(),
-                        parts[1].parse::<u64>(),
-                    ) {
+                    if let (Ok(hours), Ok(minutes)) =
+                        (parts[0].parse::<u64>(), parts[1].parse::<u64>())
+                    {
                         // Validate time ranges
                         if hours <= 23 && minutes <= 59 {
                             return Some(hours * 3600 + minutes * 60);
@@ -3846,18 +4091,22 @@ impl FsHandle {
                 _ => {}
             }
         }
-        
+
         // Format: pure seconds
         if let Ok(seconds) = grace_str.parse::<u64>() {
             return Some(seconds);
         }
-        
+
         // Could not parse - return None to indicate unknown format
         None
     }
 
     /// Parse quota command output
-    fn parse_quota_output(&self, output: &str, config: &FsQuotaConfig) -> Result<SpaceQuota, anyhow::Error> {
+    fn parse_quota_output(
+        &self,
+        output: &str,
+        config: &FsQuotaConfig,
+    ) -> Result<SpaceQuota, anyhow::Error> {
         // This is a simplified parser - real implementation would handle various quota output formats
         // Expected format (simplified): "used soft_limit hard_limit grace"
         for line in output.lines() {
@@ -3876,22 +4125,29 @@ impl FsHandle {
                 let (used_converted, soft_converted, hard_converted) = match config.units {
                     QuotaUnits::Bytes => {
                         // Assume input is in KB, convert to bytes
-                        (used * 1024, soft_limit.map(|x| x * 1024), hard_limit.map(|x| x * 1024))
+                        (
+                            used * 1024,
+                            soft_limit.map(|x| x * 1024),
+                            hard_limit.map(|x| x * 1024),
+                        )
                     }
-                    QuotaUnits::Blocks => {
-                        (used, soft_limit, hard_limit)
-                    }
+                    QuotaUnits::Blocks => (used, soft_limit, hard_limit),
                     QuotaUnits::Auto => {
                         // Default to bytes
-                        (used * 1024, soft_limit.map(|x| x * 1024), hard_limit.map(|x| x * 1024))
+                        (
+                            used * 1024,
+                            soft_limit.map(|x| x * 1024),
+                            hard_limit.map(|x| x * 1024),
+                        )
                     }
                 };
 
-                let grace_exceeded = grace_info.contains("expired") || grace_info.contains("exceeded");
-                
+                let grace_exceeded =
+                    grace_info.contains("expired") || grace_info.contains("exceeded");
+
                 // Parse grace time from the grace_info field
                 let grace_time_remaining_sec = self.parse_grace_time(grace_info);
-                
+
                 let used_percent_of_soft = if let Some(soft) = soft_converted {
                     if soft > 0 {
                         Some((used_converted as f64 / soft as f64) * 100.0)
@@ -3917,7 +4173,11 @@ impl FsHandle {
     }
 
     /// Parse inode quota command output
-    fn parse_inode_quota_output(&self, output: &str, _config: &FsQuotaConfig) -> Result<InodeQuota, anyhow::Error> {
+    fn parse_inode_quota_output(
+        &self,
+        output: &str,
+        _config: &FsQuotaConfig,
+    ) -> Result<InodeQuota, anyhow::Error> {
         // Similar to parse_quota_output but for inodes
         for line in output.lines() {
             if line.trim().is_empty() {
@@ -3931,11 +4191,12 @@ impl FsHandle {
                 let hard_limit = parts[2].parse::<u64>().ok();
                 let grace_info = parts.get(3).unwrap_or(&"");
 
-                let grace_exceeded = grace_info.contains("expired") || grace_info.contains("exceeded");
-                
+                let grace_exceeded =
+                    grace_info.contains("expired") || grace_info.contains("exceeded");
+
                 // Parse grace time from the grace_info field
                 let grace_time_remaining_sec = self.parse_grace_time(grace_info);
-                
+
                 let used_percent_of_soft = if let Some(soft) = soft_limit {
                     if soft > 0 {
                         Some((used as f64 / soft as f64) * 100.0)
@@ -4082,7 +4343,8 @@ impl FsHandle {
 
         // Execute quota summary operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        let summary_result = timeout(timeout_duration, self.execute_quota_summary(&config)).await
+        let summary_result = timeout(timeout_duration, self.execute_quota_summary(&config))
+            .await
             .map_err(|_| FsError::QuotaSummaryTimeout)?;
 
         match summary_result {
@@ -4092,7 +4354,10 @@ impl FsHandle {
     }
 
     /// Parse quota summary configuration from arguments
-    pub fn parse_quota_summary_config(&self, args: Value) -> Result<FsQuotaSummaryConfig, anyhow::Error> {
+    pub fn parse_quota_summary_config(
+        &self,
+        args: Value,
+    ) -> Result<FsQuotaSummaryConfig, anyhow::Error> {
         let mut config: FsQuotaSummaryConfig = crate::core::lenient::from_value(args)
             .map_err(|e| FsError::InvalidQuotaSummaryConfig(e.to_string()))?;
 
@@ -4105,31 +4370,47 @@ impl FsHandle {
     }
 
     /// Validate quota summary configuration
-    pub fn validate_quota_summary_config(&self, config: &FsQuotaSummaryConfig) -> Result<(), anyhow::Error> {
+    pub fn validate_quota_summary_config(
+        &self,
+        config: &FsQuotaSummaryConfig,
+    ) -> Result<(), anyhow::Error> {
         if config.timeout_ms == 0 {
-            return Err(FsError::InvalidQuotaSummaryConfig("timeout_ms must be greater than 0".to_string()).into());
+            return Err(FsError::InvalidQuotaSummaryConfig(
+                "timeout_ms must be greater than 0".to_string(),
+            )
+            .into());
         }
 
         if !config.include_space && !config.include_inodes {
-            return Err(FsError::InvalidQuotaSummaryConfig("Either include_space or include_inodes must be true".to_string()).into());
+            return Err(FsError::InvalidQuotaSummaryConfig(
+                "Either include_space or include_inodes must be true".to_string(),
+            )
+            .into());
         }
 
         // Validate filter arrays are string arrays (type is enforced by serde)
         // Just check for sanity
-        if config.include_mountpoints.iter().any(|s| s.is_empty()) ||
-           config.exclude_mountpoints.iter().any(|s| s.is_empty()) ||
-           config.include_types.iter().any(|s| s.is_empty()) ||
-           config.exclude_types.iter().any(|s| s.is_empty()) ||
-           config.include_sources.iter().any(|s| s.is_empty()) ||
-           config.exclude_sources.iter().any(|s| s.is_empty()) {
-            return Err(FsError::InvalidQuotaSummaryConfig("Filter entries cannot be empty strings".to_string()).into());
+        if config.include_mountpoints.iter().any(|s| s.is_empty())
+            || config.exclude_mountpoints.iter().any(|s| s.is_empty())
+            || config.include_types.iter().any(|s| s.is_empty())
+            || config.exclude_types.iter().any(|s| s.is_empty())
+            || config.include_sources.iter().any(|s| s.is_empty())
+            || config.exclude_sources.iter().any(|s| s.is_empty())
+        {
+            return Err(FsError::InvalidQuotaSummaryConfig(
+                "Filter entries cannot be empty strings".to_string(),
+            )
+            .into());
         }
 
         // Validate env is string->string map if present
         if let Some(env) = &config.env {
             for (key, _value) in env {
                 if key.is_empty() {
-                    return Err(FsError::InvalidQuotaSummaryConfig("Environment variable key cannot be empty".to_string()).into());
+                    return Err(FsError::InvalidQuotaSummaryConfig(
+                        "Environment variable key cannot be empty".to_string(),
+                    )
+                    .into());
                 }
             }
         }
@@ -4138,25 +4419,33 @@ impl FsHandle {
     }
 
     /// Execute the actual quota summary operation
-    async fn execute_quota_summary(&self, config: &FsQuotaSummaryConfig) -> Result<Value, anyhow::Error> {
+    async fn execute_quota_summary(
+        &self,
+        config: &FsQuotaSummaryConfig,
+    ) -> Result<Value, anyhow::Error> {
         // 1. Discover and filter filesystems
         let all_filesystems = self.discover_filesystems().await?;
         let filtered_filesystems = self.apply_filesystem_filters(&all_filesystems, config);
 
         if filtered_filesystems.is_empty() {
-            return Err(FsError::QuotaSummaryFailed("No filesystems found after applying filters".to_string()).into());
+            return Err(FsError::QuotaSummaryFailed(
+                "No filesystems found after applying filters".to_string(),
+            )
+            .into());
         }
 
         // 2. Resolve subject(s)
         let subjects_to_query = if config.all_subjects {
-            self.resolve_all_subjects_for_summary(&filtered_filesystems, config).await?
+            self.resolve_all_subjects_for_summary(&filtered_filesystems, config)
+                .await?
         } else {
             vec![self.resolve_single_subject_for_summary(config).await?]
         };
 
         // 3. Query quotas on each filesystem
-        let (quota_filesystems, filesystems_without_quotas, partial_failures) = 
-            self.query_quota_summary_on_filesystems(&filtered_filesystems, &subjects_to_query, config).await;
+        let (quota_filesystems, filesystems_without_quotas, partial_failures) = self
+            .query_quota_summary_on_filesystems(&filtered_filesystems, &subjects_to_query, config)
+            .await;
 
         if quota_filesystems.is_empty() {
             return Err(FsError::QuotaSummaryNoQuotaFilesystems.into());
@@ -4164,9 +4453,21 @@ impl FsHandle {
 
         // 4. Aggregate results
         let result = if config.all_subjects {
-            self.build_multi_subject_summary_result(&subjects_to_query, &quota_filesystems, &filesystems_without_quotas, &partial_failures, config)
+            self.build_multi_subject_summary_result(
+                &subjects_to_query,
+                &quota_filesystems,
+                &filesystems_without_quotas,
+                &partial_failures,
+                config,
+            )
         } else {
-            self.build_single_subject_summary_result(&subjects_to_query[0], &quota_filesystems, &filesystems_without_quotas, &partial_failures, config)
+            self.build_single_subject_summary_result(
+                &subjects_to_query[0],
+                &quota_filesystems,
+                &filesystems_without_quotas,
+                &partial_failures,
+                config,
+            )
         };
 
         Ok(serde_json::to_value(result)?)
@@ -4177,8 +4478,8 @@ impl FsHandle {
         let mut filesystems = Vec::new();
 
         // Read /proc/mounts to discover filesystems
-        let mounts_content = fs::read_to_string("/proc/mounts")
-            .context("Failed to read /proc/mounts")?;
+        let mounts_content =
+            fs::read_to_string("/proc/mounts").context("Failed to read /proc/mounts")?;
 
         for line in mounts_content.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -4199,19 +4500,29 @@ impl FsHandle {
     }
 
     /// Apply filters to filesystem list
-    pub fn apply_filesystem_filters(&self, filesystems: &[QuotaFilesystem], config: &FsQuotaSummaryConfig) -> Vec<QuotaFilesystem> {
+    pub fn apply_filesystem_filters(
+        &self,
+        filesystems: &[QuotaFilesystem],
+        config: &FsQuotaSummaryConfig,
+    ) -> Vec<QuotaFilesystem> {
         let mut filtered = filesystems.to_vec();
 
         // Apply include_mountpoints filter
         if !config.include_mountpoints.is_empty() {
             filtered.retain(|fs| {
-                config.include_mountpoints.iter().any(|prefix| fs.target.starts_with(prefix))
+                config
+                    .include_mountpoints
+                    .iter()
+                    .any(|prefix| fs.target.starts_with(prefix))
             });
         }
 
         // Apply exclude_mountpoints filter
         filtered.retain(|fs| {
-            !config.exclude_mountpoints.iter().any(|prefix| fs.target.starts_with(prefix))
+            !config
+                .exclude_mountpoints
+                .iter()
+                .any(|prefix| fs.target.starts_with(prefix))
         });
 
         // Apply include_types filter
@@ -4234,7 +4545,10 @@ impl FsHandle {
     }
 
     /// Resolve single subject for quota summary
-    async fn resolve_single_subject_for_summary(&self, config: &FsQuotaSummaryConfig) -> Result<QuotaSubject, anyhow::Error> {
+    async fn resolve_single_subject_for_summary(
+        &self,
+        config: &FsQuotaSummaryConfig,
+    ) -> Result<QuotaSubject, anyhow::Error> {
         // Reuse existing logic from regular quota operation
         let temp_quota_config = FsQuotaConfig {
             path: None,
@@ -4254,25 +4568,39 @@ impl FsHandle {
     }
 
     /// Resolve all subjects for quota summary (multi-subject mode)
-    pub async fn resolve_all_subjects_for_summary(&self, _filesystems: &[QuotaFilesystem], _config: &FsQuotaSummaryConfig) -> Result<Vec<QuotaSubject>, anyhow::Error> {
+    pub async fn resolve_all_subjects_for_summary(
+        &self,
+        _filesystems: &[QuotaFilesystem],
+        _config: &FsQuotaSummaryConfig,
+    ) -> Result<Vec<QuotaSubject>, anyhow::Error> {
         // For now, return an error indicating this is not yet implemented
         // In a full implementation, this would enumerate all quota subjects across the filesystems
-        Err(FsError::QuotaSummaryFailed("all_subjects=true is not yet implemented".to_string()).into())
+        Err(
+            FsError::QuotaSummaryFailed("all_subjects=true is not yet implemented".to_string())
+                .into(),
+        )
     }
 
     /// Query quotas on all filtered filesystems
     async fn query_quota_summary_on_filesystems(
-        &self, 
-        filesystems: &[QuotaFilesystem], 
-        subjects: &[QuotaSubject], 
-        config: &FsQuotaSummaryConfig
-    ) -> (Vec<QuotaSummaryFilesystem>, Vec<FilesystemWithoutQuotas>, Vec<PartialFailure>) {
+        &self,
+        filesystems: &[QuotaFilesystem],
+        subjects: &[QuotaSubject],
+        config: &FsQuotaSummaryConfig,
+    ) -> (
+        Vec<QuotaSummaryFilesystem>,
+        Vec<FilesystemWithoutQuotas>,
+        Vec<PartialFailure>,
+    ) {
         let mut quota_filesystems = Vec::new();
         let mut filesystems_without_quotas = Vec::new();
         let mut partial_failures = Vec::new();
 
         for filesystem in filesystems {
-            match self.query_filesystem_quotas(filesystem, subjects, config).await {
+            match self
+                .query_filesystem_quotas(filesystem, subjects, config)
+                .await
+            {
                 Ok(Some(quota_fs)) => quota_filesystems.push(quota_fs),
                 Ok(None) => filesystems_without_quotas.push(FilesystemWithoutQuotas {
                     source: filesystem.source.clone(),
@@ -4291,21 +4619,26 @@ impl FsHandle {
             }
         }
 
-        (quota_filesystems, filesystems_without_quotas, partial_failures)
+        (
+            quota_filesystems,
+            filesystems_without_quotas,
+            partial_failures,
+        )
     }
 
     /// Query quotas for a single filesystem
     async fn query_filesystem_quotas(
-        &self, 
-        filesystem: &QuotaFilesystem, 
-        subjects: &[QuotaSubject], 
-        config: &FsQuotaSummaryConfig
+        &self,
+        filesystem: &QuotaFilesystem,
+        subjects: &[QuotaSubject],
+        config: &FsQuotaSummaryConfig,
     ) -> Result<Option<QuotaSummaryFilesystem>, anyhow::Error> {
         // Check if quotas are supported on this filesystem
-        let (space_quota_enabled, inode_quota_enabled) = match self.check_quota_support(filesystem).await {
-            Ok((space, inode)) => (space, inode),
-            Err(_) => return Ok(None), // Filesystem doesn't support quotas
-        };
+        let (space_quota_enabled, inode_quota_enabled) =
+            match self.check_quota_support(filesystem).await {
+                Ok((space, inode)) => (space, inode),
+                Err(_) => return Ok(None), // Filesystem doesn't support quotas
+            };
 
         if !space_quota_enabled && !inode_quota_enabled {
             return Ok(None); // No quotas enabled
@@ -4327,7 +4660,9 @@ impl FsHandle {
                 env: config.env.clone(),
             };
 
-            let quota_subject = self.query_subject_quota(subject, filesystem, &temp_quota_config).await?;
+            let quota_subject = self
+                .query_subject_quota(subject, filesystem, &temp_quota_config)
+                .await?;
 
             Ok(Some(QuotaSummaryFilesystem {
                 source: filesystem.source.clone(),
@@ -4398,9 +4733,12 @@ impl FsHandle {
         config: &FsQuotaSummaryConfig,
     ) -> QuotaSummaryResult {
         // Aggregate quota data for each subject across all filesystems
-        let subject_summaries = subjects.iter().map(|subject| {
-            self.aggregate_subject_quota_across_filesystems(subject, quota_filesystems, config)
-        }).collect();
+        let subject_summaries = subjects
+            .iter()
+            .map(|subject| {
+                self.aggregate_subject_quota_across_filesystems(subject, quota_filesystems, config)
+            })
+            .collect();
 
         QuotaSummaryResult {
             backend: "fs".to_string(),
@@ -4490,8 +4828,16 @@ impl FsHandle {
 
             Some(SpaceQuotaSummary {
                 used: total_space_used,
-                soft_limit: if total_space_soft > 0 { Some(total_space_soft) } else { None },
-                hard_limit: if total_space_hard > 0 { Some(total_space_hard) } else { None },
+                soft_limit: if total_space_soft > 0 {
+                    Some(total_space_soft)
+                } else {
+                    None
+                },
+                hard_limit: if total_space_hard > 0 {
+                    Some(total_space_hard)
+                } else {
+                    None
+                },
                 used_percent_of_soft,
                 any_grace_exceeded: any_space_grace_exceeded,
             })
@@ -4508,8 +4854,16 @@ impl FsHandle {
 
             Some(InodeQuotaSummary {
                 used: total_inode_used,
-                soft_limit: if total_inode_soft > 0 { Some(total_inode_soft) } else { None },
-                hard_limit: if total_inode_hard > 0 { Some(total_inode_hard) } else { None },
+                soft_limit: if total_inode_soft > 0 {
+                    Some(total_inode_soft)
+                } else {
+                    None
+                },
+                hard_limit: if total_inode_hard > 0 {
+                    Some(total_inode_hard)
+                } else {
+                    None
+                },
                 used_percent_of_soft,
                 any_grace_exceeded: any_inode_grace_exceeded,
             })
@@ -4530,7 +4884,7 @@ impl FsHandle {
         // In the current architecture, quota_filesystems contain quota data for the first subject only
         // For multi-subject mode, we would need a different data flow, but for now we'll work with
         // the existing single-subject data and just copy the subject information
-        
+
         // Aggregate space quota data from all filesystems
         let space_summary = if config.include_space {
             let mut total_space_used = 0u64;
@@ -4566,8 +4920,16 @@ impl FsHandle {
 
                 Some(SpaceQuotaSummary {
                     used: total_space_used,
-                    soft_limit: if total_space_soft > 0 { Some(total_space_soft) } else { None },
-                    hard_limit: if total_space_hard > 0 { Some(total_space_hard) } else { None },
+                    soft_limit: if total_space_soft > 0 {
+                        Some(total_space_soft)
+                    } else {
+                        None
+                    },
+                    hard_limit: if total_space_hard > 0 {
+                        Some(total_space_hard)
+                    } else {
+                        None
+                    },
                     used_percent_of_soft,
                     any_grace_exceeded: any_space_grace_exceeded,
                 })
@@ -4613,8 +4975,16 @@ impl FsHandle {
 
                 Some(InodeQuotaSummary {
                     used: total_inode_used,
-                    soft_limit: if total_inode_soft > 0 { Some(total_inode_soft) } else { None },
-                    hard_limit: if total_inode_hard > 0 { Some(total_inode_hard) } else { None },
+                    soft_limit: if total_inode_soft > 0 {
+                        Some(total_inode_soft)
+                    } else {
+                        None
+                    },
+                    hard_limit: if total_inode_hard > 0 {
+                        Some(total_inode_hard)
+                    } else {
+                        None
+                    },
                     used_percent_of_soft,
                     any_grace_exceeded: any_inode_grace_exceeded,
                 })
@@ -4643,7 +5013,8 @@ impl FsHandle {
 
         // Execute usage operation with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        let usage_result = timeout(timeout_duration, self.execute_usage(&config)).await
+        let usage_result = timeout(timeout_duration, self.execute_usage(&config))
+            .await
             .map_err(|_| FsError::UsageTimeout)?;
 
         match usage_result {
@@ -4663,29 +5034,48 @@ impl FsHandle {
     /// Validate usage configuration
     fn validate_usage_config(&self, config: &FsUsageConfig) -> Result<(), anyhow::Error> {
         if config.timeout_ms == 0 {
-            return Err(FsError::InvalidUsageConfig("timeout_ms must be greater than 0".to_string()).into());
+            return Err(FsError::InvalidUsageConfig(
+                "timeout_ms must be greater than 0".to_string(),
+            )
+            .into());
         }
 
         if let Some(min) = config.threshold_used_percent_min {
             if min < 0.0 || min > 100.0 {
-                return Err(FsError::InvalidUsageConfig("threshold_used_percent_min must be between 0 and 100".to_string()).into());
+                return Err(FsError::InvalidUsageConfig(
+                    "threshold_used_percent_min must be between 0 and 100".to_string(),
+                )
+                .into());
             }
         }
 
         if let Some(max) = config.threshold_used_percent_max {
             if max < 0.0 || max > 100.0 {
-                return Err(FsError::InvalidUsageConfig("threshold_used_percent_max must be between 0 and 100".to_string()).into());
+                return Err(FsError::InvalidUsageConfig(
+                    "threshold_used_percent_max must be between 0 and 100".to_string(),
+                )
+                .into());
             }
         }
 
-        if let (Some(min), Some(max)) = (config.threshold_used_percent_min, config.threshold_used_percent_max) {
+        if let (Some(min), Some(max)) = (
+            config.threshold_used_percent_min,
+            config.threshold_used_percent_max,
+        ) {
             if min > max {
-                return Err(FsError::InvalidUsageConfig("threshold_used_percent_min cannot be greater than threshold_used_percent_max".to_string()).into());
+                return Err(FsError::InvalidUsageConfig(
+                    "threshold_used_percent_min cannot be greater than threshold_used_percent_max"
+                        .to_string(),
+                )
+                .into());
             }
         }
 
         if config.mode == UsageMode::Paths && config.paths.is_empty() {
-            return Err(FsError::InvalidUsageConfig("paths cannot be empty when mode is 'paths'".to_string()).into());
+            return Err(FsError::InvalidUsageConfig(
+                "paths cannot be empty when mode is 'paths'".to_string(),
+            )
+            .into());
         }
 
         Ok(())
@@ -4698,7 +5088,8 @@ impl FsHandle {
 
         // 2. Select filesystems based on mode and paths
         let mut selected_mounts = if config.mode == UsageMode::Paths && !config.paths.is_empty() {
-            self.resolve_paths_to_filesystems(&raw_mounts, &config.paths).await?
+            self.resolve_paths_to_filesystems(&raw_mounts, &config.paths)
+                .await?
         } else {
             raw_mounts
         };
@@ -4741,20 +5132,18 @@ impl FsHandle {
 
         // 6. Apply threshold filters
         if let Some(min_threshold) = config.threshold_used_percent_min {
-            filesystem_usages.retain(|fs| {
-                fs.used_percent.map_or(false, |pct| pct >= min_threshold)
-            });
+            filesystem_usages
+                .retain(|fs| fs.used_percent.map_or(false, |pct| pct >= min_threshold));
         }
 
         if let Some(max_threshold) = config.threshold_used_percent_max {
-            filesystem_usages.retain(|fs| {
-                fs.used_percent.map_or(true, |pct| pct <= max_threshold)
-            });
+            filesystem_usages.retain(|fs| fs.used_percent.map_or(true, |pct| pct <= max_threshold));
         }
 
         // 7. Sort filesystems deterministically
         filesystem_usages.sort_by(|a, b| {
-            a.target.cmp(&b.target)
+            a.target
+                .cmp(&b.target)
                 .then_with(|| a.source.cmp(&b.source))
                 .then_with(|| a.fstype.cmp(&b.fstype))
         });
@@ -4768,7 +5157,10 @@ impl FsHandle {
 
         // 9. Build path to filesystem mapping if mode is paths
         let path_to_filesystem = if config.mode == UsageMode::Paths {
-            Some(self.build_path_to_filesystem_mapping(&config.paths, &filesystem_usages).await?)
+            Some(
+                self.build_path_to_filesystem_mapping(&config.paths, &filesystem_usages)
+                    .await?,
+            )
         } else {
             None
         };
@@ -4840,14 +5232,20 @@ impl FsHandle {
         // Apply include_mountpoints filter
         if !config.include_mountpoints.is_empty() {
             filtered.retain(|mount| {
-                config.include_mountpoints.iter().any(|prefix| mount.target.starts_with(prefix))
+                config
+                    .include_mountpoints
+                    .iter()
+                    .any(|prefix| mount.target.starts_with(prefix))
             });
         }
 
         // Apply exclude_mountpoints filter
         if !config.exclude_mountpoints.is_empty() {
             filtered.retain(|mount| {
-                !config.exclude_mountpoints.iter().any(|prefix| mount.target.starts_with(prefix))
+                !config
+                    .exclude_mountpoints
+                    .iter()
+                    .any(|prefix| mount.target.starts_with(prefix))
             });
         }
 
@@ -4886,16 +5284,19 @@ impl FsHandle {
         config: &FsUsageConfig,
     ) -> Result<FilesystemUsage, anyhow::Error> {
         // Use the existing statvfs-based implementation
-        let usage_info = self.get_statvfs_info(&mount.target).await
-            .ok_or_else(|| FsError::UsageFailed(format!("Failed to get usage info for {}", mount.target)))?;
+        let usage_info = self.get_statvfs_info(&mount.target).await.ok_or_else(|| {
+            FsError::UsageFailed(format!("Failed to get usage info for {}", mount.target))
+        })?;
 
         let inode_info = if config.include_inodes {
-            self.get_inode_info(&mount.target).await.map(|info| FilesystemInodes {
-                total: info.total,
-                used: info.used,
-                free: info.free,
-                used_percent: Some(info.used_percent),
-            })
+            self.get_inode_info(&mount.target)
+                .await
+                .map(|info| FilesystemInodes {
+                    total: info.total,
+                    used: info.used,
+                    free: info.free,
+                    used_percent: Some(info.used_percent),
+                })
         } else {
             None
         };
@@ -4950,8 +5351,16 @@ impl FsHandle {
         match units {
             UsageUnits::Auto | UsageUnits::Bytes => (size_bytes, used_bytes, free_bytes),
             UsageUnits::Kilobytes => (size_bytes / 1024, used_bytes / 1024, free_bytes / 1024),
-            UsageUnits::Megabytes => (size_bytes / (1024 * 1024), used_bytes / (1024 * 1024), free_bytes / (1024 * 1024)),
-            UsageUnits::Gigabytes => (size_bytes / (1024 * 1024 * 1024), used_bytes / (1024 * 1024 * 1024), free_bytes / (1024 * 1024 * 1024)),
+            UsageUnits::Megabytes => (
+                size_bytes / (1024 * 1024),
+                used_bytes / (1024 * 1024),
+                free_bytes / (1024 * 1024),
+            ),
+            UsageUnits::Gigabytes => (
+                size_bytes / (1024 * 1024 * 1024),
+                used_bytes / (1024 * 1024 * 1024),
+                free_bytes / (1024 * 1024 * 1024),
+            ),
             UsageUnits::Blocks => {
                 // Assume 512-byte blocks (traditional Unix block size)
                 (size_bytes / 512, used_bytes / 512, free_bytes / 512)
@@ -5000,8 +5409,16 @@ impl FsHandle {
             let (size_bytes, used_bytes, free_bytes) = match config.units {
                 UsageUnits::Auto | UsageUnits::Bytes => (total_size, total_used, total_free),
                 UsageUnits::Kilobytes => (total_size * 1024, total_used * 1024, total_free * 1024),
-                UsageUnits::Megabytes => (total_size * 1024 * 1024, total_used * 1024 * 1024, total_free * 1024 * 1024),
-                UsageUnits::Gigabytes => (total_size * 1024 * 1024 * 1024, total_used * 1024 * 1024 * 1024, total_free * 1024 * 1024 * 1024),
+                UsageUnits::Megabytes => (
+                    total_size * 1024 * 1024,
+                    total_used * 1024 * 1024,
+                    total_free * 1024 * 1024,
+                ),
+                UsageUnits::Gigabytes => (
+                    total_size * 1024 * 1024 * 1024,
+                    total_used * 1024 * 1024 * 1024,
+                    total_free * 1024 * 1024 * 1024,
+                ),
                 UsageUnits::Blocks => (total_size * 512, total_used * 512, total_free * 512),
             };
             (
@@ -5015,15 +5432,18 @@ impl FsHandle {
 
         // Aggregate inode information if available
         let inodes = if config.include_inodes {
-            let total_inodes: u64 = filesystems.iter()
+            let total_inodes: u64 = filesystems
+                .iter()
                 .filter_map(|fs| fs.inodes.as_ref())
                 .map(|inodes| inodes.total)
                 .sum();
-            let used_inodes: u64 = filesystems.iter()
+            let used_inodes: u64 = filesystems
+                .iter()
                 .filter_map(|fs| fs.inodes.as_ref())
                 .map(|inodes| inodes.used)
                 .sum();
-            let free_inodes: u64 = filesystems.iter()
+            let free_inodes: u64 = filesystems
+                .iter()
                 .filter_map(|fs| fs.inodes.as_ref())
                 .map(|inodes| inodes.free)
                 .sum();
@@ -5135,11 +5555,17 @@ impl FsHandle {
     fn validate_resize_config(&self, config: &FsResizeConfig) -> Result<(), anyhow::Error> {
         // Basic field validation
         if config.target.is_empty() {
-            return Err(FsError::InvalidResizeConfig("target is required and cannot be empty".to_string()).into());
+            return Err(FsError::InvalidResizeConfig(
+                "target is required and cannot be empty".to_string(),
+            )
+            .into());
         }
 
         if config.timeout_ms == 0 {
-            return Err(FsError::InvalidResizeConfig("timeout_ms must be greater than 0".to_string()).into());
+            return Err(FsError::InvalidResizeConfig(
+                "timeout_ms must be greater than 0".to_string(),
+            )
+            .into());
         }
 
         // Size/delta validation
@@ -5147,21 +5573,33 @@ impl FsHandle {
         let delta_provided = config.delta.is_some();
 
         if !size_provided && !delta_provided {
-            return Err(FsError::InvalidResizeConfig("exactly one of 'size' or 'delta' must be specified".to_string()).into());
+            return Err(FsError::InvalidResizeConfig(
+                "exactly one of 'size' or 'delta' must be specified".to_string(),
+            )
+            .into());
         }
 
         if size_provided && delta_provided {
-            return Err(FsError::InvalidResizeConfig("cannot specify both 'size' and 'delta'".to_string()).into());
+            return Err(FsError::InvalidResizeConfig(
+                "cannot specify both 'size' and 'delta'".to_string(),
+            )
+            .into());
         }
 
         // Min free space validation
         if config.min_free_space_percent < 0.0 || config.min_free_space_percent > 100.0 {
-            return Err(FsError::InvalidResizeConfig("min_free_space_percent must be between 0 and 100".to_string()).into());
+            return Err(FsError::InvalidResizeConfig(
+                "min_free_space_percent must be between 0 and 100".to_string(),
+            )
+            .into());
         }
 
         // Contradictory options validation
         if config.volume_resize_only && config.filesystem_resize_only {
-            return Err(FsError::InvalidResizeConfig("volume_resize_only and filesystem_resize_only are mutually exclusive".to_string()).into());
+            return Err(FsError::InvalidResizeConfig(
+                "volume_resize_only and filesystem_resize_only are mutually exclusive".to_string(),
+            )
+            .into());
         }
 
         // Shrink mode validation
@@ -5173,7 +5611,10 @@ impl FsHandle {
         if let Some(env) = &config.env {
             for (key, _) in env {
                 if key.is_empty() {
-                    return Err(FsError::InvalidResizeConfig("environment variable keys cannot be empty".to_string()).into());
+                    return Err(FsError::InvalidResizeConfig(
+                        "environment variable keys cannot be empty".to_string(),
+                    )
+                    .into());
                 }
             }
         }
@@ -5185,7 +5626,7 @@ impl FsHandle {
     async fn execute_resize(&self, config: &FsResizeConfig) -> Result<Value, anyhow::Error> {
         // Discover filesystem information
         let fs_info = self.discover_filesystem(&config.target, &config.by).await?;
-        
+
         // Validate filesystem type support
         self.validate_filesystem_support(&fs_info.fstype, config)?;
 
@@ -5195,7 +5636,7 @@ impl FsHandle {
 
         // Determine operation type (grow/shrink/noop)
         let delta_bytes = target_size as i64 - current_size as i64;
-        
+
         if delta_bytes == 0 {
             // No-op case
             return Ok(json!(ResizeResult {
@@ -5230,29 +5671,41 @@ impl FsHandle {
         let is_shrink = delta_bytes < 0;
         if is_shrink {
             if config.mode == ResizeMode::Grow {
-                return Err(FsError::InvalidResizeConfig("cannot shrink when mode is 'grow'".to_string()).into());
+                return Err(FsError::InvalidResizeConfig(
+                    "cannot shrink when mode is 'grow'".to_string(),
+                )
+                .into());
             }
             if !config.allow_shrink {
                 return Err(FsError::ResizeShrinkNotAllowed.into());
             }
-            
+
             // Check filesystem support for shrinking
             match fs_info.fstype.as_str() {
                 "xfs" => {
-                    return Err(FsError::ResizeShrinkNotSupportedForFilesystem(fs_info.fstype.clone()).into());
+                    return Err(FsError::ResizeShrinkNotSupportedForFilesystem(
+                        fs_info.fstype.clone(),
+                    )
+                    .into());
                 }
                 "ext3" | "ext4" => {
                     if config.require_unmounted_for_shrink && fs_info.mounted {
-                        return Err(FsError::ResizeShrinkRequiresUnmount(config.target.clone()).into());
+                        return Err(
+                            FsError::ResizeShrinkRequiresUnmount(config.target.clone()).into()
+                        );
                     }
                 }
                 _ => {}
             }
 
             // Check min free space constraint
-            self.validate_min_free_space(&fs_info, target_size, config.min_free_space_percent).await?;
+            self.validate_min_free_space(&fs_info, target_size, config.min_free_space_percent)
+                .await?;
         } else if config.mode == ResizeMode::Shrink {
-            return Err(FsError::InvalidResizeConfig("cannot grow when mode is 'shrink'".to_string()).into());
+            return Err(FsError::InvalidResizeConfig(
+                "cannot grow when mode is 'shrink'".to_string(),
+            )
+            .into());
         }
 
         // Check device capacity constraints for grow operations
@@ -5264,7 +5717,9 @@ impl FsHandle {
         }
 
         if config.dry_run {
-            return self.build_resize_plan(config, &fs_info, current_size, target_size).await;
+            return self
+                .build_resize_plan(config, &fs_info, current_size, target_size)
+                .await;
         }
 
         // Execute actual resize
@@ -5273,19 +5728,25 @@ impl FsHandle {
 
         // Handle volume resize first for grow operations
         if !is_shrink && config.manage_underlying_volume && !config.filesystem_resize_only {
-            let volume_action = self.resize_underlying_volume(&fs_info.source, target_size, false).await?;
+            let volume_action = self
+                .resize_underlying_volume(&fs_info.source, target_size, false)
+                .await?;
             actions.push(volume_action);
         }
 
         // Handle filesystem resize
         if !config.volume_resize_only {
-            let fs_action = self.resize_filesystem(&fs_info, target_size, config).await?;
+            let fs_action = self
+                .resize_filesystem(&fs_info, target_size, config)
+                .await?;
             actions.push(fs_action);
         }
 
         // Handle volume resize after for shrink operations
         if is_shrink && config.manage_underlying_volume && !config.filesystem_resize_only {
-            let volume_action = self.resize_underlying_volume(&fs_info.source, target_size, true).await?;
+            let volume_action = self
+                .resize_underlying_volume(&fs_info.source, target_size, true)
+                .await?;
             actions.push(volume_action);
         }
 
@@ -5325,7 +5786,11 @@ impl FsHandle {
     }
 
     /// Discover filesystem information based on target and method
-    async fn discover_filesystem(&self, target: &str, by: &ResizeTargetKind) -> Result<ResizeFilesystemInfo, anyhow::Error> {
+    async fn discover_filesystem(
+        &self,
+        target: &str,
+        by: &ResizeTargetKind,
+    ) -> Result<ResizeFilesystemInfo, anyhow::Error> {
         match by {
             ResizeTargetKind::Auto => {
                 // Try mountpoint first, then device
@@ -5335,23 +5800,22 @@ impl FsHandle {
                     self.discover_by_device(target).await
                 }
             }
-            ResizeTargetKind::Mountpoint => {
-                self.discover_by_mountpoint(target).await
-            }
-            ResizeTargetKind::Device => {
-                self.discover_by_device(target).await
-            }
+            ResizeTargetKind::Mountpoint => self.discover_by_mountpoint(target).await,
+            ResizeTargetKind::Device => self.discover_by_device(target).await,
         }
     }
 
     /// Discover filesystem by mountpoint
-    async fn discover_by_mountpoint(&self, mountpoint: &str) -> Result<ResizeFilesystemInfo, anyhow::Error> {
+    async fn discover_by_mountpoint(
+        &self,
+        mountpoint: &str,
+    ) -> Result<ResizeFilesystemInfo, anyhow::Error> {
         let mounts = self.get_existing_mounts().await?;
-        
+
         for mount in &mounts {
             if mount.target == mountpoint {
                 let current_size = self.get_filesystem_size_by_mountpoint(mountpoint).await?;
-                
+
                 return Ok(ResizeFilesystemInfo {
                     source: mount.source.clone(),
                     fstype: mount.fs_type.clone(),
@@ -5362,25 +5826,35 @@ impl FsHandle {
                 });
             }
         }
-        
+
         Err(FsError::ResizeTargetNotFound(format!("mountpoint not found: {}", mountpoint)).into())
     }
 
     /// Discover filesystem by device
-    async fn discover_by_device(&self, device: &str) -> Result<ResizeFilesystemInfo, anyhow::Error> {
+    async fn discover_by_device(
+        &self,
+        device: &str,
+    ) -> Result<ResizeFilesystemInfo, anyhow::Error> {
         let mounts = self.get_existing_mounts().await?;
-        
+
         // Check if device is currently mounted
         let mount = mounts.iter().find(|m| m.source == device);
         let (mounted, fstype) = if let Some(mount) = mount {
             (true, mount.fs_type.clone())
         } else {
-            (false, self.detect_filesystem_type(device).await
-                .map_err(|_| FsError::ResizeTargetNotFound(format!("cannot determine filesystem type for: {}", device)))?)
+            (
+                false,
+                self.detect_filesystem_type(device).await.map_err(|_| {
+                    FsError::ResizeTargetNotFound(format!(
+                        "cannot determine filesystem type for: {}",
+                        device
+                    ))
+                })?,
+            )
         };
 
         let current_size = self.get_device_size(device).await?;
-        
+
         Ok(ResizeFilesystemInfo {
             source: device.to_string(),
             fstype,
@@ -5436,14 +5910,21 @@ impl FsHandle {
         }
 
         // Return generic error that can be handled by callers
-        Err(anyhow::anyhow!("unable to detect filesystem type for: {}", device))
+        Err(anyhow::anyhow!(
+            "unable to detect filesystem type for: {}",
+            device
+        ))
     }
 
     /// Validate filesystem type is supported for resize operations
-    fn validate_filesystem_support(&self, fstype: &str, config: &FsResizeConfig) -> Result<(), anyhow::Error> {
+    fn validate_filesystem_support(
+        &self,
+        fstype: &str,
+        config: &FsResizeConfig,
+    ) -> Result<(), anyhow::Error> {
         match fstype {
             "ext3" | "ext4" | "xfs" | "btrfs" => Ok(()),
-            _ => Err(FsError::ResizeUnsupportedFilesystem(fstype.to_string()).into())
+            _ => Err(FsError::ResizeUnsupportedFilesystem(fstype.to_string()).into()),
         }
     }
 
@@ -5454,7 +5935,7 @@ impl FsHandle {
                 let bytes = n.as_u64().ok_or_else(|| {
                     FsError::InvalidResizeConfig("size must be a positive integer".to_string())
                 })?;
-                
+
                 // Apply unit conversion if not auto/bytes
                 match units {
                     SizeUnits::Auto | SizeUnits::Bytes => Ok(bytes),
@@ -5470,10 +5951,10 @@ impl FsHandle {
                 let n: u64 = st.trim().parse().unwrap_or(0);
                 self.parse_size(&Value::from(n), units)
             }
-            Value::String(s) => {
-                self.parse_human_readable_size(s)
-            }
-            _ => Err(FsError::InvalidResizeConfig("size must be a number or string".to_string()).into())
+            Value::String(s) => self.parse_human_readable_size(s),
+            _ => Err(
+                FsError::InvalidResizeConfig("size must be a number or string".to_string()).into(),
+            ),
         }
     }
 
@@ -5481,7 +5962,9 @@ impl FsHandle {
     fn parse_human_readable_size(&self, size_str: &str) -> Result<u64, anyhow::Error> {
         let size_str = size_str.trim();
         if size_str.is_empty() {
-            return Err(FsError::InvalidResizeConfig("size string cannot be empty".to_string()).into());
+            return Err(
+                FsError::InvalidResizeConfig("size string cannot be empty".to_string()).into(),
+            );
         }
 
         // Handle delta prefixes
@@ -5507,8 +5990,9 @@ impl FsHandle {
             (&size_str[..split_pos], &size_str[split_pos..])
         };
 
-        let number: f64 = number_part.parse()
-            .map_err(|_| FsError::InvalidResizeConfig(format!("invalid number format: {}", number_part)))?;
+        let number: f64 = number_part.parse().map_err(|_| {
+            FsError::InvalidResizeConfig(format!("invalid number format: {}", number_part))
+        })?;
 
         if number < 0.0 && multiplier > 0 {
             return Err(FsError::InvalidResizeConfig("size cannot be negative".to_string()).into());
@@ -5520,45 +6004,71 @@ impl FsHandle {
             "M" | "MB" | "MIB" => number * 1024.0 * 1024.0,
             "G" | "GB" | "GIB" => number * 1024.0 * 1024.0 * 1024.0,
             "T" | "TB" | "TIB" => number * 1024.0 * 1024.0 * 1024.0 * 1024.0,
-            _ => return Err(FsError::InvalidResizeConfig(format!("unknown size unit: {}", unit_part)).into()),
+            _ => {
+                return Err(FsError::InvalidResizeConfig(format!(
+                    "unknown size unit: {}",
+                    unit_part
+                ))
+                .into());
+            }
         };
 
         let final_bytes = (base_bytes * multiplier as f64) as i64;
         if final_bytes < 0 {
-            Err(FsError::InvalidResizeConfig("calculated size cannot be negative".to_string()).into())
+            Err(
+                FsError::InvalidResizeConfig("calculated size cannot be negative".to_string())
+                    .into(),
+            )
         } else {
             Ok(final_bytes as u64)
         }
     }
 
     /// Compute target size from configuration
-    fn compute_target_size(&self, config: &FsResizeConfig, current_size: u64) -> Result<u64, anyhow::Error> {
+    fn compute_target_size(
+        &self,
+        config: &FsResizeConfig,
+        current_size: u64,
+    ) -> Result<u64, anyhow::Error> {
         if let Some(size_value) = &config.size {
             self.parse_size(size_value, &config.size_units)
         } else if let Some(delta_value) = &config.delta {
             let delta = self.parse_size(delta_value, &config.size_units)? as i64;
             let target = current_size as i64 + delta;
             if target < 0 {
-                Err(FsError::ResizeInvalidTargetSize("target size cannot be negative".to_string()).into())
+                Err(
+                    FsError::ResizeInvalidTargetSize("target size cannot be negative".to_string())
+                        .into(),
+                )
             } else {
                 Ok(target as u64)
             }
         } else {
-            Err(FsError::InvalidResizeConfig("either size or delta must be specified".to_string()).into())
+            Err(
+                FsError::InvalidResizeConfig("either size or delta must be specified".to_string())
+                    .into(),
+            )
         }
     }
 
     /// Get current filesystem size
-    async fn get_current_filesystem_size(&self, fs_info: &ResizeFilesystemInfo) -> Result<u64, anyhow::Error> {
+    async fn get_current_filesystem_size(
+        &self,
+        fs_info: &ResizeFilesystemInfo,
+    ) -> Result<u64, anyhow::Error> {
         if fs_info.mounted {
-            self.get_filesystem_size_by_mountpoint(&fs_info.source).await
+            self.get_filesystem_size_by_mountpoint(&fs_info.source)
+                .await
         } else {
             self.get_device_size(&fs_info.source).await
         }
     }
 
     /// Get filesystem size by mountpoint using statvfs
-    async fn get_filesystem_size_by_mountpoint(&self, mountpoint: &str) -> Result<u64, anyhow::Error> {
+    async fn get_filesystem_size_by_mountpoint(
+        &self,
+        mountpoint: &str,
+    ) -> Result<u64, anyhow::Error> {
         let output = AsyncCommand::new("df")
             .arg("-B")
             .arg("1")
@@ -5567,24 +6077,31 @@ impl FsHandle {
             .await?;
 
         if !output.status.success() {
-            return Err(FsError::ResizeTargetNotFound(format!("cannot get size for mountpoint: {}", mountpoint)).into());
+            return Err(FsError::ResizeTargetNotFound(format!(
+                "cannot get size for mountpoint: {}",
+                mountpoint
+            ))
+            .into());
         }
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let lines: Vec<&str> = output_str.lines().collect();
-        
+
         if lines.len() < 2 {
             return Err(FsError::ResizeTargetNotFound("invalid df output".to_string()).into());
         }
 
         let fields: Vec<&str> = lines[1].split_whitespace().collect();
         if fields.len() < 2 {
-            return Err(FsError::ResizeTargetNotFound("invalid df output format".to_string()).into());
+            return Err(
+                FsError::ResizeTargetNotFound("invalid df output format".to_string()).into(),
+            );
         }
 
         let size_str = fields[1];
-        size_str.parse::<u64>()
-            .map_err(|_| FsError::ResizeTargetNotFound("cannot parse filesystem size".to_string()).into())
+        size_str.parse::<u64>().map_err(|_| {
+            FsError::ResizeTargetNotFound("cannot parse filesystem size".to_string()).into()
+        })
     }
 
     /// Get device size using blockdev
@@ -5596,17 +6113,27 @@ impl FsHandle {
             .await?;
 
         if !output.status.success() {
-            return Err(FsError::ResizeTargetNotFound(format!("cannot get size for device: {}", device)).into());
+            return Err(FsError::ResizeTargetNotFound(format!(
+                "cannot get size for device: {}",
+                device
+            ))
+            .into());
         }
 
         let size_str = String::from_utf8_lossy(&output.stdout);
         let size_str = size_str.trim();
-        size_str.parse::<u64>()
-            .map_err(|_| FsError::ResizeTargetNotFound("cannot parse device size".to_string()).into())
+        size_str.parse::<u64>().map_err(|_| {
+            FsError::ResizeTargetNotFound("cannot parse device size".to_string()).into()
+        })
     }
 
     /// Validate minimum free space constraint for shrink operations
-    async fn validate_min_free_space(&self, fs_info: &ResizeFilesystemInfo, target_size: u64, min_free_percent: f64) -> Result<(), anyhow::Error> {
+    async fn validate_min_free_space(
+        &self,
+        fs_info: &ResizeFilesystemInfo,
+        target_size: u64,
+        min_free_percent: f64,
+    ) -> Result<(), anyhow::Error> {
         if !fs_info.mounted {
             // Can't check used space for unmounted filesystem - assume it's OK
             return Ok(());
@@ -5626,7 +6153,7 @@ impl FsHandle {
 
         let output_str = String::from_utf8_lossy(&output.stdout);
         let lines: Vec<&str> = output_str.lines().collect();
-        
+
         if lines.len() < 2 {
             return Ok(());
         }
@@ -5648,7 +6175,12 @@ impl FsHandle {
     }
 
     /// Resize the underlying volume (LVM)
-    async fn resize_underlying_volume(&self, device: &str, target_size: u64, is_shrink: bool) -> Result<ResizeAction, anyhow::Error> {
+    async fn resize_underlying_volume(
+        &self,
+        device: &str,
+        target_size: u64,
+        is_shrink: bool,
+    ) -> Result<ResizeAction, anyhow::Error> {
         if !self.is_lvm_device(device).await? {
             return Err(FsError::ResizeVolumeManagementUnsupported.into());
         }
@@ -5673,7 +6205,9 @@ impl FsHandle {
             "success".to_string()
         } else {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(FsError::ResizeFailed(format!("volume resize failed: {}", error_msg)).into());
+            return Err(
+                FsError::ResizeFailed(format!("volume resize failed: {}", error_msg)).into(),
+            );
         };
 
         Ok(ResizeAction {
@@ -5709,20 +6243,29 @@ impl FsHandle {
     }
 
     /// Resize the filesystem itself
-    async fn resize_filesystem(&self, fs_info: &ResizeFilesystemInfo, target_size: u64, config: &FsResizeConfig) -> Result<ResizeAction, anyhow::Error> {
+    async fn resize_filesystem(
+        &self,
+        fs_info: &ResizeFilesystemInfo,
+        target_size: u64,
+        config: &FsResizeConfig,
+    ) -> Result<ResizeAction, anyhow::Error> {
         match fs_info.fstype.as_str() {
             "ext3" | "ext4" => self.resize_ext_filesystem(fs_info, target_size).await,
             "xfs" => self.resize_xfs_filesystem(fs_info).await,
             "btrfs" => self.resize_btrfs_filesystem(fs_info, target_size).await,
-            _ => Err(FsError::ResizeUnsupportedFilesystem(fs_info.fstype.clone()).into())
+            _ => Err(FsError::ResizeUnsupportedFilesystem(fs_info.fstype.clone()).into()),
         }
     }
 
     /// Resize ext3/ext4 filesystem
-    async fn resize_ext_filesystem(&self, fs_info: &ResizeFilesystemInfo, target_size: u64) -> Result<ResizeAction, anyhow::Error> {
+    async fn resize_ext_filesystem(
+        &self,
+        fs_info: &ResizeFilesystemInfo,
+        target_size: u64,
+    ) -> Result<ResizeAction, anyhow::Error> {
         let size_arg = resize2fs_size_arg(target_size);
         let command = format!("resize2fs {} {}", fs_info.source, size_arg);
-        
+
         let output = AsyncCommand::new("resize2fs")
             .arg(&fs_info.source)
             .arg(&size_arg)
@@ -5733,7 +6276,11 @@ impl FsHandle {
             "success".to_string()
         } else {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(FsError::ResizeFailed(format!("ext filesystem resize failed: {}", error_msg)).into());
+            return Err(FsError::ResizeFailed(format!(
+                "ext filesystem resize failed: {}",
+                error_msg
+            ))
+            .into());
         };
 
         Ok(ResizeAction {
@@ -5745,20 +6292,26 @@ impl FsHandle {
     }
 
     /// Resize XFS filesystem (grow only)
-    async fn resize_xfs_filesystem(&self, fs_info: &ResizeFilesystemInfo) -> Result<ResizeAction, anyhow::Error> {
+    async fn resize_xfs_filesystem(
+        &self,
+        fs_info: &ResizeFilesystemInfo,
+    ) -> Result<ResizeAction, anyhow::Error> {
         if !fs_info.mounted {
             return Err(FsError::ResizeFailed("XFS must be mounted to resize".to_string()).into());
         }
 
         // Find mount point for this device
         let mounts = self.get_existing_mounts().await?;
-        let mount_point = mounts.iter()
+        let mount_point = mounts
+            .iter()
             .find(|m| m.source == fs_info.source)
             .map(|m| &m.target)
-            .ok_or_else(|| FsError::ResizeFailed("cannot find mount point for XFS filesystem".to_string()))?;
+            .ok_or_else(|| {
+                FsError::ResizeFailed("cannot find mount point for XFS filesystem".to_string())
+            })?;
 
         let command = format!("xfs_growfs {}", mount_point);
-        
+
         let output = AsyncCommand::new("xfs_growfs")
             .arg(mount_point)
             .output()
@@ -5768,7 +6321,11 @@ impl FsHandle {
             "success".to_string()
         } else {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(FsError::ResizeFailed(format!("XFS filesystem resize failed: {}", error_msg)).into());
+            return Err(FsError::ResizeFailed(format!(
+                "XFS filesystem resize failed: {}",
+                error_msg
+            ))
+            .into());
         };
 
         Ok(ResizeAction {
@@ -5780,16 +6337,21 @@ impl FsHandle {
     }
 
     /// Resize Btrfs filesystem
-    async fn resize_btrfs_filesystem(&self, fs_info: &ResizeFilesystemInfo, target_size: u64) -> Result<ResizeAction, anyhow::Error> {
+    async fn resize_btrfs_filesystem(
+        &self,
+        fs_info: &ResizeFilesystemInfo,
+        target_size: u64,
+    ) -> Result<ResizeAction, anyhow::Error> {
         // Find mount point for this device
         let mounts = self.get_existing_mounts().await?;
-        let mount_point = mounts.iter()
+        let mount_point = mounts
+            .iter()
             .find(|m| m.source == fs_info.source)
             .map(|m| &m.target)
             .ok_or_else(|| FsError::ResizeFailed("btrfs must be mounted to resize".to_string()))?;
 
         let command = format!("btrfs filesystem resize {} {}", target_size, mount_point);
-        
+
         let output = AsyncCommand::new("btrfs")
             .arg("filesystem")
             .arg("resize")
@@ -5802,7 +6364,11 @@ impl FsHandle {
             "success".to_string()
         } else {
             let error_msg = String::from_utf8_lossy(&output.stderr);
-            return Err(FsError::ResizeFailed(format!("btrfs filesystem resize failed: {}", error_msg)).into());
+            return Err(FsError::ResizeFailed(format!(
+                "btrfs filesystem resize failed: {}",
+                error_msg
+            ))
+            .into());
         };
 
         Ok(ResizeAction {
@@ -5814,7 +6380,13 @@ impl FsHandle {
     }
 
     /// Build resize plan for dry-run
-    async fn build_resize_plan(&self, config: &FsResizeConfig, fs_info: &ResizeFilesystemInfo, current_size: u64, target_size: u64) -> Result<Value, anyhow::Error> {
+    async fn build_resize_plan(
+        &self,
+        config: &FsResizeConfig,
+        fs_info: &ResizeFilesystemInfo,
+        current_size: u64,
+        target_size: u64,
+    ) -> Result<Value, anyhow::Error> {
         let mut steps = Vec::new();
         let delta_bytes = target_size as i64 - current_size as i64;
         let is_shrink = delta_bytes < 0;
@@ -5834,36 +6406,49 @@ impl FsHandle {
         // Add filesystem resize step
         if !config.volume_resize_only {
             let (tool, command) = match fs_info.fstype.as_str() {
-                "ext3" | "ext4" => {
-                    ("resize2fs".to_string(), format!("resize2fs {} {}", fs_info.source, resize2fs_size_arg(target_size)))
-                }
+                "ext3" | "ext4" => (
+                    "resize2fs".to_string(),
+                    format!(
+                        "resize2fs {} {}",
+                        fs_info.source,
+                        resize2fs_size_arg(target_size)
+                    ),
+                ),
                 "xfs" => {
                     let mount_point = if fs_info.mounted {
                         // Find mount point
                         let mounts = self.get_existing_mounts().await?;
-                        mounts.iter()
+                        mounts
+                            .iter()
                             .find(|m| m.source == fs_info.source)
                             .map(|m| m.target.clone())
                             .unwrap_or_else(|| "/unknown".to_string())
                     } else {
                         "/unknown".to_string()
                     };
-                    ("xfs_growfs".to_string(), format!("xfs_growfs {}", mount_point))
+                    (
+                        "xfs_growfs".to_string(),
+                        format!("xfs_growfs {}", mount_point),
+                    )
                 }
                 "btrfs" => {
                     let mount_point = if fs_info.mounted {
                         // Find mount point
                         let mounts = self.get_existing_mounts().await?;
-                        mounts.iter()
+                        mounts
+                            .iter()
                             .find(|m| m.source == fs_info.source)
                             .map(|m| m.target.clone())
                             .unwrap_or_else(|| "/unknown".to_string())
                     } else {
                         "/unknown".to_string()
                     };
-                    ("btrfs".to_string(), format!("btrfs filesystem resize {} {}", target_size, mount_point))
+                    (
+                        "btrfs".to_string(),
+                        format!("btrfs filesystem resize {} {}", target_size, mount_point),
+                    )
                 }
-                _ => ("unknown".to_string(), "unsupported filesystem".to_string())
+                _ => ("unknown".to_string(), "unsupported filesystem".to_string()),
             };
 
             steps.push(ResizeAction {
@@ -5949,7 +6534,10 @@ impl FsHandle {
 
         // Validate timeout
         if config.timeout_ms == 0 {
-            return Err(FsError::InvalidCheckConfig("timeout_ms must be greater than 0".to_string()).into());
+            return Err(FsError::InvalidCheckConfig(
+                "timeout_ms must be greater than 0".to_string(),
+            )
+            .into());
         }
 
         // Check repair permissions
@@ -5962,8 +6550,9 @@ impl FsHandle {
             for (key, value) in env.iter() {
                 if key.is_empty() || value.is_empty() {
                     return Err(FsError::InvalidCheckConfig(
-                        "environment variable keys and values cannot be empty".to_string()
-                    ).into());
+                        "environment variable keys and values cannot be empty".to_string(),
+                    )
+                    .into());
                 }
             }
         }
@@ -5975,7 +6564,7 @@ impl FsHandle {
     async fn execute_check(&self, config: &FsCheckConfig) -> Result<Value, anyhow::Error> {
         // Resolve target to get filesystem information
         let fs_info = self.resolve_check_target(config).await?;
-        
+
         // Apply skip policies
         if let Some(skip_result) = self.apply_check_skip_policies(config, &fs_info)? {
             return Ok(serde_json::to_value(skip_result)?);
@@ -6020,7 +6609,9 @@ impl FsHandle {
         }
 
         // Execute the check tool
-        let tool_result = self.execute_check_tool(config, &tool_name, &args_vec).await?;
+        let tool_result = self
+            .execute_check_tool(config, &tool_name, &args_vec)
+            .await?;
 
         // Analyze results
         let analysis = self.analyze_check_results(config, &fs_info, &tool_result)?;
@@ -6049,7 +6640,10 @@ impl FsHandle {
     }
 
     /// Resolve the check target to filesystem information
-    async fn resolve_check_target(&self, config: &FsCheckConfig) -> Result<CheckFilesystemInfo, anyhow::Error> {
+    async fn resolve_check_target(
+        &self,
+        config: &FsCheckConfig,
+    ) -> Result<CheckFilesystemInfo, anyhow::Error> {
         match config.by {
             CheckTargetKind::Mountpoint => self.resolve_target_by_mountpoint(config).await,
             CheckTargetKind::Device => self.resolve_target_by_device(config).await,
@@ -6065,9 +6659,12 @@ impl FsHandle {
     }
 
     /// Resolve target by mountpoint
-    async fn resolve_target_by_mountpoint(&self, config: &FsCheckConfig) -> Result<CheckFilesystemInfo, anyhow::Error> {
+    async fn resolve_target_by_mountpoint(
+        &self,
+        config: &FsCheckConfig,
+    ) -> Result<CheckFilesystemInfo, anyhow::Error> {
         let mounts = self.get_existing_mounts().await?;
-        
+
         for mount in mounts {
             if mount.target == config.target {
                 let readonly = mount.options.iter().any(|opt| opt == "ro");
@@ -6079,24 +6676,29 @@ impl FsHandle {
                 });
             }
         }
-        
+
         Err(FsError::CheckTargetNotFound(format!("mountpoint not found: {}", config.target)).into())
     }
 
     /// Resolve target by device
-    async fn resolve_target_by_device(&self, config: &FsCheckConfig) -> Result<CheckFilesystemInfo, anyhow::Error> {
+    async fn resolve_target_by_device(
+        &self,
+        config: &FsCheckConfig,
+    ) -> Result<CheckFilesystemInfo, anyhow::Error> {
         let device_path = config.target.clone();
-        
+
         // Check if device exists
         if !tokio::fs::metadata(&device_path).await.is_ok() {
-            return Err(FsError::CheckTargetNotFound(format!("device not found: {}", device_path)).into());
+            return Err(
+                FsError::CheckTargetNotFound(format!("device not found: {}", device_path)).into(),
+            );
         }
 
         // Check if device is mounted
         let mounts = self.get_existing_mounts().await?;
         let mut mounted = false;
         let mut readonly = false;
-        
+
         for mount in mounts {
             if mount.source == device_path {
                 mounted = true;
@@ -6109,8 +6711,13 @@ impl FsHandle {
         let fstype = if let Some(ref fs_type) = config.filesystem_type {
             fs_type.clone()
         } else {
-            self.detect_filesystem_type(&device_path).await
-                .map_err(|_| FsError::CheckUnsupportedFilesystem("unable to detect filesystem type".to_string()))?
+            self.detect_filesystem_type(&device_path)
+                .await
+                .map_err(|_| {
+                    FsError::CheckUnsupportedFilesystem(
+                        "unable to detect filesystem type".to_string(),
+                    )
+                })?
         };
 
         Ok(CheckFilesystemInfo {
@@ -6122,7 +6729,11 @@ impl FsHandle {
     }
 
     /// Apply skip policies
-    fn apply_check_skip_policies(&self, config: &FsCheckConfig, fs_info: &CheckFilesystemInfo) -> Result<Option<CheckResult>, anyhow::Error> {
+    fn apply_check_skip_policies(
+        &self,
+        config: &FsCheckConfig,
+        fs_info: &CheckFilesystemInfo,
+    ) -> Result<Option<CheckResult>, anyhow::Error> {
         if config.skip_if_mounted && fs_info.mounted {
             return Ok(Some(CheckResult {
                 backend: "fs".to_string(),
@@ -6137,7 +6748,9 @@ impl FsHandle {
                 analysis: None,
                 summary: CheckSummary {
                     status: "skipped".to_string(),
-                    skipped_reason: Some("Filesystem is mounted and skip_if_mounted=true".to_string()),
+                    skipped_reason: Some(
+                        "Filesystem is mounted and skip_if_mounted=true".to_string(),
+                    ),
                 },
                 action: Some("skipped_mounted".to_string()),
                 reason: Some("Filesystem is mounted and skip_if_mounted=true".to_string()),
@@ -6158,9 +6771,17 @@ impl FsHandle {
     }
 
     /// Enforce check policies
-    fn enforce_check_policies(&self, config: &FsCheckConfig, fs_info: &CheckFilesystemInfo) -> Result<(), anyhow::Error> {
+    fn enforce_check_policies(
+        &self,
+        config: &FsCheckConfig,
+        fs_info: &CheckFilesystemInfo,
+    ) -> Result<(), anyhow::Error> {
         // Check if repair requires unmounting
-        if config.mode == CheckMode::Repair && config.require_unmounted_for_repair && fs_info.mounted && !fs_info.readonly {
+        if config.mode == CheckMode::Repair
+            && config.require_unmounted_for_repair
+            && fs_info.mounted
+            && !fs_info.readonly
+        {
             return Err(FsError::CheckRequiresUnmountForRepair(fs_info.source.clone()).into());
         }
 
@@ -6176,23 +6797,27 @@ impl FsHandle {
     }
 
     /// Select appropriate tool for the filesystem
-    fn select_check_tool(&self, config: &FsCheckConfig, fs_info: &CheckFilesystemInfo) -> Result<(String, Vec<String>), anyhow::Error> {
+    fn select_check_tool(
+        &self,
+        config: &FsCheckConfig,
+        fs_info: &CheckFilesystemInfo,
+    ) -> Result<(String, Vec<String>), anyhow::Error> {
         match fs_info.fstype.as_str() {
             "ext2" | "ext3" | "ext4" | "vfat" | "reiserfs" => {
                 self.build_fsck_command(config, fs_info)
-            },
-            "xfs" => {
-                self.build_xfs_repair_command(config, fs_info)
-            },
-            "btrfs" => {
-                self.build_btrfs_command(config, fs_info)
-            },
+            }
+            "xfs" => self.build_xfs_repair_command(config, fs_info),
+            "btrfs" => self.build_btrfs_command(config, fs_info),
             _ => Err(FsError::CheckUnsupportedFilesystem(fs_info.fstype.clone()).into()),
         }
     }
 
     /// Build fsck command for ext* and other fsck-supported filesystems
-    fn build_fsck_command(&self, config: &FsCheckConfig, fs_info: &CheckFilesystemInfo) -> Result<(String, Vec<String>), anyhow::Error> {
+    fn build_fsck_command(
+        &self,
+        config: &FsCheckConfig,
+        fs_info: &CheckFilesystemInfo,
+    ) -> Result<(String, Vec<String>), anyhow::Error> {
         let tool_name = format!("fsck.{}", fs_info.fstype);
         let mut args = vec![];
 
@@ -6202,14 +6827,14 @@ impl FsHandle {
                 if config.aggressiveness == CheckAggressiveness::Aggressive {
                     args.push("-f".to_string()); // force check
                 }
-            },
+            }
             CheckMode::Repair => {
                 if config.allow_repair {
                     args.push("-p".to_string()); // preen mode (safe auto-repair)
                 } else {
                     args.push("-n".to_string()); // fallback to no-op
                 }
-            },
+            }
             CheckMode::Auto => {
                 if config.allow_repair {
                     args.push("-p".to_string()); // preen mode
@@ -6219,7 +6844,7 @@ impl FsHandle {
                 if config.aggressiveness == CheckAggressiveness::Aggressive {
                     args.push("-f".to_string());
                 }
-            },
+            }
         }
 
         args.push(fs_info.source.clone());
@@ -6228,28 +6853,32 @@ impl FsHandle {
     }
 
     /// Build xfs_repair command
-    fn build_xfs_repair_command(&self, config: &FsCheckConfig, fs_info: &CheckFilesystemInfo) -> Result<(String, Vec<String>), anyhow::Error> {
+    fn build_xfs_repair_command(
+        &self,
+        config: &FsCheckConfig,
+        fs_info: &CheckFilesystemInfo,
+    ) -> Result<(String, Vec<String>), anyhow::Error> {
         let tool_name = "xfs_repair".to_string();
         let mut args = vec![];
 
         match config.mode {
             CheckMode::Check => {
                 args.push("-n".to_string()); // no-modify mode
-            },
+            }
             CheckMode::Repair => {
                 if config.allow_repair && !fs_info.mounted {
                     // Don't add -n for actual repair
                 } else {
                     args.push("-n".to_string()); // fallback to check-only
                 }
-            },
+            }
             CheckMode::Auto => {
                 if config.allow_repair && !fs_info.mounted {
                     // Auto mode with repair allowed
                 } else {
                     args.push("-n".to_string()); // check-only
                 }
-            },
+            }
         }
 
         args.push(fs_info.source.clone());
@@ -6258,7 +6887,11 @@ impl FsHandle {
     }
 
     /// Build btrfs command (scrub or check)
-    fn build_btrfs_command(&self, config: &FsCheckConfig, fs_info: &CheckFilesystemInfo) -> Result<(String, Vec<String>), anyhow::Error> {
+    fn build_btrfs_command(
+        &self,
+        config: &FsCheckConfig,
+        fs_info: &CheckFilesystemInfo,
+    ) -> Result<(String, Vec<String>), anyhow::Error> {
         let tool_name = "btrfs".to_string();
         let mut args = vec![];
 
@@ -6271,27 +6904,27 @@ impl FsHandle {
         } else if !fs_info.mounted || config.btrfs_allow_offline_check {
             // Offline check
             args.push("check".to_string());
-            
+
             match config.mode {
                 CheckMode::Check => {
                     args.push("--readonly".to_string());
-                },
+                }
                 CheckMode::Repair => {
                     if config.allow_repair && !fs_info.mounted {
                         args.push("--repair".to_string());
                     } else {
                         args.push("--readonly".to_string());
                     }
-                },
+                }
                 CheckMode::Auto => {
                     if config.allow_repair && !fs_info.mounted {
                         args.push("--repair".to_string());
                     } else {
                         args.push("--readonly".to_string());
                     }
-                },
+                }
             }
-            
+
             args.push(fs_info.source.clone());
         } else {
             return Err(FsError::CheckMustBeOffline(fs_info.source.clone()).into());
@@ -6301,16 +6934,19 @@ impl FsHandle {
     }
 
     /// Execute the check tool
-    async fn execute_check_tool(&self, config: &FsCheckConfig, tool_name: &str, args: &[String]) -> Result<CheckTool, anyhow::Error> {
+    async fn execute_check_tool(
+        &self,
+        config: &FsCheckConfig,
+        tool_name: &str,
+        args: &[String],
+    ) -> Result<CheckTool, anyhow::Error> {
         // Check if tool is available
         self.check_tool_available(tool_name).await?;
 
         let full_command = format!("{} {}", tool_name, args.join(" "));
 
         let mut cmd = AsyncCommand::new(tool_name);
-        cmd.args(args)
-           .stdout(Stdio::piped())
-           .stderr(Stdio::piped());
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
 
         // Apply environment variables
         if let Some(ref env) = config.env {
@@ -6319,7 +6955,9 @@ impl FsHandle {
             }
         }
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| FsError::CheckFailed(format!("Failed to execute {}: {}", tool_name, e)))?;
 
         Ok(CheckTool {
@@ -6335,10 +6973,12 @@ impl FsHandle {
     async fn check_tool_available(&self, tool_name: &str) -> Result<(), anyhow::Error> {
         let mut cmd = AsyncCommand::new("which");
         cmd.arg(tool_name)
-           .stdout(Stdio::null())
-           .stderr(Stdio::null());
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|_| FsError::CheckToolNotAvailable(tool_name.to_string()))?;
 
         if !output.status.success() {
@@ -6349,32 +6989,41 @@ impl FsHandle {
     }
 
     /// Analyze check results based on tool output and exit codes
-    fn analyze_check_results(&self, config: &FsCheckConfig, fs_info: &CheckFilesystemInfo, tool: &CheckTool) -> Result<CheckAnalysis, anyhow::Error> {
+    fn analyze_check_results(
+        &self,
+        config: &FsCheckConfig,
+        fs_info: &CheckFilesystemInfo,
+        tool: &CheckTool,
+    ) -> Result<CheckAnalysis, anyhow::Error> {
         match fs_info.fstype.as_str() {
             "ext2" | "ext3" | "ext4" | "vfat" | "reiserfs" => {
                 self.analyze_fsck_results(config, tool)
-            },
-            "xfs" => {
-                self.analyze_xfs_repair_results(config, tool)
-            },
-            "btrfs" => {
-                self.analyze_btrfs_results(config, tool)
-            },
+            }
+            "xfs" => self.analyze_xfs_repair_results(config, tool),
+            "btrfs" => self.analyze_btrfs_results(config, tool),
             _ => Ok(CheckAnalysis {
                 errors_found: tool.exit_code != 0,
                 repaired: false,
                 needs_repair: tool.exit_code != 0,
-                filesystem_state: if tool.exit_code == 0 { "clean".to_string() } else { "errors_detected".to_string() },
+                filesystem_state: if tool.exit_code == 0 {
+                    "clean".to_string()
+                } else {
+                    "errors_detected".to_string()
+                },
             }),
         }
     }
 
     /// Analyze fsck results based on exit codes
-    fn analyze_fsck_results(&self, _config: &FsCheckConfig, tool: &CheckTool) -> Result<CheckAnalysis, anyhow::Error> {
+    fn analyze_fsck_results(
+        &self,
+        _config: &FsCheckConfig,
+        tool: &CheckTool,
+    ) -> Result<CheckAnalysis, anyhow::Error> {
         // fsck exit codes:
         // 0: No errors
         // 1: Errors corrected
-        // 2: System should be rebooted  
+        // 2: System should be rebooted
         // 4: Errors left uncorrected
         // 8: Operational error
         // 16: Usage or syntax error
@@ -6416,7 +7065,11 @@ impl FsHandle {
     }
 
     /// Analyze xfs_repair results
-    fn analyze_xfs_repair_results(&self, _config: &FsCheckConfig, tool: &CheckTool) -> Result<CheckAnalysis, anyhow::Error> {
+    fn analyze_xfs_repair_results(
+        &self,
+        _config: &FsCheckConfig,
+        tool: &CheckTool,
+    ) -> Result<CheckAnalysis, anyhow::Error> {
         // xfs_repair exit codes:
         // 0: No errors
         // 1: Errors found and repaired, or errors found in -n mode
@@ -6436,9 +7089,13 @@ impl FsHandle {
                     errors_found: true,
                     repaired,
                     needs_repair: !repaired,
-                    filesystem_state: if repaired { "repaired".to_string() } else { "errors_detected".to_string() },
+                    filesystem_state: if repaired {
+                        "repaired".to_string()
+                    } else {
+                        "errors_detected".to_string()
+                    },
                 })
-            },
+            }
             _ => Ok(CheckAnalysis {
                 errors_found: true,
                 repaired: false,
@@ -6449,7 +7106,11 @@ impl FsHandle {
     }
 
     /// Analyze btrfs results
-    fn analyze_btrfs_results(&self, _config: &FsCheckConfig, tool: &CheckTool) -> Result<CheckAnalysis, anyhow::Error> {
+    fn analyze_btrfs_results(
+        &self,
+        _config: &FsCheckConfig,
+        tool: &CheckTool,
+    ) -> Result<CheckAnalysis, anyhow::Error> {
         // btrfs scrub/check exit codes:
         // 0: No errors or successful completion
         // 1: Errors found
@@ -6488,7 +7149,7 @@ impl FsHandle {
                         filesystem_state: "errors_detected".to_string(),
                     })
                 }
-            },
+            }
             _ => Ok(CheckAnalysis {
                 errors_found: true,
                 repaired: false,
@@ -6506,7 +7167,8 @@ impl FsHandle {
 
         // Execute with timeout
         let timeout_duration = Duration::from_millis(config.timeout_ms);
-        let result = timeout(timeout_duration, self.execute_list_mounts(&config)).await
+        let result = timeout(timeout_duration, self.execute_list_mounts(&config))
+            .await
             .map_err(|_| FsError::ListMountsTimeout)?;
 
         match result {
@@ -6531,11 +7193,18 @@ impl FsHandle {
     /// Validate list-mounts configuration
     fn validate_list_mounts_config(&self, config: &ListMountsConfig) -> Result<(), anyhow::Error> {
         if config.timeout_ms == 0 {
-            return Err(FsError::InvalidListMountsConfig("timeout_ms must be greater than 0".to_string()).into());
+            return Err(FsError::InvalidListMountsConfig(
+                "timeout_ms must be greater than 0".to_string(),
+            )
+            .into());
         }
 
         if !config.include_readonly && !config.include_readwrite {
-            return Err(FsError::InvalidListMountsConfig("Both include_readonly=false and include_readwrite=false - nothing allowed".to_string()).into());
+            return Err(FsError::InvalidListMountsConfig(
+                "Both include_readonly=false and include_readwrite=false - nothing allowed"
+                    .to_string(),
+            )
+            .into());
         }
 
         Ok(())
@@ -6544,7 +7213,9 @@ impl FsHandle {
     /// Execute the actual list-mounts operation
     async fn execute_list_mounts(&self, config: &ListMountsConfig) -> Result<Value, anyhow::Error> {
         // 1. Read mount table
-        let raw_mounts = self.read_mount_table().await
+        let raw_mounts = self
+            .read_mount_table()
+            .await
             .map_err(|e| FsError::ListMountsFailed(format!("Failed to read mount table: {}", e)))?;
 
         // 2. Parse and classify mounts
@@ -6574,7 +7245,9 @@ impl FsHandle {
 
             // Optionally resolve filesystem features
             if config.resolve_fs_features {
-                entry.fs_features = self.resolve_filesystem_features(&raw_mount.fstype, &raw_mount.source).await;
+                entry.fs_features = self
+                    .resolve_filesystem_features(&raw_mount.fstype, &raw_mount.source)
+                    .await;
             }
 
             mount_entries.push(entry);
@@ -6590,7 +7263,8 @@ impl FsHandle {
 
         // 5. Sort deterministically
         mount_entries.sort_by(|a, b| {
-            a.target.cmp(&b.target)
+            a.target
+                .cmp(&b.target)
                 .then_with(|| a.source.cmp(&b.source))
                 .then_with(|| a.fstype.cmp(&b.fstype))
         });
@@ -6627,10 +7301,24 @@ impl FsHandle {
 
     /// Check if filesystem type is a pseudo filesystem
     fn is_pseudo_filesystem(&self, fstype: &str) -> bool {
-        let is_pseudo = matches!(fstype, 
-            "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" | "cgroup" | 
-            "cgroup2" | "pstore" | "securityfs" | "debugfs" | "tracefs" |
-            "bpf" | "configfs" | "fusectl" | "mqueue" | "hugetlbfs"
+        let is_pseudo = matches!(
+            fstype,
+            "proc"
+                | "sysfs"
+                | "devtmpfs"
+                | "devpts"
+                | "tmpfs"
+                | "cgroup"
+                | "cgroup2"
+                | "pstore"
+                | "securityfs"
+                | "debugfs"
+                | "tracefs"
+                | "bpf"
+                | "configfs"
+                | "fusectl"
+                | "mqueue"
+                | "hugetlbfs"
         );
         is_pseudo
     }
@@ -6638,9 +7326,18 @@ impl FsHandle {
     /// Check if filesystem is a network filesystem
     fn is_network_filesystem(&self, fstype: &str, source: &str) -> bool {
         // Check by filesystem type
-        if matches!(fstype,
-            "nfs" | "nfs4" | "cifs" | "smb" | "smbfs" | "sshfs" | 
-            "glusterfs" | "fuse.sshfs" | "fuse.cifs" | "fuse.glusterfs"
+        if matches!(
+            fstype,
+            "nfs"
+                | "nfs4"
+                | "cifs"
+                | "smb"
+                | "smbfs"
+                | "sshfs"
+                | "glusterfs"
+                | "fuse.sshfs"
+                | "fuse.cifs"
+                | "fuse.glusterfs"
         ) {
             return true;
         }
@@ -6655,7 +7352,11 @@ impl FsHandle {
     }
 
     /// Filter mounts by paths - only include filesystems backing the specified paths
-    fn filter_mounts_by_paths(&self, mounts: &[ListMountEntry], paths: &[String]) -> Result<Vec<ListMountEntry>, anyhow::Error> {
+    fn filter_mounts_by_paths(
+        &self,
+        mounts: &[ListMountEntry],
+        paths: &[String],
+    ) -> Result<Vec<ListMountEntry>, anyhow::Error> {
         let mut selected_mounts = Vec::new();
         let mut selected_targets = std::collections::HashSet::new();
 
@@ -6686,18 +7387,27 @@ impl FsHandle {
     }
 
     /// Apply all the include/exclude filters
-    fn apply_list_mounts_filters(&self, mut mounts: Vec<ListMountEntry>, config: &ListMountsConfig) -> Result<Vec<ListMountEntry>, anyhow::Error> {
-        
+    fn apply_list_mounts_filters(
+        &self,
+        mut mounts: Vec<ListMountEntry>,
+        config: &ListMountsConfig,
+    ) -> Result<Vec<ListMountEntry>, anyhow::Error> {
         // Apply mountpoint filters
         if !config.include_mountpoints.is_empty() {
             mounts.retain(|mount| {
-                config.include_mountpoints.iter().any(|prefix| mount.target.starts_with(prefix))
+                config
+                    .include_mountpoints
+                    .iter()
+                    .any(|prefix| mount.target.starts_with(prefix))
             });
         }
 
         if !config.exclude_mountpoints.is_empty() {
             mounts.retain(|mount| {
-                !config.exclude_mountpoints.iter().any(|prefix| mount.target.starts_with(prefix))
+                !config
+                    .exclude_mountpoints
+                    .iter()
+                    .any(|prefix| mount.target.starts_with(prefix))
             });
         }
 
@@ -6779,7 +7489,7 @@ impl FsHandle {
                 }
 
                 Some(meta)
-            },
+            }
             _ => None,
         }
     }
@@ -6816,7 +7526,8 @@ impl FsHandle {
                 for line in output_str.lines() {
                     if line.starts_with("Filesystem features:") {
                         if let Some(features_str) = line.split(':').nth(1) {
-                            features = features_str.split_whitespace()
+                            features = features_str
+                                .split_whitespace()
                                 .map(|s| s.to_string())
                                 .collect();
                         }
@@ -6836,22 +7547,22 @@ impl FsHandle {
                 }
 
                 Some(FsFeatures {
-                    features: if features.is_empty() { None } else { Some(features) },
+                    features: if features.is_empty() {
+                        None
+                    } else {
+                        Some(features)
+                    },
                     block_size,
                     inode_size,
                 })
-            },
+            }
             _ => None,
         }
     }
 
     /// Resolve XFS filesystem features
     async fn resolve_xfs_features(&self, source: &str) -> Option<FsFeatures> {
-        match AsyncCommand::new("xfs_info")
-            .arg(source)
-            .output()
-            .await
-        {
+        match AsyncCommand::new("xfs_info").arg(source).output().await {
             Ok(output) if output.status.success() => {
                 let output_str = String::from_utf8_lossy(&output.stdout);
                 let mut block_size = None;
@@ -6874,7 +7585,7 @@ impl FsHandle {
                     block_size,
                     inode_size: None,
                 })
-            },
+            }
             _ => None,
         }
     }
@@ -6893,7 +7604,21 @@ impl FsHandle {
 
 impl Handle for FsHandle {
     fn verbs(&self) -> &'static [&'static str] {
-        &["mount", "unmount", "umount", "snapshot", "quota", "quota_summary", "usage", "resize", "check", "fsck", "list-mounts", "help", "h"]
+        &[
+            "mount",
+            "unmount",
+            "umount",
+            "snapshot",
+            "quota",
+            "quota_summary",
+            "usage",
+            "resize",
+            "check",
+            "fsck",
+            "list-mounts",
+            "help",
+            "h",
+        ]
     }
 
     fn help(&self) -> Option<&'static HandleHelp> {
@@ -6904,33 +7629,45 @@ impl Handle for FsHandle {
         match verb {
             "mount" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("Failed to serialize mount arguments")?;
-                
+                let args_value =
+                    serde_json::to_value(args).context("Failed to serialize mount arguments")?;
+
                 // For the synchronous Handle trait, we need to use a runtime
-                let rt = tokio::runtime::Runtime::new()
-                    .context("Failed to create async runtime")?;
-                
+                let rt =
+                    tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
                 match rt.block_on(self.mount(args_value)) {
                     Ok(result) => {
                         // Write JSON result to stdout
-                        writeln!(io.stdout, "{}", serde_json::to_string(&result)
-                            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string(&result).map_err(|e| anyhow::anyhow!(
+                                "Failed to serialize result: {}",
+                                e
+                            ))?
+                        )?;
                         Ok(Status::ok())
-                    },
+                    }
                     Err(e) => {
                         // Map errors to appropriate status codes
                         if let Some(fs_err) = e.downcast_ref::<FsError>() {
                             match fs_err {
-                                FsError::InvalidMountConfig(_) => Ok(Status::err(1, &e.to_string())),
+                                FsError::InvalidMountConfig(_) => {
+                                    Ok(Status::err(1, &e.to_string()))
+                                }
                                 FsError::ProfileNotFound(_) => Ok(Status::err(2, &e.to_string())),
                                 FsError::MountUnsupported => Ok(Status::err(3, &e.to_string())),
-                                FsError::MountPermissionDenied => Ok(Status::err(13, &e.to_string())),
+                                FsError::MountPermissionDenied => {
+                                    Ok(Status::err(13, &e.to_string()))
+                                }
                                 FsError::AlreadyMounted(_) => Ok(Status::err(16, &e.to_string())),
                                 FsError::ConflictingMount(_) => Ok(Status::err(17, &e.to_string())),
                                 FsError::MountFailure(_) => Ok(Status::err(32, &e.to_string())),
                                 FsError::MountTimeout => Ok(Status::err(62, &e.to_string())),
-                                FsError::TargetCreationFailed(_) => Ok(Status::err(18, &e.to_string())),
+                                FsError::TargetCreationFailed(_) => {
+                                    Ok(Status::err(18, &e.to_string()))
+                                }
                                 FsError::NotMounted(_) => Ok(Status::err(19, &e.to_string())),
                                 _ => Ok(Status::err(1, &e.to_string())),
                             }
@@ -6942,33 +7679,45 @@ impl Handle for FsHandle {
             }
             "unmount" | "umount" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("Failed to serialize unmount arguments")?;
-                
+                let args_value =
+                    serde_json::to_value(args).context("Failed to serialize unmount arguments")?;
+
                 // For the synchronous Handle trait, we need to use a runtime
-                let rt = tokio::runtime::Runtime::new()
-                    .context("Failed to create async runtime")?;
-                
+                let rt =
+                    tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
                 match rt.block_on(self.unmount(args_value)) {
                     Ok(result) => {
                         // Write JSON result to stdout
-                        writeln!(io.stdout, "{}", serde_json::to_string(&result)
-                            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string(&result).map_err(|e| anyhow::anyhow!(
+                                "Failed to serialize result: {}",
+                                e
+                            ))?
+                        )?;
                         Ok(Status::ok())
-                    },
+                    }
                     Err(e) => {
                         // Map errors to appropriate status codes
                         if let Some(fs_err) = e.downcast_ref::<FsError>() {
                             match fs_err {
-                                FsError::InvalidUnmountConfig(_) => Ok(Status::err(1, &e.to_string())),
+                                FsError::InvalidUnmountConfig(_) => {
+                                    Ok(Status::err(1, &e.to_string()))
+                                }
                                 FsError::ProfileNotFound(_) => Ok(Status::err(2, &e.to_string())),
                                 FsError::UnmountUnsupported => Ok(Status::err(3, &e.to_string())),
-                                FsError::UnmountPermissionDenied => Ok(Status::err(13, &e.to_string())),
+                                FsError::UnmountPermissionDenied => {
+                                    Ok(Status::err(13, &e.to_string()))
+                                }
                                 FsError::NotMounted(_) => Ok(Status::err(19, &e.to_string())),
                                 FsError::UnmountBusy(_) => Ok(Status::err(16, &e.to_string())),
                                 FsError::UnmountFailure(_) => Ok(Status::err(32, &e.to_string())),
                                 FsError::UnmountTimeout => Ok(Status::err(62, &e.to_string())),
-                                FsError::UnmountOptionUnsupported(_) => Ok(Status::err(95, &e.to_string())),
+                                FsError::UnmountOptionUnsupported(_) => {
+                                    Ok(Status::err(95, &e.to_string()))
+                                }
                                 _ => Ok(Status::err(1, &e.to_string())),
                             }
                         } else {
@@ -6979,25 +7728,33 @@ impl Handle for FsHandle {
             }
             "snapshot" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("Failed to serialize snapshot arguments")?;
-                
+                let args_value =
+                    serde_json::to_value(args).context("Failed to serialize snapshot arguments")?;
+
                 // For the synchronous Handle trait, we need to use a runtime
-                let rt = tokio::runtime::Runtime::new()
-                    .context("Failed to create async runtime")?;
-                
+                let rt =
+                    tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
                 match rt.block_on(self.snapshot(args_value)) {
                     Ok(result) => {
                         // Write JSON result to stdout
-                        writeln!(io.stdout, "{}", serde_json::to_string(&result)
-                            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string(&result).map_err(|e| anyhow::anyhow!(
+                                "Failed to serialize result: {}",
+                                e
+                            ))?
+                        )?;
                         Ok(Status::ok())
-                    },
+                    }
                     Err(e) => {
                         // Map errors to appropriate status codes
                         if let Some(fs_err) = e.downcast_ref::<FsError>() {
                             match fs_err {
-                                FsError::InvalidSnapshotConfig(_) => Ok(Status::err(1, &e.to_string())),
+                                FsError::InvalidSnapshotConfig(_) => {
+                                    Ok(Status::err(1, &e.to_string()))
+                                }
                                 FsError::ProfileNotFound(_) => Ok(Status::err(2, &e.to_string())),
                                 FsError::SnapshotUnsupported => Ok(Status::err(3, &e.to_string())),
                                 FsError::SnapshotTimeout => Ok(Status::err(62, &e.to_string())),
@@ -7012,29 +7769,39 @@ impl Handle for FsHandle {
             }
             "quota" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("Failed to serialize quota arguments")?;
-                
+                let args_value =
+                    serde_json::to_value(args).context("Failed to serialize quota arguments")?;
+
                 // For the synchronous Handle trait, we need to use a runtime
-                let rt = tokio::runtime::Runtime::new()
-                    .context("Failed to create async runtime")?;
-                
+                let rt =
+                    tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
                 match rt.block_on(self.quota(args_value)) {
                     Ok(result) => {
                         // Write JSON result to stdout
-                        writeln!(io.stdout, "{}", serde_json::to_string(&result)
-                            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string(&result).map_err(|e| anyhow::anyhow!(
+                                "Failed to serialize result: {}",
+                                e
+                            ))?
+                        )?;
                         Ok(Status::ok())
-                    },
+                    }
                     Err(e) => {
                         // Map errors to appropriate status codes
                         if let Some(fs_err) = e.downcast_ref::<FsError>() {
                             match fs_err {
-                                FsError::InvalidQuotaConfig(_) => Ok(Status::err(1, &e.to_string())),
+                                FsError::InvalidQuotaConfig(_) => {
+                                    Ok(Status::err(1, &e.to_string()))
+                                }
                                 FsError::ProfileNotFound(_) => Ok(Status::err(2, &e.to_string())),
                                 FsError::QuotaUnsupported => Ok(Status::err(3, &e.to_string())),
                                 FsError::QuotaNotEnabled(_) => Ok(Status::err(4, &e.to_string())),
-                                FsError::QuotaSubjectNotFound(_) => Ok(Status::err(5, &e.to_string())),
+                                FsError::QuotaSubjectNotFound(_) => {
+                                    Ok(Status::err(5, &e.to_string()))
+                                }
                                 FsError::QuotaTimeout => Ok(Status::err(62, &e.to_string())),
                                 FsError::QuotaFailed(_) => Ok(Status::err(32, &e.to_string())),
                                 _ => Ok(Status::err(1, &e.to_string())),
@@ -7049,29 +7816,45 @@ impl Handle for FsHandle {
                 // Convert Args to Value for async processing
                 let args_value = serde_json::to_value(args)
                     .context("Failed to serialize quota summary arguments")?;
-                
+
                 // For the synchronous Handle trait, we need to use a runtime
-                let rt = tokio::runtime::Runtime::new()
-                    .context("Failed to create async runtime")?;
-                
+                let rt =
+                    tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
                 match rt.block_on(self.quota_summary(args_value)) {
                     Ok(result) => {
                         // Write JSON result to stdout
-                        writeln!(io.stdout, "{}", serde_json::to_string(&result)
-                            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string(&result).map_err(|e| anyhow::anyhow!(
+                                "Failed to serialize result: {}",
+                                e
+                            ))?
+                        )?;
                         Ok(Status::ok())
-                    },
+                    }
                     Err(e) => {
                         // Map errors to appropriate status codes
                         if let Some(fs_err) = e.downcast_ref::<FsError>() {
                             match fs_err {
-                                FsError::InvalidQuotaSummaryConfig(_) => Ok(Status::err(1, &e.to_string())),
+                                FsError::InvalidQuotaSummaryConfig(_) => {
+                                    Ok(Status::err(1, &e.to_string()))
+                                }
                                 FsError::ProfileNotFound(_) => Ok(Status::err(2, &e.to_string())),
-                                FsError::QuotaSummaryUnsupported => Ok(Status::err(3, &e.to_string())),
-                                FsError::QuotaSummaryNoQuotaFilesystems => Ok(Status::err(4, &e.to_string())),
-                                FsError::QuotaSubjectNotFound(_) => Ok(Status::err(5, &e.to_string())),
+                                FsError::QuotaSummaryUnsupported => {
+                                    Ok(Status::err(3, &e.to_string()))
+                                }
+                                FsError::QuotaSummaryNoQuotaFilesystems => {
+                                    Ok(Status::err(4, &e.to_string()))
+                                }
+                                FsError::QuotaSubjectNotFound(_) => {
+                                    Ok(Status::err(5, &e.to_string()))
+                                }
                                 FsError::QuotaSummaryTimeout => Ok(Status::err(62, &e.to_string())),
-                                FsError::QuotaSummaryFailed(_) => Ok(Status::err(32, &e.to_string())),
+                                FsError::QuotaSummaryFailed(_) => {
+                                    Ok(Status::err(32, &e.to_string()))
+                                }
                                 _ => Ok(Status::err(1, &e.to_string())),
                             }
                         } else {
@@ -7082,25 +7865,33 @@ impl Handle for FsHandle {
             }
             "usage" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("Failed to serialize usage arguments")?;
-                
+                let args_value =
+                    serde_json::to_value(args).context("Failed to serialize usage arguments")?;
+
                 // For the synchronous Handle trait, we need to use a runtime
-                let rt = tokio::runtime::Runtime::new()
-                    .context("Failed to create async runtime")?;
-                
+                let rt =
+                    tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
                 match rt.block_on(self.usage(args_value)) {
                     Ok(result) => {
                         // Write JSON result to stdout
-                        writeln!(io.stdout, "{}", serde_json::to_string(&result)
-                            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string(&result).map_err(|e| anyhow::anyhow!(
+                                "Failed to serialize result: {}",
+                                e
+                            ))?
+                        )?;
                         Ok(Status::ok())
-                    },
+                    }
                     Err(e) => {
                         // Map errors to appropriate status codes
                         if let Some(fs_err) = e.downcast_ref::<FsError>() {
                             match fs_err {
-                                FsError::InvalidUsageConfig(_) => Ok(Status::err(1, &e.to_string())),
+                                FsError::InvalidUsageConfig(_) => {
+                                    Ok(Status::err(1, &e.to_string()))
+                                }
                                 FsError::ProfileNotFound(_) => Ok(Status::err(2, &e.to_string())),
                                 FsError::UsageUnsupported => Ok(Status::err(3, &e.to_string())),
                                 FsError::UsageTimeout => Ok(Status::err(62, &e.to_string())),
@@ -7117,35 +7908,61 @@ impl Handle for FsHandle {
             }
             "resize" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("Failed to serialize resize arguments")?;
-                
+                let args_value =
+                    serde_json::to_value(args).context("Failed to serialize resize arguments")?;
+
                 // For the synchronous Handle trait, we need to use a runtime
-                let rt = tokio::runtime::Runtime::new()
-                    .context("Failed to create async runtime")?;
-                
+                let rt =
+                    tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
                 match rt.block_on(self.resize(args_value)) {
                     Ok(result) => {
                         // Write JSON result to stdout
-                        writeln!(io.stdout, "{}", serde_json::to_string(&result)
-                            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string(&result).map_err(|e| anyhow::anyhow!(
+                                "Failed to serialize result: {}",
+                                e
+                            ))?
+                        )?;
                         Ok(Status::ok())
-                    },
+                    }
                     Err(e) => {
                         // Map errors to appropriate status codes
                         if let Some(fs_err) = e.downcast_ref::<FsError>() {
                             match fs_err {
-                                FsError::InvalidResizeConfig(_) => Ok(Status::err(1, &e.to_string())),
+                                FsError::InvalidResizeConfig(_) => {
+                                    Ok(Status::err(1, &e.to_string()))
+                                }
                                 FsError::ProfileNotFound(_) => Ok(Status::err(2, &e.to_string())),
-                                FsError::ResizeTargetNotFound(_) => Ok(Status::err(2, &e.to_string())),
-                                FsError::ResizeUnsupportedFilesystem(_) => Ok(Status::err(3, &e.to_string())),
-                                FsError::ResizeShrinkNotAllowed => Ok(Status::err(4, &e.to_string())),
-                                FsError::ResizeShrinkNotSupportedForFilesystem(_) => Ok(Status::err(5, &e.to_string())),
-                                FsError::ResizeShrinkRequiresUnmount(_) => Ok(Status::err(6, &e.to_string())),
-                                FsError::ResizeWouldViolateMinFree => Ok(Status::err(7, &e.to_string())),
-                                FsError::ResizeTargetExceedsDevice => Ok(Status::err(8, &e.to_string())),
-                                FsError::ResizeInvalidTargetSize(_) => Ok(Status::err(9, &e.to_string())),
-                                FsError::ResizeVolumeManagementUnsupported => Ok(Status::err(10, &e.to_string())),
+                                FsError::ResizeTargetNotFound(_) => {
+                                    Ok(Status::err(2, &e.to_string()))
+                                }
+                                FsError::ResizeUnsupportedFilesystem(_) => {
+                                    Ok(Status::err(3, &e.to_string()))
+                                }
+                                FsError::ResizeShrinkNotAllowed => {
+                                    Ok(Status::err(4, &e.to_string()))
+                                }
+                                FsError::ResizeShrinkNotSupportedForFilesystem(_) => {
+                                    Ok(Status::err(5, &e.to_string()))
+                                }
+                                FsError::ResizeShrinkRequiresUnmount(_) => {
+                                    Ok(Status::err(6, &e.to_string()))
+                                }
+                                FsError::ResizeWouldViolateMinFree => {
+                                    Ok(Status::err(7, &e.to_string()))
+                                }
+                                FsError::ResizeTargetExceedsDevice => {
+                                    Ok(Status::err(8, &e.to_string()))
+                                }
+                                FsError::ResizeInvalidTargetSize(_) => {
+                                    Ok(Status::err(9, &e.to_string()))
+                                }
+                                FsError::ResizeVolumeManagementUnsupported => {
+                                    Ok(Status::err(10, &e.to_string()))
+                                }
                                 FsError::ResizeTimeout => Ok(Status::err(62, &e.to_string())),
                                 FsError::ResizeFailed(_) => Ok(Status::err(32, &e.to_string())),
                                 _ => Ok(Status::err(1, &e.to_string())),
@@ -7158,32 +7975,52 @@ impl Handle for FsHandle {
             }
             "check" | "fsck" => {
                 // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("Failed to serialize check arguments")?;
-                
+                let args_value =
+                    serde_json::to_value(args).context("Failed to serialize check arguments")?;
+
                 // For the synchronous Handle trait, we need to use a runtime
-                let rt = tokio::runtime::Runtime::new()
-                    .context("Failed to create async runtime")?;
-                
+                let rt =
+                    tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
                 match rt.block_on(self.check(args_value)) {
                     Ok(result) => {
                         // Write JSON result to stdout
-                        writeln!(io.stdout, "{}", serde_json::to_string(&result)
-                            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string(&result).map_err(|e| anyhow::anyhow!(
+                                "Failed to serialize result: {}",
+                                e
+                            ))?
+                        )?;
                         Ok(Status::ok())
-                    },
+                    }
                     Err(e) => {
                         // Map errors to appropriate status codes
                         if let Some(fs_err) = e.downcast_ref::<FsError>() {
                             match fs_err {
-                                FsError::InvalidCheckConfig(_) => Ok(Status::err(1, &e.to_string())),
+                                FsError::InvalidCheckConfig(_) => {
+                                    Ok(Status::err(1, &e.to_string()))
+                                }
                                 FsError::ProfileNotFound(_) => Ok(Status::err(2, &e.to_string())),
-                                FsError::CheckTargetNotFound(_) => Ok(Status::err(2, &e.to_string())),
-                                FsError::CheckUnsupportedFilesystem(_) => Ok(Status::err(3, &e.to_string())),
-                                FsError::CheckRepairNotAllowed => Ok(Status::err(4, &e.to_string())),
-                                FsError::CheckRequiresUnmountForRepair(_) => Ok(Status::err(5, &e.to_string())),
-                                FsError::CheckMustBeOffline(_) => Ok(Status::err(6, &e.to_string())),
-                                FsError::CheckToolNotAvailable(_) => Ok(Status::err(7, &e.to_string())),
+                                FsError::CheckTargetNotFound(_) => {
+                                    Ok(Status::err(2, &e.to_string()))
+                                }
+                                FsError::CheckUnsupportedFilesystem(_) => {
+                                    Ok(Status::err(3, &e.to_string()))
+                                }
+                                FsError::CheckRepairNotAllowed => {
+                                    Ok(Status::err(4, &e.to_string()))
+                                }
+                                FsError::CheckRequiresUnmountForRepair(_) => {
+                                    Ok(Status::err(5, &e.to_string()))
+                                }
+                                FsError::CheckMustBeOffline(_) => {
+                                    Ok(Status::err(6, &e.to_string()))
+                                }
+                                FsError::CheckToolNotAvailable(_) => {
+                                    Ok(Status::err(7, &e.to_string()))
+                                }
                                 FsError::CheckTimeout => Ok(Status::err(62, &e.to_string())),
                                 FsError::CheckFailed(_) => Ok(Status::err(32, &e.to_string())),
                                 _ => Ok(Status::err(1, &e.to_string())),
@@ -7198,25 +8035,35 @@ impl Handle for FsHandle {
                 // Convert Args to Value for async processing
                 let args_value = serde_json::to_value(args)
                     .context("Failed to serialize list-mounts arguments")?;
-                
+
                 // For the synchronous Handle trait, we need to use a runtime
-                let rt = tokio::runtime::Runtime::new()
-                    .context("Failed to create async runtime")?;
-                
+                let rt =
+                    tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+
                 match rt.block_on(self.list_mounts(args_value)) {
                     Ok(result) => {
                         // Write JSON result to stdout
-                        writeln!(io.stdout, "{}", serde_json::to_string(&result)
-                            .map_err(|e| anyhow::anyhow!("Failed to serialize result: {}", e))?)?;
+                        writeln!(
+                            io.stdout,
+                            "{}",
+                            serde_json::to_string(&result).map_err(|e| anyhow::anyhow!(
+                                "Failed to serialize result: {}",
+                                e
+                            ))?
+                        )?;
                         Ok(Status::ok())
-                    },
+                    }
                     Err(e) => {
                         // Map errors to appropriate status codes
                         if let Some(fs_err) = e.downcast_ref::<FsError>() {
                             match fs_err {
-                                FsError::InvalidListMountsConfig(_) => Ok(Status::err(1, &e.to_string())),
+                                FsError::InvalidListMountsConfig(_) => {
+                                    Ok(Status::err(1, &e.to_string()))
+                                }
                                 FsError::ProfileNotFound(_) => Ok(Status::err(2, &e.to_string())),
-                                FsError::ListMountsUnsupported => Ok(Status::err(3, &e.to_string())),
+                                FsError::ListMountsUnsupported => {
+                                    Ok(Status::err(3, &e.to_string()))
+                                }
                                 FsError::ListMountsTimeout => Ok(Status::err(62, &e.to_string())),
                                 FsError::ListMountsFailed(_) => Ok(Status::err(32, &e.to_string())),
                                 _ => Ok(Status::err(1, &e.to_string())),
@@ -7270,22 +8117,62 @@ mod stage4_tests {
 
     #[test]
     fn mount_and_unmount_dry_run_parse_strictly() {
-        let h = FsHandle { alias: "test".to_string() };
+        let h = FsHandle {
+            alias: "test".to_string(),
+        };
         for bad in ["ture", "maybe", "2", ""] {
-            assert!(h.parse_mount_config(json!({"target": "/mnt/x", "source": "/dev/x", "dry_run": bad})).is_err(), "{bad:?}");
-            assert!(h.parse_unmount_config(json!({"target": "/mnt/x", "dry_run": bad})).is_err(), "{bad:?}");
+            assert!(
+                h.parse_mount_config(
+                    json!({"target": "/mnt/x", "source": "/dev/x", "dry_run": bad})
+                )
+                .is_err(),
+                "{bad:?}"
+            );
+            assert!(
+                h.parse_unmount_config(json!({"target": "/mnt/x", "dry_run": bad}))
+                    .is_err(),
+                "{bad:?}"
+            );
         }
-        for (v, want) in [("true", true), ("1", true), ("YES", true), ("on", true), ("false", false), ("0", false), ("off", false)] {
-            assert_eq!(h.parse_mount_config(json!({"target": "/mnt/x", "source": "/dev/x", "dry_run": v})).unwrap().dry_run, want, "{v}");
-            assert_eq!(h.parse_unmount_config(json!({"target": "/mnt/x", "dry_run": v})).unwrap().dry_run, want, "{v}");
+        for (v, want) in [
+            ("true", true),
+            ("1", true),
+            ("YES", true),
+            ("on", true),
+            ("false", false),
+            ("0", false),
+            ("off", false),
+        ] {
+            assert_eq!(
+                h.parse_mount_config(json!({"target": "/mnt/x", "source": "/dev/x", "dry_run": v}))
+                    .unwrap()
+                    .dry_run,
+                want,
+                "{v}"
+            );
+            assert_eq!(
+                h.parse_unmount_config(json!({"target": "/mnt/x", "dry_run": v}))
+                    .unwrap()
+                    .dry_run,
+                want,
+                "{v}"
+            );
         }
         // Through call(): a mistyped dry run fails before any mount command.
         let mut args = Args::new();
-        for (k, v) in [("target", "/nonexistent/resh-test-mnt"), ("source", "/dev/null"), ("dry_run", "ture")] {
+        for (k, v) in [
+            ("target", "/nonexistent/resh-test-mnt"),
+            ("source", "/dev/null"),
+            ("dry_run", "ture"),
+        ] {
             args.insert(k.into(), v.into());
         }
         let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
         let st = h.call("mount", &args, &mut io).unwrap();
         assert!(!st.ok);
         assert!(!std::path::Path::new("/nonexistent/resh-test-mnt").exists());
@@ -7299,7 +8186,9 @@ mod tests {
 
     #[test]
     fn test_mount_config_validation() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Test empty target
         let config = MountConfig {
@@ -7343,7 +8232,9 @@ mod tests {
             "source": "/dev/sdb1"
         });
 
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
         let config = handle.parse_mount_config(args).unwrap();
 
         assert_eq!(config.target, "/mnt/test");
@@ -7366,7 +8257,9 @@ mod tests {
             "read_only": true
         });
 
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
         let config = handle.parse_mount_config(args).unwrap();
 
         assert!(config.read_only);
@@ -7375,8 +8268,10 @@ mod tests {
 
     #[test]
     fn test_mount_compatibility() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let existing = ExistingMount {
             source: "/dev/sdb1".to_string(),
             target: "/mnt/test".to_string(),
@@ -7414,8 +8309,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_dry_run_plan() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let config = MountConfig {
             target: "/mnt/test".to_string(),
             source: Some("/dev/sdb1".to_string()),
@@ -7426,11 +8323,11 @@ mod tests {
         };
 
         let result = handle.create_mount_plan(&config, false).unwrap();
-        
+
         assert_eq!(result.action, "planned");
         assert!(result.dry_run == Some(true));
         assert!(result.plan.is_some());
-        
+
         let plan = result.plan.unwrap();
         assert!(plan.create_directory.len() > 0);
         assert!(plan.mount_commands.len() > 0);
@@ -7443,7 +8340,9 @@ mod tests {
 
     #[test]
     fn test_unmount_config_validation() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Test empty target
         let config = UnmountConfig {
@@ -7477,7 +8376,9 @@ mod tests {
 
     #[test]
     fn test_parse_unmount_config() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Test JSON deserialization
         let args = json!({
@@ -7516,7 +8417,9 @@ mod tests {
 
     #[test]
     fn test_find_mounts_to_unmount() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let existing_mounts = vec![
             ExistingMount {
@@ -7545,7 +8448,9 @@ mod tests {
             by: UnmountTargetKind::Target,
             ..Default::default()
         };
-        let matched = handle.find_mounts_to_unmount(&existing_mounts, &config).unwrap();
+        let matched = handle
+            .find_mounts_to_unmount(&existing_mounts, &config)
+            .unwrap();
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].target, "/mnt/data");
 
@@ -7555,7 +8460,9 @@ mod tests {
             by: UnmountTargetKind::Source,
             ..Default::default()
         };
-        let matched = handle.find_mounts_to_unmount(&existing_mounts, &config).unwrap();
+        let matched = handle
+            .find_mounts_to_unmount(&existing_mounts, &config)
+            .unwrap();
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].source, "/dev/sdb1");
 
@@ -7565,7 +8472,9 @@ mod tests {
             by: UnmountTargetKind::Auto,
             ..Default::default()
         };
-        let matched = handle.find_mounts_to_unmount(&existing_mounts, &config).unwrap();
+        let matched = handle
+            .find_mounts_to_unmount(&existing_mounts, &config)
+            .unwrap();
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].target, "/mnt/data");
 
@@ -7575,14 +8484,18 @@ mod tests {
             by: UnmountTargetKind::Auto,
             ..Default::default()
         };
-        let matched = handle.find_mounts_to_unmount(&existing_mounts, &config).unwrap();
+        let matched = handle
+            .find_mounts_to_unmount(&existing_mounts, &config)
+            .unwrap();
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].source, "/dev/sdc1");
     }
 
     #[test]
     fn test_compute_unmount_order() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let all_mounts = vec![
             ExistingMount {
@@ -7619,7 +8532,9 @@ mod tests {
             detach_children: false,
             ..Default::default()
         };
-        let order = handle.compute_unmount_order(&matched_mounts, &all_mounts, &config).unwrap();
+        let order = handle
+            .compute_unmount_order(&matched_mounts, &all_mounts, &config)
+            .unwrap();
         assert_eq!(order.len(), 1);
         assert_eq!(order[0].target, "/mnt/data");
 
@@ -7629,7 +8544,9 @@ mod tests {
             detach_children: true,
             ..Default::default()
         };
-        let order = handle.compute_unmount_order(&matched_mounts, &all_mounts, &config).unwrap();
+        let order = handle
+            .compute_unmount_order(&matched_mounts, &all_mounts, &config)
+            .unwrap();
         assert_eq!(order.len(), 3);
         // Should be deepest first: /mnt/data/tmp/nested, /mnt/data/tmp, /mnt/data
         assert_eq!(order[0].target, "/mnt/data/tmp/nested");
@@ -7639,7 +8556,9 @@ mod tests {
 
     #[test]
     fn test_unmount_dry_run_plan() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let unmount_order = vec![
             ExistingMount {
@@ -7686,25 +8605,41 @@ mod tests {
 
     #[test]
     fn test_unmount_error_mapping() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Test error code mapping
         let error = FsError::InvalidUnmountConfig("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.invalid_unmount_config");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.invalid_unmount_config"
+        );
 
         let error = FsError::UnmountBusy("/mnt/test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.unmount_busy");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.unmount_busy"
+        );
 
         let error = FsError::UnmountTimeout;
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.unmount_timeout");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.unmount_timeout"
+        );
 
         let error = FsError::NotMounted("/mnt/test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.not_mounted");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.not_mounted"
+        );
     }
 
     #[test]
     fn test_snapshot_config_validation() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Test zero timeout
         let config = SnapshotConfig {
@@ -7726,7 +8661,9 @@ mod tests {
 
     #[test]
     fn test_snapshot_filtering() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let raw_mounts = vec![
             RawMountInfo {
@@ -7785,7 +8722,9 @@ mod tests {
 
     #[test]
     fn test_path_normalization() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         assert_eq!(handle.normalize_path("/mnt//data/"), "/mnt/data");
         assert_eq!(handle.normalize_path("/"), "/");
@@ -7796,7 +8735,9 @@ mod tests {
 
     #[test]
     fn test_options_parsing() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let options = handle.parse_and_sort_options("rw,relatime,noatime");
         assert_eq!(options, vec!["noatime", "relatime", "rw"]);
@@ -7810,20 +8751,22 @@ mod tests {
 
     #[test]
     fn test_proc_mounts_parsing() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let proc_content = "/dev/sda1 / ext4 rw,relatime,errors=remount-ro 0 1\nproc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n";
-        
+
         let mounts = handle.parse_proc_mounts(proc_content).unwrap();
         assert_eq!(mounts.len(), 2);
-        
+
         assert_eq!(mounts[0].source, "/dev/sda1");
         assert_eq!(mounts[0].target, "/");
         assert_eq!(mounts[0].fstype, "ext4");
         assert_eq!(mounts[0].options, "rw,relatime,errors=remount-ro");
         assert_eq!(mounts[0].dump, 0);
         assert_eq!(mounts[0].pass, 1);
-        
+
         assert_eq!(mounts[1].source, "proc");
         assert_eq!(mounts[1].target, "/proc");
         assert_eq!(mounts[1].fstype, "proc");
@@ -7831,7 +8774,9 @@ mod tests {
 
     #[test]
     fn test_mount_line_parsing() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Linux style
         let line = "/dev/sda1 on /boot type ext2 (rw,relatime)";
@@ -7851,7 +8796,9 @@ mod tests {
 
     #[test]
     fn test_has_filters() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let config = SnapshotConfig::default();
         assert!(!handle.has_filters(&config));
@@ -7871,24 +8818,40 @@ mod tests {
 
     #[test]
     fn test_snapshot_error_mapping() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let error = FsError::InvalidSnapshotConfig("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.invalid_snapshot_config");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.invalid_snapshot_config"
+        );
 
         let error = FsError::SnapshotUnsupported;
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.snapshot_unsupported");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.snapshot_unsupported"
+        );
 
         let error = FsError::SnapshotTimeout;
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.snapshot_timeout");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.snapshot_timeout"
+        );
 
         let error = FsError::SnapshotFailed("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.snapshot_failed");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.snapshot_failed"
+        );
     }
 
     #[test]
     fn test_quota_config_validation() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Test zero timeout
         let config = FsQuotaConfig {
@@ -7931,7 +8894,9 @@ mod tests {
             "subject": "testuser"
         });
 
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
         let config = handle.parse_quota_config(args).unwrap();
 
         assert_eq!(config.path, Some("/home".to_string()));
@@ -7965,7 +8930,9 @@ mod tests {
             }
         });
 
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
         let config = handle.parse_quota_config(args).unwrap();
 
         assert_eq!(config.path, Some("/var/log".to_string()));
@@ -7978,24 +8945,26 @@ mod tests {
         assert_eq!(config.all_subjects, true);
         assert_eq!(config.units, QuotaUnits::Bytes);
         assert_eq!(config.timeout_ms, 10000);
-        
+
         let env = config.env.unwrap();
         assert_eq!(env.get("QUOTA_DEBUG"), Some(&"1".to_string()));
     }
 
     #[test]
     fn test_quota_parse_output() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Test with bytes units
         let config = FsQuotaConfig {
             units: QuotaUnits::Bytes,
             ..Default::default()
         };
-        
+
         let output = "1024 2048 4096 none";
         let result = handle.parse_quota_output(output, &config).unwrap();
-        
+
         // Should convert KB to bytes
         assert_eq!(result.used, 1024 * 1024);
         assert_eq!(result.soft_limit, Some(2048 * 1024));
@@ -8009,7 +8978,7 @@ mod tests {
             units: QuotaUnits::Blocks,
             ..Default::default()
         };
-        
+
         let result = handle.parse_quota_output(output, &config).unwrap();
         assert_eq!(result.used, 1024);
         assert_eq!(result.soft_limit, Some(2048));
@@ -8018,12 +8987,14 @@ mod tests {
 
     #[test]
     fn test_quota_parse_inode_output() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let config = FsQuotaConfig::default();
         let output = "512 1024 2048 none";
         let result = handle.parse_inode_quota_output(output, &config).unwrap();
-        
+
         assert_eq!(result.used, 512);
         assert_eq!(result.soft_limit, Some(1024));
         assert_eq!(result.hard_limit, Some(2048));
@@ -8034,16 +9005,18 @@ mod tests {
 
     #[test]
     fn test_quota_parse_output_grace_exceeded() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let config = FsQuotaConfig {
             units: QuotaUnits::Bytes,
             ..Default::default()
         };
-        
+
         let output = "3072 2048 4096 expired";
         let result = handle.parse_quota_output(output, &config).unwrap();
-        
+
         assert_eq!(result.used, 3072 * 1024);
         assert_eq!(result.soft_limit, Some(2048 * 1024));
         assert_eq!(result.hard_limit, Some(4096 * 1024));
@@ -8053,27 +9026,31 @@ mod tests {
 
     #[test]
     fn test_quota_parse_output_no_limits() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let config = FsQuotaConfig {
             units: QuotaUnits::Bytes,
             ..Default::default()
         };
-        
+
         let output = "1024 0 0 none";
         let result = handle.parse_quota_output(output, &config).unwrap();
-        
+
         assert_eq!(result.used, 1024 * 1024);
         assert_eq!(result.soft_limit, Some(0));
         assert_eq!(result.hard_limit, Some(0));
         assert_eq!(result.grace_exceeded, false);
-        assert!(result.used_percent_of_soft.is_none());  // Can't calculate percentage with 0 limit
+        assert!(result.used_percent_of_soft.is_none()); // Can't calculate percentage with 0 limit
     }
 
     #[test]
     fn test_grace_time_parsing_special_cases() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Test special case values that should return None
         assert_eq!(handle.parse_grace_time("none"), None);
         assert_eq!(handle.parse_grace_time("never"), None);
@@ -8081,7 +9058,7 @@ mod tests {
         assert_eq!(handle.parse_grace_time("0"), None);
         assert_eq!(handle.parse_grace_time(""), None);
         assert_eq!(handle.parse_grace_time("  "), None);
-        
+
         // Test expired/exceeded cases that should return Some(0)
         assert_eq!(handle.parse_grace_time("expired"), Some(0));
         assert_eq!(handle.parse_grace_time("exceeded"), Some(0));
@@ -8090,14 +9067,16 @@ mod tests {
 
     #[test]
     fn test_grace_time_parsing_days() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Test various day formats
         assert_eq!(handle.parse_grace_time("7days"), Some(7 * 24 * 60 * 60));
         assert_eq!(handle.parse_grace_time("1day"), Some(1 * 24 * 60 * 60));
         assert_eq!(handle.parse_grace_time("14days"), Some(14 * 24 * 60 * 60));
         assert_eq!(handle.parse_grace_time("30DAYS"), Some(30 * 24 * 60 * 60));
-        
+
         // Test invalid day formats
         assert_eq!(handle.parse_grace_time("days"), None);
         assert_eq!(handle.parse_grace_time("xdays"), None);
@@ -8105,15 +9084,17 @@ mod tests {
 
     #[test]
     fn test_grace_time_parsing_hours() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Test various hour formats
         assert_eq!(handle.parse_grace_time("2hours"), Some(2 * 60 * 60));
         assert_eq!(handle.parse_grace_time("1hour"), Some(1 * 60 * 60));
         assert_eq!(handle.parse_grace_time("24hrs"), Some(24 * 60 * 60));
         assert_eq!(handle.parse_grace_time("5hr"), Some(5 * 60 * 60));
         assert_eq!(handle.parse_grace_time("12HOURS"), Some(12 * 60 * 60));
-        
+
         // Test invalid hour formats
         assert_eq!(handle.parse_grace_time("hours"), None);
         assert_eq!(handle.parse_grace_time("xhours"), None);
@@ -8121,14 +9102,16 @@ mod tests {
 
     #[test]
     fn test_grace_time_parsing_minutes() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Test various minute formats
         assert_eq!(handle.parse_grace_time("30mins"), Some(30 * 60));
         assert_eq!(handle.parse_grace_time("45min"), Some(45 * 60));
         assert_eq!(handle.parse_grace_time("60minutes"), Some(60 * 60));
         assert_eq!(handle.parse_grace_time("15MINS"), Some(15 * 60));
-        
+
         // Test invalid minute formats
         assert_eq!(handle.parse_grace_time("mins"), None);
         assert_eq!(handle.parse_grace_time("xmins"), None);
@@ -8136,17 +9119,25 @@ mod tests {
 
     #[test]
     fn test_grace_time_parsing_time_format() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Test HH:MM:SS format
-        assert_eq!(handle.parse_grace_time("23:59:59"), Some(23 * 3600 + 59 * 60 + 59));
-        assert_eq!(handle.parse_grace_time("01:30:45"), Some(1 * 3600 + 30 * 60 + 45));
+        assert_eq!(
+            handle.parse_grace_time("23:59:59"),
+            Some(23 * 3600 + 59 * 60 + 59)
+        );
+        assert_eq!(
+            handle.parse_grace_time("01:30:45"),
+            Some(1 * 3600 + 30 * 60 + 45)
+        );
         assert_eq!(handle.parse_grace_time("00:00:30"), Some(30));
-        
+
         // Test HH:MM format (seconds assumed to be 0)
         assert_eq!(handle.parse_grace_time("12:30"), Some(12 * 3600 + 30 * 60));
         assert_eq!(handle.parse_grace_time("00:45"), Some(45 * 60));
-        
+
         // Test invalid time formats
         assert_eq!(handle.parse_grace_time("25:00:00"), None); // Invalid hour
         assert_eq!(handle.parse_grace_time("12:60:00"), None); // Invalid minute 
@@ -8157,13 +9148,15 @@ mod tests {
 
     #[test]
     fn test_grace_time_parsing_seconds() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Test pure seconds format
         assert_eq!(handle.parse_grace_time("3600"), Some(3600));
         assert_eq!(handle.parse_grace_time("60"), Some(60));
         assert_eq!(handle.parse_grace_time("1"), Some(1));
-        
+
         // Test invalid number formats
         assert_eq!(handle.parse_grace_time("abc"), None);
         assert_eq!(handle.parse_grace_time("12.5"), None);
@@ -8171,30 +9164,35 @@ mod tests {
 
     #[test]
     fn test_quota_parse_output_with_grace_time() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let config = FsQuotaConfig {
             units: QuotaUnits::Bytes,
             ..Default::default()
         };
-        
+
         // Test with days grace time
         let output = "3072 2048 4096 7days";
         let result = handle.parse_quota_output(output, &config).unwrap();
         assert_eq!(result.grace_time_remaining_sec, Some(7 * 24 * 60 * 60));
         assert_eq!(result.grace_exceeded, false);
-        
+
         // Test with HH:MM:SS grace time
         let output = "3072 2048 4096 23:59:59";
         let result = handle.parse_quota_output(output, &config).unwrap();
-        assert_eq!(result.grace_time_remaining_sec, Some(23 * 3600 + 59 * 60 + 59));
-        
+        assert_eq!(
+            result.grace_time_remaining_sec,
+            Some(23 * 3600 + 59 * 60 + 59)
+        );
+
         // Test with expired grace
         let output = "3072 2048 4096 expired";
         let result = handle.parse_quota_output(output, &config).unwrap();
         assert_eq!(result.grace_time_remaining_sec, Some(0));
         assert_eq!(result.grace_exceeded, true);
-        
+
         // Test with no grace time
         let output = "1024 2048 4096 none";
         let result = handle.parse_quota_output(output, &config).unwrap();
@@ -8204,21 +9202,23 @@ mod tests {
 
     #[test]
     fn test_inode_quota_parse_output_with_grace_time() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let config = FsQuotaConfig::default();
-        
+
         // Test with hours grace time
         let output = "1500 1024 2048 5hours";
         let result = handle.parse_inode_quota_output(output, &config).unwrap();
         assert_eq!(result.grace_time_remaining_sec, Some(5 * 60 * 60));
         assert_eq!(result.grace_exceeded, false);
-        
+
         // Test with minutes grace time
         let output = "1500 1024 2048 30mins";
         let result = handle.parse_inode_quota_output(output, &config).unwrap();
         assert_eq!(result.grace_time_remaining_sec, Some(30 * 60));
-        
+
         // Test with expired grace
         let output = "1500 1024 2048 exceeded";
         let result = handle.parse_inode_quota_output(output, &config).unwrap();
@@ -8229,11 +9229,23 @@ mod tests {
     #[test]
     fn test_subject_type_enum() {
         // Test deserialization
-        assert_eq!(serde_json::from_str::<SubjectType>("\"auto\"").unwrap(), SubjectType::Auto);
-        assert_eq!(serde_json::from_str::<SubjectType>("\"user\"").unwrap(), SubjectType::User);
-        assert_eq!(serde_json::from_str::<SubjectType>("\"group\"").unwrap(), SubjectType::Group);
-        assert_eq!(serde_json::from_str::<SubjectType>("\"project\"").unwrap(), SubjectType::Project);
-        
+        assert_eq!(
+            serde_json::from_str::<SubjectType>("\"auto\"").unwrap(),
+            SubjectType::Auto
+        );
+        assert_eq!(
+            serde_json::from_str::<SubjectType>("\"user\"").unwrap(),
+            SubjectType::User
+        );
+        assert_eq!(
+            serde_json::from_str::<SubjectType>("\"group\"").unwrap(),
+            SubjectType::Group
+        );
+        assert_eq!(
+            serde_json::from_str::<SubjectType>("\"project\"").unwrap(),
+            SubjectType::Project
+        );
+
         // Test that invalid values fail
         assert!(serde_json::from_str::<SubjectType>("\"invalid\"").is_err());
     }
@@ -8241,10 +9253,19 @@ mod tests {
     #[test]
     fn test_quota_units_enum() {
         // Test deserialization
-        assert_eq!(serde_json::from_str::<QuotaUnits>("\"auto\"").unwrap(), QuotaUnits::Auto);
-        assert_eq!(serde_json::from_str::<QuotaUnits>("\"blocks\"").unwrap(), QuotaUnits::Blocks);
-        assert_eq!(serde_json::from_str::<QuotaUnits>("\"bytes\"").unwrap(), QuotaUnits::Bytes);
-        
+        assert_eq!(
+            serde_json::from_str::<QuotaUnits>("\"auto\"").unwrap(),
+            QuotaUnits::Auto
+        );
+        assert_eq!(
+            serde_json::from_str::<QuotaUnits>("\"blocks\"").unwrap(),
+            QuotaUnits::Blocks
+        );
+        assert_eq!(
+            serde_json::from_str::<QuotaUnits>("\"bytes\"").unwrap(),
+            QuotaUnits::Bytes
+        );
+
         // Test that invalid values fail
         assert!(serde_json::from_str::<QuotaUnits>("\"invalid\"").is_err());
     }
@@ -8252,7 +9273,7 @@ mod tests {
     #[test]
     fn test_quota_config_default() {
         let config = FsQuotaConfig::default();
-        
+
         assert!(config.path.is_none());
         assert!(config.subject.is_none());
         assert_eq!(config.subject_type, SubjectType::Auto);
@@ -8268,30 +9289,52 @@ mod tests {
 
     #[test]
     fn test_quota_error_mapping() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let error = FsError::InvalidQuotaConfig("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.invalid_quota_config");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.invalid_quota_config"
+        );
 
         let error = FsError::QuotaUnsupported;
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.quota_unsupported");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.quota_unsupported"
+        );
 
         let error = FsError::QuotaNotEnabled("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.quota_not_enabled");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.quota_not_enabled"
+        );
 
         let error = FsError::QuotaSubjectNotFound("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.quota_subject_not_found");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.quota_subject_not_found"
+        );
 
         let error = FsError::QuotaTimeout;
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.quota_timeout");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.quota_timeout"
+        );
 
         let error = FsError::QuotaFailed("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.quota_failed");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.quota_failed"
+        );
     }
 
     #[test]
     fn test_check_config_validation() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Test empty target
         let config = FsCheckConfig {
@@ -8338,7 +9381,7 @@ mod tests {
     #[test]
     fn test_check_config_defaults() {
         let config = FsCheckConfig::default();
-        
+
         assert_eq!(config.target, "");
         assert_eq!(config.by, CheckTargetKind::Auto);
         assert_eq!(config.filesystem_type, None);
@@ -8359,7 +9402,9 @@ mod tests {
 
     #[test]
     fn test_check_parse_config() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Test basic config
         let input = json!({
@@ -8392,7 +9437,7 @@ mod tests {
             }
         });
         let config = handle.parse_check_config(input).unwrap();
-        
+
         assert_eq!(config.target, "/mnt/data");
         assert_eq!(config.by, CheckTargetKind::Mountpoint);
         assert_eq!(config.filesystem_type, Some("ext4".to_string()));
@@ -8413,7 +9458,9 @@ mod tests {
 
     #[test]
     fn test_check_filesystem_support() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         // Test supported filesystems
         assert!(handle.validate_check_filesystem_support("ext2").is_ok());
@@ -8431,8 +9478,10 @@ mod tests {
 
     #[test]
     fn test_build_fsck_command() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let fs_info = CheckFilesystemInfo {
             source: "/dev/sdb1".to_string(),
             fstype: "ext4".to_string(),
@@ -8477,8 +9526,10 @@ mod tests {
 
     #[test]
     fn test_build_xfs_repair_command() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let fs_info = CheckFilesystemInfo {
             source: "/dev/sdb1".to_string(),
             fstype: "xfs".to_string(),
@@ -8516,14 +9567,18 @@ mod tests {
             mounted: true,
             readonly: false,
         };
-        let (tool, args) = handle.build_xfs_repair_command(&config, &fs_info_mounted).unwrap();
+        let (tool, args) = handle
+            .build_xfs_repair_command(&config, &fs_info_mounted)
+            .unwrap();
         assert!(args.contains(&"-n".to_string())); // Should fallback to check
     }
 
     #[test]
     fn test_build_btrfs_command() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         let fs_info_mounted = CheckFilesystemInfo {
             source: "/dev/sdb1".to_string(),
             fstype: "btrfs".to_string(),
@@ -8545,7 +9600,9 @@ mod tests {
             btrfs_use_scrub: true,
             ..Default::default()
         };
-        let (tool, args) = handle.build_btrfs_command(&config, &fs_info_mounted).unwrap();
+        let (tool, args) = handle
+            .build_btrfs_command(&config, &fs_info_mounted)
+            .unwrap();
         assert_eq!(tool, "btrfs");
         assert!(args.contains(&"scrub".to_string()));
         assert!(args.contains(&"start".to_string()));
@@ -8560,7 +9617,9 @@ mod tests {
             btrfs_allow_offline_check: true,
             ..Default::default()
         };
-        let (tool, args) = handle.build_btrfs_command(&config, &fs_info_unmounted).unwrap();
+        let (tool, args) = handle
+            .build_btrfs_command(&config, &fs_info_unmounted)
+            .unwrap();
         assert_eq!(tool, "btrfs");
         assert!(args.contains(&"check".to_string()));
         assert!(args.contains(&"--readonly".to_string()));
@@ -8575,13 +9634,17 @@ mod tests {
             btrfs_allow_offline_check: true,
             ..Default::default()
         };
-        let (tool, args) = handle.build_btrfs_command(&config, &fs_info_unmounted).unwrap();
+        let (tool, args) = handle
+            .build_btrfs_command(&config, &fs_info_unmounted)
+            .unwrap();
         assert!(args.contains(&"--repair".to_string()));
     }
 
     #[test]
     fn test_analyze_fsck_results() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
         let config = FsCheckConfig::default();
 
         // Test clean filesystem
@@ -8629,7 +9692,9 @@ mod tests {
 
     #[test]
     fn test_analyze_xfs_repair_results() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
         let config = FsCheckConfig::default();
 
         // Test clean filesystem
@@ -8676,7 +9741,9 @@ mod tests {
 
     #[test]
     fn test_analyze_btrfs_results() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
         let config = FsCheckConfig::default();
 
         // Test clean filesystem with scrub
@@ -8723,40 +9790,71 @@ mod tests {
 
     #[test]
     fn test_check_error_mapping() {
-        let handle = FsHandle { alias: "test".to_string() };
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
 
         let error = FsError::InvalidCheckConfig("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.invalid_check_config");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.invalid_check_config"
+        );
 
         let error = FsError::CheckTargetNotFound("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.check_target_not_found");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.check_target_not_found"
+        );
 
         let error = FsError::CheckUnsupportedFilesystem("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.check_unsupported_filesystem");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.check_unsupported_filesystem"
+        );
 
         let error = FsError::CheckRepairNotAllowed;
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.check_repair_not_allowed");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.check_repair_not_allowed"
+        );
 
         let error = FsError::CheckRequiresUnmountForRepair("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.check_requires_unmount_for_repair");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.check_requires_unmount_for_repair"
+        );
 
         let error = FsError::CheckMustBeOffline("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.check_must_be_offline");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.check_must_be_offline"
+        );
 
         let error = FsError::CheckToolNotAvailable("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.check_tool_not_available");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.check_tool_not_available"
+        );
 
         let error = FsError::CheckTimeout;
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.check_timeout");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.check_timeout"
+        );
 
         let error = FsError::CheckFailed("test".to_string());
-        assert_eq!(handle.map_error_to_code(&anyhow::anyhow!(error)), "fs.check_failed");
+        assert_eq!(
+            handle.map_error_to_code(&anyhow::anyhow!(error)),
+            "fs.check_failed"
+        );
     }
 
     #[test]
     fn test_build_multi_subject_summary_result_basic() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Create test subjects
         let subjects = vec![
             QuotaSubject {
@@ -8798,23 +9896,17 @@ mod tests {
         };
 
         // Test with empty filesystems
-        let result = handle.build_multi_subject_summary_result(
-            &subjects,
-            &[],
-            &[],
-            &[],
-            &config,
-        );
+        let result = handle.build_multi_subject_summary_result(&subjects, &[], &[], &[], &config);
 
         assert_eq!(result.backend, "fs");
         assert_eq!(result.verb, "quota_summary");
         assert_eq!(result.alias, "test");
         assert_eq!(result.all_subjects, true);
         assert!(result.subjects.is_some());
-        
+
         let subject_summaries = result.subjects.unwrap();
         assert_eq!(subject_summaries.len(), 2);
-        
+
         // Check first subject summary
         assert_eq!(subject_summaries[0].subject, "user1");
         assert_eq!(subject_summaries[0].subject_type, "user");
@@ -8822,7 +9914,7 @@ mod tests {
         assert_eq!(subject_summaries[0].gid, Some(1001));
         assert!(subject_summaries[0].space.is_none());
         assert!(subject_summaries[0].inodes.is_none());
-        
+
         // Check second subject summary
         assert_eq!(subject_summaries[1].subject, "user2");
         assert_eq!(subject_summaries[1].subject_type, "user");
@@ -8834,8 +9926,10 @@ mod tests {
 
     #[test]
     fn test_aggregate_subject_quota_across_filesystems_with_data() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Create test subject
         let subject = QuotaSubject {
             subject: "user1".to_string(),
@@ -8855,8 +9949,8 @@ mod tests {
                 space_quota_enabled: true,
                 inode_quota_enabled: true,
                 space: Some(SpaceQuota {
-                    used: 1024 * 1024 * 100, // 100MB
-                    soft_limit: Some(1024 * 1024 * 500), // 500MB
+                    used: 1024 * 1024 * 100,              // 100MB
+                    soft_limit: Some(1024 * 1024 * 500),  // 500MB
                     hard_limit: Some(1024 * 1024 * 1000), // 1GB
                     grace_exceeded: false,
                     grace_time_remaining_sec: Some(7200), // 2 hours
@@ -8878,7 +9972,7 @@ mod tests {
                 space_quota_enabled: true,
                 inode_quota_enabled: true,
                 space: Some(SpaceQuota {
-                    used: 1024 * 1024 * 200, // 200MB
+                    used: 1024 * 1024 * 200,             // 200MB
                     soft_limit: Some(1024 * 1024 * 300), // 300MB
                     hard_limit: Some(1024 * 1024 * 500), // 500MB
                     grace_exceeded: true,
@@ -8917,7 +10011,11 @@ mod tests {
         };
 
         // Test aggregation
-        let result = handle.aggregate_subject_quota_across_filesystems(&subject, &quota_filesystems, &config);
+        let result = handle.aggregate_subject_quota_across_filesystems(
+            &subject,
+            &quota_filesystems,
+            &config,
+        );
 
         // Check subject information
         assert_eq!(result.subject, "user1");
@@ -8944,8 +10042,10 @@ mod tests {
 
     #[test]
     fn test_aggregate_subject_quota_space_only() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Create test subject
         let subject = QuotaSubject {
             subject: "user1".to_string(),
@@ -8957,24 +10057,22 @@ mod tests {
         };
 
         // Create filesystem with space quota only
-        let quota_filesystems = vec![
-            QuotaSummaryFilesystem {
-                source: "/dev/sda1".to_string(),
-                target: "/home".to_string(),
-                fstype: "ext4".to_string(),
-                space_quota_enabled: true,
-                inode_quota_enabled: false,
-                space: Some(SpaceQuota {
-                    used: 1024 * 1024 * 150, // 150MB
-                    soft_limit: Some(1024 * 1024 * 500), // 500MB
-                    hard_limit: Some(1024 * 1024 * 1000), // 1GB
-                    grace_exceeded: false,
-                    grace_time_remaining_sec: None,
-                    used_percent_of_soft: Some(30.0),
-                }),
-                inodes: None,
-            },
-        ];
+        let quota_filesystems = vec![QuotaSummaryFilesystem {
+            source: "/dev/sda1".to_string(),
+            target: "/home".to_string(),
+            fstype: "ext4".to_string(),
+            space_quota_enabled: true,
+            inode_quota_enabled: false,
+            space: Some(SpaceQuota {
+                used: 1024 * 1024 * 150,              // 150MB
+                soft_limit: Some(1024 * 1024 * 500),  // 500MB
+                hard_limit: Some(1024 * 1024 * 1000), // 1GB
+                grace_exceeded: false,
+                grace_time_remaining_sec: None,
+                used_percent_of_soft: Some(30.0),
+            }),
+            inodes: None,
+        }];
 
         // Create test configuration - space only
         let config = FsQuotaSummaryConfig {
@@ -8997,7 +10095,11 @@ mod tests {
         };
 
         // Test aggregation
-        let result = handle.aggregate_subject_quota_across_filesystems(&subject, &quota_filesystems, &config);
+        let result = handle.aggregate_subject_quota_across_filesystems(
+            &subject,
+            &quota_filesystems,
+            &config,
+        );
 
         // Check space aggregation
         assert!(result.space.is_some());
@@ -9013,8 +10115,10 @@ mod tests {
 
     #[test]
     fn test_aggregate_subject_quota_no_limits() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Create test subject
         let subject = QuotaSubject {
             subject: "user1".to_string(),
@@ -9026,31 +10130,29 @@ mod tests {
         };
 
         // Create filesystem with no quota limits
-        let quota_filesystems = vec![
-            QuotaSummaryFilesystem {
-                source: "/dev/sda1".to_string(),
-                target: "/home".to_string(),
-                fstype: "ext4".to_string(),
-                space_quota_enabled: true,
-                inode_quota_enabled: true,
-                space: Some(SpaceQuota {
-                    used: 1024 * 1024 * 100, // 100MB
-                    soft_limit: None, // No soft limit
-                    hard_limit: None, // No hard limit
-                    grace_exceeded: false,
-                    grace_time_remaining_sec: None,
-                    used_percent_of_soft: None,
-                }),
-                inodes: Some(InodeQuota {
-                    used: 1000,
-                    soft_limit: None, // No soft limit
-                    hard_limit: None, // No hard limit
-                    grace_exceeded: false,
-                    grace_time_remaining_sec: None,
-                    used_percent_of_soft: None,
-                }),
-            },
-        ];
+        let quota_filesystems = vec![QuotaSummaryFilesystem {
+            source: "/dev/sda1".to_string(),
+            target: "/home".to_string(),
+            fstype: "ext4".to_string(),
+            space_quota_enabled: true,
+            inode_quota_enabled: true,
+            space: Some(SpaceQuota {
+                used: 1024 * 1024 * 100, // 100MB
+                soft_limit: None,        // No soft limit
+                hard_limit: None,        // No hard limit
+                grace_exceeded: false,
+                grace_time_remaining_sec: None,
+                used_percent_of_soft: None,
+            }),
+            inodes: Some(InodeQuota {
+                used: 1000,
+                soft_limit: None, // No soft limit
+                hard_limit: None, // No hard limit
+                grace_exceeded: false,
+                grace_time_remaining_sec: None,
+                used_percent_of_soft: None,
+            }),
+        }];
 
         // Create test configuration
         let config = FsQuotaSummaryConfig {
@@ -9073,7 +10175,11 @@ mod tests {
         };
 
         // Test aggregation
-        let result = handle.aggregate_subject_quota_across_filesystems(&subject, &quota_filesystems, &config);
+        let result = handle.aggregate_subject_quota_across_filesystems(
+            &subject,
+            &quota_filesystems,
+            &config,
+        );
 
         // Check space aggregation
         assert!(result.space.is_some());
@@ -9096,46 +10202,44 @@ mod tests {
 
     #[test]
     fn test_build_multi_subject_summary_result_with_data() {
-        let handle = FsHandle { alias: "test".to_string() };
-        
+        let handle = FsHandle {
+            alias: "test".to_string(),
+        };
+
         // Create test subjects
-        let subjects = vec![
-            QuotaSubject {
-                subject: "user1".to_string(),
-                subject_type: "user".to_string(),
-                uid: Some(1001),
-                gid: Some(1001),
-                space: None,
-                inodes: None,
-            },
-        ];
+        let subjects = vec![QuotaSubject {
+            subject: "user1".to_string(),
+            subject_type: "user".to_string(),
+            uid: Some(1001),
+            gid: Some(1001),
+            space: None,
+            inodes: None,
+        }];
 
         // Create test filesystems
-        let quota_filesystems = vec![
-            QuotaSummaryFilesystem {
-                source: "/dev/sda1".to_string(),
-                target: "/home".to_string(),
-                fstype: "ext4".to_string(),
-                space_quota_enabled: true,
-                inode_quota_enabled: true,
-                space: Some(SpaceQuota {
-                    used: 1024 * 1024 * 100, // 100MB
-                    soft_limit: Some(1024 * 1024 * 500), // 500MB
-                    hard_limit: Some(1024 * 1024 * 1000), // 1GB
-                    grace_exceeded: false,
-                    grace_time_remaining_sec: Some(7200),
-                    used_percent_of_soft: Some(20.0),
-                }),
-                inodes: Some(InodeQuota {
-                    used: 1000,
-                    soft_limit: Some(5000),
-                    hard_limit: Some(10000),
-                    grace_exceeded: false,
-                    grace_time_remaining_sec: Some(3600),
-                    used_percent_of_soft: Some(20.0),
-                }),
-            },
-        ];
+        let quota_filesystems = vec![QuotaSummaryFilesystem {
+            source: "/dev/sda1".to_string(),
+            target: "/home".to_string(),
+            fstype: "ext4".to_string(),
+            space_quota_enabled: true,
+            inode_quota_enabled: true,
+            space: Some(SpaceQuota {
+                used: 1024 * 1024 * 100,              // 100MB
+                soft_limit: Some(1024 * 1024 * 500),  // 500MB
+                hard_limit: Some(1024 * 1024 * 1000), // 1GB
+                grace_exceeded: false,
+                grace_time_remaining_sec: Some(7200),
+                used_percent_of_soft: Some(20.0),
+            }),
+            inodes: Some(InodeQuota {
+                used: 1000,
+                soft_limit: Some(5000),
+                hard_limit: Some(10000),
+                grace_exceeded: false,
+                grace_time_remaining_sec: Some(3600),
+                used_percent_of_soft: Some(20.0),
+            }),
+        }];
 
         // Create test configuration
         let config = FsQuotaSummaryConfig {
@@ -9168,17 +10272,17 @@ mod tests {
 
         assert_eq!(result.all_subjects, true);
         assert!(result.subjects.is_some());
-        
+
         let subject_summaries = result.subjects.unwrap();
         assert_eq!(subject_summaries.len(), 1);
-        
+
         // Check subject summary with aggregated data
         let summary = &subject_summaries[0];
         assert_eq!(summary.subject, "user1");
         assert_eq!(summary.subject_type, "user");
         assert_eq!(summary.uid, Some(1001));
         assert_eq!(summary.gid, Some(1001));
-        
+
         // Check aggregated space data
         assert!(summary.space.is_some());
         let space = summary.space.as_ref().unwrap();
@@ -9186,7 +10290,7 @@ mod tests {
         assert_eq!(space.soft_limit, Some(1024 * 1024 * 500));
         assert_eq!(space.hard_limit, Some(1024 * 1024 * 1000));
         assert_eq!(space.any_grace_exceeded, false);
-        
+
         // Check aggregated inode data
         assert!(summary.inodes.is_some());
         let inodes = summary.inodes.as_ref().unwrap();
@@ -9196,9 +10300,12 @@ mod tests {
         assert_eq!(inodes.any_grace_exceeded, false);
 
         // Check filters are preserved
-        assert_eq!(result.filters.include_mountpoints, vec!["/home".to_string()]);
+        assert_eq!(
+            result.filters.include_mountpoints,
+            vec!["/home".to_string()]
+        );
         assert_eq!(result.filters.include_types, vec!["ext4".to_string()]);
-        
+
         // Check that filesystem data is preserved
         assert_eq!(result.filesystems.len(), 1);
         assert_eq!(result.filesystems[0].target, "/home");
@@ -9207,7 +10314,10 @@ mod tests {
 
     /// Builds the JSON value the CLI produces: every argument is a string.
     fn cli_args(pairs: &[(&str, &str)]) -> Value {
-        let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let args: Args = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         serde_json::to_value(args).unwrap()
     }
 
@@ -9215,37 +10325,88 @@ mod tests {
     fn cli_string_args_parse_into_typed_configs() {
         let h = FsHandle::new_for_test("t".to_string());
 
-        let c = h.parse_snapshot_config(cli_args(&[("include_inodes", "true"), ("timeout_ms", "1234"), ("include_types", "ext4,xfs")])).unwrap();
+        let c = h
+            .parse_snapshot_config(cli_args(&[
+                ("include_inodes", "true"),
+                ("timeout_ms", "1234"),
+                ("include_types", "ext4,xfs"),
+            ]))
+            .unwrap();
         assert!(c.include_inodes);
         assert_eq!(c.timeout_ms, 1234);
         assert_eq!(c.include_types, vec!["ext4", "xfs"]);
 
-        let c = h.parse_resize_config(cli_args(&[("target", "/data"), ("mode", "shrink"), ("allow_shrink", "true"), ("dry_run", "true"), ("timeout_ms", "9000")])).unwrap();
+        let c = h
+            .parse_resize_config(cli_args(&[
+                ("target", "/data"),
+                ("mode", "shrink"),
+                ("allow_shrink", "true"),
+                ("dry_run", "true"),
+                ("timeout_ms", "9000"),
+            ]))
+            .unwrap();
         assert_eq!(c.mode, ResizeMode::Shrink);
         assert!(c.allow_shrink && c.dry_run);
         assert_eq!(c.timeout_ms, 9000);
-        assert!(h.validate_resize_config(&FsResizeConfig { size: Some(json!("1G")), ..c }).is_ok());
+        assert!(
+            h.validate_resize_config(&FsResizeConfig {
+                size: Some(json!("1G")),
+                ..c
+            })
+            .is_ok()
+        );
 
-        let c = h.parse_check_config(cli_args(&[("target", "/dev/sdz9"), ("mode", "repair"), ("allow_repair", "yes"), ("max_pass", "2")])).unwrap();
+        let c = h
+            .parse_check_config(cli_args(&[
+                ("target", "/dev/sdz9"),
+                ("mode", "repair"),
+                ("allow_repair", "yes"),
+                ("max_pass", "2"),
+            ]))
+            .unwrap();
         assert_eq!(c.mode, CheckMode::Repair);
         assert!(c.allow_repair);
         assert_eq!(c.max_pass, Some(2));
 
-        let c = h.parse_list_mounts_config(cli_args(&[("include_pseudo", "true"), ("include_readonly", "false"), ("timeout_ms", "100")])).unwrap();
+        let c = h
+            .parse_list_mounts_config(cli_args(&[
+                ("include_pseudo", "true"),
+                ("include_readonly", "false"),
+                ("timeout_ms", "100"),
+            ]))
+            .unwrap();
         assert!(c.include_pseudo && !c.include_readonly);
         assert_eq!(c.timeout_ms, 100);
 
-        let c = h.parse_quota_config(cli_args(&[("include_inodes", "false"), ("timeout_ms", "42"), ("units", "bytes")])).unwrap();
+        let c = h
+            .parse_quota_config(cli_args(&[
+                ("include_inodes", "false"),
+                ("timeout_ms", "42"),
+                ("units", "bytes"),
+            ]))
+            .unwrap();
         assert!(!c.include_inodes && c.include_space && c.resolve_uid_gid);
         assert_eq!(c.timeout_ms, 42);
         assert_eq!(c.units, QuotaUnits::Bytes);
 
-        let c = h.parse_quota_summary_config(cli_args(&[("all_subjects", "true"), ("include_types", "ext4")])).unwrap();
+        let c = h
+            .parse_quota_summary_config(cli_args(&[
+                ("all_subjects", "true"),
+                ("include_types", "ext4"),
+            ]))
+            .unwrap();
         assert!(c.all_subjects);
         assert_eq!(c.include_types, vec!["ext4"]);
         assert_eq!(c.timeout_ms, 8000);
 
-        let c = h.parse_usage_config(cli_args(&[("mode", "paths"), ("paths", "/a,/b"), ("human_readable", "true"), ("threshold_used_percent_min", "10.5")])).unwrap();
+        let c = h
+            .parse_usage_config(cli_args(&[
+                ("mode", "paths"),
+                ("paths", "/a,/b"),
+                ("human_readable", "true"),
+                ("threshold_used_percent_min", "10.5"),
+            ]))
+            .unwrap();
         assert_eq!(c.mode, UsageMode::Paths);
         assert_eq!(c.paths, vec!["/a", "/b"]);
         assert!(c.human_readable && c.include_inodes);
@@ -9256,15 +10417,27 @@ mod tests {
     #[test]
     fn cli_invalid_typed_args_are_reported() {
         let h = FsHandle::new_for_test("t".to_string());
-        assert!(h.parse_quota_config(cli_args(&[("timeout_ms", "soon")])).is_err());
-        assert!(h.parse_usage_config(cli_args(&[("units", "parsecs")])).is_err());
-        assert!(h.parse_check_config(cli_args(&[("target", "/x"), ("allow_repair", "maybe")])).is_err());
+        assert!(
+            h.parse_quota_config(cli_args(&[("timeout_ms", "soon")]))
+                .is_err()
+        );
+        assert!(
+            h.parse_usage_config(cli_args(&[("units", "parsecs")]))
+                .is_err()
+        );
+        assert!(
+            h.parse_check_config(cli_args(&[("target", "/x"), ("allow_repair", "maybe")]))
+                .is_err()
+        );
     }
 
     #[test]
     fn resize_bare_number_string_uses_size_units() {
         let h = FsHandle::new_for_test("t".to_string());
-        assert_eq!(h.parse_size(&json!("2"), &SizeUnits::Kilobytes).unwrap(), 2048);
+        assert_eq!(
+            h.parse_size(&json!("2"), &SizeUnits::Kilobytes).unwrap(),
+            2048
+        );
         assert_eq!(h.parse_size(&json!("1K"), &SizeUnits::Auto).unwrap(), 1024);
     }
 
@@ -9297,7 +10470,9 @@ mod tests {
         let mut stdin = std::io::empty();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut io = IoStreams::new(&mut stdin, &mut out, &mut err);
-        let args: Args = [("verb".to_string(), "resize".to_string())].into_iter().collect();
+        let args: Args = [("verb".to_string(), "resize".to_string())]
+            .into_iter()
+            .collect();
         h.call("help", &args, &mut io).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("Handle: fs\nVerb: resize"));

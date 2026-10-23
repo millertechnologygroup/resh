@@ -188,14 +188,14 @@ pub fn error_code_to_numeric(error_code: &str) -> i32 {
     match error_code {
         // Requirements spec error codes
         "not_found" => 2,
-        "not_installed" => 3, 
+        "not_installed" => 3,
         "invalid_name" => 10,
         "permission_denied" => 13,
         "timeout" => 24,
         "conflict" => 29,
         "io" => 74,
         "internal" => 70,
-        
+
         // Legacy error codes (keep for compatibility)
         error_codes::INVALID_ARGUMENT => 10,
         error_codes::PLUGIN_INVALID_TARGET => 10,
@@ -382,33 +382,34 @@ impl EnabledRegistry {
             enabled: Vec::new(),
         }
     }
-    
+
     pub fn is_enabled(&self, plugin_id: &str) -> bool {
         self.enabled.iter().any(|p| p.id == plugin_id)
     }
-    
+
     pub fn get_enabled_version(&self, plugin_id: &str) -> Option<&str> {
-        self.enabled.iter()
+        self.enabled
+            .iter()
             .find(|p| p.id == plugin_id)
             .map(|p| p.version.as_str())
     }
-    
+
     pub fn enable_plugin(&mut self, plugin_id: String, version: String) -> bool {
         // Remove existing entry if present
         self.enabled.retain(|p| p.id != plugin_id);
-        
+
         // Add new entry
         self.enabled.push(EnabledPlugin {
             id: plugin_id,
             version,
         });
-        
+
         // Sort by id for deterministic output
         self.enabled.sort_by(|a, b| a.id.cmp(&b.id));
-        
+
         true
     }
-    
+
     pub fn disable_plugin(&mut self, plugin_id: &str) -> bool {
         let initial_len = self.enabled.len();
         self.enabled.retain(|p| p.id != plugin_id);
