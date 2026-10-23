@@ -2,399 +2,156 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes system automation using a resource-oriented URI execution model.
+Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs and reports the results as JSON.
 
-The `template://` handle provides template rendering, validation, and testing capabilities using the Tera template engine. It supports both file-based and inline templates with dynamic data injection and structured output.
+The `template://` handle renders, validates and tests text templates with the [Tera](https://keats.github.io/tera/) engine. Every verb prints one JSON object.
 
-Traditional configuration generation and templating workflows often require:
-
-* External scripting languages
-* Unstructured output handling
-* Separate validation tooling
-* Custom test harnesses
-* Manual variable checking
-
-The `template://` handle addresses these limitations by:
-
-* Providing a uniform URI-based interface
-* Supporting structured JSON context injection
-* Returning deterministic JSON responses
-* Enabling built-in validation and automated testing
-
-All template operations follow the URI model:
-
+```text
+resh template://<path>.<verb> key=value ...     template file, relative to the current directory
+resh template://inline.<verb> key=value ...     template text passed as an argument
 ```
-template://path/to/template.ext.verb(arguments)
-template://inline.verb(arguments)
-```
+
+* `<path>` is a template file such as `welcome.txt` or `templates/nginx.conf`. The verb is the part after the last dot, so `template://nginx.conf.render` renders the file `nginx.conf`.
+* `inline` (or an empty target) means there is no file; the template text comes from an argument.
+* `<verb>` is `render`, `validate` or `test`. Any other verb fails with `Error: unknown verb: <verb>` and exit status 1.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Design Notes
 
-The `template://` handle adheres to resh design principles.
-
-### Structured Interface Model
-
-All template operations follow:
-
-```
-template://target.verb(arguments)
-```
-
-Where `target` is either:
-
-* A file path to a template
-* The reserved target `inline` for inline template content
-
-This ensures consistent invocation semantics across render, validate, and test operations.
-
-### Safety-First Execution
-
-The handle supports:
-
-* Strict variable validation
-* Structured error reporting
-* Deterministic output typing
-* Explicit output format selection
-
-These features reduce runtime configuration errors.
-
-### Deterministic Behavior
-
-All operations return structured JSON with:
-
-* Explicit success indicator (`ok`)
-* Structured error lists
-* Defined output format metadata
-* Template and context metadata
-
-### JSON-Based Structured Output
-
-Outputs are structured and machine-readable, enabling:
-
-* CI/CD validation
-* Configuration generation pipelines
-* Automated regression testing
-* Deterministic downstream parsing
-
-### AI-Readiness
-
-The deterministic grammar and structured response model allow template rendering to be safely invoked within automation agents and orchestration systems.
+* Each template is compiled on its own. `{% extends %}`, `{% include %}` and `{% import %}` of other template files are not supported, because no other templates are loaded.
+* Tera's built-in functions are available, including `get_env`, which reads environment variables of the `resh` process (`{{ get_env(name="HOME") }}`). Do not render untrusted templates.
+* None of the verbs read `timeout_ms`, which is ignored. None has a dry-run mode, so `dry_run=true` is refused (exit 2). Rendering never writes files.
+* Context values come only from the `context` / `context_file` arguments (and, for `test`, each case's `context`). There are no other data sources.
 
 ---
 
-## 3. Command Syntax and Execution Model
+## 3. Verbs
 
-### 3.1 URI Structure
+Per-verb help: `resh template <verb> --help`.
 
-```
-template://target.verb(arguments)
-```
+### 3.1 render
 
-#### Components
+Renders a template with a JSON context.
 
-| Component   | Description                            |
-| ----------- | -------------------------------------- |
-| `template`  | Handle identifier                      |
-| `target`    | Template file path or `inline`         |
-| `verb`      | `render`, `validate`, or `test`        |
-| `arguments` | Named parameters controlling execution |
-
----
-
-### Examples
-
-Inline render:
-
-```sh
-template://inline.render(template="Hello {{ name }}", context="{\"name\":\"world\"}")
+```bash
+resh --json-pretty template://welcome.txt.render 'context={"name":"alice"}'
+resh template://inline.render 'template=Hello {{ name }}' 'context={"name":"world"}'
+resh template://nginx.conf.render context_file=/srv/vars/prod.json
+resh template://inline.render 'template={"port": {{ port }}}' 'context={"port":8080}' format=json
 ```
 
-File render:
+| Argument       | Meaning |
+| -------------- | ------- |
+| `template`     | Template text (takes precedence over the file) |
+| `from`         | Template text, older spelling; used when `template` is absent |
+| `context`      | JSON context. If both are given, `context` replaces `context_file` entirely (they are not merged) |
+| `context_file` | Path of a JSON context file |
+| `format`       | `text` (default), `html`, `json` (parse the rendered text as JSON into `body.value`) or `bytes` (base64 in `body.base64`). Other values give an `invalid_format` error |
 
-```sh
-template://config.yaml.render(context_file="/data/vars.json")
-```
-
-Validate template:
-
-```sh
-template://email.html.validate()
-```
-
-Run tests:
-
-```sh
-template://newsletter.html.test()
-```
-
----
-
-### 3.2 Execution Semantics
-
-All template operations return structured JSON envelopes.
-
-#### Render Success Example
+Output for a file containing `Hello, {{ name }}!`:
 
 ```json
 {
   "ok": true,
   "engine": "tera",
-  "template": {
-    "source": "inline",
-    "name": "inline",
-    "size": 15
-  },
-  "context": {
-    "keys": ["name"],
-    "raw": {"name": "world"}
-  },
-  "body": {
-    "type": "text",
-    "value": "Hello world"
-  },
+  "template": { "source": "file", "name": "welcome.txt", "path": "welcome.txt", "size": 18 },
+  "context": { "keys": ["name"], "raw": { "name": "alice" } },
+  "body": { "type": "text", "value": "Hello, alice!" },
   "errors": []
 }
 ```
 
-#### Validation Failure Example
+On failure `ok` is `false`, `body` is absent and `errors` holds objects with `kind` and `message`. Error kinds: `template_not_found`, `io`, `context_parse`, `render` (template parse or render error, including a missing variable; the message is Tera's top-level message, such as `Failed to render 'render_template'`, so use `validate` to see which variable is missing), `json_parse`, `invalid_format`. The process exits non-zero.
+
+### 3.2 validate
+
+Checks a template for syntax errors and, by rendering it with the given context, for render errors such as missing variables.
+
+```bash
+resh --json-pretty template://welcome.txt.validate 'context={"name":"alice"}'
+resh template://welcome.txt.validate strict=false
+resh template://inline.validate 'from=Hello {{ name }}'
+```
+
+| Argument   | Meaning |
+| ---------- | ------- |
+| `from`     | Template text (`inline=` is also accepted). **`template=` is not read by `validate`**: with only `template=`, validate reports `Failed to read template` |
+| `context`  | JSON context (`context_file` is not read by `validate`) |
+| `strict`   | Default `true`. When given, only the exact value `true` keeps strict mode; any other value (`false`, `no`, `0`, or a typo such as `ture`) turns it off. With strict off, missing variables are reported in `warnings` and the command succeeds |
+| `encoding` | Only `utf-8` is accepted |
+
+Output:
 
 ```json
 {
   "ok": false,
+  "template": { "source": "file", "name": "welcome.txt", "path": "welcome.txt", "size": 18 },
   "strict": true,
   "errors": [
-    {
-      "kind": "missing_variable",
-      "message": "Missing variable: Variable `user` not found"
-    }
+    { "kind": "missing_variable", "message": "Missing variable: Variable `name` not found in context while rendering 'validate_template'" }
   ],
   "warnings": []
 }
 ```
 
-Automation logic should evaluate the `ok` field and inspect `errors` and `warnings`.
+Error kinds: `file_read`, `encoding`, `context_parse`, `syntax`, `missing_variable`, `render`. On any error the command exits with status 1.
+
+### 3.3 test
+
+Renders a template once per test case and checks the result.
+
+```bash
+resh --json-pretty template://welcome.txt.test
+resh template://welcome.txt.test cases_file=/srv/tests/welcome-cases.json stop_on_first_fail=true
+resh template://inline.test 'template=Hi {{ n }}' 'cases=[{"name":"one","context":{"n":1},"expected":"Hi 1"}]'
+```
+
+| Argument             | Meaning |
+| -------------------- | ------- |
+| `template` / `from`  | Template text instead of the file |
+| `cases`              | JSON array of test cases |
+| `cases_file`         | File holding the JSON array |
+| `stop_on_first_fail` | Exact value `true` stops after the first failing case |
+| `capture_output`     | `summary` (default: include `rendered` only for failing cases), `full` (always), `none` (never) |
+
+Without `cases` or `cases_file`, the cases are read from the file next to the template with the extension `.tests.json` (for `welcome.txt`, `welcome.tests.json`).
+
+Each case has `name`, `context` (both required), and optionally `expected` (exact match), `contains` and `not_contains` (substring checks).
+
+Output:
+
+```json
+{
+  "template": "welcome.txt",
+  "ok": true,
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "stop_on_first_fail": false,
+  "cases": [ { "name": "alice", "ok": true, "expected": "Hello, alice!" } ]
+}
+```
+
+A missing template or missing cases sets `ok: false`, an `error` message and exit status 2.
 
 ---
 
-## 4. Functional Domain – Template Handle
+## 4. Platform Support
 
-### Operational Scope
-
-The `template://` handle supports:
-
-* Rendering templates
-* Syntax validation
-* Strict variable validation
-* Automated test execution
-* Inline and file-based templates
-* Multiple output formats
+Only Linux is supported and verified.
 
 ---
 
-### Supported Verbs
+## 5. Operational Notes
 
-#### render
-
-Renders template content using Tera.
-
-**Required:**
-
-* Template file path OR `template` argument for inline content
-
-**Optional:**
-
-* `context` (JSON string)
-* `context_file` (JSON file path)
-* `format` (`text`, `html`, `json`, `bytes`)
-* `encoding` (utf-8 supported)
+* Run `validate` (strict) before `render` in pipelines, and fail the job when `ok` is `false`.
+* Keep context in JSON files (`context_file`) under version control alongside the templates.
+* Use `test` with a `.tests.json` file next to each template to catch regressions.
+* Do not put secrets in templates; note that `get_env` can read the environment.
 
 ---
 
-#### validate
+## 6. Implementation
 
-Validates template syntax and checks for missing variables.
-
-**Optional:**
-
-* `context`
-* `strict` (default: true)
-
----
-
-#### test
-
-Executes defined test cases against a template.
-
-**Optional:**
-
-* `cases`
-* `cases_file`
-* `stop_on_first_fail`
-* `capture_output`
-
----
-
-### Template Engine
-
-The handle uses the **Tera template engine**, supporting:
-
-* Variable substitution: `{{ variable }}`
-* Conditionals: `{% if %}`
-* Loops: `{% for %}`
-* Filters: `{{ name | upper }}`
-* Template inheritance
-* Comments: `{# comment #}`
-
----
-
-### Data Sources
-
-Data injection precedence:
-
-1. Inline `context`
-2. `context_file`
-3. URL parameters
-
-Context files must be valid JSON.
-
----
-
-### Output Formats
-
-| Format  | Description                    |
-| ------- | ------------------------------ |
-| `text`  | Plain text output              |
-| `html`  | HTML-labeled output            |
-| `json`  | Parses rendered output as JSON |
-| `bytes` | Base64-encoded binary output   |
-
----
-
-### Test Case Format
-
-Test cases are JSON arrays with:
-
-* `name`
-* `context`
-* `expected` (exact match)
-* `contains`
-* `not_contains`
-
----
-
-### Common Error Types
-
-* `template_not_found`
-* `context_parse`
-* `syntax`
-* `missing_variable`
-* `render`
-* `json_parse`
-
----
-
-## 5. Platform Support
-
-The template handle operates within resh and supports:
-
-| Platform   | Support   |
-| ---------- | --------- |
-| Linux      | Supported |
-| Unix/macOS | Supported |
-| Windows    | Supported |
-
-Template compatibility depends on file system accessibility and JSON parsing capabilities.
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Validate templates before rendering.
-* Use strict mode in production.
-* Test templates with representative data.
-* Avoid embedding secrets directly in templates.
-
-### Automation Considerations
-
-* Use `format="json"` for structured output pipelines.
-* Validate `ok` before consuming rendered output.
-* Separate data into context files for maintainability.
-* Use automated tests to prevent regression.
-
-### CI/CD Integration
-
-* Validate templates during build stages.
-* Run `test` verb for configuration validation.
-* Render configuration artifacts during deployment.
-* Fail pipelines if `ok=false`.
-
-### Production Recommendations
-
-* Maintain version control of templates.
-* Use explicit context files.
-* Enforce strict validation.
-* Log structured JSON outputs for auditing.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Generate environment-specific configuration files.
-* Validate configuration prior to deployment.
-* Automate manifest rendering during build pipelines.
-
-### SRE Engineers
-
-* Render runtime configuration safely.
-* Validate templates during incident recovery.
-* Test templates before applying changes.
-
-### Network Administrators
-
-* Generate network configuration files.
-* Create templated firewall policies.
-* Render device configuration templates.
-
-### AI/Automation Engineers
-
-* Integrate template rendering into orchestration agents.
-* Use structured JSON output for downstream processing.
-* Automate validation prior to execution workflows.
-
----
-
-## 8. Technical Foundation
-
-The `template://` handle operates within resh, implemented in Rust.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Strong compile-time guarantees
-* Deterministic binary execution
-
-### Type Safety
-
-Argument parsing and response construction are type-validated, reducing runtime ambiguity.
-
-### Performance Characteristics
-
-* Efficient template rendering
-* Controlled error propagation
-* Deterministic JSON serialization
-
-### Cross-Platform Architecture
-
-The template handle operates across:
-
-* Linux
-* macOS/Unix
-* Windows
-
-Functionality is dependent on file system access and JSON support.
+Written in Rust (`src/handles/automation/templateh.rs`) on the Tera 1.x engine.

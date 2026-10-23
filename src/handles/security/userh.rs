@@ -2971,14 +2971,14 @@ impl UserHandle {
         }
 
         // Parse boolean flags
-        if let Some(dry_run) = args.get("dry_run") {
-            options.dry_run = dry_run.parse().unwrap_or(false);
+        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run;
         }
         if let Some(ignore_if_exists) = args.get("ignore_if_exists") {
             options.ignore_if_exists = ignore_if_exists.parse().unwrap_or(true);
         }
-        if let Some(force) = args.get("force") {
-            options.force = force.parse().unwrap_or(false);
+        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
+            options.force = force;
         }
         if let Some(create_home) = args.get("create_home") {
             options.create_home = create_home.parse().unwrap_or(true);
@@ -3055,14 +3055,14 @@ impl UserHandle {
         }
 
         // Parse boolean flags
-        if let Some(dry_run) = args.get("dry_run") {
-            options.dry_run = dry_run.parse().unwrap_or(false);
+        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run;
         }
         if let Some(ignore_if_missing) = args.get("ignore_if_missing") {
             options.ignore_if_missing = ignore_if_missing.parse().unwrap_or(true);
         }
-        if let Some(force) = args.get("force") {
-            options.force = force.parse().unwrap_or(false);
+        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
+            options.force = force;
         }
 
         // Parse format
@@ -3132,14 +3132,14 @@ impl UserHandle {
         }
 
         // Parse boolean flags
-        if let Some(dry_run) = args.get("dry_run") {
-            options.dry_run = dry_run.parse().unwrap_or(false);
+        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run;
         }
         if let Some(ignore_if_missing) = args.get("ignore_if_missing") {
             options.ignore_if_missing = ignore_if_missing.parse().unwrap_or(true);
         }
-        if let Some(force) = args.get("force") {
-            options.force = force.parse().unwrap_or(false);
+        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
+            options.force = force;
         }
         if let Some(require_old_password) = args.get("require_old_password") {
             options.require_old_password = require_old_password.parse().unwrap_or(false);
@@ -3195,14 +3195,14 @@ impl UserHandle {
         }
 
         // Parse boolean flags
-        if let Some(dry_run) = args.get("dry_run") {
-            options.dry_run = dry_run.parse().unwrap_or(false);
+        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run;
         }
         if let Some(ignore_if_missing) = args.get("ignore_if_missing") {
             options.ignore_if_missing = ignore_if_missing.parse().unwrap_or(true);
         }
-        if let Some(force) = args.get("force") {
-            options.force = force.parse().unwrap_or(false);
+        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
+            options.force = force;
         }
         if let Some(protect_system_users) = args.get("protect_system_users") {
             options.protect_system_users = protect_system_users.parse().unwrap_or(true);
@@ -3244,14 +3244,14 @@ impl UserHandle {
         }
 
         // Parse boolean flags
-        if let Some(dry_run) = args.get("dry_run") {
-            options.dry_run = dry_run.parse().unwrap_or(false);
+        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run;
         }
         if let Some(ignore_if_missing) = args.get("ignore_if_missing") {
             options.ignore_if_missing = ignore_if_missing.parse().unwrap_or(true);
         }
-        if let Some(force) = args.get("force") {
-            options.force = force.parse().unwrap_or(false);
+        if let Some(force) = crate::core::lenient::bool_arg(args, "force")? {
+            options.force = force;
         }
         if let Some(protect_system_users) = args.get("protect_system_users") {
             options.protect_system_users = protect_system_users.parse().unwrap_or(true);
@@ -7065,14 +7065,26 @@ mod tests {
         };
 
         // Create a backend with root user that's locked
-        let backend = MockBackend::new()
+        let mut backend = MockBackend::new()
             .with_existing_user("root", 0, "root")
             .with_locked_user("root", true);
 
-        // At the unit test level, we test the protection logic
-        // The actual protection happens in the unlock_user method
-        let result = handle.unlock(&target, options);
-        assert!(result.is_err(), "Expected SystemUserUnlockProtected error");
+        let err = handle.unlock_user(&target, &options, &mut backend)
+            .expect_err("Expected SystemUserUnlockProtected error");
+        assert!(
+            matches!(err.downcast_ref::<UserError>(), Some(UserError::SystemUserUnlockProtected(name, 0)) if name == "root"),
+            "unexpected error: {err}"
+        );
+        // The protected account must be left exactly as it was
+        assert!(backend.is_locked("root").unwrap());
+
+        // The protection also applies to any uid below the threshold
+        let mut backend = MockBackend::new()
+            .with_existing_user("daemon", 999, "daemon")
+            .with_locked_user("daemon", true);
+        let options = UserUnlockOptions { username: Some("daemon".to_string()), ..options };
+        assert!(handle.unlock_user(&target, &options, &mut backend).is_err());
+        assert!(backend.is_locked("daemon").unwrap());
     }
 
     #[test]
@@ -7089,14 +7101,19 @@ mod tests {
         };
 
         // Create a backend with root user that's locked
-        let backend = MockBackend::new()
+        let mut backend = MockBackend::new()
             .with_existing_user("root", 0, "root")
             .with_locked_user("root", true);
 
-        let response = handle.unlock(&target, options).unwrap();
+        let response = handle.unlock_user(&target, &options, &mut backend).unwrap();
         assert!(response.ok);
+        assert_eq!(response.unlock.was_locked, Some(true));
+        assert_eq!(response.unlock.is_locked, Some(false));
+        assert!(response.unlock.changed);
         assert!(!response.warnings.is_empty());
         assert!(response.warnings.iter().any(|w| w.contains("system user")));
+        // force=true is the only way past the protection, and it really unlocks
+        assert!(!backend.is_locked("root").unwrap());
     }
 
     #[test]
@@ -7111,11 +7128,13 @@ mod tests {
         };
 
         // Create a backend with a locked user
-        let backend = MockBackend::new()
+        let mut backend = MockBackend::new()
             .with_existing_user("alice", 1001, "alice")
             .with_locked_user("alice", true);
 
-        let response = handle.unlock(&target, options).unwrap();
+        let response = handle.unlock_user(&target, &options, &mut backend).unwrap();
+        // The account itself must still be locked after a dry run
+        assert!(backend.is_locked("alice").unwrap());
         assert!(response.ok);
         assert!(response.dry_run);
         assert_eq!(response.unlock.was_locked, Some(true));
@@ -7150,12 +7169,14 @@ mod tests {
         let handle = UserHandle { alias: "test".to_string() };
         let text_output = handle.format_unlock_text_response(&response);
         
+        // Same column layout as format_lock_text_response
         assert!(text_output.contains("Backend : mock"));
         assert!(text_output.contains("User    : alice"));
-        assert!(text_output.contains("Existed     : yes"));
-        assert!(text_output.contains("Was Locked  : yes"));
-        assert!(text_output.contains("Is Locked   : no"));
-        assert!(text_output.contains("Changed     : yes"));
+        assert!(text_output.contains("Existed    : yes"));
+        assert!(text_output.contains("Missing    : no"));
+        assert!(text_output.contains("Was Locked : yes"));
+        assert!(text_output.contains("Is Locked  : no"));
+        assert!(text_output.contains("Changed    : yes"));
     }
 
     #[test]
@@ -7163,10 +7184,14 @@ mod tests {
         let url = Url::parse("user://default").unwrap();
         let handle = UserHandle::from_url(url).unwrap();
         let verbs = handle.verbs();
-        
+
         assert!(verbs.contains(&"unlock"), "Verbs should include 'unlock'");
         assert!(verbs.contains(&"lock"), "Verbs should include 'lock'");
-        assert_eq!(verbs.len(), 5, "Should have 5 verbs: add, delete, passwd, lock, unlock");
+        assert_eq!(
+            verbs,
+            &["add", "delete", "passwd", "lock", "unlock", "groups", "exists"],
+            "Should have 7 verbs: add, delete, passwd, lock, unlock, groups, exists"
+        );
     }
 
     #[test]
@@ -7365,7 +7390,7 @@ mod tests {
             ..Default::default()
         };
 
-        let response = handle.groups(&target, options).unwrap();
+        let response = handle.groups_user(&target, &options, &backend).unwrap();
         assert!(response.ok);
         
         // Should only have 2 groups (alice and dev), adm should be filtered out
@@ -7394,7 +7419,7 @@ mod tests {
             ..Default::default()
         };
 
-        let response = handle.groups(&target, options).unwrap();
+        let response = handle.groups_user(&target, &options, &backend).unwrap();
         assert!(response.ok);
         
         // Should only have dev group, alice (primary) should be filtered out
@@ -7422,7 +7447,7 @@ mod tests {
             ..Default::default()
         };
 
-        let response = handle.groups(&target, options).unwrap();
+        let response = handle.groups_user(&target, &options, &backend).unwrap();
         assert!(response.ok);
         
         // Should only have alice group (primary), dev should be filtered out
@@ -7450,7 +7475,7 @@ mod tests {
             ..Default::default()
         };
 
-        let response = handle.groups(&target, options).unwrap();
+        let response = handle.groups_user(&target, &options, &backend).unwrap();
         assert!(response.ok);
         
         // Should only have dev group matching the filter
@@ -7513,7 +7538,7 @@ mod tests {
             ..Default::default()
         };
 
-        let response = handle.groups(&target, options).unwrap();
+        let response = handle.groups_user(&target, &options, &backend).unwrap();
         assert!(response.ok);
         assert!(response.groups.is_empty());
         assert!(!response.warnings.is_empty());
@@ -7575,7 +7600,8 @@ mod tests {
         let verbs = handle.verbs();
         
         assert!(verbs.contains(&"groups"), "Verbs should include 'groups'");
-        assert_eq!(verbs.len(), 6, "Should have 6 verbs: add, delete, passwd, lock, unlock, groups");
+        assert!(verbs.contains(&"exists"), "Verbs should include 'exists'");
+        assert_eq!(verbs.len(), 7, "Should have 7 verbs: add, delete, passwd, lock, unlock, groups, exists");
     }
 
     #[test]
@@ -8297,5 +8323,144 @@ mod tests {
         assert!(st.ok);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["user"]["username"], "alice");
+    }
+}
+
+// SEC-05: user changes requested as a dry run must leave the account
+// database untouched. Everything runs against MockBackend; no system
+// command is reachable from unit tests.
+#[cfg(test)]
+mod dry_run_tests {
+    use super::*;
+
+    const TRUE: &[&str] = &["true", "1", "yes", "on", "TRUE", "Yes"];
+    const BAD: &[&str] = &["maybe", "", "2", "y", "tru"];
+
+    fn args(pairs: &[(&str, &str)]) -> Args {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn handle() -> UserHandle {
+        UserHandle { alias: "bob".into() }
+    }
+
+    fn target(name: &str) -> UserTarget {
+        UserTarget { path: name.into() }
+    }
+
+    fn mock() -> MockBackend {
+        MockBackend::new().with_existing_user("bob", 1500, "bob").with_existing_group("bob", 1500)
+    }
+
+    /// SEC-08: `force` (which overrides the system-account protections) is
+    /// read by the shared parser in all five option parsers. A malformed
+    /// value is an error, never a silent `false`/`true`.
+    #[test]
+    fn force_parses_consistently_and_rejects_garbage() {
+        let h = handle();
+        let t = target("bob");
+        for v in TRUE {
+            let a = args(&[("force", v)]);
+            assert!(h.parse_add_options(&a, &t).unwrap().force, "{v}");
+            assert!(h.parse_delete_options(&a, &t).unwrap().force, "{v}");
+            assert!(h.parse_passwd_options(&args(&[("force", v), ("password", "Secret-Pass-123")]), &t).unwrap().force, "{v}");
+            assert!(h.parse_lock_options(&a, &t).unwrap().force, "{v}");
+            assert!(h.parse_unlock_options(&a, &t).unwrap().force, "{v}");
+        }
+        for v in ["false", "0", "no", "off"] {
+            assert!(!h.parse_unlock_options(&args(&[("force", v)]), &t).unwrap().force, "{v}");
+        }
+        for v in BAD {
+            let a = args(&[("force", v)]);
+            assert!(h.parse_add_options(&a, &t).is_err(), "{v:?}");
+            assert!(h.parse_delete_options(&a, &t).is_err(), "{v:?}");
+            assert!(h.parse_lock_options(&a, &t).is_err(), "{v:?}");
+            assert!(h.parse_unlock_options(&a, &t).is_err(), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn delete_dry_run_keeps_the_user() {
+        let h = handle();
+        for v in TRUE {
+            let mut b = mock();
+            let o = h.parse_delete_options(&args(&[("dry_run", v)]), &target("bob")).unwrap();
+            assert!(o.dry_run, "{v}");
+            let r = h.delete_user(&target("bob"), &o, &mut b).unwrap();
+            assert!(r.dry_run);
+            assert!(b.lookup_user("bob").unwrap().is_some(), "dry_run={v} deleted the user");
+        }
+        // Normal execution still deletes.
+        for args_ in [args(&[("dry_run", "false")]), args(&[("dry_run", "0")]), args(&[])] {
+            let mut b = mock();
+            let o = h.parse_delete_options(&args_, &target("bob")).unwrap();
+            h.delete_user(&target("bob"), &o, &mut b).unwrap();
+            assert!(b.lookup_user("bob").unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn add_dry_run_creates_nothing() {
+        let h = handle();
+        for v in TRUE {
+            let mut b = MockBackend::new();
+            let o = h.parse_add_options(&args(&[("dry_run", v)]), &target("newbie")).unwrap();
+            h.add_user(&target("newbie"), &o, &mut b).unwrap();
+            assert!(b.lookup_user("newbie").unwrap().is_none(), "dry_run={v} created the user");
+        }
+        let mut b = MockBackend::new();
+        let o = h.parse_add_options(&args(&[("dry_run", "no")]), &target("newbie")).unwrap();
+        h.add_user(&target("newbie"), &o, &mut b).unwrap();
+        assert!(b.lookup_user("newbie").unwrap().is_some());
+    }
+
+    #[test]
+    fn lock_dry_run_leaves_account_unlocked() {
+        let h = handle();
+        for v in TRUE {
+            let mut b = mock();
+            let o = h.parse_lock_options(&args(&[("dry_run", v)]), &target("bob")).unwrap();
+            h.lock_user(&target("bob"), &o, &mut b).unwrap();
+            assert!(!b.is_locked("bob").unwrap(), "dry_run={v} locked the account");
+        }
+        let mut b = mock();
+        let o = h.parse_lock_options(&args(&[("dry_run", "off")]), &target("bob")).unwrap();
+        h.lock_user(&target("bob"), &o, &mut b).unwrap();
+        assert!(b.is_locked("bob").unwrap());
+    }
+
+    #[test]
+    fn every_user_parser_accepts_spellings_and_rejects_garbage() {
+        let h = handle();
+        let t = target("bob");
+        for v in TRUE {
+            let a = args(&[("dry_run", v)]);
+            assert!(h.parse_add_options(&a, &t).unwrap().dry_run);
+            assert!(h.parse_delete_options(&a, &t).unwrap().dry_run);
+            assert!(h.parse_passwd_options(&a, &t).unwrap().dry_run);
+            assert!(h.parse_lock_options(&a, &t).unwrap().dry_run);
+            assert!(h.parse_unlock_options(&a, &t).unwrap().dry_run);
+        }
+        for v in BAD {
+            let a = args(&[("dry_run", v)]);
+            assert!(h.parse_add_options(&a, &t).is_err(), "add {v:?}");
+            assert!(h.parse_delete_options(&a, &t).is_err(), "delete {v:?}");
+            assert!(h.parse_passwd_options(&a, &t).is_err(), "passwd {v:?}");
+            assert!(h.parse_lock_options(&a, &t).is_err(), "lock {v:?}");
+            assert!(h.parse_unlock_options(&a, &t).is_err(), "unlock {v:?}");
+        }
+    }
+
+    /// Through `call`: a malformed dry_run fails before any backend exists.
+    #[test]
+    fn malformed_dry_run_fails_the_verb() {
+        for verb in ["add", "delete", "passwd", "lock", "unlock"] {
+            let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let ok = handle().call(verb, &args(&[("dry_run", "maybe")]), &mut io)
+                .map(|s| s.ok)
+                .unwrap_or(false);
+            assert!(!ok, "{verb} accepted dry_run=maybe");
+        }
     }
 }

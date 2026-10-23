@@ -11,6 +11,59 @@ use super::types::{
     ArtifactCandidate, PluginManifest, RegistryEntry, RequestedVersion, SourceSpec, VerifyMode,
 };
 
+/// Parse a SHA-256 given as 64 hexadecimal digits (either case) and return
+/// it in lower case. Anything else is an error; nothing is trimmed or padded.
+pub fn parse_sha256(value: &str) -> Result<String> {
+    if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(anyhow!("Invalid SHA-256 {:?}: expected 64 hexadecimal digits", value));
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only seam: lets this thread's registry clients talk plain HTTP to
+    /// a loopback mock server. There is no equivalent outside `cfg(test)`.
+    static ALLOW_LOOPBACK_HTTP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Allow plain HTTP to 127.0.0.1/localhost for registry clients created on
+/// this thread (tests only).
+#[cfg(test)]
+pub(crate) fn allow_loopback_http_for_tests(allow: bool) {
+    ALLOW_LOOPBACK_HTTP.with(|c| c.set(allow));
+}
+
+fn loopback_http_allowed() -> bool {
+    #[cfg(test)]
+    {
+        ALLOW_LOOPBACK_HTTP.with(|c| c.get())
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+/// Require an authenticated transport for a remote registry or artifact URL:
+/// the scheme must be `https` and a host must be present. Plain `http`, and
+/// every other scheme, is refused before any connection is made.
+pub fn require_https(url: &str) -> Result<Url> {
+    let parsed = Url::parse(url).with_context(|| format!("Invalid plugin URL: {:?}", url))?;
+    if parsed.host_str().is_none_or(|h| h.is_empty()) {
+        return Err(anyhow!("Invalid plugin URL {:?}: no host", url));
+    }
+    match parsed.scheme() {
+        "https" => Ok(parsed),
+        "http" if loopback_http_allowed()
+            && matches!(parsed.host_str(), Some("127.0.0.1") | Some("localhost")) => Ok(parsed),
+        scheme => Err(anyhow!(
+            "Refusing plugin URL {:?}: scheme {:?} is not allowed, plugin registries and artifacts must use https",
+            url, scheme
+        )),
+    }
+}
+
 /// Registry client for fetching and parsing plugin metadata
 pub struct RegistryClient {
     http_client: Client,
@@ -20,9 +73,12 @@ pub struct RegistryClient {
 impl RegistryClient {
     /// Create new registry client with timeout
     pub fn new(timeout_ms: u64) -> Result<Self> {
+        // TLS certificates are always verified (reqwest's default; nothing
+        // here disables it). https_only also refuses a redirect to http.
         let http_client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent("resh-plugin-client/1.0")
+            .https_only(!loopback_http_allowed())
             .build()
             .context("Failed to create HTTP client")?;
 
@@ -96,6 +152,7 @@ impl RegistryClient {
     ) -> Result<ArtifactCandidate> {
         // For URL source, we need to make assumptions about the manifest
         // In a real implementation, we might fetch a companion manifest file
+        require_https(url)?;
         let kind = if url.ends_with(".tar.gz") {
             "tar.gz".to_string()
         } else {
@@ -167,7 +224,8 @@ impl RegistryClient {
     /// Fetch plugin entry from registry
     fn fetch_registry_entry(&self, registry_url: &str, plugin_id: &str) -> Result<RegistryEntry> {
         // Try to parse as URL first, fall back to file path
-        if let Ok(url) = Url::parse(registry_url) {
+        if Url::parse(registry_url).is_ok() {
+            let url = require_https(registry_url)?;
             self.fetch_registry_entry_http(&url, plugin_id)
         } else {
             self.fetch_registry_entry_file(registry_url, plugin_id)
@@ -237,6 +295,7 @@ impl RegistryClient {
 
     /// Download artifact from URL
     pub fn download_artifact(&self, url: &str) -> Result<Vec<u8>> {
+        require_https(url)?;
         let response = self
             .http_client
             .get(url)
@@ -268,6 +327,7 @@ impl RegistryClient {
         hasher.update(data);
         let result = hasher.finalize();
         let actual_sha256 = format!("{:x}", result);
+        let expected_sha256 = parse_sha256(expected_sha256)?;
 
         if actual_sha256 != expected_sha256 {
             return Err(anyhow!(

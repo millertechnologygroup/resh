@@ -4,532 +4,244 @@
 
 ### Definition
 
-Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `secret://` handle provides secure storage and retrieval of sensitive information such as API keys, passwords, tokens, and cryptographic material.
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations as URI-style commands. The `secret://` handle stores and reads small secret values (API keys, passwords, tokens) in a local keystore file, and reads values from the process environment.
 
-### Purpose
+### What the handle does
 
-The secret domain enables:
+* Stores a secret from a literal value or from an environment variable (`set`).
+* Reads a secret, optionally withholding the value from the output (`get`).
+* Lists keys by prefix (`ls`).
+* Removes a secret (`rm`).
+* `rotate` is registered but **not implemented**: it always fails (see below).
 
-* Secure storage of sensitive values
-* Retrieval with optional redaction
-* Secret listing and removal
-* Cryptographic secret generation and rotation
-* Integration with environment variables
+Every verb prints one JSON object on stdout.
 
-All operations return structured JSON output suitable for automation, CI/CD pipelines, and infrastructure orchestration.
+### What the handle does not do
 
-### Architectural Problem Addressed
+* **No encryption at rest.** The local keystore is a plain JSON file. Its protection is file permissions only (see [Storage](#4-storage)). Anyone who can read the file as your user, or as root, can read every secret in it.
+* **No secret generation or rotation.** `rotate` returns a "not implemented" error. There are no `strategy` or `length` options.
+* **No Vault integration.** The `vault` scope is accepted in the URL, but every verb on it fails with "vault backend not implemented yet".
+* **No locking.** See [Limitations](#7-limitations).
 
-Traditional secret management approaches:
+---
 
-* Store secrets in plaintext files or environment variables
-* Lack encryption at rest
-* Provide no structured interface
-* Require ad hoc scripting for rotation
-* Produce unstructured output
+## 2. Command Syntax
 
-resh addresses these limitations by:
-
-* Providing an encrypted local secret store
-* Exposing a structured URI-based command model
-* Enforcing JSON output contracts
-* Supporting deterministic secret generation
-* Enabling programmatic redaction for safe logging
-
-### Resource-Oriented URI Model
-
-Secret operations follow:
-
-```
-secret://scope/key_path.verb(options)
+```text
+resh secret://<scope>/<key-path>.<verb> [key=value ...]
 ```
 
-Where:
+| Component  | Description                                                          |
+| ---------- | -------------------------------------------------------------------- |
+| `scope`    | `local` (keystore file), `env` (process environment, read-only), or `vault` (not implemented) |
+| `key-path` | Key name. Slashes group keys (`app/db_password`); `ls` uses them as prefixes. |
+| `verb`     | `get`, `set`, `rm`, `ls`, `rotate`                                   |
 
-* **handle**: `secret://`
-* **scope**: `local`, `env`, or `vault` (planned)
-* **key_path**: Hierarchical key identifier
-* **verb**: Operation (`get`, `set`, `rm`, `ls`, `rotate`)
-* **options**: Structured parameters
+Any other scope is rejected with `unsupported scope '<x>'; supported scopes: local, env, vault`.
 
-Examples:
+The verb is the text after the last dot of the URL, so a key path should not end in something that looks like a verb.
 
-```
-secret://local/openai/api_key.set(value="sk-test123")
-secret://local/openai/api_key.get(redact=true)
-secret://env/DATABASE_URL.get
-secret://local/.ls
+Built-in help:
+
+```bash
+resh secret --help
+resh secret get --help
 ```
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 3. Verbs
 
-### Structured Interface Model
+| Verb     | Scopes       | Arguments                         | Result                                   |
+| -------- | ------------ | --------------------------------- | ---------------------------------------- |
+| `get`    | local, env   | `redact=true` (optional)          | `exists`, `value` (or `null`), `redacted` |
+| `set`    | local only   | `value=<secret>` or `from_env=<VAR>` | `set: true`, `source: "literal"` or `"env"` |
+| `rm`     | local only   | none                              | `removed: true/false`                    |
+| `ls`     | local, env   | none (the key path is the prefix) | sorted `keys`, `prefix`                  |
+| `rotate` | none         | none                              | always fails, exit status 2              |
 
-* Five explicitly defined verbs.
-* Hierarchical key path addressing.
-* Scope-based storage abstraction.
-* Deterministic JSON output.
-* Verb-specific structured parameters.
+### get
 
----
+```bash
+resh --json-pretty secret://local/app/db_password.get
+resh secret://local/app/db_password.get redact=true
+resh secret://env/DATABASE_URL.get
+```
 
-### Safety-First Execution
-
-* Local secrets encrypted at rest.
-* File permissions restricted to owner (0600).
-* Redaction support (`redact=true`).
-* Environment scope is read-only.
-* Atomic file writes prevent corruption.
-* Secret exposure requires explicit parameter (`expose_value=true`).
-
----
-
-### Deterministic Behavior
-
-* Identical inputs produce consistent JSON responses.
-* Scope behavior strictly enforced.
-* Parameter validation required per verb.
-* Invalid operations return structured errors.
-
----
-
-### JSON-Based Structured Output
-
-Representative example:
+* **`get` prints the secret value in plain text by default.** Pass `redact=true` to get `"value": null` and `"redacted": true` instead. Only the exact string `true` turns redaction on; `redact=yes` or `redact=1` still prints the value.
+* There is no `expose_value` argument.
+* A missing key is not an error: the command exits 0 with `"exists": false` and `"value": null`. Check `exists`.
 
 ```json
 {
-  "scope": "local",
-  "key": "openai/api_key",
   "backend": "local",
   "exists": true,
-  "value": null,
-  "redacted": true
+  "key": "app/db_password",
+  "scope": "local",
+  "value": "s3cr3t-value"
 }
 ```
 
-All responses include scope, key, backend, and operation-specific metadata.
-
----
-
-### AI-Readiness
-
-Structured output enables:
-
-* Automated secret audits
-* Compliance verification
-* Rotation policy enforcement
-* Secret existence validation
-* Programmatic redaction safety
-
----
-
-## 3. Command Syntax and Execution Model
-
-### 3.1 URI Structure
-
-```
-secret://scope/key_path.verb(arguments)
-```
-
-| Component   | Description                       |
-| ----------- | --------------------------------- |
-| `handle`    | `secret://`                       |
-| `scope`     | `local`, `env`, `vault` (planned) |
-| `key_path`  | Hierarchical secret identifier    |
-| `verb`      | Operation                         |
-| `arguments` | Structured parameters             |
-
----
-
-### Available Verbs
-
-| Verb     | Purpose             |
-| -------- | ------------------- |
-| `get`    | Retrieve secret     |
-| `set`    | Store secret        |
-| `rm`     | Remove secret       |
-| `ls`     | List secrets        |
-| `rotate` | Generate new secret |
-
----
-
-### Production Examples
-
-#### Store Secret
-
-```
-secret://local/myapp/db/password.set(from_env="MYAPP_DB_PASSWORD")
-```
-
-#### Retrieve Secret (Redacted)
-
-```
-secret://local/myapp/db/password.get(redact=true)
-```
-
-#### List Secrets
-
-```
-secret://local/myapp.ls
-```
-
-#### Remove Secret
-
-```
-secret://local/myapp/db/password.rm
-```
-
-#### Rotate Secret
-
-```
-secret://local/myapp/token.rotate(strategy=random,length=256)
-```
-
-#### Generate RSA Key Pair
-
-```
-secret://local/crypto/rsa.rotate(strategy=rsa,length=4096)
-```
-
----
-
-## 3.2 Execution Semantics
-
-### Deterministic Behavior
-
-* `set` requires either `value` or `from_env`.
-* `env` scope is read-only.
-* `rotate` defaults to random 256-bit generation.
-* `expose_value=false` by default.
-* File writes are atomic.
-* Missing keys return structured error.
-
----
-
-### Structured Output Contracts
-
-Example: Set operation
+With `redact=true`:
 
 ```json
 {
-  "scope": "local",
-  "key": "myapp/db/password",
   "backend": "local",
+  "exists": true,
+  "key": "app/db_password",
+  "redacted": true,
+  "scope": "local",
+  "value": null
+}
+```
+
+### set
+
+```bash
+resh secret://local/app/db_password.set from_env=DB_PASSWORD
+resh secret://local/app/api_key.set value=sk-test123
+```
+
+* `value=` takes precedence if both are given.
+* `from_env=<VAR>` reads the value from the named environment variable of the `resh` process; if it is unset, the command fails.
+* **Prefer `from_env=`.** A `value=` argument is visible to other local users in the process list (`ps`) and is kept in shell history.
+* `set` overwrites an existing key without warning.
+* `env` scope is read-only: `set` fails with `env backend is read-only`.
+
+```json
+{
+  "backend": "local",
+  "key": "app/db_password",
+  "scope": "local",
   "set": true,
   "source": "env"
 }
 ```
 
-Example: Rotate operation
+### rm
+
+```bash
+resh secret://local/app/old_token.rm
+```
+
+Removing a key that does not exist succeeds with `"removed": false`.
+
+### ls
+
+```bash
+resh secret://local/app.ls
+resh secret://local/.ls
+```
+
+Lists keys equal to the key path or nested under it (`app` matches `app` and `app/...`). An empty key path (`secret://local/.ls`) lists every key. Values are never printed by `ls`.
+
+For `env` scope, `ls` lists environment variable **names** of the `resh` process (`secret://env/.ls` lists all of them).
 
 ```json
 {
-  "scope": "local",
-  "key": "myapp/token",
   "backend": "local",
-  "rotated": true,
-  "strategy": "random",
-  "length": 256
+  "keys": ["app/api_key", "app/db_password"],
+  "prefix": "app",
+  "scope": "local"
+}
+```
+
+### rotate (not implemented)
+
+```bash
+resh secret://local/app/api_key.rotate
+```
+
+Always prints the error object below and exits with status 2. It does not change the stored value.
+
+```json
+{
+  "backend": "local",
+  "error": "rotate operation not implemented yet",
+  "key": "app/api_key",
+  "scope": "local"
 }
 ```
 
 ---
 
-### Error Handling Structure
+## 4. Storage
 
-Representative error:
+The `local` scope uses one file:
+
+```text
+<state-dir>/resh/secrets/local.json
+```
+
+`<state-dir>` is `$XDG_STATE_HOME`, or `~/.local/state` when that is unset (Linux). If no state directory can be determined, local-scope verbs fail; there is no fallback location such as `/tmp`.
+
+* The file is **plain, unencrypted JSON** mapping key paths to values.
+* The directory is created with mode 0700 (and tightened to 0700 if it was more open).
+* Each write goes to a new temporary file created with mode 0600 in the same directory, is synced to disk, and is renamed over `local.json`. A crash during a write leaves either the old or the new file, not a partial one.
+* `get` and `ls` only read the file. `set` and `rm` read the whole file, change it in memory, and write it back.
+
+Protect the file the way you would protect any plaintext credential file: keep it out of backups and shared home directories you do not trust, and use full-disk encryption if the threat model includes a lost disk.
+
+---
+
+## 5. Errors and Exit Codes
+
+Errors are printed as a JSON object with an `error` string on **stdout**. resh also prints `Error: <reason>` on stderr.
 
 ```json
 {
-  "scope": "local",
-  "key": "nonexistent",
-  "backend": "local",
-  "error": "key not found"
+  "backend": "env",
+  "error": "env backend is read-only",
+  "key": "X",
+  "scope": "env"
 }
 ```
 
-Errors are structured and suitable for programmatic evaluation.
+| Exit status | When (verified in the source)                                                         |
+| ----------- | ------------------------------------------------------------------------------------- |
+| 0           | Success, including `get` of a missing key and `rm` of a missing key                   |
+| 1           | Missing key path, missing `value`/`from_env`, unset `from_env` variable, write to `env` scope, keystore read/parse/write failure |
+| 2           | `rotate` (not implemented) and any verb on `vault` scope (not implemented)            |
 
 ---
 
-## 4. Functional Domains
+## 6. Options That Are Not Supported
+
+The secret handle reads only the arguments listed in [Verbs](#3-verbs). Every other argument is **ignored without an error**, including:
+
+* `timeout_ms`: ignored (all operations are local file or environment reads).
+* `dry_run`: no verb has a dry-run mode, so `dry_run=true` is refused (exit 2) and nothing is written.
+* `strategy`, `length`, `expose_value`: do not exist.
 
 ---
 
-### 4.1 Automation Utilities
+## 7. Limitations
 
-**Handle**
-
-* `secret://`
-
-**Scope**
-
-* CI/CD secret injection
-* Application provisioning
-* Automated rotation
-* Environment synchronization
+* **Plaintext storage.** No encryption at rest; see [Storage](#4-storage).
+* **No locking.** Two `resh secret` processes running `set` or `rm` at the same time can each load the file, change it, and write it back; the last writer wins and the other change is lost. Run writers one at a time.
+* **Command-line exposure.** `value=` is visible in the process list; use `from_env=`.
+* **`get` output contains the secret** unless `redact=true`. Do not log it.
+* **`rotate` and `vault` are not implemented.**
+* **Platform.** Linux is the only supported and tested platform. The keystore path comes from the XDG state directory; on platforms where no state directory is defined (for example macOS and Windows), local-scope verbs fail.
 
 ---
 
-### 4.2 Data & State Management
+## 8. Usage Guidance
 
-**Scope**
+* Import a secret from an environment variable rather than typing it on the command line:
 
-* Secret inventory via `ls`
-* Existence checks
-* Prefix-based grouping
-* Secret lifecycle management
+  ```bash
+  resh secret://local/app/db/password.set from_env=DB_PASSWORD
+  ```
 
-Example:
+* Check that a secret exists without printing it:
 
-```
-secret://local/projectX.ls
-```
+  ```bash
+  resh secret://local/app/db/password.get redact=true
+  ```
 
----
+  Then test the `exists` field of the JSON.
 
-### 4.3 Filesystem & Storage
-
-**Local Scope Storage Locations**
-
-| Platform | Path                                          |
-| -------- | --------------------------------------------- |
-| Linux    | `~/.local/state/resh/secrets/`                |
-| macOS    | `~/Library/Application Support/resh/secrets/` |
-| Windows  | `%APPDATA%\resh\secrets\`                     |
-
-Features:
-
-* Encrypted JSON storage
-* 0600 file permissions
-* Atomic writes
-
----
-
-### 4.4 Network & Remote Operations
-
-Supports secure integration with:
-
-* HTTP clients
-* Service deployments
-* TLS configurations
-* API authentication
-
-Example:
-
-```
-secret://local/api/token.get(redact=true)
-```
-
----
-
-### 4.5 Packages & Software
-
-Supports:
-
-* Secure configuration of installed applications
-* Credential injection post-install
-* Environment isolation per deployment stage
-
----
-
-### 4.6 Process & Service Management
-
-Integrates with:
-
-* `svc://` for service reload after secret update
-* `cron://` for scheduled rotation
-* `config://` for configuration referencing
-
----
-
-### 4.7 Security & Secrets
-
-Primary capabilities:
-
-| Scope | Access               |
-| ----- | -------------------- |
-| local | Read/write encrypted |
-| env   | Read-only            |
-| vault | Planned              |
-
-Rotation strategies:
-
-* `random`
-* `uuid`
-* `aes`
-* `rsa`
-
-Security controls:
-
-* Encrypted storage
-* Explicit value exposure
-* Strong random generation
-* No automatic exposure in logs
-
----
-
-### 4.8 System Information
-
-Structured reporting includes:
-
-* Scope
-* Backend
-* Key path
-* Existence status
-* Rotation metadata
-* Strategy and length (for generated secrets)
-
----
-
-## 5. Platform Support
-
-| Platform | Support Level |
-| -------- | ------------- |
-| Linux    | Full support  |
-| macOS    | Full support  |
-| Windows  | Full support  |
-
-Notes:
-
-* Storage paths differ by OS.
-* Environment scope depends on OS environment variables.
-* Vault integration not yet implemented.
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Always use `redact=true` in logs.
-* Avoid plaintext secrets in scripts.
-* Use hierarchical paths (`app/env/service/key`).
-* Rotate secrets periodically.
-* Remove unused secrets.
-* Limit secret exposure to required contexts only.
-
----
-
-### Automation Considerations
-
-* Always validate JSON `error` field.
-* Use `from_env` during initial migration.
-* Avoid `expose_value=true` in automated logs.
-* Automate rotation with cron or pipeline tasks.
-* Use consistent naming conventions.
-
----
-
-### CI/CD Integration
-
-Typical workflow:
-
-1. Import secrets from environment:
-
-   ```
-   secret://local/app/db/password.set(from_env="DB_PASSWORD")
-   ```
-2. Validate existence:
-
-   ```
-   secret://local/app/db/password.get(redact=true)
-   ```
-3. Rotate on schedule:
-
-   ```
-   secret://local/app/db/password.rotate
-   ```
-4. Reload dependent services.
-
----
-
-### Production Environment Recommendations
-
-* Enforce minimum 256-bit random secrets.
-* Use RSA 2048+ for asymmetric keys.
-* Document rotation policies.
-* Maintain separate secret scopes per environment.
-* Audit secret inventory regularly.
-* Avoid environment variable leakage.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Inject secrets into deployment pipelines.
-* Manage environment-specific credentials.
-* Automate secret rotation workflows.
-* Secure application configuration.
-
----
-
-### SRE Engineers
-
-* Audit secret existence and usage.
-* Rotate compromised credentials.
-* Validate encryption compliance.
-* Ensure redacted logging in production.
-
----
-
-### Network Administrators
-
-* Manage TLS private keys.
-* Secure API tokens.
-* Rotate access credentials.
-* Validate secret storage integrity.
-
----
-
-### AI / Automation Engineers
-
-* Interpret structured secret metadata.
-* Detect missing or misconfigured secrets.
-* Trigger remediation workflows.
-* Validate compliance policies programmatically.
-
----
-
-## 8. Technical Foundation
-
-### Rust Implementation Advantages
-
-resh is implemented in Rust, providing:
-
-* Memory safety
-* Strong type guarantees
-* Deterministic argument parsing
-* Secure file I/O handling
-
----
-
-### Type Safety
-
-* Enumerated verbs
-* Strict parameter validation
-* Explicit scope enforcement
-* Structured error modeling
-
----
-
-### Performance Characteristics
-
-* Efficient encrypted file operations
-* Atomic writes
-* Minimal JSON serialization overhead
-* Fast prefix-based secret listing
-
----
-
-### Cross-Platform Architecture
-
-* OS-aware storage path resolution
-* Consistent JSON output
-* Scope abstraction layer
-* Explicit unsupported-scope signaling
+* Use hierarchical key paths (`app/env/service/key`) so `ls` can list one application's keys.
+* Remove secrets you no longer need with `rm`.
+* To change a secret, run `set` again with the new value; there is no automatic rotation.

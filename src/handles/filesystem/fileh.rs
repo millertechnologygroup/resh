@@ -963,18 +963,11 @@ fn resolve_file_path(path: &PathBuf) -> Result<PathBuf, anyhow::Error> {
         return Ok(path.clone());
     }
 
-    // If it's a directory, we can't read it as a file
+    // A directory is passed through exactly as an absolute one is: each
+    // verb applies its own file/directory rules (find, delete, chmod ... act
+    // on directories; read reports that the path is a directory).
     if path.is_dir() {
-        // Try to find the file in current working directory
-        if path.is_relative() {
-            let current_dir = std::env::current_dir()
-                .with_context(|| "failed to get current working directory")?;
-            let cwd_path = current_dir.join(path);
-            if cwd_path.is_file() {
-                return Ok(cwd_path);
-            }
-        }
-        bail!("{:?} is a directory", path);
+        return Ok(path.clone());
     }
 
     // For relative paths that don't exist, try in current working directory
@@ -1367,10 +1360,7 @@ impl FileHandle {
             .transpose()?;
 
         // Parse follow_symlinks (case-insensitive)
-        let follow_symlinks = args
-            .get("follow_symlinks")
-            .map(|s| s.to_lowercase() == "true")
-            .unwrap_or(false);
+        let follow_symlinks = crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
 
         // Parse include_hidden (case-insensitive)
         let include_hidden = args
@@ -1674,11 +1664,7 @@ impl FileHandle {
             .transpose()?;
 
         // Parse dry run flag (default: false)
-        let dry_run = args
-            .get("dry_run")
-            .map(|s| s.to_lowercase())
-            .map(|s| s == "true")
-            .unwrap_or(false);
+        let dry_run = crate::core::lenient::dry_run(args)?;
 
         // Parse backup suffix (optional - not in requirements but keeping for compatibility)
         let backup_suffix = args.get("backup");
@@ -1798,13 +1784,14 @@ impl FileHandle {
                 .subsec_nanos();
             let mut temp_path = resolved_path.clone();
             let temp_name = format!(
-                ".{}.resh.tmp-{}-{}",
+                ".{}.resh.tmp-{}-{}-{}",
                 temp_path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("file"),
                 pid,
-                random
+                random,
+                uuid::Uuid::new_v4().simple()
             );
             temp_path.set_file_name(temp_name);
             temp_path
@@ -1812,7 +1799,7 @@ impl FileHandle {
 
         // Write to temporary file
         {
-            let mut temp_file = File::create(&temp_path)
+            let mut temp_file = create_new_temp_file(&temp_path)
                 .with_context(|| format!("failed to create temporary file: {:?}", temp_path))?;
             temp_file
                 .write_all(new_content.as_bytes())
@@ -3429,7 +3416,7 @@ impl FileHandle {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let temp_name = format!(".resh_tmp_{}_{}", pid, timestamp % 1000000);
+        let temp_name = format!(".resh_tmp_{}_{}_{}", pid, timestamp % 1000000, uuid::Uuid::new_v4().simple());
 
         let temp_path = if let Some(parent) = path.parent() {
             parent.join(&temp_name)
@@ -3442,7 +3429,7 @@ impl FileHandle {
 
         // Write to temporary file
         {
-            let mut temp_file = File::create(&temp_path)
+            let mut temp_file = create_new_temp_file(&temp_path)
                 .with_context(|| format!("failed to create temporary file {:?}", temp_path))?;
 
             temp_file
@@ -3564,14 +3551,23 @@ impl FileHandle {
         }
 
         // Create parent directories if requested
-        if create_parents {
-            if let Some(parent) = dest_path.parent() {
-                if !parent.exists() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("failed to create parent directories: {}", parent.display()))
-                        .map_err(|e| anyhow::anyhow!("io error: {}", e))?;
-                }
-            }
+        if create_parents
+            && let Some(parent) = dest_parent(&dest_path)
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create parent directories: {}", parent.display()))
+                .map_err(|e| anyhow::anyhow!("io error: {}", e))?;
+        }
+
+        // Check that destination parent exists if create_parents is false.
+        // This must come before the overwrite removal below, so a rename that
+        // cannot complete never deletes the existing destination.
+        if !create_parents
+            && let Some(parent) = dest_parent(&dest_path)
+            && !parent.exists()
+        {
+            return Ok(Status::err(2, format!("destination parent does not exist: {}", parent.display())));
         }
 
         // Handle destination existence and overwrite logic
@@ -3580,24 +3576,18 @@ impl FileHandle {
                 return Ok(Status::err(2, "destination exists"));
             }
             
-            // Remove destination if overwrite is enabled
+            // Remove destination if overwrite is enabled. A file replacing a
+            // file needs no removal: rename(2) replaces it atomically, so a
+            // failed rename leaves the old destination in place. Directories
+            // (on either side) cannot be replaced that way.
             if dest_path.is_dir() {
                 remove_dir_all(&dest_path)
                     .with_context(|| format!("failed to remove existing directory: {}", dest_path.display()))
                     .map_err(|e| anyhow::anyhow!("io error: {}", e))?;
-            } else {
+            } else if src_path.is_dir() {
                 remove_file(&dest_path)
                     .with_context(|| format!("failed to remove existing file: {}", dest_path.display()))
                     .map_err(|e| anyhow::anyhow!("io error: {}", e))?;
-            }
-        }
-
-        // Check that destination parent exists if create_parents is false
-        if !create_parents {
-            if let Some(parent) = dest_path.parent() {
-                if !parent.exists() {
-                    return Ok(Status::err(2, format!("destination parent does not exist: {}", parent.display())));
-                }
             }
         }
 
@@ -3697,13 +3687,8 @@ impl FileHandle {
     }
 
     /// Parse boolean string arguments
-    fn parse_bool_arg(args: &Args, key: &str, default: bool) -> bool {
-        args.get(key)
-            .map(|s| {
-                let s_lower = s.to_lowercase();
-                matches!(s_lower.as_str(), "true" | "1" | "yes")
-            })
-            .unwrap_or(default)
+    fn parse_bool_arg(args: &Args, key: &str, default: bool) -> Result<bool> {
+        Ok(crate::core::lenient::bool_arg(args, key)?.unwrap_or(default))
     }
 
     fn cross_filesystem_move(
@@ -4365,9 +4350,9 @@ impl Handle for FileHandle {
                     .ok_or_else(|| anyhow::anyhow!("missing arg: to"))?;
 
                 // Parse optional arguments with defaults
-                let overwrite = Self::parse_bool_arg(args, "overwrite", false);
-                let create_parents = Self::parse_bool_arg(args, "create_parents", false);
-                let atomic = Self::parse_bool_arg(args, "atomic", true);
+                let overwrite = Self::parse_bool_arg(args, "overwrite", false)?;
+                let create_parents = Self::parse_bool_arg(args, "create_parents", false)?;
+                let atomic = Self::parse_bool_arg(args, "atomic", true)?;
 
                 // Call the comprehensive rename implementation
                 self.do_rename(&resolved_path, to, overwrite, create_parents, atomic, io)
@@ -4398,13 +4383,7 @@ impl Handle for FileHandle {
                 let dest_path = normalize_path(&std::path::PathBuf::from(to_dec));
 
                 // Parse optional arguments
-                let overwrite = args
-                    .get("overwrite")
-                    .map(|s| {
-                        let s_lower = s.to_lowercase();
-                        s_lower == "true" || s_lower == "1" || s_lower == "yes"
-                    })
-                    .unwrap_or(false);
+                let overwrite = crate::core::lenient::bool_arg(args, "overwrite")?.unwrap_or(false);
 
                 let preserve_mode = args
                     .get("preserve_mode")
@@ -4429,11 +4408,11 @@ impl Handle for FileHandle {
                 }
 
                 // Ensure destination parent directory exists
-                if let Some(parent) = dest_path.parent() {
-                    if !parent.exists() {
-                        writeln!(io.stderr, "destination parent does not exist")?;
-                        return Ok(Status::err(1, "destination parent does not exist"));
-                    }
+                if let Some(parent) = dest_parent(&dest_path)
+                    && !parent.exists()
+                {
+                    writeln!(io.stderr, "destination parent does not exist")?;
+                    return Ok(Status::err(1, "destination parent does not exist"));
                 }
 
                 // Perform atomic copy using temporary file
@@ -4441,8 +4420,11 @@ impl Handle for FileHandle {
                     .parent()
                     .unwrap_or_else(|| std::path::Path::new("."));
 
-                // Create temporary file in destination directory
-                let temp_name = format!(".resh_tmp_{:x}", std::process::id());
+                // Create temporary file in destination directory. The name is
+                // unpredictable and the file is created new without following
+                // symlinks, so a link planted in a shared destination
+                // directory cannot redirect the write.
+                let temp_name = format!(".resh_tmp_{:x}_{}", std::process::id(), uuid::Uuid::new_v4().simple());
                 let temp_path = dest_dir.join(&temp_name);
 
                 // Cleanup temporary file on any error
@@ -4457,9 +4439,15 @@ impl Handle for FileHandle {
                     let mut source = File::open(&resolved_path).with_context(|| {
                         format!("failed to open source file {:?}", &resolved_path)
                     })?;
-                    let mut temp = File::create(&temp_path).with_context(|| {
-                        format!("failed to create temporary file {:?}", &temp_path)
-                    })?;
+                    let mut temp = {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .custom_flags(libc::O_NOFOLLOW)
+                            .open(&temp_path)
+                    }
+                    .with_context(|| format!("failed to create temporary file {:?}", temp_path))?;
 
                     std::io::copy(&mut source, &mut temp)
                         .with_context(|| "failed to copy file contents")?;
@@ -4529,15 +4517,9 @@ impl Handle for FileHandle {
                 }
 
                 // Parse arguments
-                let recursive = args
-                    .get("recursive")
-                    .map(|s| matches!(s.to_lowercase().as_str(), "true" | "1" | "yes"))
-                    .unwrap_or(false);
+                let recursive = crate::core::lenient::bool_arg(args, "recursive")?.unwrap_or(false);
 
-                let force = args
-                    .get("force")
-                    .map(|s| matches!(s.to_lowercase().as_str(), "true" | "1" | "yes"))
-                    .unwrap_or(false);
+                let force = crate::core::lenient::bool_arg(args, "force")?.unwrap_or(false);
 
                 let missing_ok = args
                     .get("missing_ok")
@@ -4818,7 +4800,6 @@ impl Handle for FileHandle {
                     let uid_arg = args.get("uid");
                     let group_arg = args.get("group");
                     let gid_arg = args.get("gid");
-                    let recursive_arg = args.get("recursive");
 
                     // Validate at least one argument is provided
                     if user_arg.is_none()
@@ -4856,12 +4837,7 @@ impl Handle for FileHandle {
                     let final_gid = target_gid.or_else(|| Some(Gid::from_raw(current_meta.gid())));
 
                     // Check if recursive operation is requested
-                    let is_recursive = recursive_arg
-                        .map(|s| {
-                            let s_lower = s.to_lowercase();
-                            s_lower == "true" || s_lower == "1" || s_lower == "yes"
-                        })
-                        .unwrap_or(false);
+                    let is_recursive = crate::core::lenient::bool_arg(args, "recursive")?.unwrap_or(false);
 
                     // Perform the chown operation
                     let result = if is_recursive {
@@ -5240,13 +5216,7 @@ impl Handle for FileHandle {
                 let mut dest_path = normalize_path(&std::path::PathBuf::from(to_dec));
 
                 // Parse optional overwrite argument
-                let overwrite = args
-                    .get("overwrite")
-                    .map(|s| {
-                        let s_lower = s.to_lowercase();
-                        s_lower == "true" || s_lower == "1" || s_lower == "yes"
-                    })
-                    .unwrap_or(false);
+                let overwrite = crate::core::lenient::bool_arg(args, "overwrite")?.unwrap_or(false);
 
                 // Handle moving into directory case
                 if dest_path.exists() && dest_path.is_dir() {
@@ -5262,11 +5232,11 @@ impl Handle for FileHandle {
                 }
 
                 // Ensure destination parent directory exists
-                if let Some(parent) = dest_path.parent() {
-                    if !parent.exists() {
-                        writeln!(io.stderr, "destination parent does not exist")?;
-                        return Ok(Status::err(1, "destination parent does not exist"));
-                    }
+                if let Some(parent) = dest_parent(&dest_path)
+                    && !parent.exists()
+                {
+                    writeln!(io.stderr, "destination parent does not exist")?;
+                    return Ok(Status::err(1, "destination parent does not exist"));
                 }
 
                 // Attempt rename first (atomic operation)
@@ -5301,6 +5271,26 @@ impl Handle for FileHandle {
             }
         }
     }
+}
+
+/// Creates a temporary file for an atomic write: a new file only (an
+/// existing file or a planted symlink at the name is an error, never
+/// followed), with the default mode, so the result keeps today's permissions.
+fn create_new_temp_file(path: &std::path::Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+/// The directory that will contain `dest`. A bare file name (`new.txt`) has
+/// an empty `Path::parent()`, which never "exists"; it means the current
+/// directory.
+fn dest_parent(dest: &std::path::Path) -> Option<&std::path::Path> {
+    dest.parent()
+        .map(|p| if p.as_os_str().is_empty() { std::path::Path::new(".") } else { p })
 }
 
 #[cfg(test)]
@@ -5370,5 +5360,121 @@ mod tests {
         let args: Args = [("verb".to_string(), "read".to_string())].into_iter().collect();
         let (_, out) = run(&h, "help", &args);
         assert!(out.starts_with("Handle: file\nVerb: read\n"));
+    }
+}
+
+// FUNC-09: relative directories resolve exactly like absolute ones.
+// Relative paths below are relative to the crate root (cargo's test cwd).
+#[cfg(test)]
+mod relative_dir_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn run(target: &str, verb: &str, pairs: &[(&str, &str)]) -> (Status, String, String) {
+        let h = FileHandle::from_url(Url::parse(target).unwrap()).unwrap();
+        let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let status = {
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            h.call(verb, &args, &mut io).unwrap_or_else(|err| Status::err(1, err.to_string()))
+        };
+        (status, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())
+    }
+
+    /// SEC-08: recursive/force/overwrite go through the shared parser. A
+    /// malformed value fails before anything is changed, and the `on`
+    /// spelling (previously read as false) is honored.
+    #[test]
+    fn destructive_switches_parse_strictly() {
+        let tmp = TempDir::new().unwrap();
+        let url = |p: &std::path::Path| format!("file://{}", p.display());
+
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        std::fs::write(tree.join("sub/f"), b"keep").unwrap();
+        for bad in ["maybe", "", "2"] {
+            let (s, _, _) = run(&url(&tree), "delete", &[("recursive", bad)]);
+            assert!(!s.ok, "recursive={bad:?} accepted");
+            let (s, _, _) = run(&url(&tree), "delete", &[("recursive", "true"), ("force", bad)]);
+            assert!(!s.ok, "force={bad:?} accepted");
+            assert_eq!(std::fs::read(tree.join("sub/f")).unwrap(), b"keep");
+        }
+        let (s, _, err) = run(&url(&tree), "delete", &[("recursive", "on")]);
+        assert!(s.ok, "{err}");
+        assert!(!tree.exists());
+
+        let src = tmp.path().join("src.txt");
+        let dst = tmp.path().join("dst.txt");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(&dst, b"old").unwrap();
+        for verb in ["copy", "move"] {
+            let (s, _, _) = run(&url(&src), verb, &[("to", &dst.to_string_lossy()), ("overwrite", "maybe")]);
+            assert!(!s.ok, "{verb} overwrite=maybe accepted");
+            assert_eq!(std::fs::read(&dst).unwrap(), b"old");
+            assert_eq!(std::fs::read(&src).unwrap(), b"new");
+        }
+        let (s, _, err) = run(&url(&src), "copy", &[("to", &dst.to_string_lossy()), ("overwrite", "on")]);
+        assert!(s.ok, "{err}");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new");
+    }
+
+    #[test]
+    fn relative_directories_are_accepted() {
+        for rel in ["src", "./src", "src/core", "./src/handles/filesystem"] {
+            assert_eq!(resolve_file_path(&PathBuf::from(rel)).unwrap(), PathBuf::from(rel), "{rel}");
+        }
+        let (status, out, err) = run("file://./src/core", "find", &[]);
+        assert!(status.ok, "{err}");
+        assert!(out.contains("status.rs"), "{out}");
+        let (status, out, _) = run("file://src/core", "find", &[]);
+        assert!(status.ok && out.contains("lenient.rs"));
+        let (status, out, _) = run("file://./src/core", "stat", &[]);
+        assert!(status.ok && out.contains("\"dir\""), "{out}");
+    }
+
+    #[test]
+    fn relative_and_absolute_directories_agree() {
+        let abs = std::env::current_dir().unwrap().join("src/core");
+        let (rs, rout, _) = run("file://./src/core", "find", &[]);
+        let (as_, aout, _) = run(&format!("file://{}", abs.display()), "find", &[]);
+        assert!(rs.ok && as_.ok);
+        let names = |out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            let mut n: Vec<String> = v.as_array().unwrap().iter()
+                .map(|e| e["path"].as_str().unwrap().rsplit('/').next().unwrap().to_string())
+                .collect();
+            n.sort();
+            n
+        };
+        assert_eq!(names(&rout), names(&aout));
+    }
+
+    #[test]
+    fn missing_and_misused_paths_still_fail_with_a_reason() {
+        let (status, _, err) = run("file://./no-such-dir-resh-test", "find", &[]);
+        assert!(!status.ok);
+        assert!(!err.is_empty() || status.reason.is_some());
+        // A directory is not readable as a file, relative or absolute.
+        let (status, _, _) = run("file://./src", "read", &[]);
+        assert!(!status.ok);
+        let tmp = TempDir::new().unwrap();
+        let (status, _, _) = run(&format!("file://{}", tmp.path().display()), "read", &[]);
+        assert!(!status.ok);
+    }
+
+    #[test]
+    fn traversal_and_symlinks_are_not_rewritten() {
+        // `..` is normalized lexically, never resolved against links.
+        let h = FileHandle::from_url(Url::parse("file://./src/../src/core").unwrap()).unwrap();
+        assert_eq!(h.path, PathBuf::from("src/core"));
+        let h = FileHandle::from_url(Url::parse("file://../x").unwrap()).unwrap();
+        assert_eq!(h.path, PathBuf::from("../x"));
+        // A symlinked directory is passed through as given, not canonicalized.
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("real")).unwrap();
+        std::os::unix::fs::symlink("real", tmp.path().join("link")).unwrap();
+        let link = tmp.path().join("link");
+        assert_eq!(resolve_file_path(&link).unwrap(), link);
     }
 }

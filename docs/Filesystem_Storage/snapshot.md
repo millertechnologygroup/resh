@@ -2,504 +2,225 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command execution framework that standardizes infrastructure operations using a resource-oriented URI model.
+The `snapshot://` handle saves full local copies of a file or directory,
+compares them with each other or with the live filesystem, lists them and
+restores them. It is a plain file-copy mechanism: it does not use
+filesystem-level snapshots (LVM, Btrfs, ZFS), and there is no compression,
+deduplication or incremental snapshotting.
 
-The `snapshot://` handle provides filesystem snapshot management with atomic guarantees. It enables:
+Verbs: `create`, `diff`, `ls`, `restore`.
 
-* Creation of filesystem snapshots
-* Restoration of snapshots to target paths
-* Comparison of snapshots and live filesystem state
-* Listing and filtering snapshots within logical groups
-
-Snapshots capture the complete state of files or directories at a point in time. All operations are designed to be atomic, ensuring no partial state is exposed during creation or restoration.
-
-Traditional snapshot and backup workflows often depend on external tools, manual directory copying, or filesystem-specific snapshot features. The `snapshot://` handle provides a uniform, portable interface independent of underlying filesystem capabilities.
-
-All snapshot operations follow one of two URI formats:
-
-**Create / Diff (path-based):**
-
-```
-snapshot://TARGET_PATH.verb(arguments)
-```
-
-**Restore / List (snapshot-based):**
-
-```
-snapshot://SNAPSHOT_NAME.verb(arguments)
-```
+Platform: Linux only is supported and tested.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Command Syntax
 
-### Structured Interface Model
-
-All operations use consistent URI grammar:
-
+```text
+resh snapshot://<target-path>.create name=<name> ...
+resh snapshot://<target-path>.diff from=<snapshot>|live to=<snapshot>|live ...
+resh snapshot://<target-path>.ls ...
+resh snapshot://<snapshot-name>.restore target=<path> ...
 ```
-snapshot://target.verb(arguments)
+
+The URL names the target path for `create`, `diff` and `ls`, and the
+snapshot name for `restore`. Absolute paths take three slashes
+(`snapshot:///srv/app.create`).
+
+**Use absolute target paths.** `create` turns a relative target into an
+absolute one before storing the snapshot, but `ls` and `diff` look the
+target up exactly as written. A snapshot created with
+`snapshot://app.create` is therefore not found by `snapshot://app.ls`
+(empty list) or `snapshot://app.diff` (error "no snapshots found for
+target"); use the absolute path for all three.
+
+Help: `resh snapshot --help`, `resh snapshot <verb> --help`.
+
+### Storage location
+
+Snapshots are stored under the XDG state directory:
+`$XDG_STATE_HOME/resh/snapshots` (default `~/.local/state/resh/snapshots`;
+`/tmp/resh/snapshots` if no state directory can be determined). Each
+target gets a group directory named after its absolute path with every
+character other than letters, digits, `.`, `-` and `_` replaced by `_`
+(for example `/srv/app` becomes `_srv_app`), truncated to 120 characters.
+Each snapshot is a directory named after the snapshot, holding the copied
+content and a `meta.json` file.
+
+```text
+~/.local/state/resh/snapshots/_srv_app/backup-v1/meta.json
 ```
 
-The handle provides four verbs:
+### Exit status
 
-* `create`
-* `restore`
-* `diff`
-* `ls`
+0 on success, 1 on failure for `create`, `diff` and `ls`. `restore` uses:
 
-The grammar separates snapshot identity from filesystem targets to reduce ambiguity.
+| Code | Meaning (restore) |
+| ---- | ----------------- |
+| 0 | Restored (or dry run printed) |
+| 1 | Missing/invalid argument, unsupported `mode` |
+| 2 | Snapshot, its metadata or its content not found |
+| 3 | Target exists (file, or non-empty directory) and `force` is not true |
+| 4 | Copy or swap into place failed |
 
----
+The reason is printed on stderr (`Error: ...`); most failures also print a
+small JSON object with `error` and `message` on stdout.
 
-### Safety-First Execution
+### timeout_ms
 
-Safety mechanisms include:
-
-* Atomic snapshot creation
-* Atomic restore staging and swap
-* Explicit `force=true` requirement for overwrites
-* `dry_run=true` support for restore
-* Explicit name conflict handling (`if_exists`)
-* TTL-based expiration controls
-
-No partial snapshots are left behind on failure.
+No snapshot verb reads `timeout_ms`; it is ignored.
 
 ---
 
-### Deterministic Behavior
+## 3. Verbs
 
-Snapshot operations:
+### 3.1 create
 
-* Require explicit arguments
-* Enforce case-sensitive snapshot names
-* Use strict exit codes
-* Preserve metadata and permissions
-* Prevent live-to-live diff comparisons
-* Require at least one of `from` or `to` in diff operations
+```bash
+resh --json-pretty snapshot:///srv/app.create name=backup-v1 ttl=86400
+resh snapshot:///etc/nginx.create name=pre-change description='before upgrade' if_exists=skip
+```
 
-Exit Codes:
+| Argument | Default | Notes |
+| -------- | ------- | ----- |
+| `name` | required | Snapshot name, case-sensitive |
+| `description` | none | Stored in metadata, shown by `ls` |
+| `ttl` | none | Seconds; sets `expires_at` in the metadata only |
+| `if_exists` | `error` | `error` (exit 1), `skip` (`"skipped": true`), `overwrite` |
+| `backend` | `local` | Only `local` exists |
 
-| Code | Meaning          |
-| ---- | ---------------- |
-| 0    | Success          |
-| 1    | General error    |
-| 2    | Not found        |
-| 3    | Already exists   |
-| 4    | Target not empty |
+The copy is made in a temporary directory and renamed into place, so a
+failed create leaves no half-written snapshot. File modes and modification
+times are kept. Symbolic links are followed: the snapshot (and a later
+restore) contains a regular-file copy of the link target, not the link.
 
-Automation systems must rely on exit codes and structured output.
+`ttl` is not enforced: nothing deletes or hides a snapshot after
+`expires_at`. Remove old snapshot directories yourself.
 
----
-
-### JSON-Based Structured Output
-
-Most operations return structured JSON.
-
-Example (create):
+Output:
 
 ```json
 {
-  "ok": true,
   "backend": "local",
-  "id": "generated-id",
+  "created_at": "2026-10-16T09:12:44.512309876+00:00",
+  "expires_at": "2026-10-17T09:12:44.512309876+00:00",
+  "id": "73265a09-2b27-49d7-a5ab-49315543eacb",
   "name": "backup-v1",
-  "target": "/srv/app",
-  "created_at": "2025-11-15T18:01:02Z",
-  "expires_at": null,
-  "skipped": false
+  "ok": true,
+  "path": "/home/alice/.local/state/resh/snapshots/_srv_app/backup-v1",
+  "skipped": false,
+  "target": "/srv/app"
 }
 ```
 
-Example (diff summary section):
+### 3.2 diff
+
+```bash
+resh snapshot:///srv/app.diff from=backup-v1 to=live format=summary
+resh snapshot:///srv/app.diff from=backup-v1 to=backup-v2
+resh snapshot:///srv/app.diff from=backup-v1 to=live path=conf
+```
+
+| Argument | Notes |
+| -------- | ----- |
+| `from`, `to` | A snapshot name or id, or `live` for the current filesystem. At least one is required; `live` against `live` is rejected |
+| `path` | Restrict the comparison to a subpath |
+| `format` | `json` (default) or `summary` (text) |
+
+**Always pass both `from` and `to`.** A side that is left out is compared
+as an empty tree, not as the live filesystem: `from=backup-v1` alone
+reports every file in the snapshot as `removed` (the report shows
+`to: empty (live)`).
+
+Files are compared by content hash when available, otherwise by
+modification time. The JSON report contains `name`, `from`, `to`,
+`from_kind`, `to_kind`, `root`, `path`, a `summary` object (`added`,
+`removed`, `modified`, `unchanged`) and an `entries` array. Summary format:
+
+```text
+snapshot: /srv/app
+from: backup-v1 (snapshot)
+to:   live (live)
+root: /srv/app
+path: /
+
+added: 1
+removed: 0
+modified: 2
+unchanged: 14
+```
+
+### 3.3 ls
+
+```bash
+resh --json-pretty snapshot:///srv/app.ls limit=5
+resh snapshot:///srv/app.ls name_prefix=deploy- since=2026-10-01T00:00:00Z
+```
+
+Arguments: `limit`, `name_prefix`, `since`, `until` (RFC 3339), `state`,
+`tag`, `json_pretty`. Prints a JSON array, newest first, with `id`, `name`,
+`created_at`, `backend`, `target` and `description` (when set). An unknown
+target prints `[]`.
+
+Snapshots made by `create` record no state or tags, so `state=` and `tag=`
+match only metadata written by other means.
+
+### 3.4 restore
+
+```bash
+resh --json-pretty snapshot://backup-v1.restore target=/srv/app force=true
+resh --json-pretty snapshot://backup-v1.restore target=/srv/app force=true dry_run
+resh snapshot://backup-v1.restore target=/srv/app-copy
+```
+
+| Argument | Default | Notes |
+| -------- | ------- | ----- |
+| `target` | required | Where to restore; may differ from the original path |
+| `force` | `false` | Required to replace an existing file or non-empty directory |
+| `dry_run` | `false` | Print the planned `actions` without changing anything |
+| `mode` | `overwrite` | The only supported mode |
+
+The snapshot is found by name across all target groups. If the same name
+was used for snapshots of different targets, the first match found is
+restored, so keep snapshot names unique.
+
+The snapshot is copied to a temporary location next to the target; an
+existing target is moved aside, the copy is renamed into place, and the old
+content is removed. If the final rename fails, the old target is put back.
+
+Output:
 
 ```json
-{
-  "summary": {
-    "added": 2,
-    "removed": 1,
-    "modified": 3,
-    "unchanged": 10
-  }
-}
+{"mode":"overwrite","snapshot":"backup-v1","status":"ok","target":"/srv/app"}
 ```
-
-Structured output supports:
-
-* CI/CD validation
-* Change auditing
-* Automated rollback workflows
-* Compliance checks
 
 ---
 
-### AI-Readiness
+## 4. Limitations
 
-The snapshot handle enables:
-
-* Deterministic change tracking
-* Structured difference analysis
-* Automated rollback decision-making
-* Integration into orchestration agents
-
-The `diff` verb provides machine-readable delta information suitable for automated policy evaluation.
-
----
-
-## 3. Command Syntax and Execution Model
-
-### 3.1 URI Structure
-
-```
-snapshot://target.verb(arguments)
-```
-
-#### Components
-
-| Component   | Description                                   |
-| ----------- | --------------------------------------------- |
-| `snapshot`  | Handle identifier                             |
-| `target`    | Filesystem path or snapshot name              |
-| `verb`      | Operation (`create`, `restore`, `diff`, `ls`) |
-| `arguments` | Named parameters                              |
+* Relative targets do not work with `ls` and `diff` (see section 2).
+* An omitted `from`/`to` in `diff` means an empty tree, not live.
+* `ttl` is recorded but never enforced.
+* Symbolic links are copied as the files they point to.
+* Ownership is not explicitly preserved; restored files belong to the user
+  running resh.
+* Target group names are truncated to 120 characters, so two long target
+  paths that share the same first 120 (sanitized) characters share one
+  group: `ls` lists both, and their snapshot names collide.
+* Local backend only; full copies only.
 
 ---
 
-### Examples
-
-Create snapshot:
+## 5. Example Workflow
 
 ```bash
-snapshot:///srv/app.create(name="before-deploy")
+resh snapshot:///srv/app.create name=deploy-20261023
+
+# deploy the application
+
+resh snapshot:///srv/app.diff from=deploy-20261023 to=live format=summary
+
+# roll back
+resh snapshot://deploy-20261023.restore target=/srv/app force=true dry_run
+resh snapshot://deploy-20261023.restore target=/srv/app force=true
 ```
-
-Restore snapshot:
-
-```bash
-snapshot://before-deploy.restore(target="/srv/app",force=true)
-```
-
-Compare snapshot to live:
-
-```bash
-snapshot:///srv/app.diff(from="before-deploy",to="live",format="summary")
-```
-
-List snapshots:
-
-```bash
-snapshot://myapp.ls(limit=10)
-```
-
----
-
-### 3.2 Execution Semantics
-
-Operations follow atomic semantics:
-
-**Create**
-
-* Snapshot staged in temporary location
-* Moved atomically into final storage
-* Metadata written last
-
-**Restore**
-
-* Target staged
-* Final replacement atomic
-* Original data preserved until completion
-
-**Diff**
-
-* Computes file-level comparisons
-* Supports JSON and summary formats
-* Supports path filtering
-
-Representative JSON (restore):
-
-```json
-{
-  "snapshot": "backup-v1",
-  "target": "/srv/app",
-  "mode": "overwrite",
-  "status": "ok"
-}
-```
-
-Representative JSON (ls):
-
-```json
-[
-  {
-    "id": "snap-003",
-    "name": "deploy-v2",
-    "created_at": "2025-11-15T18:03:02Z",
-    "backend": "local",
-    "target": "/srv/app",
-    "state": "ready"
-  }
-]
-```
-
----
-
-## 4. Functional Domains
-
-### 4.1 Automation Utilities
-
-Snapshot operations enable:
-
-* Pre-deployment state capture
-* Post-change verification
-* Change detection
-* Rollback orchestration
-
-Common pattern:
-
-```bash
-snapshot:///srv/app.create(name="pre-change")
-```
-
----
-
-### 4.2 Data & State Management
-
-Snapshots preserve:
-
-* Full directory trees
-* File permissions
-* Metadata
-* Timestamps
-* Optional expiration metadata
-
-Use cases:
-
-* Configuration tracking
-* Data state preservation
-* Version tracking
-* Compliance validation
-
----
-
-### 4.3 Filesystem & Storage
-
-Snapshots operate on:
-
-* Files
-* Directories
-
-Limitations:
-
-* Local backend only
-* No compression
-* No deduplication
-* No incremental snapshots
-* No cross-filesystem snapshotting
-
-Storage structure:
-
-```
-<state_dir>/resh/snapshots/<group>/<snapshot>/
-```
-
----
-
-### 4.4 Network & Remote Operations
-
-Not applicable (local storage only).
-
----
-
-### 4.5 Packages & Software
-
-Indirectly supports deployment workflows by enabling:
-
-* Version checkpointing
-* Safe rollbacks
-* Deployment verification
-
----
-
-### 4.6 Process & Service Management
-
-Supports safe configuration updates when combined with service restarts.
-
----
-
-### 4.7 Security & Secrets
-
-Preserves:
-
-* File modes
-* Special permission bits
-* Symbolic links
-
-Ownership preservation depends on execution privileges.
-
----
-
-### 4.8 System Information
-
-`ls` supports filtering by:
-
-* State
-* Tag
-* Time range (`since`, `until`)
-* Name prefix
-* Result limit
-
-Example:
-
-```bash
-snapshot://myapp.ls(state=ready,limit=5)
-```
-
----
-
-## 5. Platform Support
-
-Based strictly on documentation:
-
-* Linux supported
-* macOS supported
-* Windows supported
-
-Storage locations:
-
-* Linux: `$XDG_STATE_HOME/resh/snapshots`
-* macOS: `~/Library/Application Support/resh/snapshots`
-* Windows: `%APPDATA%/resh/snapshots`
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Always snapshot before risky operations.
-* Use `if_exists="error"` for manual operations.
-* Use `if_exists="skip"` for idempotent automation.
-* Use `dry_run=true` before restore with force.
-* Apply TTL to manage storage lifecycle.
-
----
-
-### Automation Considerations
-
-* Use JSON output for CI pipelines.
-* Validate `ok` flag.
-* Monitor snapshot storage growth.
-* Use consistent naming conventions.
-* Filter `ls` output by prefix or tags.
-
----
-
-### CI/CD Integration
-
-Deployment example:
-
-```bash
-snapshot:///srv/app.create(name="deploy-20250207")
-
-# deploy application
-
-snapshot:///srv/app.diff(from="deploy-20250207",to="live",format="summary")
-```
-
-Rollback example:
-
-```bash
-snapshot://deploy-20250207.restore(target="/srv/app",force=true)
-```
-
----
-
-### Production Recommendations
-
-* Use timestamped names for automated backups.
-* Enforce retention using TTL.
-* Avoid force restore without review.
-* Snapshot only required directories.
-* Monitor storage capacity regularly.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Create deployment checkpoints.
-* Compare release states.
-* Implement automated rollback.
-* Track configuration drift.
-
----
-
-### SRE Engineers
-
-* Perform safe recovery during incidents.
-* Audit filesystem changes.
-* Validate state after outages.
-* Track system configuration evolution.
-
----
-
-### Network Administrators
-
-* Preserve configuration before updates.
-* Restore device configurations.
-* Track configuration differences.
-
----
-
-### AI / Automation Engineers
-
-* Use diff JSON for policy evaluation.
-* Trigger rollback based on modified file count.
-* Automate change validation.
-* Integrate snapshot lifecycle management.
-
----
-
-## 8. Technical Foundation
-
-The snapshot handle is implemented within resh’s Rust-based execution framework.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Atomic file operations
-* Deterministic error handling
-* Cross-platform compatibility
-
----
-
-### Type Safety
-
-* Strict argument validation
-* Required parameter enforcement
-* Controlled overwrite semantics
-* Case-sensitive snapshot identity
-
----
-
-### Performance Characteristics
-
-* Full copy snapshots
-* No deduplication
-* Snapshot time proportional to data size
-* Diff faster than full snapshot
-* Restore speed dependent on target filesystem
-
----
-
-### Cross-Platform Architecture
-
-Supported on:
-
-* Linux
-* macOS
-* Windows
-
-Snapshots rely on local filesystem storage and operate independently of underlying filesystem snapshot capabilities.
-

@@ -177,8 +177,8 @@ What problem does this solve? What pain point does it address?
 How would this feature work? What would the API look like?
 
 **Example Usage:**
-```bash
-# Show what commands would look like
+```text
+# Show what commands would look like (hypothetical handle)
 resh newhandle://resource.action --json-pretty
 ```
 
@@ -303,7 +303,7 @@ When code contributions open with v1.0 stable in Q2 2026, here's what the develo
 
 **Prerequisites:**
 ```bash
-# Rust 1.70 or later
+# Rust 1.88 or later
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Git
@@ -323,14 +323,20 @@ git remote add upstream https://github.com/millertechnologygroup/resh.git
 
 **Build and Test:**
 ```bash
-# Build
-cargo build
+# Build, using the dependency versions in Cargo.lock
+cargo build --locked
 
-# Run tests
-cargo test
+# Run the default test suite. It is hermetic: system commands are stubbed or
+# mocked, and tests that need real services are #[ignore]d.
+cargo test --locked
 
-# Run a specific handle's tests
-cargo test --package resh --lib handles::file::tests
+# Run one handle's tests
+cargo test --locked --lib fileh::
+
+# Tests that need disposable infrastructure (a throwaway bare git remote,
+# PostgreSQL, MySQL/MariaDB) are opt-in. Never point these at real systems.
+TEST_POSTGRES_DSN=... TEST_MYSQL_DSN=... TEST_GIT_CLONE_HTTPS_URL=... \
+  cargo test --locked --lib -- --ignored
 
 # Run resh locally
 cargo run -- svc://nginx.status --json-pretty
@@ -411,7 +417,11 @@ When we begin accepting PRs with v1.0 stable (Q2 2026), this will be the process
 **All PRs must:**
 - Include tests that cover the changes
 - Update relevant documentation
-- Pass all CI checks (tests, linting, formatting)
+- Pass the CI gates in `.gitlab-ci.yml`: locked build on Rust 1.88, the test
+  suite (including `tests/doc_examples.rs`, which checks every `resh` example
+  in the docs), formatting and `cargo audit`. Clippy runs as an advisory job
+  against the baseline in `docs/reviews/resh-cli-lint-baseline.md`; do not
+  add new warnings
 - Include a clear description of the changes
 - Reference any related issues
 
@@ -445,8 +455,12 @@ cargo fmt
 
 **Use cargo clippy:**
 ```bash
-cargo clippy -- -D warnings
+cargo clippy --all-targets
 ```
+
+The code base still carries pre-existing lint debt (see
+`docs/reviews/resh-cli-lint-baseline.md`), so `-D warnings` fails today.
+New and changed code must not add warnings.
 
 **Follow Rust idioms:**
 - Use `Result<T, E>` for error handling

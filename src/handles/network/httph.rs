@@ -450,10 +450,8 @@ impl HttpHandle {
             .timeout(Duration::from_millis(timeout_ms));
         
         // Handle allow_insecure for HTTPS
-        if let Some(allow_insecure) = args.get("allow_insecure") {
-            if allow_insecure.to_lowercase() == "true" && scheme == "https" {
-                builder = builder.danger_accept_invalid_certs(true);
-            }
+        if crate::core::lenient::bool_arg(args, "allow_insecure")?.unwrap_or(false) && scheme == "https" {
+            builder = builder.danger_accept_invalid_certs(true);
         }
         
         builder.build().context("Failed to create HTTP client")
@@ -2195,5 +2193,29 @@ mod help_tests {
     fn non_help_verbs_are_not_help() {
         assert!(help_output("http://my-httpd/", "get", &[]).is_none());
         assert!(help_output("http://x/pre-hotfix", "headers", &[]).is_none());
+    }
+}
+
+/// Stage 3 (SEC-08): `allow_insecure` disables TLS certificate checks, so
+/// it is read by the shared boolean parser: a malformed value is an error,
+/// never a silent default.
+#[cfg(test)]
+mod allow_insecure_tests {
+    use super::*;
+
+    fn args(pairs: &[(&str, &str)]) -> Args {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn allow_insecure_parses_strictly() {
+        for v in ["true", "yes", "1", "on", "false", "no", "0", "off"] {
+            assert!(HttpHandle::build_client(&args(&[("allow_insecure", v)]), "https").is_ok(), "{v}");
+        }
+        assert!(HttpHandle::build_client(&args(&[]), "https").is_ok());
+        for bad in ["maybe", "", "2", "insecure"] {
+            let err = HttpHandle::build_client(&args(&[("allow_insecure", bad)]), "https").unwrap_err();
+            assert!(err.to_string().contains("allow_insecure"), "{err}");
+        }
     }
 }

@@ -36,7 +36,7 @@ static GIT_HELP: HandleHelp = HandleHelp {
                 usage: "resh git://<alias>.status path=<repo-dir>\n  \
                     [include_untracked=true|false] [include_ignored=true|false]\n  \
                     [include_staged=true|false] [include_branch=true|false]\n  \
-                    [include_remote=true|false] [timeout_ms=<n>]",
+                    [include_remote=true|false]",
                 example: "resh --json-pretty git://main.status path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -88,7 +88,7 @@ Shown with --json-pretty."#,
                 usage: "resh git://<alias>.status_summary path=<repo-dir> [remote=<name>]\n  \
                     [branch=<name>] [include_untracked=true|false]\n  \
                     [include_ignored=true|false] [include_remote=true|false]\n  \
-                    [compute_diffstats=true|false] [max_files=<n>] [timeout_ms=<n>]",
+                    [compute_diffstats=true|false] [max_files=<n>]",
                 example: "resh --json-pretty git://main.status_summary path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -149,7 +149,7 @@ Shown for a branch without an upstream with --json-pretty."#,
                 usage: "resh git://<alias>.status_short path=<repo-dir> [branch=<name>]\n  \
                     [remote=<name>] [include_remote=true|false]\n  \
                     [include_dirty=true|false] [include_conflicts=true|false]\n  \
-                    [symbols=<json-object>] [timeout_ms=<n>]",
+                    [symbols=<json-object>]",
                 example: "resh --json-pretty git://main.status_short path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -312,7 +312,7 @@ Shown for action=list with --json-pretty."#,
                     [amend=true|false] [no_edit=true|false] [signoff=true|false]\n  \
                     [author_name=<name>] [author_email=<email>]\n  \
                     [committer_name=<name>] [committer_email=<email>]\n  \
-                    [timestamp=<iso8601>] [timeout_ms=<n>]",
+                    [timestamp=<iso8601>]",
                 example: "resh --json-pretty git://main.commit path=/srv/app 'message=Fix typo'",
                 example_output: Some(
                     r#"{
@@ -355,7 +355,7 @@ Shown with --json-pretty. staged_files counts only files staged by this call."#,
                     [author_email=<email>] [committer_name=<name>]\n  \
                     [committer_email=<email>] [ff_only=true|false] [no_ff=true|false]\n  \
                     [squash=true|false] [allow_uncommitted=true|false]\n  \
-                    [abort_on_conflict=true|false] [timeout_ms=<n>]",
+                    [abort_on_conflict=true|false]",
                 example: "resh --json-pretty git://main.merge path=/srv/app source=feature",
                 example_output: Some(
                     r#"{
@@ -391,7 +391,7 @@ Shown for a fast-forward merge with --json-pretty."#,
                     [committer_name=<name>] [committer_email=<email>]\n  \
                     [ff_only=true|false] [preserve_merges=true|false]\n  \
                     [autosquash=true|false] [allow_uncommitted=true|false]\n  \
-                    [abort_on_conflict=true|false] [timeout_ms=<n>]",
+                    [abort_on_conflict=true|false]",
                 example: "resh --json-pretty git://main.rebase path=/srv/app upstream=main",
                 example_output: Some(
                     r#"{
@@ -425,8 +425,7 @@ operation=continue or operation=abort."#,
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.clone url=<repo-url> path=<dir> [branch=<name>]\n  \
                     [depth=<n>] [recursive=true|false] [ssh_key=<file>]\n  \
-                    [username=<user>] [password=<pass>] [token=<token>]\n  \
-                    [timeout_ms=<n>]",
+                    [username=<user>] [password=<pass>] [token=<token>]",
                 example: "resh git://main.clone url=https://example.com/app.git path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -450,7 +449,7 @@ operation=continue or operation=abort."#,
                 usage: "resh git://<alias>.pull path=<repo-dir> [remote=<name>]\n  \
                     [branch=<name>] [ff_only=true|false] [prune=true|false]\n  \
                     [ssh_key=<file>] [username=<user>] [password=<pass>]\n  \
-                    [token=<token>] [timeout_ms=<n>]",
+                    [token=<token>]",
                 example: "resh --json-pretty git://main.pull path=/srv/app remote=origin",
                 example_output: Some(
                     r#"{
@@ -481,7 +480,7 @@ reports status up_to_date."#,
                     [branch=<name>] [branches=<b1,b2,...>] [tags=true|false]\n  \
                     [force=true|false] [ff_only=true|false]\n  \
                     [set_upstream=true|false] [ssh_key=<file>] [username=<user>]\n  \
-                    [password=<pass>] [token=<token>] [timeout_ms=<n>]",
+                    [password=<pass>] [token=<token>]",
                 example: "resh --json-pretty git://main.push path=/srv/app branch=main",
                 example_output: Some(
                     r#"{
@@ -506,16 +505,16 @@ Shown with --json-pretty."#,
         },
         VerbHelp {
             name: "sync",
-            definition: "Fetches from a remote, integrates the changes by rebase, merge, or \
-                fast-forward, and then pushes the current branch.",
+            definition: "Fetches from a remote, fast-forwards the current branch when it is \
+                behind, and then pushes it, failing without pushing when the histories have \
+                diverged (sync never rebases or merges).",
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.sync path=<repo-dir> [remote=<name>]\n  \
                     [branch=<name>] [remote_branch=<name>]\n  \
                     [pull_strategy=rebase|merge|ff_only] [push=true|false]\n  \
                     [push_tags=true|false] [force_push=true|false]\n  \
                     [allow_uncommitted=true|false] [stash_uncommitted=true|false]\n  \
-                    [abort_on_conflict=true|false] [dry_run=true|false]\n  \
-                    [timeout_ms=<n>]",
+                    [abort_on_conflict=true|false] [dry_run=true|false]",
                 example: "resh --json-pretty git://main.sync path=/srv/app pull_strategy=rebase",
                 example_output: None,
             }),
@@ -1163,6 +1162,26 @@ pub enum PullStrategy {
     Rebase,
     Merge,
     FfOnly,
+}
+
+fn pull_strategy_name(strategy: &PullStrategy) -> &'static str {
+    match strategy {
+        PullStrategy::Rebase => "rebase",
+        PullStrategy::Merge => "merge",
+        PullStrategy::FfOnly => "ff_only",
+    }
+}
+
+/// The integration actually performed during sync, from the pull result:
+/// a fast-forward or nothing. `mode` is the requested pull_strategy.
+fn sync_integration_report(fetched: &Value, pull_strategy: &PullStrategy) -> Value {
+    let updated = fetched.get("status").and_then(Value::as_str) == Some("updated");
+    json!({
+        "status": if updated { "fast_forward" } else { "up_to_date" },
+        "mode": pull_strategy_name(pull_strategy),
+        "commits_fast_forwarded": if updated { fetched.get("behind_by").cloned().unwrap_or(json!(0)) } else { json!(0) },
+        "local_commits_ahead": fetched.get("ahead_by").cloned().unwrap_or(json!(0)),
+    })
 }
 
 impl Default for PullStrategy {
@@ -2985,15 +3004,15 @@ impl GitHandle {
                 let has_name = config.name.is_some() && !config.name.as_ref().unwrap().is_empty();
                 let has_names = config.names.is_some() && !config.names.as_ref().unwrap().is_empty();
 
-                if !has_name && !has_names {
+                if !has_name && config.names.as_ref().is_some_and(|n| n.is_empty()) {
                     return Err(GitError::InvalidTagConfig {
-                        message: "either name or names is required for delete action".to_string(),
+                        message: "names array cannot be empty".to_string(),
                     });
                 }
 
-                if has_names && config.names.as_ref().unwrap().is_empty() {
+                if !has_name && !has_names {
                     return Err(GitError::InvalidTagConfig {
-                        message: "names array cannot be empty".to_string(),
+                        message: "either name or names is required for delete action".to_string(),
                     });
                 }
             }
@@ -7209,13 +7228,15 @@ impl GitHandle {
         let pull_strategy = config.pull_strategy.clone().unwrap_or_default();
         let allow_uncommitted = config.allow_uncommitted.unwrap_or(false);
         let stash_uncommitted = config.stash_uncommitted.unwrap_or(false);
-        let abort_on_conflict = config.abort_on_conflict.unwrap_or(true);
+        // sync integrates by fast-forward only (see sync_fetch), so no
+        // merge conflict can arise; the option is accepted for compatibility.
+        let _abort_on_conflict = config.abort_on_conflict.unwrap_or(true);
         let push = config.push.unwrap_or(true);
         let push_tags = config.push_tags.unwrap_or(false);
         let force_push = config.force_push.unwrap_or(false);
         let set_upstream = config.set_upstream.unwrap_or(true);
         let dry_run = config.dry_run.unwrap_or(false);
-        let ff_only = config.ff_only.unwrap_or(false);
+        let _ff_only = config.ff_only.unwrap_or(false);
 
         // Resolve branches first
         let (local_branch, remote_branch) = {
@@ -7249,6 +7270,18 @@ impl GitHandle {
             // Determine remote branch
             let remote_branch = config.remote_branch.clone().unwrap_or_else(|| local_branch.clone());
 
+            // The fetch/fast-forward step integrates `<remote>/<branch>` into
+            // the same-named local branch; a different remote branch would
+            // be integrated into the wrong local branch.
+            if remote_branch != local_branch {
+                return Err(GitError::InvalidSyncConfig {
+                    message: format!(
+                        "remote_branch '{}' differs from the local branch '{}'; git sync only supports syncing a branch with the same-named remote branch",
+                        remote_branch, local_branch
+                    ),
+                });
+            }
+
             (local_branch, remote_branch)
         };
         
@@ -7258,9 +7291,6 @@ impl GitHandle {
         } else {
             None
         };
-
-        let mut integration_result = None;
-        let mut push_result = None;
 
         // Perform the sync operation
         if dry_run {
@@ -7282,28 +7312,35 @@ impl GitHandle {
             }));
         }
 
-        // Fetch from remote
-        self.sync_fetch(&repo, &remote_name, &remote_branch, profile).await?;
+        // Fetch and integrate, then push. Nothing is pushed unless the
+        // integration really completed.
+        let outcome: Result<(Value, Option<Value>), GitError> = async {
+            let fetched = self.sync_fetch(&repo, &remote_name, &local_branch, &pull_strategy, profile).await?;
+            let integration = sync_integration_report(&fetched, &pull_strategy);
+            let pushed = if push {
+                Some(self.sync_push(&repo, &remote_name, &local_branch, &remote_branch, push_tags, force_push, set_upstream, profile).await?)
+            } else {
+                None
+            };
+            Ok((integration, pushed))
+        }.await;
 
-        // Integrate remote changes
-        integration_result = Some(self.sync_integrate(&repo, &remote_name, &local_branch, &remote_branch, &pull_strategy, ff_only, abort_on_conflict)?);
-
-        // Push if requested
-        if push {
-            push_result = Some(self.sync_push(&repo, &remote_name, &local_branch, &remote_branch, push_tags, force_push, set_upstream, profile).await?);
-        }
+        let (integration, push_result) = match outcome {
+            Ok(v) => v,
+            Err(e) => {
+                // Give back the user's uncommitted changes before failing.
+                if let Some(stash_oid) = stash_ref {
+                    let _ = self.sync_restore_stash(&mut repo, stash_oid);
+                }
+                return Err(e);
+            }
+        };
 
         // Restore stash if needed
         let mut stash_conflicts = false;
         if let Some(stash_oid) = stash_ref {
             stash_conflicts = self.sync_restore_stash(&mut repo, stash_oid)?;
         }
-
-        // Build result
-        let integration = integration_result.unwrap_or_else(|| json!({
-            "status": "up_to_date",
-            "commits_rebased": 0
-        }));
 
         let push_info = push_result.unwrap_or_else(|| json!({
             "attempted": false,
@@ -7414,18 +7451,11 @@ impl GitHandle {
 
         actions.push(format!("Would fetch from {}/{}", remote, remote_branch));
 
-        // Determine what integration would happen
-        match pull_strategy {
-            PullStrategy::Rebase => {
-                actions.push(format!("Would rebase local '{}' onto '{}/{}'", local_branch, remote, remote_branch));
-            },
-            PullStrategy::Merge => {
-                actions.push(format!("Would merge '{}/{}' into '{}'", remote, remote_branch, local_branch));
-            },
-            PullStrategy::FfOnly => {
-                actions.push(format!("Would fast-forward '{}' to '{}/{}'", local_branch, remote, remote_branch));
-            },
-        }
+        // Integration is fast-forward only, whatever the pull_strategy
+        actions.push(format!(
+            "Would fast-forward '{}' to '{}/{}' if behind; diverged history fails without pushing (pull_strategy={})",
+            local_branch, remote, remote_branch, pull_strategy_name(pull_strategy)
+        ));
 
         if push {
             actions.push(format!("Would push '{}' to {}/{}", local_branch, remote, remote_branch));
@@ -7437,15 +7467,20 @@ impl GitHandle {
         Ok(actions)
     }
 
-    /// Fetch from remote
-    async fn sync_fetch(&self, repo: &Repository, remote: &str, remote_branch: &str, profile: &GitConnectionProfile) -> Result<(), GitError> {
-        // Create a minimal pull request just to fetch
+    /// Fetches `<remote>/<branch>` and fast-forwards the local branch when
+    /// it is behind. Returns the pull result (`status` "updated" or
+    /// "up_to_date", `ahead_by`, `behind_by`).
+    ///
+    /// sync does not rebase or merge divergent history: when both sides
+    /// have new commits it fails before anything is pushed, for every
+    /// pull_strategy, instead of reporting an integration that never ran.
+    async fn sync_fetch(&self, repo: &Repository, remote: &str, branch: &str, pull_strategy: &PullStrategy, profile: &GitConnectionProfile) -> Result<Value, GitError> {
         let pull_value = json!({
             "path": repo.workdir().unwrap().to_string_lossy(),
             "remote": remote,
-            "branch": remote_branch,
+            "branch": branch,
             "rebase": false,
-            "ff_only": false,
+            "ff_only": true,
             "ssh_key": profile.ssh_key_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "username": profile.username,
             "password": profile.password,
@@ -7453,105 +7488,20 @@ impl GitHandle {
             "timeout_ms": 30000
         });
 
-        // Call pull to fetch (but not integrate)
-        self.pull(pull_value).await.map_err(|e| {
-            GitError::SyncPullFailed {
-                message: format!("fetch failed: {}", e),
-            }
-        })?;
-
-        Ok(())
-    }
-
-    /// Integrate remote changes using specified strategy
-    fn sync_integrate(&self, repo: &Repository, remote: &str, local_branch: &str, remote_branch: &str, pull_strategy: &PullStrategy, ff_only: bool, abort_on_conflict: bool) -> Result<Value, GitError> {
-        let remote_ref = format!("{}/{}", remote, remote_branch);
-
-        match pull_strategy {
-            PullStrategy::FfOnly => {
-                self.sync_fast_forward(repo, local_branch, &remote_ref)
+        self.pull(pull_value).await.map_err(|e| match e {
+            GitError::PullNonFastForward => match pull_strategy {
+                PullStrategy::FfOnly => GitError::SyncNonFastForward,
+                PullStrategy::Rebase | PullStrategy::Merge => GitError::SyncFailed {
+                    message: format!(
+                        "'{branch}' and '{remote}/{branch}' have diverged; git sync can only fast-forward, \
+                         so pull_strategy={} was not performed and nothing was pushed. \
+                         Rebase or merge manually, then run sync again.",
+                        pull_strategy_name(pull_strategy)
+                    ),
+                },
             },
-            PullStrategy::Rebase => {
-                self.sync_rebase(repo, local_branch, &remote_ref, abort_on_conflict)
-            },
-            PullStrategy::Merge => {
-                self.sync_merge(repo, local_branch, &remote_ref, ff_only, abort_on_conflict)
-            },
-        }
-    }
-
-    /// Fast-forward integration
-    fn sync_fast_forward(&self, repo: &Repository, local_branch: &str, remote_ref: &str) -> Result<Value, GitError> {
-        let local_ref = format!("refs/heads/{}", local_branch);
-        let local_commit = repo.find_reference(&local_ref)
-            .and_then(|r| r.peel_to_commit())
-            .map_err(|_| GitError::SyncBranchNotFound { branch: local_branch.to_string() })?;
-
-        let remote_commit = repo.find_reference(&format!("refs/remotes/{}", remote_ref))
-            .and_then(|r| r.peel_to_commit())
-            .map_err(|_| GitError::SyncRemoteNotFound { remote: remote_ref.to_string() })?;
-
-        // Check if fast-forward is possible
-        if repo.graph_ahead_behind(local_commit.id(), remote_commit.id()).map_err(|e| {
-            GitError::SyncFailed { message: format!("failed to check ahead/behind: {}", e) }
-        })?.1 == 0 {
-            // Already up to date
-            return Ok(json!({
-                "status": "up_to_date",
-                "mode": "fast_forward"
-            }));
-        }
-
-        let merge_base = repo.merge_base(local_commit.id(), remote_commit.id()).map_err(|_| {
-            GitError::SyncNonFastForward
-        })?;
-
-        if merge_base != local_commit.id() {
-            return Err(GitError::SyncNonFastForward);
-        }
-
-        // Perform fast-forward
-        let mut reference = repo.find_reference(&local_ref).map_err(|e| {
-            GitError::SyncFailed { message: format!("failed to find local reference: {}", e) }
-        })?;
-
-        reference.set_target(remote_commit.id(), "sync fast-forward").map_err(|e| {
-            GitError::SyncFailed { message: format!("failed to fast-forward: {}", e) }
-        })?;
-
-        // Update HEAD and working directory
-        repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force())).map_err(|e| {
-            GitError::SyncFailed { message: format!("failed to checkout after fast-forward: {}", e) }
-        })?;
-
-        Ok(json!({
-            "status": "fast_forward",
-            "mode": "fast_forward"
-        }))
-    }
-
-    /// Rebase integration
-    fn sync_rebase(&self, _repo: &Repository, local_branch: &str, remote_ref: &str, _abort_on_conflict: bool) -> Result<Value, GitError> {
-        // For now, return a placeholder result
-        // In a full implementation, this would perform the rebase operation
-        log::info!("Would rebase {} onto {}", local_branch, remote_ref);
-        
-        Ok(json!({
-            "status": "rebased",
-            "mode": "rebase"
-        }))
-    }
-
-    /// Merge integration
-    fn sync_merge(&self, _repo: &Repository, local_branch: &str, remote_ref: &str, ff_only: bool, _abort_on_conflict: bool) -> Result<Value, GitError> {
-        // For now, return a placeholder result
-        // In a full implementation, this would perform the merge operation
-        log::info!("Would merge {} into {} (ff_only={})", remote_ref, local_branch, ff_only);
-        
-        Ok(json!({
-            "status": "merged", 
-            "mode": "merge"
-        }))
+            other => GitError::SyncPullFailed { message: format!("fetch failed: {}", other) },
+        })
     }
 
     /// Push changes to remote
@@ -8405,6 +8355,18 @@ impl Handle for GitHandle {
             return Ok(Status::success());
         }
 
+        // Git operations run as blocking libgit2 calls, which the locked
+        // git2 version gives no way to interrupt, so a requested timeout
+        // cannot be enforced. Refuse it instead of silently ignoring it.
+        if args.contains_key("timeout_ms") {
+            let reason = format!(
+                "git {}: timeout_ms is not supported: git operations cannot be interrupted, so the timeout would be ignored",
+                verb
+            );
+            writeln!(io.stderr, "Error: {}", reason)?;
+            return Ok(Status::err(2, reason));
+        }
+
         match verb {
             "clone" => {
                 // Convert Args to Value for async processing
@@ -8913,9 +8875,28 @@ mod tests {
 
     #[test]
     fn test_connection_not_found() {
+        // An unregistered alias is not an error: local verbs (status,
+        // commit, branch, ...) run without a connection profile. It must
+        // get an empty profile and never another alias's credentials.
+        GitHandle::register_connection("registered_with_secrets".to_string(), GitConnectionProfile {
+            ssh_key_path: Some(PathBuf::from("/nonexistent/id_ed25519")),
+            known_hosts_path: None,
+            username: Some("user".to_string()),
+            password: Some("secret".to_string()),
+            token: Some("token".to_string()),
+        });
+
         let handle = GitHandle { alias: "nonexistent".to_string() };
-        let result = handle.load_connection_profile();
-        assert!(matches!(result, Err(GitError::ConnectionNotFound { .. })));
+        let profile = handle.load_connection_profile().expect("unregistered alias gets the default profile");
+        assert!(profile.ssh_key_path.is_none());
+        assert!(profile.known_hosts_path.is_none());
+        assert!(profile.username.is_none());
+        assert!(profile.password.is_none());
+        assert!(profile.token.is_none());
+
+        let handle = GitHandle { alias: "registered_with_secrets".to_string() };
+        let profile = handle.load_connection_profile().unwrap();
+        assert_eq!(profile.token.as_deref(), Some("token"));
     }
 
     #[test]
@@ -9005,6 +8986,7 @@ mod tests {
 
     // Integration tests - these will be skipped if environment variables are not set
     #[tokio::test]
+    #[ignore = "needs a real remote: set TEST_GIT_CLONE_HTTPS_URL and run with --ignored"]
     async fn test_https_public_repo_integration() {
         let url = std::env::var("TEST_GIT_CLONE_HTTPS_URL");
         if url.is_err() {
@@ -9053,28 +9035,26 @@ mod tests {
 
     #[tokio::test] 
     async fn test_timeout_functionality() {
+        // Hermetic: no network and no fixed /tmp path. A git timeout cannot
+        // be enforced (libgit2 calls are blocking), so the CLI refuses
+        // timeout_ms (see timeout_rejection_tests); here the clone itself
+        // must fail promptly and leave nothing behind.
         let handle = GitHandle { alias: "test".to_string() };
-        
-        // Register a connection profile
-        let profile = GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        };
-        GitHandle::register_connection("test".to_string(), profile);
+        let tmp = TempDir::new().unwrap();
+        let missing_source = tmp.path().join("no-such-repo");
+        let target = tmp.path().join("clone");
 
-        // Use an invalid/non-existent URL that will cause timeout or failure
         let args = json!({
-            "url": "https://192.0.2.1/nonexistent.git", // RFC5737 test address
-            "path": "/tmp/timeout_test",
+            "url": format!("file://{}", missing_source.display()),
+            "path": target.to_string_lossy(),
             "timeout_ms": 100
         });
 
+        let start = std::time::Instant::now();
         let result = handle.clone(args).await;
-        // Should either timeout or fail to clone - both are acceptable for this test
-        assert!(result.is_err(), "Expected timeout or clone failure, got: {:?}", result);
+        assert!(result.is_err(), "Expected clone failure, got: {:?}", result);
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(!target.join(".git").exists());
     }
 
     // Pull validation tests
@@ -9338,6 +9318,7 @@ mod tests {
 
     // Integration tests for pull - these will be skipped if environment variables are not set
     #[tokio::test]
+    #[ignore = "needs a real remote: set TEST_GIT_PULL_HTTPS_URL/TEST_GIT_PULL_TEMP_DIR and run with --ignored"]
     async fn test_pull_https_integration() {
         let url = std::env::var("TEST_GIT_PULL_HTTPS_URL");
         let temp_base = std::env::var("TEST_GIT_PULL_TEMP_DIR");
@@ -9704,6 +9685,7 @@ mod tests {
 
     // Integration tests for push - these will be skipped if environment variables are not set
     #[tokio::test]
+    #[ignore = "performs a real git push to TEST_GIT_PUSH_HTTPS_URL; run only against a disposable remote with --ignored"]
     async fn test_push_https_integration() {
         let url = std::env::var("TEST_GIT_PUSH_HTTPS_URL");
         let temp_base = std::env::var("TEST_GIT_PUSH_TEMP_DIR");
@@ -10329,10 +10311,13 @@ mod tests {
             &[&first_commit]
         ).unwrap();
 
-        // Checkout the first commit (detached HEAD)
+        // Checkout the first commit (detached HEAD), as `git checkout <sha>`
+        // does: update the index and working tree first, then move HEAD.
+        // Moving HEAD first would leave file2.txt staged as a new file.
         let first_commit_obj = repo.find_commit(commit1).unwrap();
+        repo.checkout_tree(first_commit_obj.as_object(), None).unwrap();
         repo.set_head_detached(commit1).unwrap();
-        repo.checkout_head(Some(&mut git2::build::CheckoutBuilder::new())).unwrap();
+        assert!(!repo_path.join("file2.txt").exists());
 
         // Test status in detached HEAD state
         GitHandle::register_connection("test3".to_string(), GitConnectionProfile {
@@ -11633,5 +11618,252 @@ mod tests {
         assert!(is_git_help_word("--help"));
         assert!(is_git_help_word("help"));
         assert!(!is_git_help_word("my-helper"));
+    }
+}
+
+// FUNC-04: sync never reports an integration that did not happen and never
+// pushes after a failed integration. Local temporary repositories only.
+#[cfg(test)]
+mod sync_correctness_tests {
+    use super::*;
+    use git2::{RepositoryInitOptions, Signature};
+    use tempfile::TempDir;
+
+    struct World {
+        _dir: TempDir,
+        remote: std::path::PathBuf,
+        a: Repository,
+        b: Repository,
+    }
+
+    fn sig() -> Signature<'static> {
+        Signature::now("Resh Test", "test@example.invalid").unwrap()
+    }
+
+    fn commit(repo: &Repository, file: &str, content: &str) -> Oid {
+        let workdir = repo.workdir().unwrap();
+        std::fs::write(workdir.join(file), content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(file)).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let parents: Vec<git2::Commit> = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).into_iter().collect();
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig(), &sig(), content, &tree, &parent_refs).unwrap()
+    }
+
+    fn push_main(repo: &Repository) {
+        repo.find_remote("origin").unwrap().push(&["refs/heads/main:refs/heads/main"], None).unwrap();
+    }
+
+    fn remote_main(w: &World) -> Oid {
+        Repository::open_bare(&w.remote).unwrap().refname_to_id("refs/heads/main").unwrap()
+    }
+
+    fn head(repo: &Repository) -> Oid {
+        repo.head().unwrap().target().unwrap()
+    }
+
+    /// A bare remote with one commit on main, cloned as `a` and `b`.
+    fn world() -> World {
+        let dir = TempDir::new().unwrap();
+        let remote = dir.path().join("remote.git");
+        Repository::init_opts(&remote, RepositoryInitOptions::new().bare(true).initial_head("main")).unwrap();
+
+        let open = |name: &str| {
+            let path = dir.path().join(name);
+            let repo = Repository::init_opts(&path, RepositoryInitOptions::new().initial_head("main")).unwrap();
+            repo.remote("origin", remote.to_str().unwrap()).unwrap();
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "Resh Test").unwrap();
+            cfg.set_str("user.email", "test@example.invalid").unwrap();
+            repo
+        };
+        let a = open("a");
+        commit(&a, "base.txt", "base");
+        push_main(&a);
+
+        let b = open("b");
+        b.find_remote("origin").unwrap().fetch(&["refs/heads/main:refs/remotes/origin/main"], None, None).unwrap();
+        let base = b.refname_to_id("refs/remotes/origin/main").unwrap();
+        b.reference("refs/heads/main", base, true, "test").unwrap();
+        b.set_head("refs/heads/main").unwrap();
+        b.checkout_head(Some(git2::build::CheckoutBuilder::default().force())).unwrap();
+        World { _dir: dir, remote, a, b }
+    }
+
+    fn sync(repo: &Repository, extra: &[(&str, &str)]) -> Result<Value, GitError> {
+        let mut args = json!({ "path": repo.workdir().unwrap().to_string_lossy() });
+        for (k, v) in extra {
+            args[*k] = json!(v);
+        }
+        let h = GitHandle { alias: "sync-test".to_string() };
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            .block_on(h.sync(args))
+    }
+
+    #[test]
+    fn ahead_only_pushes_and_reports_no_integration() {
+        let w = world();
+        let local = commit(&w.b, "b.txt", "local work");
+        let out = sync(&w.b, &[]).unwrap();
+        assert_eq!(out["status"], "success");
+        assert_eq!(out["integration"]["status"], "up_to_date");
+        assert_eq!(out["integration"]["mode"], "rebase");
+        assert_eq!(out["push_result"]["status"], "pushed");
+        assert_eq!(remote_main(&w), local);
+    }
+
+    #[test]
+    fn behind_only_fast_forwards_for_every_strategy() {
+        for strategy in ["rebase", "merge", "ff_only"] {
+            let w = world();
+            let upstream = commit(&w.a, "a.txt", "upstream work");
+            push_main(&w.a);
+            let out = sync(&w.b, &[("pull_strategy", strategy)]).unwrap();
+            assert_eq!(out["integration"]["status"], "fast_forward", "{strategy}");
+            assert_eq!(out["integration"]["mode"], strategy);
+            assert_eq!(head(&w.b), upstream);
+            assert!(w.b.workdir().unwrap().join("a.txt").exists());
+            assert_eq!(remote_main(&w), upstream);
+        }
+    }
+
+    #[test]
+    fn divergent_history_fails_and_pushes_nothing() {
+        for strategy in ["rebase", "merge", "ff_only"] {
+            let w = world();
+            let upstream = commit(&w.a, "a.txt", "upstream work");
+            push_main(&w.a);
+            let local = commit(&w.b, "b.txt", "local work");
+
+            let err = sync(&w.b, &[("pull_strategy", strategy)]).unwrap_err();
+            match (strategy, &err) {
+                ("ff_only", GitError::SyncNonFastForward) => {}
+                (_, GitError::SyncFailed { message }) => {
+                    assert!(message.contains("diverged") && message.contains("nothing was pushed"), "{message}");
+                    assert!(message.contains(strategy), "{message}");
+                }
+                _ => panic!("{strategy}: unexpected {err:?}"),
+            }
+            assert_eq!(remote_main(&w), upstream, "{strategy}: remote unchanged");
+            assert_eq!(head(&w.b), local, "{strategy}: local commit kept");
+        }
+    }
+
+    #[test]
+    fn conflicting_divergence_is_rejected_without_touching_files() {
+        let w = world();
+        commit(&w.a, "base.txt", "upstream edit");
+        push_main(&w.a);
+        commit(&w.b, "base.txt", "local edit");
+        assert!(sync(&w.b, &[("pull_strategy", "merge")]).is_err());
+        assert_eq!(std::fs::read_to_string(w.b.workdir().unwrap().join("base.txt")).unwrap(), "local edit");
+        assert_eq!(w.b.state(), git2::RepositoryState::Clean);
+    }
+
+    #[test]
+    fn failed_fetch_fails_without_push() {
+        let w = world();
+        let local = commit(&w.b, "b.txt", "local work");
+        let before = remote_main(&w);
+        w.b.remote_set_url("origin", "/nonexistent/resh-test-remote.git").unwrap();
+        let err = sync(&w.b, &[]).unwrap_err();
+        assert!(matches!(err, GitError::SyncPullFailed { .. }), "{err:?}");
+        assert_eq!(remote_main(&w), before);
+        assert_eq!(head(&w.b), local);
+    }
+
+    #[test]
+    fn failed_push_is_an_error() {
+        let w = world();
+        commit(&w.b, "b.txt", "local work");
+        let before = remote_main(&w);
+        w.b.remote_set_pushurl("origin", Some("/nonexistent/resh-test-remote.git")).unwrap();
+        let err = sync(&w.b, &[]).unwrap_err();
+        assert!(matches!(err, GitError::SyncPushFailed { .. } | GitError::SyncPushRejected { .. }), "{err:?}");
+        assert_eq!(remote_main(&w), before);
+    }
+
+    #[test]
+    fn different_remote_branch_is_rejected() {
+        let w = world();
+        commit(&w.b, "b.txt", "local work");
+        let before = remote_main(&w);
+        let err = sync(&w.b, &[("remote_branch", "release")]).unwrap_err();
+        assert!(matches!(err, GitError::InvalidSyncConfig { .. }), "{err:?}");
+        assert_eq!(remote_main(&w), before);
+    }
+
+    #[test]
+    fn stash_is_restored_when_sync_fails() {
+        let w = world();
+        commit(&w.a, "a.txt", "upstream work");
+        push_main(&w.a);
+        commit(&w.b, "b.txt", "local work");
+        let dirty = w.b.workdir().unwrap().join("base.txt");
+        std::fs::write(&dirty, "uncommitted edit").unwrap();
+
+        assert!(sync(&w.b, &[("stash_uncommitted", "true")]).is_err());
+        assert_eq!(std::fs::read_to_string(&dirty).unwrap(), "uncommitted edit");
+        let mut stashes = 0;
+        let mut b = Repository::open(w.b.workdir().unwrap()).unwrap();
+        b.stash_foreach(|_, _, _| { stashes += 1; true }).unwrap();
+        assert_eq!(stashes, 0, "stash was popped back");
+    }
+
+    #[test]
+    fn dry_run_describes_fast_forward_only() {
+        let w = world();
+        let out = sync(&w.b, &[("dry_run", "true"), ("pull_strategy", "merge")]).unwrap();
+        let actions = out["actions"].to_string();
+        assert!(actions.contains("fast-forward") && actions.contains("pull_strategy=merge"), "{actions}");
+        assert!(!actions.contains("Would merge") && !actions.contains("Would rebase"));
+    }
+}
+
+/// Stage 3 (SEC-08): an explicit git `timeout_ms` is refused, because the
+/// blocking libgit2 call it would bound cannot be interrupted. Runs against
+/// a temporary local repository only.
+#[cfg(test)]
+mod timeout_rejection_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn run(verb: &str, pairs: &[(&str, &str)]) -> (Status, String, String) {
+        let h = GitHandle { alias: "timeout_rejection".to_string() };
+        let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let status = {
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            h.call(verb, &args, &mut io).unwrap()
+        };
+        (status, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())
+    }
+
+    #[test]
+    fn explicit_timeout_is_rejected_before_anything_runs() {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree = repo.find_tree(repo.index().unwrap().write_tree().unwrap()).unwrap();
+        let head = repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+
+        for verb in ["status", "status_short", "branch", "commit", "clone", "pull", "push", "sync"] {
+            let (status, out, err) = run(verb, &[("path", &path), ("timeout_ms", "5000")]);
+            assert!(!status.ok, "{verb} accepted timeout_ms");
+            assert_eq!(status.exit_code(), 2, "{verb}");
+            assert!(err.contains("timeout_ms is not supported"), "{verb}: {err}");
+            assert!(out.is_empty(), "{verb} produced output: {out}");
+        }
+        // Nothing was done to the repository (no commit, no branch).
+        assert_eq!(repo.head().unwrap().target(), Some(head), "repository was modified");
+        assert_eq!(repo.branches(None).unwrap().count(), 1);
+
+        // Without timeout_ms the verb still runs normally.
+        let (status, _, err) = run("status", &[("path", &path)]);
+        assert!(status.ok, "{err}");
     }
 }

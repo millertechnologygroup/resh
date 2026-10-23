@@ -34,12 +34,33 @@ impl<'de> IntoDeserializer<'de, Error> for Lenient {
     }
 }
 
-fn parse_bool(s: &str) -> Option<bool> {
+/// The CLI boolean spellings: `true|false|1|0|yes|no|on|off`,
+/// case-insensitive. Anything else is `None`.
+pub fn parse_bool(s: &str) -> Option<bool> {
     match s.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => Some(true),
         "false" | "0" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+/// Read boolean argument `key`: `None` when absent, an error when present
+/// but not one of the `parse_bool` spellings. Callers never get a silent
+/// default for a value they could not read.
+pub fn bool_arg(args: &crate::core::Args, key: &str) -> anyhow::Result<Option<bool>> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(v) => parse_bool(v).map(Some).ok_or_else(|| anyhow::anyhow!(
+            "invalid value for {}: {:?} (expected true/false, 1/0, yes/no or on/off)",
+            key, v
+        )),
+    }
+}
+
+/// The `dry_run` argument; absent means `false`. A malformed value is an
+/// error, so a mistyped dry run is refused instead of making real changes.
+pub fn dry_run(args: &crate::core::Args) -> anyhow::Result<bool> {
+    Ok(bool_arg(args, "dry_run")?.unwrap_or(false))
 }
 
 fn visit_array<'de, V: Visitor<'de>>(items: Vec<Value>, visitor: V) -> Result<V::Value, Error> {
@@ -283,6 +304,24 @@ mod tests {
     fn numbers_accepted_for_string_fields() {
         let o: Opts = from_value(json!({"name": 42})).unwrap();
         assert_eq!(o.name, "42");
+    }
+
+    // SEC-05: one boolean reader for dry_run everywhere.
+    #[test]
+    fn dry_run_spellings() {
+        let a = |v: &str| -> crate::core::Args { [("dry_run".to_string(), v.to_string())].into() };
+        for t in ["true", "TRUE", "True", "1", "yes", "YES", "on", "On", " true "] {
+            assert!(dry_run(&a(t)).unwrap(), "{t:?}");
+        }
+        for f in ["false", "FALSE", "0", "no", "off", "Off"] {
+            assert!(!dry_run(&a(f)).unwrap(), "{f:?}");
+        }
+        for bad in ["", "maybe", "2", "-1", "truee", "y", "n", "t", "dry_run", "null", "\"true\""] {
+            let err = dry_run(&a(bad)).unwrap_err().to_string();
+            assert!(err.contains("invalid value for dry_run"), "{bad:?}: {err}");
+        }
+        assert!(!dry_run(&crate::core::Args::new()).unwrap());
+        assert_eq!(bool_arg(&crate::core::Args::new(), "dry_run").unwrap(), None);
     }
 
     #[test]

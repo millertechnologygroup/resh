@@ -235,9 +235,13 @@ fn unknown_handle_and_verb_errors_unchanged() {
 
 #[test]
 fn normal_status_execution_unchanged() {
-    // Read-only query of a service that does not exist.
-    let (code, out, _) = run(&["svc://resh-help-test-nonexistent.status"]);
-    assert_eq!(code, 0);
+    // Read-only query of a service that does not exist. Help interception
+    // must not affect it: the handle runs and prints its status object.
+    // Since Stage 2 (FUNC-02) a missing service is a failure, with a reason
+    // on stderr, instead of exit 0.
+    let (code, out, err) = run(&["svc://resh-help-test-nonexistent.status"]);
+    assert_eq!(code, 1);
+    assert!(err.starts_with("Error: svc status resh-help-test-nonexistent"), "{err}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert!(v.get("name").is_some());
     assert!(v.get("backend").is_some());

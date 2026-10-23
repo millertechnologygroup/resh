@@ -4,540 +4,255 @@
 
 ### Definition
 
-Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `cert://` handle provides structured management of digital certificates and cryptographic keys.
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations as URI-style commands. The `cert://` handle inspects and manages X.509 certificates, private keys, and certificate signing requests (CSRs) stored as PEM or DER files.
 
-### Purpose
+It uses pure-Rust libraries (x509-parser, rcgen, ring, rsa, p256, p384, ed25519-dalek); OpenSSL is not required. All work is on local files: the handle makes no network connections.
 
-The certificate domain enables:
+### What the handle does
 
-* Inspection of certificates, keys, CSRs, and chains
-* Generation of private keys and certificates
-* Creation and signing of CSRs
-* Certificate renewal
-* Certificate verification and chain analysis
-* Digital signing operations
+* Inspect certificates, bundles, CSRs, and private keys (`info`).
+* Verify a certificate's structure, signature chain, validity period, hostname, purpose, and matching private key (`verify`).
+* Generate private keys, self-signed certificates, CA-signed leaf certificates, and CSRs (`generate`).
+* Create a CSR from an existing or new key (`csr.create`).
+* Sign data with a private key, or issue a certificate from a CSR with `mode=csr` (`sign`).
+* Issue a replacement for an existing certificate (`renew`).
+* List the certificates of a bundle as chain candidates (`chain.info`, limited; see below).
 
-All operations return structured JSON output suitable for automation and infrastructure workflows.
+### What the handle does not do
 
-### Architectural Problem Addressed
+* **No encrypted private keys.** `key_passphrase` (on `generate` and `renew`) is rejected with an error. Encrypted signer keys (`signer_key_passphrase`) and encrypted existing keys are rejected too. All keys are written unencrypted.
+* **No CMS/PKCS#7 signatures** (see [sign](#sign)).
+* **No revocation checking** (CRL/OCSP): `check_revocation=soft` reports `not_checked` and `hard` fails.
+* No ACME, no automatic renewal, no HSM/PKCS#11.
 
-Traditional certificate tooling (e.g., OpenSSL CLI):
+---
 
-* Uses complex flag-based syntax
-* Produces human-oriented output
-* Requires manual parsing for automation
-* Has inconsistent workflows for lifecycle operations
+## 2. Command Syntax
 
-resh addresses these limitations by:
-
-* Exposing certificate lifecycle operations as typed verbs
-* Using structured parameters instead of positional flags
-* Returning deterministic JSON output
-* Providing consistent error codes and validation semantics
-
-### Resource-Oriented URI Model
-
-Certificate operations follow:
-
-```
-handle://target.verb(options)
+```text
+resh cert://<file-path>.<verb> [key=value ...]
 ```
 
-For certificate management:
+* Absolute path: `cert:///etc/ssl/certs/server.pem.info` (three slashes).
+* Relative path: `cert://./server.pem.info`.
+* The verb is the text after the last dot; `csr.create`, `csr.sign`, and `chain.info` are recognized as whole verbs.
+* JSON-valued options (`subject`, `sans`, `output`, ...) must be quoted for the shell: `subject='{"common_name":"example.com"}'`.
 
-* **handle**: `cert://`
-* **target**: File path or resource path
-* **verb**: Operation (e.g., `info`, `generate`, `verify`)
-* **options**: Structured parameters
+Built-in help (authoritative for every option):
 
-Examples:
-
-```
-cert:///etc/ssl/certs/server.pem.info
-cert:///tmp/server.generate(mode=self_signed,subject='{"common_name":"example.com"}')
-cert:///tmp/server.pem.verify
+```bash
+resh cert --help
+resh cert generate --help
 ```
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 3. Verbs
 
-### Structured Interface Model
+| Verb         | Purpose                                                                  |
+| ------------ | ------------------------------------------------------------------------ |
+| `info`       | Report type, serial, subject, issuer, validity, public key, extensions, fingerprints for each object in a file |
+| `verify`     | Check a certificate against a policy; each check is passed, failed, skipped, not_checked, or unsupported |
+| `chain.info` | List leaf candidates of a bundle (no real chain building; see below)     |
+| `generate`   | Generate a key, self-signed certificate, CA-signed leaf, or CSR           |
+| `csr.create` | Create a CSR at the target path                                           |
+| `sign`       | Sign data, or with `mode=csr` issue a certificate for a CSR              |
+| `csr.sign`   | Registered, but **cannot be reached from the command line** (see below)  |
+| `renew`      | Issue a replacement certificate with the same subject, SANs, and extensions |
 
-* Eight explicitly defined verbs.
-* JSON-based structured subject and SAN definitions.
-* Explicit mode selection for generation and signing.
-* Deterministic output schemas.
+### info
+
+```bash
+resh --json-pretty cert:///etc/ssl/certs/server.pem.info
+resh cert://./bundle.pem.info fingerprint_algs=sha256,sha512
+```
+
+Options: `format=json|text`, `encoding=auto|pem|der`, `fingerprint_algs=sha1,sha256,sha384,sha512`, `include_pem`, `include_raw`. A bundle reports `"type": "certificatechain"` with one object per certificate; a CSR or key reports `kind` `csr` or `private_key`. `version` is zero-based (2 means X.509 v3).
+
+### verify
+
+```bash
+resh cert://./web.pem.verify trust_paths=ca.pem hostname=web.test format=text
+resh cert:///etc/ssl/certs/server.pem.verify purpose=server_auth
+```
+
+Options: `hostname=`, `trust=system|mount|inline` (default `system`, the system CA bundle), `trust_paths=<path>,...` and `trust_pem=<pem>` (add trust anchors), `max_chain_depth`, `min_rsa_bits`, `purpose=server_auth|client_auth|code_signing|email_protection|any`, `allow_self_signed`, `allow_expired`, `allow_not_yet_valid`, `check_revocation=none|soft|hard`, `keypair_target=<key-path>`, `disallow_weak_signatures`, `format`.
+
+* The first certificate in the file is verified; any others are used as intermediates.
+* Every signature in the chain is checked (RSA PKCS#1 v1.5 SHA-256/384/512, ECDSA P-256/P-384, Ed25519). Other algorithms report `unsupported`.
+* If any check fails, the command exits with status 7.
+
+There is no `ca_bundle` option; use `trust_paths=`.
+
+### chain.info (limited)
+
+```bash
+resh cert://./bundle.pem.chain.info format=text
+```
+
+**Current behaviour:** `chain.info` parses the bundle and lists leaf candidates, but it does not link certificates to their issuers. Each reported chain has length 1 and a `trust_status` of `incomplete` (or `self_signed_untrusted` for a self-signed certificate), even when the issuer is in the same bundle or in `trust_paths`. The `trust`, `trust_paths`, and `trust_pem` options do not change the result. Use `verify` for real chain validation.
+
+### generate
+
+```bash
+resh --json-pretty cert://./server.generate mode=key algorithm=ecdsa
+resh cert://./ca.generate mode=self_signed algorithm=ecdsa is_ca=true subject='{"common_name":"Example CA"}'
+resh cert://./web.generate mode=leaf_cert signer_ca=ca.pem signer_key=ca-key.pem subject='{"common_name":"web.test"}' sans='["DNS:web.test"]'
+```
+
+Files are written beside the target path: `<target>-key.pem` (key), `<target>.pem` (certificate), `<target>.csr` (CSR, `mode=csr`).
+
+| Option                  | Values / default                                                        |
+| ----------------------- | ----------------------------------------------------------------------- |
+| `mode`                  | `key` (default), `self_signed`, `csr`, `leaf_cert`                       |
+| `algorithm`             | `rsa` (default), `ecdsa`, `ed25519`                                      |
+| `rsa_bits`              | default 2048; values below 2048 are rejected                             |
+| `ecdsa_curve`           | `P-256` (default), `P-384`; P-521 and secp256k1 are rejected             |
+| `subject`               | JSON object; `common_name` required for every mode except `key`. Also `organization`, `organizational_unit`, `country`, `state_or_province`, `locality` (arrays of strings) |
+| `sans`                  | JSON array (or comma list) of `DNS:`, `IP:`, `EMAIL:` entries            |
+| `is_ca`, `path_len`     | CA flag and path length constraint                                       |
+| `not_before`, `not_after`, `not_after_offset_days` | validity (`not_after_offset_days` default 365)   |
+| `signer_ca`, `signer_key` | required for `mode=leaf_cert`                                          |
+| `key_format`, `key_encoding`, `cert_encoding`, `csr_encoding` | `pkcs8`/`pkcs1`/`sec1`, `pem`/`der` |
+| `output`                | JSON object: `write_key`, `write_cert`, `write_csr`, `return_key`, `return_cert`, `return_csr` |
+| `overwrite`             | default `false`: if any output file exists, nothing is written and the command fails with `cert.target_exists` |
+
+`key_passphrase` is rejected: "key_passphrase is not supported: private key encryption is not available in this build".
+
+### csr.create
+
+```bash
+resh cert://./web-req.pem.csr.create key_strategy=generate algorithm=ecdsa new_key_output_path=web-key.pem subject='{"common_name":"web.test"}' sans='["DNS:web.test"]'
+resh cert://./web-req.pem.csr.create existing_key_path=web-key.pem algorithm=ecdsa subject='{"common_name":"web.test"}'
+```
+
+The CSR is written to the target path exactly (here `./web-req.pem`). Options: `subject` (required), `key_strategy=reuse|generate` (default `reuse`, which needs `existing_key_path`), `new_key_output_path`, `algorithm` (default `rsa`), `rsa_bits`, `ecdsa_curve`, `sans`, `key_usage`, `extended_key_usage`, `overwrite`, `format`.
+
+* When reusing a non-RSA key, pass the matching `algorithm=` (for example `algorithm=ecdsa`); it is not inferred from the key, and a mismatch fails with "signature algorithm is incompatible with the given key pair".
+* Do not pass `new_key_passphrase`: the new key is still written **unencrypted**, although the output reports `"encrypted": true`.
+
+### sign
+
+Data signing:
+
+```bash
+resh --json-pretty cert://./ca.sign signer_key=ca-key.pem data_source=app.tar signature_output_path=app.tar.sig
+```
+
+The target (`./ca`) is only a label in the output. Options: `signer_key` (required), `data_source=<path>` or `data_bytes_base64=`, `signature_algorithm`, `signature_encoding=base64|pem|der`, `signature_output_path`, `include_signature_bytes=true`. Without `signature_output_path` or `include_signature_bytes=true` the signature is computed but not kept.
+
+`signature_format=cms_detached` or `cms_attached` is accepted and echoed in the output, but **CMS is not implemented**: a raw signature is produced regardless. Do not rely on CMS output.
+
+Issuing a certificate from a CSR (`mode=csr`):
+
+```bash
+resh cert://./ca.sign mode=csr csr_source=web-req.pem signer_cert=ca.pem signer_key=ca-key.pem cert_output_path=web.pem
+```
+
+The CSR signature is verified; the certificate keeps the CSR's subject, SANs, and public key. Validity and extensions can be set with `not_before`, `not_after`, `not_after_offset_days` (default 365), `is_ca`, `path_len`, `key_usage`, `extended_key_usage`, `sans_override`. The output `cert` object reports the real serial number, validity, and fingerprints.
+
+### csr.sign (not reachable from the CLI)
+
+`csr.sign` is a registered verb, but the stage parser never produces it: `cert://<target>.csr.sign` is parsed as the `sign` verb with target `<target>.csr`, which then runs data signing (and typically fails with "For data mode, either data_source or data_bytes_base64 must be specified"). **Use `sign mode=csr`** as shown above. See `resh cert csr.sign --help`.
+
+### renew
+
+```bash
+resh cert:///etc/ssl/certs/server.pem.renew format=text
+resh cert://./web.pem.renew signer_ca=ca.pem signer_key=ca-key.pem existing_key_path=web-key.pem
+```
+
+Options: `renewal_mode=auto|self_signed|explicit_signer`, `signer_ca`, `signer_key`, `key_strategy=reuse|rekey` (default `reuse`), `existing_key_path` (default `<name>-key.pem`), `algorithm`, `new_cert_output_path` (default `<name>-renewed.pem`), `new_key_output_path` (default `<name>-renewed-key.pem` with `rekey`), `not_before=now|carry_over_start|<rfc3339>`, `not_after`, `not_after_offset_days`, `overwrite`, `format`. A CA-signed certificate needs `signer_ca` and `signer_key`. `key_passphrase` is rejected.
 
 ---
 
-### Safety-First Execution
+## 4. Output and Errors
 
-* `overwrite=false` by default.
-* Key generation enforces minimum RSA 2048 bits.
-* Password-based key encryption supported.
-* CSR signing requires explicit CA certificate and key.
-* Certificate verification validates expiration and signatures.
-
----
-
-### Deterministic Behavior
-
-* Identical inputs produce consistent JSON outputs.
-* Validation errors are explicit and structured.
-* Encoding detection (`pem`, `der`, `auto`) is deterministic.
-* Explicit key strategy (`reuse`, `rekey`) during renewal.
-
----
-
-### JSON-Based Structured Output
-
-All verbs return structured JSON with:
-
-* `ok` or `success`
-* Metadata about certificates or keys
-* Validity windows
-* Fingerprints
-* Error objects (if failure)
-
-Representative example:
+Output is pretty-printed JSON on stdout (or text with `format=text`). See each verb's `--help` for a full example. Abbreviated `info` example:
 
 ```json
 {
-  "type": "certificate",
   "encoding": "pem",
+  "type": "certificate",
   "objects": [
     {
-      "subject": {
-        "common_name": "example.com"
-      },
+      "kind": "certificate",
+      "subject": { "common_name": "example.com", "raw_dn": "CN=example.com" },
       "validity": {
-        "not_before": "2024-01-01T00:00:00Z",
-        "not_after": "2025-01-01T00:00:00Z",
-        "is_currently_valid": true
+        "is_currently_valid": true,
+        "not_after": "2027-10-16T19:10:00+00:00",
+        "not_before": "2026-10-16T19:10:00+00:00"
       },
-      "fingerprints": {
-        "sha256": "AB:CD:EF:..."
-      }
+      "fingerprints": { "sha256": "C2:76:3C:C0:...:6C:B1:F2:3C" }
     }
   ]
 }
 ```
 
----
-
-### AI-Readiness
-
-Structured output enables:
-
-* Automated certificate expiration monitoring
-* Trust chain validation
-* Algorithm compliance checks
-* Policy enforcement on SANs and key sizes
-* Automated renewal workflows
-
----
-
-## 3. Command Syntax and Execution Model
-
-### 3.1 URI Structure
-
-```
-cert:///<path>.VERB(options)
-```
-
-| Component | Description               |
-| --------- | ------------------------- |
-| `handle`  | `cert://`                 |
-| `target`  | Absolute or relative path |
-| `VERB`    | Certificate operation     |
-| `options` | Structured parameters     |
-
----
-
-### Supported Verbs (8)
-
-| Verb         | Purpose                     |
-| ------------ | --------------------------- |
-| `info`       | Inspect certificate/key/CSR |
-| `generate`   | Generate key or certificate |
-| `verify`     | Validate certificate        |
-| `sign`       | Sign data or CSR            |
-| `renew`      | Renew existing certificate  |
-| `csr.create` | Create CSR                  |
-| `csr.sign`   | Sign CSR                    |
-| `chain.info` | Inspect certificate chain   |
-
----
-
-### Production Examples
-
-#### Inspect Certificate
-
-```
-cert:///etc/ssl/certs/server.pem.info
-```
-
-#### Generate RSA Key
-
-```
-cert:///tmp/key.generate(mode=key,algorithm=rsa,rsa_bits=2048)
-```
-
-#### Generate Self-Signed Certificate
-
-```
-cert:///tmp/server.generate(
-  mode=self_signed,
-  subject='{"common_name":"example.com"}',
-  algorithm=rsa,
-  rsa_bits=2048
-)
-```
-
-#### Create CSR
-
-```
-cert:///tmp/server.csr.create(
-  key_strategy=generate,
-  algorithm=ecdsa,
-  ecdsa_curve=P-256,
-  new_key_output_path=/tmp/server-key.pem,
-  subject='{"common_name":"example.com"}',
-  sans='["DNS:example.com","DNS:www.example.com"]'
-)
-```
-
-#### Sign CSR
-
-```
-cert:///tmp/server.csr.sign(
-  signer_ca=/ca/root.pem,
-  signer_key=/ca/root-key.pem,
-  cert_output_path=/tmp/server.pem
-)
-```
-
-#### Verify Certificate
-
-```
-cert:///tmp/server.pem.verify(ca_bundle=/ca/root.pem)
-```
-
----
-
-## 3.2 Execution Semantics
-
-### Deterministic Behavior
-
-* Required parameters enforced.
-* Invalid JSON subject/SAN definitions rejected.
-* Key sizes validated.
-* Signature algorithm compatibility enforced.
-* Chain validation explicitly reported.
-
----
-
-### Structured Output Contracts
-
-Example: Verification
+Errors are also JSON on **stdout** (resh additionally prints `Error: <reason>` on stderr), for example:
 
 ```json
 {
-  "valid": true,
-  "errors": [],
-  "warnings": [],
-  "chain_length": 2,
-  "expires_in_days": 89
-}
-```
-
-Example: Renewal
-
-```json
-{
-  "ok": true,
-  "key_strategy": "reuse",
-  "validity": {
-    "not_before": "2024-01-01T00:00:00Z",
-    "not_after": "2025-01-01T00:00:00Z"
-  }
-}
-```
-
----
-
-### Error Handling Structure
-
-Representative error:
-
-```json
-{
-  "ok": false,
   "error": {
-    "code": "cert.parse_failed",
-    "message": "Invalid certificate format"
+    "code": "cert.invalid_options",
+    "details": { "path": "./k3" },
+    "message": "RSA key size too small: 1024. Minimum is 2048 bits"
   }
 }
 ```
 
-Standardized exit codes:
+### Exit codes (verified in the source)
 
-| Code | Meaning               |
-| ---- | --------------------- |
-| 0    | Success               |
-| 1    | General error         |
-| 2    | Certificate not found |
-| 3    | Parse error           |
-| 4    | Invalid options       |
-| 5    | Target exists         |
-| 6    | Verification failed   |
-| 7    | Permission denied     |
+| Verb                 | Exit status on failure                                                       |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `info`               | 1 invalid options, 2 file cannot be read, 3 encoding detection failed, 4 parse failed |
+| `verify`             | 1 invalid options, 2 file cannot be read, 3 encoding detection failed, 4 type detection failed, 5 parse failed, 6 unsupported object type, 7 a verification check failed |
+| `generate`, `sign`, `renew` | 1 invalid options or a result with `ok: false`, 2 operation error     |
+| `csr.create`, `chain.info` | 1                                                                      |
+
+Success is always 0.
 
 ---
 
-## 4. Functional Domains
+## 5. Options That Are Not Supported
+
+* `timeout_ms`: ignored by every cert verb (all work is local).
+* `key_passphrase`, `signer_key_passphrase`, `existing_key_passphrase`: rejected (no encrypted keys).
+* `new_key_passphrase` (csr.create): accepted but has no effect (see above).
+* `signature_format=cms_detached|cms_attached`: accepted but produces a raw signature.
+* `key_kdf`, `key_kdf_iterations`: parsed, but only meaningful with `key_passphrase`, which is rejected.
+* `trust`, `trust_paths`, `trust_pem` on `chain.info`: no effect on the result.
+
+`overwrite` is parsed strictly: `true/false/1/0/yes/no/on/off`; any other value is an error.
 
 ---
 
-### 4.1 Automation Utilities
+## 6. File Safety
 
-**Handle**
-
-* `cert://`
-
-**Use Cases**
-
-* Automated TLS provisioning
-* Automated CSR creation in CI pipelines
-* Renewal workflows
-* Policy compliance validation
+* Existing files are not replaced unless `overwrite=true`.
+* Private keys are written with the normal file mode and then changed to 0600. There is a short window in which a new key file has the default (umask) permissions, so write keys only into directories other users cannot read. On `csr.create`, a failure to set 0600 is ignored.
+* Certificates and CSRs are written with default permissions.
 
 ---
 
-### 4.2 Data & State Management
+## 7. Platform Support
 
-**Scope**
-
-* Certificate metadata inspection
-* Fingerprint calculation
-* Expiration tracking
-* Chain relationship analysis
+Linux is the only supported and tested platform. macOS and Windows are not supported.
 
 ---
 
-### 4.3 Filesystem & Storage
-
-**Scope**
-
-* Secure key storage
-* PEM/DER encoding management
-* Encrypted private key support
-* File overwrite protection
-
----
-
-### 4.4 Network & Remote Operations
-
-**Scope**
-
-* TLS certificate provisioning
-* Server and client authentication
-* Trust chain validation
-* Secure endpoint configuration
-
----
-
-### 4.5 Packages & Software
-
-Supports:
-
-* Post-install TLS configuration
-* Secure service enablement
-* Certificate-based authentication for services
-
----
-
-### 4.6 Process & Service Management
-
-Integrates with:
-
-* `svc://` for reloading services after certificate renewal
-* `cron://` for scheduled renewal checks
-* `secret://` for storing key passwords
-
----
-
-### 4.7 Security & Secrets
-
-Primary domain:
-
-* RSA, ECDSA, Ed25519 key generation
-* Password-protected private keys
-* CA hierarchy creation
-* Chain validation
-* Key derivation functions (PBKDF2, Argon2id)
-
-Security considerations:
-
-* Minimum RSA 2048-bit enforcement
-* Support for encrypted private keys
-* Explicit CA flag (`is_ca`)
-* SAN validation
-* Explicit overwrite control
-
----
-
-### 4.8 System Information
-
-Structured reporting includes:
-
-* Certificate subject and issuer
-* Validity window
-* Public key algorithm and size
-* Fingerprints (SHA-1, SHA-256)
-* Chain trust validation status
-
----
-
-## 5. Platform Support
-
-The certificate handle operates on:
-
-* Linux
-* Unix/macOS (where filesystem and crypto libraries are available)
-* Windows (limited to file-based operations)
-
-Platform compatibility depends on filesystem access and cryptographic support.
-
-Limitations (as documented):
-
-* No ACME protocol support
-* No automatic renewal
-* No CRL/OCSP integration
-* No HSM/PKCS#11 support
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Use RSA 2048-bit minimum.
-* Prefer ECDSA P-256 or Ed25519 for modern deployments.
-* Use `overwrite=false` in production.
-* Store CA private keys offline.
-* Use short validity for leaf certificates.
-* Validate certificates before deployment.
-
----
-
-### Automation Considerations
-
-* Monitor `expires_in_days`.
-* Use structured verification output.
-* Automate renewal workflows.
-* Validate SAN presence for domain certificates.
-* Log certificate operations.
-
----
-
-### CI/CD Integration
-
-Typical workflow:
-
-1. Generate CSR.
-2. Sign CSR using CA.
-3. Verify certificate.
-4. Deploy certificate to service.
-5. Reload service via `svc://`.
-6. Schedule renewal checks with `cron://`.
-
----
-
-### Production Environment Recommendations
-
-* Implement certificate inventory tracking.
-* Rotate certificates proactively.
-* Protect private keys with strict file permissions.
-* Use password encryption with Argon2id for sensitive keys.
-* Avoid self-signed certificates in production.
-* Validate full chain before deployment.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Automate TLS provisioning.
-* Generate and sign CSRs.
-* Integrate certificate renewal in pipelines.
-* Enforce algorithm compliance policies.
-
----
-
-### SRE Engineers
-
-* Monitor certificate expiration.
-* Verify trust chains during incident response.
-* Rotate compromised certificates.
-* Audit SAN and issuer metadata.
-
----
-
-### Network Administrators
-
-* Provision TLS certificates for web servers.
-* Maintain internal CA hierarchies.
-* Validate secure communication endpoints.
-* Manage certificate chains.
-
----
-
-### AI / Automation Engineers
-
-* Parse structured certificate metadata.
-* Detect policy violations (weak algorithms, missing SANs).
-* Automate remediation workflows.
-* Evaluate trust path validity programmatically.
-
----
-
-## 8. Technical Foundation
-
-### Rust Implementation Advantages
-
-resh is implemented in Rust, providing:
-
-* Memory safety
-* Strong type guarantees
-* Deterministic command parsing
-* Secure cryptographic handling
-
----
-
-### Type Safety
-
-* Enumerated verbs
-* Structured subject JSON validation
-* Strict algorithm selection
-* Defined error codes
-
----
-
-### Performance Characteristics
-
-* Efficient key generation
-* Compact DER support
-* Deterministic serialization
-* Minimal overhead JSON output
-
----
-
-### Cross-Platform Architecture
-
-* Filesystem-based operation model
-* Unified encoding detection
-* Consistent structured output
-* Explicit unsupported-feature signaling
+## 8. Usage Guidance
+
+* Prefer ECDSA P-256 or Ed25519, or RSA 2048+ (smaller RSA keys are rejected).
+* Keep CA private keys in a directory only you can read; keys are never encrypted by this handle.
+* Validate certificates with `verify` (not `chain.info`) before deploying them.
+* Monitor expiry with `info` (`validity.not_after`, `validity.is_currently_valid`).
+
+Typical CA-signed workflow:
+
+```bash
+resh cert://./ca.generate mode=self_signed algorithm=ecdsa is_ca=true subject='{"common_name":"Example CA"}'
+resh cert://./web-req.pem.csr.create key_strategy=generate algorithm=ecdsa new_key_output_path=web-key.pem subject='{"common_name":"web.test"}' sans='["DNS:web.test"]'
+resh cert://./ca.sign mode=csr csr_source=web-req.pem signer_cert=ca.pem signer_key=ca-key.pem cert_output_path=web.pem
+resh cert://./web.pem.verify trust_paths=ca.pem hostname=web.test format=text
+```

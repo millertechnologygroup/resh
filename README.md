@@ -8,26 +8,26 @@
 
 ---
 
-## 🎉 v1.0 Beta Released - 28 Production-Ready Handles
+## v1.0.2-beta - 28 Handles (Beta)
 
-**resh v1.0-beta is ready for testing!** This release includes 28 production-ready handles plus comprehensive automation utilities for backup management, plugin operations, and template rendering.
+**resh v1.0.2-beta is available for testing.** This beta release includes 28 handles, among them automation utilities for backups, plugins and template rendering. It is beta software: some verbs are stubs or have known limitations, listed in each handle's documentation and in [docs/known_issues.md](docs/known_issues.md).
 
 ⭐ **Star this repo** to follow development and be notified of updates!
 
 **Current Status:**
-- ✅ 28 handles implemented and functional
-- ✅ JSON, table, and log output formats working
-- ✅ URI-based resource model operational
-- ⏱️ 2 additional handles coming in v1.1 (March 2026)
-- ⚠️ Beta quality - expect bugs and rough edges
+- ✅ 28 handles registered, each with built-in help (`resh <handle> --help`)
+- ✅ Most verbs print JSON; some also offer a text format (see each handle's docs)
+- ✅ URI-based resource model
+- ⏱️ 2 additional handles planned for v1.1
+- ⚠️ Beta quality - expect bugs and rough edges; see [docs/known_issues.md](docs/known_issues.md)
 
 ---
 
 ## What is resh?
 
-resh (Resource Shell) is a next-generation automation platform designed for the AI era. While traditional tools like Ansible and Terraform were built for humans writing YAML, resh provides **structured, typed outputs** that both AI agents and human operators can reliably consume.
+resh (Resource Shell) is a command-line tool that runs operations on resources named by URLs (`svc://nginx.status`, `file:///etc/hosts.read`) and prints structured results, mostly JSON, that both scripts and AI agents can consume without text parsing.
 
-**v1.0 Beta demonstrates the enhanced automation vision with 28 working handles plus comprehensive automation utilities.**
+**v1.0.2-beta has 28 handles, including the backup, plugin and template automation utilities.**
 
 ### The Problem
 
@@ -37,8 +37,6 @@ Current infrastructure automation tools face critical limitations:
 - **Inconsistent errors** - AI agents can't reliably handle failures  
 - **YAML complexity** - Configuration files become unmaintainable at scale
 - **Not composable** - Different tools for different tasks, extensive glue code
-
-**When AI agents try to use traditional tools, error rates spike 10-15x higher than human-operated workflows.**
 
 ### The Difference
 
@@ -67,13 +65,13 @@ resh db://sqlite/app.query 'sql=SELECT COUNT(*) AS n FROM users' dsn=sqlite:app.
 ```
 
 **Why this matters for AI agents:**
-- No regex parsing needed
-- Predictable error handling
-- Same patterns across all operations
-- Type-safe outputs
+- No regex parsing needed: fields have names
+- One failure contract: exit code 0 on success; on failure the handle's code (1-255) or 1, with `Error: <reason>` on stderr
+- One command form across all handles: `resh <handle>://<target>.<verb> key=value ...`
+- Each handle documents its real output fields (there is no single shared response envelope)
 
-**3. Comprehensive Operations**
-28 handles operational in v1.0-beta, including automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
+**Broad coverage**
+28 handles in v1.0.2-beta: automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
 
 ---
 
@@ -107,8 +105,7 @@ resh db://sqlite/app.query 'sql=SELECT COUNT(*) AS n FROM users' dsn=sqlite:app.
 - ✅ Functional 28 handles you can use today
 - ⚠️ Bugs and rough edges (it's beta!)
 - ⚠️ API may change before v1.0 stable
-- ✅ Responsive maintainer (issues answered within 24h)
-- ✅ Rapid iteration and improvements
+- ✅ Active development and iteration
 - ✅ Your feedback directly shapes development
 
 ---
@@ -116,28 +113,30 @@ resh db://sqlite/app.query 'sql=SELECT COUNT(*) AS n FROM users' dsn=sqlite:app.
 ## New in v1.0: Automation Utilities
 
 ### Data Protection & Backup Management
-- ✅ `backup://` - Complete backup lifecycle management
-  - Create backups with multiple backend support (restic, borg, rsync, tar)
-  - List, restore, and verify backup integrity
-  - Automated retention policies and scheduled backups
+- ✅ `backup://` - Backup lifecycle by running restic, borg, rsync or tar
+  - Create, list, restore, verify and prune backups (`keep_*` retention rules)
+  - `create` and `prune` support `dry_run`; `restore` has no dry run and refuses `dry_run=true`
+  - `schedule` only reports a schedule definition; it installs no cron job or timer (run `create` from cron or a systemd timer yourself)
+  - Encryption and deduplication are whatever the backend provides (restic and borg encrypt; tar and rsync do not)
 
 ### Plugin & Extension Management  
-- ✅ `plugin://` - Full plugin lifecycle operations
-  - Install from registry, URL, or local files
-  - Search, update, enable, disable, and remove plugins
-  - SHA-256 artifact verification and dry-run plans
+- ✅ `plugin://` - Plugin lifecycle in a local plugin store
+  - Install from an HTTPS registry (default), a direct HTTPS URL, or a local file
+  - Registry installs require a SHA-256 checksum from the registry by default (`verify=sha256`); `source=url` has no checksum and needs an explicit `verify=none`
+  - Plain `http://` is always refused
+  - Search catalogs, update, enable, disable and remove plugins, with `dry_run` plans
 
 ### Template & Content Generation
-- ✅ `template://` - Powerful template rendering system
-  - Tera template engine with data injection
-  - Template validation and testing
-  - Multiple output formats (file, stdout, structured)
+- ✅ `template://` - Tera template rendering
+  - Render with a JSON context (`context=` or `context_file=`)
+  - Validate and test templates
+  - Output formats for `render`: `text`, `html`, `json`, `bytes` (printed to stdout; rendering never writes files)
 
 **Why These Matter for AI Agents:**
-- **Predictable Operations:** Every automation returns structured JSON envelopes
-- **Complete Lifecycle:** From installation through execution to cleanup
-- **Error Handling:** Detailed status reporting for autonomous decision-making
-- **Security First:** Built-in verification and safe defaults
+- **Structured results:** each verb prints JSON (the shape is specific to each handle; see its docs)
+- **Failures are never silent:** non-zero exit code plus `Error: <reason>` on stderr
+- **Plans before changes:** `dry_run` where a verb supports it (not every verb does; see the handle docs)
+- **Verification by default:** plugin registry installs are checksum-verified
 
 ```bash
 # Example: Complete backup workflow
@@ -145,12 +144,14 @@ resh backup://daily.create src=/home/user backend=restic repo_url=/srv/restic pa
 resh --json-pretty backup://daily.list backend=restic repo_url=/srv/restic password_file=/etc/resh/restic.pass
 resh backup://daily.verify backend=restic repo_url=/srv/restic password_file=/etc/resh/restic.pass
 
-# Example: Plugin management
-resh plugin://available.search q=security
-resh plugin://security-scanner.install source=registry dry_run=true
-resh plugin://security-scanner.install source=registry
-resh plugin://security-scanner.enable
-resh plugin://security-scanner.update
+# Example: Plugin management (registry= must be an HTTPS registry you trust;
+# a registry dry run still contacts the registry to resolve the version)
+resh plugin://installed.list format=names
+resh plugin://aws.install registry=https://plugins.example.org version=1.2.3 dry_run=true
+resh plugin://aws.install registry=https://plugins.example.org version=1.2.3
+resh plugin://demo.install source=file path=/home/alice/demo.tar.gz
+resh plugin://aws.enable
+resh plugin://aws.update registry=https://plugins.example.org dry_run=true
 
 # Example: Template rendering
 resh template://config.yml.render context_file=vars.json
@@ -158,70 +159,70 @@ resh template://config.yml.render context_file=vars.json
 
 ---
 
-## Implemented in v1.0 Beta (28 Handles)
+## Implemented in v1.0.2-beta (28 Handles)
+
+Each handle's page under [docs/](docs/) lists its registered verbs, arguments, real output fields and known limitations. `resh <handle> --help` prints the same verb list.
 
 ### Automation Utilities
-- ✅ `template://` - Template operations (render, validate, test)
-- ✅ `backup://` - Backup operations (create, list, restore, verify, prune, size, schedule)
-- ✅ `plugin://` - Full plugin lifecycle operations (install, update, remove, enable, disable, available.list, available.search, available.info, installed.list)
+- ✅ `template://` - Tera templates (render, validate, test)
+- ✅ `backup://` - Backups through restic, borg, rsync or tar (create, list, restore, verify, prune; `schedule` reports a definition only and installs nothing)
+- ✅ `plugin://` - Plugin lifecycle (install, update, remove, enable, disable, available.list, available.search, available.info, installed.list)
 
 ### Filesystem & Storage ✅
-- ✅ `file://` - File operations (read, write, copy, move, delete, chmod, hash)
-- ✅ `fs://` - Filesystem management (mount, quota, usage, resize)
-- ✅ `snapshot://` - Snapshot and versioning (create, restore, diff, list)
-- ✅ `archive://` - Archive management (tar, zip, 7z, gzip, xz, zstd)
+- ✅ `file://` - File operations (read, write, copy, move, delete, chmod, hash, grep, find, extended attributes, and more)
+- ✅ `fs://` - Mounted filesystems (list-mounts, usage, quota, mount, unmount, resize, check)
+- ✅ `snapshot://` - Full local copies of a file or directory (create, restore, diff, ls)
+- ✅ `archive://` - Archives: create tar, tar.gz, zip and single-file gzip; read tar.xz and tar.zst; no 7z support and no password-protected archives
+  (see [archive.md](docs/Filesystem_Storage/archive.md))
 
 ### Process & Service Management ✅
-- ✅ `proc://` - Process control (signal, nice, setPriority, limits)
-- ✅ `svc://` - Service management (systemd + OpenRC support)
-- ✅ `cron://` - Job scheduler (systemd timers + cron)
+- ✅ `proc://` - Signals and nice values for a process (signal, nice.get/set, setPriority; `limits.set` only affects the resh process itself)
+- ✅ `svc://` - Service management (systemd and OpenRC)
+- ✅ `cron://` - Scheduled jobs as crontab entries or systemd timers (list, add, enable, disable, rm)
 
 ### Network & Remote Operations ✅
-- ✅ `ssh://` - Remote execution and file transfer
-- ✅ `http://` - HTTP client operations (get, post, put, delete, patch)
-- ✅ `net://` - Network diagnostics (ping, tcp_check, scan, dns)
-- ✅ `dns://` - DNS operations (lookup, resolve, zone management)
-- ✅ `mail://` - Email/SMTP (send, templates, attachments)
+- ✅ `ssh://` - Remote commands and file upload/download through the system `ssh` client; `tunnel`, `keys.list` and `key.add` are stubs (dry run only)
+- ✅ `http://` - HTTP client (get, head, headers, options, preflight, json, post, put, patch, delete)
+- ✅ `net://` - Network diagnostics (interfaces, routes, ping, tcp_check, scan, dns)
+- ✅ `dns://` - DNS lookup, resolve, trace and zone transfer (`zone.fetch`); `zone.update` is simulated and sends nothing
+- ✅ `mail://` - Email over SMTP (send, send_template, attachments, test, config); `send` has no dry run (use `send_template ... dry_run=true` to preview)
 
 ### Security & Secrets ✅
-- ✅ `secret://` - Secret management (env, keystore, Vault integration)
-- ✅ `cert://` - Certificate management (X.509, TLS, Let's Encrypt)
-- ✅ `firewall://` - Firewall management (iptables, nftables, ufw, firewalld)
-- ✅ `user://` - User management (add, del, passwd, groups, exists)
+- ✅ `secret://` - Local keystore file (mode 0600, **not encrypted**) and read-only environment lookup; the `vault` scope and `rotate` are not implemented
+- ✅ `cert://` - X.509 certificates, keys and CSRs in local files (info, verify, chain.info, generate, csr.create, sign, renew)
+- ✅ `firewall://` - Firewall rules and state (iptables, nftables, ufw, firewalld)
+- ✅ `user://` - User management (exists, groups, add, delete, passwd, lock, unlock)
 
 ### Data & State Management ✅
-- ✅ `db://` - Database operations (PostgreSQL, MySQL, SQLite)
+- ✅ `db://` - Database operations (PostgreSQL, MySQL/MariaDB, SQLite)
 - ✅ `cache://` - Cache operations (Redis, Memcached)
-- ✅ `config://` - Configuration store (get, set, watch, remove)
-- ✅ `mq://` - Message queue operations (create, put, get, purge)
-- ✅ `log://` - Logging and log management
-- ✅ `event://` - Event pipeline (publish, subscribe, filter)
+- ✅ `config://` - Local JSON configuration store (get, set, ls, watch; no delete verb)
+- ✅ `mq://` - Local, single-host file-based FIFO queue (create, put, get, peek, len, purge)
+- ✅ `log://` - Tail log files or a systemd service journal
+- ✅ `event://` - Local event topics (emit, subscribe, list-topics, hooks)
 
 ### System & Software ✅
-- ✅ `system://` - System information (CPU, memory, disk, network, uptime)
-- ✅ `pkg://` - Package manager (apt, yum, dnf, pacman, apk)
-- ✅ `git://` - Git operations (clone, pull, commit, push, status)
+- ✅ `system://` - System information (info, uptime, load, memory, cpu, disk, env.list)
+- ✅ `pkg://` - Package manager (apt, dnf, yum, pacman, apk, brew): install, remove, update, upgrade, search, info, snapshot; `restore` is best effort and does not pin locked versions; `security_only` works only for dnf/yum `update` and dnf `upgrade` and is refused elsewhere
+- ✅ `git://` - Git through libgit2 (clone, pull, push, commit, status, diff, branch, tag, merge, rebase, sync); `pull` and `sync` fast-forward only
 
-**Total: 28 handles production-ready** (25 core + 3 automation utilities)
+**Total: 28 handles** (25 core + 3 automation utilities), beta quality. See [docs/known_issues.md](docs/known_issues.md) for open issues.
 
 ---
 
 ## Why resh?
 
 ### For DevOps Teams
-- Faster, more reliable automation
-- Single tool replaces Ansible + Terraform + scripts
-- Predictable outputs eliminate debugging nightmares
+- One command form for many tasks that otherwise need separate tools and scripts
+- Named JSON fields instead of text parsing
 
 ### For SRE Teams
-- Better observability with structured data
-- Reliable fleet operations via SSH
-- Self-healing infrastructure capabilities
+- Structured data for observability and health checks
+- Remote commands over SSH (`ssh://host.exec`)
 
 ### For AI/ML Engineers
-- AI-native design from the ground up
-- Type-safe operations for autonomous agents
-- Foundation for self-managing infrastructure
+- Designed with AI agents as consumers from the start
+- Documented output fields and a consistent exit-code contract
 
 ---
 
@@ -231,41 +232,41 @@ resh template://config.yml.render context_file=vars.json
 |-----------|--------|--------|
 | v0.7 Alpha (25 handles) | November 2025 | ✅ **Completed** |
 | v0.8 Alpha (27 handles) | December 2025 | ✅ **Completed** |
-| v1.0 Beta (28 handles) | January 2026 | ✅ **Released** |
-| v1.1 (30 handles) | March 2026 | ⏱️ In Progress |
-| v1.0 Stable | Q2 2026 | ⏱️ Planned |
+| v1.0 Beta (28 handles) | January 2026 | ✅ **Released** (v1.0.0-beta) |
+| v1.0.2-beta (28 handles) | - | Current beta |
+| v1.1 (30 handles) | Not yet scheduled | ⏱️ Planned |
+| v1.0 Stable | Not yet scheduled | ⏱️ Planned |
 
-See [ROADMAP.md](ROADMAP.md) for detailed timeline.
+Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md).
 
 ---
 
 ## Current Status
 
-**What's working in v1.0-beta:**
-- ✅ 28 handles implemented and functional
-- ✅ Complete automation utilities (backup, plugin, template)
+**What's working in v1.0.2-beta:**
+- ✅ 28 handles registered, with per-handle and per-verb `--help`
+- ✅ Automation utilities (backup, plugin, template)
 - ✅ URI parser and resource dispatcher
-- ✅ JSON, table, and log output formatters
-- ✅ Basic CLI with argument parsing
-- ✅ SSH remote execution
-- ✅ Database operations (PostgreSQL, MySQL, SQLite)
-- ✅ Service management (systemd + OpenRC)
-- ✅ Template rendering with Tera engine
-- ✅ Full plugin system with registry support
-- ✅ Comprehensive backup lifecycle management
-- ✅ Complete documentation for all handles
-- ✅ Organized documentation structure by category
+- ✅ JSON output (`--json-pretty` to indent); some verbs also offer text output
+- ✅ SSH remote execution through the system `ssh` client
+- ✅ Database operations (PostgreSQL, MySQL/MariaDB, SQLite)
+- ✅ Service management (systemd and OpenRC)
+- ✅ Template rendering with the Tera engine
+- ✅ Plugin installs from HTTPS registries with SHA-256 verification
+- ✅ Backup create/list/restore/verify/prune through restic, borg, rsync or tar
+- ✅ Documentation for all handles, organized by category
 
 **What's next:**
-- ⏱️ webhook:// and lock:// handles (v1.1 - March 2026)
+- ⏱️ webhook:// and lock:// handles (planned for v1.1)
 - ⏱️ Enhanced integration test suite (v1.1)
 - ⏱️ Performance optimization (v1.1)
 - ⏱️ Binary releases for major distributions (v1.0 stable)
 - ⏱️ Production hardening and polish (v1.0 stable)
 
 **Beta limitations:**
-- ✅ Documentation complete for all 28 handles
-- ⚠️ Test coverage ~80% (expanding to 95%+ in v1.0 stable)
+- ⚠️ Some verbs are stubs or simulated (for example `ssh tunnel`, `dns zone.update`, `secret rotate`); each handle page says so
+- ⚠️ The test suite still has known failures; see [docs/known_issues.md](docs/known_issues.md)
+- ⚠️ Fixes involving root, real devices or remote servers were tested with unit tests and dry runs, not against live systems
 - ⚠️ Performance not yet optimized
 - ⚠️ Error messages need improvement
 - ⚠️ Some edge cases not fully handled
@@ -281,9 +282,11 @@ See [ROADMAP.md](ROADMAP.md) for detailed timeline.
 
 ### Prerequisites
 
-- **Rust 1.70 or later** - Install from [rustup.rs](https://rustup.rs)
+- **Rust 1.88 or later** - Install from [rustup.rs](https://rustup.rs)
 - **Git** - For cloning the repository
-- **Linux/Unix** - Currently Linux-focused (Ubuntu, Debian, RHEL, Arch, Alpine tested)
+- **Linux x86_64** - The only supported platform. macOS and Windows are not supported.
+
+What has been verified: resh builds and its tests run on Gentoo Linux x86_64 (an OpenRC host). The `pkg://` handle was exercised against apt (Debian bookworm), dnf (Fedora 42), yum (Amazon Linux 2), pacman (Arch) and apk (Alpine 3.20) in unprivileged sandboxes. brew and systemd hosts have not been exercised.
 
 ### Building from Source
 
@@ -295,8 +298,8 @@ cd resh
 # Checkout the v1.0.2-beta release
 git checkout v1.0.2-beta
 
-# Build in release mode
-cargo build --release
+# Build in release mode, using the dependency versions in Cargo.lock
+cargo build --release --locked
 
 # Binary will be at: ./target/release/resh
 ./target/release/resh --version
@@ -306,7 +309,7 @@ cargo build --release
 
 ```bash
 # Install to /usr/local/bin (requires sudo)
-cargo build --release
+cargo build --release --locked
 sudo cp target/release/resh /usr/local/bin/
 sudo chmod +x /usr/local/bin/resh
 
@@ -320,18 +323,11 @@ resh --version
 # Build for development (faster compile, slower runtime)
 cargo build
 
-# Run directly
-cargo run -- svc://nginx status --format json
+# Run directly (read-only example)
+cargo run -- svc://sshd.status
 
 # Run tests
 cargo test
-```
-
-### Using the Installation Script
-
-```bash
-# Quick install (downloads and builds latest release)
-curl -fsSL https://get.reshshell.dev | sh
 ```
 
 ### Binary Releases
@@ -341,13 +337,14 @@ curl -fsSL https://get.reshshell.dev | sh
 - RHEL/Fedora/CentOS (.rpm)
 - Arch Linux (AUR)
 - Generic Linux (tar.gz)
-- macOS (Homebrew - post v1.0)
+
+These are plans; no binary packages are published yet.
 
 ---
 
 ## Contributing
 
-**resh v1.0 beta is now available for testing!** We welcome:
+**resh v1.0.2-beta is available for testing.** We welcome:
 
 ### How You Can Help Now
 
@@ -380,7 +377,7 @@ curl -fsSL https://get.reshshell.dev | sh
 
 ### Code Contributions
 
-**Not accepting pull requests yet** - We'll open contributions with v1.0 stable (Q2 2026).
+**Not accepting pull requests yet** - We plan to open contributions with v1.0 stable.
 
 Formal contribution guidelines coming with v1.0 stable.
 
@@ -397,7 +394,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
 ## Philosophy
 
 **Structured Over Unstructured**  
-Every operation returns typed, predictable data. No parsing. No surprises.
+Operations return named fields (mostly JSON) instead of free text.
 
 **Simple Over Complex**  
 URI-based addressing works like the web. If you understand URLs, you understand resh.
@@ -408,8 +405,8 @@ Build complex workflows from simple, reliable primitives.
 **AI-Native Over AI-Compatible**  
 Designed for autonomous agents from the ground up, not bolted on later.
 
-**Fast Over Slow**  
-Single binary, zero dependencies, native performance.
+**Native Over Interpreted**  
+A single Rust binary. Many handles drive existing system tools (systemctl, rc-service, package managers, restic, ssh, and so on), which must be installed for those handles to work.
 
 ---
 
@@ -441,22 +438,22 @@ Built with frustration from years of fragile automation tools and excitement abo
 ## FAQ
 
 **Q: Can I use resh now?**  
-A: Yes! v1.0-beta is available for testing. All 28 handles are functional and stable enough for experimentation and feedback.
+A: Yes. v1.0.2-beta is available for testing and feedback. Some verbs are stubs or have known limitations; check the handle's page and [docs/known_issues.md](docs/known_issues.md).
 
 **Q: Is v1.0-beta production-ready?**  
-A: Not yet. This is a beta release with 28 stable handles. We recommend testing in non-production environments. Full production release (v1.0 stable) planned for Q2 2026.
+A: No. This is a beta release with 28 handles. Test it in non-production environments. A stable release (v1.0 stable) is planned but not yet scheduled.
 
 **Q: What's missing before v1.0 stable?**  
-A: 2 additional handles (webhook://, lock://), performance optimization, comprehensive testing, and production hardening. Target: Q2 2026.
+A: 2 additional handles (webhook://, lock://), the open items in [docs/known_issues.md](docs/known_issues.md), performance optimization, broader testing, and hardening.
 
 **Q: Can I contribute code?**  
-A: Not yet. We'll open for code contributions with v1.0 stable (Q2 2026). For now, please test, report bugs, and provide feedback.
+A: Not yet. We plan to open for code contributions with v1.0 stable. For now, please test, report bugs, and provide feedback.
 
 **Q: What about Windows/macOS?**  
-A: Initial focus is Linux. macOS support likely post-v1.0. Windows support is being evaluated.
+A: Not supported. resh is Linux-only: the code uses Unix-only system calls, and nothing has been built or tested on macOS or Windows.
 
 **Q: How is this different from Ansible?**  
-A: Ansible uses YAML playbooks with unstructured output designed for humans. resh uses URIs with structured output (JSON/table/log) designed for both humans and AI agents. Ansible is for configuration management. resh is for real-time operations and AI-native automation.
+A: Ansible uses YAML playbooks with output designed for humans. resh uses URIs with structured output (mostly JSON) designed for both humans and AI agents. Ansible is for configuration management. resh is for real-time operations and AI-native automation.
 
 **Q: How is this different from Terraform?**  
 A: Terraform is for infrastructure-as-code with state management. resh is for real-time operations and automation without state files. They solve different problems and can be complementary.
@@ -471,10 +468,10 @@ A: [GitHub Issues](https://github.com/millertechnologygroup/resh/issues) - Pleas
 A: Yes, it's Apache 2.0 licensed. However, being beta, we recommend testing in non-production environments first.
 
 **Q: What's the performance like?**  
-A: Functional but not yet optimized. Performance improvements coming in v1.1. Current focus is correctness and features.
+A: Functional but not yet optimized. Current focus is correctness.
 
 ---
 
-**v1.0 Beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
+**v1.0.2-beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
 
 [Download v1.0.2-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.2-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)

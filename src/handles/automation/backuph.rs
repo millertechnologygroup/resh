@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -527,6 +526,49 @@ pub struct ScheduleConfig {
     pub enabled: bool,
     pub runner: String,
     pub definition_path: String,
+}
+
+/// Waits for `child` to exit, collecting its stdout and stderr, for at most
+/// `timeout`. Returns `Ok(None)` after killing and reaping the child when the
+/// deadline passes. Output pipes are drained on separate threads so a
+/// chatty child cannot block on a full pipe. Also used by the firewall
+/// handle for its command timeouts.
+pub(crate) fn wait_with_deadline(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<Option<std::process::Output>> {
+    use std::io::Read;
+
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().context("Failed to wait for backend process")? {
+            return Ok(Some(std::process::Output {
+                status,
+                stdout: stdout.join().unwrap_or_default(),
+                stderr: stderr.join().unwrap_or_default(),
+            }));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait(); // reap; no zombie is left behind
+            // The readers finish when the pipes close; they are not joined
+            // because a grandchild may still hold the pipes open.
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10).min(deadline - Instant::now()));
+    }
 }
 
 /// Constants for default timeouts per specification (in milliseconds)
@@ -1228,15 +1270,23 @@ impl Reply {
 impl BackupHandle {
     /// Create a new BackupHandle from a URL per specification
     pub fn from_url(url: Url) -> Result<Self> {
-        let repo = if url.path().is_empty() || url.path() == "/" {
-            "default".to_string()
-        } else {
-            // Remove leading slash and decode percent-encoding
-            let path = url.path().strip_prefix('/').unwrap_or(url.path());
-            percent_decode_str(path)
+        // The documented form `backup://<profile>` puts the profile in the
+        // URL host; `backup:///<profile>` puts it in the path. Both name the
+        // same profile, and `backup://<profile>/<sub>` joins them.
+        let decode = |s: &str| -> Result<String> {
+            Ok(percent_decode_str(s)
                 .decode_utf8()
                 .context("Invalid UTF-8 in repository path")?
-                .into_owned()
+                .into_owned())
+        };
+        let host = url.host_str().filter(|h| !h.is_empty()).map(decode).transpose()?;
+        let path = url.path().strip_prefix('/').unwrap_or(url.path());
+        let path = if path.is_empty() { None } else { Some(decode(path)?) };
+        let repo = match (host, path) {
+            (Some(h), Some(p)) => format!("{}/{}", h, p),
+            (Some(h), None) => h,
+            (None, Some(p)) => p,
+            (None, None) => "default".to_string(),
         };
 
         Ok(BackupHandle {
@@ -1343,36 +1393,9 @@ impl BackupHandle {
         }
 
         let child = cmd.spawn().context("Failed to spawn backend process")?;
-
-        // Handle timeout
-        let timeout_duration = Duration::from_millis(timeout_ms);
-        let child_arc = Arc::new(std::sync::Mutex::new(Some(child)));
-        let child_for_thread = child_arc.clone();
-
-        let _timeout_result = std::thread::spawn(move || {
-            std::thread::sleep(timeout_duration);
-            if let Ok(mut child_opt) = child_for_thread.lock() {
-                if let Some(mut child) = child_opt.take() {
-                    let _ = child.kill();
-                }
-            }
-        });
-
-        // Wait for completion or timeout
-        let output = if let Ok(mut child_opt) = child_arc.lock() {
-            if let Some(child) = child_opt.take() {
-                child.wait_with_output().context("Failed to wait for backend process")?
-            } else {
-                bail!("Backend command timed out after {}ms", timeout_ms);
-            }
-        } else {
-            bail!("Failed to acquire child process lock");
-        };
-
+        let output = wait_with_deadline(child, Duration::from_millis(timeout_ms))?
+            .ok_or_else(|| anyhow::anyhow!("Backend command timed out after {}ms", timeout_ms))?;
         let duration = start.elapsed();
-        if duration >= timeout_duration {
-            bail!("Backend command timed out after {}ms", timeout_ms);
-        }
 
         Ok(BackendResult {
             exit_code: output.status.code().unwrap_or(-1),
@@ -1519,7 +1542,7 @@ impl BackupHandle {
     fn verb_create(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let src = args.get("src").ok_or_else(|| anyhow::anyhow!("Missing required argument: src"))?;
         let timeout_ms = arg_timeout(args, DEFAULT_CREATE_TIMEOUT_MS);
-        let r = Reply::new("create", args, arg_flag(args, "dry_run", false));
+        let r = Reply::new("create", args, crate::core::lenient::dry_run(args)?);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
 
         let sources = split_list(src, ';');
@@ -1683,6 +1706,11 @@ impl BackupHandle {
         let snapshot_id = args.get("snapshot_id").ok_or_else(|| anyhow::anyhow!("Missing required argument: snapshot_id"))?;
         let dest = args.get("dest").ok_or_else(|| anyhow::anyhow!("Missing required argument: dest"))?;
         let timeout_ms = arg_timeout(args, DEFAULT_RESTORE_TIMEOUT_MS);
+        // restore has no dry-run mode. A dry-run request must never become a
+        // real restore over `dest`, so it is refused before anything runs.
+        if crate::core::lenient::dry_run(args)? {
+            anyhow::bail!("backup restore does not support dry_run; nothing was restored");
+        }
         let r = Reply::new("restore", args, false);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
 
@@ -1847,7 +1875,7 @@ impl BackupHandle {
     /// Prune old snapshots per specification
     fn verb_prune(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let timeout_ms = arg_timeout(args, DEFAULT_PRUNE_TIMEOUT_MS);
-        let r = Reply::new("prune", args, arg_flag(args, "dry_run", false));
+        let r = Reply::new("prune", args, crate::core::lenient::dry_run(args)?);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
         let repo_url = args.get("repo_url");
         let capabilities = self.get_capabilities(&backend);
@@ -2419,5 +2447,171 @@ mod tests {
         assert!(out.starts_with("Handle: backup\nVerb: prune"), "{out}");
         let (_, out) = call(&h, "--help=create", &Args::new());
         assert!(out.contains("Verb: create"), "{out}");
+    }
+}
+
+// H7: each documented `backup://<profile>` gets its own profile.
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    fn repo(url: &str) -> String {
+        BackupHandle::from_url(Url::parse(url).unwrap()).unwrap().repo
+    }
+
+    #[test]
+    fn profile_comes_from_the_url_host() {
+        assert_eq!(repo("backup://db"), "db");
+        assert_eq!(repo("backup://web"), "web");
+        assert_ne!(
+            BackupHandle::from_url(Url::parse("backup://db").unwrap()).unwrap().default_tar_repo(),
+            BackupHandle::from_url(Url::parse("backup://web").unwrap()).unwrap().default_tar_repo(),
+            "profiles must not share a repository"
+        );
+        // Unchanged forms.
+        assert_eq!(repo("backup://"), "default");
+        assert_eq!(repo("backup:///legacy"), "legacy");
+        assert_eq!(repo("backup://db/nightly"), "db/nightly");
+        assert_eq!(repo("backup://my%20db"), "my db");
+    }
+
+    #[test]
+    fn profile_survives_the_cli_parser() {
+        let parsed = crate::core::parse::parse_stage("backup://db.list").unwrap();
+        assert_eq!(repo(&parsed.target), "db");
+    }
+}
+
+// Stage 4: a dry-run request never performs a real backup, prune or
+// restore. Malformed dry_run values are errors (shared lenient parser), and
+// restore, which has no dry-run mode, refuses dry_run=true.
+#[cfg(test)]
+mod dry_run_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn call(verb: &str, kv: &[(&str, &str)]) -> Result<Status> {
+        let h = BackupHandle::from_url(Url::parse("backup://t").unwrap()).unwrap();
+        let args: Args = kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+        h.call(verb, &args, &mut io)
+    }
+
+    fn entries(p: &std::path::Path) -> usize {
+        std::fs::read_dir(p).map(|d| d.count()).unwrap_or(0)
+    }
+
+    #[test]
+    fn malformed_dry_run_is_refused_and_nothing_runs() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("a.txt"), "data").unwrap();
+        let repo = tmp.path().join("repo");
+        let (s, r) = (src.to_str().unwrap(), repo.to_str().unwrap());
+        for bad in ["maybe", "2", "", "y", "treu"] {
+            let base = [("backend", "tar"), ("repo_url", r), ("dry_run", bad)];
+            let mut create = base.to_vec();
+            create.push(("src", s));
+            assert!(call("create", &create).is_err(), "create dry_run={bad:?}");
+            assert!(call("prune", &base).is_err(), "prune dry_run={bad:?}");
+            assert_eq!(entries(&repo), 0, "dry_run={bad:?} wrote a backup");
+        }
+        // Real spellings still work: a dry run writes nothing, a real run does.
+        for yes in ["true", "1", "yes", "ON"] {
+            let st = call("create", &[("backend", "tar"), ("repo_url", r), ("src", s), ("dry_run", yes)]).unwrap();
+            assert!(st.ok, "dry_run={yes}");
+            assert_eq!(entries(&repo), 0, "dry_run={yes} wrote a backup");
+        }
+        let st = call("create", &[("backend", "tar"), ("repo_url", r), ("src", s), ("dry_run", "off")]).unwrap();
+        assert!(st.ok);
+        assert_eq!(entries(&repo), 1);
+    }
+
+    #[test]
+    fn restore_refuses_dry_run_and_leaves_dest_untouched() {
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("keep.txt"), "original").unwrap();
+        let d = dest.to_str().unwrap();
+        let repo = tmp.path().join("repo");
+        let r = repo.to_str().unwrap();
+        for v in ["true", "1", "yes", "on", "maybe"] {
+            let res = call("restore", &[("backend", "tar"), ("repo_url", r), ("snapshot_id", "x"), ("dest", d), ("dry_run", v)]);
+            let err = res.expect_err(&format!("restore dry_run={v} must fail")).to_string();
+            if v != "maybe" {
+                assert!(err.contains("does not support dry_run"), "{err}");
+            }
+        }
+        assert_eq!(entries(&dest), 1);
+        assert_eq!(std::fs::read_to_string(dest.join("keep.txt")).unwrap(), "original");
+    }
+}
+
+// FUNC-08: backup timeouts are enforced: the backend is killed at the
+// deadline and the operation fails with a timeout error.
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    fn piped(program: &str, args: &[&str]) -> std::process::Child {
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn deadline_kills_and_reaps_a_hung_backend() {
+        let child = piped("sleep", &["5"]);
+        let pid = child.id() as libc::pid_t;
+        let start = Instant::now();
+        let out = wait_with_deadline(child, Duration::from_millis(200)).unwrap();
+        assert!(out.is_none(), "timed out");
+        assert!(start.elapsed() < Duration::from_secs(2), "returned at the deadline");
+        // Killed and reaped: the pid no longer exists.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    }
+
+    #[test]
+    fn fast_commands_are_unaffected() {
+        let child = piped("sh", &["-c", "echo out; echo err >&2; exit 3"]);
+        let out = wait_with_deadline(child, Duration::from_secs(10)).unwrap().unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(out.stdout, b"out\n");
+        assert_eq!(out.stderr, b"err\n");
+    }
+
+    #[test]
+    fn large_output_does_not_deadlock() {
+        let child = piped("head", &["-c", "300000", "/dev/zero"]);
+        let out = wait_with_deadline(child, Duration::from_secs(10)).unwrap().unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout.len(), 300000);
+    }
+
+    #[test]
+    fn backend_command_timeout_is_an_error() {
+        let h = BackupHandle { repo: "t".into(), target: "backup://t".into() };
+        let spec = CmdSpec {
+            program: "sleep".into(),
+            args: vec!["5".into()],
+            env: HashMap::new(),
+            env_remove: Vec::new(),
+            cwd: None,
+        };
+        let start = Instant::now();
+        let err = h.execute_backend_command(&spec, 150).unwrap_err();
+        assert!(err.to_string().contains("timed out after 150ms"), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(2));
+
+        let quick = CmdSpec { program: "true".into(), args: vec![], ..spec };
+        let res = h.execute_backend_command(&quick, 5000).unwrap();
+        assert_eq!(res.exit_code, 0);
     }
 }

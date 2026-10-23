@@ -4217,9 +4217,7 @@ impl DnsZoneUpdateOptions {
             bail!("Total changes ({}) exceeds max_changes ({})", total_changes, max_changes);
         }
 
-        let dry_run = args.get("dry_run")
-            .and_then(|s| s.parse::<bool>().ok())
-            .unwrap_or(false);
+        let dry_run = crate::core::lenient::dry_run(args)?;
 
         let include_raw = args.get("include_raw")
             .and_then(|s| s.parse::<bool>().ok())

@@ -3563,6 +3563,33 @@ fn bind_param_sqlite<'q>(query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlit
     }
 }
 
+/// Decode a PostgreSQL integer column at its real width. sqlx decodes
+/// strictly, so reading an INT4 or INT2 column as `i64` fails.
+fn pg_get_int<I: sqlx::ColumnIndex<sqlx::postgres::PgRow>>(
+    row: &sqlx::postgres::PgRow,
+    idx: I,
+    type_name: &str,
+) -> Result<Option<i64>, sqlx::Error> {
+    match type_name {
+        "INT2" => row.try_get::<Option<i16>, _>(idx).map(|v| v.map(i64::from)),
+        "INT4" => row.try_get::<Option<i32>, _>(idx).map(|v| v.map(i64::from)),
+        _ => row.try_get::<Option<i64>, _>(idx),
+    }
+}
+
+/// Decode a PostgreSQL float column at its real width (FLOAT4 is `f32`).
+/// NUMERIC is not decodable without an extra sqlx feature and still fails.
+fn pg_get_float<I: sqlx::ColumnIndex<sqlx::postgres::PgRow>>(
+    row: &sqlx::postgres::PgRow,
+    idx: I,
+    type_name: &str,
+) -> Result<Option<f64>, sqlx::Error> {
+    match type_name {
+        "FLOAT4" => row.try_get::<Option<f32>, _>(idx).map(|v| v.map(f64::from)),
+        _ => row.try_get::<Option<f64>, _>(idx),
+    }
+}
+
 /// Helper function to convert database row to JSON
 fn row_to_json_postgres(row: &sqlx::postgres::PgRow) -> Result<Value, DbError> {
     let mut json_row = serde_json::Map::new();
@@ -3578,12 +3605,12 @@ fn row_to_json_postgres(row: &sqlx::postgres::PgRow) -> Result<Value, DbError> {
                 val.map(Value::Bool).unwrap_or(Value::Null)
             }
             "INT2" | "INT4" | "INT8" => {
-                let val: Option<i64> = row.try_get(column_name)
+                let val = pg_get_int(row, column_name, type_info.name())
                     .map_err(|e| DbError::QueryFailed { message: format!("Failed to get int column {}: {}", column_name, e) })?;
                 val.map(|v| json!(v)).unwrap_or(Value::Null)
             }
             "FLOAT4" | "FLOAT8" | "NUMERIC" => {
-                let val: Option<f64> = row.try_get(column_name)
+                let val = pg_get_float(row, column_name, type_info.name())
                     .map_err(|e| DbError::QueryFailed { message: format!("Failed to get float column {}: {}", column_name, e) })?;
                 val.map(|v| json!(v)).unwrap_or(Value::Null)
             }
@@ -3764,14 +3791,14 @@ fn convert_postgres_value(row: &sqlx::postgres::PgRow, col_index: usize) -> Valu
                 .unwrap_or(Value::Null)
         }
         "INT2" | "INT4" | "INT8" => {
-            row.try_get::<Option<i64>, _>(col_index)
+            pg_get_int(row, col_index, type_info.name())
                 .ok()
                 .flatten()
                 .map(|v| json!(v))
                 .unwrap_or(Value::Null)
         }
         "FLOAT4" | "FLOAT8" | "NUMERIC" => {
-            row.try_get::<Option<f64>, _>(col_index)
+            pg_get_float(row, col_index, type_info.name())
                 .ok()
                 .flatten()
                 .map(|v| json!(v))
@@ -4212,7 +4239,9 @@ async fn describe_table_mysql(pool: &Pool<MySql>, config: &TablesConfig, table_n
     let mut columns = Vec::new();
     for row in rows {
         let column_name: String = row.get(3);
-        let ordinal_position: i32 = row.get(4);
+        // information_schema.columns.ordinal_position is unsigned on MySQL
+        // and MariaDB; sqlx refuses (and `get` panics on) a signed read.
+        let ordinal_position: u32 = row.get(4);
         let data_type: String = row.get(5);
         let is_nullable: String = row.get(6);
         let default: Option<String> = row.get(7);
@@ -4813,7 +4842,7 @@ impl Handle for DbHandle {
         match result {
             Ok(result) => {
                 write!(io.stdout, "{}", result)?;
-                Ok(Status::ok())
+                Ok(value_status(&result))
             }
             Err(e) => {
                 // Check if it's a DbError that can be converted to JSON
@@ -4833,6 +4862,20 @@ impl Handle for DbHandle {
             }
         }
     }
+}
+
+/// The exit status for a verb result: results that report
+/// `"status": "error"` (for example a ping whose every attempt failed) are
+/// failures, with the error message as the reason.
+fn value_status(result: &Value) -> Status {
+    if result.get("status").and_then(Value::as_str) != Some("error") {
+        return Status::ok();
+    }
+    let message = result
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("operation failed");
+    Status::err(1, message.to_string())
 }
 
 /// Process-wide runtime for db operations. sqlx pools are tied to the
@@ -5841,6 +5884,7 @@ mod tests {
     // Optional Postgres/MySQL integration tests (environment-driven)
 
     #[tokio::test]
+    #[ignore = "needs a disposable PostgreSQL server (runs DDL/DML): set TEST_POSTGRES_DSN and run with --ignored"]
     async fn test_postgres_integration() {
         if let Ok(dsn) = std::env::var("TEST_POSTGRES_DSN") {
             let url = Url::parse("db://postgres/test_integration").unwrap();
@@ -5865,6 +5909,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "needs a disposable MySQL server (runs DDL/DML): set TEST_MYSQL_DSN and run with --ignored"]
     async fn test_mysql_integration() {
         if let Ok(dsn) = std::env::var("TEST_MYSQL_DSN") {
             let url = Url::parse("db://mysql/test_integration").unwrap();
@@ -5891,6 +5936,7 @@ mod tests {
     // Optional Postgres Exec Integration Tests
 
     #[tokio::test]
+    #[ignore = "needs a disposable PostgreSQL server (runs DDL/DML): set TEST_POSTGRES_DSN and run with --ignored"]
     async fn test_postgres_exec_integration() {
         if let Ok(dsn) = std::env::var("TEST_POSTGRES_DSN") {
             let url = Url::parse("db://postgres/test_exec_integration").unwrap();
@@ -5903,9 +5949,12 @@ mod tests {
             let connect_result = handle.connect(connect_args).await;
             assert!(connect_result.is_ok());
             
-            // Create temp table
+            // A regular table: each exec may use a different pooled connection,
+            // so a session-scoped TEMP table would not be visible to later calls.
+            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS exec_test_pg" })).await.unwrap();
+            // Create table
             let create_args = json!({
-                "sql": "CREATE TEMP TABLE exec_test_pg (id SERIAL PRIMARY KEY, name TEXT, active BOOLEAN)"
+                "sql": "CREATE TABLE exec_test_pg (id SERIAL PRIMARY KEY, name TEXT, active BOOLEAN)"
             });
             let create_result = handle.exec(create_args).await.unwrap();
             assert_eq!(create_result["rows_affected"], 0);
@@ -5948,6 +5997,7 @@ mod tests {
     // Optional MySQL Exec Integration Tests
 
     #[tokio::test]
+    #[ignore = "needs a disposable MySQL server (runs DDL/DML): set TEST_MYSQL_DSN and run with --ignored"]
     async fn test_mysql_exec_integration() {
         if let Ok(dsn) = std::env::var("TEST_MYSQL_DSN") {
             let url = Url::parse("db://mysql/test_exec_integration").unwrap();
@@ -5960,9 +6010,12 @@ mod tests {
             let connect_result = handle.connect(connect_args).await;
             assert!(connect_result.is_ok());
             
-            // Create temp table
+            // A regular table: each exec may use a different pooled connection,
+            // so a session-scoped TEMP table would not be visible to later calls.
+            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS exec_test_mysql" })).await.unwrap();
+            // Create table
             let create_args = json!({
-                "sql": "CREATE TEMPORARY TABLE exec_test_mysql (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), active BOOLEAN)"
+                "sql": "CREATE TABLE exec_test_mysql (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100), active BOOLEAN)"
             });
             let create_result = handle.exec(create_args).await.unwrap();
             assert_eq!(create_result["rows_affected"], 0);
@@ -6304,6 +6357,7 @@ mod tests {
     // Optional Postgres/MySQL tables integration tests
 
     #[tokio::test]
+    #[ignore = "needs a disposable PostgreSQL server (runs DDL/DML): set TEST_POSTGRES_DSN and run with --ignored"]
     async fn test_postgres_tables_integration() {
         if let Ok(dsn) = std::env::var("TEST_POSTGRES_DSN") {
             let url = Url::parse("db://postgres/test_tables_integration").unwrap();
@@ -6315,9 +6369,12 @@ mod tests {
             // Test connection
             handle.connect(connect_args).await.unwrap();
             
-            // Create temp table
+            // A regular table: each exec may use a different pooled connection,
+            // so a session-scoped TEMP table would not be visible to later calls.
+            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS tables_test_pg" })).await.unwrap();
+            // Create table
             handle.exec(json!({
-                "sql": "CREATE TEMP TABLE tables_test_pg (id SERIAL PRIMARY KEY, name TEXT NOT NULL)"
+                "sql": "CREATE TABLE tables_test_pg (id SERIAL PRIMARY KEY, name TEXT NOT NULL)"
             })).await.unwrap();
             
             // List tables - should include our temp table in many cases
@@ -6339,6 +6396,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "needs a disposable MySQL server (runs DDL/DML): set TEST_MYSQL_DSN and run with --ignored"]
     async fn test_mysql_tables_integration() {
         if let Ok(dsn) = std::env::var("TEST_MYSQL_DSN") {
             let url = Url::parse("db://mysql/test_tables_integration").unwrap();
@@ -6350,9 +6408,12 @@ mod tests {
             // Test connection
             handle.connect(connect_args).await.unwrap();
             
-            // Create temp table
+            // A regular table: each exec may use a different pooled connection,
+            // so a session-scoped TEMP table would not be visible to later calls.
+            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS tables_test_mysql" })).await.unwrap();
+            // Create table
             handle.exec(json!({
-                "sql": "CREATE TEMPORARY TABLE tables_test_mysql (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL)"
+                "sql": "CREATE TABLE tables_test_mysql (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL)"
             })).await.unwrap();
             
             // List tables
@@ -6650,6 +6711,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "needs a disposable PostgreSQL server (runs DDL/DML): set TEST_POSTGRES_DSN and run with --ignored"]
     async fn test_postgres_schema_integration() {
         if let Ok(dsn) = std::env::var("TEST_POSTGRES_DSN") {
             let url = Url::parse("db://postgres/test_schema_integration").unwrap();
@@ -6661,9 +6723,12 @@ mod tests {
             // Test connection
             handle.connect(connect_args).await.unwrap();
             
-            // Create temp table with constraints
+            // A regular table: each exec may use a different pooled connection,
+            // so a session-scoped TEMP table would not be visible to later calls.
+            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS schema_test_pg" })).await.unwrap();
+            // Create table with constraints
             handle.exec(json!({
-                "sql": "CREATE TEMP TABLE schema_test_pg (
+                "sql": "CREATE TABLE schema_test_pg (
                     id SERIAL PRIMARY KEY,
                     email VARCHAR(100) UNIQUE NOT NULL,
                     name TEXT,
@@ -6706,6 +6771,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "needs a disposable MySQL server (runs DDL/DML): set TEST_MYSQL_DSN and run with --ignored"]
     async fn test_mysql_schema_integration() {
         if let Ok(dsn) = std::env::var("TEST_MYSQL_DSN") {
             let url = Url::parse("db://mysql/test_schema_integration").unwrap();
@@ -6717,9 +6783,12 @@ mod tests {
             // Test connection
             handle.connect(connect_args).await.unwrap();
             
-            // Create temp table
+            // A regular table: each exec may use a different pooled connection,
+            // so a session-scoped TEMP table would not be visible to later calls.
+            handle.exec(json!({ "sql": "DROP TABLE IF EXISTS schema_test_mysql" })).await.unwrap();
+            // Create table
             handle.exec(json!({
-                "sql": "CREATE TEMPORARY TABLE schema_test_mysql (
+                "sql": "CREATE TABLE schema_test_mysql (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     email VARCHAR(100) UNIQUE NOT NULL,
                     name VARCHAR(50),
@@ -6757,6 +6826,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    // FUNC-02: a ping that failed every attempt is a failed command.
+    #[test]
+    fn failed_ping_result_is_a_failure_status() {
+        let failed = json!({"status": "error", "attempts": 3,
+            "error": {"code": "db.ping_failed", "message": "Ping failed after 3 attempts"}});
+        let st = value_status(&failed);
+        assert!(!st.ok);
+        assert_eq!(st.exit_code(), 1);
+        assert_eq!(st.reason.as_deref(), Some("Ping failed after 3 attempts"));
+        assert!(value_status(&json!({"status": "ok", "latency_ms": 1})).ok);
+        assert!(value_status(&json!({"rows": []})).ok);
     }
 
     #[test]

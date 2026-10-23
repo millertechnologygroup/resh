@@ -2,437 +2,237 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes system and application operations using a resource-oriented URI execution model.
+Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs.
 
-The `config://` handle provides persistent configuration management using hierarchical namespaces and JSON-based storage. Configuration data is stored as JSON files under:
+The `config://` handle stores JSON configuration values, one file per key, under the user's config directory:
 
-```
-~/.config/resh/config/
-```
-
-Traditional configuration management in shell environments often involves:
-
-* Environment variables without hierarchy
-* Flat configuration files
-* Ad hoc parsing logic
-* Non-atomic writes
-* Manual change tracking
-
-The `config://` handle addresses these limitations by:
-
-* Enforcing a hierarchical namespace/key structure
-* Supporting JSON-typed values
-* Providing atomic write operations
-* Enabling real-time change monitoring
-* Returning structured output for automation workflows
-
-All configuration operations follow the resh URI format:
-
-```
-config://namespace/key.verb(options)
+```text
+$XDG_CONFIG_HOME/resh/config/      (default ~/.config/resh/config/)
 ```
 
-If no namespace is specified, the `default` namespace is used.
+Values can be read (`get`), written (`set`), listed by prefix (`ls`) and watched for changes (`watch`). There is no delete verb; remove the key's file to delete it.
+
+All operations use this form:
+
+```text
+resh config://[<namespace>/]<key>.<verb> [key=value ...]
+```
+
+* `config://app/db/url` names namespace `app` and key `db/url`, stored as `app/db/url.json`.
+* A single segment such as `config://theme` uses the namespace `default`, stored as `default/theme.json`.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Design Notes
 
-The `config://` handle adheres to resh architectural principles.
-
-### Structured Interface Model
-
-All configuration operations use:
-
-```
-config://namespace/path/to/key.verb(options)
-```
-
-This provides consistent hierarchical organization and predictable command structure.
-
-### Safety-First Execution
-
-The handle supports:
-
-* Atomic file writes
-* Structured exit codes
-* JSON validation controls
-* Input sanitization
-* Namespace isolation
-
-These prevent partial writes and inconsistent configuration state.
-
-### Deterministic Behavior
-
-Each command:
-
-* Returns predictable JSON structures (where applicable)
-* Uses defined exit codes
-* Separates value retrieval from metadata operations
-* Ensures consistent storage location resolution
-
-### JSON-Based Structured Output
-
-Values are stored and retrieved as JSON, supporting:
-
-* Strings
-* Numbers
-* Booleans
-* Objects
-* Arrays
-* Null
-
-Structured storage enables automation systems to consume configuration deterministically.
-
-### AI-Readiness
-
-The predictable URI grammar and JSON-based storage allow automated configuration orchestration without ad hoc parsing.
+* `set` writes to a temporary file in the same directory, syncs it, and renames it into place, so a reader never sees a half-written value.
+* `get` prints the stored JSON text exactly as saved, with no envelope.
+* `set` prints nothing on success.
+* On failure resh prints `Error: <reason>` to stderr (for example `Error: not found`).
+* There is no dry-run mode.
 
 ---
 
 ## 3. Command Syntax and Execution Model
 
-### 3.1 URI Structure
+### 3.1 URL structure
 
-```
-config://namespace/key.verb(options)
-config://key.verb(options)              # Uses default namespace
-config://namespace/path/to/key.verb(options)
-```
+| Component   | Description                                                       |
+| ----------- | ----------------------------------------------------------------- |
+| `config`    | Handle scheme                                                     |
+| `namespace` | First path segment; `default` when the URL has only one segment   |
+| `key`       | The remaining segments, joined with `/`                           |
+| `verb`      | `get`, `set`, `ls`, `watch`                                       |
 
-#### Components
+### 3.2 Example commands
 
-| Component   | Description                 |
-| ----------- | --------------------------- |
-| `config`    | Handle identifier           |
-| `namespace` | Top-level grouping          |
-| `key`       | Configuration item          |
-| `verb`      | `get`, `set`, `ls`, `watch` |
-| `options`   | Named parameters            |
+Store a string:
 
----
-
-### Examples
-
-Set configuration value:
-
-```sh
-config://app/theme.set(value="dark")
+```bash
+resh config://app/theme.set value=dark
 ```
 
-Set JSON object explicitly:
+Store a JSON object:
 
-```sh
-config://app/settings.set(value={"timeout":30,"retries":3},raw=true)
+```bash
+resh config://app/settings.set 'value={"timeout":30,"retries":3}'
 ```
 
-Retrieve value:
+Read a value:
 
-```sh
-config://app/theme.get
+```bash
+resh config://app/theme.get
 ```
 
-List namespace contents:
+List a namespace recursively:
 
-```sh
-config://app.ls(recursive=true)
+```bash
+resh --json-pretty config://app.ls recursive=true
 ```
 
-Watch for changes:
+Watch the `db/` keys of the `app` namespace for ten seconds, printing current values first:
 
-```sh
-config://app.watch(prefix="db",initial=true)
+```bash
+resh config://app/db.watch prefix=db/ initial=true timeout_ms=10000
 ```
 
----
+### 3.3 Output
 
-### 3.2 Execution Semantics
+`get` prints the stored value:
 
-Operations return structured JSON or typed values depending on verb.
+```text
+"dark"
+```
 
-#### Example: Get JSON Value
+`ls` (shown with `--json-pretty`):
 
 ```json
 {
-  "theme": "dark",
-  "font_size": 14
-}
-```
-
-#### Example: List Output
-
-```json
-{
-  "prefix": "app",
-  "recursive": false,
   "entries": [
     {
-      "key": "theme",
+      "full_key": "app/db",
+      "has_value": true,
+      "key": "db",
+      "kind": "branch",
+      "meta": {}
+    },
+    {
       "full_key": "app/theme",
+      "has_value": true,
+      "key": "theme",
       "kind": "leaf",
-      "has_value": true
+      "meta": {
+        "size": 6,
+        "updated_at": "2026-10-16T09:12:44.512309817+00:00"
+      }
     }
-  ]
+  ],
+  "limit": null,
+  "offset": 0,
+  "pattern": null,
+  "prefix": "app",
+  "recursive": false
 }
 ```
 
-#### Example: Watch Event
+`watch` prints one JSON object per line:
 
 ```json
-{
-  "op": "set",
-  "scope": "app",
-  "key": "theme",
-  "value": "light",
-  "version": 2,
-  "ts": "2024-01-01T00:00:01Z",
-  "source": "config"
-}
+{"op":"set","scope":"app/db","key":"db/url","value":"postgres://db.example.com:5432/app","version":1,"ts":"2026-10-23T13:09:14.115023610+00:00","source":"config"}
 ```
 
-Automation systems must evaluate exit codes for control flow:
+### 3.4 Exit codes
 
-| Code | Meaning                           |
-| ---- | --------------------------------- |
-| 0    | Success                           |
-| 1    | Missing key or required argument  |
-| 2    | Invalid JSON or invalid parameter |
-| 3    | Filesystem I/O error              |
+These codes are set by the handle (verified in the source):
+
+| Code | Meaning                                                                      |
+| ---- | ---------------------------------------------------------------------------- |
+| 0    | Success                                                                      |
+| 1    | Key not found; empty key; `set` without `value`; `watch` with both `key` and `prefix` |
+| 2    | Stored file is not valid JSON; `set raw=true` with invalid JSON; invalid `limit`, `offset` or `pattern` for `ls`; `watch` cannot create its directory |
+| 3    | File I/O error while reading or renaming                                     |
+
+Other failures (for example a directory that cannot be created) exit 1.
 
 ---
 
-## 4. Functional Domain – Configuration Handle
+## 4. Verbs
+
+### 4.1 get
+
+Prints the value stored for the key. Fails with "not found" if the key has no file, and with "invalid json" if the file does not hold valid JSON.
+
+```bash
+resh config://app/db/url.get
+```
+
+### 4.2 set
+
+Stores `value=` for the key.
+
+* Without `raw`, the value is parsed as JSON when possible (so `value=30` stores the number 30 and `value=true` the boolean), and otherwise stored as a JSON string (`value=dark` stores `"dark"`).
+* With `raw=true`, the value must be valid JSON or the command fails with exit code 2.
+
+```bash
+resh config://app/timeout.set value=30
+resh config://app/flags.set 'value={"beta":true}' raw=true
+```
+
+To store text that looks like JSON as a string, quote it as JSON: `'value="30"'`.
+
+### 4.3 ls
+
+Lists the keys (`kind: "leaf"`) and sub-directories (`kind: "branch"`) under the URL's prefix, sorted by `full_key`. `config://.ls` lists the namespaces.
+
+| Argument    | Description                                  | Default |
+| ----------- | -------------------------------------------- | ------- |
+| `recursive` | `true` to walk all levels                    | `false` |
+| `pattern`   | Glob matched against key names               | none    |
+| `limit`     | Maximum entries returned                     | all     |
+| `offset`    | Entries to skip                              | 0       |
+
+```bash
+resh config://app.ls recursive=true 'pattern=*' limit=50
+```
+
+`recursive` is honoured only when it is exactly `true`.
+
+### 4.4 watch
+
+Prints one JSON line per change until `timeout_ms` passes or `max_events` lines have been printed. With neither set it runs until interrupted.
+
+| Argument     | Description                                                    | Default |
+| ------------ | -------------------------------------------------------------- | ------- |
+| `key`        | Report only this key                                           | all     |
+| `prefix`     | Report only keys starting with this text                       | all     |
+| `timeout_ms` | Stop after this many milliseconds (0 = no timeout)             | 0       |
+| `max_events` | Stop after this many lines (0 = no limit)                      | 0       |
+| `initial`    | `true` to print a `snapshot` line for each current value first | `false` |
+
+`key` and `prefix` cannot be used together. Each line has `op` (`snapshot`, `set` or `rm`), `scope`, `key`, `value` (absent for `rm`), `version` (a counter starting at 1 for this run), `ts` and `source: "config"`.
+
+What is watched depends on the URL:
+
+* A target with a namespace, such as `config://app/db`, watches the whole `app` namespace directory, and keys are reported relative to it (`db/url`). The rest of the URL path (`db`) does not filter anything; use `prefix=db/` or `key=db/url` to narrow the output.
+* A single-segment target, such as `config://app`, uses the `default` namespace and therefore watches the whole config directory; keys are reported with their namespace (`app/db/url`).
+
+```bash
+resh config://app.watch prefix=app/db timeout_ms=10000 max_events=5
+```
+
+A `timeout_ms` or `max_events` value that is not a number is replaced by 0 (no limit), with a note on stderr.
+
+### 4.5 timeout_ms
+
+Only `watch` reads `timeout_ms`, and it enforces it as a run time limit. `get`, `set` and `ls` ignore it.
 
 ---
 
-### 4.1 Hierarchical Storage
+## 5. Path Rules and Limitations
 
-Configuration items consist of:
-
-* **Namespace**
-* **Key**
-* **Value (JSON)**
-
-Example filesystem structure:
-
-```
-~/.config/resh/config/
-  app/
-    db/
-      url.json
-      timeout.json
-```
-
-Namespaces support nested paths:
-
-```
-config://app/db/url.get
-```
+* In the namespace, any character other than letters, digits, `.`, `_` and `-` is replaced with `_`. In the key, `/` is also kept.
+* **The config directory is not a strict boundary.** `..` is not rejected. A namespace of `..` resolves to the parent of the config directory, so `config://../x.set value=1` writes `$XDG_CONFIG_HOME/resh/x.json`, one level outside `resh/config`. `..` segments inside the key path are collapsed by URL parsing before resh sees them, so they cannot climb further. Do not build config URLs from untrusted input.
+* Files are created with the default umask, so values are usually readable by other users. Do not store secrets here; use the `secret` handle instead.
+* `get` and `watch` create the namespace directory if it is missing, even though they do not write values.
+* The watcher uses filesystem notifications and also re-reads the directory every 500 ms when no timeout is set. Files that do not hold valid JSON are skipped.
 
 ---
 
-### 4.2 get – Retrieve Configuration
+## 6. Platform Support
 
-Retrieves the stored JSON value.
-
-Example:
-
-```sh
-config://app/db/timeout.get
-```
-
-Returns the raw JSON value stored in the key.
+Linux is the only supported and tested platform. The directory comes from the XDG config path.
 
 ---
 
-### 4.3 set – Store Configuration
+## 7. Usage Guidance
 
-Stores JSON-typed values.
-
-Arguments:
-
-* `value` (required)
-* `raw` (optional)
-
-Behavior:
-
-* Without `raw=true`, valid JSON is auto-parsed; otherwise stored as string.
-* With `raw=true`, value must be valid JSON.
-
-Examples:
-
-```sh
-config://app/timeout.set(value=30,raw=true)
-config://app/theme.set(value="dark")
-```
-
-Atomic write guarantees prevent partial file corruption.
+* Separate environments with namespaces, for example `config://prod/db/url` and `config://dev/db/url`.
+* In scripts, read values with `get` and parse them as JSON (for example with `jq`).
+* Check the exit code of `get`: a missing key exits 1.
+* Use `watch` with `timeout_ms` or `max_events` in automation so it always ends.
 
 ---
 
-### 4.4 ls – List Configuration
+## 8. Implementation Notes
 
-Lists namespaces and keys.
-
-Arguments:
-
-* `recursive`
-* `pattern`
-* `limit`
-* `offset`
-
-Example:
-
-```sh
-config://app.ls(recursive=true)
-```
-
-Entry types:
-
-| Kind     | Description               |
-| -------- | ------------------------- |
-| `leaf`   | JSON file (value)         |
-| `branch` | Directory containing keys |
-
----
-
-### 4.5 watch – Monitor Changes
-
-Monitors configuration changes in real time.
-
-Arguments:
-
-* `key` OR `prefix` (mutually exclusive)
-* `timeout_ms`
-* `max_events`
-* `initial`
-
-Example:
-
-```sh
-config://app/db.watch(prefix="",initial=true)
-```
-
-Emits structured JSON lines:
-
-* `snapshot`
-* `set`
-* `rm`
-
----
-
-### 4.6 Namespace Behavior
-
-Default namespace:
-
-```
-config://mykey.get → default/mykey.json
-```
-
-Sanitization rules allow only safe characters; unsafe characters are replaced with underscores.
-
----
-
-## 5. Platform Support
-
-| Platform   | Support Level |
-| ---------- | ------------- |
-| Linux      | Supported     |
-| Unix/macOS | Supported     |
-| Windows    | Supported     |
-
-Support depends on filesystem permissions and user home directory resolution.
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Use hierarchical organization (e.g., `app/db/connection`).
-* Use `raw=true` for numeric, boolean, and object types.
-* Avoid storing sensitive data without encryption.
-* Leverage atomic write guarantees.
-
-### Automation Considerations
-
-* Validate exit codes.
-* Use `ls(recursive=true)` for configuration inspection.
-* Use `watch` for dynamic reconfiguration.
-* Use pagination for large configuration trees.
-
-### CI/CD Integration
-
-* Validate required configuration keys during build.
-* Use structured `get` output for pipeline validation.
-* Monitor config changes for runtime reconfiguration.
-
-### Production Recommendations
-
-* Separate environments using namespaces (`prod`, `dev`, `test`).
-* Use descriptive key names.
-* Version-control configuration schemas.
-* Monitor configuration changes via `watch`.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Manage environment-specific configuration.
-* Store deployment parameters.
-* Implement feature flags.
-
-### SRE Engineers
-
-* Monitor configuration changes.
-* Validate runtime parameters.
-* Implement layered configuration management.
-
-### Network Administrators
-
-* Store network configuration metadata.
-* Maintain environment separation.
-* Monitor configuration updates.
-
-### AI/Automation Engineers
-
-* Dynamically read configuration state.
-* Subscribe to configuration changes.
-* Orchestrate runtime reconfiguration workflows.
-
----
-
-## 8. Technical Foundation
-
-The `config://` handle operates within resh, implemented in Rust.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Atomic filesystem operations
-* Deterministic error handling
-* Strong type guarantees
-
-### Type Safety
-
-JSON parsing and validation enforce consistent configuration types.
-
-### Performance Characteristics
-
-* Lightweight file-based storage
-* Efficient hierarchical lookups
-* Minimal runtime overhead
-
-### Cross-Platform Architecture
-
-Supported across:
-
-* Linux
-* macOS/Unix
-* Windows
-
-Operation depends on filesystem accessibility and user permissions.
-
-
+* Written in Rust. Values are serialized with `serde_json`; directory walks use `walkdir`; `watch` uses the `notify` crate.

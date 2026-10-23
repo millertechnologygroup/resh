@@ -2,169 +2,81 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes system and infrastructure operations using a resource-oriented URI execution model.
+Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs.
 
-The `log://` handle provides structured access to:
+The `log://` handle has one verb, `tail`. It prints the most recent lines of a plain-text log file, or of a systemd service's journal through `journalctl`, optionally keeping only the lines that contain a substring. Output is the raw lines or a JSON object.
 
-* File-based log files
-* System service logs via `journalctl`
-
-It supports:
-
-* Tail-style retrieval of recent log entries
-* Substring-based pattern filtering
-* Structured JSON output
-* Efficient handling of large log files
-
-Traditional log analysis from the shell typically involves:
-
-* Direct use of `tail`, `grep`, `awk`
-* Service-specific commands
-* Manual parsing of output
-* Inefficient reading of large files
-* Inconsistent error handling
-
-The `log://` handle addresses these issues by:
-
-* Providing a consistent URI-based interface
-* Returning deterministic output structures
-* Implementing efficient file-reading algorithms
-* Supporting structured JSON output for automation
-* Exposing a built-in help system
-
-All operations follow the resh URI format:
-
+```text
+resh log:///<absolute-path>.tail [lines=<n>] [pattern=<text>] [mode=raw|json]
+resh log://./<relative-path>.tail ...
+resh log://svc/<service>.tail ...
 ```
-log://target.verb(options)
-```
+
+The verb is the text after the last dot, so `log:///var/log/app.log.tail` reads `/var/log/app.log`.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Design Notes
 
-### Structured Interface Model
-
-All log operations follow:
-
-```
-log://path_or_service.verb(arguments)
-```
-
-Examples:
-
-* File log: `log:///var/log/syslog.tail`
-* Relative file: `log://./app.log.tail`
-* Service log: `log://svc/nginx.tail`
-
-This standardizes log access across file and service sources.
-
-### Safety-First Execution
-
-The handle enforces:
-
-* Explicit argument validation
-* Structured exit codes
-* Controlled memory usage
-* Clear error reporting for file and permission failures
-
-Invalid arguments and file access errors result in consistent exit status `2`.
-
-### Deterministic Behavior
-
-Operations:
-
-* Return predictable output based on `mode`
-* Use consistent argument validation rules
-* Provide stable JSON structures in `mode=json`
-* Separate data from error information
-
-### JSON-Based Structured Output
-
-When `mode=json` is specified, output includes:
-
-* `path`
-* `requested_lines`
-* `returned_lines`
-* `pattern`
-* `lines`
-
-This enables deterministic parsing in automation workflows.
-
-### AI-Readiness
-
-The consistent URI grammar and structured JSON output enable log inspection and filtering within automated systems without reliance on fragile text parsing.
+* Read-only: the handle never writes or rotates logs.
+* Files are read backward from the end, so large files are not read in full.
+* `pattern` is a case-sensitive substring match, not a regular expression.
+* There is no follow mode (`tail -f`); each command prints once and exits.
 
 ---
 
 ## 3. Command Syntax and Execution Model
 
-### 3.1 URI Structure
+### 3.1 Targets
 
-```
-log://target.verb(options)
-```
+| Target form            | Reads                                                     |
+| ---------------------- | --------------------------------------------------------- |
+| `log:///var/log/syslog` | Absolute file path                                       |
+| `log://./logs/app.log` | Path relative to the current directory                    |
+| `log://svc/nginx`      | `journalctl -u nginx -n <lines> --no-pager -o short`      |
 
-#### Components
+Any other host (for example `log://var/log/syslog`) is rejected.
 
-| Component | Description                               |
-| --------- | ----------------------------------------- |
-| `log`     | Handle identifier                         |
-| `target`  | File path or service (`svc/service-name`) |
-| `verb`    | `tail`, `help`, `--help`, `-h`            |
-| `options` | Named parameters                          |
+### 3.2 Arguments
 
----
+| Argument  | Description                           | Default |
+| --------- | ------------------------------------- | ------- |
+| `lines`   | Number of lines to read from the end  | 100     |
+| `pattern` | Keep only lines containing this text  | none    |
+| `mode`    | `raw` or `json`                       | `raw`   |
 
-### File Log Formats
+`pattern` is applied **after** the last `lines` lines are taken: `lines=50 pattern=ERROR` returns the matching lines among the last 50, not the last 50 matching lines.
 
-| Format        | Example                      |
-| ------------- | ---------------------------- |
-| Absolute file | `log:///var/log/syslog.tail` |
-| Relative file | `log://./app.log.tail`       |
-| Service log   | `log://svc/nginx.tail`       |
-
----
-
-### Preferred Syntax (Space-Separated)
+### 3.3 Example commands
 
 ```bash
 resh log:///var/log/syslog.tail lines=10
-resh log:///var/log/syslog.tail pattern=ERROR mode=json
+resh log:///var/log/syslog.tail lines=500 pattern=ERROR mode=json
+resh 'log:///var/log/syslog.tail(lines=10)'
+resh log://./logs/app.log.tail lines=20
+resh log://svc/nginx.tail lines=50 pattern=error
 ```
 
-### Alternative Syntax (Quoted)
+### 3.4 Output
 
-```bash
-resh "log:///var/log/syslog.tail(lines=10)"
-```
-
-Parentheses syntax must be quoted to avoid shell parsing errors.
-
----
-
-### 3.2 Execution Semantics
-
-All operations return output in one of two modes:
-
-* `raw` (default)
-* `json`
-
-#### JSON Mode Example
+`mode=raw` prints the lines only. `mode=json` (shown with `--json-pretty`):
 
 ```json
 {
-  "path": "/var/log/syslog",
-  "requested_lines": 30,
-  "returned_lines": 6,
-  "pattern": "ERROR",
   "lines": [
-    "Jan 01 10:00:01 host ERROR failure detected",
-    "Jan 01 10:00:02 host ERROR retrying"
-  ]
+    "Oct 16 09:12:44 host kernel: eth0: link up",
+    "Oct 16 09:13:02 host app[901]: error: disk quota exceeded"
+  ],
+  "path": "/var/log/syslog",
+  "pattern": null,
+  "requested_lines": 2,
+  "returned_lines": 2
 }
 ```
 
-#### Error Example (JSON Mode)
+For `log://svc/<service>` the object has `service` in place of `path`.
+
+Missing file in `mode=json`:
 
 ```json
 {
@@ -175,269 +87,74 @@ All operations return output in one of two modes:
 }
 ```
 
-Exit codes:
+### 3.5 Exit codes
 
-| Code | Meaning                               |
-| ---- | ------------------------------------- |
-| 0    | Success                               |
-| 2    | Invalid argument or file access error |
+These codes are set by the handle (verified in the source):
 
-Automation systems must evaluate exit codes and structured fields rather than parsing human-readable messages.
+| Code | Meaning                                                            |
+| ---- | ------------------------------------------------------------------ |
+| 0    | Success (including an empty file or no matching lines)             |
+| 2    | `lines=0`, an invalid `mode`, a missing file, or a path that is not a file |
+| other | For `log://svc/...`, the exit code of a failing `journalctl`     |
 
----
-
-## 4. Functional Domain – Log Handle
-
-The `log://` handle falls under **System Information and Observability**.
-
-### Operational Scope
-
-* Read last N lines of log files
-* Filter logs using substring matching
-* Access systemd service logs
-* Produce structured output for automation
-* Handle large files efficiently
+Other failures, such as a file that cannot be opened because of permissions, exit 1.
 
 ---
 
-### 4.1 Core Verb: `tail`
+## 4. Verb: tail
 
-Retrieves the last N lines of a log source.
+### 4.1 Files
 
-#### Arguments
+* Files smaller than 64 KiB are read whole; larger files are read backward in 8 KiB chunks until enough lines are found.
+* Lines are split on newlines; multi-line log entries are not grouped.
+* In files of 64 KiB or more, invalid UTF-8 is replaced with U+FFFD. In smaller files, invalid UTF-8 makes the command fail.
 
-| Argument  | Description                    | Default |
-| --------- | ------------------------------ | ------- |
-| `lines`   | Number of lines to return (>0) | 100     |
-| `pattern` | Substring filter               | None    |
-| `mode`    | `raw` or `json`                | `raw`   |
+### 4.2 Service journals
 
----
-
-### Examples
-
-Basic tail:
-
-```bash
-resh log:///tmp/app.log.tail
-```
-
-Specific line count:
-
-```bash
-resh log:///tmp/app.log.tail lines=20
-```
-
-Pattern filtering:
-
-```bash
-resh log:///tmp/app.log.tail lines=50 pattern=ERROR
-```
-
-JSON output:
-
-```bash
-resh log:///var/log/syslog.tail lines=100 pattern=CRON mode=json
-```
-
-Service log access:
-
-```bash
-resh log://svc/nginx.tail lines=50 pattern=error
-```
-
----
-
-### 4.2 Help System
-
-The log handle includes an integrated help system.
-
-Full help:
-
-```bash
-log://help
-log://--help
-log://-h
-```
-
-Verb-specific help:
-
-```bash
-log://--help=tail
-```
-
-The help system includes syntax, performance guidance, examples, and error-handling documentation.
-
----
-
-### 4.3 File Format Support
-
-Supported:
-
-* Plain text logs
-* Syslog
-* Web server logs
-* Application logs
-* Custom line-based logs
-
-Characteristics:
-
-* Line-based processing
-* Case-sensitive substring matching
-* No regex support
-* No multi-line entry handling
-* No streaming mode (`tail -f` not supported)
-
----
-
-### 4.4 Performance Characteristics
-
-The handle uses size-based optimization:
-
-| File Size | Strategy                    |
-| --------- | --------------------------- |
-| < 64KB    | Read entire file            |
-| ≥ 64KB    | Backward scan in 8KB chunks |
-
-Large files are processed without loading entire contents into memory, enabling efficient tail operations on multi-gigabyte logs.
-
----
-
-### 4.5 Service Logs
-
-Service logs use `journalctl`.
-
-Requirements:
-
-* `journalctl` must be installed
-* Service must exist
-* User must have permission
-
-Example:
+`log://svc/<service>` runs `journalctl -u <service> -n <lines> --no-pager -o short`. It needs systemd's `journalctl` and permission to read the journal (often membership in the `systemd-journal` or `adm` group). If `journalctl` fails, its error is reported (in the JSON object with `mode=json`, otherwise on stderr).
 
 ```bash
 resh log://svc/postgresql.tail lines=30 mode=json
 ```
 
-Service log behavior depends on system configuration.
-
----
-
-## 5. Platform Support
-
-| Platform   | Support Level       |
-| ---------- | ------------------- |
-| Linux      | Supported           |
-| macOS/Unix | File logs supported |
-| Windows    | File logs supported |
-
-Service log functionality depends on `journalctl` availability and systemd presence.
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Always specify `lines` in automation.
-* Use `mode=json` for programmatic processing.
-* Validate exit codes.
-* Confirm file existence before automation loops.
-* Limit output size for large logs.
-
-### Automation Considerations
-
-* Use `pattern` to reduce output volume.
-* Combine JSON mode with tools such as `jq`.
-* Handle empty file responses explicitly.
-* Avoid excessive line counts in production scripts.
-
-### CI/CD Integration
-
-* Validate recent log entries after deployment.
-* Detect error conditions via pattern matching.
-* Use JSON mode to count matching lines.
-* Gate pipeline stages based on structured results.
-
-Example:
+### 4.3 Counting matches in a script
 
 ```bash
-ERROR_COUNT=$(resh log:///var/log/app.log.tail pattern=ERROR mode=json | jq '.returned_lines')
+ERROR_COUNT=$(resh log:///var/log/app.log.tail lines=1000 pattern=ERROR mode=json | jq '.returned_lines')
 ```
 
-### Production Recommendations
+### 4.4 timeout_ms
 
+`tail` does not read `timeout_ms`; it is ignored if given. A `journalctl` call has no time limit.
+
+---
+
+## 5. Limitations
+
+* **The URL path is not percent-decoded.** A file whose name contains a space or another character that URLs encode (for example `my app.log`) cannot be read, because the handle looks for `my%20app.log`. Use a symlink with a plain name.
+* Relative paths cannot reach the parent directory: leading `..` components are dropped, so `log://../x.log` reads `./x.log`. Use an absolute path instead.
+* A non-numeric `lines` value (for example `lines=abc`) is silently replaced by 100.
+* In a boundary case on files of 64 KiB or more, the first returned line can be cut off at the start (when the backward scan stops exactly at the requested number of newlines in the middle of a line).
+* In `mode=raw`, a missing-file error is printed to stdout as `Error: ...` (and again to stderr by resh).
+* No regular expressions, no follow mode, no time-range filters.
+
+---
+
+## 6. Platform Support
+
+Linux is the only supported and tested platform. `log://svc/...` needs systemd's `journalctl`; on systems without systemd (for example OpenRC) only file logs work.
+
+---
+
+## 7. Usage Guidance
+
+* Always set `lines` in automation, and make it large enough for `pattern` to find matches (section 3.2).
+* Use `mode=json` with `jq` for scripts.
 * Use absolute paths for system logs.
-* Monitor log rotation behavior.
-* Use service logs for systemd-managed services.
-* Keep substring patterns simple.
-* Combine with Unix tools for advanced analysis.
+* For anything beyond substring filtering, pipe raw output into `grep`, `awk` or similar tools.
 
 ---
 
-## 7. Use Cases by Role
+## 8. Implementation Notes
 
-### DevOps Engineers
-
-* Validate deployments by inspecting recent logs.
-* Automate post-deployment checks.
-* Extract structured error counts in pipelines.
-
-### SRE Engineers
-
-* Investigate incidents using efficient tail operations.
-* Monitor service logs via systemd.
-* Analyze error frequency through structured output.
-
-### Network Administrators
-
-* Inspect system logs for network-related events.
-* Monitor service startup and failure conditions.
-* Filter logs for configuration changes.
-
-### AI/Automation Engineers
-
-* Use structured JSON responses for anomaly detection.
-* Integrate log inspection into orchestration agents.
-* Trigger actions based on filtered log output.
-
----
-
-## 8. Technical Foundation
-
-The `log://` handle operates within resh, implemented in Rust.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Efficient file I/O handling
-* Deterministic error propagation
-* Predictable cross-platform behavior
-
-### Type Safety
-
-Argument parsing enforces:
-
-* Valid line counts
-* Valid output modes
-* Correct URL structure
-
-Invalid inputs return explicit error codes.
-
-### Performance Characteristics
-
-* Optimized backward file scanning
-* Minimal memory footprint for large logs
-* Efficient substring filtering
-* Structured JSON serialization
-
-### Cross-Platform Architecture
-
-Supported across:
-
-* Linux
-* macOS/Unix
-* Windows (file-based logs)
-
-Service log support depends on `journalctl` availability.
-
+* Written in Rust. `journalctl` is run directly (no shell), with the service name passed as a separate argument.

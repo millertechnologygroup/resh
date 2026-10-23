@@ -6,9 +6,16 @@
 Resource Shell answers two help requests without running any resource
 operation:
 
+```text
+resh <handle> --help          handle-level help
+resh <handle> <verb> --help   verb-level help
+```
+
+For example:
+
 ```bash
-resh <handle> --help          # handle-level help
-resh <handle> <verb> --help   # verb-level help
+resh svc --help
+resh svc status --help
 ```
 
 If a request can't be answered from help metadata, the CLI behaves as it did

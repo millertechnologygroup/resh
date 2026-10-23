@@ -4,420 +4,263 @@
 
 ### Definition
 
-Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. It provides typed handles for managing processes, services, and scheduled tasks in a deterministic and automation-friendly manner.
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using URI-based commands. This category has three handles for the local host:
+
+| Handle | Purpose | Detailed documentation |
+| ------ | ------- | ---------------------- |
+| `cron://` | Scheduled jobs as crontab entries or systemd timers | [cron.md](cron.md) |
+| `proc://` | Signals and nice values for a single process | [proc.md](proc.md) |
+| `svc://` | System services through systemd or OpenRC | [svc.md](svc.md) |
 
 ### Purpose
 
-resh enables:
+These handles let you:
 
-* Structured management of running processes
-* Declarative service lifecycle control
-* Scheduled task configuration
-* Machine-readable output for automation and orchestration
+* List, add, remove, enable and disable scheduled jobs
+* Send signals to processes and change their nice values
+* Start, stop, restart, reload, enable and disable services, and read their state and logs
 
-resh replaces traditional text-based CLI tooling with structured command invocation and JSON output contracts.
+Most verbs print a JSON object. Exceptions: `svc ... .logs` prints plain log lines, and `svc` `reload`, `enable`, `disable`, `mask` and `unmask` print nothing on success. `cron` verbs accept `format=text` for a text summary.
 
 ### Architectural Problem Addressed
 
-Traditional process and service tooling:
-
-* Produces unstructured text output
-* Varies across init systems (systemd, OpenRC, cron)
-* Requires shell parsing for automation
-* Lacks consistent output schemas
-
-resh addresses these issues by:
-
-* Exposing process, service, and scheduling capabilities via typed handles
-* Standardizing verbs and input parameters
-* Returning structured JSON output
-* Supporting deterministic execution semantics
+`crontab`, `kill`, `renice`, `systemctl` and `rc-service` each have their own syntax and text output. These handles give one URI form and JSON output, so scripts can check fields and exit codes instead of parsing text.
 
 ### Resource-Oriented URI Model
 
-resh commands follow:
-
-```
-handle://target.verb(options)
+```text
+<scheme>://<target>.<verb> [key=value ...]
 ```
 
-For process and service management:
-
-* **handle**: `cron://`, `proc://`, `svc://`
-* **target**: Resource identifier (e.g., PID, service name, local scheduler)
-* **verb**: Operation (e.g., `status`, `list`, `start`, `stop`)
-* **options**: Structured parameters (where applicable)
+* **scheme**: `cron`, `proc` or `svc`
+* **target**: a label for `cron` (ignored; always the local host), a PID or `self` for `proc`, a service name for `svc`
+* **verb**: the operation, after the last dot (dotted verbs such as `nice.get` are recognized as a whole)
+* **options**: `key=value` words after the stage; quote values with spaces
 
 Examples:
 
-```
-cron://local.list
-proc://1234.status
-svc://nginx.restart
+```bash
+resh cron://local.list
+resh proc://1234.nice.get
+resh svc://nginx.restart
 ```
 
 ---
 
 ## 2. Design Philosophy and Core Principles
 
-### Structured Interface Model
+### Interface Model
 
-* Each domain is exposed via a distinct handle.
-* Operations are defined as explicit verbs.
-* Targets are clearly identified (PID, service name, scheduler).
-* Output is standardized in JSON format.
+* Each domain has its own handle and its own verbs:
+  * `cron`: `list`, `add`, `rm`, `enable`, `disable`
+  * `proc`: `signal`, `term`, `int`, `hup`, `kill`, `stop`, `cont`, `usr1`, `usr2`, `nice.get`, `nice.set`, `nice.inc`, `nice.dec`, `setPriority`, `io.peek`, `limits.set`
+  * `svc`: `status`, `is-enabled`, `start`, `stop`, `restart`, `reload`, `enable`, `disable`, `mask`, `unmask`, `wait`, `logs`, `scale`
+* Help for any handle or verb: `resh <handle> --help`, `resh <handle> <verb> --help`.
 
----
+### Safety
 
-### Safety-First Execution
+* `cron` `add`, `rm`, `enable` and `disable` support `dry_run` (true/false/1/0/yes/no/on/off, or a bare `dry_run` word; any other value is an error).
+* `svc` and the `proc` signal and nice verbs have **no dry run**; they act immediately.
+* Input checks done before any action: `proc` PIDs must be 1 to 2147483647 (or `self`); `svc` service names are rejected if they start with `-`, contain `.`/`..` path segments, whitespace, control characters or `:` (exit 2).
+* `cron` does not reject newlines in job fields; see the limitations in [cron.md](cron.md).
 
-* Explicit verbs required for state-changing operations.
-* No implicit destructive behavior.
-* Clear separation between inspection and modification.
-* Platform-specific limitations are documented.
+### Timeouts
 
----
+* Only `svc` `stop` and `wait` have a timeout, given as `timeout=<milliseconds>`. A timeout that expires exits with code 124.
+* No verb in this category reads `timeout_ms`. It is ignored everywhere except `proc` `limits.set`, which treats any unrecognized argument (including `timeout_ms`) as an unknown resource and fails.
 
-### Deterministic Behavior
+### Exit status
 
-* Identical inputs yield consistent structured outputs.
-* Exit behavior reflects operation success or failure.
-* Service management operations respect system init configuration.
+* 0 on success; non-zero on failure, with `Error: <reason>` on stderr if the handle did not already write to stderr.
+* `cron`: every failure exits 1, and the JSON `ok` field always agrees with the exit status.
+* `proc` and `svc` use a few specific codes (for example `proc` exit 3 for "process not found", `svc` exit 124 for a timeout). See each handle's document for the verified list.
 
----
+### Limited verbs
 
-### JSON-Based Structured Output
-
-All operations return JSON objects describing:
-
-* Target metadata
-* Operation result
-* Status indicators
-* Error information (when applicable)
-
-Representative example:
-
-```json
-{
-  "ok": true,
-  "service": "nginx",
-  "status": "running",
-  "enabled": true,
-  "manager": "systemd"
-}
-```
-
----
-
-### AI-Readiness
-
-Structured output enables:
-
-* Automated health checks
-* Programmatic service orchestration
-* Scheduled task validation
-* Process state reasoning
+* `proc` `limits.set` applies `setrlimit` to the resh process itself, not to the target or `pid=` process, so it cannot change another process's limits.
+* `proc` `io.peek` reads log files in the resh state directory that nothing in resh writes.
 
 ---
 
 ## 3. Command Syntax and Execution Model
 
-### 3.1 URI Structure
+### 3.1 Examples
 
-```
-handle://target.verb(options)
-```
+#### List scheduled jobs
 
-| Component | Description                    |
-| --------- | ------------------------------ |
-| `handle`  | `cron://`, `proc://`, `svc://` |
-| `target`  | Resource identifier            |
-| `verb`    | Operation to perform           |
-| `options` | Optional structured parameters |
-
----
-
-### Production Examples
-
-#### List Scheduled Tasks
-
-```
-cron://local.list
+```bash
+resh cron://local.list
 ```
 
-#### Add Scheduled Task
+#### Add a scheduled job (crontab)
 
-```
-cron://local.add(schedule="0 2 * * *", command="/usr/bin/backup.sh")
-```
-
-#### Check Process Status
-
-```
-proc://1234.status
+```bash
+resh cron://local.add 'schedule=0 2 * * *' command=/usr/bin/backup.sh backend=cron id=backup dry_run
+resh cron://local.add 'schedule=0 2 * * *' command=/usr/bin/backup.sh backend=cron id=backup
 ```
 
-#### Change Process Priority
+#### Signal a process
 
-```
-proc://1234.renice(priority=10)
-```
-
-#### Check Service Status
-
-```
-svc://nginx.status
+```bash
+resh proc://1234.term
+resh proc://1234.signal sig=HUP
 ```
 
-#### Restart Service
+#### Change process priority
 
-```
-svc://postgresql.restart
+```bash
+resh proc://1234.nice.get
+resh proc://1234.nice.set value=10
+resh proc://1234.setPriority class=background
 ```
 
-#### Enable Service at Boot
+#### Check, restart and enable a service
 
-```
-svc://nginx.enable
+```bash
+resh svc://nginx.status
+resh svc://postgresql.restart
+resh svc://postgresql.wait state=active timeout=30000
+resh svc://nginx.enable
 ```
 
 ---
 
 ## 3.2 Execution Semantics
 
-### Deterministic Behavior
+### Output shapes
 
-* Operations require explicit targets.
-* No implicit service resolution.
-* Verb-based design prevents ambiguous operations.
-* Platform-specific backends selected automatically (e.g., systemd vs OpenRC).
+There is no common response envelope across these handles; each verb has its own fields. Examples:
 
----
+`svc://nginx.status` on systemd (abbreviated):
 
-### Structured Output Contracts
+```json
+{
+  "active_state": "active",
+  "backend": "systemd",
+  "name": "nginx.service",
+  "pid": 1234,
+  "sub_state": "running"
+}
+```
 
-Each operation returns:
-
-* `ok` status
-* Target information
-* Result metadata
-* Backend manager identification (when applicable)
-
-Example (process status):
+`proc://1234.term`:
 
 ```json
 {
   "ok": true,
   "pid": 1234,
-  "name": "backup.sh",
-  "state": "running",
-  "priority": 0,
-  "cpu_usage_percent": 2.3,
-  "memory_usage_mb": 15.4
+  "signal": "TERM",
+  "signal_num": 15,
+  "verb": "term"
 }
 ```
 
----
-
-### Error Handling Structure
-
-Representative error:
+`cron` failure (any verb):
 
 ```json
 {
   "ok": false,
   "error": {
-    "code": "svc.service_not_found",
-    "message": "Service 'unknown' does not exist"
+    "code": "cron.rm_no_match",
+    "message": "No scheduled jobs matched the provided criteria."
   }
 }
 ```
 
-Errors are structured and machine-readable.
+`proc` does not report process state, CPU or memory; there is no `proc` status verb.
+
+### Backend selection
+
+* `svc` uses systemd if `/run/systemd/system` exists or `systemctl` is on `PATH`, otherwise OpenRC if `rc-service` or `rc-status` is on `PATH`.
+* `cron add backend=auto` uses systemd timers whenever `systemctl --version` runs; pass `backend=cron` for a crontab line.
+
+### State
+
+Each `resh` invocation is a separate process. Nothing is kept between invocations; all state lives in the service manager, the crontabs and the unit files.
 
 ---
 
 ## 4. Functional Domains
 
----
-
 ### 4.1 Automation Utilities
 
-**Scope**
-
-Infrastructure task automation and scheduling.
-
-**Handles**
-
-* `cron://`
-
-**Use Cases**
-
-* Daily backups
-* System maintenance tasks
-* Monitoring scripts
-* Cleanup jobs
-
-**Integration Scenarios**
-
-* Schedule database dumps
-* Trigger log rotation tasks
-* Periodic health checks
-
----
+`cron://` for recurring jobs: backups, maintenance, monitoring scripts, cleanup.
 
 ### 4.2 Data & State Management
 
-**Scope**
-
-Inspection of process and service state.
-
-**Handles**
-
-* `proc://`
-* `svc://`
-
-**Use Cases**
-
-* Retrieve service status
-* Inspect process runtime data
-* Validate scheduled jobs
-
----
+`svc` `status` and `is-enabled` for service state; `cron` `list` for the crontab inventory; `proc` `nice.get` for a process's nice value.
 
 ### 4.3 Filesystem & Storage
 
-Indirectly supports:
-
-* Scheduled file cleanup
-* Backup execution
-* Log management automation
-
----
+Indirect only: `cron` edits crontab and unit files; `svc logs` on OpenRC reads files under `/var/log`.
 
 ### 4.4 Network & Remote Operations
 
-Supports management of:
+All three handles act on the local host only. To manage another host, run resh on it.
 
-* Network-facing services (e.g., web servers)
-* Background daemons
-* Infrastructure services
-
-Example:
-
+```bash
+resh svc://apache2.status
 ```
-svc://apache2.status
-```
-
----
 
 ### 4.5 Packages & Software
 
-Supports lifecycle management of installed services:
-
-* Restart after package updates
-* Enable service post-install
-* Disable deprecated services
-
----
+Restart or reload services after package updates, enable newly installed services, disable or mask unwanted ones.
 
 ### 4.6 Process & Service Management
 
-**Handles**
-
-* `cron://`
-* `proc://`
-* `svc://`
-
-**Capabilities**
-
-* Schedule tasks
-* Manage PIDs
-* Send signals
-* Adjust process priority
-* Start/stop/restart services
-* Enable/disable services at boot
-
----
+* `cron`: schedule, list and remove jobs
+* `proc`: signal processes and adjust nice values
+* `svc`: control and inspect services
 
 ### 4.7 Security & Secrets
 
-Security considerations include:
-
-* Restricting service enablement
-* Limiting process privilege changes
-* Reviewing scheduled tasks
-* Preventing unauthorized service activation
-
----
+* Most `svc` changes, system crontabs and system units need root.
+* `proc` can signal or renice only processes you own unless you are root.
+* Do not put secrets in cron commands or environment values; they are stored in plain text.
+* Do not pass untrusted input as cron job fields (no newline validation).
 
 ### 4.8 System Information
 
-Provides structured reporting for:
-
-* Service health
-* Process runtime metrics
-* Scheduler configuration
-* Backend init system (systemd, OpenRC)
-* Task schedules
+* Service state, main PID and timestamps (systemd) or state and raw output (OpenRC)
+* Scheduled job inventory from crontabs (systemd timers are not listed)
+* Detected init backend (`backend` field in `svc` output)
 
 ---
 
 ## 5. Platform Support
 
-| Platform   | Support Level                                                     |
-| ---------- | ----------------------------------------------------------------- |
-| Linux      | Full support                                                      |
-| Unix/macOS | Most features supported (systemd-specific features may not apply) |
-| Windows    | Limited support                                                   |
+Linux only. The code uses Unix-only system calls and Linux signal numbers, and nothing was built or tested on macOS, BSD or Windows.
 
-Platform compatibility depends on:
-
-* Availability of init system (systemd, OpenRC)
-* Native scheduling tools
-* Process control capabilities
+| Handle | Requirements |
+| ------ | ------------ |
+| `cron` | `crontab` for the cron backend; `systemctl` for systemd timers |
+| `proc` | Linux kernel interfaces (`kill`, `getpriority`, `setpriority`) |
+| `svc` | systemd (D-Bus, `systemctl`, `journalctl`) or OpenRC (`rc-service`, `rc-status`, `rc-update`) |
 
 ---
 
 ## 6. Operational Best Practices
 
-### Safe Usage Guidelines
+### Safe usage
 
-* Validate service existence before modification.
-* Use status inspection before restart.
+* Check `svc` status before changing a service; there is no dry run.
+* Use `dry_run` before every changing `cron` verb.
+* Send TERM before KILL.
 * Avoid disabling critical system services.
-* Audit scheduled tasks regularly.
 
----
+### Automation
 
-### Automation Considerations
+* Check exit codes first, then JSON fields.
+* Use `svc wait` with `timeout` in milliseconds after a restart.
+* Use `id=` for cron jobs so they can be removed or disabled exactly.
 
-* Consume structured JSON output.
-* Validate `ok` before proceeding.
-* Avoid parsing human-readable output.
-* Use deterministic schedules in cron.
+### CI/CD integration
 
----
-
-### CI/CD Integration
-
-Typical workflow:
-
-1. Deploy updated service binary.
-2. Restart service via `svc`.
-3. Verify status.
-4. Schedule recurring maintenance with `cron`.
-5. Monitor long-running jobs with `proc`.
-
----
-
-### Production Environment Recommendations
-
-* Enable only required services at boot.
-* Document scheduled jobs.
-* Monitor high-CPU processes.
-* Limit process priority changes to necessary cases.
-* Test restart procedures in staging before production rollout.
+1. Deploy the updated service binary.
+2. `resh svc://app.restart`
+3. `resh svc://app.wait state=active timeout=60000`
+4. `resh svc://app.status`
+5. Schedule recurring maintenance with `cron add backend=cron`.
 
 ---
 
@@ -425,69 +268,29 @@ Typical workflow:
 
 ### DevOps Engineers
 
-* Automate service restarts post-deployment.
+* Restart and verify services after deployments.
 * Schedule recurring maintenance jobs.
-* Validate process state in pipelines.
-
----
 
 ### SRE Engineers
 
-* Diagnose failed services.
-* Restart or reload services during incidents.
-* Inspect process metrics during outages.
-
----
+* Diagnose and restart failed services; read logs with `svc logs`.
+* Escalate signals to hung processes with `proc`.
 
 ### Network Administrators
 
-* Manage network-facing daemons.
-* Enable/disable services at boot.
-* Monitor service health.
+* Manage network-facing daemons and their boot configuration.
 
----
+### Automation Engineers
 
-### AI / Automation Engineers
-
-* Consume structured service health metadata.
-* Automate remediation workflows.
-* Trigger escalations based on process state.
-* Validate scheduled job integrity programmatically.
+* Build remediation scripts on exit codes and JSON fields.
+* Audit scheduled jobs with `cron list`.
 
 ---
 
 ## 8. Technical Foundation
 
-### Rust Implementation Advantages
-
-resh is implemented in Rust, providing:
-
-* Memory safety
-* Strong compile-time guarantees
-* Predictable execution
-* Efficient system call management
-
----
-
-### Type Safety
-
-* Explicit verb enumeration
-* Strict parameter validation
-* Structured error typing
-* Deterministic output schemas
-
----
-
-### Performance Characteristics
-
-* Native binary execution
-* Low overhead process invocation
-* Controlled timeout and scheduling logic
-
----
-
-### Cross-Platform Architecture
-
-* Backend abstraction for systemd and OpenRC
-* Cron and systemd timer support
-* Consistent structured output across supported systems
+* Implemented in Rust under `src/handles/processes/` (`cronh.rs`, `proch.rs`, `svch.rs`).
+* `svc` talks to systemd over D-Bus (`zbus`) with `systemctl`/`journalctl` fallbacks, and shells out to OpenRC tools.
+* `proc` uses `libc` system calls directly.
+* `cron` shells out to `crontab` and `systemctl` and edits crontab and unit files.
+* Argument checking varies by verb; unknown argument names are generally ignored. See each handle's document.

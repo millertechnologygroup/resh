@@ -1971,8 +1971,8 @@ impl CertHandle {
         }
 
         // Parse overwrite
-        if let Some(overwrite_str) = args.get("overwrite") {
-            opts.overwrite = matches!(overwrite_str.as_str(), "true" | "1" | "yes");
+        if let Some(overwrite) = crate::core::lenient::bool_arg(args, "overwrite")? {
+            opts.overwrite = overwrite;
         }
 
         // Parse output options
@@ -4822,8 +4822,8 @@ impl CertHandle {
         }
         
         // Parse behavior options
-        if let Some(overwrite_str) = args.get("overwrite") {
-            opts.overwrite = matches!(overwrite_str.as_str(), "true" | "1" | "yes");
+        if let Some(overwrite) = crate::core::lenient::bool_arg(args, "overwrite")? {
+            opts.overwrite = overwrite;
         }
         
         if let Some(format_str) = args.get("format") {
@@ -5045,8 +5045,8 @@ impl CertHandle {
         }
 
         // Parse behavior options
-        if let Some(overwrite_str) = args.get("overwrite") {
-            opts.overwrite = matches!(overwrite_str.as_str(), "true" | "1" | "yes");
+        if let Some(overwrite) = crate::core::lenient::bool_arg(args, "overwrite")? {
+            opts.overwrite = overwrite;
         }
 
         if let Some(format_str) = args.get("format") {
@@ -5264,8 +5264,8 @@ impl CertHandle {
         }
 
         // Parse behavior options
-        if let Some(overwrite_str) = args.get("overwrite") {
-            opts.overwrite = matches!(overwrite_str.as_str(), "true" | "1" | "yes");
+        if let Some(overwrite) = crate::core::lenient::bool_arg(args, "overwrite")? {
+            opts.overwrite = overwrite;
         }
 
         if let Some(format_str) = args.get("format") {
@@ -5934,9 +5934,8 @@ impl CertHandle {
         }
 
         // Behavior options
-        if let Some(overwrite_str) = args.get("overwrite") {
-            opts.overwrite = overwrite_str.parse::<bool>()
-                .unwrap_or_else(|_| overwrite_str.to_lowercase() == "true");
+        if let Some(overwrite) = crate::core::lenient::bool_arg(args, "overwrite")? {
+            opts.overwrite = overwrite;
         }
 
         if let Some(format_str) = args.get("format") {

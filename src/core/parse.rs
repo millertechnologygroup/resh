@@ -21,6 +21,11 @@ fn is_help_request(s: &str) -> bool {
     super::help::is_help_flag(head) || super::help::is_help_flag(last)
 }
 
+/// A bare `dry_run` word (no `=value`), which means `dry_run=true`.
+pub fn is_bare_dry_run(word: &str) -> bool {
+    word.trim() == "dry_run"
+}
+
 pub fn parse_stage(s: &str) -> Result<ParsedStage> {
     // First, check if we have parentheses for args
     let (main_part, args_str) = if let Some(open_paren) = s.rfind('(') {
@@ -85,6 +90,8 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
                                     k.trim().to_string(),
                                     v.trim().trim_matches('\"').to_string(),
                                 );
+                            } else if is_bare_dry_run(kv) {
+                                args.insert("dry_run".to_string(), "true".to_string());
                             }
                         }
                     }
@@ -161,6 +168,8 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
                             k.trim().to_string(),
                             v.trim().trim_matches('"').to_string(),
                         );
+                    } else if is_bare_dry_run(kv) {
+                        args.insert("dry_run".to_string(), "true".to_string());
                     }
                 }
             }
@@ -229,6 +238,8 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
                             // Strip quotes from simple string values
                             args.insert(key, value.trim_matches('"').to_string());
                         }
+                    } else if is_bare_dry_run(kv) {
+                        args.insert("dry_run".to_string(), "true".to_string());
                     }
                 }
             }
@@ -268,6 +279,8 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
                                     k.trim().to_string(),
                                     v.trim().trim_matches('"').to_string(),
                                 );
+                            } else if is_bare_dry_run(kv) {
+                                args.insert("dry_run".to_string(), "true".to_string());
                             }
                         }
                     }
@@ -437,6 +450,22 @@ mod scheme_dotted_verb_tests {
         assert_eq!((p.target.as_str(), p.verb.as_str()), ("svc://my-httpd", "status"));
         let p = parse_stage("file:///etc/my-hosts.read").unwrap();
         assert_eq!((p.target.as_str(), p.verb.as_str()), ("file:///etc/my-hosts", "read"));
+    }
+
+    #[test]
+    fn bare_dry_run_in_parentheses_means_true() {
+        for stage in [
+            "user://bob.delete(dry_run)",
+            "user://bob.delete(force=false, dry_run)",
+            "firewall://.rules.add(dry_run, dport=22)",
+            "plugin://aws.install(dry_run)",
+            "mail://send(to=a@b.c, dry_run)",
+        ] {
+            let p = parse_stage(stage).unwrap();
+            assert_eq!(p.args.get("dry_run").map(String::as_str), Some("true"), "{stage}");
+        }
+        // Other bare words are still not arguments.
+        assert!(parse_stage("user://bob.delete(dry_runx)").unwrap().args.is_empty());
     }
 
     #[test]
