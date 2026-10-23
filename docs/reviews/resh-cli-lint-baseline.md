@@ -47,7 +47,7 @@ cargo fmt --all -- --check
 cargo test --locked
 ```
 
-Until then, the `fmt` CI job fails. That is expected, and the CI documentation says so. New Stage 4 files (`tests/doc_examples.rs`, `tests/stage4_regressions.rs`) are already rustfmt-clean.
+The formatting commit has since been made (`8f9ed39`), so `cargo fmt --all -- --check` is clean and the `fmt` CI job can pass. New Stage 4 files (`tests/doc_examples.rs`, `tests/stage4_regressions.rs`) are already rustfmt-clean.
 
 ## Clippy
 
@@ -112,10 +112,10 @@ Clippy's output was intersected with every line the working tree adds relative t
 3. `await_holding_lock` in `dbh.rs`, and the undeclared `cfg` features in `cacheh.rs` tests.
 4. About 1,114 style lints, half of them `collapsible_if`. Most can be fixed mechanically with `cargo clippy --fix`, but that should be a separate change, like the formatting pass.
 
-## Gate policy (as configured in `.gitlab-ci.yml`)
+## Gate policy (as configured in `.github/workflows/ci.yml`)
 
 | Check | Gate | Reason |
 |---|---|---|
-| `cargo fmt --all -- --check` | **Enforced** | It fails until the formatting commit lands; after that, it keeps the tree formatted. |
-| `cargo clippy --workspace --all-targets` | **Advisory** (`allow_failure: true`, report kept as an artifact) | Pre-existing debt. Keeping it visible instead of hidden. Do not add new warnings; check new code against this baseline. |
+| `cargo fmt --all -- --check` | **Enforced** | Clean since the formatting commit; it keeps the tree formatted. |
+| `cargo clippy --workspace --all-targets` | **Advisory** (`continue-on-error: true`, report kept as an artifact) | Pre-existing debt. Keeping it visible instead of hidden. Do not add new warnings; check new code against this baseline. |
 | Path to a strict gate | — | (1) Fix the 5 deny-level errors. (2) Apply `clippy --fix` in a separate change. (3) Add `-D warnings` with any remaining exceptions listed by name in `[lints.clippy]`, each with a reason. |
