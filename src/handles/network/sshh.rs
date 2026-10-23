@@ -1075,6 +1075,29 @@ pub struct SshErrorDetails {
     pub details: HashMap<String, String>,
 }
 
+/// Why a completed ssh exec counts as a failure, or None for exit code 0.
+fn exec_failure(result: &SshExecResult) -> Option<SshErrorDetails> {
+    let (code, message) = if result.timed_out {
+        ("EXEC_TIMEOUT", "remote command timed out".to_string())
+    } else if let Some(signal) = &result.signal {
+        ("EXEC_SIGNALED", format!("remote command was terminated by signal {}", signal))
+    } else {
+        match result.exit_code {
+            Some(0) => return None,
+            Some(255) => {
+                let detail = result.stderr.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                ("SSH_FAILED", match detail {
+                    Some(d) => format!("ssh failed (exit code 255): {}", d),
+                    None => "ssh failed (exit code 255)".to_string(),
+                })
+            }
+            Some(c) => ("REMOTE_EXIT_NONZERO", format!("remote command exited with code {}", c)),
+            None => ("EXEC_NO_EXIT_CODE", "remote command ended without an exit code".to_string()),
+        }
+    };
+    Some(SshErrorDetails { code: code.to_string(), message, details: HashMap::new() })
+}
+
 /// Complete SSH exec response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshExecResponse {
@@ -3278,8 +3301,8 @@ impl SshHandle {
         }
 
         // Parse behavior
-        if let Some(dry_run_str) = args.get("dry_run") {
-            options.dry_run = dry_run_str.parse::<bool>().unwrap_or(false);
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run_str;
         }
         if let Some(capture_str) = args.get("capture_output") {
             options.capture_output = capture_str.parse::<bool>().unwrap_or(true);
@@ -3436,8 +3459,8 @@ impl SshHandle {
         }
 
         // Parse behavior & output
-        if let Some(dry_run_str) = args.get("dry_run") {
-            options.dry_run = dry_run_str.parse::<bool>().unwrap_or(false);
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run_str;
         }
         if let Some(verify_str) = args.get("verify_checksum") {
             options.verify_checksum = verify_str.parse::<bool>().unwrap_or(false);
@@ -3561,8 +3584,8 @@ impl SshHandle {
         }
 
         // Parse behavior & output
-        if let Some(dry_run_str) = args.get("dry_run") {
-            options.dry_run = dry_run_str.parse::<bool>().unwrap_or(false);
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run_str;
         }
         if let Some(format) = args.get("format") {
             options.format = match format.as_str() {
@@ -5232,9 +5255,8 @@ impl SshHandle {
         }
 
         // Parse behavior and output
-        if let Some(val_str) = args.get("dry_run") {
-            options.dry_run = val_str.parse::<bool>()
-                .unwrap_or(false);
+        if let Some(val_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = val_str;
         }
 
         if let Some(format_str) = args.get("format") {
@@ -5408,19 +5430,25 @@ impl SshHandle {
         // Execute the SSH command
         match self.execute_ssh_command(&host, port, &username, &command_str, &effective_options) {
             Ok((result, timing)) => {
+                // The command succeeded only if it ran to completion with
+                // exit code 0. ssh itself exits 255 when it cannot connect.
+                let failure = exec_failure(&result);
                 let response = SshExecResponse {
-                    ok: true,
+                    ok: failure.is_none(),
                     dry_run: false,
                     connection: connection_info,
                     command: Some(command_info),
-                    result: Some(result),
+                    result: Some(result.clone()),
                     timing: Some(timing),
-                    error: None,
+                    error: failure.clone(),
                     warnings: vec![],
                 };
 
                 self.write_response(&response, &options, io)?;
-                Ok(Status::success())
+                match failure {
+                    None => Ok(Status::success()),
+                    Some(f) => Ok(Status::err(result.exit_code.unwrap_or(1), f.message)),
+                }
             },
             Err(e) => {
                 let ssh_error = match e.downcast_ref::<SshError>() {
@@ -5822,8 +5850,8 @@ impl SshHandle {
         }
 
         // Parse behavior
-        if let Some(dry_run_str) = args.get("dry_run") {
-            options.dry_run = dry_run_str.parse::<bool>().unwrap_or(false);
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run_str;
         }
         if let Some(allow_str) = args.get("allow_wildcard_binds") {
             options.allow_wildcard_binds = allow_str.parse::<bool>().unwrap_or(false);
@@ -6875,9 +6903,8 @@ impl SshHandle {
         }
 
         // Parse behavior & output
-        if let Some(val) = args.get("dry_run") {
-            options.dry_run = val.parse::<bool>()
-                .with_context(|| format!("Invalid dry_run: {}", val))?;
+        if let Some(val) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = val;
         }
         if let Some(format_str) = args.get("format") {
             options.format = serde_json::from_value(serde_json::json!(format_str))
@@ -7202,8 +7229,8 @@ impl SshHandle {
         }
 
         // Behavior & output
-        if let Some(dry_run) = args.get("dry_run") {
-            options.dry_run = dry_run.parse::<bool>().unwrap_or(false);
+        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run;
         }
         if let Some(format) = args.get("format") {
             options.format = match format.as_str() {
@@ -7851,9 +7878,8 @@ impl SshHandle {
         }
 
         // Parse behavior flags
-        if let Some(dry_run_str) = args.get("dry_run") {
-            options.dry_run = dry_run_str.parse::<bool>()
-                .unwrap_or_else(|_| dry_run_str.eq_ignore_ascii_case("true"));
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            options.dry_run = dry_run_str;
         }
         if let Some(allow_insecure_str) = args.get("allow_insecure_hostkey") {
             options.allow_insecure_hostkey = allow_insecure_str.parse::<bool>()
@@ -8869,6 +8895,74 @@ mod tests {
         assert!(response.result.as_ref().unwrap().exit_code.is_none());
     }
 
+    // SEC-05: exec under any accepted dry_run spelling never invokes ssh,
+    // and a malformed value is rejected without invoking it either.
+    #[test]
+    fn exec_dry_run_spellings_never_run_ssh() {
+        for v in ["true", "1", "yes", "on", "YES"] {
+            let handle = create_test_handle(Some("host.com"), None, Some("user"));
+            let calls = mock_ssh(fake_remote);
+            let args = args_from_pairs(&[("command", "touch /tmp/should-not-exist"), ("dry_run", v)]);
+            let (stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
+            assert_eq!(status.code, Some(0), "dry_run={v}");
+            let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
+            assert!(response.dry_run, "dry_run={v}");
+            assert!(calls.borrow().is_empty(), "dry_run={v} invoked ssh");
+        }
+        for v in ["maybe", "", "2"] {
+            let handle = create_test_handle(Some("host.com"), None, Some("user"));
+            let calls = mock_ssh(fake_remote);
+            let args = args_from_pairs(&[("command", "touch /tmp/should-not-exist"), ("dry_run", v)]);
+            let mut stdin = Cursor::new(Vec::new());
+            let (mut out, mut err) = (Cursor::new(Vec::new()), Cursor::new(Vec::new()));
+            let mut io = IoStreams { stdin: &mut stdin, stdout: &mut out, stderr: &mut err };
+            let ok = handle.verb_exec(&args, &mut io).map(|s| s.ok).unwrap_or(false);
+            assert!(!ok, "dry_run={v:?} accepted");
+            assert!(calls.borrow().is_empty(), "dry_run={v:?} invoked ssh");
+        }
+        // dry_run=false still executes (one ssh invocation).
+        let handle = create_test_handle(Some("host.com"), None, Some("user"));
+        let calls = mock_ssh(fake_remote);
+        let args = args_from_pairs(&[("command", "echo hi"), ("dry_run", "false")]);
+        let (_stdout, _stderr, status) = capture_output(|io| handle.verb_exec(&args, io));
+        assert_eq!(status.code, Some(0));
+        assert_eq!(calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn every_ssh_parser_reads_dry_run_the_same_way() {
+        let handle = create_test_handle(Some("host.com"), None, Some("user"));
+        let t = handle.target.clone();
+        let base = [("command", "true"), ("source", "/etc/hosts"), ("dest", "/tmp/x"), ("key", "ssh-ed25519 AAAA test"),
+                    ("local_port", "8080"), ("remote_port", "80"), ("host", "host.com")];
+        let parse = |a: &Args| -> Vec<(&str, Result<bool>)> {
+            vec![
+                ("exec", handle.parse_exec_options(a, &t).map(|o| o.dry_run)),
+                ("upload", handle.parse_upload_options(a, &t).map(|o| o.dry_run)),
+                ("download", handle.parse_download_options(a, &t).map(|o| o.dry_run)),
+                ("keys.list", handle.parse_keys_list_options(a, &t).map(|o| o.dry_run)),
+                ("tunnel", handle.parse_tunnel_options(a, &t).map(|o| o.dry_run)),
+                ("key.add", handle.parse_key_add_options(a, &t).map(|o| o.dry_run)),
+                ("config.get", handle.parse_config_get_options(a).map(|o| o.dry_run)),
+                ("test", handle.parse_test_options(a, &t).map(|o| o.dry_run)),
+            ]
+        };
+        for v in ["true", "1", "yes", "On"] {
+            let mut a = args_from_pairs(&base);
+            a.insert("dry_run".into(), v.into());
+            for (verb, r) in parse(&a) {
+                assert!(r.as_ref().map(|d| *d).unwrap_or(false), "{verb} dry_run={v}: {:?}", r.err());
+            }
+        }
+        for v in ["maybe", "", "tru"] {
+            let mut a = args_from_pairs(&base);
+            a.insert("dry_run".into(), v.into());
+            for (verb, r) in parse(&a) {
+                assert!(r.is_err(), "{verb} accepted dry_run={v:?}");
+            }
+        }
+    }
+
     #[test]
     fn test_successful_execution() {
         let handle = create_test_handle(Some("host.com"), None, Some("user"));
@@ -9108,12 +9202,34 @@ mod tests {
             handle.verb_exec(&args, io)
         });
 
-        assert_eq!(status.code, Some(0)); // SSH exec itself succeeds
+        // FUNC-02: a non-zero remote exit is a failure, and the process
+        // exit status carries the remote code.
+        assert!(!status.ok);
+        assert_eq!(status.code, Some(1));
         
-        // Parse JSON response
+        // Parse JSON response: ok agrees with the exit status
         let response: SshExecResponse = serde_json::from_str(&stdout).unwrap();
-        assert!(response.ok);
+        assert!(!response.ok);
         assert_eq!(response.result.as_ref().unwrap().exit_code, Some(1));
+        assert_eq!(response.error.as_ref().unwrap().code, "REMOTE_EXIT_NONZERO");
+    }
+
+    // FUNC-02: every way a completed exec can fail is reported as failure.
+    #[test]
+    fn exec_failure_classification() {
+        let base = SshExecResult {
+            executed: true, exit_code: Some(0), signal: None, timed_out: false,
+            output_truncated: false, stdout: None, stderr: None,
+        };
+        assert!(exec_failure(&base).is_none());
+        let with = |f: &dyn Fn(&mut SshExecResult)| { let mut r = base.clone(); f(&mut r); exec_failure(&r).unwrap() };
+        assert_eq!(with(&|r| r.exit_code = Some(2)).code, "REMOTE_EXIT_NONZERO");
+        let e = with(&|r| { r.exit_code = Some(255); r.stderr = Some("ssh: connect to host h port 22: Connection refused\n".into()) });
+        assert_eq!(e.code, "SSH_FAILED");
+        assert!(e.message.contains("Connection refused"));
+        assert_eq!(with(&|r| r.timed_out = true).code, "EXEC_TIMEOUT");
+        assert_eq!(with(&|r| { r.exit_code = None; r.signal = Some("KILL".into()) }).code, "EXEC_SIGNALED");
+        assert_eq!(with(&|r| r.exit_code = None).code, "EXEC_NO_EXIT_CODE");
     }
 
     // Upload verb tests

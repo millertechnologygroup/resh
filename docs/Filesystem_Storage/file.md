@@ -2,490 +2,236 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes infrastructure operations using a resource-oriented URI execution model.
+The `file://` handle reads, writes, inspects, hashes and searches files and
+directories on the local filesystem, and manages permissions, ownership,
+extended attributes and tags. It uses the Rust standard library for file
+I/O, the `xattr` crate for extended attributes and the `notify` crate for
+`watch`.
 
-The `file://` handle provides comprehensive file and directory management capabilities for local filesystems. It supports:
-
-* Basic file I/O operations
-* Metadata inspection
-* File manipulation
-* Permission management (Unix)
-* Cryptographic hashing and verification
-* Content search and replacement
-* File structure analysis
-* Change monitoring
-* Extended attributes (Unix)
-
-Traditional file management from shell environments often relies on multiple utilities (`cat`, `cp`, `mv`, `chmod`, `grep`, `find`, `sha256sum`, etc.) with inconsistent syntax and output formats. This complicates automation and increases parsing fragility.
-
-The `file://` handle addresses these limitations by:
-
-* Providing a unified URI-based interface
-* Enforcing absolute-path addressing
-* Returning structured JSON output where appropriate
-* Standardizing exit codes
-* Supporting deterministic automation workflows
-
-All file operations follow the URI format:
-
-```
-file:///absolute/path/to/resource.VERB(arguments)
-```
-
-Absolute paths are required for reliability and determinism.
+Platform: Linux only is supported and tested.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Command Syntax
 
-### Structured Interface Model
-
-All operations follow:
-
-```
-file://absolute-path.verb(arguments)
+```text
+resh file://<path>.<verb> key=value ...
+resh 'file://<path>.<verb>(key=value,...)'
 ```
 
-Examples:
+The verb is the part after the last dot of the URL (`ea.get`, `ea.set`,
+`tag.add`, `tag.rm` are recognized as a whole), so a file name with dots
+works: `file:///etc/app.conf.read` reads `/etc/app.conf`.
+
+Paths:
+
+* Absolute paths take three slashes: `file:///var/log/syslog.tail`.
+* Relative paths resolve from the current directory:
+  `file://data.txt.read`, `file://./logs/app.log.tail`. Relative directories
+  work too (`file://src.find`).
+* URL parsing lowercases the first segment of a relative path and drops a
+  leading `localhost`, so write `file://./Report.txt.read` for a mixed-case
+  relative name.
+
+Help: `resh file --help`, `resh file <verb> --help`, or the `help`/`h` verb.
+
+### Exit status
+
+0 on success. On failure the exit code is non-zero; the handle uses 1, 2 or
+3 depending on the verb and error (for example 2 for "file does not exist"
+in several verbs, 3 for a permission error in `write`/`append`). The codes
+are not consistent across verbs, so treat any non-zero code as failure and
+read the message on stderr (`Error: <reason>`). `grep` exits 1 when there
+are no matches.
+
+### timeout_ms
+
+Only `watch` reads `timeout_ms` (default 30000; it stops after that many
+milliseconds and exits 0; `timeout_ms=0` means no time limit, so it waits
+until `max_events` events have arrived). Every other verb ignores
+it, including `tail follow=true`, which runs until interrupted.
+
+---
+
+## 3. Verbs
+
+### 3.1 Reading and inspection
+
+| Verb      | Arguments | Output |
+| --------- | --------- | ------ |
+| `read`    | – | Raw file contents |
+| `exists`  | – | `{"exists":true,"kind":"file","path":...}` |
+| `stat`    | `nofollow=true` | JSON: `file_type`, `size`, `mode`, `uid`, `gid`, `readonly`, `accessed`, `modified`, `created` |
+| `preview` | `max_bytes`, `max_lines`, `mode=auto\|text\|binary`, `encoding=base64\|hex`, `include_metadata` | JSON sample |
+| `summary` | `max_bytes` | JSON: size, mtime, content type, line stats (entry count for directories) |
+| `analyze` | `max_bytes` | JSON: `ascii_ratio`, `entropy`, `line_count`, `classification` |
+| `schema`  | `format=json\|ndjson\|csv\|tsv\|text`, `max_bytes`, `max_rows` | JSON structure report |
+| `tail`    | `lines` (default 10) or `bytes`, `follow=true\|false` | Raw lines |
 
 ```bash
-file:///tmp/data.txt.read
-file:///var/log/app.log.tail(lines=50)
-file:///etc/config.yaml.replace(pattern="old",replacement="new")
+resh file:///etc/hostname.read
+resh --json-pretty file:///etc/hosts.stat
+resh file://./logs/app.log.tail lines=50
+resh --json-pretty file:///srv/data/users.csv.schema
 ```
 
-This enforces consistent grammar across 30 verbs covering file lifecycle operations.
+### 3.2 Searching
 
----
+| Verb   | Arguments |
+| ------ | --------- |
+| `grep` | `pattern` (required), `regex`, `ignore_case`, `invert`, `max` (stop after n matches), `before`, `after`, `format=text\|json`, `line_numbers` |
+| `find` | `name=<glob>`, `type=file\|dir\|symlink`, `max_depth`, `limit`, `include_hidden`, `follow_symlinks` |
 
-### Safety-First Execution
+```bash
+resh file:///var/log/app.log.grep pattern=error ignore_case=true max=20
+resh --json-pretty file:///srv/www.find name='*.html' type=file max_depth=3
+```
 
-The `file://` handle implements:
+The match limit for `grep` is `max`; there is no `max_count` argument (it is
+ignored). `find` prints a JSON array of entries with absolute paths.
 
-* Atomic write and append operations (where possible)
-* Explicit overwrite controls
-* Backup options for destructive operations
-* Exit codes for deterministic error handling
-* Optional creation flags (`create=false`)
-* Hash size limits (10GB maximum)
+Limitation: `find include_hidden=false` hides dot-files and dot-directories
+themselves but still descends into hidden directories, so files inside
+them (for example `.git/config`) are listed.
 
-Platform-specific operations (e.g., `chmod`, `chown`, extended attributes) return exit code `95` when unsupported.
+### 3.3 Watching
 
----
+```bash
+resh file:///etc/nginx/nginx.conf.watch events=modify timeout_ms=60000
+resh file://./incoming.watch max_events=1
+```
 
-### Deterministic Behavior
+Arguments: `timeout_ms` (default 30000), `max_events` (default 1),
+`events=create,modify,remove,rename` (default all). `watch` stops at the
+first of the two limits, so by default it returns after one event or 30
+seconds. Each event is printed as one line of JSON. The path is watched
+non-recursively.
 
-Operations:
+### 3.4 Hashing and verification
 
-* Require absolute paths
-* Use strict argument validation
-* Return structured JSON for metadata and hashing
-* Use predictable exit codes
-* Avoid implicit shell expansion
+| Verb | Arguments | Algorithms |
+| ---- | --------- | ---------- |
+| `md5`, `sha1`, `sha256`, `sha512` | – | fixed |
+| `hash` | `algo` (default `sha256`) | `sha256`, `sha512`, `blake3` |
+| `verify` | `algo` (default `sha256`), `expected=<hex>`, `expected_any=<hex>;<hex>...`, `size=<bytes>` | `sha256`, `sha1`, `md5`, `blake3` |
 
-Exit Codes:
+`hash` does not accept `md5` or `sha1`; `verify` does not accept `sha512`.
+An unsupported algorithm fails with exit code 2. Files larger than 10 GiB
+are refused by the hashing functions. `verify` prints a JSON report and
+fails (non-zero) on a mismatch.
 
-| Code | Meaning               |
-| ---- | --------------------- |
-| 0    | Success               |
-| 1    | General error         |
-| 2    | File not found        |
-| 3    | Permission denied     |
-| 95   | Feature not supported |
+```bash
+resh --json-pretty file:///srv/data/users.csv.sha256
+resh --json-pretty file:///srv/data/users.csv.hash algo=blake3
+resh --json-pretty file:///deploy/app.bin.verify algo=sha256 expected=58603e637dd7dc6b9bafe03f99f57a1df21bfe591f460fef091c533969c47984
+```
 
-Automation should rely on exit codes and JSON responses rather than parsing textual output.
-
----
-
-### JSON-Based Structured Output
-
-Structured JSON output is provided for:
-
-* `exists`
-* `stat`
-* Hashing operations
-* `verify`
-* `find`
-* Metadata and analysis verbs
-
-Example:
+Output of the fixed-algorithm verbs:
 
 ```json
-{
-  "path": "/tmp/file.txt",
-  "algorithm": "sha256",
-  "hash": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
-  "size": 5
-}
+{"algorithm":"sha256","hash":"58603e637dd7dc6b9bafe03f99f57a1df21bfe591f460fef091c533969c47984","path":"log.txt","size":21}
 ```
 
----
+### 3.5 Writing and modifying content
 
-### AI-Readiness
-
-The predictable URI grammar and structured outputs enable:
-
-* Deterministic automation
-* CI/CD pipeline integration
-* Integrity validation workflows
-* Agent-based orchestration
-* Programmatic content inspection
-
----
-
-## 3. Command Syntax and Execution Model
-
-### 3.1 URI Structure
-
-```
-file:///absolute/path.VERB(arguments)
-```
-
-#### Components
-
-| Component     | Description              |
-| ------------- | ------------------------ |
-| `file`        | Handle identifier        |
-| Absolute Path | Target file or directory |
-| `VERB`        | Operation                |
-| `arguments`   | Named parameters         |
-
-**Requirements:**
-
-* Absolute paths required
-* Case-sensitive
-* URL encoding required for special characters
-
----
-
-### Example Commands
-
-Basic read:
+| Verb | Arguments |
+| ---- | --------- |
+| `write` | `data`, `create` (default `true`), `mode=<octal>` |
+| `append` | `data`, `create` (default `true`) |
+| `replace` | `pattern`, `replacement` (required), `regex`, `count`, `dry_run`, `backup=<suffix>` |
 
 ```bash
-file:///tmp/example.txt.read
+resh file:///tmp/greeting.txt.write data='hello world'
+resh file:///var/tmp/jobs.log.append data='job finished'
+resh --json-pretty file:///etc/app.conf.replace pattern=8080 replacement=9090 dry_run
 ```
 
-Write content:
+`write` replaces the file atomically (temporary file plus rename) and
+prints `{"bytes":...,"path":...,"written":true}`.
+
+**`write` and `append` without `data=` read standard input until EOF.**
+If standard input is empty (for example `< /dev/null`, or a non-interactive
+job with no input), `write` truncates the file to 0 bytes and still reports
+success. Always pass `data=` unless you mean to pipe content in:
 
 ```bash
-file:///tmp/example.txt.write(data="hello")
+printf 'line\n' | resh file:///tmp/out.txt.write
 ```
 
-Calculate SHA-256:
+`replace` rewrites the file atomically; `dry_run` reports the replacement
+count without changing it.
+
+### 3.6 Copying, moving, deleting
+
+| Verb | Arguments |
+| ---- | --------- |
+| `copy` | `to` (required), `overwrite`, `preserve_mode` (default `true`) |
+| `rename` | `to` (required), `overwrite`, `create_parents`, `atomic` (default `true`) |
+| `move` / `mv` | `to` (required), `overwrite`; moves into `to` when it is an existing directory |
+| `delete` / `remove` | `recursive`, `force`, `missing_ok` |
 
 ```bash
-file:///tmp/example.txt.sha256
+resh file:///etc/nginx/nginx.conf.copy to=/etc/nginx/nginx.conf.bak
+resh --json-pretty file:///srv/data/old.csv.rename to=/srv/data/new.csv
+resh file:///tmp/report.pdf.move to=/srv/reports
+resh file:///tmp/build.cache.delete recursive=true
 ```
 
-Search text:
+* `copy` only copies regular files. `preserve_times` is accepted but not
+  implemented (it prints a warning and the copy keeps the current time).
+* `to=` may be absolute, relative (`backup/new.txt`) or a bare name
+  (`to=new.txt`), which is relative to the working directory. A missing
+  parent directory fails with "destination parent does not exist" unless
+  `create_parents=true` (rename only).
+* `rename overwrite=true` checks the destination's parent first, then
+  deletes an existing destination and renames. If the final rename itself
+  fails (for example across filesystems with `atomic=true`), the deleted
+  destination is not restored.
+* `delete` refuses `/`; a directory needs `recursive=true`. `force=true` or
+  `missing_ok=true` make a missing path succeed.
+
+### 3.7 Permissions, ownership, attributes, tags
+
+| Verb | Arguments |
+| ---- | --------- |
+| `chmod` | `mode=<octal>` (required) |
+| `chown` | `user`, `uid`, `group`, `gid`, `recursive` |
+| `ea.get` | `name` (required), `allow_missing` |
+| `ea.set` | `name`, `value` (required), `mode=create\|update\|upsert` |
+| `tag.add` | `name=<tag>[,<tag>...]` |
+| `tag.rm` | `name=<tag>[,<tag>...]` |
 
 ```bash
-file:///tmp/example.txt.grep(pattern="ERROR")
+resh file:///usr/local/bin/backup.sh.chmod mode=755
+resh file:///srv/www.chown user=alice group=www recursive=true
+resh --json-pretty file:///srv/data/report.pdf.ea.get name=user.comment
+resh --json-pretty file:///srv/data/report.pdf.tag.add name=work,q3
 ```
 
----
-
-### 3.2 Execution Semantics
-
-Operations return either:
-
-* Raw output (e.g., `read`)
-* Structured JSON (e.g., `stat`, `hash`)
-* Exit-code-based success/failure
-
-#### Representative JSON Output (exists)
-
-```json
-{
-  "path": "/tmp/file.txt",
-  "exists": true,
-  "kind": "file"
-}
-```
-
-#### Representative JSON Output (verify)
-
-```json
-{
-  "path": "/tmp/file.txt",
-  "algorithm": "sha256",
-  "verified": true,
-  "size": 1024
-}
-```
-
-Automation must inspect:
-
-* Exit codes
-* `verified` flag
-* Structured JSON fields
+Tags are lowercased and stored, comma-separated, in the `user.resh.tags`
+extended attribute; `tag.add`/`tag.rm` print `{"path":...,"tags":[...]}`.
+Extended attributes need a filesystem that supports `user.*` attributes.
 
 ---
 
-## 4. Functional Domain – File Handle
+## 4. Boolean arguments
 
-The `file://` handle belongs to the **Filesystem & Storage** domain.
-
-It provides 30 verbs across several categories.
-
----
-
-### 4.1 Basic I/O
-
-| Verb     | Description                |
-| -------- | -------------------------- |
-| `read`   | Stream entire file         |
-| `write`  | Atomic overwrite or create |
-| `append` | Atomic append              |
-
-Example:
-
-```bash
-file:///tmp/log.txt.append(data="entry")
-```
+`overwrite` (copy, move), `recursive` (delete, chown), `force` (delete) and
+`dry_run` (replace) accept `true/false/1/0/yes/no/on/off` and reject other
+values. Some other booleans are looser: `write`/`append` `create` is false
+only for the exact string `false`; `stat nofollow` is true only for `true`;
+`missing_ok` and `preserve_mode` accept `true/1/yes` as true and anything
+else as false.
 
 ---
 
-### 4.2 File Information
-
-| Verb     | Description          |
-| -------- | -------------------- |
-| `exists` | Check file existence |
-| `stat`   | Retrieve metadata    |
-
----
-
-### 4.3 File Operations
-
-| Verb     | Description |
-| -------- | ----------- |
-| `copy`   | Copy file   |
-| `delete` | Remove file |
-| `rename` | Rename file |
-| `move`   | Move file   |
-
-Example:
-
-```bash
-file:///tmp/file.txt.copy(to="/backup/file.txt",overwrite=true)
-```
-
----
-
-### 4.4 Permissions (Unix Only)
-
-| Verb    | Description      |
-| ------- | ---------------- |
-| `chmod` | Change file mode |
-| `chown` | Change ownership |
-
-Example:
-
-```bash
-file:///tmp/script.sh.chmod(mode=755)
-```
-
----
-
-### 4.5 Hashing & Integrity
-
-Supported algorithms:
-
-* MD5
-* SHA-1
-* SHA-256
-* SHA-512
-* BLAKE3
-
-Verbs:
-
-| Verb                              | Description             |
-| --------------------------------- | ----------------------- |
-| `md5`, `sha1`, `sha256`, `sha512` | Fixed algorithm         |
-| `hash(algo=...)`                  | Configurable            |
-| `verify(...)`                     | Verify hash and/or size |
-
-Example:
-
-```bash
-file:///tmp/file.iso.verify(algo=sha256,expected=<hash>)
-```
-
-Security Note:
-
-* SHA-256+ recommended
-* 10GB hash size limit enforced
-
----
-
-### 4.6 Search and Analysis
-
-| Verb      | Description         |
-| --------- | ------------------- |
-| `find`    | Recursive search    |
-| `grep`    | Pattern search      |
-| `replace` | Pattern replacement |
-| `tail`    | Last lines          |
-| `preview` | Intelligent preview |
-| `schema`  | Structure detection |
-| `summary` | File summary        |
-| `watch`   | Monitor changes     |
-| `analyze` | Content analysis    |
-
-Example:
-
-```bash
-file:///var/log/app.log.tail(lines=100,follow=true)
-```
-
----
-
-### 4.7 Extended Attributes (Unix Only)
-
-| Verb      | Description             |
-| --------- | ----------------------- |
-| `ea.get`  | Get extended attributes |
-| `ea.set`  | Set extended attributes |
-| `tag.add` | Add tags                |
-| `tag.rm`  | Remove tags             |
-
-These operations return exit code `95` on unsupported platforms.
-
----
-
-## 5. Platform Support
-
-| Platform | Support                        |
-| -------- | ------------------------------ |
-| Linux    | Full support                   |
-| macOS    | Full support                   |
-| Windows  | Supported (no Unix-only verbs) |
-
-Unix-only features:
-
-* `chmod`
-* `chown`
-* Extended attributes
-* Tag operations
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Always use absolute paths.
-* Use `create=false` to prevent unintended file creation.
-* Use `overwrite=false` to prevent accidental overwrites.
-* Create backups before `replace` operations.
-* Use secure permission modes (600, 640) for sensitive files.
-* Use `verify` after critical file transfers.
-
----
-
-### Automation Considerations
-
-* Always inspect exit codes.
-* Use JSON-returning verbs in CI pipelines.
-* Limit search depth in `find`.
-* Use `max_count` in `grep`.
-* Avoid hashing files near 10GB limit.
-
----
-
-### CI/CD Integration
-
-Typical workflows:
-
-* Validate file integrity after artifact download.
-* Replace configuration safely with backup enabled.
-* Verify permission modes post-deployment.
-* Monitor log files in post-deployment checks.
-
-Example:
-
-```bash
-file:///deploy/app.bin.verify(algo=sha256,expected=<published>)
-```
-
----
-
-### Production Environment Recommendations
-
-* Use SHA-256 or SHA-512 for security validation.
-* Restrict permissions using `chmod`.
-* Use atomic `write` and `rename`.
-* Monitor file changes with `watch`.
-* Avoid MD5 and SHA-1 for security-sensitive validation.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Validate deployment artifacts.
-* Manage configuration files.
-* Monitor logs during rollout.
-* Replace values programmatically.
-
-### SRE Engineers
-
-* Investigate incidents via file inspection.
-* Verify integrity after transfers.
-* Secure sensitive files.
-* Monitor change events.
-
-### Network Administrators
-
-* Manage configuration backups.
-* Secure credentials with strict permissions.
-* Analyze log files.
-* Track file changes.
-
-### AI/Automation Engineers
-
-* Use deterministic JSON output for orchestration.
-* Validate file integrity in automated pipelines.
-* Extract schema metadata programmatically.
-* Monitor configuration drift via `watch`.
-
----
-
-## 8. Technical Foundation
-
-The `file://` handle is implemented in Rust as part of resh.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Deterministic file I/O
-* Strong type enforcement
-* Safe concurrency primitives
-
-### Type Safety
-
-* Validated argument parsing
-* Algorithm whitelist enforcement
-* Strict path handling
-* Explicit exit code mapping
-
-### Performance Characteristics
-
-* Atomic write/append
-* Efficient streaming for `read`
-* Hash size enforcement
-* Directory traversal optimization in `find`
-
-### Cross-Platform Architecture
-
-Supported on:
-
-* Linux
-* macOS
-* Windows
-
-Unix-only features return exit code `95` on unsupported platforms.
-
-
+## 5. Best Practices
+
+* Pass `data=` to `write` explicitly in scripts; never rely on stdin unless
+  you pipe into it.
+* Use `create=false` to avoid creating files by accident and keep
+  `overwrite` off unless needed.
+* Use `replace dry_run` or `backup=<suffix>` before editing configuration.
+* Use SHA-256, SHA-512 or BLAKE3 for integrity checks; MD5 and SHA-1 are
+  for compatibility only.
+* Bound `find` with `max_depth`/`limit` and `grep` with `max`.

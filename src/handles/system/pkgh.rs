@@ -271,7 +271,8 @@ Shown for apt."#,
                 usage: "resh pkg://<alias>.update input=<json>\n  \
                     <json> keys: manager (required), packages, refresh_index, upgrade,\n  \
                     assume_yes, security_only, check_only, dry_run, timeout_ms,\n  \
-                    extra_args, env",
+                    extra_args, env\n  \
+                    security_only works with dnf and yum only; elsewhere it is refused",
                 example: "resh pkg://system.update 'input={\"manager\":\"apt\",\"check_only\":true}'",
                 example_output: Some(
                     r#"{
@@ -309,7 +310,8 @@ instead of available_updates and commands."#,
                 usage: "resh pkg://<alias>.upgrade input=<json>\n  \
                     <json> keys: manager (required), packages, refresh_index,\n  \
                     assume_yes, security_only, dry_run, check_only, timeout_ms,\n  \
-                    extra_args, env",
+                    extra_args, env\n  \
+                    security_only works with dnf only; elsewhere it is refused",
                 example: "resh pkg://system.upgrade 'input={\"manager\":\"apt\",\"check_only\":true}'",
                 example_output: Some(
                     r#"{
@@ -395,6 +397,111 @@ output adds results and summary and omits commands."#,
         },
     ],
 };
+
+/// A package-manager command line, run directly with no shell.
+///
+/// Fixed words come from string literals in this file (`lit`); every value
+/// from the caller (package names, versions, arch, extra args) is added with
+/// `arg` and always stays exactly one argv element, so shell syntax in it is
+/// never interpreted. Leading `NAME=value` words of a literal are set in the
+/// child's environment. `Display` renders the same text the handle has
+/// always reported in dry-run `commands`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CmdLine {
+    env: Vec<(String, String)>,
+    argv: Vec<String>,
+}
+
+impl CmdLine {
+    fn lit(words: &str) -> Self {
+        let mut c = Self::default();
+        c.push_lit(words);
+        c
+    }
+
+    /// Append fixed words from a literal, e.g. `" -y"`.
+    fn push_lit(&mut self, words: &str) {
+        for w in words.split_whitespace() {
+            match w.split_once('=') {
+                Some((k, v)) if self.argv.is_empty() && !k.is_empty() => {
+                    self.env.push((k.to_string(), v.to_string()))
+                }
+                _ => self.argv.push(w.to_string()),
+            }
+        }
+    }
+
+    /// Append one caller-supplied value as a single argument.
+    fn arg(&mut self, value: &str) {
+        self.argv.push(value.to_string());
+    }
+
+    #[cfg(test)]
+    fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    /// A `tokio` command for this line; nothing is spawned yet.
+    fn command(&self) -> AsyncCommand {
+        let mut c = AsyncCommand::new(&self.argv[0]);
+        c.args(&self.argv[1..]);
+        for (k, v) in &self.env {
+            c.env(k, v);
+        }
+        c
+    }
+}
+
+impl std::fmt::Display for CmdLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let words: Vec<String> = self.env.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .chain(self.argv.iter().cloned())
+            .collect();
+        f.write_str(&words.join(" "))
+    }
+}
+
+/// Check a package name, version or architecture before it reaches a
+/// package manager. Names must start with a letter or digit (so they can
+/// never be read as an option) and use only `[A-Za-z0-9._+:~@/=-]`; no
+/// whitespace, quotes or shell syntax. Returns the reason on failure.
+fn check_pkg_token(kind: &str, value: &str) -> std::result::Result<(), String> {
+    if value.is_empty() || value.len() > 256 {
+        return Err(format!("{} must be 1-256 characters", kind));
+    }
+    if !value.as_bytes()[0].is_ascii_alphanumeric() {
+        return Err(format!("{} {:?} must start with a letter or digit", kind, value));
+    }
+    if let Some(c) = value.chars().find(|c| !(c.is_ascii_alphanumeric() || "._+:~@/=-".contains(*c))) {
+        return Err(format!("{} {:?} contains invalid character {:?}", kind, value, c));
+    }
+    Ok(())
+}
+
+/// Package-file suffixes that make dnf, yum, apt, apk or pacman install a
+/// local file instead of a repository package.
+const PKG_FILE_SUFFIXES: &[&str] = &[".rpm", ".deb", ".apk", ".pkg.tar", ".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz"];
+
+/// A package name read from a restore lockfile, which is untrusted data.
+/// On top of `check_pkg_token`, it must name a repository package: no URL
+/// (`dnf install https://...` fetches and installs it), no `..` path
+/// segment, and no package-file suffix (which makes the manager install a
+/// local file).
+fn check_lockfile_pkg_name(value: &str) -> std::result::Result<(), String> {
+    check_pkg_token("package name", value)?;
+    if value.contains("://") {
+        return Err(format!("package name {:?} looks like a URL", value));
+    }
+    if value.split('/').any(|seg| seg == "..") {
+        return Err(format!("package name {:?} contains a '..' path segment", value));
+    }
+    let lower = value.to_ascii_lowercase();
+    if let Some(suffix) = PKG_FILE_SUFFIXES.iter().find(|s| lower.ends_with(*s)) {
+        return Err(format!("package name {:?} names a package file ({})", value, suffix));
+    }
+    Ok(())
+}
 
 /// Package manager error types
 #[derive(Error, Debug)]
@@ -511,6 +618,28 @@ pub enum PkgError {
     RestoreDowngradeNotSupported(String),
     #[error("Repository not available: {0}")]
     RestoreRepoNotAvailable(String),
+}
+
+/// Whether `verb` restricts its upgrade to security fixes on `manager` when
+/// `security_only` is set: `update` passes `--security` to dnf and yum,
+/// `upgrade` to dnf. The other managers' commands have no such filter, so
+/// the flag would be dropped and every package upgraded; the request is
+/// refused instead.
+fn security_only_supported(verb: &str, manager: &ManagerKind) -> bool {
+    match verb {
+        "update" => matches!(manager, ManagerKind::Dnf | ManagerKind::Yum),
+        "upgrade" => matches!(manager, ManagerKind::Dnf),
+        _ => false,
+    }
+}
+
+fn security_only_refusal(verb: &str, manager: &ManagerKind) -> String {
+    let manager = format!("{manager:?}").to_lowercase();
+    let supported = if verb == "update" { "dnf and yum" } else { "dnf" };
+    format!(
+        "security_only is not supported by pkg {verb} for {manager} (only {supported}); \
+         nothing was run. Without it, every listed or available package would be upgraded."
+    )
 }
 
 /// Supported package managers
@@ -1276,7 +1405,7 @@ impl PkgHandle {
         let result_json = serde_json::to_string_pretty(&result)?;
         writeln!(io.stdout, "{}", result_json)?;
         
-        Ok(Status::success())
+        Ok(result_status("install", &result))
     }
 
     fn remove_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -1295,7 +1424,7 @@ impl PkgHandle {
         let result_json = serde_json::to_string_pretty(&result)?;
         writeln!(io.stdout, "{}", result_json)?;
         
-        Ok(Status::success())
+        Ok(result_status("remove", &result))
     }
 
     fn update_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -1314,7 +1443,7 @@ impl PkgHandle {
         let result_json = serde_json::to_string_pretty(&result)?;
         writeln!(io.stdout, "{}", result_json)?;
         
-        Ok(Status::success())
+        Ok(result_status("update", &result))
     }
 
     fn upgrade_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -1333,7 +1462,7 @@ impl PkgHandle {
         let result_json = serde_json::to_string_pretty(&result)?;
         writeln!(io.stdout, "{}", result_json)?;
         
-        Ok(Status::success())
+        Ok(result_status("upgrade", &result))
     }
 
     fn info_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -1428,7 +1557,7 @@ impl PkgHandle {
         let result_json = serde_json::to_string_pretty(&result)?;
         writeln!(io.stdout, "{}", result_json)?;
         
-        Ok(Status::success())
+        Ok(result_status("restore", &result))
     }
 
     async fn install_async(&self, config: InstallConfig) -> Result<Value, PkgError> {
@@ -1465,6 +1594,13 @@ impl PkgHandle {
             if pkg.name.trim().is_empty() {
                 return Err(PkgError::InvalidInstallConfig("package name cannot be empty".to_string()));
             }
+            check_pkg_token("package name", &pkg.name).map_err(PkgError::InvalidInstallConfig)?;
+            if let Some(ref v) = pkg.version {
+                check_pkg_token("version", v).map_err(PkgError::InvalidInstallConfig)?;
+            }
+        }
+        if let Some(ref arch) = config.arch {
+            check_pkg_token("arch", arch).map_err(PkgError::InvalidInstallConfig)?;
         }
 
         // Check timeout
@@ -1587,12 +1723,12 @@ impl PkgHandle {
 
         // Add cache update command if needed
         if config.update_cache {
-            commands.push(self.build_update_cache_command(manager)?);
+            commands.push(self.build_update_cache_command(manager)?.to_string());
         }
 
         // Check package status and build install commands
         let install_command = self.build_install_command(config, manager).await?;
-        commands.push(install_command);
+        commands.push(install_command.to_string());
 
         // Check which packages would be installed
         for pkg in &config.packages {
@@ -1681,67 +1817,67 @@ impl PkgHandle {
     }
 
     /// Build cache update command for manager
-    fn build_update_cache_command(&self, manager: &ManagerKind) -> Result<String, PkgError> {
+    fn build_update_cache_command(&self, manager: &ManagerKind) -> Result<CmdLine, PkgError> {
         match manager {
-            ManagerKind::Apt => Ok("apt-get update".to_string()),
-            ManagerKind::Dnf => Ok("dnf makecache".to_string()),
-            ManagerKind::Yum => Ok("yum makecache".to_string()),
-            ManagerKind::Pacman => Ok("pacman -Sy".to_string()),
-            ManagerKind::Apk => Ok("apk update".to_string()),
-            ManagerKind::Brew => Ok("brew update".to_string()),
+            ManagerKind::Apt => Ok(CmdLine::lit("apt-get update")),
+            ManagerKind::Dnf => Ok(CmdLine::lit("dnf makecache")),
+            ManagerKind::Yum => Ok(CmdLine::lit("yum makecache")),
+            ManagerKind::Pacman => Ok(CmdLine::lit("pacman -Sy")),
+            ManagerKind::Apk => Ok(CmdLine::lit("apk update")),
+            ManagerKind::Brew => Ok(CmdLine::lit("brew update")),
             _ => Err(PkgError::ManagerNotAvailable("Unsupported manager".to_string())),
         }
     }
 
     /// Build install command for manager and packages
-    async fn build_install_command(&self, config: &InstallConfig, manager: &ManagerKind) -> Result<String, PkgError> {
+    async fn build_install_command(&self, config: &InstallConfig, manager: &ManagerKind) -> Result<CmdLine, PkgError> {
         let mut cmd = match manager {
             ManagerKind::Apt => {
-                let mut base = "DEBIAN_FRONTEND=noninteractive apt-get install".to_string();
+                let mut base = CmdLine::lit("DEBIAN_FRONTEND=noninteractive apt-get install");
                 if config.assume_yes {
-                    base.push_str(" -y");
+                    base.push_lit(" -y");
                 }
                 if config.reinstall {
-                    base.push_str(" --reinstall");
+                    base.push_lit(" --reinstall");
                 }
                 base
             },
             ManagerKind::Dnf => {
-                let mut base = if config.reinstall { "dnf reinstall" } else { "dnf install" }.to_string();
+                let mut base = CmdLine::lit(if config.reinstall { "dnf reinstall" } else { "dnf install" });
                 if config.assume_yes {
-                    base.push_str(" -y");
+                    base.push_lit(" -y");
                 }
                 base
             },
             ManagerKind::Yum => {
-                let mut base = if config.reinstall { "yum reinstall" } else { "yum install" }.to_string();
+                let mut base = CmdLine::lit(if config.reinstall { "yum reinstall" } else { "yum install" });
                 if config.assume_yes {
-                    base.push_str(" -y");
+                    base.push_lit(" -y");
                 }
                 base
             },
             ManagerKind::Pacman => {
-                let mut base = "pacman -S".to_string();
+                let mut base = CmdLine::lit("pacman -S");
                 if config.assume_yes {
-                    base.push_str(" --noconfirm");
+                    base.push_lit(" --noconfirm");
                 }
                 if config.only_if_missing {
-                    base.push_str(" --needed");
+                    base.push_lit(" --needed");
                 }
                 base
             },
             ManagerKind::Apk => {
-                let mut base = "apk add --no-interactive".to_string();
+                let mut base = CmdLine::lit("apk add --no-interactive");
                 if config.reinstall {
-                    base.push_str(" --force-reinstall");
+                    base.push_lit(" --force-reinstall");
                 }
                 base
             },
             ManagerKind::Brew => {
                 if config.reinstall {
-                    "brew reinstall".to_string()
+                    CmdLine::lit("brew reinstall")
                 } else {
-                    "brew install".to_string()
+                    CmdLine::lit("brew install")
                 }
             },
             _ => return Err(PkgError::ManagerNotAvailable("Unsupported manager".to_string())),
@@ -1749,15 +1885,13 @@ impl PkgHandle {
 
         // Add packages to command
         for pkg in &config.packages {
-            cmd.push(' ');
-            cmd.push_str(&self.format_package_name(pkg, manager, config)?);
+            cmd.arg(&self.format_package_name(pkg, manager, config)?);
         }
 
         // Add extra args if specified
         if let Some(ref extra_args) = config.extra_args {
             for arg in extra_args {
-                cmd.push(' ');
-                cmd.push_str(arg);
+                cmd.arg(arg);
             }
         }
 
@@ -1799,18 +1933,17 @@ impl PkgHandle {
 
     /// Check if package is installed
     async fn is_package_installed(&self, package_name: &str, manager: &ManagerKind) -> Result<bool, PkgError> {
-        let cmd = match manager {
-            ManagerKind::Apt => format!("dpkg -s {}", package_name),
-            ManagerKind::Dnf | ManagerKind::Yum => format!("rpm -q {}", package_name),
-            ManagerKind::Pacman => format!("pacman -Q {}", package_name),
-            ManagerKind::Apk => format!("apk info -e {}", package_name),
-            ManagerKind::Brew => format!("brew list --versions {}", package_name),
+        let mut cmd = match manager {
+            ManagerKind::Apt => CmdLine::lit("dpkg -s"),
+            ManagerKind::Dnf | ManagerKind::Yum => CmdLine::lit("rpm -q"),
+            ManagerKind::Pacman => CmdLine::lit("pacman -Q"),
+            ManagerKind::Apk => CmdLine::lit("apk info -e"),
+            ManagerKind::Brew => CmdLine::lit("brew list --versions"),
             _ => return Err(PkgError::ManagerNotAvailable("Unsupported manager".to_string())),
         };
+        cmd.arg(package_name);
 
-        let output = AsyncCommand::new("sh")
-            .arg("-c")
-            .arg(&cmd)
+        let output = cmd.command()
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -1824,9 +1957,7 @@ impl PkgHandle {
     async fn update_package_cache(&self, manager: &ManagerKind) -> Result<(), PkgError> {
         let cmd = self.build_update_cache_command(manager)?;
         
-        let output = AsyncCommand::new("sh")
-            .arg("-c")
-            .arg(&cmd)
+        let output = cmd.command()
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -1877,8 +2008,7 @@ impl PkgHandle {
         let cmd = self.build_install_command(&temp_config, manager).await?;
         
         // Execute command
-        let mut command = AsyncCommand::new("sh");
-        command.arg("-c").arg(&cmd);
+        let mut command = cmd.command();
         
         // Set environment variables if specified
         if let Some(ref env) = config.env {
@@ -1923,27 +2053,45 @@ impl PkgHandle {
 
     /// Get installed version of package
     async fn get_installed_version(&self, package_name: &str, manager: &ManagerKind) -> Result<String, PkgError> {
-        let cmd = match manager {
-            ManagerKind::Apt => format!("dpkg-query -W -f='${{Version}}' {}", package_name),
-            ManagerKind::Dnf | ManagerKind::Yum => format!("rpm -q --qf '%{{VERSION}}-%{{RELEASE}}' {}", package_name),
-            ManagerKind::Pacman => format!("pacman -Q {} | cut -d' ' -f2", package_name),
-            ManagerKind::Apk => format!("apk info {} | grep -o '[0-9][^[:space:]]*'", package_name),
-            ManagerKind::Brew => format!("brew list --versions {} | cut -d' ' -f2", package_name),
+        // The former shell pipelines (`| cut -d' ' -f2`, `| grep -o ...`)
+        // are applied to the output here instead.
+        let mut cmd = match manager {
+            ManagerKind::Apt => CmdLine::lit("dpkg-query -W -f=${Version}"),
+            ManagerKind::Dnf | ManagerKind::Yum => CmdLine::lit("rpm -q --qf %{VERSION}-%{RELEASE}"),
+            ManagerKind::Pacman => CmdLine::lit("pacman -Q"),
+            ManagerKind::Apk => CmdLine::lit("apk info"),
+            ManagerKind::Brew => CmdLine::lit("brew list --versions"),
             _ => return Err(PkgError::ManagerNotAvailable("Unsupported manager".to_string())),
         };
+        cmd.arg(package_name);
 
-        let output = AsyncCommand::new("sh")
-            .arg("-c")
-            .arg(&cmd)
+        let output = cmd.command()
             .output()
             .await
             .map_err(|e| PkgError::InstallFailed(format!("Failed to get version: {}", e)))?;
 
-        if output.status.success() {
-            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Ok(version)
-        } else {
-            Err(PkgError::InstallFailed("Could not get package version".to_string()))
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let version = match manager {
+            // `cut -d' ' -f2`: second field; lines without a space pass whole.
+            // The pipeline's status was cut's, so the query's status is ignored.
+            ManagerKind::Pacman | ManagerKind::Brew => Some(
+                stdout.lines()
+                    .map(|l| l.split(' ').nth(1).unwrap_or(l))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            // `grep -o '[0-9][^[:space:]]*'`: fails when nothing matches
+            ManagerKind::Apk => {
+                let re = regex::Regex::new(r"[0-9][^\s]*").expect("static regex");
+                let found: Vec<&str> = re.find_iter(&stdout).map(|m| m.as_str()).collect();
+                (!found.is_empty()).then(|| found.join("\n"))
+            }
+            _ => output.status.success().then(|| stdout.to_string()),
+        };
+
+        match version {
+            Some(v) => Ok(v.trim().to_string()),
+            None => Err(PkgError::InstallFailed("Could not get package version".to_string())),
         }
     }
 
@@ -2003,6 +2151,13 @@ impl PkgHandle {
             if pkg.name.trim().is_empty() {
                 return Err(PkgError::InvalidRemoveConfig("package name cannot be empty".to_string()));
             }
+            check_pkg_token("package name", &pkg.name).map_err(PkgError::InvalidRemoveConfig)?;
+            if let Some(ref v) = pkg.version {
+                check_pkg_token("version", v).map_err(PkgError::InvalidRemoveConfig)?;
+            }
+        }
+        if let Some(ref arch) = config.arch {
+            check_pkg_token("arch", arch).map_err(PkgError::InvalidRemoveConfig)?;
         }
 
         // Check timeout
@@ -2042,12 +2197,12 @@ impl PkgHandle {
 
         if !remove_packages.is_empty() {
             let remove_command = self.build_remove_command(&remove_packages, config, manager).await?;
-            commands.push(remove_command);
+            commands.push(remove_command.to_string());
 
             // Add autoremove command if recursive and supported
             if config.recursive {
                 if let Ok(autoremove_cmd) = self.build_autoremove_command(manager) {
-                    commands.push(autoremove_cmd);
+                    commands.push(autoremove_cmd.to_string());
                 }
             }
         }
@@ -2198,8 +2353,7 @@ impl PkgHandle {
         // Build and execute remove command
         let cmd = self.build_remove_command(packages, config, manager).await?;
         
-        let mut command = AsyncCommand::new("sh");
-        command.arg("-c").arg(&cmd);
+        let mut command = cmd.command();
         
         // Set environment variables if specified
         if let Some(ref env) = config.env {
@@ -2241,7 +2395,7 @@ impl PkgHandle {
     }
 
     /// Build remove command for manager and packages
-    pub async fn build_remove_command(&self, packages: &[&PackageSpec], config: &RemoveConfig, manager: &ManagerKind) -> Result<String, PkgError> {
+    pub async fn build_remove_command(&self, packages: &[&PackageSpec], config: &RemoveConfig, manager: &ManagerKind) -> Result<CmdLine, PkgError> {
         let mut cmd = match manager {
             ManagerKind::Apt => {
                 let base_cmd = if config.purge {
@@ -2249,60 +2403,56 @@ impl PkgHandle {
                 } else {
                     "DEBIAN_FRONTEND=noninteractive apt-get remove"
                 };
-                let mut cmd = base_cmd.to_string();
+                let mut cmd = CmdLine::lit(base_cmd);
                 if config.assume_yes {
-                    cmd.push_str(" -y");
+                    cmd.push_lit(" -y");
                 }
                 cmd
             },
             ManagerKind::Dnf => {
-                let mut cmd = "dnf remove".to_string();
+                let mut cmd = CmdLine::lit("dnf remove");
                 if config.assume_yes {
-                    cmd.push_str(" -y");
+                    cmd.push_lit(" -y");
                 }
                 cmd
             },
             ManagerKind::Yum => {
-                let mut cmd = "yum remove".to_string();
+                let mut cmd = CmdLine::lit("yum remove");
                 if config.assume_yes {
-                    cmd.push_str(" -y");
+                    cmd.push_lit(" -y");
                 }
                 cmd
             },
             ManagerKind::Pacman => {
-                let mut cmd = "pacman -R".to_string();
+                // Remove with dependencies when recursive
+                let mut cmd = CmdLine::lit(if config.recursive { "pacman -Rs" } else { "pacman -R" });
                 if config.assume_yes {
-                    cmd.push_str(" --noconfirm");
-                }
-                if config.recursive {
-                    cmd = cmd.replace("-R", "-Rs"); // Remove with dependencies
+                    cmd.push_lit(" --noconfirm");
                 }
                 cmd
             },
             ManagerKind::Apk => {
-                let mut cmd = "apk del --no-interactive".to_string();
+                let mut cmd = CmdLine::lit("apk del --no-interactive");
                 if config.purge {
-                    cmd.push_str(" --purge");
+                    cmd.push_lit(" --purge");
                 }
                 cmd
             },
             ManagerKind::Brew => {
-                "brew uninstall".to_string()
+                CmdLine::lit("brew uninstall")
             },
             _ => return Err(PkgError::ManagerNotAvailable("Unsupported manager".to_string())),
         };
 
         // Add packages to command
         for pkg in packages {
-            cmd.push(' ');
-            cmd.push_str(&self.format_remove_package_name(pkg, manager, config)?);
+            cmd.arg(&self.format_remove_package_name(pkg, manager, config)?);
         }
 
         // Add extra args if specified
         if let Some(ref extra_args) = config.extra_args {
             for arg in extra_args {
-                cmd.push(' ');
-                cmd.push_str(arg);
+                cmd.arg(arg);
             }
         }
 
@@ -2310,11 +2460,11 @@ impl PkgHandle {
     }
 
     /// Build autoremove command if supported
-    pub fn build_autoremove_command(&self, manager: &ManagerKind) -> Result<String, PkgError> {
+    pub fn build_autoremove_command(&self, manager: &ManagerKind) -> Result<CmdLine, PkgError> {
         match manager {
-            ManagerKind::Apt => Ok("DEBIAN_FRONTEND=noninteractive apt-get autoremove -y".to_string()),
-            ManagerKind::Dnf => Ok("dnf autoremove -y".to_string()),
-            ManagerKind::Yum => Ok("yum autoremove -y".to_string()),
+            ManagerKind::Apt => Ok(CmdLine::lit("DEBIAN_FRONTEND=noninteractive apt-get autoremove -y")),
+            ManagerKind::Dnf => Ok(CmdLine::lit("dnf autoremove -y")),
+            ManagerKind::Yum => Ok(CmdLine::lit("yum autoremove -y")),
             // Pacman recursive removal is handled in the main command
             // APK and Brew don't have explicit autoremove
             _ => Err(PkgError::ManagerNotAvailable("Autoremove not supported".to_string())),
@@ -2324,9 +2474,7 @@ impl PkgHandle {
     /// Run autoremove command
     async fn run_autoremove(&self, manager: &ManagerKind) -> Result<(), PkgError> {
         if let Ok(cmd) = self.build_autoremove_command(manager) {
-            let output = AsyncCommand::new("sh")
-                .arg("-c")
-                .arg(&cmd)
+            let output = cmd.command()
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .output()
@@ -2384,8 +2532,20 @@ impl PkgHandle {
         // Validate configuration
         self.validate_update_config(&config)?;
         
+        // Refuse an unhonorable security_only before touching the host: for
+        // an explicit manager here, for `auto` once it is detected.
+        if config.security_only
+            && config.manager != ManagerKind::Auto
+            && !security_only_supported("update", &config.manager)
+        {
+            return Err(PkgError::InvalidUpdateConfig(security_only_refusal("update", &config.manager)));
+        }
+
         // Resolve manager
         let manager = self.resolve_manager(&config.manager).await?;
+        if config.security_only && !security_only_supported("update", &manager) {
+            return Err(PkgError::InvalidUpdateConfig(security_only_refusal("update", &manager)));
+        }
         
         // Check for check-only or dry-run modes
         if config.check_only || config.dry_run {
@@ -2416,6 +2576,10 @@ impl PkgHandle {
             }
         }
 
+        for pkg in &config.packages {
+            check_pkg_token("package name", pkg).map_err(PkgError::InvalidUpdateConfig)?;
+        }
+
         // Check that there's something to do
         if !config.refresh_index && !config.upgrade && !config.check_only {
             return Err(PkgError::InvalidUpdateConfig("Nothing to do: refresh_index, upgrade, and check_only are all false".to_string()));
@@ -2442,6 +2606,9 @@ impl PkgHandle {
         if config.packages.iter().any(|pkg| pkg.trim().is_empty()) {
             return Err(PkgError::InvalidUpgradeConfig("package names cannot be empty".to_string()));
         }
+        for pkg in &config.packages {
+            check_pkg_token("package name", pkg).map_err(PkgError::InvalidUpgradeConfig)?;
+        }
 
         // Check for meaningless combination
         if config.dry_run && config.check_only && !config.refresh_index && config.packages.is_empty() {
@@ -2458,7 +2625,7 @@ impl PkgHandle {
 
         // Add refresh index command if requested
         if config.refresh_index {
-            commands.push(self.build_update_cache_command(manager)?);
+            commands.push(self.build_update_cache_command(manager)?.to_string());
         }
 
         // Get available updates
@@ -2468,7 +2635,7 @@ impl PkgHandle {
             if config.upgrade && config.dry_run {
                 // Add upgrade commands for dry-run
                 let upgrade_cmd = self.build_upgrade_command(config, manager, &available_updates).await?;
-                commands.push(upgrade_cmd);
+                commands.push(upgrade_cmd.to_string());
             }
         }
 
@@ -2495,7 +2662,7 @@ impl PkgHandle {
 
         // Add refresh index command if requested
         if config.refresh_index {
-            commands.push(self.build_update_cache_command(manager)?);
+            commands.push(self.build_update_cache_command(manager)?.to_string());
         }
 
         // Get available upgrades
@@ -2526,8 +2693,20 @@ impl PkgHandle {
         // Validate configuration
         self.validate_upgrade_config(&config)?;
         
+        // Refuse an unhonorable security_only before touching the host: for
+        // an explicit manager here, for `auto` once it is detected.
+        if config.security_only
+            && config.manager != ManagerKind::Auto
+            && !security_only_supported("upgrade", &config.manager)
+        {
+            return Err(PkgError::InvalidUpgradeConfig(security_only_refusal("upgrade", &config.manager)));
+        }
+
         // Resolve manager
         let manager = self.resolve_manager(&config.manager).await?;
+        if config.security_only && !security_only_supported("upgrade", &manager) {
+            return Err(PkgError::InvalidUpgradeConfig(security_only_refusal("upgrade", &manager)));
+        }
         
         // Check for check-only or dry-run modes
         if config.check_only || config.dry_run {
@@ -2675,59 +2854,20 @@ impl PkgHandle {
 
     /// Get available updates for packages
     async fn get_available_updates(&self, config: &UpdateConfig, manager: &ManagerKind) -> Result<Vec<AvailableUpdate>, PkgError> {
-        let cmd = match manager {
-            ManagerKind::Apt => {
-                if config.packages.is_empty() {
-                    "apt list --upgradable 2>/dev/null | tail -n +2".to_string()
-                } else {
-                    format!("apt list --upgradable {} 2>/dev/null | tail -n +2", config.packages.join(" "))
-                }
-            },
-            ManagerKind::Dnf | ManagerKind::Yum => {
-                let base_cmd = if matches!(manager, ManagerKind::Dnf) { "dnf" } else { "yum" };
-                if config.packages.is_empty() {
-                    format!("{} check-update 2>/dev/null || true", base_cmd)
-                } else {
-                    format!("{} check-update {} 2>/dev/null || true", base_cmd, config.packages.join(" "))
-                }
-            },
-            ManagerKind::Pacman => {
-                if config.packages.is_empty() {
-                    "pacman -Qu".to_string()
-                } else {
-                    format!("pacman -Qu {}", config.packages.join(" "))
-                }
-            },
-            ManagerKind::Apk => {
-                if config.packages.is_empty() {
-                    "apk list -u 2>/dev/null".to_string()
-                } else {
-                    format!("apk list -u {} 2>/dev/null", config.packages.join(" "))
-                }
-            },
-            ManagerKind::Brew => {
-                if config.packages.is_empty() {
-                    "brew outdated".to_string()
-                } else {
-                    format!("brew outdated {}", config.packages.join(" "))
-                }
-            },
-            _ => return Err(PkgError::ManagerNotAvailable("Unsupported manager".to_string())),
-        };
+        let (cmd, ignore_status, skip_header) = self.list_updates_command(&config.packages, manager)?;
 
-        let output = AsyncCommand::new("sh")
-            .arg("-c")
-            .arg(&cmd)
+        let output = cmd.command()
             .output()
             .await
             .map_err(|e| PkgError::UpdateCheckFailed(format!("Failed to check for updates: {}", e)))?;
 
-        if !output.status.success() && output.status.code() != Some(100) { // 100 is normal for yum/dnf when no updates
+        if !ignore_status && !output.status.success() && output.status.code() != Some(100) { // 100 is normal for yum/dnf when no updates
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(PkgError::UpdateCheckFailed(format!("Update check failed: {}", stderr)));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = if skip_header { stdout.lines().skip(1).map(|l| format!("{}\n", l)).collect() } else { stdout.into_owned() };
         self.parse_available_updates(&stdout, manager)
     }
 
@@ -2874,7 +3014,7 @@ impl PkgHandle {
     }
 
     /// Build upgrade command
-    async fn build_upgrade_command(&self, config: &UpdateConfig, manager: &ManagerKind, available_updates: &[AvailableUpdate]) -> Result<String, PkgError> {
+    async fn build_upgrade_command(&self, config: &UpdateConfig, manager: &ManagerKind, available_updates: &[AvailableUpdate]) -> Result<CmdLine, PkgError> {
         let mut cmd = match manager {
             ManagerKind::Apt => {
                 let base_cmd = if config.security_only {
@@ -2882,62 +3022,62 @@ impl PkgHandle {
                 } else {
                     "DEBIAN_FRONTEND=noninteractive apt-get upgrade"
                 };
-                let mut cmd = base_cmd.to_string();
+                let mut cmd = CmdLine::lit(base_cmd);
                 if config.assume_yes {
-                    cmd.push_str(" -y");
+                    cmd.push_lit(" -y");
                 }
                 if config.dry_run {
-                    cmd.push_str(" -s");
+                    cmd.push_lit(" -s");
                 }
                 cmd
             },
             ManagerKind::Dnf => {
                 let mut cmd = if config.security_only {
-                    "dnf update --security".to_string()
+                    CmdLine::lit("dnf update --security")
                 } else {
-                    "dnf upgrade".to_string()
+                    CmdLine::lit("dnf upgrade")
                 };
                 if config.assume_yes {
-                    cmd.push_str(" -y");
+                    cmd.push_lit(" -y");
                 }
                 if config.dry_run {
-                    cmd.push_str(" --assumeno");
+                    cmd.push_lit(" --assumeno");
                 }
                 cmd
             },
             ManagerKind::Yum => {
                 let mut cmd = if config.security_only {
-                    "yum update --security".to_string()
+                    CmdLine::lit("yum update --security")
                 } else {
-                    "yum update".to_string()
+                    CmdLine::lit("yum update")
                 };
                 if config.assume_yes {
-                    cmd.push_str(" -y");
+                    cmd.push_lit(" -y");
                 }
                 if config.dry_run {
-                    cmd.push_str(" --assumeno");
+                    cmd.push_lit(" --assumeno");
                 }
                 cmd
             },
             ManagerKind::Pacman => {
-                let mut cmd = "pacman -Su".to_string();
+                let mut cmd = CmdLine::lit("pacman -Su");
                 if config.assume_yes {
-                    cmd.push_str(" --noconfirm");
+                    cmd.push_lit(" --noconfirm");
                 }
                 // Pacman doesn't have built-in dry-run for upgrades
                 cmd
             },
             ManagerKind::Apk => {
-                let mut cmd = "apk upgrade".to_string();
+                let mut cmd = CmdLine::lit("apk upgrade");
                 if !config.assume_yes {
-                    cmd.push_str(" --interactive");
+                    cmd.push_lit(" --interactive");
                 } else {
-                    cmd.push_str(" --no-interactive");
+                    cmd.push_lit(" --no-interactive");
                 }
                 cmd
             },
             ManagerKind::Brew => {
-                "brew upgrade".to_string()
+                CmdLine::lit("brew upgrade")
             },
             _ => return Err(PkgError::ManagerNotAvailable("Unsupported manager".to_string())),
         };
@@ -2945,16 +3085,14 @@ impl PkgHandle {
         // Add specific packages if requested
         if !config.packages.is_empty() {
             for package in &config.packages {
-                cmd.push(' ');
-                cmd.push_str(package);
+                cmd.arg(package);
             }
         }
 
         // Add extra args if specified
         if let Some(ref extra_args) = config.extra_args {
             for arg in extra_args {
-                cmd.push(' ');
-                cmd.push_str(arg);
+                cmd.arg(arg);
             }
         }
 
@@ -2963,49 +3101,10 @@ impl PkgHandle {
 
     /// Get available upgrades for packages
     async fn get_available_upgrades(&self, config: &UpgradeConfig, manager: &ManagerKind) -> Result<Vec<AvailableUpdate>, PkgError> {
-        let cmd = match manager {
-            ManagerKind::Apt => {
-                if config.packages.is_empty() {
-                    "apt list --upgradable 2>/dev/null | tail -n +2".to_string()
-                } else {
-                    format!("apt list --upgradable {} 2>/dev/null | tail -n +2", config.packages.join(" "))
-                }
-            },
-            ManagerKind::Dnf | ManagerKind::Yum => {
-                let base_cmd = if matches!(manager, ManagerKind::Dnf) { "dnf" } else { "yum" };
-                if config.packages.is_empty() {
-                    format!("{} check-update 2>/dev/null || true", base_cmd)
-                } else {
-                    format!("{} check-update {} 2>/dev/null || true", base_cmd, config.packages.join(" "))
-                }
-            },
-            ManagerKind::Pacman => {
-                if config.packages.is_empty() {
-                    "pacman -Qu".to_string()
-                } else {
-                    format!("pacman -Qu {}", config.packages.join(" "))
-                }
-            },
-            ManagerKind::Apk => {
-                if config.packages.is_empty() {
-                    "apk list -u 2>/dev/null".to_string()
-                } else {
-                    format!("apk list -u {} 2>/dev/null", config.packages.join(" "))
-                }
-            },
-            ManagerKind::Brew => {
-                if config.packages.is_empty() {
-                    "brew outdated".to_string()
-                } else {
-                    format!("brew outdated {}", config.packages.join(" "))
-                }
-            },
-            _ => return Err(PkgError::ManagerNotAvailable("Unsupported manager".to_string())),
-        };
+        // The exit status was never checked here
+        let (cmd, _, skip_header) = self.list_updates_command(&config.packages, manager)?;
 
-        let output = AsyncCommand::new("sh")
-            .arg("-c")
-            .arg(&cmd)
+        let output = cmd.command()
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -3014,7 +3113,30 @@ impl PkgHandle {
             .await
             .map_err(|e| PkgError::UpgradeCheckFailed(format!("Failed to execute command: {}", e)))?;
 
-        self.parse_available_upgrades(&String::from_utf8_lossy(&output.stdout), manager)
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = if skip_header { stdout.lines().skip(1).map(|l| format!("{}\n", l)).collect() } else { stdout.into_owned() };
+        self.parse_available_upgrades(&stdout, manager)
+    }
+
+    /// Command that lists pending updates, run without a shell. Returns the
+    /// command plus what the former shell form did around it: whether its
+    /// exit status was discarded (`apt list ... | tail`, `check-update ||
+    /// true`) and whether the first output line was dropped (`tail -n +2`).
+    /// Standard error, formerly sent to /dev/null, is captured and unused.
+    fn list_updates_command(&self, packages: &[String], manager: &ManagerKind) -> Result<(CmdLine, bool, bool), PkgError> {
+        let (mut cmd, ignore_status, skip_header) = match manager {
+            ManagerKind::Apt => (CmdLine::lit("apt list --upgradable"), true, true),
+            ManagerKind::Dnf => (CmdLine::lit("dnf check-update"), true, false),
+            ManagerKind::Yum => (CmdLine::lit("yum check-update"), true, false),
+            ManagerKind::Pacman => (CmdLine::lit("pacman -Qu"), false, false),
+            ManagerKind::Apk => (CmdLine::lit("apk list -u"), false, false),
+            ManagerKind::Brew => (CmdLine::lit("brew outdated"), false, false),
+            _ => return Err(PkgError::ManagerNotAvailable("Unsupported manager".to_string())),
+        };
+        for package in packages {
+            cmd.arg(package);
+        }
+        Ok((cmd, ignore_status, skip_header))
     }
 
     /// Parse available upgrades from command output
@@ -3076,9 +3198,7 @@ impl PkgHandle {
         // Build and execute upgrade command
         let cmd = self.build_upgrade_command_for_execution(config, manager, available_upgrades).await?;
         
-        let mut command = AsyncCommand::new("sh");
-        command.arg("-c");
-        command.arg(&cmd);
+        let mut command = cmd.command();
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
 
@@ -3170,131 +3290,119 @@ impl PkgHandle {
     }
 
     /// Build upgrade command for actual execution  
-    async fn build_upgrade_command_for_execution(&self, config: &UpgradeConfig, manager: &ManagerKind, _available_upgrades: &[AvailableUpdate]) -> Result<String, PkgError> {
+    async fn build_upgrade_command_for_execution(&self, config: &UpgradeConfig, manager: &ManagerKind, _available_upgrades: &[AvailableUpdate]) -> Result<CmdLine, PkgError> {
         match manager {
             ManagerKind::Apt => {
-                let mut cmd = String::new();
+                let mut cmd = CmdLine::default();
                 if config.assume_yes {
-                    cmd.push_str("DEBIAN_FRONTEND=noninteractive ");
+                    cmd.push_lit("DEBIAN_FRONTEND=noninteractive ");
                 }
                 
                 if config.packages.is_empty() {
-                    cmd.push_str("apt-get upgrade");
+                    cmd.push_lit("apt-get upgrade");
                     if config.assume_yes {
-                        cmd.push_str(" -y");
+                        cmd.push_lit(" -y");
                     }
                 } else {
-                    cmd.push_str("apt-get install");
+                    cmd.push_lit("apt-get install");
                     if config.assume_yes {
-                        cmd.push_str(" -y");
+                        cmd.push_lit(" -y");
                     }
                     for package in &config.packages {
-                        cmd.push(' ');
-                        cmd.push_str(package);
+                        cmd.arg(package);
                     }
                 }
                 
                 if let Some(ref extra_args) = config.extra_args {
                     for arg in extra_args {
-                        cmd.push(' ');
-                        cmd.push_str(arg);
+                        cmd.arg(arg);
                     }
                 }
                 Ok(cmd)
             },
             ManagerKind::Dnf => {
-                let mut cmd = if config.packages.is_empty() {
-                    "dnf upgrade".to_string()
-                } else {
-                    format!("dnf upgrade {}", config.packages.join(" "))
-                };
+                let mut cmd = CmdLine::lit("dnf upgrade");
+                for package in &config.packages {
+                    cmd.arg(package);
+                }
                 
                 if config.assume_yes {
-                    cmd.push_str(" -y");
+                    cmd.push_lit(" -y");
                 }
                 
                 if config.security_only {
-                    cmd.push_str(" --security");
+                    cmd.push_lit(" --security");
                 }
                 
                 if let Some(ref extra_args) = config.extra_args {
                     for arg in extra_args {
-                        cmd.push(' ');
-                        cmd.push_str(arg);
+                        cmd.arg(arg);
                     }
                 }
                 Ok(cmd)
             },
             ManagerKind::Yum => {
-                let mut cmd = if config.packages.is_empty() {
-                    "yum update".to_string()
-                } else {
-                    format!("yum update {}", config.packages.join(" "))
-                };
+                let mut cmd = CmdLine::lit("yum update");
+                for package in &config.packages {
+                    cmd.arg(package);
+                }
                 
                 if config.assume_yes {
-                    cmd.push_str(" -y");
+                    cmd.push_lit(" -y");
                 }
                 
                 if let Some(ref extra_args) = config.extra_args {
                     for arg in extra_args {
-                        cmd.push(' ');
-                        cmd.push_str(arg);
+                        cmd.arg(arg);
                     }
                 }
                 Ok(cmd)
             },
             ManagerKind::Pacman => {
-                let mut cmd = if config.packages.is_empty() {
-                    "pacman -Su".to_string()
-                } else {
-                    format!("pacman -S {}", config.packages.join(" "))
-                };
+                let mut cmd = CmdLine::lit(if config.packages.is_empty() { "pacman -Su" } else { "pacman -S" });
+                for package in &config.packages {
+                    cmd.arg(package);
+                }
                 
                 if config.assume_yes {
-                    cmd.push_str(" --noconfirm");
+                    cmd.push_lit(" --noconfirm");
                 }
                 
                 if let Some(ref extra_args) = config.extra_args {
                     for arg in extra_args {
-                        cmd.push(' ');
-                        cmd.push_str(arg);
+                        cmd.arg(arg);
                     }
                 }
                 Ok(cmd)
             },
             ManagerKind::Apk => {
-                let mut cmd = "apk upgrade".to_string();
+                let mut cmd = CmdLine::lit("apk upgrade");
                 
                 if config.assume_yes {
-                    cmd.push_str(" --no-interactive");
+                    cmd.push_lit(" --no-interactive");
                 }
                 
-                if !config.packages.is_empty() {
-                    cmd.push(' ');
-                    cmd.push_str(&config.packages.join(" "));
+                for package in &config.packages {
+                    cmd.arg(package);
                 }
                 
                 if let Some(ref extra_args) = config.extra_args {
                     for arg in extra_args {
-                        cmd.push(' ');
-                        cmd.push_str(arg);
+                        cmd.arg(arg);
                     }
                 }
                 Ok(cmd)
             },
             ManagerKind::Brew => {
-                let mut cmd = "brew upgrade".to_string();
+                let mut cmd = CmdLine::lit("brew upgrade");
                 
-                if !config.packages.is_empty() {
-                    cmd.push(' ');
-                    cmd.push_str(&config.packages.join(" "));
+                for package in &config.packages {
+                    cmd.arg(package);
                 }
                 
                 if let Some(ref extra_args) = config.extra_args {
                     for arg in extra_args {
-                        cmd.push(' ');
-                        cmd.push_str(arg);
+                        cmd.arg(arg);
                     }
                 }
                 Ok(cmd)
@@ -3316,8 +3424,7 @@ impl PkgHandle {
         // Build and execute upgrade command
         let cmd = self.build_upgrade_command(config, manager, available_updates).await?;
         
-        let mut command = AsyncCommand::new("sh");
-        command.arg("-c").arg(&cmd);
+        let mut command = cmd.command();
         
         // Set environment variables if specified
         if let Some(ref env) = config.env {
@@ -4151,7 +4258,11 @@ impl PkgHandle {
             cmd_args.extend(extra_args.iter().map(|s| s.as_str()));
         }
 
-        let output = self.run_command("apt", &cmd_args, config.env.as_ref()).await
+        // apt-cache prints one "name - summary" line per package, which is
+        // what the parser below reads. `apt search` (no stable CLI) prints a
+        // "name/suite version arch" line plus an indented summary line, so
+        // its summaries were being reported as package names.
+        let output = self.run_command("apt-cache", &cmd_args, config.env.as_ref()).await
             .map_err(|e| PkgError::SearchFailed(format!("APT search command failed: {}", e)))?;
 
         if !output.status.success() {
@@ -7135,6 +7246,19 @@ impl PkgHandle {
             ));
         }
 
+        // Lockfile package names become package-manager arguments; check
+        // them before anything runs (also in dry run), so a name can never be
+        // read as an option, shell syntax, a path or a URL.
+        for pkg in &lockfile.packages {
+            check_lockfile_pkg_name(&pkg.name).map_err(PkgError::RestoreInvalidLockfile)?;
+            if let Some(v) = &pkg.version {
+                check_pkg_token("version", v).map_err(PkgError::RestoreInvalidLockfile)?;
+            }
+            if let Some(arch) = &pkg.architecture {
+                check_pkg_token("arch", arch).map_err(PkgError::RestoreInvalidLockfile)?;
+            }
+        }
+
         // Validate platform compatibility
         if config.on_platform_mismatch == PlatformPolicy::Fail {
             let host_platform = self.get_platform_info().await.ok();
@@ -9494,5 +9618,324 @@ mod tests {
         assert_eq!(cloned.os_version, platform.os_version);
         assert_eq!(cloned.kernel, platform.kernel);
         assert_eq!(cloned.architecture, platform.architecture);
+    }
+}
+// SEC-04: package-manager commands run without a shell. Nothing here
+// invokes a real package manager; execution is checked with a mock
+// executable inside a temporary directory.
+/// The exit status for a mutating verb's result: a failure when any package
+/// operation failed (`summary.failed > 0`) or the summary says
+/// `success: false`, even if other packages succeeded.
+fn result_status(verb: &str, result: &Value) -> Status {
+    let summary = result.get("summary");
+    let failed = summary.and_then(|s| s.get("failed")).and_then(Value::as_u64).unwrap_or(0);
+    let success = summary.and_then(|s| s.get("success")).and_then(Value::as_bool).unwrap_or(true);
+    if failed == 0 && success {
+        return Status::success();
+    }
+    let total = result.get("packages").and_then(Value::as_array).map(Vec::len);
+    let reason = match (failed, total) {
+        (0, _) => format!("pkg {}: operation did not complete successfully", verb),
+        (n, Some(t)) => format!("pkg {}: {} of {} package operations failed", verb, n, t),
+        (n, None) => format!("pkg {}: {} package operations failed", verb, n),
+    };
+    Status::err(1, reason)
+}
+
+#[cfg(test)]
+mod result_status_tests {
+    use super::*;
+
+    // FUNC-02: a partial failure is a failure.
+    #[test]
+    fn partial_failures_fail_the_command() {
+        let ok = json!({"packages": [{"name": "jq"}], "summary": {"installed": 1, "failed": 0}});
+        assert!(result_status("install", &ok).ok);
+        let dry = json!({"dry_run": true, "packages": []});
+        assert!(result_status("install", &dry).ok);
+
+        let partial = json!({"packages": [{"name": "jq"}, {"name": "nope"}], "summary": {"installed": 1, "failed": 1}});
+        let st = result_status("install", &partial);
+        assert!(!st.ok);
+        assert_eq!(st.exit_code(), 1);
+        assert_eq!(st.reason.as_deref(), Some("pkg install: 1 of 2 package operations failed"));
+
+        let restore = json!({"summary": {"failed": 0, "success": false, "unresolved": 2}});
+        assert!(!result_status("restore", &restore).ok);
+        let restore_ok = json!({"summary": {"failed": 0, "success": true}});
+        assert!(result_status("restore", &restore_ok).ok);
+    }
+}
+
+#[cfg(test)]
+mod cmdline_safety_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    fn handle() -> PkgHandle {
+        PkgHandle { alias: "test".to_string() }
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Runtime::new().unwrap()
+    }
+
+    const HOSTILE: &[&str] = &[
+        "jq;touch SENTINEL", "$(touch SENTINEL)", "`touch SENTINEL`", "jq|touch SENTINEL",
+        "jq&&touch SENTINEL", "jq>SENTINEL", "jq touch", "'jq'", "\"jq\"", "jq\ntouch",
+        "-y", "--force-yes", "", "*", "jq?", "jq\\", "jq#x", "jq!", "$HOME", "jq{a,b}",
+    ];
+
+    #[test]
+    fn package_tokens_accept_real_names_and_reject_shell_syntax() {
+        for ok in ["jq", "libssl1.1", "g++", "python3-pip", "nginx-core", "homebrew/cask/firefox",
+                   "1password", "pkg@2", "1:2.3.4-1ubuntu1", "2.0~rc1", "1.6-2", "amd64", "x86_64", "jq=1.6"] {
+            check_pkg_token("package name", ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+        for bad in HOSTILE {
+            assert!(check_pkg_token("package name", bad).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    fn restore_config(lockfile: String, format: &str) -> RestoreConfig {
+        serde_json::from_value(serde_json::json!({
+            "manager": "apt", "lockfile": lockfile, "format": format,
+            "dry_run": true, "on_platform_mismatch": "ignore"
+        })).unwrap()
+    }
+
+    fn json_lockfile(names: &[&str]) -> String {
+        let packages: Vec<_> = names.iter().map(|n| serde_json::json!({ "name": n, "version": "1.0" })).collect();
+        serde_json::json!({
+            "lockfile_version": "pkg-lock/v1", "generated_at": "2026-01-01T00:00:00Z",
+            "manager": { "name": "apt", "alias": "system", "version": null, "config": null },
+            "platform": { "os_family": null, "os_name": null, "os_version": null, "kernel": null, "architecture": null },
+            "scope": "system", "packages": packages
+        }).to_string()
+    }
+
+    /// SEC-08: restore validates every lockfile package name before any
+    /// package-manager command runs, dry run included. A hostile name in a
+    /// JSON or text lockfile fails the whole restore.
+    #[test]
+    fn restore_rejects_hostile_lockfile_names_before_running_anything() {
+        let tmp = TempDir::new().unwrap();
+        let sentinel = tmp.path().join("SENTINEL");
+        let s = sentinel.to_string_lossy();
+        let hostile = [
+            format!("jq;touch {s}"), format!("$(touch {s})"), format!("jq && touch {s}"),
+            "-oAPT::Get::Assume-Yes=1".to_string(), "--allow-unauthenticated".to_string(),
+            "https://evil.example/x.rpm".to_string(), "ftp://evil.example/pkg".to_string(),
+            "/tmp/evil.deb".to_string(), "tmp/evil.rpm".to_string(), "evil.pkg.tar.zst".to_string(),
+            "a/../../etc/x".to_string(), "".to_string(),
+        ];
+        for name in &hostile {
+            for (lockfile, format) in [(json_lockfile(&["jq", name]), "json"), (format!("jq=1.6\n{name}=1.0\n"), "text")] {
+                let err = rt().block_on(handle().restore_async(restore_config(lockfile, format)))
+                    .expect_err(&format!("{name:?} accepted in {format} lockfile"));
+                assert!(matches!(err, PkgError::RestoreInvalidLockfile(_) | PkgError::InvalidRestoreConfig(_)), "{name:?}: {err}");
+            }
+        }
+        assert!(!sentinel.exists());
+
+        let bad_version = json_lockfile(&["jq"]).replace("\"1.0\"", "\"1.0;id\"");
+        assert!(rt().block_on(handle().restore_async(restore_config(bad_version, "json"))).is_err());
+    }
+
+    #[test]
+    fn valid_lockfile_names_still_pass_restore_validation() {
+        let names = ["jq", "libssl1.1", "g++", "python3-pip", "homebrew/cask/firefox", "1password", "pkg@2", "jq=1.6"];
+        for (lockfile, format) in [(json_lockfile(&names), "json"), ("jq=1.6\nnginx-core=1.24.0-2\n".to_string(), "text")] {
+            let config = restore_config(lockfile, format);
+            let lock = handle().parse_lockfile(&config.lockfile, &config.format).unwrap();
+            rt().block_on(handle().validate_lockfile(&lock, &config)).unwrap();
+        }
+        for ok in ["1:2.3.4-1ubuntu1", "2.0~rc1"] {
+            check_pkg_token("version", ok).unwrap();
+        }
+    }
+
+    fn install_config(name: &str, version: Option<&str>, dry_run: bool) -> InstallConfig {
+        InstallConfig {
+            manager: ManagerKind::Apt,
+            packages: vec![PackageSpec { name: name.into(), version: version.map(Into::into), source: None }],
+            update_cache: false,
+            assume_yes: true,
+            only_if_missing: true,
+            reinstall: false,
+            upgrade: false,
+            dry_run,
+            timeout_ms: 1000,
+            arch: None,
+            extra_args: None,
+            env: None,
+        }
+    }
+
+    #[test]
+    fn hostile_names_versions_and_arch_fail_validation() {
+        let h = handle();
+        for bad in HOSTILE {
+            assert!(h.validate_config(&install_config(bad, None, true)).is_err(), "name {bad:?}");
+            assert!(h.validate_config(&install_config("jq", Some(bad), true)).is_err(), "version {bad:?}");
+            let mut c = install_config("jq", None, true);
+            c.arch = Some(bad.to_string());
+            assert!(h.validate_config(&c).is_err(), "arch {bad:?}");
+        }
+        assert!(h.validate_config(&install_config("jq", Some("1.6-2"), false)).is_ok());
+    }
+
+    /// Dry run with a hostile name is rejected through the real verb entry
+    /// point, before any status query (formerly `sh -c "dpkg -s <name>"`).
+    #[test]
+    fn dry_run_with_hostile_names_runs_nothing() {
+        let dir = TempDir::new().unwrap();
+        let sentinel = dir.path().join("pwned");
+        let s = sentinel.display().to_string();
+        for name in [format!("jq;touch {s}"), format!("$(touch {s})"), format!("`touch {s}`")] {
+            for verb in ["install", "remove"] {
+                let input = json!({"manager": "apt", "dry_run": true, "packages": [{"name": name}]});
+                let mut args = Args::new();
+                args.insert("input".into(), input.to_string());
+                let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+                let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+                assert!(handle().call(verb, &args, &mut io).is_err(), "{verb} {name}");
+            }
+            for verb in ["update", "upgrade"] {
+                let input = json!({"manager": "apt", "dry_run": true, "packages": [name]});
+                let mut args = Args::new();
+                args.insert("input".into(), input.to_string());
+                let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+                let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+                assert!(handle().call(verb, &args, &mut io).is_err(), "{verb} {name}");
+            }
+        }
+        assert!(!sentinel.exists());
+    }
+
+    #[test]
+    fn install_command_keeps_display_text_and_single_arguments() {
+        let mut c = install_config("jq", Some("1.6-2"), false);
+        c.arch = Some("amd64".into());
+        c.extra_args = Some(vec!["-o".into(), "Dpkg::Options::=--force-confold".into(), "$(touch X); a b".into()]);
+        let cmd = rt().block_on(handle().build_install_command(&c, &ManagerKind::Apt)).unwrap();
+        assert_eq!(
+            cmd.to_string(),
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y jq=1.6-2:amd64 -o Dpkg::Options::=--force-confold $(touch X); a b"
+        );
+        assert_eq!(cmd.argv(), &[
+            "apt-get", "install", "-y", "jq=1.6-2:amd64", "-o", "Dpkg::Options::=--force-confold", "$(touch X); a b",
+        ]);
+        assert_eq!(cmd.env, vec![("DEBIAN_FRONTEND".to_string(), "noninteractive".to_string())]);
+    }
+
+    #[test]
+    fn remove_and_upgrade_commands_keep_display_text() {
+        let h = handle();
+        let pkg = PackageSpec { name: "jq".into(), version: None, source: None };
+        let rc = RemoveConfig {
+            manager: ManagerKind::Pacman, packages: vec![pkg.clone()], purge: false, recursive: true,
+            assume_yes: true, only_if_installed: true, fail_if_missing: false, dry_run: false,
+            timeout_ms: 1000, arch: None, extra_args: None, env: None,
+        };
+        let cmd = rt().block_on(h.build_remove_command(&[&pkg], &rc, &ManagerKind::Pacman)).unwrap();
+        assert_eq!(cmd.to_string(), "pacman -Rs --noconfirm jq");
+        let cmd = rt().block_on(h.build_remove_command(&[&pkg], &RemoveConfig { purge: true, ..rc.clone() }, &ManagerKind::Apt)).unwrap();
+        assert_eq!(cmd.to_string(), "DEBIAN_FRONTEND=noninteractive apt-get purge -y jq");
+        assert_eq!(h.build_autoremove_command(&ManagerKind::Dnf).unwrap().argv(), &["dnf", "autoremove", "-y"]);
+
+        let uc = UpgradeConfig {
+            manager: ManagerKind::Dnf, packages: vec!["jq".into(), "curl".into()], refresh_index: false,
+            assume_yes: true, security_only: true, dry_run: false, check_only: false, timeout_ms: 1000,
+            extra_args: Some(vec!["--setopt=x=1".into()]), env: None,
+        };
+        let cmd = rt().block_on(h.build_upgrade_command_for_execution(&uc, &ManagerKind::Dnf, &[])).unwrap();
+        assert_eq!(cmd.to_string(), "dnf upgrade jq curl -y --security --setopt=x=1");
+        let cmd = rt().block_on(h.build_upgrade_command_for_execution(&uc, &ManagerKind::Apt, &[])).unwrap();
+        assert_eq!(cmd.argv(), &["apt-get", "install", "-y", "jq", "curl", "--setopt=x=1"]);
+
+        let (cmd, ignore, skip) = h.list_updates_command(&["jq".into()], &ManagerKind::Apt).unwrap();
+        assert_eq!((cmd.to_string().as_str(), ignore, skip), ("apt list --upgradable jq", true, true));
+    }
+
+    /// The executor passes each argument to the program as-is: shell syntax
+    /// arrives literally and nothing is executed by a shell.
+    #[test]
+    fn execution_uses_argv_not_a_shell() {
+        let dir = TempDir::new().unwrap();
+        let sentinel = dir.path().join("pwned");
+        let out = dir.path().join("argv.txt");
+        let mock = dir.path().join("mock-pkg");
+        fs_write_exec(&mock, "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$OUT\"\n");
+        let s = sentinel.display().to_string();
+        let hostile = [
+            format!("$(touch {s})"), format!("`touch {s}`"), format!("jq;touch {s}"),
+            format!("jq && touch {s}"), "with space".to_string(), "'quoted'".to_string(), "\"dq\"".to_string(),
+        ];
+        let mut cmd = CmdLine::lit(&format!("OUT={} {}", out.display(), mock.display()));
+        for a in &hostile {
+            cmd.arg(a);
+        }
+        let status = rt().block_on(async { cmd.command().status().await }).unwrap();
+        assert!(status.success());
+        let got: Vec<String> = std::fs::read_to_string(&out).unwrap().lines().map(String::from).collect();
+        assert_eq!(got, hostile.to_vec());
+        assert!(!sentinel.exists(), "a shell interpreted an argument");
+    }
+
+    #[test]
+    fn execution_failures_are_reported() {
+        let missing = CmdLine::lit("/nonexistent/resh-test-pkg-manager");
+        assert!(rt().block_on(async { missing.command().output().await }).is_err());
+        let dir = TempDir::new().unwrap();
+        let mock = dir.path().join("failing");
+        fs_write_exec(&mock, "#!/bin/sh\necho boom >&2\nexit 3\n");
+        let failing = CmdLine::lit(&mock.display().to_string());
+        let out = rt().block_on(async { failing.command().output().await }).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "boom");
+    }
+
+    /// Stage 4: security_only must never widen into a full upgrade. Where
+    /// the manager's command has no security filter, update and upgrade fail
+    /// before running anything, in dry run and check-only mode too.
+    #[test]
+    fn security_only_is_refused_where_it_cannot_be_honored() {
+        let run = |verb: &str, input: serde_json::Value| {
+            let mut args = Args::new();
+            args.insert("input".into(), input.to_string());
+            let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            handle().call(verb, &args, &mut io).map(|s| s.ok).map_err(|e| e.to_string())
+        };
+        let unsupported = [
+            ("update", vec!["apt", "pacman", "apk", "brew"]),
+            ("upgrade", vec!["apt", "yum", "pacman", "apk", "brew"]),
+        ];
+        for (verb, managers) in unsupported {
+            for manager in managers {
+                for mode in [json!({}), json!({"dry_run": true}), json!({"check_only": true})] {
+                    let mut input = json!({"manager": manager, "security_only": true, "refresh_index": false});
+                    input.as_object_mut().unwrap().extend(mode.as_object().unwrap().clone());
+                    let err = run(verb, input.clone()).expect_err(&format!("{verb} {input}"));
+                    assert!(err.contains("security_only is not supported"), "{verb} {manager}: {err}");
+                    assert!(err.contains("nothing was run"), "{err}");
+                }
+            }
+        }
+        assert!(security_only_supported("update", &ManagerKind::Dnf));
+        assert!(security_only_supported("update", &ManagerKind::Yum));
+        assert!(security_only_supported("upgrade", &ManagerKind::Dnf));
+        assert!(!security_only_supported("upgrade", &ManagerKind::Yum));
+        // The refused managers really build an unfiltered command.
+        let cfg: UpdateConfig = serde_json::from_value(json!({"manager": "apt", "security_only": true})).unwrap();
+        let cmd = rt().block_on(handle().build_upgrade_command(&cfg, &ManagerKind::Apt, &[])).unwrap();
+        assert!(!cmd.to_string().contains("security"), "{cmd}");
+    }
+
+    fn fs_write_exec(path: &std::path::Path, script: &str) {
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 }

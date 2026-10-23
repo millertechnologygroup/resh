@@ -1,0 +1,60 @@
+# cargo-audit configuration for resh.
+#
+# Every ignored advisory below was assessed for reachability in resh during
+# the Stage 4 release review; the reasoning is recorded in
+# docs/reviews/resh-cli-stage4-final-release-assessment.md (Dependency
+# Security). Any advisory NOT listed here fails `cargo audit`. Remove an entry
+# as soon as the dependency is upgraded, and re-assess entries whenever the
+# dependency graph or the code calling these crates changes.
+
+[advisories]
+ignore = [
+    # crossbeam-epoch 0.9.18 (via rayon/ignore): fmt::Pointer impl
+    # dereferences invalid pointers. resh never formats crossbeam pointers.
+    "RUSTSEC-2026-0204",
+    # h2 0.3.27: only reached through hyper 0.14 in dev-dependency mock HTTP
+    # servers (httptest, mockito, httpmock); not in the release binary. The
+    # h2 0.4 used by reqwest is patched.
+    "RUSTSEC-2026-0258",
+    # idna 0.4.0 (via trust-dns-proto 0.23): ASCII-only Punycode labels are
+    # accepted. resh resolves names the operator supplies and makes no trust
+    # decision on IDN equivalence. Fix needs trust-dns -> hickory-dns.
+    "RUSTSEC-2024-0421",
+    # lettre 0.11.19: hostname verification bug in the boring-tls backend
+    # only. resh builds lettre with native-tls; boring-tls is not compiled.
+    "RUSTSEC-2026-0141",
+    # quick-xml 0.18.1: build-dependency of email-address-parser; parses a
+    # fixed grammar at build time, never runtime input.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    # quinn-proto 0.11.13: present in Cargo.lock only; reqwest's HTTP/3
+    # support is not enabled, so it is not compiled.
+    "RUSTSEC-2026-0037",
+    "RUSTSEC-2026-0185",
+    "RUSTSEC-2026-0338",
+    "RUSTSEC-2026-0339",
+    "RUSTSEC-2026-0340",
+    "RUSTSEC-2026-0342",
+    # ring 0.16.20 (via x509-parser 0.15 / rcgen 0.12): AES functions may
+    # panic with overflow checks enabled. resh does not use ring 0.16 AES,
+    # and release builds have overflow checks off.
+    "RUSTSEC-2025-0009",
+    # rsa 0.9.9: Marvin timing side channel in RSA decryption. No fixed
+    # release exists. resh generates keys and signs; it exposes no RSA
+    # decryption oracle (sqlx-mysql only encrypts with the server key).
+    "RUSTSEC-2023-0071",
+    # sevenz-rust 0.5.4: path traversal in decompress_impl, no fix. Declared
+    # in Cargo.toml but never referenced from src/, so no 7z data reaches it.
+    # Removing the unused dependency is recommended.
+    "RUSTSEC-2026-0245",
+    # time 0.3.44: stack exhaustion when PARSING RFC 2822. resh and its
+    # dependencies only FORMAT RFC 2822 (x509-parser to_rfc2822).
+    "RUSTSEC-2026-0009",
+    # zip 0.6.6: ZipArchive::extract / ZipStreamReader::extract apply modes,
+    # symlinks and SUID bits. resh never calls them; its own extractor writes
+    # regular files with create_new and no entry modes. Fix is zip >= 9.0, a
+    # major API migration.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+]

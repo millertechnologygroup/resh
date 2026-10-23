@@ -300,6 +300,10 @@ pub struct LocalSnapshotBackend {
 
 impl LocalSnapshotBackend {
     pub fn new() -> Result<Self> {
+        #[cfg(test)]
+        if let Some(base_dir) = test_store::get() {
+            return Ok(Self { base_dir });
+        }
         let base_dir = match dirs::state_dir() {
             Some(dir) => dir.join("resh").join("snapshots"),
             None => PathBuf::from("/tmp").join("resh").join("snapshots"),
@@ -676,7 +680,17 @@ impl SnapshotHandle {
             
             Ok((TreeKind::Live, target, dummy_meta))
         } else {
-            let meta = self.load_snapshot_meta(name, id_or_live)?;
+            // `from`/`to` name a snapshot by id or by the name given at
+            // create (the help's own example uses a name).
+            let meta = match self.load_snapshot_meta(name, id_or_live) {
+                Ok(meta) => meta,
+                Err(by_id) => self.load_snapshot_meta(id_or_live, "").map_err(|_| {
+                    anyhow::anyhow!(
+                        "snapshot '{}' not found by id or name for target {:?} ({})",
+                        id_or_live, self.target, by_id
+                    )
+                })?,
+            };
             let snapshot_path = meta.path.clone();
             if !snapshot_path.exists() {
                 bail!("snapshot directory not found: {:?}", snapshot_path);
@@ -1330,17 +1344,13 @@ impl SnapshotHandle {
         };
         
         // Parse optional arguments
-        let force = args.get("force")
-            .map(|s| s.to_lowercase() == "true")
-            .unwrap_or(false);
+        let force = crate::core::lenient::bool_arg(args, "force")?.unwrap_or(false);
             
         let mode = args.get("mode")
             .map(|s| s.as_str())
             .unwrap_or("overwrite");
         
-        let dry_run = args.get("dry_run")
-            .map(|s| s.to_lowercase() == "true")
-            .unwrap_or(false);
+        let dry_run = crate::core::lenient::dry_run(args)?;
         
         // Validate mode (MVP: only support overwrite)
         if mode != "overwrite" {
@@ -1901,6 +1911,84 @@ impl Handle for SnapshotHandle {
             "ls" => self.verb_ls(args, io),
             _ => bail!("unknown verb for snapshot://: {} (available: create, diff, restore, ls)", verb),
         }
+    }
+}
+
+/// Test-only snapshot store location for the current thread, so tests
+/// never touch the user's real state directory.
+#[cfg(test)]
+pub(crate) mod test_store {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    thread_local! {
+        static BASE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub fn get() -> Option<PathBuf> {
+        BASE.with(|b| b.borrow().clone())
+    }
+
+    pub struct Guard;
+
+    pub fn install(base: PathBuf) -> Guard {
+        BASE.with(|b| *b.borrow_mut() = Some(base));
+        Guard
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            BASE.with(|b| *b.borrow_mut() = None);
+        }
+    }
+}
+
+// H15: `diff from=<name>` finds snapshots by the name given at create.
+#[cfg(test)]
+mod diff_by_name_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn call(target: &Path, verb: &str, pairs: &[(&str, &str)]) -> (Status, String, String) {
+        let url = Url::parse(&format!("snapshot://{}", target.display())).unwrap();
+        let h = SnapshotHandle::from_url(&url).unwrap();
+        let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let status = {
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            h.call(verb, &args, &mut io).unwrap_or_else(|err| Status::err(1, format!("{:#}", err)))
+        };
+        (status, String::from_utf8_lossy(&o).into_owned(), String::from_utf8_lossy(&e).into_owned())
+    }
+
+    #[test]
+    fn diff_resolves_snapshot_names_and_ids() {
+        let tmp = TempDir::new().unwrap();
+        let _store = test_store::install(tmp.path().join("store"));
+        let target = tmp.path().join("app");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("config.txt"), "v1").unwrap();
+
+        let (status, out, err) = call(&target, "create", &[("name", "backup-v1")]);
+        assert!(status.ok, "{out}{err}");
+        let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()
+            .pointer("/snapshot/id").and_then(|v| v.as_str()).map(str::to_string);
+
+        fs::write(target.join("config.txt"), "v2 changed").unwrap();
+
+        let (status, out, err) = call(&target, "diff", &[("from", "backup-v1"), ("to", "live")]);
+        assert!(status.ok, "diff by name failed: {:?} {err}", status.reason);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["summary"]["modified"], 1, "{out}");
+
+        if let Some(id) = id {
+            let (status, _, err) = call(&target, "diff", &[("from", &id), ("to", "live")]);
+            assert!(status.ok, "diff by id failed: {err}");
+        }
+
+        let (status, _, _) = call(&target, "diff", &[("from", "no-such-snapshot"), ("to", "live")]);
+        assert!(!status.ok);
     }
 }
 

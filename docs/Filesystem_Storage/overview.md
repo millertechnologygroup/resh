@@ -2,411 +2,114 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes infrastructure operations using a resource-oriented URI execution model.
+The Filesystem & Storage category has four handles:
 
-The **Filesystem & Storage** domain provides tools for managing files, directories, archives, mounted storage, and point-in-time snapshots. It enables consistent, structured interaction with local storage resources using deterministic command syntax and structured output.
+| Handle | Purpose | Details |
+| ------ | ------- | ------- |
+| `file://` | Read, write, inspect, hash, search, copy/move/delete files; permissions, extended attributes, tags | [file.md](file.md) |
+| `archive://` | Create, list, test, inspect, extract and modify tar, tar.gz, zip and gzip archives (tar.xz / tar.zst read-only) | [archive.md](archive.md) |
+| `fs://` | Mounted filesystems: list, usage, mount table snapshot, quotas, mount/unmount, resize, check | [fs.md](fs.md) |
+| `snapshot://` | Full local copies of a file or directory, with diff, list and restore | [snapshot.md](snapshot.md) |
 
-Traditional filesystem and storage management typically involves:
-
-* Multiple CLI tools (`cp`, `mv`, `tar`, `mount`, `df`, etc.)
-* Inconsistent output formats
-* Backend-specific syntax
-* Manual parsing in automation workflows
-* Increased risk of destructive operations
-
-The resh Filesystem & Storage tools address these issues by:
-
-* Using a consistent URI-based command structure
-* Grouping related operations under defined handles
-* Providing structured JSON output where applicable
-* Supporting deterministic automation and CI/CD integration
-
-All operations follow the resh URI model:
-
-```
-handle://target.verb(options)
-```
+Platform: Linux only is supported and tested. Nothing here has been built
+or tested on macOS or Windows.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Command Syntax
 
-### Structured Interface Model
-
-Filesystem operations follow a consistent resource-oriented format:
-
-```
-file://path.verb(options)
-archive://path.verb(options)
-fs://target.verb(options)
-snapshot://target.verb(options)
+```text
+resh <scheme>://<target>.<verb> key=value ...
+resh '<scheme>://<target>.<verb>(key=value,...)'
 ```
 
-This eliminates command fragmentation and unifies file and storage management under a consistent grammar.
+The verb is the part after the last dot of the URL. What the target means
+differs per handle:
 
-### Safety-First Execution
+| Handle | Target | Example |
+| ------ | ------ | ------- |
+| `file` | The file or directory path (absolute with three slashes, or relative) | `file:///etc/hosts.read` |
+| `archive` | Empty; every path is an argument. The dot is still required | `archive://.list archive=a.tar.gz` |
+| `fs` | A free-form alias echoed back in the result | `fs://local.usage` |
+| `snapshot` | The target path (`create`, `diff`, `ls`) or the snapshot name (`restore`) | `snapshot:///srv/app.ls` |
 
-The Filesystem & Storage domain is designed to:
+Help for any handle: `resh <handle> --help` and
+`resh <handle> <verb> --help`. Add `--json-pretty` before the stage for
+indented JSON.
 
-* Require explicit targets
-* Separate destructive verbs from read-only verbs
-* Encourage snapshot-based backup workflows
-* Provide deterministic argument handling
+Each `resh` invocation is a separate process. State persists only where a
+handle writes it to disk: `snapshot://` stores its copies under
+`$XDG_STATE_HOME/resh/snapshots` (default `~/.local/state/resh/snapshots`).
 
-Operations are structured to reduce accidental data loss and support reversible workflows.
+### Exit status and output
 
-### Deterministic Behavior
-
-Each operation:
-
-* Follows predictable URI grammar
-* Uses explicit verbs
-* Separates operational intent from parameters
-* Returns consistent status and structured output (where applicable)
-
-### JSON-Based Structured Output
-
-Structured output enables:
-
-* Automation-safe parsing
-* CI/CD integration
-* Monitoring and logging
-* Deterministic validation
-
-### AI-Readiness
-
-The uniform command grammar and structured outputs enable integration into automation agents and orchestration workflows without relying on fragile text parsing.
+Exit code 0 means success. On failure the exit code is the handle's code
+(see each handle page) or 1, and the reason is printed on stderr as
+`Error: <reason>`. There is no shared response envelope: each handle prints
+its own JSON shape (or raw content, for example `file://...read`).
 
 ---
 
-## 3. Command Syntax and Execution Model
+## 3. Examples
 
-### 3.1 URI Structure
-
-```
-handle://target.verb(options)
-```
-
-#### Components
-
-| Component | Description                                                   |
-| --------- | ------------------------------------------------------------- |
-| `handle`  | Domain handle (`file`, `archive`, `fs`, `snapshot`)           |
-| `target`  | File path, archive path, mount target, or snapshot identifier |
-| `verb`    | Operation to perform                                          |
-| `options` | Named parameters controlling behavior                         |
-
----
-
-### Examples
-
-File read:
+Files:
 
 ```bash
-file:///etc/hosts.read
+resh file:///etc/hosts.read
+resh file:///tmp/config.yaml.write data='key: value'
+resh file:///tmp/source.txt.copy to=/tmp/destination.txt
+resh --json-pretty file:///srv/release.tar.gz.sha256
 ```
 
-Copy file:
+Archives:
 
 ```bash
-file:///tmp/source.txt.copy(dest="/tmp/destination.txt")
+resh archive://.create output=release.tar.gz 'sources=["build"]'
+resh archive://.test archive=release.tar.gz
+resh archive://.extract archive=release.tar.gz destination=deploy
 ```
 
-Create archive:
+Mounted filesystems:
 
 ```bash
-archive:///tmp/project.tar.create(src="/home/user/project")
+resh --json-pretty fs://local.usage mode=aggregate
+resh fs://local.list-mounts include_types=ext4,xfs
+resh fs://local.mount target=/mnt/data source=/dev/sdb1 type=ext4 dry_run
 ```
 
-Mount filesystem:
+Snapshots:
 
 ```bash
-fs:///mnt/data.mount(device="/dev/sdb1", type="ext4")
-```
-
-Create snapshot:
-
-```bash
-snapshot:///home/user.create(label="pre-upgrade")
+resh snapshot:///home/user/config.create name=pre-upgrade
+resh snapshot:///home/user/config.diff from=pre-upgrade to=live format=summary
+resh snapshot://pre-upgrade.restore target=/home/user/config force=true dry_run
 ```
 
 ---
 
-### 3.2 Execution Semantics
+## 4. Important Limitations
 
-Operations return structured output where applicable and provide predictable exit status.
+The handle pages list all limitations. The ones most likely to matter:
 
-#### Representative JSON Example
-
-```json
-{
-  "op": "file.read",
-  "target": "/etc/hosts",
-  "status": "success",
-  "size_bytes": 312,
-  "content": "127.0.0.1 localhost"
-}
-```
-
-Error responses follow a structured format:
-
-```json
-{
-  "op": "file.read",
-  "status": "error",
-  "error": {
-    "kind": "NOT_FOUND",
-    "message": "File does not exist"
-  }
-}
-```
-
-Automation systems must evaluate the `status` field or exit code rather than parsing textual output.
+* `file://...write` without `data=` reads standard input and truncates the
+  file when standard input is empty.
+* `archive://` cannot create tar.xz, tar.zst or 7z archives, cannot read 7z
+  at all, and cannot create password-protected archives (`password=` is
+  always rejected).
+* `fs://...resize` rejects negative deltas; `all_subjects=true` for quotas
+  is not implemented.
+* `snapshot://` `ls` and `diff` need the absolute target path; an omitted
+  `from`/`to` in `diff` is an empty tree, not live; `ttl` is not enforced.
 
 ---
 
-## 4. Functional Domains – Filesystem & Storage
-
----
-
-### 4.1 File Operations (`file://`)
-
-#### Operational Scope
-
-* Read and write files
-* Copy and move files
-* Compare file contents
-* Create directories
-* Inspect file metadata
-
-#### Common Use Cases
-
-* Managing configuration files
-* Copying build artifacts
-* Inspecting file properties
-* Organizing directories
-* Validating deployment outputs
-
-#### Example Commands
-
-```bash
-file:///var/log/app.log.read
-file:///tmp/config.yaml.write(content="key: value")
-file:///data/archive.copy(dest="/backup/archive")
-```
-
-#### Integration Scenarios
-
-* CI artifact validation
-* Automated configuration updates
-* File integrity checks
-* Deployment workflows
-
----
-
-### 4.2 Archive Management (`archive://`)
-
-#### Operational Scope
-
-* Create compressed archives (ZIP, TAR, 7-Zip)
-* Extract archive contents
-* Package multiple files into single artifacts
-* Compress backups
-
-#### Common Use Cases
-
-* Packaging release artifacts
-* Extracting downloaded files
-* Creating compressed backups
-* Organizing related files
-
-#### Example Commands
-
-```bash
-archive:///tmp/release.zip.create(src="/build/output")
-archive:///tmp/release.zip.extract(dest="/deploy")
-```
-
-#### Integration Scenarios
-
-* Build pipeline artifact packaging
-* Distribution workflows
-* Backup compression
-* Deployment staging
-
----
-
-### 4.3 Filesystem Operations (`fs://`)
-
-#### Operational Scope
-
-* Mount storage devices
-* Check disk space
-* Resize partitions
-* Manage filesystem types
-* Work with network storage
-
-#### Common Use Cases
-
-* Mounting external drives
-* Validating disk usage before deployment
-* Managing storage capacity
-* Resizing partitions
-
-#### Example Commands
-
-```bash
-fs:///mnt/data.mount(device="/dev/sdb1")
-fs:///.disk
-fs:///mnt/data.resize(size="200G")
-```
-
-#### Integration Scenarios
-
-* Pre-deployment disk validation
-* Infrastructure provisioning
-* Storage expansion workflows
-* Cloud instance preparation
-
----
-
-### 4.4 Snapshots (`snapshot://`)
-
-#### Operational Scope
-
-* Create point-in-time copies
-* Restore previous file states
-* Compare snapshot versions
-* Protect against data loss
-
-#### Common Use Cases
-
-* Pre-upgrade backups
-* Configuration rollback
-* Version comparison
-* Recovery from accidental deletion
-
-#### Example Commands
-
-```bash
-snapshot:///home/user.create(label="before-change")
-snapshot:///home/user.restore(snapshot_id="snap-123")
-```
-
-#### Integration Scenarios
-
-* Deployment rollback strategies
-* Backup validation
-* Version control outside Git
-* Disaster recovery workflows
-
----
-
-## 5. Platform Support
-
-| Platform   | Support Level                                            |
-| ---------- | -------------------------------------------------------- |
-| Linux      | Full support                                             |
-| macOS/Unix | Supported                                                |
-| Windows    | Supported with potential filesystem-specific limitations |
-
-Filesystem behavior depends on underlying OS and filesystem type.
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Create snapshots before destructive operations.
-* Use explicit destination paths in copy/move operations.
-* Verify disk space before large archive operations.
-* Avoid mounting over existing active mount points.
-
-### Automation Considerations
-
-* Parse structured JSON output.
-* Validate exit codes.
-* Separate read-only checks from write operations.
-* Use snapshot workflows in automated pipelines.
-
-### CI/CD Integration
-
-* Validate artifact integrity before deployment.
-* Compress build outputs using archive operations.
-* Check available disk space during build stages.
-* Create snapshots before applying infrastructure changes.
-
-### Production Environment Recommendations
-
-* Maintain consistent directory structures.
-* Use descriptive snapshot labels.
-* Monitor disk utilization regularly.
-* Implement periodic archive cleanup strategies.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Manage deployment artifacts.
-* Package and distribute releases.
-* Validate filesystem state during CI pipelines.
-* Implement snapshot-based rollback workflows.
-
-### SRE Engineers
-
-* Monitor disk capacity.
-* Restore from snapshots during incidents.
-* Validate file integrity after deployments.
-* Manage storage lifecycle operations.
-
-### Network Administrators
-
-* Mount external storage.
-* Manage shared network drives.
-* Monitor disk usage.
-* Protect configuration files via snapshots.
-
-### AI/Automation Engineers
-
-* Use deterministic file operations in orchestration.
-* Automate backup creation before state changes.
-* Validate storage conditions programmatically.
-* Integrate structured filesystem responses into decision logic.
-
----
-
-## 8. Technical Foundation
-
-The Filesystem & Storage domain operates within resh, implemented in Rust.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Strong type guarantees
-* Reliable filesystem interaction
-* Deterministic error handling
-
-### Type Safety
-
-Arguments and response envelopes are type-validated to prevent malformed operations.
-
-### Performance Characteristics
-
-* Efficient file I/O handling
-* Structured metadata reporting
-* Deterministic snapshot management
-* Minimal runtime overhead
-
-### Cross-Platform Architecture
-
-Supported across:
-
-* Linux
-* macOS/Unix
-* Windows
-
-Behavior depends on underlying filesystem capabilities and OS permissions.
-
+## 5. Best Practices
+
+* Take a `snapshot://` copy before changing configuration, and `diff`
+  against `live` afterwards.
+* Use `dry_run` where offered (`archive remove`, `file replace`,
+  `fs mount/unmount/resize/check`, `snapshot restore`).
+* Use `archive://.test` and `file://...verify` to check artifacts.
+* Set `max_total_bytes`/`max_file_bytes` when extracting untrusted
+  archives.
+* Check the exit code; read JSON fields, not text output.

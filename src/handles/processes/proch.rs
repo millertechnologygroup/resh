@@ -368,6 +368,19 @@ pub struct ProcHandle {
     name: String, // Can be a PID or "self"
 }
 
+/// Parse a single target PID. Only 1..=pid_t::MAX is accepted: zero, negative
+/// values and anything that would wrap on conversion address process groups
+/// or every process (`kill(-1, ..)`), never one process.
+fn parse_pid(s: &str) -> anyhow::Result<libc::pid_t> {
+    let pid: u64 = s.parse()
+        .with_context(|| format!("invalid pid: {}", s))?;
+    if pid == 0 {
+        return Err(anyhow!("invalid pid: must be positive"));
+    }
+    libc::pid_t::try_from(pid)
+        .map_err(|_| anyhow!("invalid pid: {} is out of range (max {})", s, libc::pid_t::MAX))
+}
+
 impl ProcHandle {
     pub fn from_url(u: &Url) -> anyhow::Result<Self> {
         // Accept host + path, strip leading slashes, parse as PID or "self"
@@ -390,13 +403,7 @@ impl ProcHandle {
         if name == "self" || crate::core::help::is_help_flag(&name) {
             Ok(Self { name })
         } else {
-            let pid: u32 = name.parse()
-                .with_context(|| format!("invalid pid: {}", name))?;
-
-            if pid == 0 {
-                return Err(anyhow!("invalid pid: must be positive"));
-            }
-
+            parse_pid(&name)?;
             Ok(Self { name })
         }
     }
@@ -404,11 +411,10 @@ impl ProcHandle {
     /// Resolve the name to an actual PID
     fn resolve_pid(&self) -> anyhow::Result<libc::pid_t> {
         if self.name == "self" {
-            Ok(std::process::id() as libc::pid_t)
+            libc::pid_t::try_from(std::process::id())
+                .map_err(|_| anyhow!("invalid pid: own pid out of range"))
         } else {
-            let pid: u32 = self.name.parse()
-                .with_context(|| format!("invalid pid: {}", self.name))?;
-            Ok(pid as libc::pid_t)
+            parse_pid(&self.name)
         }
     }
 
@@ -1293,9 +1299,7 @@ impl ProcHandle {
         };
 
         // Check if this is check-only mode
-        let check_only = args.get("dry_run")
-            .map(|s| s == "true" || s == "1")
-            .unwrap_or(false);
+        let check_only = crate::core::lenient::dry_run(args)?;
 
         let mut results = serde_json::Map::new();
         let mut overall_success = true;
@@ -1701,5 +1705,60 @@ mod tests {
         let out = crate::core::help::render_legacy("proc", &PROC_HELP, h.verbs(), None);
         assert!(out.starts_with("Handle: proc"), "{out}");
         assert!(ProcHandle::from_url(&Url::parse("proc://my-hosts").unwrap()).is_err());
+    }
+
+    // SEC-03: no PID may wrap into 0 or a negative pid_t on its way to kill().
+    // These tests only parse; no signal is ever sent.
+    #[test]
+    fn pid_parsing_rejects_out_of_range_values() {
+        assert_eq!(parse_pid("1").unwrap(), 1);
+        assert_eq!(parse_pid("4242").unwrap(), 4242);
+        assert_eq!(parse_pid(&libc::pid_t::MAX.to_string()).unwrap(), libc::pid_t::MAX);
+        for bad in [
+            "0",
+            "-1",
+            "-4242",
+            "2147483648",
+            "4294967295",
+            "4294967296",
+            "18446744073709551615",
+            "18446744073709551616",
+            "99999999999999999999999",
+            "",
+            "12a",
+            "0x10",
+            "1.5",
+            " 1",
+        ] {
+            assert!(parse_pid(bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn proc_url_rejects_wrapping_pids() {
+        for url in ["proc://4294967295", "proc://2147483648", "proc://0", "proc://-1"] {
+            assert!(ProcHandle::from_url(&Url::parse(url).unwrap()).is_err(), "{url}");
+        }
+        let h = ProcHandle::from_url(&Url::parse("proc://2147483647").unwrap()).unwrap();
+        assert_eq!(h.resolve_pid().unwrap(), 2147483647);
+        let h = ProcHandle::from_url(&Url::parse("proc://self").unwrap()).unwrap();
+        assert_eq!(h.resolve_pid().unwrap() as u32, std::process::id());
+    }
+
+    #[test]
+    fn resolve_pid_rechecks_range_without_from_url() {
+        // A handle built without from_url must still never yield -1.
+        let h = ProcHandle { name: "4294967295".to_string() };
+        assert!(h.resolve_pid().is_err());
+        let h = ProcHandle { name: "0".to_string() };
+        assert!(h.resolve_pid().is_err());
+    }
+
+    #[test]
+    fn kill_stage_with_wrapping_pid_fails_before_dispatch() {
+        let p = crate::core::parse::parse_stage("proc://4294967295.kill").unwrap();
+        assert_eq!(p.verb, "kill");
+        let url = Url::parse(&p.target).unwrap();
+        assert!(ProcHandle::from_url(&url).is_err());
     }
 }

@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Release-candidate stabilization (not yet versioned)
+
+Security, correctness and documentation fixes on top of 1.0.2-beta. Details
+and evidence: `docs/reviews/`.
+
+#### Security
+- archive: extraction can no longer write outside the destination
+  (symlinks, hard links, absolute and `..` paths, device nodes); an unsafe
+  entry fails the extraction.
+- plugin: ids and versions must be single safe path components; registries
+  and artifact URLs must use HTTPS; registry artifacts need a SHA-256
+  checksum (`source=url` requires an explicit `verify=none`); artifacts may
+  contain only regular files and directories.
+- proc: PIDs above 2147483647 are rejected (previously `4294967295` became
+  `kill(-1)`).
+- pkg: package managers run without a shell; names, versions and lockfile
+  entries are validated.
+- `dry_run`: one strict parser (`true/false/1/0/yes/no/on/off`); malformed
+  values are errors and a bare `dry_run` means true.
+- Dependencies: rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots
+  1.0.10, bytes 1.11.1, h2 0.4.16, tar 0.4.45 (security patches).
+  `Cargo.lock` is now tracked; minimum Rust version is 1.88.
+
+#### Fixed
+- Failures always exit non-zero and print a reason on stderr.
+- firewall enable/disable write a real backup before changing rules;
+  firewall `timeout_ms` is enforced.
+- git sync is fast-forward only and fails on divergent history instead of
+  reporting a merge/rebase it did not do.
+- backup timeouts are enforced; `backup://<profile>` is honored.
+- cron enable no longer uncomments ordinary comments.
+- svc instance units (`getty@tty1`) target the right unit.
+- file relative directories work; snapshot `diff from=<name>` works.
+- PostgreSQL integer/float decoding and the MySQL `tables` panic.
+- Stage 4: `pkg security_only` is refused where it cannot be honored
+  (it ran a full upgrade); `backup create/prune` and `fs mount/unmount`
+  reject malformed `dry_run`; `backup restore` and `mail send` refuse
+  `dry_run=true` (they performed the real operation); ext3/ext4 resize uses
+  the requested size (it asked for a quarter); `file rename/copy/move`
+  accept bare destination names and rename no longer deletes the
+  destination before failing; `archive add/remove` on `.tar.zst` no longer
+  truncates the archive.
+- Stage 4 (independent review): `dry_run=true` on a verb that has no dry-run
+  mode is refused instead of being ignored (it made the real change), and
+  unknown bare words and misspelled `dry_run` keys are errors instead of
+  being dropped (also a top-level `dry_run` next to pkg's `input=`);
+  `archive add` keeps the headers of existing tar entries (modes, owners,
+  times and symlinks were lost) and the mode, time and compression of
+  existing ZIP entries; archive and file-copy
+  rewrites use unpredictable, non-following temporary files; SMTP profiles
+  are written 0600; firewall `rules.reload` no longer writes a predictable
+  `/tmp` file; `fs resize` runs LVM tools without a shell; `resh` with no
+  stage exits 2 instead of panicking.
+
+#### Changed (compatibility)
+- A zip `password=` is refused (encrypted creation is not supported).
+- git `timeout_ms` is refused (git steps cannot be interrupted).
+- `http://` plugin registries and plugin artifacts containing links are
+  refused.
+- The documentation under `docs/` was rewritten against the code; every
+  `resh` example is checked by `tests/doc_examples.rs`.
+
 ### Planned for v1.1 (March 2026)
 - webhook:// handle - Webhook receiver for event-driven automation
 - lock:// handle - Distributed locking mechanisms (Redis, etcd, Consul)

@@ -4,13 +4,38 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use super::registry::RegistryClient;
-use super::store::PluginStore;
+use super::registry::{parse_sha256, RegistryClient};
+use super::store::{
+    artifact_relative_path, create_dirs_no_follow, create_new_no_follow, sanitized_mode, PluginStore,
+};
 use super::types::{
     action_types, error_codes, error_code_to_numeric, Action, ArtifactCandidate, Envelope,
-    Mode, PlanDecision, PluginOpArgs, PluginResult, StructuredError, VerifyMode,
+    Mode, PlanDecision, PluginOpArgs, PluginResult, SourceSpec, StructuredError, VerifyMode,
     ArtifactInfo, PathInfo, TargetInfo, ArgsInfo,
 };
+
+/// Integrity rule for a resolved artifact (SEC-07).
+///
+/// With `verify=sha256` (the default) a remote artifact must come with a
+/// well-formed SHA-256 from its registry entry; there is no other trusted
+/// place to get one, so a direct `source=url` artifact cannot be verified
+/// and is refused. A local `source=file` artifact involves no transport and
+/// is accepted without a checksum. `verify=none` is the explicit opt-out.
+/// Transport rules (HTTPS only) are enforced by the registry client and
+/// apply whatever `verify` says.
+fn check_integrity_metadata(args: &PluginOpArgs, candidate: &ArtifactCandidate) -> Result<()> {
+    if !matches!(args.verify, VerifyMode::Sha256) || matches!(args.source, SourceSpec::File { .. }) {
+        return Ok(());
+    }
+    match candidate.sha256.as_deref() {
+        Some(sum) if !sum.trim().is_empty() => parse_sha256(sum).map(|_| ()),
+        _ if matches!(args.source, SourceSpec::Url { .. }) => Err(anyhow!(
+            "No trusted SHA-256 is available for a source=url artifact, so verify=sha256 cannot be satisfied; \
+             install from a registry, or pass verify=none to install without integrity verification"
+        )),
+        _ => Err(anyhow!("Registry entry has no SHA-256 for this artifact; refusing to install an unverifiable plugin")),
+    }
+}
 
 /// Shared execution engine for both install and update operations
 pub struct ExecutionEngine {
@@ -196,12 +221,21 @@ impl ExecutionEngine {
 
     /// Resolve plugin candidate from source
     fn resolve_candidate(&mut self, args: &PluginOpArgs, actions: &mut Vec<Action>) -> Result<ArtifactCandidate> {
-        let result = self.registry_client.resolve_plugin(
-            &args.plugin_id,
-            &args.source,
-            &args.requested_version,
-            &args.verify,
-        );
+        // The id and the registry-supplied version become store path
+        // components; reject unsafe values before anything is fetched.
+        let result = super::store::validate_path_component("id", &args.plugin_id)
+            .and_then(|_| self.registry_client.resolve_plugin(
+                &args.plugin_id,
+                &args.source,
+                &args.requested_version,
+                &args.verify,
+            ))
+            .and_then(|c| {
+                super::store::validate_path_component("version", &c.manifest.version)?;
+                check_integrity_metadata(args, &c)
+                    .map_err(|e| self.create_error(error_codes::PLUGIN_VERIFY_FAILED, &e.to_string()))?;
+                Ok(c)
+            });
 
         match &result {
             Ok(candidate) => {
@@ -447,22 +481,34 @@ impl ExecutionEngine {
         // Download artifact
         let artifact_data = self.download_artifact(artifact, actions)?;
 
-        // Verify artifact
+        // Verify artifact (before anything is written to disk)
         if matches!(args.verify, VerifyMode::Sha256) {
-            self.verify_artifact(&artifact_data, artifact, actions)?;
+            self.verify_artifact(&artifact_data, args, artifact, actions)?;
         }
 
-        // Extract artifact
-        let extracted_path = self.extract_artifact(&artifact_data, args, artifact, actions)?;
+        // Extract artifact; a rejected or failed extraction leaves no staging behind
+        let extracted_path = match self.extract_artifact(&artifact_data, args, artifact, actions) {
+            Ok(path) => path,
+            Err(e) => {
+                let _ = self.store.cleanup_staging(&args.plugin_id);
+                return Err(e);
+            }
+        };
 
         // Install plugin
-        let installed_metadata = self.store.install_plugin(
+        let installed_metadata = match self.store.install_plugin(
             &args.plugin_id,
             version,
             artifact,
             &extracted_path,
             &self.source_to_string(&args.source),
-        ).map_err(|e| self.create_error(error_codes::PLUGIN_INSTALL_FAILED, &e.to_string()))?;
+        ) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                let _ = self.store.cleanup_staging(&args.plugin_id);
+                return Err(self.create_error(error_codes::PLUGIN_INSTALL_FAILED, &e.to_string()));
+            }
+        };
 
         self.add_action(actions, &format!("install-{}", actions.len()), action_types::INSTALL, "Plugin installed successfully", true, None);
 
@@ -595,7 +641,7 @@ impl ExecutionEngine {
     }
 
     /// Verify artifact checksum
-    fn verify_artifact(&mut self, data: &[u8], artifact: &ArtifactCandidate, actions: &mut Vec<Action>) -> Result<()> {
+    fn verify_artifact(&mut self, data: &[u8], args: &PluginOpArgs, artifact: &ArtifactCandidate, actions: &mut Vec<Action>) -> Result<()> {
         if let Some(expected_sha256) = &artifact.sha256 {
             let result = self.registry_client.verify_checksum(data, expected_sha256);
             match &result {
@@ -621,9 +667,13 @@ impl ExecutionEngine {
                 }
             }
             result.map_err(|e| self.create_error(error_codes::PLUGIN_VERIFY_FAILED, &e.to_string()))
-        } else {
-            self.add_action(actions, &format!("verify-{}", actions.len()), action_types::VERIFY, "No checksum to verify", true, None);
+        } else if matches!(args.source, SourceSpec::File { .. }) {
+            self.add_action(actions, &format!("verify-{}", actions.len()), action_types::VERIFY, "Local file source: no checksum to verify", true, None);
             Ok(())
+        } else {
+            // Fail closed: a remote artifact is never installed unverified under verify=sha256
+            self.add_action(actions, &format!("verify-{}", actions.len()), action_types::VERIFY, "No trusted checksum available", false, None);
+            Err(self.create_error(error_codes::PLUGIN_VERIFY_FAILED, "No trusted SHA-256 for a remote artifact; refusing to install"))
         }
     }
 
@@ -670,18 +720,59 @@ impl ExecutionEngine {
         extract_result.map_err(|e| self.create_error(error_codes::PLUGIN_EXTRACT_FAILED, &e.to_string()))
     }
 
-    /// Extract tar.gz archive
+    /// Extract tar.gz archive into the (new, empty) staging directory.
+    ///
+    /// Plugin artifacts are untrusted. Only regular files and directories
+    /// with plain relative paths are accepted; symbolic links, hard links,
+    /// device nodes and FIFOs fail the whole extraction, so nothing in
+    /// staging can point at a file outside the artifact. Files are created
+    /// with `create_new` and `O_NOFOLLOW`, and their mode is reduced to
+    /// 0644 or 0755 (no setuid/setgid/sticky, no group/other write).
     fn extract_tar_gz(&self, data: &[u8], staging_dir: &Path) -> Result<std::path::PathBuf> {
         use flate2::read::GzDecoder;
-        use tar::Archive;
+        use tar::{Archive, EntryType};
         use std::io::Cursor;
 
         let cursor = Cursor::new(data);
         let gz_decoder = GzDecoder::new(cursor);
         let mut archive = Archive::new(gz_decoder);
 
-        archive.unpack(staging_dir)
-            .context("Failed to extract tar.gz archive")?;
+        let entries = archive.entries().context("Failed to read tar.gz archive")?;
+        for entry in entries {
+            let mut entry = entry.context("Failed to read tar.gz archive entry")?;
+            let raw_path = entry.path().context("Invalid entry path in plugin artifact")?.into_owned();
+            let Some(rel) = artifact_relative_path(&raw_path)? else {
+                continue; // "." / "./": the staging directory itself
+            };
+            let entry_type = entry.header().entry_type();
+            match entry_type {
+                EntryType::Directory => {
+                    create_dirs_no_follow(staging_dir, &rel)?;
+                }
+                EntryType::Regular | EntryType::Continuous => {
+                    if let Some(parent) = rel.parent() {
+                        create_dirs_no_follow(staging_dir, parent)?;
+                    }
+                    let mode = entry.header().mode().unwrap_or(0o644);
+                    let mut out = create_new_no_follow(&staging_dir.join(&rel), sanitized_mode(mode))
+                        .with_context(|| format!("Failed to create plugin file {:?}", rel))?;
+                    std::io::copy(&mut entry, &mut out)
+                        .with_context(|| format!("Failed to write plugin file {:?}", rel))?;
+                }
+                EntryType::Symlink | EntryType::Link => {
+                    return Err(anyhow!(
+                        "Refusing plugin artifact entry {:?}: symbolic and hard links are not allowed in plugin artifacts",
+                        raw_path
+                    ));
+                }
+                other => {
+                    return Err(anyhow!(
+                        "Refusing plugin artifact entry {:?}: unsupported entry type {:?}",
+                        raw_path, other
+                    ));
+                }
+            }
+        }
 
         Ok(staging_dir.to_path_buf())
     }
@@ -1561,10 +1652,487 @@ mod tests {
         assert!(update.ok, "{:?}", update.error.as_ref().map(|e| &e.message));
     }
 
+    /// SEC-02: a registry whose version key and manifest version try to
+    /// climb out of the store. Resolution fails before any download, in
+    /// both dry-run and real mode, and the sentinel outside the store stays.
+    #[test]
+    fn registry_version_traversal_is_rejected_before_install() {
+        let (dir, _artifact, mut engine) = setup();
+        let victim = dir.path().join("victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("keep.txt"), b"sentinel").unwrap();
+        let evil = "../../../victim";
+        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let registry = serde_json::json!({
+            "demo": {
+                "plugin_id": "demo",
+                "versions": { evil: {
+                    "name": "demo", "version": evil,
+                    "description": null, "author": null, "license": null,
+                    "homepage": null, "repository": null, "keywords": null,
+                    "platforms": { platform: {
+                        "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
+                        "bin": "plugin", "sha256": "00"
+                    }}
+                }}
+            }
+        });
+        let reg_path = dir.path().join("registry.json");
+        fs::write(&reg_path, registry.to_string()).unwrap();
+        for dry_run in [true, false] {
+            let mut args = op_args(Mode::Install, "", dry_run);
+            args.source = super::super::types::SourceSpec::Registry {
+                url: reg_path.to_string_lossy().to_string(),
+            };
+            let env = engine.run_plugin_op(args);
+            assert!(!env.ok, "dry_run={dry_run}");
+            let msg = env.error.as_ref().unwrap().message.clone();
+            assert!(msg.contains("Invalid plugin version"), "{msg}");
+            assert_eq!(fs::read(victim.join("keep.txt")).unwrap(), b"sentinel");
+            assert_eq!(fs::read_dir(&victim).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn unsafe_plugin_id_is_rejected_before_install() {
+        let (_dir, artifact, mut engine) = setup();
+        for id in ["../escape", "a/b", "..", ""] {
+            let mut args = op_args(Mode::Install, &artifact, false);
+            args.plugin_id = id.to_string();
+            let env = engine.run_plugin_op(args);
+            assert!(!env.ok, "{id:?}");
+        }
+    }
+
     #[test]
     fn update_of_missing_plugin_is_an_error_not_a_panic() {
         let (_dir, artifact, mut engine) = setup();
         let env = engine.run_plugin_op(op_args(Mode::Update, &artifact, false));
         assert!(!env.ok);
+    }
+}
+
+/// Stage 3 regression tests: plugin artifact link traversal (SEC-06) and
+/// registry transport and checksum integrity (SEC-07). Every test uses a
+/// temporary plugin store; network tests talk only to a loopback mock.
+#[cfg(test)]
+mod artifact_security_tests {
+    use super::*;
+    use super::super::registry::allow_loopback_http_for_tests;
+    use super::super::types::{RequestedVersion, SourceSpec};
+    use httpmock::prelude::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use tar::{EntryType, Header};
+    use tempfile::TempDir;
+
+    const SENTINEL: &[u8] = b"PRIVATE-SENTINEL-do-not-copy";
+
+    fn args(source: SourceSpec, verify: VerifyMode, force: bool, dry_run: bool) -> PluginOpArgs {
+        PluginOpArgs {
+            mode: Mode::Install,
+            plugin_id: "demo".to_string(),
+            source,
+            requested_version: RequestedVersion::Latest,
+            verify,
+            force,
+            allow_downgrade: false,
+            dry_run,
+            strict: false,
+            purge: false,
+            timeout_ms: 5000,
+        }
+    }
+
+    /// A temp dir with a private sentinel file outside the plugin store, a
+    /// store, and an engine. Set any HTTP seam before calling this.
+    fn setup() -> (TempDir, PathBuf, ExecutionEngine) {
+        let dir = TempDir::new().unwrap();
+        let secret = dir.path().join("secret");
+        fs::create_dir(&secret).unwrap();
+        let sentinel = secret.join("id_ed25519");
+        fs::write(&sentinel, SENTINEL).unwrap();
+        fs::set_permissions(&sentinel, fs::Permissions::from_mode(0o600)).unwrap();
+        let store = PluginStore::with_dir(dir.path().join("plugins")).unwrap();
+        let engine = ExecutionEngine::with_store(5000, store).unwrap();
+        (dir, sentinel, engine)
+    }
+
+    /// Append an entry with a raw name/link name, bypassing the tar
+    /// builder's own path checks, as a hostile artifact would.
+    fn raw(b: &mut tar::Builder<Vec<u8>>, name: &str, kind: EntryType, link: Option<&str>, mode: u32, data: &[u8]) {
+        let mut h = Header::new_gnu();
+        {
+            let old = h.as_old_mut();
+            old.name[..name.len()].copy_from_slice(name.as_bytes());
+            if let Some(l) = link {
+                old.linkname[..l.len()].copy_from_slice(l.as_bytes());
+            }
+        }
+        h.set_entry_type(kind);
+        h.set_mode(mode);
+        h.set_size(data.len() as u64);
+        h.set_cksum();
+        b.append(&h, data).unwrap();
+    }
+
+    fn tar_gz(build: impl FnOnce(&mut tar::Builder<Vec<u8>>)) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        build(&mut b);
+        let tar = b.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar).unwrap();
+        gz.finish().unwrap()
+    }
+
+    fn valid_artifact() -> Vec<u8> {
+        tar_gz(|b| {
+            raw(b, "bin/", EntryType::Directory, None, 0o755, b"");
+            raw(b, "bin/plugin", EntryType::Regular, None, 0o4755, b"#!/bin/sh\necho ok\n");
+            raw(b, "./share/doc/README", EntryType::Regular, None, 0o666, b"readme");
+        })
+    }
+
+    fn write_artifact(dir: &TempDir, name: &str, data: &[u8]) -> SourceSpec {
+        let path = dir.path().join(name);
+        fs::write(&path, data).unwrap();
+        SourceSpec::File { path: path.to_string_lossy().to_string() }
+    }
+
+    /// True if any regular file under `root` (links not followed) holds the
+    /// sentinel bytes, or any symlink exists other than the `current` links.
+    fn store_leaks(root: &Path) -> bool {
+        walkdir::WalkDir::new(root).follow_links(false).into_iter().flatten().any(|e| {
+            let ft = e.file_type();
+            if ft.is_symlink() {
+                e.file_name() != "current"
+            } else {
+                ft.is_file() && fs::read(e.path()).map(|d| d.windows(SENTINEL.len()).any(|w| w == SENTINEL)).unwrap_or(false)
+            }
+        })
+    }
+
+    fn nothing_installed(dir: &TempDir) {
+        let root = dir.path().join("plugins/demo");
+        assert!(!root.join("versions").exists(), "a version directory was created");
+        assert!(fs::symlink_metadata(root.join("current")).is_err(), "a current link was created");
+        assert!(!root.join(".staging").exists(), "staging was not cleaned up");
+    }
+
+    // ---------------------------------------------------------------- SEC-06
+
+    #[test]
+    fn valid_artifact_installs_with_sanitized_modes() {
+        let (dir, _sentinel, mut engine) = setup();
+        let src = write_artifact(&dir, "demo.tar.gz", &valid_artifact());
+        let env = engine.run_plugin_op(args(src, VerifyMode::Sha256, false, false));
+        assert!(env.ok, "{:?}", env.error.as_ref().map(|e| &e.message));
+        let v = dir.path().join("plugins/demo/versions/local");
+        let bin = fs::symlink_metadata(v.join("bin/plugin")).unwrap();
+        assert!(bin.file_type().is_file());
+        assert_eq!(bin.permissions().mode() & 0o7777, 0o755, "setuid must be dropped");
+        let readme = fs::symlink_metadata(v.join("share/doc/README")).unwrap();
+        assert_eq!(readme.permissions().mode() & 0o7022, 0, "no special or group/other write bits");
+        assert_eq!(fs::read(v.join("share/doc/README")).unwrap(), b"readme");
+        assert!(!dir.path().join("plugins/demo/.staging").exists());
+    }
+
+    #[test]
+    fn symlink_to_private_file_is_rejected_and_not_copied() {
+        let (dir, sentinel, mut engine) = setup();
+        let target = sentinel.to_string_lossy().to_string();
+        let relative = "../../../../../../../../../../../../../../../../..".to_string() + &target;
+        for (name, link) in [("bin/plugin", target.as_str()), ("bin/plugin", relative.as_str()), ("key", target.as_str())] {
+            let data = tar_gz(|b| {
+                raw(b, "bin/", EntryType::Directory, None, 0o755, b"");
+                raw(b, name, EntryType::Symlink, Some(link), 0o777, b"");
+            });
+            let src = write_artifact(&dir, "evil.tar.gz", &data);
+            let env = engine.run_plugin_op(args(src, VerifyMode::None, false, false));
+            assert!(!env.ok, "{name} -> {link} was accepted");
+            assert!(env.error.as_ref().unwrap().message.contains("links are not allowed"), "{:?}", env.error);
+            nothing_installed(&dir);
+            assert!(!store_leaks(&dir.path().join("plugins")), "sentinel reached the store");
+        }
+        assert_eq!(fs::read(&sentinel).unwrap(), SENTINEL);
+        assert_eq!(fs::metadata(&sentinel).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn hard_link_to_private_file_is_rejected() {
+        let (dir, sentinel, mut engine) = setup();
+        let target = sentinel.to_string_lossy().to_string();
+        for link in [target.as_str(), "../../secret/id_ed25519", "bin/other"] {
+            let data = tar_gz(|b| {
+                raw(b, "bin/other", EntryType::Regular, None, 0o755, b"x");
+                raw(b, "bin/plugin", EntryType::Link, Some(link), 0o755, b"");
+            });
+            let src = write_artifact(&dir, "evil.tar.gz", &data);
+            let env = engine.run_plugin_op(args(src, VerifyMode::None, false, false));
+            assert!(!env.ok, "hard link to {link} was accepted");
+            nothing_installed(&dir);
+            assert!(!store_leaks(&dir.path().join("plugins")));
+        }
+        assert_eq!(fs::read(&sentinel).unwrap(), SENTINEL);
+    }
+
+    #[test]
+    fn escaping_paths_and_special_files_are_rejected() {
+        let (dir, _sentinel, mut engine) = setup();
+        let outside = dir.path().join("escaped");
+        let abs = outside.to_string_lossy().to_string();
+        let cases: Vec<(String, EntryType)> = vec![
+            ("../../../escaped".to_string(), EntryType::Regular),
+            ("bin/../../escaped".to_string(), EntryType::Regular),
+            (abs.clone(), EntryType::Regular),
+            ("dev".to_string(), EntryType::Char),
+            ("blk".to_string(), EntryType::Block),
+            ("fifo".to_string(), EntryType::Fifo),
+        ];
+        for (name, kind) in cases {
+            let data = tar_gz(|b| raw(b, &name, kind, None, 0o644, if kind == EntryType::Regular { b"x" } else { b"" }));
+            let src = write_artifact(&dir, "evil.tar.gz", &data);
+            let env = engine.run_plugin_op(args(src, VerifyMode::None, false, false));
+            assert!(!env.ok, "{name:?} ({kind:?}) was accepted");
+            nothing_installed(&dir);
+            assert!(!outside.exists(), "{name:?} wrote outside the store");
+            assert!(walkdir::WalkDir::new(dir.path()).into_iter().flatten().all(|e| e.file_name() != "escaped"));
+        }
+    }
+
+    #[test]
+    fn malicious_reinstall_leaves_existing_plugin_untouched() {
+        let (dir, sentinel, mut engine) = setup();
+        let good = write_artifact(&dir, "good.tar.gz", &valid_artifact());
+        assert!(engine.run_plugin_op(args(good, VerifyMode::None, false, false)).ok);
+        let bin = dir.path().join("plugins/demo/versions/local/bin/plugin");
+        let before = fs::read(&bin).unwrap();
+
+        let target = sentinel.to_string_lossy().to_string();
+        let evil = tar_gz(|b| {
+            raw(b, "bin/", EntryType::Directory, None, 0o755, b"");
+            raw(b, "bin/plugin", EntryType::Symlink, Some(&target), 0o777, b"");
+        });
+        let src = write_artifact(&dir, "evil.tar.gz", &evil);
+        let env = engine.run_plugin_op(args(src, VerifyMode::None, true, false)); // force reinstall
+        assert!(!env.ok);
+        assert_eq!(fs::read(&bin).unwrap(), before, "installed plugin was modified");
+        assert!(fs::symlink_metadata(&bin).unwrap().file_type().is_file());
+        assert!(fs::symlink_metadata(dir.path().join("plugins/demo/current")).is_ok());
+        assert!(!dir.path().join("plugins/demo/.staging").exists());
+        assert!(!store_leaks(&dir.path().join("plugins")));
+    }
+
+    /// Defense in depth: even if a link reached staging some other way, the
+    /// store copy refuses it instead of reading through it, and removes the
+    /// partially copied version.
+    #[test]
+    fn store_copy_refuses_links_in_staging() {
+        let (dir, sentinel, _engine) = setup();
+        let store = PluginStore::with_dir(dir.path().join("plugins")).unwrap();
+        let staging = store.staging_dir("demo").unwrap();
+        fs::create_dir(staging.join("bin")).unwrap();
+        std::os::unix::fs::symlink(&sentinel, staging.join("bin/plugin")).unwrap();
+        std::os::unix::fs::symlink(sentinel.parent().unwrap(), staging.join("dirlink")).unwrap();
+        let candidate = ArtifactCandidate {
+            kind: "tar.gz".to_string(),
+            url: None,
+            path: None,
+            sha256: None,
+            manifest: super::super::types::PluginManifest {
+                name: "demo".to_string(), version: "1.0.0".to_string(), description: None, author: None,
+                license: None, homepage: None, repository: None, keywords: None, platforms: Default::default(),
+            },
+        };
+        let err = store.install_plugin("demo", "1.0.0", &candidate, &staging, "test").unwrap_err();
+        assert!(format!("{err:#}").contains("symlinks"), "{err:#}");
+        assert!(!dir.path().join("plugins/demo/versions/1.0.0").exists());
+        assert!(!store_leaks(&dir.path().join("plugins/demo/versions")));
+        assert_eq!(fs::read(&sentinel).unwrap(), SENTINEL);
+    }
+
+    // ---------------------------------------------------------------- SEC-07
+
+    fn sha256_hex(data: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(data))
+    }
+
+    /// Serve a registry entry for `demo` 1.2.0 whose checksum is `sha` and
+    /// whose artifact is `artifact` (or a 404 when `None`).
+    fn registry<'a>(server: &'a MockServer, sha: &str, artifact: Option<&[u8]>) -> (httpmock::Mock<'a>, httpmock::Mock<'a>) {
+        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let entry = serde_json::json!({
+            "plugin_id": "demo",
+            "versions": { "1.2.0": {
+                "name": "demo", "version": "1.2.0", "description": null, "author": null,
+                "license": null, "homepage": null, "repository": null, "keywords": null,
+                "platforms": { platform: {
+                    "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
+                    "bin": "demo.tar.gz", "sha256": sha
+                }}
+            }}
+        });
+        let index = server.mock(|when, then| {
+            when.method(GET).path("/v1/plugins/demo");
+            then.status(200).header("content-type", "application/json").body(entry.to_string());
+        });
+        let art = server.mock(|when, then| {
+            when.method(GET).path("/v1/artifacts/demo/1.2.0/demo.tar.gz");
+            match artifact {
+                Some(data) => then.status(200).body(data),
+                None => then.status(404),
+            };
+        });
+        (index, art)
+    }
+
+    struct LoopbackHttp;
+    impl LoopbackHttp {
+        fn on() -> Self {
+            allow_loopback_http_for_tests(true);
+            LoopbackHttp
+        }
+    }
+    impl Drop for LoopbackHttp {
+        fn drop(&mut self) {
+            allow_loopback_http_for_tests(false);
+        }
+    }
+
+    fn reg(server: &MockServer) -> SourceSpec {
+        SourceSpec::Registry { url: server.base_url() }
+    }
+
+    #[test]
+    fn plain_http_transport_is_refused_and_never_contacted() {
+        use super::super::registry::require_https;
+        assert!(require_https("https://plugins.example.org").is_ok());
+        assert!(require_https("https://plugins.example.org:8443/x").is_ok());
+        for bad in ["http://plugins.example.org", "http://127.0.0.1:1/", "ftp://h/x", "file:///etc/passwd", "https://", "HTTPS"] {
+            assert!(require_https(bad).is_err(), "{bad} accepted");
+        }
+
+        // Without the test seam, a plain-HTTP registry or URL is refused
+        // before any request reaches the server, in dry run too.
+        let server = MockServer::start();
+        let data = valid_artifact();
+        let (index, art) = registry(&server, &sha256_hex(&data), Some(&data));
+        let direct = server.mock(|when, then| {
+            when.method(GET).path("/direct.tar.gz");
+            then.status(200).body(&data);
+        });
+        let (dir, _s, mut engine) = setup();
+        for dry_run in [true, false] {
+            let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, dry_run));
+            assert!(!env.ok);
+            assert!(env.error.as_ref().unwrap().message.contains("https"), "{:?}", env.error);
+            let url = SourceSpec::Url { url: server.url("/direct.tar.gz") };
+            let env = engine.run_plugin_op(args(url, VerifyMode::None, false, dry_run));
+            assert!(!env.ok, "http url source accepted with verify=none");
+        }
+        assert!(engine.registry_client.download_artifact(&server.url("/direct.tar.gz")).is_err());
+        assert_eq!(index.hits() + art.hits() + direct.hits(), 0, "plain HTTP was contacted");
+        nothing_installed(&dir);
+    }
+
+    #[test]
+    fn valid_checksum_installs() {
+        let _http = LoopbackHttp::on();
+        let server = MockServer::start();
+        let data = valid_artifact();
+        let (_index, art) = registry(&server, &sha256_hex(&data).to_uppercase(), Some(&data));
+        let (dir, _s, mut engine) = setup();
+        let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, false));
+        assert!(env.ok, "{:?}", env.error.as_ref().map(|e| &e.message));
+        assert_eq!(art.hits(), 1);
+        assert!(env.actions.iter().any(|a| a.name == "Checksum verified successfully"));
+        assert!(dir.path().join("plugins/demo/versions/1.2.0/bin/plugin").is_file());
+    }
+
+    #[test]
+    fn missing_or_malformed_checksum_fails_before_download() {
+        let _http = LoopbackHttp::on();
+        let data = valid_artifact();
+        let short = sha256_hex(&data)[..63].to_string();
+        let non_hex = "z".repeat(64);
+        for sha in ["", "   ", "00", short.as_str(), non_hex.as_str()] {
+            for dry_run in [true, false] {
+                let server = MockServer::start();
+                let (_index, art) = registry(&server, sha, Some(&data));
+                let (dir, _s, mut engine) = setup();
+                let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, dry_run));
+                assert!(!env.ok, "checksum {sha:?} accepted (dry_run={dry_run})");
+                assert!(env.error.as_ref().unwrap().message.contains(error_codes::PLUGIN_VERIFY_FAILED), "{:?}", env.error);
+                assert_eq!(art.hits(), 0, "artifact downloaded despite unusable checksum {sha:?}");
+                nothing_installed(&dir);
+            }
+        }
+    }
+
+    #[test]
+    fn mismatched_checksum_downloads_but_never_extracts_or_installs() {
+        let _http = LoopbackHttp::on();
+        let server = MockServer::start();
+        let data = valid_artifact();
+        let (_index, art) = registry(&server, &sha256_hex(b"something else"), Some(&data));
+        let (dir, _s, mut engine) = setup();
+        let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, false));
+        assert!(!env.ok);
+        assert!(env.error.as_ref().unwrap().message.contains("Checksum verification failed"), "{:?}", env.error);
+        assert_eq!(art.hits(), 1);
+        assert!(!env.actions.iter().any(|a| a.action_type == action_types::EXTRACT || a.action_type == action_types::INSTALL));
+        nothing_installed(&dir);
+    }
+
+    #[test]
+    fn download_failure_installs_nothing() {
+        let _http = LoopbackHttp::on();
+        let server = MockServer::start();
+        let data = valid_artifact();
+        let (_index, art) = registry(&server, &sha256_hex(&data), None);
+        let (dir, _s, mut engine) = setup();
+        let env = engine.run_plugin_op(args(reg(&server), VerifyMode::Sha256, false, false));
+        assert!(!env.ok);
+        assert!(env.error.as_ref().unwrap().message.contains(error_codes::PLUGIN_DOWNLOAD_FAILED), "{:?}", env.error);
+        assert_eq!(art.hits(), 1);
+        nothing_installed(&dir);
+    }
+
+    #[test]
+    fn url_source_needs_explicit_verify_none() {
+        let _http = LoopbackHttp::on();
+        let server = MockServer::start();
+        let data = valid_artifact();
+        let direct = server.mock(|when, then| {
+            when.method(GET).path("/demo.tar.gz");
+            then.status(200).body(&data);
+        });
+        let (dir, _s, mut engine) = setup();
+        let url = || SourceSpec::Url { url: server.url("/demo.tar.gz") };
+        let env = engine.run_plugin_op(args(url(), VerifyMode::Sha256, false, false));
+        assert!(!env.ok, "unverifiable url artifact accepted under verify=sha256");
+        assert!(env.error.as_ref().unwrap().message.contains("verify=none"), "{:?}", env.error);
+        assert_eq!(direct.hits(), 0);
+        nothing_installed(&dir);
+
+        // The documented opt-out still works (and SEC-06 still applies to it)
+        let env = engine.run_plugin_op(args(url(), VerifyMode::None, false, false));
+        assert!(env.ok, "{:?}", env.error.as_ref().map(|e| &e.message));
+        assert_eq!(direct.hits(), 1);
+    }
+
+    #[test]
+    fn verify_checksum_parses_strictly() {
+        use super::super::registry::parse_sha256;
+        let client = RegistryClient::new(1000).unwrap();
+        let sum = sha256_hex(b"abc");
+        assert!(client.verify_checksum(b"abc", &sum).is_ok());
+        assert!(client.verify_checksum(b"abc", &sum.to_uppercase()).is_ok());
+        assert!(client.verify_checksum(b"abd", &sum).is_err());
+        assert!(client.verify_checksum(b"abc", &format!(" {sum}")).is_err());
+        assert!(client.verify_checksum(b"abc", "").is_err());
+        assert!(parse_sha256(&sum[..62]).is_err());
+        assert!(parse_sha256(&format!("{sum}0")).is_err());
     }
 }

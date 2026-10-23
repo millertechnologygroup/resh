@@ -4,269 +4,187 @@
 
 ### Definition
 
-Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. It provides typed handles for interacting with system resources and returns deterministic, structured JSON output suitable for automation.
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. It provides typed handles for interacting with system resources and returns structured JSON output suitable for automation.
 
-The **System Information** domain is exposed via the `system://` handle and provides structured access to hardware details, runtime status, and resource utilization metrics.
+The **System Information** domain is exposed via the `system://` handle, which reports read-only information about the local Linux host. Full reference: [system.md](system.md).
 
 ### Purpose
 
-The `system://` handle enables:
+The `system://` handle provides:
 
-* Retrieval of operating system and kernel metadata
-* Monitoring of CPU load and performance
-* Inspection of memory usage (RAM and swap)
-* Reporting of disk usage across mounted filesystems
-* Querying uptime and boot time
-* Listing environment variables
+* Operating system and kernel metadata
+* CPU utilization, topology and frequency
+* Load averages
+* Memory usage (RAM, swap, hugepages, cgroup limits)
+* Disk usage across mounted filesystems, with I/O statistics
+* Uptime and boot time
+* Environment variable listing with masking of sensitive values
 
-All operations are read-only and return structured JSON suitable for automation, diagnostics, and monitoring workflows.
-
-### Architectural Problem Addressed
-
-Traditional system monitoring tools:
-
-* Use multiple independent commands (`uptime`, `free`, `df`, `top`, `env`)
-* Produce human-oriented text output
-* Require parsing for automation
-* Lack consistent output schemas
-
-resh addresses these limitations by:
-
-* Providing a unified `system://` handle
-* Standardizing monitoring verbs
-* Returning structured JSON output
-* Normalizing platform-specific data
-* Supporting deterministic automation contracts
+All operations are read-only and print one JSON object (or text with `format=text`).
 
 ### Resource-Oriented URI Model
 
-System monitoring operations follow:
+The URL has no target, but the dot before the verb is required:
 
+```text
+resh system://.<verb> [<option>=<value> ...] [input=<json>]
 ```
-handle://target.verb(options)
-```
-
-For system information:
 
 * **handle**: `system://`
-* **target**: `.` (system context)
-* **verb**: Information category (e.g., `info`, `memory`, `disk`)
-* **options**: Optional structured parameters
+* **target**: empty
+* **verb**: `info`, `uptime`, `load`, `memory`, `cpu`, `disk`, `env.list`
+* **options**: `key=value` words and/or one JSON object in `input`
 
 Examples:
 
-```
-system://.info
-system://.memory
-system://.disk
-system://.env.list
-```
-
----
-
-## 2. Design Philosophy and Core Principles
-
-### Structured Interface Model
-
-* Seven explicitly defined information verbs.
-* Each verb corresponds to a specific monitoring category.
-* Output format is consistent across commands.
-* All operations are read-only.
-
----
-
-### Safety-First Execution
-
-* No system state modification.
-* Sensitive values automatically protected where applicable.
-* Graceful handling of missing or unsupported metrics.
-* Safe operation in containers and virtual environments.
-
----
-
-### Deterministic Behavior
-
-* Identical inputs yield consistent JSON structures.
-* Platform detection is automatic.
-* Unsupported metrics are reported explicitly.
-* No hidden side effects.
-
----
-
-### JSON-Based Structured Output
-
-All responses include:
-
-* Structured metric values
-* Percentage representations where applicable
-* Timestamps and trend indicators where relevant
-* Human-readable summaries alongside raw data
-
-Representative example:
-
-```json
-{
-  "ok": true,
-  "system": {
-    "os": "Linux",
-    "kernel": "6.6.0",
-    "architecture": "x86_64"
-  },
-  "uptime": {
-    "seconds": 86400,
-    "human": "1 day"
-  },
-  "load": {
-    "1m": 0.42,
-    "5m": 0.38,
-    "15m": 0.35
-  }
-}
+```bash
+resh system://.info
+resh system://.memory
+resh system://.disk
+resh system://.env.list
 ```
 
 ---
 
-### AI-Readiness
+## 2. Design Principles
 
-Structured output enables:
-
-* Automated health monitoring
-* Threshold-based alerting
-* Capacity planning analysis
-* Drift detection
-* Predictive workload modeling
-* Policy enforcement
+* Seven read-only verbs, one per information category.
+* No system state is modified.
+* Sensitive environment values are masked by default.
+* Missing or unavailable metrics are reported as `available: false` or in `warnings` rather than failing the command.
+* Unknown option names are ignored silently, so check spelling against `resh system <verb> --help`.
 
 ---
 
 ## 3. Command Syntax and Execution Model
 
-### 3.1 URI Structure
-
-```
-system://.VERB(options)
-```
-
-| Component | Description          |
-| --------- | -------------------- |
-| `handle`  | `system://`          |
-| `target`  | `.` (system context) |
-| `VERB`    | Monitoring operation |
-| `options` | Optional parameters  |
-
----
-
-### Available Verbs
+### 3.1 Available Verbs
 
 | Verb       | Purpose                  |
 | ---------- | ------------------------ |
-| `info`     | System overview          |
-| `uptime`   | Uptime and boot time     |
-| `load`     | CPU load averages        |
-| `memory`   | RAM and swap usage       |
-| `cpu`      | CPU performance metrics  |
-| `disk`     | Disk usage across mounts |
-| `env.list` | Environment variables    |
+| `info`     | Combined report for selected scopes (`os`, `kernel`, `cpu`, `memory`, `load`, `disk`, `process`, `pressure`, `cgroup`, `virtualization`) |
+| `uptime`   | Uptime, boot time, idle time |
+| `load`     | 1/5/15-minute load averages, per-CPU values, process counts |
+| `memory`   | RAM, swap, hugepage and cgroup memory usage |
+| `cpu`      | Sampled CPU utilization, topology, frequency, cgroup CPU limits |
+| `disk`     | Capacity, inode usage and I/O statistics for mounted filesystems |
+| `env.list` | Environment variables of resh or of another process (`pid=`) |
 
----
+### 3.2 Examples
 
-### Production Examples
+#### System Overview
 
-#### Full System Overview
-
-```
-system://.info
+```bash
+resh system://.info
 ```
 
-#### Check Memory Usage
+#### Memory Usage
 
-```
-system://.memory
-```
-
-#### Inspect Disk Utilization
-
-```
-system://.disk
+```bash
+resh system://.memory
 ```
 
-#### Monitor CPU Load
+#### Disk Utilization of the Root Filesystem
 
-```
-system://.load
-```
-
-#### View CPU Topology
-
-```
-system://.cpu
+```bash
+resh system://.disk mount_points=/
 ```
 
-#### List Environment Variables
+#### Load Averages
 
+```bash
+resh system://.load
 ```
-system://.env.list
+
+#### CPU Utilization and Topology
+
+```bash
+resh system://.cpu sample_duration_ms=1000
+```
+
+#### Selected Environment Variables
+
+```bash
+resh system://.env.list names=PATH,HOME
 ```
 
 ---
 
-## 3.2 Execution Semantics
+### 3.3 Execution Semantics
 
-### Deterministic Behavior
+* Values are read from `/proc`, `/sys` and system calls at call time (`info` also runs `uname -a` and `hostname`).
+* Each `resh` invocation is a separate process; nothing is cached or kept between invocations.
+* **Timeouts**: the system handle has no `timeout_ms` option; a `timeout_ms` argument is ignored. The only time-related option is the CPU sampling interval (`sample_duration_ms`).
 
-* Each verb maps to a specific metric set.
-* Output structure is stable across runs.
-* Platform-specific differences are normalized.
-* Missing metrics are reported without failure.
+### 3.4 Output
 
----
-
-### Structured Output Contracts
-
-Example: Memory Usage
+Representative `memory` output (with `include_cgroup=false include_hugepages=false include_human=false`):
 
 ```json
 {
   "ok": true,
-  "memory": {
-    "total_bytes": 17179869184,
-    "used_bytes": 8589934592,
-    "free_bytes": 4294967296,
-    "used_percent": 50.0,
-    "swap_total_bytes": 2147483648,
-    "swap_used_percent": 12.5
-  }
+  "timestamp_unix_ms": 1792761175370,
+  "system": {
+    "available": true,
+    "mem_total_bytes": 134047248384,
+    "mem_free_bytes": 20854009856,
+    "mem_available_bytes": 106859823104,
+    "buffers_bytes": 2104233984,
+    "cached_bytes": 79905128448,
+    "shmem_bytes": 906797056,
+    "sreclaimable_bytes": 4256710656,
+    "swap_total_bytes": 4294963200,
+    "swap_free_bytes": 2236887040,
+    "mem_used_bytes": 27187425280,
+    "mem_used_pct": 20.28,
+    "swap_used_bytes": 2058076160,
+    "swap_used_pct": 47.92
+  },
+  "warnings": []
 }
 ```
 
-Example: Disk Usage
+Representative `disk` output (with `mount_points=/ include_io=false include_human=false`):
 
 ```json
 {
   "ok": true,
-  "disks": [
+  "timestamp_unix_ms": 1792761175376,
+  "mounts_truncated": false,
+  "mounts": [
     {
-      "mount": "/",
-      "total_bytes": 107374182400,
-      "used_percent": 72.4
+      "mount_point": "/",
+      "device": "/dev/nvme0n1p3",
+      "fs_type": "ext4",
+      "virtual_fs": false,
+      "total_bytes": 1962561503232,
+      "used_bytes": 704683360256,
+      "free_bytes": 1257878142976,
+      "avail_bytes": 1158109913088,
+      "used_pct": 35.91,
+      "free_pct": 64.09,
+      "inodes_total": 121774080,
+      "inodes_used": 2944929,
+      "inodes_free": 118829151,
+      "inodes_used_pct": 2.42,
+      "tags": ["rootfs"]
     }
-  ]
+  ],
+  "warnings": []
 }
 ```
 
----
+### 3.5 Errors
 
-### Error Handling Structure
-
-Representative error:
+On an error the handle prints a JSON object with `ok: false` and an `error` object, writes `Error: <reason>` to standard error, and exits 1:
 
 ```json
 {
-  "ok": false,
   "error": {
-    "code": "system.unsupported_platform",
-    "message": "Requested metric not available on this platform"
-  }
+    "code": "system.info_scope_invalid",
+    "message": "invalid scope: bogus"
+  },
+  "ok": false
 }
 ```
 
@@ -274,165 +192,80 @@ Representative error:
 
 ## 4. Functional Domains
 
----
-
 ### 4.1 Automation Utilities
-
-**Handle**
-
-* `system://`
-
-**Scope**
 
 * Health checks
 * Resource threshold validation
 * Deployment readiness checks
 * Automated diagnostics
 
----
-
 ### 4.2 Data & State Management
 
-**Scope**
-
-* Real-time memory and CPU metrics
+* Point-in-time memory and CPU metrics
 * Uptime tracking
 * Environment configuration inspection
 * Disk capacity reporting
 
----
-
 ### 4.3 Filesystem & Storage
 
-**Scope**
+* Mounted filesystem enumeration (virtual filesystems skipped unless `include_virtual=true`)
+* Capacity and inode utilization
+* Block device I/O counters
 
-* Mounted filesystem enumeration
-* Storage capacity monitoring
-* Utilization percentage reporting
-* Disk exhaustion detection
-
-Example:
-
-```
-system://.disk
+```bash
+resh system://.disk include_io=true
 ```
 
----
+### 4.4 Process & Service Management
 
-### 4.4 Network & Remote Operations
+* Runnable and total process counts (`load`)
+* Process information (`info` scope `process`)
+* Process-level detail is provided by the separate `proc://` handle.
 
-Indirect support through:
+### 4.5 Security & Secrets
 
-* System load analysis for remote deployments
-* Capacity checks prior to scaling
-* Baseline host metrics for remote orchestration
+* Environment variable auditing (`env.list`)
+* Values of variables whose names look sensitive (containing `password`, `secret`, `token`, `api_key`, and similar) are replaced with `***MASKED***` unless `include_sensitive=true`. Masking is by name only.
 
----
+### 4.6 System Information
 
-### 4.5 Packages & Software
-
-Supports:
-
-* Pre-install resource validation
-* Post-install health checks
-* Memory availability verification
-* Environment variable inspection
-
----
-
-### 4.6 Process & Service Management
-
-Integrates with:
-
-* `proc://` for process-level metrics
-* `svc://` for service lifecycle management
-* Load monitoring before service restart
-* Memory validation before deployment
-
----
-
-### 4.7 Security & Secrets
-
-Supports:
-
-* Environment variable auditing
-* Detection of unexpected configuration variables
-* Validation of runtime environment settings
-* Safe omission of sensitive data where applicable
-
----
-
-### 4.8 System Information
-
-Primary domain includes:
-
-| Category    | Description                        |
-| ----------- | ---------------------------------- |
-| OS Info     | Operating system and kernel        |
-| Uptime      | Runtime duration and boot time     |
-| Load        | CPU load averages                  |
-| Memory      | RAM and swap utilization           |
-| CPU         | Core count and performance metrics |
-| Disk        | Filesystem usage                   |
-| Environment | Process environment variables      |
+| Category    | Verb / scope |
+| ----------- | ------------ |
+| OS Info     | `info` scopes `os`, `kernel` |
+| Uptime      | `uptime` |
+| Load        | `load` |
+| Memory      | `memory` |
+| CPU         | `cpu` |
+| Disk        | `disk` |
+| Pressure    | `info` scope `pressure` |
+| Containers  | `info` scopes `cgroup`, `virtualization` |
+| Environment | `env.list` |
 
 ---
 
 ## 5. Platform Support
 
-| Platform       | Support Level                                           |
-| -------------- | ------------------------------------------------------- |
-| Linux          | Full support                                            |
-| macOS/Unix     | Basic support (some Linux-specific metrics unavailable) |
-| Windows        | Limited support                                         |
-| Containers/WSL | Supported with environment-aware warnings               |
-
-Platform detection is automatic, and unavailable metrics are handled gracefully.
+* Linux only. The handle requires `/proc` (and `/sys` for some metrics); no other operating system is supported.
+* In containers, cgroup metrics reflect the container's limits and some `/proc` entries may be restricted; unavailable data is reported in `warnings` or as `available: false`.
 
 ---
 
 ## 6. Operational Best Practices
 
-### Safe Usage Guidelines
-
-* Use `memory` before large deployments.
-* Monitor `disk` prior to data-intensive tasks.
-* Check `load` before scaling operations.
-* Use `info` during troubleshooting.
-* Avoid exposing environment variables in logs.
-
----
-
-### Automation Considerations
-
-* Validate `ok` field before processing.
-* Use percentage fields for threshold checks.
-* Log structured JSON for audit trails.
-* Use load averages for scaling decisions.
-* Monitor swap usage as early memory pressure indicator.
-
----
+* Check `ok` and `warnings` before using the values.
+* Use the percentage fields (`mem_used_pct`, `used_pct`) for threshold checks.
+* Prefer `mem_available_bytes` over `mem_free_bytes`.
+* Use per-CPU load (`load_1m_per_cpu`) for scaling decisions.
+* Avoid writing environment variable values to logs; use `include_values=false` when only names are needed.
 
 ### CI/CD Integration
 
 Typical workflow:
 
-1. `system://.memory` – ensure sufficient RAM.
-2. `system://.disk` – verify storage capacity.
-3. `system://.load` – confirm system stability.
+1. `resh system://.memory` – ensure sufficient RAM.
+2. `resh system://.disk` – verify storage capacity.
+3. `resh system://.load` – confirm system stability.
 4. Proceed with deployment.
-5. Validate via `system://.info`.
-
----
-
-### Production Environment Recommendations
-
-* Establish resource thresholds.
-* Monitor disk utilization proactively.
-* Review uptime to determine patch cycles.
-* Audit environment variables regularly.
-* Integrate monitoring with alerting systems.
-* Avoid reliance on single-point health metrics.
 
 ---
 
@@ -442,72 +275,23 @@ Typical workflow:
 
 * Validate system readiness before deployments.
 * Monitor memory and disk consumption.
-* Inspect environment variables for configuration drift.
 * Integrate system checks into pipelines.
-
----
 
 ### SRE Engineers
 
 * Diagnose performance issues.
-* Track system stability via uptime.
 * Monitor load during incident response.
-* Validate resource pressure indicators.
-
----
-
-### Network Administrators
-
-* Confirm system capacity for network services.
-* Monitor disk usage for log growth.
-* Check system load for peak periods.
-* Inspect runtime environment settings.
-
----
+* Check pressure stall information.
 
 ### AI / Automation Engineers
 
 * Parse structured resource metrics.
-* Detect anomalies in usage patterns.
-* Trigger automated remediation.
 * Implement threshold-based orchestration.
 
 ---
 
 ## 8. Technical Foundation
 
-### Rust Implementation Advantages
-
-resh is implemented in Rust, providing:
-
-* Memory safety
-* Deterministic system interaction
-* Strong compile-time guarantees
-* Efficient metric collection
-
----
-
-### Type Safety
-
-* Enumerated verbs
-* Strict output schemas
-* Explicit error modeling
-* Structured metric representation
-
----
-
-### Performance Characteristics
-
-* Lightweight data collection
-* Efficient `/proc` and `/sys` access on Linux
-* Minimal overhead sampling
-* Real-time metric reporting
-
----
-
-### Cross-Platform Architecture
-
-* Platform-aware metric collection
-* Graceful degradation on unsupported systems
-* Unified JSON schema
-* Deterministic output across environments
+* Implemented in Rust; reads `/proc` and `/sys` directly.
+* Fixed verb set with per-verb option structures.
+* Errors carry a code such as `system.info_scope_invalid`.

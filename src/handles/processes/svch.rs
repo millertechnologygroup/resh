@@ -258,6 +258,17 @@ impl SvcHandle {
     pub fn from_url(u: &Url) -> anyhow::Result<Self> {
         // Accept host + path, strip leading slashes, join with '/'
         let mut name = String::new();
+        // Instance units such as `getty@tty1` parse as URL userinfo
+        // (`getty`) plus host (`tty1`); keep the whole name.
+        if !u.username().is_empty() {
+            let user = percent_encoding::percent_decode_str(u.username()).decode_utf8_lossy();
+            name.push_str(&user);
+            if let Some(pw) = u.password() {
+                name.push(':');
+                name.push_str(&percent_encoding::percent_decode_str(pw).decode_utf8_lossy());
+            }
+            name.push('@');
+        }
         if let Some(h) = u.host_str() {
             name.push_str(h);
         }
@@ -396,19 +407,7 @@ impl SvcHandle {
         }
         
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut active_state = "unknown".to_string();
-        let mut sub_state = "unknown".to_string();
-        let mut description = "No description available".to_string();
-        
-        for line in stdout.lines() {
-            if let Some(value) = line.strip_prefix("ActiveState=") {
-                active_state = value.to_string();
-            } else if let Some(value) = line.strip_prefix("SubState=") {
-                sub_state = value.to_string();
-            } else if let Some(value) = line.strip_prefix("Description=") {
-                description = value.to_string();
-            }
-        }
+        let (active_state, sub_state, description) = parse_systemctl_show(&unit, &stdout)?;
         
         Ok(json!({
             "name": unit,
@@ -440,6 +439,9 @@ impl SvcHandle {
                 let stdout = String::from_utf8_lossy(&o.stdout);
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 let combined = format!("{}{}", stdout, stderr);
+                if openrc_service_missing(&combined) {
+                    anyhow::bail!("service '{}' does not exist", svc);
+                }
                 
                 let state = if combined.contains("started") || combined.contains("running") {
                     "running"
@@ -1322,6 +1324,13 @@ impl Handle for SvcHandle {
             return self.display_help(args.get("verb").map(String::as_str), io);
         }
 
+        // Every verb acts on the named service; never run a backend
+        // command with a name it could misread.
+        if let Err(reason) = validate_service_name(&self.name) {
+            writeln!(io.stderr, "Error: {}", reason)?;
+            return Ok(Status::err(2, reason));
+        }
+
         match verb {
             "status" => {
                 let backend = Self::detect_backend();
@@ -1349,7 +1358,7 @@ impl Handle for SvcHandle {
                     }),
                 };
                 write!(io.stdout, "{}", serde_json::to_string(&obj)?)?;
-                Ok(Status::ok())
+                Ok(status_outcome(&obj))
             }
             "start" => {
                 let backend = Self::detect_backend();
@@ -1798,6 +1807,70 @@ impl Handle for SvcHandle {
     }
 }
 
+/// ActiveState, SubState and Description from `systemctl show <unit>`.
+/// systemctl succeeds even for units that do not exist, reporting
+/// `LoadState=not-found`; that is an error, not a stopped service.
+fn parse_systemctl_show(unit: &str, stdout: &str) -> anyhow::Result<(String, String, String)> {
+    let mut active_state = "unknown".to_string();
+    let mut sub_state = "unknown".to_string();
+    let mut description = "No description available".to_string();
+    for line in stdout.lines() {
+        if let Some(value) = line.strip_prefix("LoadState=") {
+            if value == "not-found" {
+                anyhow::bail!("unit '{}' not found", unit);
+            }
+        } else if let Some(value) = line.strip_prefix("ActiveState=") {
+            active_state = value.to_string();
+        } else if let Some(value) = line.strip_prefix("SubState=") {
+            sub_state = value.to_string();
+        } else if let Some(value) = line.strip_prefix("Description=") {
+            description = value.to_string();
+        }
+    }
+    Ok((active_state, sub_state, description))
+}
+
+/// Rejects service names that are empty, could be read as a command-line
+/// option, or contain path traversal, whitespace, control characters or a
+/// `user:password@` form. Instance names such as `getty@tty1` are valid.
+fn validate_service_name(name: &str) -> Result<(), String> {
+    let bad = if name.is_empty() {
+        Some("is empty")
+    } else if name.starts_with('-') {
+        Some("starts with '-'")
+    } else if name.split('/').any(|seg| seg == ".." || seg == ".") {
+        Some("contains a '.' or '..' path segment")
+    } else if name.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        Some("contains whitespace or control characters")
+    } else if name.contains(':') {
+        Some("contains ':'")
+    } else {
+        None
+    };
+    match bad {
+        Some(why) => Err(format!("invalid service name {:?}: {}", name, why)),
+        None => Ok(()),
+    }
+}
+
+/// Whether `rc-service <name> status` output says the service is unknown.
+fn openrc_service_missing(output: &str) -> bool {
+    output.contains("does not exist")
+}
+
+/// The exit status for a status object: a failure when it carries an
+/// error (unknown service, no backend, query failure).
+fn status_outcome(obj: &serde_json::Value) -> Status {
+    match obj.get("error") {
+        Some(e) => Status::err(1, format!(
+            "svc status {}: {}",
+            obj.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+            e.as_str().map(str::to_string).unwrap_or_else(|| e.to_string())
+        )),
+        None => Status::ok(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1816,6 +1889,75 @@ mod tests {
         assert!(!SvcHandle::should_show_help(&url("svc://pre-hotfix")));
         assert!(!SvcHandle::should_show_help(&url("svc://x/my-hosts")));
         assert!(!SvcHandle::should_show_help(&url("svc://nginx")));
+    }
+
+    fn name_of(stage: &str) -> String {
+        let parsed = crate::core::parse::parse_stage(stage).unwrap();
+        SvcHandle::from_url(&url(&parsed.target)).unwrap().name
+    }
+
+    // FUNC-07: instance units keep their full name through the CLI parser.
+    #[test]
+    fn instance_unit_names_are_preserved() {
+        for (stage, name, unit) in [
+            ("svc://getty@tty1.stop", "getty@tty1", "getty@tty1.service"),
+            ("svc://getty@tty1.status", "getty@tty1", "getty@tty1.service"),
+            ("svc://openvpn-client@work.restart", "openvpn-client@work", "openvpn-client@work.service"),
+            ("svc://container-getty@1.service.status", "container-getty@1.service", "container-getty@1.service"),
+            ("svc://nginx.status", "nginx", "nginx.service"),
+            ("svc://nginx-debug.status", "nginx-debug", "nginx-debug.service"),
+            ("svc://user@1000.status", "user@1000", "user@1000.service"),
+        ] {
+            assert_eq!(name_of(stage), name, "{stage}");
+            let h = SvcHandle::from_url(&url(&crate::core::parse::parse_stage(stage).unwrap().target)).unwrap();
+            assert_eq!(h.unit_name(), unit, "{stage}");
+            assert!(validate_service_name(&h.name).is_ok(), "{stage}");
+        }
+        // Similar names stay distinct.
+        assert_ne!(name_of("svc://getty@tty1.status"), name_of("svc://getty@tty11.status"));
+        assert_ne!(name_of("svc://getty@tty1.status"), name_of("svc://tty1.status"));
+    }
+
+    #[test]
+    fn invalid_service_names_are_rejected_before_any_command() {
+        for name in ["", "-H", "--now", "../x", "a/../b", "a b", "a\tb", "getty:x@tty1"] {
+            assert!(validate_service_name(name).is_err(), "{name:?}");
+        }
+        // Through call(): rejected with a reason, nothing executed.
+        let h = SvcHandle::from_url(&url("svc://a:b@tty1")).unwrap();
+        assert_eq!(h.name, "a:b@tty1");
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let status = {
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            h.call("stop", &Args::new(), &mut io).unwrap()
+        };
+        assert!(!status.ok);
+        assert_eq!(status.code, Some(2));
+        assert!(String::from_utf8(e).unwrap().contains("invalid service name"));
+        assert!(o.is_empty());
+    }
+
+    // FUNC-02: status of a missing service is a failure on both backends.
+    #[test]
+    fn missing_services_are_failures() {
+        let show_missing = "Id=nosuch.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\n";
+        let err = parse_systemctl_show("nosuch.service", show_missing).unwrap_err();
+        assert!(err.to_string().contains("not found"));
+        let show_stopped = "Id=nginx.service\nLoadState=loaded\nActiveState=inactive\nSubState=dead\nDescription=nginx\n";
+        assert_eq!(
+            parse_systemctl_show("nginx.service", show_stopped).unwrap(),
+            ("inactive".into(), "dead".into(), "nginx".into())
+        );
+
+        assert!(openrc_service_missing(" * rc-service: service `nosuch' does not exist\n"));
+        assert!(!openrc_service_missing(" * status: stopped\n"));
+
+        let st = status_outcome(&json!({"name": "nosuch", "backend": "openrc", "error": "service 'nosuch' does not exist"}));
+        assert!(!st.ok);
+        assert_eq!(st.reason.as_deref(), Some("svc status nosuch: service 'nosuch' does not exist"));
+        // A stopped service is a successful status query.
+        assert!(status_outcome(&json!({"name": "nginx", "backend": "openrc", "state": "stopped_or_unknown"})).ok);
     }
 
     #[test]

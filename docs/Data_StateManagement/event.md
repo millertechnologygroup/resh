@@ -2,438 +2,234 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes infrastructure operations using a resource-oriented URI execution model.
+Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs.
 
-The `event://` handle provides a messaging system for publishing, subscribing, and managing events within resh. It supports:
+The `event://` handle is a small local event log. `emit` appends a structured event to a topic, and `subscribe` reads stored events back by topic pattern, with offsets, simple consumer-group offset tracking and filters. Results are printed as JSON.
 
-* Event emission with structured metadata
-* Topic-based subscriptions with wildcard support
-* Consumer group coordination
-* Hook-based integrations
-* Structured JSON output for automation workflows
+The stage has no target, so the verb follows a dot directly:
 
-Traditional event-driven tooling often requires:
-
-* External messaging systems
-* Custom client libraries
-* Manual offset management
-* Unstructured CLI outputs
-* Inconsistent filtering behavior
-
-The `event://` handle addresses these issues by:
-
-* Providing a uniform URI-based command interface
-* Enforcing structured JSON envelopes
-* Supporting topic validation and metadata tracking
-* Enabling deterministic automation workflows
-
-All event operations follow the URI pattern:
-
+```text
+resh event://.<verb> [key=value ...]
 ```
-event://verb(arguments)
-event://target.verb(arguments)
+
+`event://emit` (no dot) does not parse; the form is `event://.emit`.
+
+### Where events are stored
+
+Events are stored as one JSON Lines file per topic in the resh state directory:
+
+```text
+$XDG_STATE_HOME/resh/events/<topic>.jsonl      (default ~/.local/state/resh/events/)
+$XDG_STATE_HOME/resh/events/_offsets.json      (committed consumer-group offsets)
 ```
+
+The directory is created with mode 0700 and the files with mode 0600. Because events are on disk, an event emitted by one `resh` command can be read by a later one. If the platform has no state directory, the handle falls back to an in-memory bus that lasts only for one process (so nothing persists); this does not happen on Linux.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Design Notes
 
-### Structured Interface Model
-
-All event operations use a consistent URI grammar:
-
-```
-event://emit
-event://subscribe
-event://list-topics
-event://hooks.enable
-```
-
-This standardizes event publication, consumption, and management.
-
-### Safety-First Execution
-
-The handle enforces:
-
-* Topic validation rules
-* Structured error reporting
-* Input validation for tags and metadata
-* Controlled offset behavior
-* Explicit consumer group requirements for resumable processing
-
-### Deterministic Behavior
-
-Each operation:
-
-* Returns a structured JSON response
-* Includes explicit `ok` status indicators
-* Separates `event`, `error`, and `warnings` fields
-* Includes timestamp metadata
-
-### JSON-Based Structured Output
-
-All responses are machine-readable and consistent, enabling:
-
-* CI/CD integration
-* Automated monitoring
-* Structured event processing
-* Deterministic filtering
-
-### AI-Readiness
-
-The uniform grammar and structured metadata model allow automated orchestration agents to publish and consume events without parsing unstructured text.
+* `emit`, `subscribe` and `list-topics` print a JSON object with `ok`, `error` and `warnings` fields. This output is indented even without `--json-pretty`.
+* On failure the JSON object (with `ok: false` and an `error.code`) is printed to stdout, resh prints `Error: <reason>` to stderr, and the exit code is 1.
+* This is a local, file-based event log for one host, not a message broker. There is no network transport, no delivery to other hosts, and no push delivery.
 
 ---
 
 ## 3. Command Syntax and Execution Model
 
-### 3.1 URI Structure
+### 3.1 Verbs
 
-```
-event://verb(arguments)
-```
+| Verb            | Purpose                                                        |
+| --------------- | -------------------------------------------------------------- |
+| `emit`          | Append an event to a topic file                                |
+| `subscribe`     | Read stored events whose topic matches a pattern               |
+| `list-topics`   | List topics from a built-in sample catalogue (see section 4.3) |
+| `hooks.list`    | List registered hooks                                          |
+| `hooks.enable`  | Register a built-in hook for the current process               |
+| `hooks.disable` | Remove a hook for the current process                          |
 
-Or for hook management:
+### 3.2 Example commands
 
-```
-event://hooks.verb(arguments)
-```
-
-#### Components
-
-| Component   | Description                                          |
-| ----------- | ---------------------------------------------------- |
-| `event`     | Handle identifier                                    |
-| `verb`      | Operation (`emit`, `subscribe`, `list-topics`, etc.) |
-| `arguments` | Named parameters                                     |
-
----
-
-### Example Commands
-
-Emit event:
+Emit an event:
 
 ```bash
-event://emit topic="system.fs.resized" data='{"mount":"/data"}'
+resh event://.emit topic=jobs.backup.completed 'data={"status":"success"}'
 ```
 
-Subscribe to topic:
+Read all stored events for matching topics:
 
 ```bash
-event://subscribe topic="jobs.backup.completed" offset="latest"
+resh event://.subscribe 'topic=jobs.*' offset=earliest
 ```
 
-List topics:
+List hooks:
 
 ```bash
-event://list-topics
+resh --json-pretty event://.hooks.list
 ```
 
-Enable hook:
-
-```bash
-event://hooks.enable name="mq"
-```
-
----
-
-### 3.2 Execution Semantics
-
-All operations return structured JSON envelopes.
-
-#### Representative Emit Success Response
+### 3.3 emit output
 
 ```json
 {
-  "ok": true,
-  "timestamp_unix_ms": 1732538400000,
-  "event": {
-    "id": "evt_1732538400000_abcd1234",
-    "topic": "system.fs.resized",
-    "timestamp_unix_ms": 1732538400000,
-    "mode": "fire_and_forget",
-    "priority": "normal",
-    "data": {
-      "mount": "/data"
-    },
-    "backend": "in_memory_bus"
-  },
   "error": null,
+  "event": {
+    "backend": "state_file",
+    "causation_id": null,
+    "correlation_id": null,
+    "data": { "status": "success" },
+    "id": "evt_1792166019757_224a64d890cb",
+    "key": null,
+    "mode": "fire_and_forget",
+    "mode_used": "fire_and_forget",
+    "priority": "normal",
+    "schema_version": null,
+    "source": null,
+    "summary": null,
+    "tags": [],
+    "timestamp_unix_ms": 1792166019757,
+    "topic": "jobs.backup.completed",
+    "ttl_ms": null
+  },
+  "ok": true,
+  "timestamp_unix_ms": 1792166019757,
   "warnings": []
 }
 ```
 
-#### Representative Error Response
+### 3.4 Error output
 
 ```json
 {
-  "ok": false,
-  "timestamp_unix_ms": 1732538400000,
-  "event": null,
   "error": {
-    "code": "event.emit_invalid_topic",
-    "message": "topic cannot be empty"
+    "code": "event.emit_invalid_data",
+    "message": "failed to parse data as JSON"
   },
+  "event": null,
+  "ok": false,
+  "timestamp_unix_ms": 1792760903628,
   "warnings": []
 }
 ```
 
-Automation systems must evaluate `ok` and `error.code` for control flow.
-
 ---
 
-## 4. Functional Domain – Event Handle
+## 4. Verbs
 
----
+### 4.1 emit
 
-### 4.1 Core Operations
+Appends one event to `<topic>.jsonl`.
 
-#### emit
+| Argument         | Description                                                    |
+| ---------------- | -------------------------------------------------------------- |
+| `topic`          | Required. Must not contain `*` or `?`                          |
+| `data`           | Required. Must be valid JSON                                   |
+| `source`, `key`, `correlation_id`, `causation_id` | Stored as given              |
+| `tags`           | JSON array of strings                                          |
+| `priority`       | `low`, `normal` or `high` (default `normal`)                   |
+| `mode`           | `fire_and_forget` (default) or `wait_for_persist` (syncs the file to disk before replying) |
+| `ttl_ms`         | Stored in the event only; events are never expired or deleted  |
+| `summarize`      | Adds a `summary` field                                         |
+| `schema_version` | Stored as given                                                |
+| `format`         | `json` (default) or `text`                                     |
 
-Publishes an event to a topic.
-
-Required:
-
-* `topic`
-* `data` (JSON)
-
-Optional:
-
-* `mode`
-* `priority`
-* `ttl_ms`
-* `key`
-* `correlation_id`
-* `causation_id`
-* `source`
-* `tags`
-* `schema_version`
-* `format`
-
----
-
-#### subscribe
-
-Consumes events from a topic or wildcard pattern.
-
-Required:
-
-* `topic`
-
-Optional:
-
-* `offset` (`latest`, `earliest`, `next`)
-* `limit`
-* `group_id`
-* `consumer_id`
-* `auto_commit`
-* `wait`
-* `match_tags`
-* `match_correlation_id`
-* `match_source`
-* `include_data`
-* `format`
-
-Supports wildcard patterns such as:
-
-```
-jobs.backup.*
+```bash
+resh event://.emit topic=deploy.finished 'data={"service":"api","version":"1.4.2"}' source=ci 'tags=["deploy","prod"]' correlation_id=run-881
 ```
 
----
+### 4.2 subscribe
 
-#### list-topics
+Reads stored events whose topic matches `topic=` (`*` and `?` wildcards are allowed) and prints them as one batch. It does not keep running or stream; with `wait=true` it polls until at least one event arrives or `wait_timeout_ms` (default 30000) passes.
 
-Lists topics with optional metadata.
+| Argument               | Description                                                       |
+| ---------------------- | ----------------------------------------------------------------- |
+| `topic`                | Required topic or pattern                                         |
+| `offset`               | `latest` (default; skips events already stored), `earliest`, `next` (needs `group_id`), or a number |
+| `limit`                | Maximum events returned                                           |
+| `group_id`             | Consumer group whose committed offset `offset=next` resumes from  |
+| `auto_commit`          | Commit the new offset for the group (default `true`)              |
+| `manual_commit_offset` | Commit this offset instead                                        |
+| `consumer_id`          | Echoed in the output only                                         |
+| `wait`, `wait_timeout_ms` | Poll for new events (see above)                                |
+| `match_tags`           | JSON array; keep events carrying these tags                       |
+| `match_correlation_id`, `match_source` | Exact-match filters                               |
+| `max_latency_ms`       | Keep only events newer than this many milliseconds                |
+| `include_data`, `include_summary`, `include_raw` | Control which fields are filled         |
+| `format`               | `json` (default) or `text`                                        |
 
-Optional:
+Offsets index the matching events in timestamp order across all matching topic files. The output includes `events`, `events_returned`, `offset_start`, `offset_end`, `next_offset`, `high_watermark`, `committed`, `committed_offset` and `timed_out`.
 
-* `prefix`
-* `match`
-* `sources`
-* `include_stats`
-* `include_schema`
-* `limit`
+Process a topic in batches, resuming where the previous command stopped:
 
----
-
-### 4.2 Hook Management
-
-#### hooks.list
-
-Lists available hooks.
-
-#### hooks.enable
-
-Enables a hook (`mq`, `log`, `proc`, `fs`).
-
-#### hooks.disable
-
-Disables a hook.
-
----
-
-### 4.3 Topic Validation Rules
-
-* Maximum length: 256 characters
-* Allowed characters: alphanumeric, `.`, `_`, `:`, `-`, `*`, `?`
-* Cannot be empty
-
-Tag rules:
-
-* Maximum length: 64 characters
-* Must be ASCII
-* JSON array format required
-
----
-
-### 4.4 Event Metadata Fields
-
-Each event may include:
-
-* `id`
-* `timestamp_unix_ms`
-* `topic`
-* `data`
-* `priority`
-* `ttl_ms`
-* `key`
-* `correlation_id`
-* `causation_id`
-* `source`
-* `tags`
-* `schema_version`
-
----
-
-### 4.5 Consumer Groups
-
-Consumer groups enable load-balanced consumption:
-
-```
-event://subscribe topic="jobs.process" group_id="workers" consumer_id="w1" offset="next"
+```bash
+resh event://.subscribe topic=jobs.work offset=next group_id=workers limit=10
 ```
 
-`offset="next"` requires `group_id`.
+The committed offset is stored per group and topic pattern in `_offsets.json`. There is no locking around reading and committing offsets, so two consumers in the same group running at the same time can receive the same events. `consumer_id` does not assign or balance work between consumers.
+
+### 4.3 list-topics
+
+**Returns sample data.** `list-topics` lists topics from built-in sample catalogues for the event, mq, log, proc and fs_watch sources. It does not read the event store, so topics you have emitted to are not listed (look in the events directory instead). Arguments: `prefix`, `match`, `sources`, `limit`, `include_hidden`, `include_stats`, `include_schema`, `format`.
+
+```bash
+resh --json-pretty event://.list-topics prefix=jobs. sources=mq
+```
+
+### 4.4 Hooks
+
+Four built-in hooks (`mq`, `log`, `proc`, `fs`) are registered at the start of every `resh` process. **They are simulations**: they do not forward events, write logs, signal processes or watch files. They only print notes to stderr, for example:
+
+* on `subscribe`: `MQ hook processed subscription with 1 events` and `Log hook: subscription to jobs.* returned 1 events`;
+* on `emit` with a tag such as `mq:orders`: `MQ Hook: Would forward event <id> to MQ topic: orders` (similarly `log:`, `proc:` and `fs:` tags).
+
+stdout is not affected, so the JSON output stays parseable.
+
+* `hooks.list` prints `global_hooks` (normally all four), `instance_hooks` and `total`.
+* `hooks.enable name=mq|log|proc|fs` registers the hook in the current process only. An unknown name fails.
+* `hooks.disable name=<hook>` removes it in the current process only, and reports `"disabled": true` even if no such hook was registered.
+
+Because each `resh` command is a new process, enabling or disabling a hook has no effect on any later command: all four hooks are active again in the next process.
+
+```bash
+resh event://.hooks.disable name=mq
+```
+
+### 4.5 Topic and tag rules
+
+* Topics: 1 to 256 characters from letters, digits, `.`, `_`, `:`, `-` (and `*`, `?` in `subscribe` patterns only). The topic is used as the file name.
+* Tags: non-empty, at most 64 characters, ASCII, passed as a JSON array.
+
+### 4.6 timeout_ms
+
+No event verb reads `timeout_ms`; it is ignored if given. `subscribe wait=true` is bounded by `wait_timeout_ms` instead.
 
 ---
 
-### 4.6 Backend Characteristics
+## 5. Limitations
 
-Current backend: `in_memory_bus`
-
-Characteristics:
-
-* In-memory storage
-* No persistence across restarts
-* Immediate delivery
-* Single-process scope
-
-`wait_for_persist` mode is downgraded with a warning due to lack of durable storage.
+* `list-topics` returns sample data, not the stored topics.
+* Hooks are simulations that only write notes to stderr, and enable/disable lasts for one process.
+* `ttl_ms` is recorded but not enforced. Topic files grow until you delete them.
+* Consumer-group offsets are not locked against concurrent consumers.
+* Emitting to a wildcard topic fails with the generic code `event.emit_internal_error`.
 
 ---
 
-## 5. Platform Support
+## 6. Platform Support
 
-| Platform   | Support Level |
-| ---------- | ------------- |
-| Linux      | Supported     |
-| macOS/Unix | Supported     |
-| Windows    | Supported     |
-
-Event behavior depends on runtime environment and backend configuration.
+Linux is the only supported and tested platform. Persistence depends on the XDG state directory, which is resolved on Linux.
 
 ---
 
-## 6. Operational Best Practices
+## 7. Usage Guidance
 
-### Safe Usage Guidelines
-
-* Use structured topics with clear naming patterns.
-* Validate topic names before emission.
-* Use correlation IDs for workflow tracing.
-* Use consumer groups for scalable processing.
-
-### Automation Considerations
-
-* Evaluate `ok` and `error` fields.
-* Use `limit` to control subscription volume.
-* Use `match_*` filters to reduce unnecessary processing.
-* Avoid `offset="earliest"` in high-volume production systems unless required.
-
-### CI/CD Integration
-
-* Emit deployment lifecycle events.
-* Subscribe for verification events.
-* Use structured metadata for traceability.
-* Validate schema with `include_schema`.
-
-### Production Recommendations
-
-* Monitor event counts via `include_stats`.
-* Use tags for filtering and classification.
-* Separate internal topics using `_internal.*`.
-* Avoid reliance on persistence with in-memory backend.
+* Use `correlation_id` to link events from one workflow run and `match_correlation_id` to read them back.
+* Use `group_id` with `offset=next` for a single consumer that processes a topic in batches.
+* Delete or rotate old topic files under the events directory when they are no longer needed.
 
 ---
 
-## 7. Use Cases by Role
+## 8. Implementation Notes
 
-### DevOps Engineers
-
-* Emit deployment lifecycle events.
-* Implement event-driven pipelines.
-* Monitor build and backup completion events.
-
-### SRE Engineers
-
-* Subscribe to system-level topics.
-* Monitor job completion and failure events.
-* Use correlation IDs for incident tracing.
-
-### Network Administrators
-
-* Emit network configuration events.
-* Subscribe to system.fs and network-related topics.
-* Track configuration changes.
-
-### AI/Automation Engineers
-
-* Consume structured events for orchestration.
-* Use correlation tracking for workflow automation.
-* Implement event-driven decision logic.
-
----
-
-## 8. Technical Foundation
-
-The `event://` handle operates within resh, implemented in Rust.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Structured type validation
-* Deterministic error propagation
-* High-performance event dispatch
-
-### Type Safety
-
-Arguments and metadata are type-validated, reducing malformed event risks.
-
-### Performance Characteristics
-
-* Low-latency event dispatch
-* Efficient metadata processing
-* Structured JSON serialization
-
-### Cross-Platform Architecture
-
-Supported across:
-
-* Linux
-* macOS/Unix
-* Windows
-
-Behavior is dependent on backend implementation.
-
-
+* Written in Rust. Each event is appended with a single write of one JSON line, so concurrent `emit` commands do not interleave lines; a line that does not parse is skipped when reading.
+* Committed offsets are written to a temporary file and renamed into place.

@@ -80,6 +80,9 @@ fn reconstruct_mail_command(stage: &str, args: &[String]) -> (String, Vec<String
                     }
                 };
                 processed_args.push(cleaned);
+            } else if core::parse::is_bare_dry_run(arg) {
+                // Not part of a value: a bare `dry_run` requests a dry run
+                processed_args.push("dry_run=\"true\"".to_string());
             } else {
                 // This might be part of a broken quoted argument, try to merge
                 if let Some(last) = processed_args.last_mut() {
@@ -162,20 +165,24 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let stage = cli.stage.expect("No stage provided. Try --list-schemas");
+    let Some(stage) = cli.stage else {
+        eprintln!("Error: no stage provided. Try `resh --help` or `resh --list-schemas`.");
+        std::process::exit(2);
+    };
 
     // Reconstruct mail URLs that were broken by shell parsing
     let (final_stage, final_args) = reconstruct_mail_command(&stage, &cli.args);
 
     // Capture output so we can optionally pretty-print JSON
     let mut buf: Vec<u8> = Vec::new();
+    let mut stderr = core::status::TrackingWriter::new(std::io::stderr());
     let status = dispatch_stage(
         &mut reg,
         &final_stage,
         &final_args,
         &mut std::io::stdin(),
         &mut buf,
-        &mut std::io::stderr(),
+        &mut stderr,
     )?;
 
     if cli.json_pretty {
@@ -197,7 +204,9 @@ fn main() -> Result<()> {
     }
 
     if !status.ok {
-        std::process::exit(status.code.unwrap_or(1));
+        // A failure must never be silent or exit 0.
+        let _ = core::status::report_failure(&status, stderr.written, &mut std::io::stderr());
+        std::process::exit(status.exit_code());
     }
     Ok(())
 }

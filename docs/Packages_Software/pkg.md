@@ -4,274 +4,221 @@
 
 ### Definition
 
-Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `pkg://` handle provides package management capabilities across multiple operating systems and package managers.
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `pkg://` handle installs, removes, updates, queries and snapshots system packages by running the host's package manager: `apt` (apt-get / apt-cache / dpkg-query), `dnf`, `yum`, `pacman`, `apk` or `brew`.
 
 ### Purpose
 
-The Package Manager handle enables:
+The Package handle provides:
 
-* Installation and removal of software packages
-* System-wide updates and upgrades
+* Installation and removal of packages
+* Index refresh, updates and upgrades
 * Package search and metadata inspection
 * Installed package inventory reporting
-* System state snapshot and restoration
-* Cross-platform abstraction across major package managers
-
-All operations use structured JSON input and produce structured output suitable for automation.
-
-### Architectural Problem Addressed
-
-Traditional package manager tooling:
-
-* Varies significantly across platforms (`apt`, `dnf`, `yum`, `pacman`, `apk`, `brew`)
-* Produces human-oriented output
-* Requires shell parsing for automation
-* Has inconsistent behavior across systems
-
-resh addresses this by:
-
-* Abstracting multiple package managers under a unified interface
-* Standardizing verb semantics
-* Enforcing structured JSON input
-* Returning structured, machine-readable results
-* Supporting dry-run execution and deterministic output contracts
+* Snapshots of the installed package set as a `pkg-lock/v1` lockfile
+* A best-effort `restore` that installs missing packages and optionally removes extra ones (see 3.4: it does **not** pin locked versions)
 
 ### Resource-Oriented URI Model
 
-resh commands use:
-
+```text
+resh pkg://<alias>.<verb> input=<json>
 ```
-handle://target.verb(options)
-```
-
-For package management:
 
 * **handle**: `pkg://`
-* **target**: alias (commonly `system`)
-* **verb**: package operation (`install`, `remove`, `update`, etc.)
-* **options**: JSON configuration passed via `input`
+* **alias**: a free-form label (commonly `system`), echoed as `alias` in the output
+* **verb**: one of the verbs below
+* **input**: one JSON object holding all options. It is the only argument the handle reads; other `key=value` words are ignored.
+
+Every verb requires the `manager` key: one of `apt`, `dnf`, `yum`, `pacman`, `apk`, `brew`, or `auto`. With `auto`, the first manager binary found on `PATH` is used, in the order apt-get, dnf, yum, pacman, apk, brew. An explicit manager whose binary is not on `PATH` is an error.
 
 Example:
 
-```
-resh pkg://system.install input='{"manager":"auto","packages":[{"name":"curl"}]}'
-```
-
----
-
-## 2. Design Philosophy and Core Principles
-
-### Structured Interface Model
-
-* Nine explicit verbs define package lifecycle operations.
-* All configuration is provided via JSON.
-* Structured output reports operation results.
-* Manager auto-detection is standardized.
-
----
-
-### Safety-First Execution
-
-* `dry_run` available for install, remove, update, upgrade, restore.
-* `only_if_missing` prevents unnecessary reinstallations.
-* `fail_if_missing` controls strict removal behavior.
-* Timeout control (`timeout_ms`) limits execution duration.
-* Snapshot and restore enable state rollback capability.
-
----
-
-### Deterministic Behavior
-
-* Explicit flags control behavior (e.g., `assume_yes`, `reinstall`, `security_only`).
-* Identical JSON input yields consistent structured output.
-* Auto-detection logic is consistent across supported managers.
-* Exit codes reflect defined failure categories.
-
----
-
-### JSON-Based Structured Output
-
-Each verb returns structured JSON summarizing:
-
-* Operation counts (installed, upgraded, removed, failed)
-* Metadata (manager, alias)
-* Warnings and errors
-* Status indicators
-
-Example (install result):
-
-```json
-{
-  "installed": 2,
-  "upgraded": 0,
-  "reinstalled": 0,
-  "unchanged": 0,
-  "failed": 0
-}
+```bash
+resh pkg://system.install 'input={"manager":"auto","packages":[{"name":"curl"}]}'
 ```
 
 ---
 
-### AI-Readiness
+## 2. Verbs
 
-Structured outputs allow:
+| Verb             | Description | Required `input` keys |
+| ---------------- | ----------- | --------------------- |
+| `install`        | Install packages (refreshes the index first by default; skips installed packages by default) | `manager`, `packages` (array of `{name, version}`) |
+| `remove`         | Remove packages, optionally purging configuration and unused dependencies | `manager`, `packages` (array of `{name}`) |
+| `update`         | Refresh the index and by default upgrade all or the listed packages; `check_only` only reports; `security_only` with dnf/yum only (see 4.4) | `manager` |
+| `upgrade`        | Upgrade all or the listed packages; `check_only` only reports; `security_only` with dnf only (see 4.4) | `manager` |
+| `info`           | Details for named packages | `manager`, `packages` (array of names) |
+| `search`         | Search the package index | `manager`, `query` |
+| `list_installed` | List installed packages, optionally filtered and paginated | `manager` |
+| `snapshot`       | Capture the installed package set as a lockfile (JSON, YAML or text) | `manager` |
+| `restore`        | Install / remove packages so the host matches a lockfile (best effort, see 3.4) | `manager`, `lockfile` (lockfile content as a string) |
+| `apply_lock`     | Alias for `restore` | same as `restore` |
 
-* Automated dependency validation
-* Change detection
-* Idempotent configuration enforcement
-* Snapshot-based state comparison
-* Machine reasoning over system state
+`resh pkg <verb> --help` lists every accepted key for a verb.
 
 ---
 
 ## 3. Command Syntax and Execution Model
 
-### 3.1 URI Structure
+### 3.1 Example Commands
 
-```
-resh pkg://alias.verb input='{"json":"config"}'
-```
-
-| Component | Description                           |
-| --------- | ------------------------------------- |
-| `handle`  | `pkg://`                              |
-| `alias`   | Logical system alias (e.g., `system`) |
-| `verb`    | Package operation                     |
-| `input`   | JSON configuration                    |
-
----
-
-### Supported Verbs
-
-| Verb             | Description                       |
-| ---------------- | --------------------------------- |
-| `install`        | Install packages                  |
-| `remove`         | Remove packages                   |
-| `update`         | Refresh index and update packages |
-| `upgrade`        | Upgrade packages                  |
-| `info`           | Package metadata lookup           |
-| `search`         | Search repositories               |
-| `list_installed` | List installed packages           |
-| `snapshot`       | Capture system package state      |
-| `restore`        | Restore from snapshot             |
-| `apply_lock`     | Alias for `restore`               |
-
----
-
-### Example Commands
+Each example passes one JSON object on a single line. Quote it for the shell.
 
 #### Install Packages (Dry Run)
 
 ```bash
-resh pkg://system.install input='{
-  "manager":"auto",
-  "packages":[{"name":"curl"},{"name":"git"}],
-  "dry_run":true
-}'
+resh pkg://system.install 'input={"manager":"auto","packages":[{"name":"curl"},{"name":"git"}],"dry_run":true}'
 ```
 
-#### Remove Package
+#### Install a Specific Version
 
 ```bash
-resh pkg://system.remove input='{
-  "packages":[{"name":"curl"}],
-  "purge":false,
-  "dry_run":true
-}'
+resh pkg://system.install 'input={"manager":"apt","packages":[{"name":"jq","version":"1.7.1-3build1"}]}'
 ```
 
-#### Update System
+Version pinning is passed to apt (`name=version`), dnf/yum (`name-version`) and apk (`name=version`). With pacman a version is rejected; with brew it is ignored. The `source` field of a package entry is accepted but not used.
+
+#### Remove Package (Dry Run)
 
 ```bash
-resh pkg://system.update input='{
-  "refresh_index":true,
-  "upgrade":true
-}'
+resh pkg://system.remove 'input={"manager":"auto","packages":[{"name":"curl"}],"purge":false,"dry_run":true}'
+```
+
+#### Check for Updates
+
+```bash
+resh pkg://system.update 'input={"manager":"auto","check_only":true}'
 ```
 
 #### Search for Packages
 
 ```bash
-resh pkg://system.search input='{
-  "query":"curl",
-  "limit":20
-}'
+resh pkg://system.search 'input={"manager":"auto","query":"curl","limit":20}'
 ```
 
 #### Create Snapshot
 
 ```bash
-resh pkg://system.snapshot input='{
-  "scope":"all",
-  "include_versions":"exact",
-  "format":"json"
-}'
+resh pkg://system.snapshot 'input={"manager":"auto","scope":"all","include_versions":"exact","format":"json"}'
 ```
 
-#### Restore from Snapshot
+#### Restore from Snapshot (Dry Run)
+
+`lockfile` is the lockfile content as a JSON string, so it is easiest to build the request in a file:
 
 ```bash
-resh pkg://system.restore input='{
-  "lockfile":"{...}",
-  "mode":"exact",
-  "dry_run":true
-}'
+resh pkg://system.restore "input=$(cat restore.json)"
+```
+
+with `restore.json` such as (lockfile string shortened):
+
+```json
+{
+  "manager": "apt",
+  "lockfile": "{\"lockfile_version\":\"pkg-lock/v1\", ...}",
+  "dry_run": true
+}
 ```
 
 ---
 
-## 3.2 Execution Semantics
+### 3.2 Execution Semantics
 
-### Deterministic Behavior
+* No shell is used. Each package-manager command is run directly with an argument vector; caller values (package names, versions, arch, `extra_args`) are always single arguments and are never interpreted as shell syntax.
+* Package names, versions and `arch` are validated: 1–256 characters, must start with a letter or digit (so they cannot be read as an option), and may contain only `A-Z a-z 0-9 . _ + : ~ @ / = -`.
+* Package names read from a restore lockfile are additionally rejected if they contain `://`, a `..` path segment, or end in a package-file suffix (`.rpm`, `.deb`, `.apk`, `.pkg.tar`, `.pkg.tar.zst`, `.pkg.tar.xz`, `.pkg.tar.gz`), so a lockfile cannot make the manager fetch a URL or install a local file.
+* `dry_run` (inside the JSON) is available for `install`, `remove`, `update`, `upgrade` and `restore`; it reports the planned commands without running them. A `dry_run=true` given as a separate argument (outside `input=`) is refused with exit 2 and nothing runs; put `"dry_run":true` inside the JSON.
+* Each `resh` invocation is a separate process; nothing is kept between invocations.
 
-* Operations depend solely on JSON input.
-* Auto-detection selects appropriate backend manager.
-* Snapshot captures reproducible state.
-* Restore behavior controlled via `mode`, `allow_downgrades`, etc.
+### 3.3 Timeouts
 
----
+Every verb enforces `timeout_ms` (a key inside the JSON) as a wall-clock limit on the whole operation. Defaults:
 
-### Structured Output Contracts
+| Verb | Default `timeout_ms` |
+| ---- | -------------------- |
+| `info`, `search` | 5000 (5 s) |
+| `snapshot` | 15000 (15 s) |
+| `restore`, `apply_lock` | 180000 (3 min) |
+| `install`, `remove`, `list_installed` | 600000 (10 min) |
+| `update`, `upgrade` | 900000 (15 min) |
 
-Representative snapshot output:
+`timeout_ms` must be greater than 0. `search` runs an extra query per match (for example `apt-cache policy` on apt), so on slow systems it may need a larger `timeout_ms` than the 5 s default. When the timeout expires, resh stops waiting and reports a timeout error; the package-manager process it started is not explicitly killed.
+
+### 3.4 Restore Behavior and Limitations
+
+`restore` compares the lockfile with the installed packages and builds a plan with `install`, `upgrade`, `downgrade`, `remove`, `keep`, `extra` and `unresolved` lists:
+
+* A locked package that is not installed is installed **by name** (latest available version).
+* A locked package whose installed version string differs is put in `upgrade` or `downgrade` by a plain string comparison of the version strings, not a package-manager version comparison. The "upgrade" step reinstalls by name (latest available version); the "downgrade" step (only with `allow_downgrades`, and only apt, dnf, yum) also runs by name. **The locked version is never passed to the package manager**, so restore does not reproduce exact versions.
+* With `allow_newer` (default `true`) a newer installed version is kept.
+* Packages installed on the host but not in the lockfile are listed in `extra`, or **removed** when `allow_removals` is `true`. Use this with care: on a full system it removes every package missing from the lockfile.
+* `mode` (`exact` / `best_effort`) is echoed in the output but does not change the plan.
+* `on_repo_mismatch` and `include_dependencies` are accepted but have no effect on restore; `extra_args` is not passed to the restore commands.
+* `on_platform_mismatch: "fail"` rejects a lockfile whose OS name or architecture differs from the host.
+* `on_missing_package: "fail"` makes the restore fail if any package is `unresolved`.
+
+Restore is therefore not a rollback mechanism: it cannot return a host to the exact package versions in a snapshot.
+
+### 3.5 Output
+
+All verbs print one JSON object to standard output. Representative `install` output (apt):
 
 ```json
 {
-  "lockfile_version": "1.0",
-  "manager": {
-    "name": "apt",
-    "alias": "system"
-  },
-  "platform": {
-    "os_family": "unix",
-    "architecture": "x86_64"
-  },
+  "alias": "system",
+  "backend": "pkg",
+  "dry_run": false,
+  "manager": "apt",
   "packages": [
     {
-      "name": "curl",
-      "version": "7.68.0-1ubuntu2.19"
+      "action": "installed",
+      "from_cache": false,
+      "installed_version": "1.7.1-3build1",
+      "name": "jq",
+      "requested_version": null
     }
-  ]
+  ],
+  "summary": {
+    "failed": 0,
+    "installed": 1,
+    "reinstalled": 0,
+    "unchanged": 0,
+    "upgraded": 0
+  },
+  "update_cache": true
 }
 ```
 
----
-
-### Error Handling Structure
-
-Representative error:
+Representative `snapshot` output (abbreviated; the `lockfile` field holds the full lockfile as a string):
 
 ```json
 {
-  "status": "failure",
-  "failed": 1,
-  "warnings": [
-    "Repository mismatch for package xyz"
-  ]
+  "action": "snapshot",
+  "alias": "system",
+  "backend": "pkg",
+  "format": "json",
+  "lockfile": "{\n  \"lockfile_version\": \"pkg-lock/v1\",\n  ...\n}",
+  "manager": "apt",
+  "parsed": {
+    "lockfile_version": "pkg-lock/v1",
+    "manager": { "alias": "system", "name": "apt", "version": "apt 2.7.14 (amd64)" },
+    "packages_count": 214,
+    "platform": {
+      "architecture": "x86_64",
+      "kernel": "Linux 6.8.0-45-generic",
+      "os_family": "debian",
+      "os_name": "Ubuntu",
+      "os_version": "24.04"
+    },
+    "scope": "manual"
+  }
 }
 ```
 
-Exit codes are defined and documented within built-in help.
+### 3.6 Errors and Exit Codes
+
+* Invalid input (bad JSON, missing `manager`, invalid package name, `timeout_ms` of 0), an unavailable manager, or a timeout: resh prints `Error: <reason>` to standard error and exits 1.
+* `install`, `remove`, `update`, `upgrade` and `restore` print their JSON result and then exit 1 if any package operation failed, with a reason such as `pkg install: 1 of 2 package operations failed` on standard error. A partial failure is a failure.
+* Otherwise the exit code is 0.
 
 ---
 
@@ -279,59 +226,19 @@ Exit codes are defined and documented within built-in help.
 
 ### 4.1 Automation Utilities
 
-**Scope**
-
-System provisioning and dependency automation.
-
-**Use Cases**
-
 * CI/CD build agent setup
 * Environment standardization
 * Automated patching
 
----
-
 ### 4.2 Data & State Management
 
-**Scope**
-
-Package state inspection and reproducibility.
-
-**Use Cases**
-
 * Dependency auditing
-* Drift detection
-* System state backups
-* Lockfile-based enforcement
+* Drift detection (compare snapshots, or run `restore` with `dry_run` to see the plan)
+* Recording the installed package set
 
----
+### 4.3 Packages & Software
 
-### 4.3 Filesystem & Storage
-
-**Scope**
-
-Snapshot and restore operations managing system package state as lockfiles.
-
-**Use Cases**
-
-* Backup before major upgrades
-* Rollback capability
-* System cloning
-
----
-
-### 4.4 Network & Remote Operations
-
-Indirectly supports:
-
-* Downloading packages from repositories
-* Remote repository synchronization
-
----
-
-### 4.5 Packages & Software
-
-**Supported Managers**
+**Managers in the code**
 
 * apt
 * dnf
@@ -343,86 +250,41 @@ Indirectly supports:
 **Core Capabilities**
 
 * Install/remove packages
-* Upgrade system
+* Upgrade the system
 * Inspect metadata
 * Search repositories
-* Capture and restore state
+* Snapshot the package set and reinstall missing packages from a lockfile
 
----
+### 4.4 Security
 
-### 4.6 Process & Service Management
+* Security-only updates (`security_only=true`) are honored only where resh can pass `--security`: `update` with dnf or yum, and `upgrade` with dnf. For any other manager (update: apt, pacman, apk, brew; upgrade: apt, yum, pacman, apk, brew) the request fails before anything runs, including in `dry_run` and `check_only`, with `security_only is not supported by pkg <verb> for <manager> (only ...); nothing was run.` It is never silently dropped.
+* Lockfile package names are validated before any command runs
+* Platform mismatch detection on restore (`on_platform_mismatch`)
+* Package-manager commands require root privileges; resh does not elevate privileges itself.
 
-Indirectly supports:
+### 4.5 System Information
 
-* Installing service binaries
-* Updating service versions
-* Removing deprecated services
-
----
-
-### 4.7 Security & Secrets
-
-Security-related capabilities:
-
-* Security-only updates (`security_only`)
-* Snapshot validation
-* Strict restore policies (`on_missing_package`)
-* Platform mismatch detection
-
----
-
-### 4.8 System Information
-
-Structured reporting includes:
-
-* Installed package versions
-* Architecture
-* Repository source
-* Installation reason
-* OS metadata
-* Manager version
+`info`, `list_installed` and `snapshot` can report installed and candidate versions, architecture, repository, installation reason, OS metadata and the manager version, depending on the manager and the `include_*` keys.
 
 ---
 
 ## 5. Platform Support
 
-Supported package managers:
-
-| Manager | Platform              |
-| ------- | --------------------- |
-| apt     | Ubuntu, Debian        |
-| dnf     | Fedora, CentOS Stream |
-| yum     | RHEL, CentOS          |
-| pacman  | Arch Linux            |
-| apk     | Alpine Linux          |
-| brew    | macOS, Linux          |
-
-Auto-detection (`manager: "auto"`) selects the appropriate backend.
-
-No additional platform limitations are specified in documentation.
+* Linux is the only supported platform for resh.
+* The apt, dnf, yum, pacman and apk backends were exercised in Linux test sandboxes.
+* The brew backend exists in the code but was never executed in testing; treat it as untested.
 
 ---
 
 ## 6. Operational Best Practices
 
-### Safe Usage Guidelines
-
 * Use `dry_run` before applying changes.
-* Take snapshots before upgrades.
-* Use `only_if_missing` to maintain idempotency.
-* Apply security updates regularly.
-* Set appropriate `timeout_ms`.
-
----
-
-### Automation Considerations
-
-* Always evaluate `failed` and `warnings`.
-* Use snapshots for drift detection.
-* Enforce strict restore policies in production.
+* Take snapshots before upgrades to record what was installed (restoring will not pin versions).
+* Rely on the default `only_if_missing` behaviour for idempotent installs.
+* Set a larger `timeout_ms` for `search` and `info` on slow systems.
+* Check the exit code and `summary.failed` after mutating verbs.
 * Use `check_only` when validating changes.
-
----
+* Do not use `allow_removals` unless the lockfile lists every package you need.
 
 ### CI/CD Integration
 
@@ -432,17 +294,6 @@ Typical sequence:
 2. `install` dependencies
 3. `snapshot` environment state
 4. Validate build
-5. Restore environment as needed
-
----
-
-### Production Environment Recommendations
-
-* Maintain periodic snapshots.
-* Use exact version restore for production.
-* Enable `security_only` updates where required.
-* Avoid force removal without validation.
-* Review repository mismatches carefully.
 
 ---
 
@@ -454,67 +305,22 @@ Typical sequence:
 * Automate dependency installation.
 * Standardize environments across teams.
 
----
-
 ### SRE Engineers
 
 * Audit installed packages.
 * Apply security patches.
-* Detect configuration drift via snapshots.
-
----
-
-### Network Administrators
-
-* Install networking tools.
-* Maintain consistent package baselines.
-* Verify repository sources.
-
----
+* Detect drift via snapshots.
 
 ### AI / Automation Engineers
 
 * Analyze structured install results.
 * Detect failed operations programmatically.
-* Implement environment compliance validation.
 * Compare snapshot states automatically.
 
 ---
 
 ## 8. Technical Foundation
 
-### Rust Implementation Advantages
-
-resh is implemented in Rust, providing:
-
-* Memory safety
-* Strong compile-time guarantees
-* Deterministic execution
-* Efficient subprocess management
-
----
-
-### Type Safety
-
-* Enumerated verb set
-* Strict JSON schema validation
-* Controlled parameter behavior
-* Structured error typing
-
----
-
-### Performance Characteristics
-
-* Native binary execution
-* Controlled timeouts
-* Efficient backend invocation
-* Minimal parsing overhead
-
----
-
-### Cross-Platform Architecture
-
-* Unified abstraction over multiple package managers
-* OS-specific manager detection
-* Consistent JSON output across supported systems
-
+* Implemented in Rust; package managers are run as subprocesses with argument vectors (no shell).
+* Fixed verb set; input is one JSON object deserialized per verb.
+* Wall-clock timeouts on every verb.

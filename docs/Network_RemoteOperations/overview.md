@@ -1,490 +1,127 @@
-# Resource Shell (resh) – Network & Remote Operations Documentation
+# Resource Shell (resh): Network and Remote Operations
 
 ## 1. Overview
 
-### Definition
+This category groups the handles that talk to other machines or inspect the
+local network:
 
-Resource Shell (resh) is a structured, resource-oriented command-line shell designed for infrastructure automation. It replaces traditional string-based command pipelines with a typed, URI-based execution model that returns structured outputs.
+| Handle             | Purpose | Details |
+| ------------------ | ------- | ------- |
+| `dns://`           | DNS lookups, resolution, delegation traces, zone transfers (AXFR). `zone.update` is simulated. | [dns.md](dns.md) |
+| `http://`, `https://` | HTTP requests (one handle serves both schemes). | [http.md](http.md) |
+| `mail://`          | Sending email over SMTP, built-in templates, SMTP checks, stored profiles. | [mail.md](mail.md) |
+| `net://`           | Local interfaces and routes, ping, TCP checks, port scans, simple DNS queries. | [net.md](net.md) |
+| `ssh://`           | Remote commands and file copies through the system `ssh` client; client config inspection. Tunnels and key management are stubs. | [ssh.md](ssh.md) |
 
-### Purpose
+Every handle has built-in help that matches the code:
 
-resh is designed to:
-
-* Provide deterministic, machine-readable command execution
-* Eliminate brittle text parsing in automation workflows
-* Standardize operational interfaces across infrastructure domains
-* Support AI-driven and programmatic infrastructure management
-
-### Architectural Problem Addressed
-
-Traditional Unix shells rely on:
-
-* Text-based output
-* Ad-hoc parsing
-* Implicit assumptions about output formatting
-* Pipeline chaining via strings
-
-This creates fragility in automation systems where:
-
-* Output formats change
-* Parsing errors cause silent failures
-* Downstream tools depend on non-contractual text output
-
-resh addresses this by:
-
-* Enforcing structured output contracts
-* Using typed resource handles
-* Defining explicit verbs for operations
-* Returning JSON responses with predictable structure
-
-### Resource-Oriented URI Model
-
-resh uses a URI-based execution syntax:
-
-```
-handle://target.verb(options)
+```bash
+resh dns --help
+resh ssh exec --help
 ```
 
-Each command represents:
+Linux is the only supported and verified platform. Nothing in these handles
+has been built or tested on macOS or Windows.
 
-* A resource (`handle`)
-* A specific target instance
-* A defined action (`verb`)
-* Explicit execution parameters (`options`)
+## 2. Command syntax
 
-This model provides:
+The general form is `resh <scheme>://<target>.<verb> key=value ...`, with the
+verb after the last dot (dotted verbs such as `zone.fetch`, `route.list`,
+`config.get` are recognized as a whole). The function-call form
+`resh '<scheme>://<target>.<verb>(key=value,...)'` also works; quote it for the
+shell. The target means something different for each handle:
 
-* Clear operational intent
-* Typed interface boundaries
-* Predictable response schemas
+| Handle | Target | Example |
+| ------ | ------ | ------- |
+| dns    | Always empty: the name is an argument. Note the dot after `//`. | `resh dns://.lookup name=example.com rtype=MX` |
+| http(s)| The request URL. | `resh https://api.example.com/health.get` |
+| mail   | None: the verb is the first path segment. | `resh mail://send to=ops@example.com subject=Alert 'text_body=Disk full'` |
+| net    | The host (and port) to probe; `if` for interface listing. | `resh net://192.0.2.10:22.tcp_check` |
+| ssh    | `[user@]host[:port]`. | `resh ssh://alice@192.0.2.10.exec command=uptime` |
 
----
+More examples, one per handle:
 
-## 2. Design Philosophy and Core Principles
-
-### Structured Interface Model
-
-* Every command maps to a defined resource handle.
-* Verbs represent allowed operations.
-* Targets are explicitly scoped.
-* Outputs are structured JSON objects.
-
-This enforces interface discipline comparable to API design rather than ad-hoc CLI execution.
-
-### Safety-First Execution
-
-resh emphasizes controlled operations:
-
-* Explicit verbs instead of implicit behavior
-* Structured error reporting
-* Reduced ambiguity in destructive operations
-
-This reduces operational risk in production environments.
-
-### Deterministic Behavior
-
-* Identical inputs produce identical structured outputs.
-* No hidden side effects.
-* No reliance on locale-dependent formatting.
-* No dependency on terminal formatting.
-
-Determinism enables reliable automation and CI/CD integration.
-
-### JSON-Based Structured Output
-
-All commands return structured JSON output:
-
-* Machine-parseable
-* Schema-consistent
-* Stable across versions
-
-This eliminates the need for grep/awk/sed-based parsing.
-
-### AI-Readiness
-
-Because output is structured:
-
-* AI agents can consume responses directly.
-* No natural language parsing is required.
-* Output contracts support automated reasoning.
-
-resh provides infrastructure semantics suitable for programmatic decision-making.
-
----
-
-## 3. Command Syntax and Execution Model
-
-### 3.1 URI Structure
-
-```
-handle://target.verb(options)
+```bash
+resh dns://.resolve name=example.com mode=mail
+resh http://service.internal:8080/health.get accept=json
+resh mail://send_template template=welcome to=bob@example.com dry_run=true
+resh net://if.list family=ipv4
+resh net://192.0.2.10.ping count=3
+resh ssh://deploy@web01.test
 ```
 
-| Component | Description                                 |
-| --------- | ------------------------------------------- |
-| `handle`  | Resource domain (e.g., ssh, http, dns, net) |
-| `target`  | Specific resource instance                  |
-| `verb`    | Operation to perform                        |
-| `options` | Explicit execution parameters               |
-
----
-
-### Example Commands
-
-#### SSH – Remote Command Execution
-
-```
-ssh://prod-server.exec(cmd="systemctl status nginx")
-```
-
-#### HTTP – Web Request
-
-```
-http://api.internal.local.get(path="/health")
-```
-
-#### DNS – Lookup
-
-```
-dns://example.com.lookup(type="A")
-```
-
-#### Email – Send Notification
-
-```
-mail://smtp.internal.send(to="admin@example.com", subject="Alert")
-```
-
-#### Network Interface Status
-
-```
-net://eth0.status()
-```
-
----
-
-### 3.2 Execution Semantics
-
-#### Deterministic Behavior
-
-* Each command maps to a defined handler.
-* Output format is stable.
-* No terminal formatting artifacts.
-
-#### Structured Output Contracts
-
-Responses include:
-
-* Status
-* Resource metadata
-* Operation results
-* Structured error details (if applicable)
-
-#### Predictable Status Responses
-
-* `success`
-* `error`
-
-No free-form output interpretation is required.
-
----
-
-### Representative JSON Response
-
-```json
-{
-  "status": "success",
-  "handle": "http",
-  "target": "api.internal.local",
-  "verb": "get",
-  "result": {
-    "status_code": 200,
-    "headers": {
-      "content-type": "application/json"
-    },
-    "body": {
-      "service": "auth",
-      "status": "healthy"
-    }
-  }
-}
-```
-
----
-
-## 4. Functional Domains
-
-> Source: Network & Remote Operations overview 
-
----
-
-### 4.1 Automation Utilities
-
-**Operational Scope**
-
-General-purpose automation primitives for orchestrating infrastructure tasks.
-
-**Common Use Cases**
-
-* Coordinated multi-step operations
-* Scripted infrastructure workflows
-* Deterministic CI/CD execution
-
----
-
-### 4.2 Data & State Management
-
-**Operational Scope**
-
-Structured management of configuration data and runtime state.
-
-**Common Use Cases**
-
-* Managing system configuration
-* Retrieving structured state snapshots
-* Feeding automation pipelines
-
----
-
-### 4.3 Filesystem & Storage
-
-**Operational Scope**
-
-File and storage operations across systems.
-
-**Common Use Cases**
-
-* Managing files
-* Inspecting storage state
-* Structured file metadata retrieval
-
----
-
-### 4.4 Network & Remote Operations
-
-**Operational Scope**
-
-Communication with remote systems and services.
-
-#### Supported Handles
-
-* `ssh`
-* `http`
-* `mail`
-* `dns`
-* `net`
-
-#### Common Use Cases
-
-* Remote server administration
-* Web service health checks
-* DNS troubleshooting
-* Sending operational alerts
-* Network diagnostics
-
-#### Example Commands
-
-**SSH Remote Execution**
-
-```
-ssh://prod-server.exec(cmd="uptime")
-```
-
-**HTTP Health Check**
-
-```
-http://service.local.get(path="/health")
-```
-
-**DNS Lookup**
-
-```
-dns://example.com.lookup(type="MX")
-```
-
-**Send Alert Email**
-
-```
-mail://smtp.local.send(to="ops@example.com", subject="Failure")
-```
-
-**Network Connectivity Test**
-
-```
-net://localhost.ping(target="8.8.8.8")
-```
-
-#### Integration Scenarios
-
-* CI pipelines validating deployments
-* SRE automation checking service health
-* Network diagnostics during incidents
-* Automated notifications for failures
-
----
-
-### 4.5 Packages & Software
-
-**Operational Scope**
-
-Managing installed software and package operations.
-
-**Use Cases**
-
-* Package inspection
-* Installation validation
-* Version verification
-
----
-
-### 4.6 Process & Service Management
-
-**Operational Scope**
-
-Managing system processes and services.
-
-**Use Cases**
-
-* Checking service status
-* Starting/stopping services
-* Monitoring process state
-
----
-
-### 4.7 Security & Secrets
-
-**Operational Scope**
-
-Secure credential handling and encrypted communications.
-
-**Use Cases**
-
-* Secure SSH connections
-* Credential-based HTTP requests
-* Safe email authentication
-
----
-
-### 4.8 System Information
-
-**Operational Scope**
-
-Retrieving system-level metadata.
-
-**Use Cases**
-
-* Host metadata collection
-* Network interface inspection
-* Infrastructure inventory reporting
-
----
-
-## 5. Platform Support
-
-### Linux
-
-* Primary supported platform
-* Native system integration
-* Full operational capability
-
-### macOS / Unix
-
-* Supported where underlying system tools are available
-* Behavior depends on platform compatibility
-
-### Windows
-
-* Limited support depending on available subsystems
-* Behavior subject to OS-specific constraints
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Use explicit targets.
-* Avoid implicit defaults.
-* Validate command options before execution.
-* Use structured responses for decision logic.
-
-### Automation Considerations
-
-* Consume JSON directly.
-* Avoid manual text inspection.
-* Implement error handling based on structured status fields.
-
-### CI/CD Integration
-
-* Use resh commands in pipeline stages.
-* Validate deployment endpoints with `http` handle.
-* Verify DNS configuration prior to cutover.
-* Trigger structured notifications using `mail`.
-
-### Production Recommendations
-
-* Use SSH key-based authentication.
-* Validate DNS before deployments.
-* Use structured health checks.
-* Store credentials securely.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Deployment validation using HTTP checks
-* Automated remote configuration via SSH
-* Structured pipeline health validation
-
-### SRE Engineers
-
-* Deterministic health monitoring
-* Incident diagnostics with DNS and network tools
-* Structured failure notifications
-
-### Network Administrators
-
-* DNS inspection
-* Connectivity diagnostics
-* Interface state verification
-
-### AI / Automation Engineers
-
-* Direct JSON ingestion by AI agents
-* Infrastructure state reasoning
-* Automated remediation workflows
-
----
-
-## 8. Technical Foundation
-
-### Rust Implementation
-
-resh is implemented in Rust, providing:
-
-* Memory safety
-* Type safety
-* Compile-time guarantees
-* High-performance execution
-
-### Type Safety
-
-* Strongly typed resource handles
-* Explicit verb definitions
-* Reduced runtime ambiguity
-
-### Performance Characteristics
-
-* Native binary execution
-* Low runtime overhead
-* Efficient network operations
-
-### Cross-Platform Architecture
-
-* Designed for Unix-like systems
-* Portable Rust-based architecture
-* Consistent structured output across environments
-
-
+Global flags go before the stage: `--json-pretty` re-indents (and sorts) JSON
+output; `resh --list-schemas` lists all registered schemes.
+
+## 3. Output and exit codes
+
+There is no shared response envelope. Each verb prints its own output, as
+documented in the handle pages and in `resh <handle> <verb> --help`:
+
+* `dns`, `mail`, `net` and `ssh` print JSON. Most
+  `dns`, `mail` and `ssh` responses contain an `ok` field; `net` responses
+  differ per verb (for example `tcp_check` has `ok`, `ping` has `reachable`).
+* `http` prints the response body for `get`, `post`, `put`, `patch` and
+  `delete` by default, and JSON for `head`, `headers`, `options`, `preflight`
+  and `json`.
+
+Exit status: 0 on success; on failure the handle's code if it is 1-255,
+otherwise 1, with the reason on stderr (`Error: <reason>` when the handle did
+not already write to stderr). Notable cases, all verified in the code:
+
+* `http`: a non-2xx status exits 1 for most verbs, but `head`, `headers` and
+  `json` exit 0 for any HTTP status.
+* `net ping` exits 0 whenever the system `ping` ran, even if the host did not
+  answer; check `reachable`. `net tcp_check` exits 111 when the connection
+  fails.
+* `ssh exec` exits with the remote command's exit code.
+
+Each `resh` invocation is a separate process. No connection, session, cache
+or SMTP transport is kept between invocations. The only state written to disk
+by these handles is the mail profile file (see below) and files that
+`ssh download` writes where you ask it to.
+
+## 4. Timeouts
+
+`timeout_ms` is not handled uniformly. Summary (see each page for details):
+
+| Handle | Enforces `timeout_ms` | Ignores it |
+| ------ | --------------------- | ---------- |
+| dns    | `lookup`, `resolve`, `trace` (per query), `zone.fetch` (connect and each read) | `zone.update` (validated, but simulated) |
+| http   | `get`, `post`, `put`, `delete`, `options`, `preflight`, `json`, `headers` | `head` (fixed 10 s), `patch` (fixed 30 s) |
+| mail   | `send`, `send_template` (SMTP transport), `test` only when a test message is sent | `config` |
+| net    | `dns`, `tcp_check` (per attempt), `scan` (per port); `ping` turns it into a per-reply wait in seconds | `list`, `route.list` |
+| ssh    | none: use `connect_timeout_ms`, `command_timeout_ms`, `transfer_timeout_ms` and the `test` timeouts | `timeout_ms` everywhere |
+
+Some verbs reject `timeout_ms=0` or a non-numeric value; several `http` verbs
+silently fall back to their default instead.
+
+## 5. What is not implemented
+
+These features are visible in arguments or help but do not do real work:
+
+* `dns zone.update`: validates the input and reports success; no UPDATE is
+  sent. TSIG is never applied, for zone updates or zone transfers.
+* `ssh tunnel`, `ssh keys.list`, `ssh key.add`: only `dry_run=true` succeeds;
+  without it they exit 1 and change nothing.
+* `ssh test`: the `sftp` and `hostkey` checks always fail.
+* `mail send`: has no dry-run mode; a `dry_run` request is refused (exit 2)
+  and nothing is sent. `mail test` does not contact the server unless it sends a test
+  message.
+* Stored mail profiles are never used for sending.
+
+## 6. Security summary
+
+* `http`: TLS certificates are verified. Only `put` honors
+  `allow_insecure=true`, which disables verification.
+* `mail`: `use_tls=none` sends credentials in clear text.
+  `tls_accept_invalid_certs` does not accept invalid certificates; in `test`
+  it allows a plain-text fallback. Stored SMTP passwords are base64-encoded,
+  **not encrypted**, in an owner-only (`0600`) file.
+* `ssh`: host keys are checked strictly by default (`known_hosts_mode` values
+  are `strict`, `accept-new`, `insecure`). Remote command arguments are not
+  safely quoted; never pass untrusted input. Passwords given on the command
+  line or in the URL are visible in the process list.
+* DNS queries without `servers=`/`server=` go to Google Public DNS, not the
+  system resolver.
+* Only probe or scan hosts you are authorized to test.

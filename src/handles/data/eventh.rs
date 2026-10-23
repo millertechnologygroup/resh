@@ -105,7 +105,7 @@ impl EventHook for MQHook {
         // Optionally forward events to message queues based on tags
         if event.tags.iter().any(|tag| tag.starts_with("mq:")) {
             if let Some(mq_topic) = event.tags.iter().find(|tag| tag.starts_with("mq:")).map(|tag| &tag[3..]) {
-                println!("MQ Hook: Would forward event {} to MQ topic: {}", event.id, mq_topic);
+                eprintln!("MQ Hook: Would forward event {} to MQ topic: {}", event.id, mq_topic);
             }
         }
         Ok(())
@@ -113,7 +113,7 @@ impl EventHook for MQHook {
     
     fn on_subscribe(&self, _request: &EventSubscribeOptions, response: &EventSubscribeResponse) -> Result<()> {
         // Could pull events from MQ and inject into event stream
-        println!("MQ hook processed subscription with {} events", response.events_returned);
+        eprintln!("MQ hook processed subscription with {} events", response.events_returned);
         Ok(())
     }
     
@@ -130,7 +130,7 @@ impl EventHook for LogHook {
         // Log events to configured log destinations based on tags
         if event.tags.iter().any(|tag| tag.starts_with("log:")) {
             if let Some(log_path) = event.tags.iter().find(|tag| tag.starts_with("log:")).map(|tag| &tag[4..]) {
-                println!("Log Hook: Event {}: {} -> {}", event.id, event.topic, log_path);
+                eprintln!("Log Hook: Event {}: {} -> {}", event.id, event.topic, log_path);
             }
         }
         Ok(())
@@ -138,7 +138,7 @@ impl EventHook for LogHook {
     
     fn on_subscribe(&self, request: &EventSubscribeOptions, response: &EventSubscribeResponse) -> Result<()> {
         // Could tail log files and generate events
-        println!("Log hook: subscription to {} returned {} events", 
+        eprintln!("Log hook: subscription to {} returned {} events", 
                    request.topic, response.events_returned);
         Ok(())
     }
@@ -156,7 +156,7 @@ impl EventHook for ProcHook {
         // Monitor process events or send signals based on tags
         if event.tags.iter().any(|tag| tag.starts_with("proc:")) {
             if let Some(proc_action) = event.tags.iter().find(|tag| tag.starts_with("proc:")).map(|tag| &tag[5..]) {
-                println!("Process Hook: Action requested: {} for event {}", proc_action, event.id);
+                eprintln!("Process Hook: Action requested: {} for event {}", proc_action, event.id);
             }
         }
         Ok(())
@@ -165,7 +165,7 @@ impl EventHook for ProcHook {
     fn on_subscribe(&self, request: &EventSubscribeOptions, _response: &EventSubscribeResponse) -> Result<()> {
         // Monitor process state changes and generate events
         if request.topic.starts_with("proc.") {
-            println!("Process monitoring subscription: {}", request.topic);
+            eprintln!("Process monitoring subscription: {}", request.topic);
         }
         Ok(())
     }
@@ -183,7 +183,7 @@ impl EventHook for FsWatchHook {
         // React to filesystem events based on tags
         if event.tags.iter().any(|tag| tag.starts_with("fs:")) {
             if let Some(fs_path) = event.tags.iter().find(|tag| tag.starts_with("fs:")).map(|tag| &tag[3..]) {
-                println!("FS Hook: Filesystem event for path: {}", fs_path);
+                eprintln!("FS Hook: Filesystem event for path: {}", fs_path);
             }
         }
         Ok(())
@@ -192,7 +192,7 @@ impl EventHook for FsWatchHook {
     fn on_subscribe(&self, request: &EventSubscribeOptions, _response: &EventSubscribeResponse) -> Result<()> {
         // Set up filesystem watchers for event generation
         if request.topic.starts_with("fs.") {
-            println!("Filesystem watch subscription: {}", request.topic);
+            eprintln!("Filesystem watch subscription: {}", request.topic);
             // Could set up fs watchers and generate events
         }
         Ok(())

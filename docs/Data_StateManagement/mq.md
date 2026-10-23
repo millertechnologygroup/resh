@@ -2,421 +2,161 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes infrastructure operations using a resource-oriented URI execution model.
+Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs.
 
-The `mq://` handle provides a file-based message queue system for local, point-to-point message processing. It enables:
+The `mq://` handle is a local, file-based FIFO queue. Each message is one file in a per-queue directory, so messages put by one `resh` command can be taken by a later one on the same host. It is meant for simple local hand-offs between scripts, not as a message broker.
 
-* Queue creation
-* FIFO message insertion and retrieval
-* Queue inspection
-* Non-destructive message preview
-* Queue purging
-* Atomic concurrent access
-
-Traditional queue implementations often require:
-
-* External messaging systems
-* Network services
-* Complex broker configuration
-* Language-specific client libraries
-* Custom retry and durability logic
-
-The `mq://` handle provides a lightweight alternative for local automation workflows using filesystem-backed storage with atomic file operations.
-
-All operations follow the URI pattern:
-
-```
-mq://queue-name.verb(options)
+```text
+resh mq://<queue>.<verb> [key=value ...]
 ```
 
-Messages are processed in FIFO (First In, First Out) order. Atomic file operations ensure message integrity under concurrent producers and consumers.
+Verbs: `create`, `put`, `get`, `peek`, `len`, `purge`.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Design Notes
 
-### Structured Interface Model
-
-All queue operations use a uniform URI grammar:
-
-```
-mq://queue-name.verb(arguments)
-```
-
-This ensures predictable invocation semantics across all queue lifecycle operations.
-
-### Safety-First Execution
-
-The handle enforces:
-
-* Atomic write operations (temporary file then rename)
-* Atomic retrieval via `_inflight` directory
-* Idempotent operations (`create`, `purge`)
-* Explicit exit codes for empty queues
-* Filesystem-safe queue name sanitization
-
-These controls prevent message corruption, duplication, and partial writes.
-
-### Deterministic Behavior
-
-Operations:
-
-* Follow strict FIFO ordering
-* Preserve message content exactly (binary-safe)
-* Return consistent exit codes
-* Avoid implicit formatting or transformation
-
-### JSON-Based Structured Output
-
-The MQ handle primarily returns raw message content. Exit codes provide structured control flow:
-
-| Exit Code | Meaning                      |
-| --------- | ---------------------------- |
-| 0         | Success                      |
-| 1         | General error                |
-| 2         | Empty queue (`get` / `peek`) |
-
-Automation logic should rely on exit codes rather than parsing output.
-
-### AI-Readiness
-
-The deterministic URI grammar and exit-code semantics allow safe integration into automation pipelines and orchestration workflows.
+* `get` and `peek` print the message bytes exactly as stored, with no JSON envelope and no trailing newline added.
+* `len` prints a bare number.
+* `create`, `put` and `purge` print nothing on success.
+* An empty queue makes `get` and `peek` exit with code 2 (resh prints `Error: empty` to stderr).
+* There is no dry-run mode; `get` and `purge` delete messages immediately.
 
 ---
 
 ## 3. Command Syntax and Execution Model
 
-### 3.1 URI Structure
+### 3.1 Queue names and storage
 
+The queue name is the URL host plus path. Any character other than letters, digits, `.`, `-` and `_` is replaced with `_`, and the name is cut to 120 characters; for example `mq://team/a` uses the directory `team_a`.
+
+Queues are stored in the resh state directory:
+
+```text
+$XDG_STATE_HOME/resh/mq/<queue>/                (default ~/.local/state/resh/mq/<queue>/)
+  01792761003306294654.msg                       one file per message, named by put time in nanoseconds
+  _inflight/                                     messages being taken by get
 ```
-mq://queue-name.verb(options)
-```
 
-#### Components
+If no state directory can be determined, the handle falls back to `/tmp/resh/mq/`, which is shared with other users. On Linux the state directory is always resolved, so this does not normally happen. Directories and files are created with the default umask, so other local users can usually read messages; do not queue secrets.
 
-| Component    | Description                          |
-| ------------ | ------------------------------------ |
-| `mq`         | Handle identifier                    |
-| `queue-name` | Logical queue identifier (sanitized) |
-| `verb`       | Queue operation                      |
-| `options`    | Named parameters (where applicable)  |
+### 3.2 Example commands
 
-Queue names are sanitized to be filesystem-safe. Unsafe characters are replaced with underscores and limited to 120 characters.
-
----
-
-### Example Commands
-
-Create queue:
+Create a queue (optional; every verb creates the directories if needed):
 
 ```bash
-resh "mq://tasks.create"
+resh mq://tasks.create
 ```
 
-Put message:
+Put a message from an argument or from stdin:
 
 ```bash
-resh "mq://tasks.put(data=hello)"
+resh mq://tasks.put data=hello
+echo "process file1.txt" | resh mq://tasks.put
 ```
 
-Put via stdin:
+Take, inspect and count messages:
 
 ```bash
-echo "process file1.txt" | resh "mq://tasks.put"
+resh mq://tasks.get
+resh mq://tasks.peek
+resh mq://tasks.len
 ```
 
-Get message:
+Delete all messages:
 
 ```bash
-resh "mq://tasks.get"
+resh mq://tasks.purge
 ```
 
-Peek message:
+### 3.3 FIFO behaviour
 
 ```bash
-resh "mq://tasks.peek"
+resh mq://demo.put data=one
+resh mq://demo.put data=two
+resh mq://demo.get
+resh mq://demo.get
 ```
 
-Queue length:
+The two `get` commands print `one` and then `two`. Order is by the nanosecond timestamp in the file name.
+
+### 3.4 Exit codes
+
+These codes are set by the handle (verified in the source):
+
+| Code | Meaning                             |
+| ---- | ----------------------------------- |
+| 0    | Success                             |
+| 1    | Filesystem error, or unknown verb   |
+| 2    | Queue empty (`get`, `peek`)         |
+
+Script example that tells "empty" apart from errors:
 
 ```bash
-resh "mq://tasks.len"
-```
-
-Purge queue:
-
-```bash
-resh "mq://tasks.purge"
-```
-
----
-
-### 3.2 Execution Semantics
-
-#### FIFO Behavior
-
-Messages are retrieved in insertion order:
-
-```bash
-resh "mq://demo.put(data=one)"
-resh "mq://demo.put(data=two)"
-resh "mq://demo.get"   # one
-resh "mq://demo.get"   # two
-```
-
-#### Atomic Retrieval
-
-`get` operation:
-
-1. Moves message to `_inflight`
-2. Reads content
-3. Removes file after successful read
-
-#### Empty Queue Handling
-
-```bash
-resh "mq://tasks.get"
-```
-
-Exit code `2` indicates empty queue.
-
-Example script handling:
-
-```bash
-if resh "mq://tasks.get"; then
-  echo "Message processed"
-else
-  echo "Queue empty"
-fi
+msg=$(resh mq://tasks.get)
+case $? in
+  0) echo "got: $msg" ;;
+  2) echo "queue empty" ;;
+  *) echo "error" >&2 ;;
+esac
 ```
 
 ---
 
-## 4. Functional Domain – Message Queue Handle
+## 4. Verbs
 
-### Operational Scope
+| Verb     | Description                                                                 |
+| -------- | --------------------------------------------------------------------------- |
+| `create` | Creates the queue directory and its `_inflight` directory (idempotent)      |
+| `put`    | Stores `data=<message>`, or all of stdin when `data` is absent              |
+| `get`    | Moves the oldest message to `_inflight`, prints it, then deletes it         |
+| `peek`   | Prints the oldest message without removing it                               |
+| `len`    | Prints the number of `.msg` files in the queue directory                    |
+| `purge`  | Deletes every `.msg` file in the queue and in `_inflight` (idempotent)      |
 
-The `mq://` handle supports:
+### 4.1 Message content
 
-* FIFO message queuing
-* Local workflow coordination
-* Task buffering
-* Lightweight job processing
-* Concurrent producer/consumer patterns
-
-It is filesystem-based and single-node.
-
----
-
-### 4.1 Supported Verbs
-
-| Verb                   | Description                          |
-| ---------------------- | ------------------------------------ |
-| `create`               | Create queue directory (idempotent)  |
-| `put`                  | Insert message                       |
-| `get`                  | Retrieve and remove oldest message   |
-| `peek`                 | View oldest message without removing |
-| `len`                  | Return number of queued messages     |
-| `purge`                | Remove all messages (idempotent)     |
-| `help`, `--help`, `-h` | Display documentation                |
-| `--help=VERB`          | Verb-specific help                   |
-
----
-
-### 4.2 Message Handling Characteristics
-
-* Binary-safe storage
-* No encoding transformation
-* No whitespace trimming
-* No size limit (filesystem dependent)
-* Preserves exact input
-
-Example (binary-safe):
+* `put` from stdin is binary-safe; the bytes are stored unchanged.
+* `data=` stores the argument's text (quote it in the shell if it contains spaces). With `data=`, nothing is read from stdin.
+* There is no size limit other than the filesystem's; `put` from stdin reads the whole input into memory first.
 
 ```bash
-printf "\x00\x01\x02\xff" | resh "mq://binary.put"
-resh "mq://binary.get"
+printf '\x00\x01\x02\xff' | resh mq://binary.put
+resh mq://binary.get | od -An -tx1
 ```
 
----
+### 4.2 timeout_ms
 
-### 4.3 Storage Location
-
-Queues are stored under:
-
-```
-~/.local/share/resh/mq/
-```
-
-Structure:
-
-```
-queue-name/
-  msg-0001.msg
-  msg-0002.msg
-  _inflight/
-```
-
-Characteristics:
-
-* One directory per queue
-* One file per message
-* Timestamp-based ordering
-* Atomic rename operations
+No mq verb reads `timeout_ms`; it is ignored if given. No verb waits: `get` on an empty queue returns at once with exit code 2.
 
 ---
 
-### 4.4 Concurrency Model
+## 5. Concurrency and Limitations
 
-Atomic file operations ensure:
-
-* Safe concurrent producers
-* Safe concurrent consumers
-* No duplication
-* No corruption
-* No partial writes
-
-Example concurrent pattern:
-
-```bash
-for i in {1..100}; do
-  echo "Task-$i" | resh "mq://concurrent.put"
-done &
-```
-
-Consumers may safely retrieve messages concurrently.
+* `put` writes the message to a temporary file and renames it into place. **The temporary file name (`tmp-<ns>.msg`) also ends in `.msg`**, so a `get`, `peek` or `len` that runs while a `put` is still writing can see it: `len` counts it, and when it is the only file, `get` or `peek` can read a partial message. Avoid running consumers while a large message is being written, or check message integrity in your own format.
+* `get` claims a message by renaming it into `_inflight`. If two `get` commands pick the same file at once, one wins and the other fails with a filesystem error (exit 1) instead of moving on to the next message.
+* A message whose `get` was interrupted after the rename stays in `_inflight` and is not returned again; `purge` deletes it. There is no acknowledgement, retry or dead-letter mechanism.
+* Ordering relies on the system clock. Messages put on hosts or containers with different clocks, or across a clock step, can be out of order.
+* `len` and `peek` create the queue directories if they do not exist.
+* The queue lives on one host. Sharing it through a network filesystem is not tested.
 
 ---
 
-### 4.5 Performance Characteristics
+## 6. Platform Support
 
-| Condition        | Behavior                         |
-| ---------------- | -------------------------------- |
-| Small messages   | Fast filesystem operations       |
-| Large messages   | Limited by I/O throughput        |
-| Many messages    | Directory scan for FIFO ordering |
-| High concurrency | Atomic rename overhead           |
-
-Recommendations:
-
-* Avoid thousands of messages in a single queue
-* Purge unused queues
-* Monitor queue length using `len`
+Linux is the only supported and tested platform.
 
 ---
 
-## 5. Platform Support
+## 7. Usage Guidance
 
-| Platform   | Support Level |
-| ---------- | ------------- |
-| Linux      | Supported     |
-| macOS/Unix | Supported     |
-| Windows    | Supported     |
-
-Operation depends on filesystem availability and user write permissions.
+* Use separate queues for separate workflows.
+* Test for exit code 2 to detect an empty queue.
+* Have one consumer per queue if you need each message to be processed exactly once.
+* Check `_inflight` for messages left by interrupted consumers.
 
 ---
 
-## 6. Operational Best Practices
+## 8. Implementation Notes
 
-### Safe Usage Guidelines
-
-* Create queues explicitly before use.
-* Handle exit code `2` for empty queues.
-* Use meaningful queue names.
-* Purge queues when workflows complete.
-* Avoid long-running tasks before consuming messages.
-
-### Automation Considerations
-
-* Check queue depth using `len`.
-* Use `peek` to inspect without consuming.
-* Implement dead-letter queues for failed processing.
-* Use idempotent processing logic.
-
-### CI/CD Integration
-
-* Use queues for task orchestration.
-* Buffer deployment events.
-* Serialize operations through FIFO processing.
-* Monitor queue depth before progressing stages.
-
-### Production Recommendations
-
-* Separate workflows into distinct queues.
-* Monitor queue length to prevent growth.
-* Implement retry logic in consumers.
-* Avoid using as a distributed messaging system.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Implement lightweight task queues.
-* Buffer deployment jobs.
-* Coordinate sequential pipeline steps.
-* Implement rate-limited processing.
-
-### SRE Engineers
-
-* Use dead-letter queues for failed tasks.
-* Monitor queue depth during incidents.
-* Implement workflow retries.
-* Coordinate recovery steps.
-
-### Network Administrators
-
-* Queue configuration updates.
-* Buffer device commands.
-* Serialize configuration application steps.
-
-### AI/Automation Engineers
-
-* Orchestrate deterministic task execution.
-* Implement workflow coordination.
-* Use queue depth as a control signal.
-* Integrate structured exit-code logic into agents.
-
----
-
-## 8. Technical Foundation
-
-The `mq://` handle operates within resh, implemented in Rust.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Deterministic file I/O handling
-* Strong error propagation
-* Cross-platform compatibility
-
-### Type Safety
-
-Argument parsing enforces:
-
-* Valid queue names
-* Recognized verbs
-* Proper data handling
-
-Invalid usage results in consistent exit codes.
-
-### Performance Characteristics
-
-* Atomic rename operations
-* Minimal memory footprint
-* Efficient directory-based FIFO ordering
-* Binary-safe operations
-
-### Cross-Platform Architecture
-
-Supported across:
-
-* Linux
-* macOS/Unix
-* Windows
-
-Functionality depends on local filesystem semantics and user permissions.
-
-
+* Written in Rust using standard filesystem calls. All verbs run in the calling process; there is no background service.

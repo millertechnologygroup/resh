@@ -1021,7 +1021,7 @@ impl PluginHandle {
     fn parse_install_args(&self, args: &Args) -> Result<PluginOpArgs> {
         let source = self.parse_source(args)?;
         let requested_version = self.parse_requested_version(args);
-        let verify = self.parse_verify_mode(args);
+        let verify = self.parse_verify_mode(args)?;
         
         Ok(PluginOpArgs {
             mode: Mode::Install,
@@ -1029,9 +1029,9 @@ impl PluginHandle {
             source,
             requested_version,
             verify,
-            force: args.get("force").map(|s| s == "true").unwrap_or(false),
-            allow_downgrade: args.get("allow_downgrade").map(|s| s == "true").unwrap_or(false),
-            dry_run: args.get("dry_run").map(|s| s == "true").unwrap_or(false),
+            force: crate::core::lenient::bool_arg(args, "force")?.unwrap_or(false),
+            allow_downgrade: crate::core::lenient::bool_arg(args, "allow_downgrade")?.unwrap_or(false),
+            dry_run: crate::core::lenient::dry_run(args)?,
             strict: false, // Only used for update
             purge: false, // Not applicable to install
             timeout_ms: args.get("timeout_ms")
@@ -1053,7 +1053,7 @@ impl PluginHandle {
         };
         
         let requested_version = RequestedVersion::Latest; // Update always gets latest
-        let verify = self.parse_verify_mode(args);
+        let verify = self.parse_verify_mode(args)?;
         
         Ok(PluginOpArgs {
             mode: Mode::Update,
@@ -1063,8 +1063,8 @@ impl PluginHandle {
             verify,
             force: false, // Force not applicable to update
             allow_downgrade: false, // Allow downgrade not applicable to update
-            dry_run: args.get("dry_run").map(|s| s == "true").unwrap_or(false),
-            strict: args.get("strict").map(|s| s == "true").unwrap_or(false),
+            dry_run: crate::core::lenient::dry_run(args)?,
+            strict: crate::core::lenient::bool_arg(args, "strict")?.unwrap_or(false),
             purge: false, // Not applicable to update
             timeout_ms: args.get("timeout_ms")
                 .and_then(|s| s.parse().ok())
@@ -1099,11 +1099,11 @@ impl PluginHandle {
             source: SourceSpec::Registry { url: "local".to_string() }, // Not used for remove
             requested_version,
             verify: VerifyMode::None, // Not needed for remove
-            force: args.get("force").map(|s| s == "true").unwrap_or(false),
+            force: crate::core::lenient::bool_arg(args, "force")?.unwrap_or(false),
             allow_downgrade: false, // Not applicable to remove
-            dry_run: args.get("dry_run").map(|s| s == "true").unwrap_or(false),
+            dry_run: crate::core::lenient::dry_run(args)?,
             strict: false, // Not applicable to remove
-            purge: args.get("purge").map(|s| s == "true").unwrap_or(false),
+            purge: crate::core::lenient::bool_arg(args, "purge")?.unwrap_or(false),
             timeout_ms: args.get("timeout_ms")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(30000), // Default 30 seconds for remove
@@ -1121,7 +1121,7 @@ impl PluginHandle {
         };
         
         // Parse force flag
-        let force = args.get("force").map(|s| s == "true").unwrap_or(false);
+        let force = crate::core::lenient::bool_arg(args, "force")?.unwrap_or(false);
         
         // Parse timeout with bounds checking
         let timeout_ms = args.get("timeout_ms")
@@ -1131,7 +1131,7 @@ impl PluginHandle {
         let timeout_ms = timeout_ms.clamp(1000, 120000); // Clamp to 1-120 seconds per spec
         
         // Parse dry_run flag
-        let dry_run = args.get("dry_run").map(|s| s == "true").unwrap_or(false);
+        let dry_run = crate::core::lenient::dry_run(args)?;
         
         // Parse reason with length validation
         let reason = args.get("reason").unwrap_or(&String::new()).clone();
@@ -1189,11 +1189,11 @@ impl PluginHandle {
     }
 
     /// Parse verify mode from arguments
-    fn parse_verify_mode(&self, args: &Args) -> VerifyMode {
+    fn parse_verify_mode(&self, args: &Args) -> Result<VerifyMode> {
         match args.get("verify").map(|s| s.as_str()) {
-            Some("none") => VerifyMode::None,
-            Some("sha256") | None => VerifyMode::Sha256, // Default to sha256
-            _ => VerifyMode::Sha256, // Default for unknown values
+            Some("none") => Ok(VerifyMode::None),
+            Some("sha256") | None => Ok(VerifyMode::Sha256), // Default to sha256
+            Some(other) => bail!("Invalid verify mode: {:?}. Must be 'sha256' or 'none'", other),
         }
     }
 }
@@ -3285,6 +3285,12 @@ mod tests {
 
     #[test]
     fn test_disable_verb_recognized() {
+        // Run against a temporary plugin store, never the user's real
+        // ~/.local/share/resh/plugins.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store_dir = tmp.path().join("plugins");
+        let _seam = crate::handles::pluginh::plugin::store::test_seam::install(store_dir.clone());
+
         let handle = create_test_handle("test");
         let args = create_test_args(HashMap::new());
         
@@ -3300,8 +3306,11 @@ mod tests {
         assert!(result.is_ok());
         let status = result.unwrap();
         assert!(!status.ok); // Should be an error status
-        // Should not be an "unknown verb" error 
+        // Should not be an "unknown verb" error
         assert!(status.reason.as_ref().map_or(true, |r| !r.contains("Unknown verb")));
+        assert!(status.reason.as_deref().unwrap_or("").contains("not installed"), "{:?}", status.reason);
+        // The (only) store that was used is the temporary one
+        assert!(store_dir.is_dir());
     }
 
     #[test]
@@ -3878,5 +3887,99 @@ mod tests {
             installed_at: Some("2023-01-01T00:00:00Z".to_string()),
             updated_at: Some("2023-01-01T00:00:00Z".to_string()),
         }
+    }
+}
+
+// SEC-05: plugin install/update/remove/enable/disable read dry_run the same
+// way; an accepted dry run installs nothing. The engine runs against a
+// store in a temporary directory, never the user's plugin directory.
+#[cfg(test)]
+mod dry_run_tests {
+    use super::*;
+    use crate::handles::pluginh::plugin::engine::ExecutionEngine;
+    use crate::handles::pluginh::plugin::store::PluginStore;
+    use tempfile::TempDir;
+
+    fn args(pairs: &[(&str, &str)]) -> Args {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn handle() -> PluginHandle {
+        PluginHandle::new(&Url::parse("plugin://demo").unwrap()).unwrap()
+    }
+
+    /// SEC-07/SEC-08: verify modes and the force/purge/strict/downgrade
+    /// switches use the shared parser; malformed values fail explicitly.
+    #[test]
+    fn verify_mode_and_switches_parse_strictly() {
+        let h = handle();
+        assert!(matches!(h.parse_install_args(&args(&[])).unwrap().verify, VerifyMode::Sha256));
+        assert!(matches!(h.parse_install_args(&args(&[("verify", "sha256")])).unwrap().verify, VerifyMode::Sha256));
+        assert!(matches!(h.parse_install_args(&args(&[("verify", "none")])).unwrap().verify, VerifyMode::None));
+        for bad in ["sha265", "md5", "", "NONE", "off"] {
+            assert!(h.parse_install_args(&args(&[("verify", bad)])).is_err(), "verify={bad:?} accepted");
+            assert!(h.parse_update_args(&args(&[("verify", bad)])).is_err(), "verify={bad:?} accepted");
+        }
+        for v in ["true", "1", "yes", "on"] {
+            let i = h.parse_install_args(&args(&[("force", v), ("allow_downgrade", v)])).unwrap();
+            assert!(i.force && i.allow_downgrade, "{v}");
+            assert!(h.parse_update_args(&args(&[("strict", v)])).unwrap().strict, "{v}");
+            let r = h.parse_remove_args(&args(&[("force", v), ("purge", v)])).unwrap();
+            assert!(r.force && r.purge, "{v}");
+            assert!(h.parse_enable_disable_args(&args(&[("force", v)])).unwrap().force, "{v}");
+        }
+        assert!(h.parse_install_args(&args(&[("force", "maybe")])).is_err());
+        assert!(h.parse_install_args(&args(&[("allow_downgrade", "2")])).is_err());
+        assert!(h.parse_remove_args(&args(&[("force", "maybe")])).is_err());
+        assert!(h.parse_remove_args(&args(&[("purge", "y")])).is_err());
+        assert!(h.parse_update_args(&args(&[("strict", "sure")])).is_err());
+        assert!(h.parse_enable_disable_args(&args(&[("force", "")])).is_err());
+    }
+
+    #[test]
+    fn parsers_accept_spellings_and_reject_garbage() {
+        let h = handle();
+        for v in ["true", "1", "yes", "on", "TRUE"] {
+            let a = args(&[("dry_run", v)]);
+            assert!(h.parse_install_args(&a).unwrap().dry_run, "{v}");
+            assert!(h.parse_update_args(&a).unwrap().dry_run, "{v}");
+            assert!(h.parse_remove_args(&a).unwrap().dry_run, "{v}");
+            assert!(h.parse_enable_disable_args(&a).unwrap().dry_run, "{v}");
+        }
+        for v in ["maybe", "", "2"] {
+            let a = args(&[("dry_run", v)]);
+            assert!(h.parse_install_args(&a).is_err(), "{v:?}");
+            assert!(h.parse_update_args(&a).is_err(), "{v:?}");
+            assert!(h.parse_remove_args(&a).is_err(), "{v:?}");
+            assert!(h.parse_enable_disable_args(&a).is_err(), "{v:?}");
+        }
+        assert!(!h.parse_install_args(&args(&[])).unwrap().dry_run);
+    }
+
+    #[test]
+    fn accepted_dry_run_installs_nothing() {
+        let dir = TempDir::new().unwrap();
+        let artifact = dir.path().join("demo-bin");
+        fs::write(&artifact, b"#!/bin/sh\n").unwrap();
+        let path = artifact.to_string_lossy().to_string();
+        for v in ["1", "yes", "on", "true"] {
+            let store_dir = dir.path().join(format!("plugins-{v}"));
+            let op = handle()
+                .parse_install_args(&args(&[("source", "file"), ("path", &path), ("verify", "none"), ("dry_run", v)]))
+                .unwrap();
+            let mut engine = ExecutionEngine::with_store(1000, PluginStore::with_dir(&store_dir).unwrap()).unwrap();
+            let env = engine.run_plugin_op(op);
+            assert!(env.ok, "{v}: {:?}", env.error.map(|e| e.message));
+            assert_eq!(env.result.installed, Some(false), "{v}");
+            assert!(!store_dir.join("demo").join("versions").exists(), "dry_run={v} installed");
+        }
+        // dry_run=false installs into the temporary store.
+        let store_dir = dir.path().join("plugins-real");
+        let op = handle()
+            .parse_install_args(&args(&[("source", "file"), ("path", &path), ("verify", "none"), ("dry_run", "false")]))
+            .unwrap();
+        let mut engine = ExecutionEngine::with_store(1000, PluginStore::with_dir(&store_dir).unwrap()).unwrap();
+        assert!(engine.run_plugin_op(op).ok);
+        assert!(store_dir.join("demo/versions/local").is_dir());
     }
 }

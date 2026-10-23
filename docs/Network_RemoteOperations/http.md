@@ -1,533 +1,265 @@
-# Resource Shell (resh) – HTTP Handle Documentation
+# Resource Shell (resh): HTTP Handle
 
 ## 1. Overview
 
-### Definition
+The `http` handle sends HTTP requests with the reqwest blocking client
+(rustls TLS). The `http://` and `https://` schemes are served by the same
+handle and accept the same verbs. Verbs map to request methods, plus helpers
+for CORS preflight checks, a JSON response envelope, and header inspection.
 
-Resource Shell (resh) is a resource-oriented command-line environment that expresses infrastructure operations using structured URI-based commands. The HTTP handle enables HTTP and HTTPS interactions through typed verbs and structured responses.
+Linux is the only supported and verified platform. Each `resh` invocation is a
+separate process: there are no persistent connections, cookies or sessions
+between commands.
 
-### Purpose
-
-resh provides deterministic HTTP interactions by:
-
-* Exposing HTTP methods as explicit verbs
-* Enforcing structured parameter definitions
-* Supporting structured JSON response envelopes
-* Returning predictable status behavior
-
-It replaces ad-hoc `curl`-style string invocation with a structured execution model.
-
-### Architectural Problem Addressed
-
-Traditional HTTP command-line tools:
-
-* Rely on textual output
-* Mix headers, body, and metadata
-* Require manual parsing
-* Depend on implicit behavior and flags
-
-This introduces automation fragility when:
-
-* Response formats change
-* Headers must be parsed manually
-* Error handling depends on text inspection
-
-resh addresses this by:
-
-* Defining HTTP verbs explicitly
-* Structuring responses (especially via `json`, `headers`, `head`, `options`)
-* Providing consistent parameter handling
-* Returning structured JSON when required
-
-### Resource-Oriented URI Model
-
-resh HTTP commands follow:
-
-```
-handle://target.verb(options)
+```bash
+resh http --help
+resh https --help
+resh http get --help
 ```
 
-For HTTP:
+## 2. Command syntax
 
-* **handle**: `http://` or `https://`
-* **target**: Host, port, and path
-* **verb**: HTTP method abstraction (`get`, `post`, `json`, etc.)
-* **options**: Structured parameters (headers, body, timeout, etc.)
+The stage URL is the request URL itself, followed by a dot and the verb:
 
-Example:
-
-```
-https://api.example.com/users.get(query="active=true",accept="json")
+```text
+resh http[s]://<host>[:<port>]/<path>.<verb> key=value ...
+resh 'http[s]://<host>/<path>.<verb>(key=value,...)'
 ```
 
----
+```bash
+resh http://api.example.com/v1/users/42.get accept=json
+resh https://example.com.headers method=HEAD
+resh 'https://api.example.com/v1/users.post(body={"name":"alice"},content_type=application/json)'
+```
 
-## 2. Design Philosophy and Core Principles
+The verb is the text after the last dot, so the verb is always required. A
+URL that ends in a file extension (for example `/index.html`) must still end
+with `.get`, `.head` and so on: `https://example.com/index.html.get`. Add query
+parameters with `query=` (see below) rather than inside the URL.
 
-### Structured Interface Model
+## 3. Verbs
 
-* Each HTTP method is exposed as a verb.
-* Parameters are defined and validated.
-* Responses are controlled via `accept` modes.
-* Structured envelope verbs (`json`, `headers`, `head`) provide machine-readable metadata.
+| Verb        | Method        | Prints                                              | Non-2xx exits |
+| ----------- | ------------- | --------------------------------------------------- | ------------- |
+| `get`       | GET           | Body as text (default), raw bytes, or a JSON envelope | 1 |
+| `head`      | HEAD          | JSON: url, status, ok, reason, headers              | **0** (check `ok`) |
+| `headers`   | any (default GET) | JSON: url, status, status_text, headers (no body) | **0** (check `status`) |
+| `options`   | OPTIONS       | JSON: allowed methods, status, headers              | 1 outside 200-399 |
+| `preflight` | OPTIONS (CORS) | JSON: parsed Access-Control-* headers              | 1 |
+| `json`      | any (default GET) | JSON envelope with the body parsed as JSON when possible | **0** (check `status`) |
+| `post`      | POST          | Raw response body                                   | 1 |
+| `put`       | PUT           | Body as text (default), raw bytes, or a JSON envelope | 1 |
+| `patch`     | PATCH         | Raw bytes (default), text, or compact JSON          | 1 |
+| `delete`    | DELETE        | Body as text (default), raw bytes, or pretty JSON   | 1 |
 
-This models HTTP operations as typed resource interactions.
+"Non-2xx exits 1" means: the response body (or JSON) is still printed to
+stdout, the process exits 1, and a reason such as `Error: HTTP 404 Not Found`
+goes to stderr. The status code is not used as the exit code. `head`,
+`headers` and `json` treat any HTTP response as success, so a script must read
+the status from the JSON.
 
----
+## 4. Common arguments
 
-### Safety-First Execution
+| Argument       | Verbs | Notes |
+| -------------- | ----- | ----- |
+| `headers`      | all   | `Name:value;Name2:value2`. `Host`, `Content-Length`, `Connection` and `Transfer-Encoding` are dropped. A segment without `:` is an error for most verbs, but is silently ignored by `delete`, `options` and `preflight`. |
+| `query`        | get, head, headers, post, put, patch, delete | `k=v&k2=v2`, appended to the URL's query. Not read by `json`, `options` or `preflight`. |
+| `timeout_ms`   | see section 6 | Whole-request timeout in milliseconds. |
+| `body`         | post, put, patch, delete, json | Inline request body. |
+| `body_file`    | post, put, patch, delete | Local file sent as the body. |
+| `content_type` | post, put, patch, delete, json | Sets `Content-Type`. |
+| `accept`       | get, put, patch, delete, json, head | Output mode (`text`, `bytes`, `json`); see each verb. For `head` it only sets the request `Accept` header. |
 
-* Non-2xx responses (for most verbs) exit with non-zero status.
-* Timeout behavior is explicitly configurable.
-* JSON parsing failures produce command failure.
-* HTTPS validation is enabled by default.
+Body precedence differs by verb: `post` and `put` use `body_file` when both are
+given; `patch` and `delete` use `body`.
 
-This prevents silent failure in automation pipelines.
+Default `Content-Type`: `put` sends `text/plain; charset=utf-8` for an inline
+`body` (none for `body_file`); `delete` sends `application/octet-stream` when
+a body is present; `json` sends `application/json` when `body` is non-empty;
+`post` and `patch` send none unless `content_type` is given.
 
----
+Redirects are followed (reqwest default, up to 10) by every verb.
+`follow_redirects=false` is honored only by `headers` and `options`.
 
-### Deterministic Behavior
+## 5. Verb reference
 
-* Identical inputs produce consistent structured outputs.
-* Headers are normalized.
-* Binary and text modes are explicitly selectable.
-* Parameter precedence rules are defined (e.g., `body_file` overrides `body`).
+### get
 
----
+```bash
+resh http://api.example.com/v1/users/42.get
+resh http://api.example.com/v1/users.get accept=json query='page=2&per_page=50'
+resh https://example.com/logo.png.get accept=bytes > logo.png
+```
 
-### JSON-Based Structured Output
-
-resh supports:
-
-* `accept="json"` for parsed JSON responses
-* `json` verb for structured response envelopes
-* `headers` verb for header-only structured output
-* `head` and `options` structured metadata output
-
-Structured envelope example:
+`accept=text` (default) prints the body as received (raw bytes if it is not
+UTF-8). `accept=bytes` prints raw bytes. `accept=json` prints an envelope:
 
 ```json
-{
-  "status": 200,
-  "status_text": "OK",
-  "url": "https://api.example.com/test",
-  "body": {
-    "type": "json",
-    "value": {
-      "ok": true,
-      "value": 42
-    }
-  }
-}
+{"status":200,"ok":true,"method":"GET","headers":{"content-type":["application/json"]},"body":{"id":42,"name":"alice"},"body_text":"{\"id\":42,\"name\":\"alice\"}"}
 ```
 
----
+`body` is parsed JSON only when the response `Content-Type` contains
+`application/json`; otherwise it is the body as a string. Header values are
+arrays. Any other `accept` value is an error.
 
-### AI-Readiness
+### head
 
-Structured response envelopes:
-
-* Expose HTTP metadata
-* Preserve header arrays
-* Provide explicit status codes
-* Eliminate natural-language parsing
-
-This enables automated reasoning over HTTP responses.
-
----
-
-## 3. Command Syntax and Execution Model
-
-### 3.1 URI Structure
-
-```
-handle://target.verb(options)
+```bash
+resh https://example.com/index.html.head
 ```
 
-| Component | Description                |
-| --------- | -------------------------- |
-| `handle`  | `http://` or `https://`    |
-| `target`  | Host, port, and path       |
-| `verb`    | HTTP operation abstraction |
-| `options` | Structured parameters      |
+Output: `{"url", "status", "ok", "reason", "headers"}` with lowercase header
+names and repeated headers joined with `, `. Exits 0 for every HTTP status.
+The timeout is fixed at 10 seconds.
 
----
+### headers
 
-### Supported HTTP Verbs
-
-| Verb        | Description                         |
-| ----------- | ----------------------------------- |
-| `get`       | Retrieve resource                   |
-| `head`      | Retrieve headers only               |
-| `post`      | Create resource                     |
-| `put`       | Create or replace resource          |
-| `patch`     | Partial update                      |
-| `delete`    | Remove resource                     |
-| `options`   | Discover allowed methods            |
-| `preflight` | CORS preflight request              |
-| `json`      | Structured JSON envelope request    |
-| `headers`   | Retrieve headers as structured JSON |
-
----
-
-### Production Examples
-
-#### Basic GET
-
-```
-http://api.internal.local/health.get
+```bash
+resh https://example.com.headers
+resh https://example.com.headers method=HEAD follow_redirects=false
 ```
 
-#### GET with JSON Mode
+`method` may be GET, HEAD, POST, PUT, PATCH, DELETE or OPTIONS (default GET);
+no body is sent. Output: `{"url", "status", "status_text", "headers"}` with
+header values as arrays. Exits 0 for every HTTP status. An unsupported method
+or malformed `headers` prints `{"url", "error": {"kind", "message"}}` and
+exits 2; a network failure prints the same shape and exits 1.
 
-```
-http://api.internal.local/metrics.get(accept="json")
-```
+### options
 
-#### POST with JSON Body
-
-```
-http://api.internal.local/users.post(
-  body="{\"name\":\"alice\"}",
-  content_type="application/json",
-  accept="json"
-)
+```bash
+resh http://api.example.com/v1/users.options include_body=true
 ```
 
-#### PUT with File Upload
+Output: `url`, `status`, `reason`, `backend` (`"reqwest"`), `headers`,
+`allowed_methods` (parsed from `Allow`), `has_body`, and `body` when
+`include_body=true` and the body is non-empty. Exits 0 for statuses 200-399.
+A non-numeric `timeout_ms` is an error.
 
-```
-http://127.0.0.1:8080/upload.put(
-  body_file="/tmp/data.bin",
-  accept="text"
-)
-```
+### preflight
 
-#### DELETE with JSON Response
-
-```
-http://api.internal.local/item.delete(query="force=true",accept="json")
+```bash
+resh http://api.example.com/users.preflight origin=https://example.org method=POST request_headers=Content-Type,Authorization
 ```
 
-#### HEAD Request
+Sends `OPTIONS` with `Origin`, `Access-Control-Request-Method` and
+`Access-Control-Request-Headers` from `origin`, `method` and
+`request_headers` (comma or semicolon separated). Output: `url`, `method`,
+`status`, `ok`, `cors` (`allowed_origins`, `allowed_methods`,
+`allowed_headers`, `exposed_headers`, `allow_credentials`,
+`max_age_seconds`) and `raw_headers`. On a network failure it prints the same
+shape with `ok: false`, `status: null` and an `error` string, and exits 1.
 
-```
-http://api.internal.local/status.head
-```
+### json
 
-#### OPTIONS Request
-
-```
-http://api.internal.local/resource.options
-```
-
-#### CORS Preflight
-
-```
-http://api.internal.local/resource.preflight(
-  origin="https://app.example.com",
-  method="POST",
-  request_headers="X-Auth-Token"
-)
+```bash
+resh http://api.example.com/v1/users/42.json
+resh http://api.example.com/v1/users.json method=POST body='{"name":"alice"}'
 ```
 
-#### Structured JSON Envelope
-
-```
-http://api.internal.local/data.json(method="GET",accept="json")
-```
-
----
-
-### Common Parameters
-
-| Parameter        | Description                                   |
-| ---------------- | --------------------------------------------- |
-| `headers`        | Custom headers (`Header:value;Header2:value`) |
-| `query`          | Query string parameters                       |
-| `accept`         | `json`, `text`, `bytes`                       |
-| `timeout_ms`     | Request timeout                               |
-| `allow_insecure` | Allow invalid HTTPS certificates              |
-| `body`           | Inline body content                           |
-| `body_file`      | File body (overrides `body`)                  |
-| `content_type`   | Content-Type header                           |
-
----
-
-### 3.2 Execution Semantics
-
-#### Deterministic Behavior
-
-* Explicit parameter precedence (`body_file` > `body`)
-* Explicit accept mode
-* Explicit timeout handling
-
----
-
-#### Structured Output Contracts
-
-Structured verbs (`head`, `options`, `json`, `headers`, `preflight`) return JSON envelopes with:
-
-* `status`
-* `ok`
-* `headers`
-* `url`
-* `body` (when applicable)
-
----
-
-#### Error Handling Structure
-
-* Most verbs exit non-zero for non-2xx responses.
-* Response body is still emitted.
-* Timeout produces failure.
-* Invalid JSON (when `accept="json"`) produces failure.
-
----
-
-### Representative Structured Response
+`method`: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS (default GET). The body
+is sent only for POST, PUT, PATCH and DELETE. No `Accept` header is added.
+Output:
 
 ```json
-{
-  "status": 204,
-  "reason": "No Content",
-  "allowed_methods": ["GET", "POST", "OPTIONS"],
-  "headers": {
-    "allow": "GET, POST, OPTIONS"
-  },
-  "url": "http://api.internal.local/resource"
-}
+{"url":"http://api.example.com/v1/users/42","status":200,"status_text":"OK","headers":{"content-type":["application/json"]},"body":{"type":"json","value":{"id":42,"name":"alice"}}}
 ```
 
----
+`accept=json` (default) gives `type: "json"` when the body parses, otherwise
+`type: "text"`. `accept=text` always gives text; `accept=bytes` gives
+`{"type": "bytes", "base64": "..."}`. A network failure prints an envelope
+with `status: 0` and an `error` string, and exits 1. Any HTTP status exits 0.
 
-## 4. Functional Domains
+### post
 
-### 4.1 Automation Utilities
-
-**Scope**
-
-HTTP-based automation for service orchestration and integration.
-
-**Use Cases**
-
-* Deployment validation
-* Health checks
-* Service integration testing
-
----
-
-### 4.2 Data & State Management
-
-**Scope**
-
-Retrieving and modifying API-backed state via REST endpoints.
-
-**Example**
-
-```
-http://api.internal.local/config.get(accept="json")
+```bash
+resh http://api.example.com/v1/users.post body='{"name":"alice"}' content_type=application/json
+resh http://api.example.com/upload.post body_file=./payload.bin content_type=application/octet-stream
 ```
 
----
+Prints the raw response body. No `accept` modes.
 
-### 4.3 Filesystem & Storage
+### put
 
-**Scope**
-
-Uploading and retrieving binary data via HTTP.
-
-**Example**
-
-```
-http://storage.internal/upload.put(body_file="/tmp/archive.tar",accept="text")
+```bash
+resh http://api.example.com/v1/users/42.put body='{"name":"alice"}' content_type=application/json
+resh https://staging.internal/v1/config.put body_file=./config.json accept=json allow_insecure=true
 ```
 
----
-
-### 4.4 Network & Remote Operations
-
-**Scope**
-
-HTTP and HTTPS communication with remote services.
-
-**Supported Handles**
-
-* `http://`
-* `https://`
-
-**Use Cases**
-
-* API validation
-* Service status checks
-* CORS diagnostics
-* Header inspection
-* REST automation
-
----
-
-### 4.5 Packages & Software
-
-HTTP can be used for:
-
-* Artifact retrieval
-* Repository access
-* Package metadata inspection
-
----
-
-### 4.6 Process & Service Management
-
-HTTP health endpoints allow:
-
-* Service readiness checks
-* Liveness validation
-* Operational diagnostics
-
----
-
-### 4.7 Security & Secrets
-
-* HTTPS enabled
-* Certificate validation by default
-* Optional `allow_insecure="true"` for development
-* Support for authentication via headers
-
----
-
-### 4.8 System Information
-
-Structured access to:
-
-* Response headers
-* Allowed HTTP methods
-* CORS policies
-* Status metadata
-
----
-
-## 5. Platform Support
-
-The documentation does not define OS-specific limitations.
-
-HTTP operations depend on:
-
-* Network connectivity
-* TLS support for HTTPS
-* Valid DNS resolution
-
-No platform-specific restrictions are specified.
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Avoid `allow_insecure="true"` in production.
-* Use explicit `timeout_ms` in automation.
-* Validate response status via structured output.
-* Handle non-2xx exits in CI pipelines.
-
----
-
-### Automation Considerations
-
-* Prefer `accept="json"` when consuming APIs.
-* Use `json` verb for structured envelope with metadata.
-* Use `headers` verb when only header metadata is required.
-* Use `head` for lightweight availability checks.
-
----
-
-### CI/CD Integration
-
-Recommended pattern:
-
-1. `head` for quick readiness.
-2. `get(accept="json")` for health endpoint validation.
-3. `post` or `put` for deployment triggers.
-4. `delete` for cleanup.
-
----
-
-### Production Recommendations
-
-* Enforce HTTPS.
-* Set appropriate timeout values.
-* Avoid parsing raw text responses.
-* Use structured envelope verbs for decision logic.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Automate deployment validation.
-* Validate REST APIs in pipelines.
-* Inspect CORS configuration.
-
----
-
-### SRE Engineers
-
-* Monitor service health endpoints.
-* Validate allowed methods via `options`.
-* Inspect response headers programmatically.
-
----
-
-### Network Administrators
-
-* Test endpoint availability.
-* Validate CORS headers.
-* Inspect TLS behavior.
-
----
-
-### AI / Automation Engineers
-
-* Consume structured JSON envelopes.
-* Implement conditional logic based on `status`.
-* Analyze header metadata.
-* Integrate HTTP automation with orchestration systems.
-
----
-
-## 8. Technical Foundation
-
-### Rust Implementation Advantages
-
-resh is implemented in Rust, providing:
-
-* Memory safety
-* Strong type guarantees
-* Predictable binary execution behavior
-
----
-
-### Type Safety
-
-* Parameter validation
-* Enumerated verb definitions
-* Explicit accept modes
-* Controlled output formats
-
----
-
-### Performance Characteristics
-
-* Native binary execution
-* Efficient request handling
-* Configurable timeouts
-
----
-
-### Cross-Platform Architecture
-
-* CLI-based execution
-* Network-dependent behavior
-* Structured output consistent across environments
-
-
+`accept`: `text` (default), `bytes`, or `json` (envelope
+`{"status", "ok", "headers", "body"}`); an unknown value falls back to text.
+
+`allow_insecure=true` **disables TLS certificate and host name verification**
+for an `https://` URL. It is parsed strictly (true/false/1/0/yes/no/on/off;
+anything else is an error) and is honored **only by `put`**. Every other verb
+ignores it and always verifies certificates. Use it only against hosts you
+control.
+
+### patch
+
+```bash
+resh http://api.example.com/v1/users/42.patch body='{"name":"bob"}' content_type=application/json
+```
+
+`accept`: `bytes` (default), `text`, or `json` (the body re-printed as compact
+JSON; a body that is not JSON is an error). The timeout is fixed at 30
+seconds.
+
+### delete
+
+```bash
+resh http://api.example.com/v1/users/42.delete
+resh http://api.example.com/v1/users/42.delete accept=json
+```
+
+`accept`: `text` (default), `bytes`, or `json` (pretty-printed JSON; a body
+that is not JSON is wrapped as `{"status": {"code", "ok"}, "body": "..."}`).
+An unknown `accept` value prints a warning on stderr and falls back to text.
+A network failure exits 2.
+
+## 6. Timeouts
+
+| Verb        | `timeout_ms` |
+| ----------- | ------------ |
+| `get`, `post`, `json`, `headers` | Enforced, default 10000. A non-numeric value is silently replaced by the default. |
+| `options`   | Enforced, default 10000. A non-numeric value is an error. |
+| `preflight` | Enforced, default 5000. Non-numeric falls back to the default. |
+| `put`, `delete` | Enforced, default 30000. Non-numeric falls back to the default. |
+| `head`      | **Ignored.** Fixed 10-second timeout. |
+| `patch`     | **Ignored.** Fixed 30-second timeout. |
+
+A timeout is reported as `Request timed out` (or `http delete error:
+connection timed out`) and exits 1 (2 for `delete`).
+
+## 7. Errors and exit codes
+
+* 0: the request completed and the verb considers the status a success
+  (always, for `head`, `headers` and `json`).
+* 1: a non-2xx status (non-200-399 for `options`), a network or TLS failure, a
+  timeout, an unreadable `body_file`, or an invalid argument.
+* 2: `delete` network failures; `headers` with an unsupported method or
+  malformed `headers`.
+
+The failure reason is printed on stderr. When the handle itself has not
+written to stderr, resh prints `Error: <reason>` (for example
+`Error: HTTP 404 Not Found`, `Error: Connection failed`). `head`, `post`,
+`put` and `delete` print their network-error message to stderr themselves,
+without the `Error:` prefix.
+
+## 8. Security notes
+
+* TLS verification is on by default for every verb. Only `put` can turn it
+  off, through `allow_insecure`.
+* Request headers given with `headers=` (for example `Authorization:Bearer
+  ...`) appear in the process list and shell history. Prefer a short-lived
+  token.
+* There is no client certificate, proxy, or cookie-jar option.
+
+## 9. Limitations
+
+* `head`, `headers` and `json` exit 0 for 4xx/5xx responses.
+* `head` and `patch` ignore `timeout_ms`.
+* `allow_insecure` works only with `put`.
+* `follow_redirects` works only with `headers` and `options`.
+* `json`, `options` and `preflight` do not read `query`.
+* Linux only.

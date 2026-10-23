@@ -1,445 +1,170 @@
-# Resource Shell (resh) – Data & State Management Overview Documentation
+# Resource Shell (resh) – Data & State Management Overview
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes system and application operations through a resource-oriented URI execution model.
+Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs.
 
-The **Data & State Management** domain provides tools for storing, retrieving, organizing, and analyzing application and system data. These tools support structured storage systems, event-driven communication, logging analysis, and message queuing.
+The Data & State Management category groups six handles that store, read or move data:
 
-Traditional data tooling in shell environments often involves:
+| Handle   | What it does                                                        | Where the data lives                                 |
+| -------- | ------------------------------------------------------------------- | ---------------------------------------------------- |
+| `cache`  | Reads and writes keys in Redis or Memcached                         | The cache server (`url=` on every command)           |
+| `config` | Stores JSON values, one file per key                                | `$XDG_CONFIG_HOME/resh/config/` (default `~/.config/resh/config/`) |
+| `db`     | Runs SQL on SQLite, PostgreSQL or MySQL/MariaDB                     | The database (`dsn=` or `DB_<ALIAS>_DSN`)            |
+| `event`  | Appends events to topics and reads them back                        | `$XDG_STATE_HOME/resh/events/` (default `~/.local/state/resh/events/`) |
+| `log`    | Prints the last lines of a log file or a systemd service journal    | Existing log files, or `journalctl`                  |
+| `mq`     | Local file-based FIFO queue                                         | `$XDG_STATE_HOME/resh/mq/<queue>/`                   |
 
-* Backend-specific command syntax
-* Inconsistent output formats
-* Manual parsing of logs and query results
-* Custom scripts for configuration management
-* Fragmented tooling across subsystems
+All commands use the resh stage form:
 
-The Data & State Management handles provide:
-
-* A consistent URI-based execution model
-* Structured JSON output
-* Deterministic behavior across subsystems
-* Integration-friendly interfaces for automation
-
-All operations follow the resh URI pattern:
-
-```
-handle://target.verb(options)
+```text
+resh <scheme>://<target>.<verb> key=value ...
+resh '<scheme>://<target>.<verb>(key=value,...)'
 ```
 
-Where:
-
-* `handle` identifies the data subsystem
-* `target` identifies the logical resource
-* `verb` defines the operation
-* `options` define execution parameters
+The verb is the text after the last dot of the URL. A URL with no target still needs the dot, as in `event://.emit`.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Things to Know Before Scripting
 
-The Data & State Management domain adheres to resh architectural principles.
-
-### Structured Interface Model
-
-All data-related operations use a consistent URI-based structure:
-
-```
-handle://target.verb(options)
-```
-
-This unifies interaction with cache systems, configuration stores, databases, events, logs, and message queues.
-
-### Safety-First Execution
-
-Operations are designed to:
-
-* Avoid implicit destructive actions
-* Provide explicit data operations
-* Return structured error information
-* Enable controlled automation
-
-### Deterministic Behavior
-
-Each operation:
-
-* Follows consistent syntax
-* Returns structured JSON output
-* Provides predictable success/error fields
-* Separates metadata from data payload
-
-### JSON-Based Structured Output
-
-All commands return machine-readable JSON, enabling:
-
-* CI/CD integration
-* Automated validation
-* Deterministic orchestration
-* Monitoring pipeline ingestion
-
-### AI-Readiness
-
-The structured interface allows integration into AI-driven automation workflows without relying on text parsing.
+* **Each `resh` command is a separate process that runs one stage.** Nothing held in memory survives between commands. `cache` connections, `db` pools and `db` transactions opened by one command are gone when it exits, so `cache` verbs take `url=` and `db` verbs take `dsn=` (or `DB_<ALIAS>_DSN`) every time. Only `config`, `event` and `mq` keep state, and they keep it on disk in the directories above.
+* **Output formats differ by handle.** There is no common response envelope:
+  * `cache` and `db` print a JSON object for the result, or `{"error": {"code", "message", "details"}}` on failure.
+  * `event` prints a JSON object with `ok`, `error` and `warnings`.
+  * `config get` prints the stored JSON value as is; `config ls` prints a JSON object; `config watch` prints one JSON object per line.
+  * `log tail` prints raw lines, or a JSON object with `mode=json`.
+  * `mq get`/`peek` print the message bytes; `mq len` prints a number.
+* **Exit codes:** 0 on success. On failure, the handle's own code if it sets one (for example `mq get` on an empty queue exits 2), otherwise 1. resh prints `Error: <reason>` to stderr if the handle did not already write to stderr.
+* `--json-pretty` (before the stage) re-indents JSON output.
+* Help: `resh <handle> --help` and `resh <handle> <verb> --help`.
 
 ---
 
-## 3. Command Syntax and Execution Model
+## 3. Examples
 
-### 3.1 URI Structure
+Cache:
 
-```
-handle://target.verb(options)
-```
-
-#### Components
-
-| Component | Description                                                    |
-| --------- | -------------------------------------------------------------- |
-| `handle`  | Data subsystem (`cache`, `config`, `db`, `event`, `log`, `mq`) |
-| `target`  | Logical resource identifier                                    |
-| `verb`    | Operation to perform                                           |
-| `options` | Named parameters                                               |
-
----
-
-### Examples
-
-Cache usage:
-
-```sh
-cache://session.get(key="user:123")
-cache://session.set(key="user:123", value="{\"role\":\"admin\"}")
+```bash
+resh cache://redis/main.set key=user:123 value=alice ttl_ms=60000 url=redis://localhost:6379/0
+resh cache://redis/main.get key=user:123 url=redis://localhost:6379/0
 ```
 
-Configuration retrieval:
+Configuration:
 
-```sh
-config://app.settings.get(key="database.host")
+```bash
+resh config://app/db/host.set value=db.example.com
+resh config://app/db/host.get
 ```
 
-Database query:
+Database:
 
-```sh
-db://main.query(sql="SELECT * FROM users")
+```bash
+resh db://sqlite/main.query 'sql=SELECT * FROM users' dsn=sqlite:app.db
 ```
 
-Log inspection:
+Logs:
 
-```sh
-log://system.tail(lines="100")
+```bash
+resh log:///var/log/syslog.tail lines=100 mode=json
 ```
 
-Event publishing:
+Events:
 
-```sh
-event://user.created.publish(payload="{\"id\":123}")
+```bash
+resh event://.emit topic=user.created 'data={"id":123}'
+resh event://.subscribe topic=user.created offset=earliest
 ```
 
-Message queue usage:
+Message queue:
 
-```sh
-mq://jobs.enqueue(message="{\"task\":\"rebuild\"}")
+```bash
+resh mq://jobs.put 'data={"task":"rebuild"}'
+resh mq://jobs.get
 ```
 
----
-
-### 3.2 Execution Semantics
-
-All operations return structured JSON envelopes.
-
-#### Representative JSON Response
+Sample `db query` output (shown with `--json-pretty`):
 
 ```json
 {
-  "op": "db.query",
-  "status": "success",
-  "resource": "db://main",
-  "result": {
-    "rows": [
-      {"id": 1, "name": "Alice"}
+  "meta": {
+    "columns": [
+      { "name": "id", "type": "INTEGER" },
+      { "name": "name", "type": "TEXT" }
     ],
-    "row_count": 1
-  }
+    "row_count": 1,
+    "truncated": false
+  },
+  "rows": [
+    { "id": 1, "name": "Alice" }
+  ]
 }
 ```
 
-#### Error Example
+Sample `config get` failure (stderr, exit code 1):
 
-```json
-{
-  "op": "config.get",
-  "status": "error",
-  "error": {
-    "kind": "NOT_FOUND",
-    "message": "Configuration key not found"
-  }
-}
+```text
+Error: not found
 ```
 
-Automation systems must evaluate the `status` field before processing results.
-
 ---
 
-## 4. Functional Domains – Data & State Management
+## 4. Handles
 
----
+### 4.1 Cache (`cache`)
 
-### 4.1 Cache
+Verbs: `connect`, `get`, `exists`, `ttl`, `keys`, `set`, `incr`, `del`. Supports namespaces, TTLs, conditional writes and utf8/json/bytes encoding. Limitations include numeric-looking keys, namespaces and cursors being dropped unless quoted as JSON strings, and Memcached `exists`/`ttl` reporting missing keys as present. See [cache.md](cache.md).
 
-**Handle:** `cache`
+### 4.2 Configuration (`config`)
 
-#### Operational Scope
+Verbs: `get`, `ls`, `watch`, `set`. Values are JSON, written atomically. There is no delete verb. A namespace of `..` resolves one level above the config directory, so do not build config URLs from untrusted input. See [config.md](config.md).
 
-* Fast temporary storage
-* Frequently accessed data caching
-* Performance optimization
+### 4.3 Database (`db`)
 
-#### Common Use Cases
+Verbs: `connect`, `ping`, `query`, `tables`, `schema`, `exec`, `transaction`. Parameters are bound with `params=`. Multi-statement transactions run in one command with `transaction statements=[...]`. PostgreSQL `NUMERIC` columns cannot be decoded. See [db.md](db.md).
 
-* Session data storage
-* Reducing database load
-* Temporary computation results
-* Short-lived API responses
+### 4.4 Events (`event`)
 
-#### Integration Scenarios
+Verbs: `emit`, `subscribe`, `list-topics`, `hooks.list`, `hooks.enable`, `hooks.disable`. Events persist as JSON Lines files in the state directory. `list-topics` returns sample data, and the built-in hooks only print notes to stderr. See [event.md](event.md).
 
-* CI/CD runtime caching
-* Distributed service performance tuning
-* High-read workload optimization
+### 4.5 Logs (`log`)
 
----
+Verb: `tail`. Reads files (absolute or `./` relative) or `log://svc/<service>` journals through `journalctl`, with substring filtering. File paths are not percent-decoded. See [log.md](log.md).
 
-### 4.2 Configuration
+### 4.6 Message queues (`mq`)
 
-**Handle:** `config`
-
-#### Operational Scope
-
-* Store application settings
-* Organize configuration using namespaces and keys
-* JSON-based storage model
-
-#### Common Use Cases
-
-* Environment-specific configuration
-* Feature flag management
-* Runtime parameter adjustment
-
-#### Integration Scenarios
-
-* Dynamic configuration updates
-* Centralized configuration management
-* Application initialization workflows
-
----
-
-### 4.3 Database
-
-**Handle:** `db`
-
-#### Supported Systems
-
-* SQLite
-* PostgreSQL
-* MySQL
-
-#### Operational Scope
-
-* Execute SQL queries
-* Manage structured data
-* Perform schema-level operations
-
-#### Common Use Cases
-
-* Transactional data storage
-* Structured analytics
-* Multi-service shared data
-
-#### Integration Scenarios
-
-* Migration pipelines
-* CI database validation
-* Infrastructure state inspection
-
----
-
-### 4.4 Events
-
-**Handle:** `event`
-
-#### Operational Scope
-
-* Publish events
-* Subscribe to events
-* Track application state changes
-
-#### Common Use Cases
-
-* Event-driven architectures
-* Audit logging
-* Cross-service notifications
-* User activity tracking
-
-#### Integration Scenarios
-
-* Microservice communication
-* Decoupled system components
-* Workflow triggers
-
----
-
-### 4.5 Logs
-
-**Handle:** `log`
-
-#### Operational Scope
-
-* Read log files
-* Filter log entries
-* Analyze system output
-
-#### Common Use Cases
-
-* Debugging application issues
-* Monitoring system behavior
-* Incident investigation
-
-#### Integration Scenarios
-
-* Observability pipelines
-* Log aggregation tools
-* Automated error detection
-
----
-
-### 4.6 Message Queues
-
-**Handle:** `mq`
-
-#### Operational Scope
-
-* File-based message queuing
-* Ordered message processing
-* Reliable inter-process communication
-
-#### Common Use Cases
-
-* Asynchronous task processing
-* Distributed job queues
-* Service decoupling
-
-#### Integration Scenarios
-
-* Background worker systems
-* Event-driven pipelines
-* Reliable job scheduling
+Verbs: `create`, `put`, `get`, `peek`, `len`, `purge`. A local, single-host FIFO queue with one file per message. It is not a distributed queue and has no acknowledgement or retry; a consumer can read a message that is still being written. See [mq.md](mq.md).
 
 ---
 
 ## 5. Platform Support
 
-| Platform   | Support Level |
-| ---------- | ------------- |
-| Linux      | Supported     |
-| Unix/macOS | Supported     |
-| Windows    | Supported     |
-
-Support depends on availability of underlying storage engines and system capabilities.
+Linux is the only supported and tested platform. The state and config directories come from the XDG paths. `cache` and `db` need network access to their servers, and `log://svc/...` needs systemd's `journalctl`.
 
 ---
 
-## 6. Operational Best Practices
+## 6. Usage Guidance
 
-### Safe Usage Guidelines
-
-* Validate database queries before execution.
-* Use configuration namespaces consistently.
-* Avoid storing sensitive data in unsecured configuration files.
-* Rotate and monitor logs regularly.
-
-### Automation Considerations
-
-* Parse JSON responses instead of raw text.
-* Validate `status` before consuming data.
-* Use structured events for workflow triggers.
-* Apply idempotent operations when possible.
-
-### CI/CD Integration
-
-* Validate configuration before deployment.
-* Use database queries for schema validation.
-* Monitor logs for deployment anomalies.
-* Trigger event notifications for deployment milestones.
-
-### Production Environment Recommendations
-
-* Separate environments using configuration namespaces.
-* Monitor cache eviction patterns.
-* Implement log retention policies.
-* Validate message queue processing reliability.
+* Pass connection details (`url=`, `dsn=`) on every `cache` and `db` command. Prefer `DB_<ALIAS>_DSN` for database passwords, because command-line arguments are visible in the process list.
+* Check exit codes, and for JSON output check the handle's own success fields (`hit`, `stored`, `ok`, `status`).
+* Do not store secrets with `config`, `event` or `mq`; their files are plain text. Use the `secret` handle.
+* Use `config watch`, `event subscribe wait=true` and `log tail` with limits (`timeout_ms`, `wait_timeout_ms`, `lines`) so scripts always end.
 
 ---
 
-## 7. Use Cases by Role
+## 7. timeout_ms Summary
 
-### DevOps Engineers
-
-* Manage configuration across environments.
-* Validate database state during deployments.
-* Integrate structured logging into pipelines.
-* Implement event-driven automation.
-
-### SRE Engineers
-
-* Monitor logs for system anomalies.
-* Use cache for performance tuning.
-* Validate database integrity.
-* Track events for audit trails.
-
-### Network Administrators
-
-* Monitor system logs.
-* Store network configuration in structured configuration stores.
-* Use message queues for reliable inter-service communication.
-
-### AI/Automation Engineers
-
-* Consume structured JSON output for decision logic.
-* Trigger actions based on events.
-* Automate configuration updates.
-* Integrate data storage into orchestration workflows.
+| Handle   | Enforces `timeout_ms`                                    | Ignores `timeout_ms`                 |
+| -------- | -------------------------------------------------------- | ------------------------------------ |
+| `cache`  | `get`, `set`, `del`, `incr`, `exists`, `keys`, `ttl` (default 1000; `0` rejected) | `connect` (uses `connect_timeout_ms`) |
+| `db`     | `ping` (per attempt, default 1000), `query`, `exec`, `tables`, `schema`, `transaction` (default 5000; `0` and non-numbers rejected) | `connect` (uses `connect_timeout_ms`) |
+| `config` | `watch` (run time limit; default none)                   | `get`, `set`, `ls`                   |
+| `event`  | none (`subscribe wait=true` uses `wait_timeout_ms`)      | all verbs                            |
+| `log`    | none                                                     | `tail`                               |
+| `mq`     | none                                                     | all verbs                            |
 
 ---
 
-## 8. Technical Foundation
+## 8. Implementation Notes
 
-The Data & State Management domain operates within resh, implemented in Rust.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Strong type guarantees
-* Deterministic execution behavior
-* High performance for structured operations
-
-### Type Safety
-
-Arguments and response envelopes are type-validated, ensuring predictable automation behavior.
-
-### Performance Characteristics
-
-* Efficient cache access
-* Structured database interaction
-* Controlled log processing
-* Deterministic event handling
-
-### Cross-Platform Architecture
-
-Supported across:
-
-* Linux
-* macOS/Unix
-* Windows
-
-Behavior may vary depending on underlying storage engines and system resources.
-
+All six handles are written in Rust and compiled into the single `resh` binary. `cache` uses the `redis` and `memcache` crates, `db` uses `sqlx`, `config watch` uses `notify`, and `log` runs `journalctl` directly without a shell.

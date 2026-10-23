@@ -2,176 +2,79 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes system automation using a resource-oriented URI execution model.
+Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs and reports the results as JSON.
 
-The `plugin://` handle provides lifecycle management for resh plugins, including installation, updates, removal, enablement, disablement, discovery, and catalog inspection.
+The `plugin://` handle manages resh plugins in a local plugin store: it installs, updates, removes, enables and disables plugins, lists what is installed, and reads plugin catalogs and indexes.
 
-Traditional extension systems often require:
+Lifecycle verbs name the plugin before the verb; catalog and listing verbs take no plugin name:
 
-* Manual download and installation procedures
-* Inconsistent update workflows
-* Unstructured output
-* Separate discovery mechanisms
-* Script-based lifecycle management
-
-The `plugin://` handle addresses these limitations by:
-
-* Providing a uniform URI-based command structure
-* Supporting multiple plugin sources (registry, URL, file)
-* Returning structured JSON output
-* Enforcing deterministic lifecycle operations
-
-All plugin operations follow the resource URI format:
-
-```
-plugin://target.verb(arguments)
+```text
+resh plugin://<plugin-id>.<verb> key=value ...     install, update, remove, enable, disable
+resh plugin://available.<verb> key=value ...       available.list, available.search, available.info
+resh plugin://installed.list key=value ...
 ```
 
-Where:
+The older doubled forms `plugin://available.available.list` and `plugin://installed.installed.list` are still accepted. A lifecycle verb with no plugin id (for example `plugin://install`) is an error.
 
-* `target` is either a plugin ID or a special target (`available`, `installed`)
-* `verb` defines the lifecycle or catalog operation
-* `arguments` define execution parameters
+Local state (all under the XDG directories of the user running resh):
+
+| What | Location |
+| ---- | -------- |
+| Plugin store (installed versions) | `$XDG_DATA_HOME/resh/plugins` (default `~/.local/share/resh/plugins`) |
+| User enable/disable state (`enable`/`disable`, `scope=user`) | `$XDG_STATE_HOME/resh/plugins/state.json` |
+| System enable/disable state (`scope=system`) | `/var/lib/resh/plugins/state.json` (needs write access there) |
+| Enabled list read by `installed.list` | `$XDG_STATE_HOME/resh/plugins/enabled.json` (see Limitations: this is not the file `enable` writes) |
+| `available.search` cache | `$XDG_STATE_HOME/resh/plugins/index-cache.json` |
+| `available.info` index cache | `$RESH_STATE_DIR/cache/plugin-indexes`, or `~/.resh/cache/plugin-indexes` |
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Security Model for Installation
 
-The `plugin://` handle adheres to resh architectural principles.
+`install` and `update` download and unpack third-party code. The rules below are enforced by the code (`src/handles/pluginh/plugin/{registry,engine,store}.rs`).
 
-### Structured Interface Model
+### 2.1 Transport: HTTPS only
 
-All plugin operations follow a uniform pattern:
+* Remote registries and artifact URLs must use `https://` with a valid certificate. TLS certificates are always verified.
+* A plain `http://` URL (or any other scheme) is refused before any connection is made. A redirect from HTTPS to HTTP is also refused.
+* These rules apply whatever `verify` says; `verify=none` does not allow `http://`.
 
-```
-plugin://plugin-id.verb(arguments)
-plugin://special-target.verb(arguments)
-```
+### 2.2 Integrity: `verify=sha256` (the default)
 
-This removes ambiguity in plugin management and standardizes lifecycle control.
+* A registry entry gives, per platform, an artifact name and a SHA-256. With `verify=sha256`, that SHA-256 must be a well-formed 64-digit hexadecimal value. A missing, empty or malformed checksum fails with `PLUGIN_VERIFY_FAILED` before anything is downloaded.
+* The downloaded artifact is hashed and compared before anything is extracted. A mismatch fails with `PLUGIN_VERIFY_FAILED` and nothing is installed.
+* **Limit:** the checksum comes from the same registry as the artifact. It proves the artifact was not altered in transit and matches what the registry published. It does **not** prove who published the plugin. A compromised or malicious registry is not detected; trust rests on HTTPS and on the registry operator.
+* `source=url` has no trusted checksum (there is no `sha256=` argument), so it is refused under `verify=sha256` and needs an explicit `verify=none`.
+* `source=file` (a local file) is accepted under `verify=sha256` without a checksum; no transport is involved.
+* `verify=none` skips the checksum. The artifact is then **installed unverified**: only the HTTPS transport protects it. This is not equivalent to a verified install; use it only for artifacts you have checked yourself.
+* `verify` accepts exactly `sha256` or `none`. Any other value (such as `md5`, `NONE`, `off` or empty) is an error and nothing runs.
 
-### Safety-First Execution
+### 2.3 Artifact contents
 
-Operations include safeguards such as:
+* An artifact whose name ends in `.tar.gz` is unpacked; anything else is installed as a single executable file.
+* A `.tar.gz` artifact may contain only regular files and directories with plain relative paths. A symbolic link, hard link, device node, FIFO, absolute path or `..` entry fails the whole install, and nothing is installed. An existing installed version is left untouched.
+* File modes are reduced to 0644 or 0755: setuid, setgid and sticky bits and group/other write bits are dropped.
 
-* `dry_run` simulation
-* SHA256 verification (default)
-* Scoped enable/disable operations
-* Timeout enforcement
-* Force flags for explicit override
+### 2.4 Plugin ids and versions
 
-These controls reduce operational risk during plugin changes.
-
-### Deterministic Behavior
-
-Operations return consistent JSON envelopes with:
-
-* Explicit `ok` status indicator
-* Exit `code`
-* Parsed `args`
-* Structured `result`
-* Enumerated `actions`
-* Structured `error` object
-
-### JSON-Based Structured Output
-
-Structured responses enable:
-
-* CI/CD validation
-* Declarative automation
-* Audit logging
-* Programmatic lifecycle control
-
-### AI-Readiness
-
-The deterministic URI grammar and structured response format support automated plugin lifecycle orchestration by AI agents and automation systems.
+* Plugin ids, and versions taken from a registry, must each be a single safe path component: 1-128 characters of `A-Z a-z 0-9 . _ + -`, starting with a letter or digit.
+* An id containing `/` (for example `plugin://acme/tool.install`) is refused, and the id `locks` is reserved.
+* The id is checked before anything is fetched; a registry-supplied version is checked before the artifact is downloaded. Nothing is written when either check fails.
 
 ---
 
-## 3. Command Syntax and Execution Model
+## 3. Response Envelopes
 
-### 3.1 URI Structure
+Every verb prints one JSON object on stdout. On failure resh also prints `Error: <message>` on stderr and exits non-zero. The shape differs between verb groups:
 
-```
-plugin://target.verb(arguments)
-```
+* **install, update, remove** (`src/handles/pluginh/plugin/engine.rs`): `op` (`plugin.install`, ...), `ok`, `code`, `target` (`name`, `requested_name`, `install_root`, and `version`/`bin_path` when known), `args` (`dry_run`, `timeout_ms`; remove also `force`, `purge`), `actions`, `result`, `error` (`kind`, `message`, `details`), `ts`.
+* **enable, disable**: `op`, `ok`, `code`, `target`, `args`, `actions` (each with `id`, `type`, `name`, `ok`, optional `details`), `result` (`installed`, `enabled`, `was_enabled`, `version`), `error`, `ts`.
+* **available.list**: `op`, `ok`, `code`, `target` (the stage URL), `args`, `actions`, `result`, `error` (`kind`, `message`), `ts`.
+* **available.search**: `op`, `ok`, `target`, `args`, `actions`, `result`, `error` (`code`, `message`, `details`).
+* **available.info**: `op`, `ok`, `target`, `ts`, `args`, `actions`, `result`, `error` (`code`, `message`, `details`).
+* **installed.list**: `op`, `ok`, `target`, `args`, `actions`, `result` (`items`, `count`, `total`, `limit`, `offset`), `warnings`, `error`, `ts`.
 
-#### Components
-
-| Component   | Description                                            |
-| ----------- | ------------------------------------------------------ |
-| `plugin`    | Handle identifier                                      |
-| `target`    | Plugin ID; omitted for `available.*` and `installed.list` |
-| `verb`      | Lifecycle or catalog operation                         |
-| `arguments` | Named parameters controlling execution                 |
-
----
-
-### Examples
-
-Install plugin:
-
-```sh
-plugin://aws.install()
-```
-
-Install specific version:
-
-```sh
-plugin://aws.install(version="1.2.3")
-```
-
-Search catalog:
-
-```sh
-plugin://available.search(q="docker")
-```
-
-List installed plugins:
-
-```sh
-plugin://installed.list()
-```
-
-Enable plugin:
-
-```sh
-plugin://aws.enable(scope="system")
-```
-
-Remove plugin:
-
-```sh
-plugin://aws.remove(purge="true")
-```
-
-Preview an install without changing anything:
-
-```sh
-plugin://aws.install(dry_run="true")
-```
-
-The older doubled forms, such as `plugin://available.available.list` and
-`plugin://installed.installed.list`, are still accepted.
-
----
-
-### 3.2 Execution Semantics
-
-All plugin operations return structured JSON with the following envelope:
-
-* `op` – Operation name
-* `ok` – Boolean success indicator
-* `code` – Exit code
-* `ts` – Timestamp
-* `target` – The plugin addressed (an object with `name`, `requested_name`,
-  and `install_root` for lifecycle verbs; the stage URL for catalog verbs)
-* `args` – Parsed arguments
-* `result` – Operation-specific data
-* `actions` – Performed actions
-* `error` – Error details (if any)
-
-#### Representative JSON Response
+Real output of a local-file install dry run (paths shortened):
 
 ```json
 {
@@ -179,307 +82,190 @@ All plugin operations return structured JSON with the following envelope:
   "ok": true,
   "code": 0,
   "target": {
-    "name": "aws",
-    "requested_name": "aws",
-    "version": "1.2.3",
-    "install_root": "/home/alice/.local/share/resh/plugins",
-    "bin_path": "/home/alice/.local/share/resh/plugins/aws/versions/1.2.3/plugin"
+    "name": "demo",
+    "requested_name": "demo",
+    "install_root": "/home/alice/.local/share/resh/plugins"
   },
-  "args": {
-    "dry_run": false,
-    "timeout_ms": 300000
-  },
+  "args": { "dry_run": true, "timeout_ms": 300000 },
   "actions": [
-    {"id": "resolve-0", "type": "resolve", "name": "Resolved plugin version: 1.2.3", "ok": true},
-    {"id": "check-1", "type": "check_installed", "name": "Plugin not installed", "ok": true},
-    {"id": "download-2", "type": "download", "name": "Downloaded artifact (1048576 bytes)", "ok": true},
-    {"id": "verify-3", "type": "verify", "name": "Checksum verified successfully", "ok": true},
-    {"id": "extract-4", "type": "extract", "name": "Extracted artifact to: ...", "ok": true},
-    {"id": "install-5", "type": "install", "name": "Plugin installed successfully", "ok": true},
-    {"id": "activate-6", "type": "activate", "name": "Plugin activated successfully", "ok": true},
-    {"id": "cleanup-7", "type": "cleanup", "name": "Staging cleanup completed", "ok": true}
+    { "id": "resolve-0", "type": "resolve", "name": "Resolved plugin version: local", "ok": true, "details": { "version": "local" } },
+    { "id": "check-1", "type": "check_installed", "name": "Plugin not installed", "ok": true },
+    { "id": "plan-2", "type": "install", "name": "Dry run: no changes made", "ok": true,
+      "details": { "artifact_kind": "tar.gz", "artifact_path": "/home/alice/demo.tar.gz", "artifact_url": null,
+                   "dry_run": true, "from_version": null, "sha256": null, "to_version": "local" } }
   ],
-  "result": {
-    "installed": true,
-    "version": "1.2.3"
-  },
-  "ts": "2026-10-16T12:00:00Z"
+  "result": { "installed": false, "version": "local" },
+  "ts": "2026-10-23T13:07:43.301630502+00:00"
 }
 ```
 
-With `dry_run="true"`, nothing is downloaded or written: the envelope
-reports the resolved version and a `plan` action, and `result.installed`
-is `false`.
+A real install adds `download`, `verify`, `extract`, `install`, `activate` and `cleanup` actions and reports `result.installed: true`. A local file installs as version `local`; a `source=url` artifact as version `unknown`.
 
-#### Error Example
+Real output of a refused `source=url` install:
 
 ```json
 {
   "op": "plugin.install",
   "ok": false,
-  "code": 2,
-  "target": {
-    "name": "nonexistent",
-    "requested_name": "nonexistent",
-    "install_root": "/home/alice/.local/share/resh/plugins"
-  },
+  "code": 4,
+  "target": { "name": "demo", "requested_name": "demo", "install_root": "/home/alice/.local/share/resh/plugins" },
+  "args": { "dry_run": false, "timeout_ms": 300000 },
+  "actions": [],
+  "result": { "removed": false, "purged": false, "installed": false },
   "error": {
-    "kind": "PLUGIN_NOT_FOUND",
-    "message": "Plugin not found in registry: nonexistent (status: 404 Not Found)"
-  }
+    "kind": "PLUGIN_VERIFY_FAILED",
+    "message": "PLUGIN_VERIFY_FAILED: No trusted SHA-256 is available for a source=url artifact, so verify=sha256 cannot be satisfied; install from a registry, or pass verify=none to install without integrity verification",
+    "details": {}
+  },
+  "ts": "2026-10-23T13:07:43.342541492+00:00"
 }
 ```
 
-Automation systems must evaluate `ok` and `code` fields for control flow decisions.
+For install, update and remove failures, rely on `ok` and on the code prefix at the start of `error.message` (such as `PLUGIN_VERIFY_FAILED:` or `PLUGIN_EXTRACT_FAILED:`). `error.kind` and `code` are derived from words in the message and are often `PLUGIN_UNKNOWN_ERROR` with code 1, even for a checksum or extraction failure. On failure `actions` is empty.
 
 ---
 
-## 4. Functional Domain – Plugin Handle
+## 4. Verbs
 
-### Operational Scope
+Per-verb help: `resh plugin <verb> --help`.
 
-The `plugin://` handle supports:
+### 4.1 install
 
-* Plugin installation
-* Version updates
-* Removal and purge
-* Enable/disable operations
-* Catalog listing and search
-* Installed plugin inspection
+```bash
+resh plugin://demo.install source=file path=/home/alice/demo.tar.gz dry_run=true
+resh plugin://demo.install source=file path=/home/alice/demo.tar.gz
+resh plugin://aws.install version=1.2.3
+resh plugin://aws.install registry=https://plugins.example.org
+resh plugin://tool.install source=url url=https://example.org/tool.tar.gz verify=none
+```
 
----
+| Argument          | Meaning |
+| ----------------- | ------- |
+| `source`          | `registry` (default), `url` or `file`. Anything else is an error |
+| `registry`        | Registry base URL for `source=registry`, default `https://plugins.reshshell.dev`. The entry is fetched from `<registry>/v1/plugins/<id>` and the artifact from `<registry>/v1/artifacts/<id>/<version>/<bin>`. A value that is not a URL is read as a local JSON registry file, but the artifact URL built from it is not HTTPS, so such an install fails at download |
+| `url`             | Artifact URL, required for `source=url`; must be `https://` |
+| `path`            | Local artifact file, required for `source=file` |
+| `version`         | Version to install from the registry (default latest). "Latest" is the highest version string in plain text order, not semantic-version order |
+| `verify`          | `sha256` (default) or `none`; see 2.2 |
+| `force`           | Reinstall the same version, or allow a downgrade |
+| `allow_downgrade` | Allow installing a version older than the installed one |
+| `dry_run`         | Resolve and report the plan; nothing is downloaded or installed (the empty plugin store directory may be created) |
+| `timeout_ms`      | See 4.10 |
 
-### Plugin Sources
+`force`, `allow_downgrade` and `dry_run` accept true/false/1/0/yes/no/on/off; anything else is an error. Installing the version that is already installed, without `force`, succeeds as a no-op. A dry run with a registry source still contacts the registry to resolve the version.
 
-Supported sources:
+### 4.2 update
 
-| Source Type | Description                        |
-| ----------- | ---------------------------------- |
-| `registry`  | Official plugin registry (default) |
-| `url`       | Direct HTTP/HTTPS download         |
-| `file`      | Local filesystem archive           |
+```bash
+resh plugin://aws.update dry_run=true
+resh plugin://aws.update registry=https://plugins.example.org strict=true
+```
 
----
+Resolves the latest version of an installed plugin from `registry` (default `https://plugins.reshshell.dev`), or from `url` if given, and installs and activates it. If the new version fails to install, the previous version is restored. Arguments: `registry`, `url`, `verify` (as for install; a `url` update needs `verify=none`), `strict`, `dry_run`, `timeout_ms`.
 
-### Lifecycle Verbs
+When the installed version is current or newer, `update` succeeds as a no-op, or fails with `PLUGIN_NO_UPDATE_AVAILABLE` when `strict=true`. Updating a plugin that is not installed fails with `PLUGIN_NOT_INSTALLED`. `version` is not read: update always targets the latest version.
 
-#### install
+### 4.3 remove
 
-Installs a plugin from a supported source.
+```bash
+resh plugin://aws.remove dry_run=true
+resh plugin://aws.remove purge=true
+```
 
-Optional controls include:
+Removes the plugin's manifest, binary and support files. Arguments: `force` (remove even if a process running the plugin binary is found), `purge` (also delete the plugin's data), `dry_run`, `timeout_ms` (accepted but not used). Removing a plugin that is not installed fails with `PLUGIN_NOT_INSTALLED`.
 
-* `version`
-* `verify`
-* `force`
-* `allow_downgrade`
-* `dry_run`
-* `timeout_ms`
+### 4.4 enable / disable
 
----
+```bash
+resh plugin://aws.enable dry_run=true
+resh plugin://aws.disable scope=user
+```
 
-#### update
+Marks an installed plugin enabled or disabled in the state file for `scope` (`user`, the default, or `system`; anything else is an error). Arguments: `scope`, `force` (override the in-use check), `reason` (accepted, at most 200 characters, but not recorded), `dry_run`, `timeout_ms` (accepted but not used). Enabling a plugin that is not installed fails with `PLUGIN_NOT_INSTALLED` (code 3).
 
-Updates an installed plugin to latest or specified version.
+### 4.5 installed.list
 
-Supports:
+```bash
+resh --json-pretty plugin://installed.list format=names
+resh plugin://installed.list prefix=aws sort=installed_at order=desc limit=10
+```
 
-* `registry`
-* `url`
-* `strict`
-* `dry_run`
+Lists the plugins in the local store. Arguments: `enabled` (`true`/`false`), `name` (exact), `prefix`, `tag`, `source`, `limit` (default 200), `offset`, `sort` (`name`, `installed_at`, `updated_at`), `order` (`asc`, `desc`), `format` (`full`, `summary`, `names`). Invalid values for `enabled`, `limit`, `sort`, `order` or `format` are errors. The `enabled` field reflects `enabled.json`, not the state written by `enable` (see Limitations).
 
----
+### 4.6 available.list
 
-#### remove
+```bash
+resh --json-pretty plugin://available.list query=docker limit=1
+resh plugin://available.list source=file:/srv/catalog.json tags=container,docker
+```
 
-Removes a plugin from the system.
+Lists plugins from a local catalog file. `source=default` (the default) reads `assets/plugins/catalog.json` **under the current directory**, so it fails elsewhere; `source=file:<path>` reads the given file. `url:` sources are not supported. Other arguments: `query`, `tags` (`,`-separated), `publisher`, `platform` (default the current `<os>-<arch>`), `include_prerelease`, `limit` (1-1000, default 100), `offset`, `format` (`summary` or `full`). No network access.
 
-Optional:
+### 4.7 available.search
 
-* `force`
-* `purge`
-* `dry_run`
+```bash
+resh --json-pretty plugin://available.search q=docker offline=true
+resh plugin://available.search q=backup 'tags=storage;backup' max_results=10
+```
 
----
+Searches a plugin index and returns scored matches. Arguments: `q`, `tags` (`;`-separated), `owner`, `name`, `min_version`, `max_results` (1-200, default 25), `source` (`default`, which is `https://plugins.reshshell.dev/index.json`, or an `https://` URL), `offline`, `refresh`, `timeout_ms`.
 
-#### enable / disable
+* With `offline=true` it reads only the local cache (or a test fixture at `tests/fixtures/plugins-index.json` under the current directory, if present) and never contacts the network.
+* Otherwise it uses the cache when present (unless `refresh=true`), else fetches the index and caches it. If the fetch fails, it falls back to that test fixture when present.
+* `offline` and `refresh` are true only for the exact value `true`.
 
-Controls plugin activation.
+### 4.8 available.info
 
-Optional:
+```bash
+resh --json-pretty plugin://available.info name=resh.docker offline=true
+```
 
-* `scope` (`user` or `system`)
-* `reason`
-* `force`
-* `dry_run`
+Reports index details for one plugin. Arguments: `name` or `id` (at least one required), `version` (numeric `x.y` or `x.y.z`), `channel` (`stable`, `beta`, `nightly`), `os`, `arch`, `source` (`default`, `official` or `community`; other values are errors), `offline` (exact `true`), `timeout_ms`. Without `offline=true` it fetches the official and community indexes over HTTPS unless a fresh cache exists.
 
----
+### 4.9 Errors commonly seen
 
-### Catalog Verbs
+`PLUGIN_NOT_INSTALLED`, `PLUGIN_VERIFY_FAILED`, `PLUGIN_EXTRACT_FAILED`, `PLUGIN_DOWNLOAD_FAILED`, `PLUGIN_NO_UPDATE_AVAILABLE`, `PLUGIN_VERSION_CONFLICT`, `PLUGIN_IN_USE`, `PLUGIN_IO_ERROR`. As noted in section 3, for install/update/remove these appear reliably as the prefix of `error.message`, not always in `error.kind`.
 
-#### available.list
+### 4.10 timeout_ms
 
-Lists available plugins from the catalog.
-
-Optional filtering:
-
-* `query`
-* `tags`
-* `max_results`
-* `sort`
-* `order`
-
----
-
-#### available.search
-
-Searches plugins using:
-
-* `q`
-* `tags`
-* `owner`
-* `min_version`
-* `max_results`
-* `offline`
-
----
-
-#### available.info
-
-Retrieves metadata for a specific plugin.
-
-Optional:
-
-* `version`
-* `channel`
-* `os`
-* `arch`
-* `offline`
-
----
-
-#### installed.list
-
-Lists installed plugins.
-
-Optional filters:
-
-* `enabled`
-* `name`
-* `prefix`
-* `tag`
-* `limit`
-* `offset`
-* `sort`
-* `format`
+| Verb             | Default | Behavior |
+| ---------------- | ------- | -------- |
+| install, update  | 300000  | Used as the per-request timeout for each registry and artifact HTTPS request. It is not a deadline for the whole operation, and has no effect on `source=file`. A malformed value is silently replaced by the default |
+| remove           | 30000   | Accepted and echoed in `args`, not used. Malformed values silently become the default |
+| enable, disable  | 15000   | Clamped to 1000-120000 and echoed in `args`, not used. Malformed values silently become the default |
+| available.search | 5000    | Enforced for the index fetch. Must be an integer from 100 to 60000, otherwise the verb fails |
+| available.info   | 5000    | Enforced for each index fetch. Must be an integer (otherwise an error) and is clamped to 100-30000 |
+| available.list, installed.list | none | Not read (local files only) |
 
 ---
 
 ## 5. Platform Support
 
-Platform compatibility depends on resh installation and plugin architecture.
-
-| Platform   | Support   |
-| ---------- | --------- |
-| Linux      | Supported |
-| Unix/macOS | Supported |
-| Windows    | Supported |
-
-Plugin compatibility may vary by OS and architecture as defined in plugin metadata.
+Only Linux is supported and verified. Registry artifacts are chosen by the `<os>-<arch>` key of the running system (for example `linux-x86_64`).
 
 ---
 
-## 6. Operational Best Practices
+## 6. Limitations
 
-### Safe Usage Guidelines
-
-* Use `dry_run="true"` before force operations.
-* Retain SHA256 verification.
-* Avoid `allow_downgrade` unless explicitly required.
-* Use scoped enable/disable operations carefully.
-
-### Automation Considerations
-
-* Parse `ok` and `code` for workflow gating.
-* Pin plugin versions in CI/CD for reproducibility.
-* Validate catalog availability before deployment.
-* Use `offline="true"` for deterministic environments.
-
-### CI/CD Integration
-
-* Install specific versions during build stages.
-* Validate plugin integrity before deployment.
-* Use catalog search for environment validation.
-* Enforce strict update policies in production.
-
-### Production Recommendations
-
-* Prefer registry source over direct URL.
-* Monitor installed plugin health.
-* Regularly review plugin versions.
-* Restrict system-wide enable operations.
+* `installed.list` reads enabled state from `enabled.json`, but `enable`/`disable` write `state.json`, so `installed.list` reports `enabled: false` for a plugin enabled with `plugin://<id>.enable`.
+* Registry checksums prove integrity in transit only, not publisher authenticity (2.2). There is no signature support.
+* `source=url` cannot be verified; it needs `verify=none` and is then unverified.
+* `error.kind` and `code` for install/update/remove failures are often `PLUGIN_UNKNOWN_ERROR` / 1; use the message prefix.
+* "Latest" version selection compares version strings as text (`1.9.0` sorts above `1.10.0`).
+* `available.list` with the default source only works when run from a directory containing `assets/plugins/catalog.json`.
 
 ---
 
-## 7. Use Cases by Role
+## 7. Operational Notes
 
-### DevOps Engineers
-
-* Install plugins during pipeline provisioning.
-* Pin versions for reproducible builds.
-* Automate updates during release cycles.
-* Validate plugin availability prior to deployment.
-
-### SRE Engineers
-
-* Enable/disable plugins during incident response.
-* Remove compromised plugins.
-* Audit installed plugins regularly.
-* Monitor plugin health metadata.
-
-### Network Administrators
-
-* Install infrastructure-related plugins.
-* Validate plugin compatibility for platform environments.
-* Use scoped enablement for controlled activation.
-
-### AI/Automation Engineers
-
-* Integrate plugin lifecycle management into orchestration agents.
-* Parse structured JSON results for state management.
-* Use `dry_run` for simulation environments.
-* Automate catalog inspection for capability discovery.
+* Prefer `source=registry` with the default `verify=sha256`, from a registry you trust.
+* Use `source=file` for artifacts you built or reviewed yourself.
+* Run `dry_run=true` first; it reports the resolved version and artifact without installing anything (a registry is still contacted to resolve).
+* Pin `version=` for reproducible installs.
+* Gate automation on `ok` or the exit status.
 
 ---
 
-## 8. Technical Foundation
+## 8. Implementation
 
-The `plugin://` handle operates within the resh framework, implemented in Rust.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Strong compile-time guarantees
-* Deterministic binary behavior
-* Reduced runtime instability
-
-### Type Safety
-
-Argument parsing and response construction are type-validated, ensuring consistent operational contracts.
-
-### Performance Characteristics
-
-* Efficient catalog querying
-* Controlled timeout enforcement
-* Structured action logging
-
-### Cross-Platform Architecture
-
-The plugin handle operates across:
-
-* Linux
-* macOS/Unix
-* Windows
-
-Plugin compatibility is defined per plugin metadata (OS and architecture constraints).
+Written in Rust: `src/handles/automation/pluginh.rs` (argument parsing, catalog verbs), `src/handles/pluginh/plugin/engine.rs` (install/update/remove), `registry.rs` (HTTPS client and checksums), `store.rs` (plugin store and path validation), `src/handles/pluginh/state.rs` (enable/disable) and `src/handles/pluginh/available/` (`available.info`).

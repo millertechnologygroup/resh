@@ -307,7 +307,9 @@ impl CronHandle {
         
         match self.provider.list_cron_entries(&options) {
             Ok(response) => {
-                if matches!(options.format, OutputFormat::Text) {
+                // A failure is always the JSON error object, so call()
+                // can report it (text mode included).
+                if matches!(options.format, OutputFormat::Text) && response.ok {
                     Ok(self.format_as_text(&response))
                 } else {
                     Ok(serde_json::to_string_pretty(&response)?)
@@ -432,7 +434,7 @@ impl CronHandle {
             id: args.get("id").cloned(),
             description: args.get("description").cloned(),
             allow_duplicate: args.get("allow_duplicate").unwrap_or(&"true".to_string()) == "true",
-            dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+            dry_run: crate::core::lenient::dry_run(args)?,
             scope: args.get("scope").unwrap_or(&"current".to_string()).clone(),
             user: args.get("user").cloned(),
             cron_file: args.get("cron_file").cloned(),
@@ -456,7 +458,9 @@ impl CronHandle {
 
         match self.provider.add_cron_job(&options) {
             Ok(response) => {
-                if matches!(options.format, OutputFormat::Text) {
+                // A failure is always the JSON error object, so call()
+                // can report it (text mode included).
+                if matches!(options.format, OutputFormat::Text) && response.ok {
                     Ok(self.format_add_as_text(&response))
                 } else {
                     Ok(serde_json::to_string_pretty(&response)?)
@@ -542,7 +546,7 @@ impl CronHandle {
             let error_response = CronRmResponse {
                 ok: false,
                 timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
-                dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+                dry_run: crate::core::lenient::dry_run(args)?,
                 backend: backend.clone(),
                 cron_modified_sources: Vec::new(),
                 systemd_scopes_touched: Vec::new(),
@@ -573,7 +577,7 @@ impl CronHandle {
             let error_response = CronRmResponse {
                 ok: false,
                 timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
-                dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+                dry_run: crate::core::lenient::dry_run(args)?,
                 backend: backend.clone(),
                 cron_modified_sources: Vec::new(),
                 systemd_scopes_touched: Vec::new(),
@@ -612,7 +616,7 @@ impl CronHandle {
             
             require_match: args.get("require_match").unwrap_or(&"true".to_string()) == "true",
             remove_units: args.get("remove_units").unwrap_or(&"true".to_string()) == "true",
-            dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+            dry_run: crate::core::lenient::dry_run(args)?,
             
             format: if args.get("format").unwrap_or(&"json".to_string()) == "text" {
                 OutputFormat::Text
@@ -623,7 +627,9 @@ impl CronHandle {
 
         match self.provider.remove_cron_jobs(&options) {
             Ok(response) => {
-                if matches!(options.format, OutputFormat::Text) {
+                // A failure is always the JSON error object, so call()
+                // can report it (text mode included).
+                if matches!(options.format, OutputFormat::Text) && response.ok {
                     Ok(self.format_rm_as_text(&response))
                 } else {
                     Ok(serde_json::to_string_pretty(&response)?)
@@ -724,7 +730,7 @@ impl CronHandle {
             let error_response = CronEnableResponse {
                 ok: false,
                 timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
-                dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+                dry_run: crate::core::lenient::dry_run(args)?,
                 backend: backend.clone(),
                 enabled: CronEnableEnabledSummary {
                     cron: Vec::new(),
@@ -759,7 +765,7 @@ impl CronHandle {
             let error_response = CronEnableResponse {
                 ok: false,
                 timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
-                dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+                dry_run: crate::core::lenient::dry_run(args)?,
                 backend: backend.clone(),
                 enabled: CronEnableEnabledSummary {
                     cron: Vec::new(),
@@ -802,7 +808,7 @@ impl CronHandle {
             
             require_match: args.get("require_match").unwrap_or(&"true".to_string()) == "true",
             start_now: args.get("start_now").unwrap_or(&"true".to_string()) == "true",
-            dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+            dry_run: crate::core::lenient::dry_run(args)?,
             
             format: if args.get("format").unwrap_or(&"json".to_string()) == "text" {
                 OutputFormat::Text
@@ -813,7 +819,9 @@ impl CronHandle {
 
         match self.provider.enable_cron_jobs(&options) {
             Ok(response) => {
-                if matches!(options.format, OutputFormat::Text) {
+                // A failure is always the JSON error object, so call()
+                // can report it (text mode included).
+                if matches!(options.format, OutputFormat::Text) && response.ok {
                     Ok(self.format_enable_as_text(&response))
                 } else {
                     Ok(serde_json::to_string_pretty(&response)?)
@@ -919,7 +927,7 @@ impl CronHandle {
             let error_response = CronDisableResponse {
                 ok: false,
                 timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
-                dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+                dry_run: crate::core::lenient::dry_run(args)?,
                 backend: backend.clone(),
                 disabled: CronDisableDisabledSummary {
                     cron: Vec::new(),
@@ -954,7 +962,7 @@ impl CronHandle {
             let error_response = CronDisableResponse {
                 ok: false,
                 timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
-                dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+                dry_run: crate::core::lenient::dry_run(args)?,
                 backend: backend.clone(),
                 disabled: CronDisableDisabledSummary {
                     cron: Vec::new(),
@@ -997,7 +1005,7 @@ impl CronHandle {
             
             require_match: args.get("require_match").unwrap_or(&"true".to_string()) == "true",
             stop_now: args.get("stop_now").unwrap_or(&"true".to_string()) == "true",
-            dry_run: args.get("dry_run").unwrap_or(&"false".to_string()) == "true",
+            dry_run: crate::core::lenient::dry_run(args)?,
             
             format: if args.get("format").unwrap_or(&"json".to_string()) == "text" {
                 OutputFormat::Text
@@ -1008,7 +1016,9 @@ impl CronHandle {
 
         match self.provider.disable_cron_jobs(&options) {
             Ok(response) => {
-                if matches!(options.format, OutputFormat::Text) {
+                // A failure is always the JSON error object, so call()
+                // can report it (text mode included).
+                if matches!(options.format, OutputFormat::Text) && response.ok {
                     Ok(self.format_disable_as_text(&response))
                 } else {
                     Ok(serde_json::to_string_pretty(&response)?)
@@ -1170,31 +1180,92 @@ impl Handle for CronHandle {
             "list" => {
                 let result = self.list_verb(args)?;
                 writeln!(io.stdout, "{}", result)?;
-                Ok(Status::ok())
+                Ok(verb_status("list", &result))
             }
             "add" => {
                 let result = self.add_verb(args)?;
                 writeln!(io.stdout, "{}", result)?;
-                Ok(Status::ok())
+                Ok(verb_status("add", &result))
             }
             "rm" => {
                 let result = self.rm_verb(args)?;
                 writeln!(io.stdout, "{}", result)?;
-                Ok(Status::ok())
+                Ok(verb_status("rm", &result))
             }
             "enable" => {
                 let result = self.enable_verb(args)?;
                 writeln!(io.stdout, "{}", result)?;
-                Ok(Status::ok())
+                Ok(verb_status("enable", &result))
             }
             "disable" => {
                 let result = self.disable_verb(args)?;
                 writeln!(io.stdout, "{}", result)?;
-                Ok(Status::ok())
+                Ok(verb_status("disable", &result))
             }
             _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
         }
     }
+}
+
+/// The timer unit named in a `systemctl list-timers --plain` line. Its
+/// columns (NEXT, LEFT, LAST, PASSED, UNIT, ACTIVATES) have a variable
+/// number of words, so the UNIT column is found by its `.timer` suffix.
+fn timer_unit(line: &str) -> Option<&str> {
+    line.split_whitespace().find(|w| w.ends_with(".timer"))
+}
+
+/// Whether `parts` (a line split on whitespace) starts with a cron schedule
+/// and has a command: five valid time fields, or a known `@` keyword.
+fn looks_like_cron_schedule(parts: &[&str]) -> bool {
+    const SPECIAL: &[&str] = &[
+        "@reboot", "@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly",
+    ];
+    if let Some(first) = parts.first()
+        && first.starts_with('@')
+    {
+        return parts.len() >= 2 && SPECIAL.contains(&first.to_ascii_lowercase().as_str());
+    }
+    parts.len() >= 6 && parts[..5].iter().all(|f| is_cron_field(f))
+}
+
+/// One cron time field: comma-separated `*`, `N`, `N-M`, optionally `/step`,
+/// where N and M are numbers or three-letter month/day names.
+fn is_cron_field(field: &str) -> bool {
+    let value = |v: &str| {
+        (!v.is_empty() && v.len() <= 2 && v.bytes().all(|b| b.is_ascii_digit()))
+            || (v.len() == 3 && v.bytes().all(|b| b.is_ascii_alphabetic()))
+    };
+    !field.is_empty()
+        && field.split(',').all(|item| {
+            let (range, step) = match item.split_once('/') {
+                Some((r, s)) => (r, Some(s)),
+                None => (item, None),
+            };
+            let step_ok = step.is_none_or(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
+            let range_ok = range == "*"
+                || match range.split_once('-') {
+                    Some((a, b)) => value(a) && value(b),
+                    None => value(range),
+                };
+            step_ok && range_ok
+        })
+}
+
+/// The exit status for a verb's rendered output: a failure if it is a JSON
+/// object with `"ok": false`, carrying the error message as the reason.
+fn verb_status(verb: &str, output: &str) -> Status {
+    let Ok(value) = serde_json::from_str::<Value>(output) else {
+        return Status::ok(); // text output is only rendered for successes
+    };
+    if value.get("ok").and_then(Value::as_bool) != Some(false) {
+        return Status::ok();
+    }
+    let error = value.get("error");
+    let message = error
+        .and_then(|e| e.get("message").and_then(Value::as_str).or_else(|| e.as_str()))
+        .or_else(|| error.and_then(|e| e.get("code")).and_then(Value::as_str))
+        .unwrap_or("operation failed");
+    Status::err(1, format!("cron {}: {}", verb, message))
 }
 
 // ===========================================================================
@@ -2315,14 +2386,7 @@ impl SystemdEditor for SystemSystemdEditor {
         if output.status.success() {
             let timers = String::from_utf8_lossy(&output.stdout)
                 .lines()
-                .filter_map(|line| {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if !parts.is_empty() {
-                        Some(parts[0].to_string())
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(|line| timer_unit(line).map(str::to_string))
                 .collect();
             Ok(timers)
         } else {
@@ -3478,25 +3542,36 @@ impl SystemCronProvider {
 
             // Find matching timers
             for line in timers.lines().skip(1) { // Skip header
-                if let Some(timer_name) = line.split_whitespace().next() {
-                    if timer_name.ends_with(".timer") && self.timer_matches(timer_name, options, scope)? {
+                if let Some(timer_name) = timer_unit(line) {
+                    if self.timer_matches(timer_name, options, scope)? {
                         if !options.dry_run {
-                            // Stop and disable the timer
-                            let _ = std::process::Command::new("systemctl")
-                                .args(if scope == "user" { 
-                                    vec!["--user", "stop", timer_name] 
-                                } else { 
-                                    vec!["stop", timer_name] 
-                                })
-                                .output();
-
-                            let _ = std::process::Command::new("systemctl")
-                                .args(if scope == "user" { 
-                                    vec!["--user", "disable", timer_name] 
-                                } else { 
-                                    vec!["disable", timer_name] 
-                                })
-                                .output();
+                            // Stop and disable the timer. A timer that could
+                            // not be disabled is not reported as removed.
+                            let mut failed = false;
+                            for action in ["stop", "disable"] {
+                                let result = std::process::Command::new("systemctl")
+                                    .args(if scope == "user" {
+                                        vec!["--user", action, timer_name]
+                                    } else {
+                                        vec![action, timer_name]
+                                    })
+                                    .output();
+                                match result {
+                                    Ok(output) if output.status.success() => {}
+                                    Ok(output) => {
+                                        warnings.push(format!("Failed to {} {} timer: {}", action, timer_name,
+                                            String::from_utf8_lossy(&output.stderr).trim()));
+                                        failed = true;
+                                    }
+                                    Err(e) => {
+                                        warnings.push(format!("Failed to execute systemctl {} for {}: {}", action, timer_name, e));
+                                        failed = true;
+                                    }
+                                }
+                            }
+                            if failed {
+                                continue;
+                            }
 
                             // Optionally remove unit files
                             if options.remove_units {
@@ -3657,8 +3732,8 @@ impl SystemCronProvider {
 
             // Find matching timers
             for line in timers.lines().skip(1) { // Skip header
-                if let Some(timer_name) = line.split_whitespace().next() {
-                    if timer_name.ends_with(".timer") && self.timer_matches_enable(timer_name, options, scope)? {
+                if let Some(timer_name) = timer_unit(line) {
+                    if self.timer_matches_enable(timer_name, options, scope)? {
                         // Check if timer is already enabled/active
                         let is_enabled = self.check_timer_enabled(timer_name, scope)?;
                         let is_active = self.check_timer_active(timer_name, scope)?;
@@ -3912,8 +3987,13 @@ impl SystemCronProvider {
             (false, trimmed)
         };
 
-        // Try to parse as cron line
+        // Try to parse as cron line. A commented line is a disabled job
+        // only if its schedule really is a cron schedule; otherwise it is an
+        // ordinary comment and must never be uncommented.
         let parts: Vec<&str> = content.split_whitespace().collect();
+        if is_commented && !looks_like_cron_schedule(&parts) {
+            return None;
+        }
         if parts.len() >= 6 {
             // Standard cron format: minute hour day month dow command...
             let schedule = format!("{} {} {} {} {}", parts[0], parts[1], parts[2], parts[3], parts[4]);
@@ -4149,8 +4229,8 @@ impl SystemCronProvider {
 
             // Find matching timers
             for line in timers.lines().skip(1) { // Skip header
-                if let Some(timer_name) = line.split_whitespace().next() {
-                    if timer_name.ends_with(".timer") && self.timer_matches_disable(timer_name, options, scope)? {
+                if let Some(timer_name) = timer_unit(line) {
+                    if self.timer_matches_disable(timer_name, options, scope)? {
                         // Check if timer is currently enabled/active
                         let is_enabled = self.check_timer_enabled(timer_name, scope)?;
                         let is_active = self.check_timer_active(timer_name, scope)?;
@@ -5382,6 +5462,133 @@ mod tests {
         }
     }
 
+    // FUNC-05: a crontab with everything enable must leave alone.
+    const MIXED_CRONTAB: &str = "\
+# m h  dom mon dow   command
+SHELL=/bin/sh
+MAILTO=ops@example.com
+
+# Runs the nightly backup for all the web servers
+0 2 * * * /usr/bin/backup --full
+# 30 3 * * * /usr/bin/backup --incremental
+
+#0 4 * * 1-5 /usr/bin/backup-check --quiet
+# @daily /usr/bin/backup-rotate
+# backup notes: 1 2 3 4 5 keep these
+# 99x * * * * /usr/bin/backup --broken
+# @someday /usr/bin/backup --never
+";
+
+    fn enable_matching(content: &str, match_command: &str) -> (String, usize) {
+        let mut eopts = enable_options();
+        eopts.match_command = Some(match_command.to_string());
+        let (out, entries, _) = provider()
+            .enable_matching_cron_entries(content, &eopts, "user", "alice", None)
+            .unwrap();
+        (out, entries.len())
+    }
+
+    /// Lines of `after` that differ from `before` (same line count).
+    fn changed_lines(before: &str, after: &str) -> Vec<(String, String)> {
+        let (b, a): (Vec<_>, Vec<_>) = (before.lines().collect(), after.lines().collect());
+        assert_eq!(b.len(), a.len(), "line count changed:\n{after}");
+        b.iter().zip(a.iter()).filter(|(x, y)| x != y).map(|(x, y)| (x.to_string(), y.to_string())).collect()
+    }
+
+    #[test]
+    fn enable_never_uncomments_ordinary_comments() {
+        let (out, n) = enable_matching(MIXED_CRONTAB, "backup");
+        assert_eq!(
+            changed_lines(MIXED_CRONTAB, &out),
+            vec![
+                ("# 30 3 * * * /usr/bin/backup --incremental".into(), "30 3 * * * /usr/bin/backup --incremental".into()),
+                ("#0 4 * * 1-5 /usr/bin/backup-check --quiet".into(), "0 4 * * 1-5 /usr/bin/backup-check --quiet".into()),
+                ("# @daily /usr/bin/backup-rotate".into(), "@daily /usr/bin/backup-rotate".into()),
+            ]
+        );
+        assert_eq!(n, 3);
+        // Comments, the header, env lines, blank lines and malformed
+        // commented entries are untouched.
+        for kept in [
+            "# m h  dom mon dow   command", "SHELL=/bin/sh", "MAILTO=ops@example.com",
+            "# Runs the nightly backup for all the web servers", "# backup notes: 1 2 3 4 5 keep these",
+            "# 99x * * * * /usr/bin/backup --broken", "# @someday /usr/bin/backup --never",
+        ] {
+            assert!(out.lines().any(|l| l == kept), "lost {kept:?}");
+        }
+        assert_eq!(out.lines().filter(|l| l.is_empty()).count(), 2);
+    }
+
+    #[test]
+    fn enable_by_command_touches_only_the_matching_job() {
+        let (out, n) = enable_matching(MIXED_CRONTAB, "backup --incremental");
+        assert_eq!(n, 1);
+        assert_eq!(
+            changed_lines(MIXED_CRONTAB, &out),
+            vec![("# 30 3 * * * /usr/bin/backup --incremental".into(), "30 3 * * * /usr/bin/backup --incremental".into())]
+        );
+        // A comment that merely mentions the words matches nothing.
+        let (out, n) = enable_matching(MIXED_CRONTAB, "web servers");
+        assert_eq!(n, 0);
+        assert!(changed_lines(MIXED_CRONTAB, &out).is_empty());
+    }
+
+    #[test]
+    fn disable_then_enable_round_trips_a_crontab() {
+        let p = provider();
+        let mut dopts = disable_options();
+        dopts.match_command = Some("backup --full".into());
+        let (disabled, entries, _) = p
+            .disable_matching_cron_entries(MIXED_CRONTAB, &dopts, "user", "alice", None)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        let (restored, n) = enable_matching(&disabled, "backup --full");
+        assert_eq!(n, 1);
+        assert_eq!(restored, MIXED_CRONTAB);
+    }
+
+    #[test]
+    fn timer_unit_is_read_from_the_unit_column() {
+        let lines = [
+            "Sat 2026-10-17 00:00:00 UTC 5h 3min left Fri 2026-10-16 00:00:01 UTC 18h ago resh-backup.timer resh-backup.service",
+            "n/a n/a n/a n/a logrotate.timer logrotate.service",
+            "Sat 2026-10-17 06:00:00 UTC 11h left - - fstrim.timer fstrim.service",
+        ];
+        assert_eq!(timer_unit(lines[0]), Some("resh-backup.timer"));
+        assert_eq!(timer_unit(lines[1]), Some("logrotate.timer"));
+        assert_eq!(timer_unit(lines[2]), Some("fstrim.timer"));
+        assert_eq!(timer_unit("NEXT LEFT LAST PASSED UNIT ACTIVATES"), None);
+        assert_eq!(timer_unit("3 timers listed."), None);
+    }
+
+    #[test]
+    fn cron_schedule_detection() {
+        let ok = |l: &str| looks_like_cron_schedule(&l.split_whitespace().collect::<Vec<_>>());
+        for line in [
+            "0 2 * * * cmd", "*/15 0-6,22 1 jan-mar mon-fri cmd", "5 4 * * sun cmd", "@reboot cmd", "@HOURLY cmd",
+        ] {
+            assert!(ok(line), "{line}");
+        }
+        for line in [
+            "Runs the nightly backup for all", "m h dom mon dow command", "0 2 * * *", "99x * * * * cmd",
+            "1 2 3 4 5", "@someday cmd", "@daily", "0 2 * * * ", "1/ * * * * cmd", "a-b * * * * cmd",
+        ] {
+            assert!(!ok(line), "{line}");
+        }
+    }
+
+    // FUNC-02: the exit status follows the rendered result.
+    #[test]
+    fn verb_status_reflects_ok_field() {
+        assert!(verb_status("add", "Cron Jobs\n=====").ok);
+        assert!(verb_status("add", r#"{"ok": true}"#).ok);
+        let st = verb_status("add", r#"{"ok": false, "error": {"code": "cron.add_invalid_schedule", "message": "Invalid cron schedule 'x'"}}"#);
+        assert!(!st.ok);
+        assert_eq!(st.exit_code(), 1);
+        assert_eq!(st.reason.as_deref(), Some("cron add: Invalid cron schedule 'x'"));
+        assert_eq!(verb_status("rm", r#"{"ok": false}"#).reason.as_deref(), Some("cron rm: operation failed"));
+    }
+
     #[test]
     fn extract_job_id_handles_full_empty_and_missing_ids() {
         assert_eq!(extract_job_id("# job-id=backup description=x"), Some("backup".to_string()));
@@ -5608,5 +5815,109 @@ mod tests {
         handle.call("--help=rm", &Args::new(), &mut io).unwrap();
         let out = String::from_utf8(stdout.into_inner()).unwrap();
         assert!(out.contains("Verb: rm"), "{}", out);
+    }
+}
+
+// SEC-05: the dry_run value each mutating provider call receives. The
+// recording provider performs nothing and touches no crontab or unit.
+#[cfg(test)]
+mod dry_run_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug, Default, Clone)]
+    struct Recording(Arc<Mutex<Vec<(&'static str, bool)>>>);
+
+    impl Recording {
+        fn take(&self) -> Vec<(&'static str, bool)> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+        fn record(&self, op: &'static str, dry_run: bool) -> anyhow::Error {
+            self.0.lock().unwrap().push((op, dry_run));
+            anyhow::anyhow!("recording provider: nothing done")
+        }
+    }
+
+    impl CronProvider for Recording {
+        fn list_cron_entries(&self, _: &CronListOptions) -> Result<CronListResponse> { anyhow::bail!("unused") }
+        fn read_user_crontab(&self, _: &str) -> Result<String> { anyhow::bail!("unused") }
+        fn read_system_crontab(&self) -> Result<String> { anyhow::bail!("unused") }
+        fn read_cron_d_files(&self) -> Result<Vec<(String, String)>> { anyhow::bail!("unused") }
+        fn read_file(&self, _: &str) -> Result<String> { anyhow::bail!("unused") }
+        fn get_current_user(&self) -> String { "tester".into() }
+        fn get_current_time(&self) -> DateTime<Utc> { Utc::now() }
+        fn add_cron_job(&self, o: &CronAddOptions) -> Result<CronAddResponse> { Err(self.record("add", o.dry_run)) }
+        fn remove_cron_jobs(&self, o: &CronRmOptions) -> Result<CronRmResponse> { Err(self.record("rm", o.dry_run)) }
+        fn enable_cron_jobs(&self, o: &CronEnableOptions) -> Result<CronEnableResponse> { Err(self.record("enable", o.dry_run)) }
+        fn disable_cron_jobs(&self, o: &CronDisableOptions) -> Result<CronDisableResponse> { Err(self.record("disable", o.dry_run)) }
+    }
+
+    fn run(verb: &str, dry_run: Option<&str>) -> (Result<String>, Vec<(&'static str, bool)>) {
+        let rec = Recording::default();
+        let h = CronHandle { alias: "test".into(), provider: Box::new(rec.clone()) };
+        let mut args: Args = [("id", "job1"), ("schedule", "0 * * * *"), ("command", "/bin/true"), ("backend", "cron")]
+            .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        if let Some(v) = dry_run {
+            args.insert("dry_run".into(), v.into());
+        }
+        let out = match verb {
+            "add" => h.add_verb(&args),
+            "rm" => h.rm_verb(&args),
+            "enable" => h.enable_verb(&args),
+            "disable" => h.disable_verb(&args),
+            _ => unreachable!(),
+        };
+        (out, rec.take())
+    }
+
+    // FUNC-02: provider failures reach the exit status through call().
+    #[test]
+    fn failed_cron_verbs_fail_through_call() {
+        for verb in ["add", "rm", "enable", "disable", "list"] {
+            let rec = Recording::default();
+            let h = CronHandle { alias: "test".into(), provider: Box::new(rec) };
+            let args: Args = [("id", "job1"), ("schedule", "0 * * * *"), ("command", "/bin/true"), ("format", "text")]
+                .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let mut i: &[u8] = &[];
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let status = {
+                let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+                h.call(verb, &args, &mut io).unwrap()
+            };
+            assert!(!status.ok, "{verb}");
+            assert_ne!(status.exit_code(), 0);
+            let out: Value = serde_json::from_slice(&o).unwrap();
+            assert_eq!(out["ok"], false, "{verb}: JSON and exit status agree");
+            let reason = status.reason.unwrap();
+            assert!(reason.contains("recording provider") || reason.contains("unused"), "{verb}: {reason}");
+        }
+    }
+
+    #[test]
+    fn mutating_cron_verbs_receive_the_requested_dry_run() {
+        for verb in ["add", "rm", "enable", "disable"] {
+            for (value, expected) in [
+                (Some("true"), true), (Some("1"), true), (Some("yes"), true), (Some("ON"), true),
+                (Some("false"), false), (Some("0"), false), (None, false),
+            ] {
+                let (_, calls) = run(verb, value);
+                assert_eq!(calls, vec![(verb_op(verb), expected)], "{verb} dry_run={value:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_dry_run_never_reaches_the_provider() {
+        for verb in ["add", "rm", "enable", "disable"] {
+            for bad in ["maybe", "", "2", "tru"] {
+                let (out, calls) = run(verb, Some(bad));
+                assert!(out.is_err(), "{verb} dry_run={bad:?} accepted");
+                assert!(calls.is_empty(), "{verb} dry_run={bad:?} reached provider: {calls:?}");
+            }
+        }
+    }
+
+    fn verb_op(verb: &str) -> &'static str {
+        match verb { "add" => "add", "rm" => "rm", "enable" => "enable", _ => "disable" }
     }
 }

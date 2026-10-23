@@ -827,7 +827,10 @@ fn save_profiles(profiles: &[SmtpProfile]) -> Result<()> {
         )
     })?;
 
-    fs::write(&temp_path, content).with_context(|| {
+    // The profiles hold SMTP passwords (base64-encoded, not encrypted), so
+    // the file is created owner-only (0600) instead of with the umask, and a
+    // planted symlink at the temp name is never followed.
+    write_private_file(&temp_path, content.as_bytes()).with_context(|| {
         format!(
             "[{}] Failed to write temp config file: {:?}",
             MAIL_CONFIG_STORE_WRITE_ERROR, temp_path
@@ -842,6 +845,30 @@ fn save_profiles(profiles: &[SmtpProfile]) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+/// Writes `data` to a new file at `path` with mode 0600, replacing a stale
+/// regular file left by an interrupted write. Refuses to follow a symlink.
+fn write_private_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "refusing to write through a symlink",
+            ));
+        }
+        Ok(_) => fs::remove_file(path)?,
+        Err(_) => {}
+    }
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    f.write_all(data)?;
+    f.sync_all()
 }
 
 fn validate_profile_name(name: &str) -> Result<()> {
@@ -3214,8 +3241,8 @@ impl MailSendTemplateOptions {
             opts.strict_vars = parse_bool(strict_vars_arg)?;
         }
 
-        if let Some(dry_run_arg) = args.get("dry_run") {
-            opts.dry_run = parse_bool(dry_run_arg)?;
+        if let Some(dry_run) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            opts.dry_run = dry_run;
         }
 
         if let Some(format_output_arg) = args.get("format_output") {
@@ -3984,6 +4011,23 @@ impl MailHandle {
     }
 
     fn verb_send(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // send has no dry-run mode. A dry-run request (including the bare
+        // `dry_run` word main.rs rewrites to dry_run="true") must never send
+        // a real message, so it is refused before any SMTP connection.
+        match crate::core::lenient::dry_run(args) {
+            Ok(false) => {}
+            Ok(true) => {
+                let msg = "mail send does not support dry_run; nothing was sent. \
+                    Use send_template with dry_run=true to preview a message.";
+                writeln!(io.stderr, "{}", msg)?;
+                return Ok(Status::err(2, msg));
+            }
+            Err(e) => {
+                let msg = format!("Invalid mail send options: {}", e);
+                writeln!(io.stderr, "{}", msg)?;
+                return Ok(Status::err(2, msg));
+            }
+        }
         let opts = match MailSendOptions::from_args(args) {
             Ok(opts) => opts,
             Err(e) => {
@@ -4164,6 +4208,69 @@ impl Handle for MailHandle {
 // Registry function
 pub fn register(registry: &mut crate::core::Registry) {
     registry.register_scheme("mail", |url| Ok(Box::new(MailHandle::new(url.clone()))));
+}
+
+// H14: the profile store is written owner-only and never through a symlink.
+#[cfg(test)]
+mod private_file_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn writes_0600_replaces_stale_files_and_refuses_symlinks() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("smtp_profiles.json.tmp");
+        write_private_file(&p, b"one").unwrap();
+        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+        write_private_file(&p, b"two").unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"two");
+        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+
+        let target = dir.path().join("victim");
+        fs::write(&target, b"keep").unwrap();
+        let link = dir.path().join("link.tmp");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(write_private_file(&link, b"x").is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+    }
+}
+
+// Stage 4: `mail send` has no dry run, so a dry-run request is refused
+// instead of sending a real message.
+#[cfg(test)]
+mod send_dry_run_tests {
+    use super::*;
+
+    #[test]
+    fn send_refuses_dry_run_without_connecting() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+        let h = MailHandle::new(Url::parse("mail://send").unwrap());
+        for v in ["true", "1", "yes", "ON", "maybe"] {
+            let args: Args = [
+                ("to", "[\"a@example.com\"]"), ("subject", "s"), ("text_body", "b"),
+                ("from", "f@example.com"), ("smtp_host", "127.0.0.1"), ("smtp_port", port.as_str()),
+                ("use_tls", "none"), ("dry_run", v),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+            let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            let st = h.call("send", &args, &mut io).unwrap();
+            assert!(!st.ok, "dry_run={v} must fail");
+            let err = String::from_utf8_lossy(&e).to_string();
+            if v != "maybe" {
+                assert!(err.contains("does not support dry_run"), "{err}");
+            }
+            match listener.accept() {
+                Err(ref x) if x.kind() == std::io::ErrorKind::WouldBlock => {}
+                other => panic!("dry_run={v} opened an SMTP connection: {other:?}"),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,8 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
+# Cargo.lock is tracked: resh is a binary, and release builds must use
+# the locked dependency versions (`cargo build --locked`).
 
 # Build artifacts
 /target/

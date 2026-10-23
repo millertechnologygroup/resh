@@ -7,7 +7,6 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tokio::time::timeout;
 use url::Url;
 
 use crate::core::{
@@ -4703,12 +4702,12 @@ impl FirewallHandle {
         }
 
         // Parse behavior flags
-        if let Some(dry_run_str) = args.get("dry_run") {
-            opts.dry_run = dry_run_str.to_lowercase() == "true";
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            opts.dry_run = dry_run_str;
         }
 
-        if let Some(overwrite_str) = args.get("overwrite") {
-            opts.overwrite = overwrite_str.to_lowercase() == "true";
+        if let Some(overwrite) = crate::core::lenient::bool_arg(args, "overwrite")? {
+            opts.overwrite = overwrite;
         }
 
         if let Some(create_dirs_str) = args.get("create_dirs") {
@@ -5165,8 +5164,8 @@ impl FirewallHandle {
         }
 
         // Parse behavior options
-        if let Some(dry_run_str) = args.get("dry_run") {
-            opts.dry_run = dry_run_str.to_lowercase() == "true";
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            opts.dry_run = dry_run_str;
         }
 
         if let Some(idempotent_str) = args.get("idempotent") {
@@ -5850,8 +5849,8 @@ impl FirewallHandle {
         }
 
         // Parse behavior options
-        if let Some(dry_run_str) = args.get("dry_run") {
-            opts.dry_run = dry_run_str.to_lowercase() == "true";
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            opts.dry_run = dry_run_str;
         }
 
         if let Some(require_match_str) = args.get("require_match") {
@@ -6487,7 +6486,7 @@ impl FirewallHandle {
                     message: format!("Failed to read file: {}", e)
                 })?;
 
-            let mut child = Command::new(restore_cmd)
+            let mut child = Command::new(resolve_program(restore_cmd))
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -6602,14 +6601,10 @@ impl FirewallHandle {
         Ok(())
     }
 
+    /// Captures the live iptables rules for `family` ("ipv4"/"ipv6") and
+    /// writes them to a new file in the backup directory. Returns the path
+    /// only once the backup is on disk.
     async fn create_iptables_backup(&self, family: &str, timeout_ms: u64) -> Result<String> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let backup_path = format!("/tmp/.resh-backup-iptables-{}-{}.rules", family, timestamp);
-
         let save_cmd = if family == "ipv6" { "ip6tables-save" } else { "iptables-save" };
 
         let (exit_code, stdout, stderr) = run_command_with_timeout(
@@ -6624,22 +6619,16 @@ impl FirewallHandle {
             }.into());
         }
 
-        fs::write(&backup_path, stdout)
-            .map_err(|e| FirewallError::IoError {
-                message: format!("Failed to write backup: {}", e)
-            })?;
-
-        Ok(backup_path)
+        write_rules_backup(
+            &firewall_backup_dir(),
+            &backup_file_name("iptables", Some(family), "rules"),
+            stdout.as_bytes(),
+        )
     }
 
+    /// Captures the live nftables ruleset and writes it to a new file in
+    /// the backup directory. Returns the path only once it is on disk.
     async fn create_nftables_backup(&self, timeout_ms: u64) -> Result<String> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let backup_path = format!("/tmp/.resh-backup-nftables-{}.rules", timestamp);
-
         let (exit_code, stdout, stderr) = run_command_with_timeout(
             "nft",
             &["list", "ruleset"],
@@ -6652,12 +6641,11 @@ impl FirewallHandle {
             }.into());
         }
 
-        fs::write(&backup_path, stdout)
-            .map_err(|e| FirewallError::IoError {
-                message: format!("Failed to write backup: {}", e)
-            })?;
-
-        Ok(backup_path)
+        write_rules_backup(
+            &firewall_backup_dir(),
+            &backup_file_name("nftables", None, "rules"),
+            stdout.as_bytes(),
+        )
     }
 
     async fn reload_from_normalized_json(
@@ -6684,15 +6672,20 @@ impl FirewallHandle {
                 if backend_data.get("backend").and_then(|b| b.as_str()) == Some(backend.as_str()) {
                     if let Some(native) = backend_data.get("native") {
                         if let Some(native_data) = native.get("data").and_then(|d| d.as_str()) {
-                            // Write native data to temp file and reload
-                            let temp_path = format!("/tmp/.resh-reload-{}-{}.rules",
-                                backend.as_str(),
-                                SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
-
-                            fs::write(&temp_path, native_data)
+                            // Write native data to a temp file and reload. The
+                            // file is created securely (random name, O_EXCL,
+                            // 0600) rather than at a predictable /tmp path that
+                            // a local user could pre-create as a symlink; it is
+                            // deleted when `temp` is dropped.
+                            let mut temp = tempfile::Builder::new()
+                                .prefix(&format!(".resh-reload-{}-", backend.as_str()))
+                                .suffix(".rules")
+                                .tempfile()
+                                .and_then(|mut t| t.write_all(native_data.as_bytes()).and_then(|_| t.flush()).map(|_| t))
                                 .map_err(|e| FirewallError::IoError {
                                     message: format!("Failed to write temp file: {}", e)
                                 })?;
+                            let temp_path = temp.path().to_string_lossy().to_string();
 
                             // Reload using the temp file
                             match backend {
@@ -6706,7 +6699,8 @@ impl FirewallHandle {
                             }
 
                             // Clean up temp file
-                            let _ = fs::remove_file(&temp_path);
+                            let _ = temp.flush();
+                            drop(temp);
 
                             return Ok(());
                         }
@@ -6745,16 +6739,16 @@ impl FirewallHandle {
         }
 
         // Parse behavior flags
-        if let Some(dry_run_str) = args.get("dry_run") {
-            opts.dry_run = dry_run_str.to_lowercase() == "true";
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            opts.dry_run = dry_run_str;
         }
 
         if let Some(validate_only_str) = args.get("validate_only") {
             opts.validate_only = validate_only_str.to_lowercase() == "true";
         }
 
-        if let Some(backup_str) = args.get("backup_before_apply") {
-            opts.backup_before_apply = backup_str.to_lowercase() == "true";
+        if let Some(backup) = crate::core::lenient::bool_arg(args, "backup_before_apply")? {
+            opts.backup_before_apply = backup;
         }
 
         // Parse timeout
@@ -7375,7 +7369,11 @@ impl FirewallHandle {
                         writeln!(io.stdout, "{}", response.to_text())?;
                     }
                 }
-                Ok(Status::ok())
+                if response.ok {
+                    Ok(Status::ok())
+                } else {
+                    Ok(Status::err(1, response_error_message(response.error.as_ref(), "firewall enable failed")))
+                }
             }
             Err(e) => {
                 let firewall_error = if let Some(fw_err) = e.downcast_ref::<FirewallError>() {
@@ -7520,8 +7518,8 @@ impl FirewallHandle {
                 }
                 // Add backup action if backup is enabled
                 if opts.backup_before_apply {
-                    let path = opts.path.as_ref().unwrap();
-                    actions.push(format!("backup current iptables state to {}.backup", path));
+                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR));
                 }
                 actions.push(format!("iptables-restore < {}", opts.path.as_ref().unwrap()));
             } else {
@@ -7529,19 +7527,20 @@ impl FirewallHandle {
                 match backend {
                     FirewallBackend::Ufw => {
                         if opts.backup_before_apply {
-                            actions.push("backup ufw configuration".to_string());
+                            response.warnings.push("backup_before_apply is not supported for ufw; no backup would be taken".to_string());
                         }
                         actions.push("ufw --force enable".to_string());
                     }
                     FirewallBackend::Firewalld => {
                         if opts.backup_before_apply {
-                            actions.push("backup firewalld configuration".to_string());
+                            response.warnings.push("backup_before_apply is not supported for firewalld; no backup would be taken".to_string());
                         }
                         actions.push("systemctl enable firewalld && systemctl start firewalld".to_string());
                     }
                     FirewallBackend::Nftables => {
                         if opts.backup_before_apply {
-                            actions.push("backup nftables configuration".to_string());
+                            actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                                FIREWALL_BACKUP_DIR));
                         }
                         actions.push("nft rules would be applied".to_string());
                     }
@@ -7580,16 +7579,16 @@ impl FirewallHandle {
             opts.source_format = RulesSourceFormat::from_str(source_format_str)?;
         }
 
-        if let Some(dry_run_str) = args.get("dry_run") {
-            opts.dry_run = dry_run_str.parse::<bool>().unwrap_or(false);
+        if let Some(dry_run_str) = crate::core::lenient::bool_arg(args, "dry_run")? {
+            opts.dry_run = dry_run_str;
         }
 
         if let Some(validate_only_str) = args.get("validate_only") {
             opts.validate_only = validate_only_str.parse::<bool>().unwrap_or(false);
         }
 
-        if let Some(backup_str) = args.get("backup_before_apply") {
-            opts.backup_before_apply = backup_str.parse::<bool>().unwrap_or(true);
+        if let Some(backup) = crate::core::lenient::bool_arg(args, "backup_before_apply")? {
+            opts.backup_before_apply = backup;
         }
 
         if let Some(fail_str) = args.get("fail_if_already_enabled") {
@@ -7658,6 +7657,9 @@ impl FirewallHandle {
 
     async fn enable_ufw(&self, opts: &EnableOptions, previous_state: &FirewallStateSnapshot) -> Result<EnableResponse> {
         let mut response = EnableResponse::new("ufw", opts.format_output.clone());
+        if opts.backup_before_apply {
+            response.warnings.push("backup_before_apply is not supported for ufw; no backup was taken".to_string());
+        }
         response.query = self.enable_options_to_json(opts, &FirewallBackend::Ufw);
         response.previous_state = Some(previous_state.clone());
 
@@ -7725,6 +7727,9 @@ impl FirewallHandle {
 
     async fn enable_firewalld(&self, opts: &EnableOptions, previous_state: &FirewallStateSnapshot) -> Result<EnableResponse> {
         let mut response = EnableResponse::new("firewalld", opts.format_output.clone());
+        if opts.backup_before_apply {
+            response.warnings.push("backup_before_apply is not supported for firewalld; no backup was taken".to_string());
+        }
         response.query = self.enable_options_to_json(opts, &FirewallBackend::Firewalld);
         response.previous_state = Some(previous_state.clone());
 
@@ -7846,7 +7851,8 @@ impl FirewallHandle {
         if opts.dry_run {
             if let Some(path) = &opts.path {
                 if opts.backup_before_apply {
-                    actions.push("firewall.rules.save(...) -> backup".to_string());
+                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR));
                 }
                 let command = match opts.family {
                     IpFamily::Ipv4 => format!("iptables-restore < {}", path),
@@ -7892,18 +7898,33 @@ impl FirewallHandle {
                 ));
             }
 
-            // Backup existing rules if requested
+            // Back up every family about to be replaced. A backup that
+            // cannot be written stops the operation before any change.
             if opts.backup_before_apply {
-                // Create a temporary backup
-                let backup_file = format!("/var/backups/firewall/.resh-backup-iptables-{}-{}.rules", 
-                    opts.family.as_str(), 
-                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
-                    
-                backup_path = Some(backup_file.clone());
-                actions.push(format!("firewall.rules.save(...) -> {}", backup_file));
+                let families: &[&str] = match opts.family {
+                    IpFamily::Ipv4 => &["ipv4"],
+                    IpFamily::Ipv6 => &["ipv6"],
+                    IpFamily::Any => &["ipv4", "ipv6"],
+                };
+                for family in families {
+                    match self.create_iptables_backup(family, opts.timeout_ms).await {
+                        Ok(written) => {
+                            actions.push(format!("firewall.rules.save(...) -> {}", written));
+                            backup_path.get_or_insert(written);
+                        }
+                        Err(e) => {
+                            return Ok(EnableResponse::with_error(
+                                "iptables",
+                                backup_failure(e),
+                                opts.format_output.clone()
+                            ));
+                        }
+                    }
+                }
             }
 
-            // Restore rules
+            // Restore rules. The rules file is passed as an argument (no
+            // shell), as disable already does.
             let restore_commands = match opts.family {
                 IpFamily::Ipv4 => vec![("iptables-restore", path.clone())],
                 IpFamily::Ipv6 => vec![("ip6tables-restore", path.clone())],
@@ -7914,8 +7935,8 @@ impl FirewallHandle {
                 actions.push(format!("{} < {}", command, file_path));
                 
                 let (exit_code, _stdout, stderr) = run_command_with_timeout(
-                    "sh", 
-                    &["-c", &format!("{} < {}", command, file_path)], 
+                    command,
+                    &[file_path.as_str()],
                     opts.timeout_ms
                 ).await?;
                 
@@ -8002,7 +8023,8 @@ impl FirewallHandle {
         if opts.dry_run {
             if let Some(path) = &opts.path {
                 if opts.backup_before_apply {
-                    actions.push("firewall.rules.save(...) -> backup".to_string());
+                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR));
                 }
                 actions.push(format!("nft -f {}", path));
             }
@@ -8043,13 +8065,21 @@ impl FirewallHandle {
                 ));
             }
 
-            // Backup existing rules if requested
+            // Backup existing rules if requested; no change without it.
             if opts.backup_before_apply {
-                let backup_file = format!("/var/backups/firewall/.resh-backup-nftables-{}.conf", 
-                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
-                    
-                backup_path = Some(backup_file.clone());
-                actions.push(format!("firewall.rules.save(...) -> {}", backup_file));
+                match self.create_nftables_backup(opts.timeout_ms).await {
+                    Ok(written) => {
+                        actions.push(format!("firewall.rules.save(...) -> {}", written));
+                        backup_path = Some(written);
+                    }
+                    Err(e) => {
+                        return Ok(EnableResponse::with_error(
+                            "nftables",
+                            backup_failure(e),
+                            opts.format_output.clone()
+                        ));
+                    }
+                }
             }
 
             // Load rules
@@ -8105,7 +8135,11 @@ impl FirewallHandle {
                         writeln!(io.stdout, "{}", response.to_text())?;
                     }
                 }
-                Ok(Status::ok())
+                if response.ok {
+                    Ok(Status::ok())
+                } else {
+                    Ok(Status::err(1, response_error_message(response.error.as_ref(), "firewall disable failed")))
+                }
             }
             Err(e) => {
                 let firewall_error = if let Some(fw_err) = e.downcast_ref::<FirewallError>() {
@@ -8267,9 +8301,8 @@ impl FirewallHandle {
             }
             FirewallBackend::Iptables => {
                 if opts.backup_before_apply {
-                    actions.push(format!("firewall.rules.save(...) -> /var/backups/firewall/.resh-backup-iptables-{}-{}.rules", 
-                        opts.family.as_str(), 
-                        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()));
+                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR));
                 }
                 if let Some(path) = &opts.path {
                     match opts.family {
@@ -8303,8 +8336,8 @@ impl FirewallHandle {
             }
             FirewallBackend::Nftables => {
                 if opts.backup_before_apply {
-                    actions.push(format!("firewall.rules.save(...) -> /var/backups/firewall/.resh-backup-nftables-{}.conf",
-                        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()));
+                    actions.push(format!("firewall.rules.save(...) -> new backup in {}/ (not written in dry run)",
+                        FIREWALL_BACKUP_DIR));
                 }
                 if let Some(path) = &opts.path {
                     actions.push(format!("nft -f {}", path));
@@ -8369,11 +8402,10 @@ impl FirewallHandle {
             opts.source_format = RulesSourceFormat::from_str(source_format_str)?;
         }
 
-        if let Some(dry_run_str) = args.get("dry_run") {
-            opts.dry_run = dry_run_str.parse::<bool>()
-                .map_err(|_| FirewallError::DisableInternalError {
-                    message: "Invalid dry_run value".to_string()
-                })?;
+        let dry_run = crate::core::lenient::bool_arg(args, "dry_run")
+            .map_err(|e| FirewallError::DisableInternalError { message: e.to_string() })?;
+        if let Some(dry_run) = dry_run {
+            opts.dry_run = dry_run;
         }
 
         if let Some(validate_only_str) = args.get("validate_only") {
@@ -8383,11 +8415,10 @@ impl FirewallHandle {
                 })?;
         }
 
-        if let Some(backup_str) = args.get("backup_before_apply") {
-            opts.backup_before_apply = backup_str.parse::<bool>()
-                .map_err(|_| FirewallError::DisableInternalError {
-                    message: "Invalid backup_before_apply value".to_string()
-                })?;
+        if let Some(backup) = crate::core::lenient::bool_arg(args, "backup_before_apply")
+            .map_err(|e| FirewallError::DisableInternalError { message: e.to_string() })?
+        {
+            opts.backup_before_apply = backup;
         }
 
         if let Some(fail_str) = args.get("fail_if_already_disabled") {
@@ -8452,6 +8483,9 @@ impl FirewallHandle {
 
     async fn disable_ufw(&self, opts: &DisableOptions, previous_state: &FirewallStateSnapshot) -> Result<DisableResponse> {
         let mut response = DisableResponse::new("ufw", opts.format_output.clone());
+        if opts.backup_before_apply {
+            response.warnings.push("backup_before_apply is not supported for ufw; no backup was taken".to_string());
+        }
         response.query = self.disable_options_to_json(opts, &FirewallBackend::Ufw);
         response.previous_state = Some(previous_state.clone());
         
@@ -8490,6 +8524,9 @@ impl FirewallHandle {
 
     async fn disable_firewalld(&self, opts: &DisableOptions, previous_state: &FirewallStateSnapshot) -> Result<DisableResponse> {
         let mut response = DisableResponse::new("firewalld", opts.format_output.clone());
+        if opts.backup_before_apply {
+            response.warnings.push("backup_before_apply is not supported for firewalld; no backup was taken".to_string());
+        }
         response.query = self.disable_options_to_json(opts, &FirewallBackend::Firewalld);
         response.previous_state = Some(previous_state.clone());
         
@@ -8533,15 +8570,23 @@ impl FirewallHandle {
         let mut actions = Vec::new();
         let mut backup_path: Option<String> = None;
 
-        // Take backup if requested
+        // Take backup if requested, of the family about to be changed
+        // (ipv4 for Ipv4/Any, as below). No change without it.
         if opts.backup_before_apply {
-            let backup_file = format!("/var/backups/firewall/.resh-backup-iptables-{}-{}.rules", 
-                opts.family.as_str(),
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
-                
-            backup_path = Some(backup_file.clone());
-            actions.push(format!("firewall.rules.save(...) -> {}", backup_file));
-            // Note: In a real implementation, we would call the rules.save function here
+            let family = if matches!(opts.family, IpFamily::Ipv6) { "ipv6" } else { "ipv4" };
+            match self.create_iptables_backup(family, opts.timeout_ms).await {
+                Ok(written) => {
+                    actions.push(format!("firewall.rules.save(...) -> {}", written));
+                    backup_path = Some(written);
+                }
+                Err(e) => {
+                    return Ok(DisableResponse::with_error(
+                        "iptables",
+                        backup_failure(e),
+                        opts.format_output.clone()
+                    ));
+                }
+            }
         }
 
         // Apply disable configuration
@@ -8656,14 +8701,21 @@ impl FirewallHandle {
         let mut actions = Vec::new();
         let mut backup_path: Option<String> = None;
 
-        // Take backup if requested
+        // Take backup if requested; no change without it.
         if opts.backup_before_apply {
-            let backup_file = format!("/var/backups/firewall/.resh-backup-nftables-{}.conf", 
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
-                
-            backup_path = Some(backup_file.clone());
-            actions.push(format!("firewall.rules.save(...) -> {}", backup_file));
-            // Note: In a real implementation, we would call the rules.save function here
+            match self.create_nftables_backup(opts.timeout_ms).await {
+                Ok(written) => {
+                    actions.push(format!("firewall.rules.save(...) -> {}", written));
+                    backup_path = Some(written);
+                }
+                Err(e) => {
+                    return Ok(DisableResponse::with_error(
+                        "nftables",
+                        backup_failure(e),
+                        opts.format_output.clone()
+                    ));
+                }
+            }
         }
 
         // Apply disable configuration
@@ -8717,35 +8769,169 @@ impl FirewallHandle {
 // Helper Functions
 // ===========================================================================
 
+/// The human-readable message of a response's `error` value, for the exit
+/// status reason.
+fn response_error_message(error: Option<&Value>, fallback: &str) -> String {
+    // Responses carry either `{message}` or `{error: {message}}`.
+    let error = error.map(|e| e.get("error").unwrap_or(e));
+    error
+        .and_then(|e| e.get("message").and_then(Value::as_str).or_else(|| e.as_str()))
+        .map(|m| format!("{}: {}", fallback, m))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// The error reported when a required pre-change backup fails.
+fn backup_failure(e: anyhow::Error) -> FirewallError {
+    match e.downcast_ref::<FirewallError>() {
+        Some(fw) => fw.clone(),
+        None => FirewallError::SaveFailed { message: format!("Backup failed: {}", e) },
+    }
+}
+
+/// Where enable/disable/reload write the pre-change rule backups.
+const FIREWALL_BACKUP_DIR: &str = "/var/backups/firewall";
+
+fn firewall_backup_dir() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = test_seam::backup_dir() {
+        return dir;
+    }
+    std::path::PathBuf::from(FIREWALL_BACKUP_DIR)
+}
+
+/// The program actually executed for `command`. Production code always
+/// runs `command` from PATH; tests can redirect every firewall command to
+/// mock executables so no test can reach the host firewall.
+fn resolve_program(command: &str) -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = test_seam::bin_dir() {
+        return dir.join(command);
+    }
+    std::path::PathBuf::from(command)
+}
+
+/// Writes a rules backup as a new 0600 file inside `dir` (created 0700 if
+/// missing) and returns its path. Never overwrites an existing file and
+/// never writes through a symlinked directory or file.
+fn write_rules_backup(dir: &Path, file_name: &str, contents: &[u8]) -> Result<String> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+    let io_err = |what: &str, e: std::io::Error| FirewallError::IoError {
+        message: format!("Failed to write backup ({}): {}: {}", what, dir.display(), e),
+    };
+
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| io_err("create directory", e))?;
+    let meta = fs::symlink_metadata(dir).map_err(|e| io_err("stat directory", e))?;
+    if !meta.is_dir() {
+        return Err(FirewallError::IoError {
+            message: format!("Backup directory {} is not a directory (or is a symlink)", dir.display()),
+        }.into());
+    }
+
+    let path = dir.join(file_name);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+        .map_err(|e| io_err("create file", e))?;
+    file.write_all(contents)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| {
+            let _ = fs::remove_file(&path);
+            io_err("write file", e)
+        })?;
+
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Unique backup file name: `.resh-backup-<backend>[-<family>]-<ms>-<pid>.<ext>`.
+fn backup_file_name(backend: &str, family: Option<&str>, ext: &str) -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    match family {
+        Some(f) => format!(".resh-backup-{}-{}-{}-{}.{}", backend, f, millis, std::process::id(), ext),
+        None => format!(".resh-backup-{}-{}-{}.{}", backend, millis, std::process::id(), ext),
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_seam {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    thread_local! {
+        static BIN_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+        static BACKUP_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub fn bin_dir() -> Option<PathBuf> {
+        BIN_DIR.with(|d| d.borrow().clone())
+    }
+
+    pub fn backup_dir() -> Option<PathBuf> {
+        BACKUP_DIR.with(|d| d.borrow().clone())
+    }
+
+    /// Redirects firewall commands and backups for the current thread
+    /// until the guard is dropped.
+    pub struct Guard;
+
+    pub fn install(bin: PathBuf, backups: PathBuf) -> Guard {
+        BIN_DIR.with(|d| *d.borrow_mut() = Some(bin));
+        BACKUP_DIR.with(|d| *d.borrow_mut() = Some(backups));
+        Guard
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            BIN_DIR.with(|d| *d.borrow_mut() = None);
+            BACKUP_DIR.with(|d| *d.borrow_mut() = None);
+        }
+    }
+}
+
+/// Run a firewall command, killing it if it is still running after
+/// `timeout_ms`. The command is a blocking child process, so the deadline is
+/// enforced by polling the child (the backup handle's `wait_with_deadline`),
+/// not by an async timeout that a blocking call would never yield to.
 #[allow(dead_code)]
 async fn run_command_with_timeout(command: &str, args: &[&str], timeout_ms: u64) -> Result<(i32, String, String)> {
-    let timeout_duration = Duration::from_millis(timeout_ms);
+    use std::process::Stdio;
 
-    let result = timeout(timeout_duration, async {
-        let output = Command::new(command)
-            .args(args)
-            .output();
+    let child = Command::new(resolve_program(command))
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to execute command: {}", e))?;
 
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                let exit_code = output.status.code().unwrap_or(-1);
-                Ok((exit_code, stdout, stderr))
-            }
-            Err(e) => Err(anyhow::anyhow!("Failed to execute command: {}", e))
+    match crate::handles::automation::backuph::wait_with_deadline(child, Duration::from_millis(timeout_ms))? {
+        Some(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let exit_code = output.status.code().unwrap_or(-1);
+            Ok((exit_code, stdout, stderr))
         }
-    }).await;
-
-    match result {
-        Ok(command_result) => command_result,
-        Err(_) => Err(anyhow::anyhow!("Command timed out after {}ms", timeout_ms)),
+        None => Err(anyhow::anyhow!("Command timed out after {}ms", timeout_ms)),
     }
 }
 
 // Utility function to check if a binary is available in PATH
 #[allow(dead_code)]
 fn is_command_available(command: &str) -> bool {
+    #[cfg(test)]
+    if let Some(dir) = test_seam::bin_dir() {
+        return dir.join(command).is_file();
+    }
     Command::new("which")
         .arg(command)
         .output()
@@ -9644,5 +9830,362 @@ COMMIT
         let (status, out) = run_call("my-help", &[]);
         assert!(!status.ok);
         assert!(out.is_empty());
+    }
+}
+
+// SEC-05: every mutating firewall verb reads dry_run the same way, and a
+// malformed value is an error instead of a real rule change.
+#[cfg(test)]
+mod dry_run_tests {
+    use super::*;
+
+    fn args(pairs: &[(&str, &str)]) -> Args {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn with(base: &[(&str, &str)], dry_run: Option<&str>) -> Args {
+        let mut a = args(base);
+        if let Some(v) = dry_run {
+            a.insert("dry_run".into(), v.into());
+        }
+        a
+    }
+
+    type DryRunParser = Box<dyn Fn(&Args) -> Result<bool>>;
+
+    /// (verb, minimal valid args, parser returning the parsed dry_run)
+    fn parsers() -> Vec<(&'static str, Vec<(&'static str, &'static str)>, DryRunParser)> {
+        let h = || FirewallHandle::from_url(&Url::parse("firewall://").unwrap()).unwrap();
+        vec![
+            ("rules.save", vec![], Box::new(move |a: &Args| Ok(h().parse_rules_save_options(a)?.dry_run))),
+            ("rules.add", vec![("proto", "tcp"), ("dport", "22")], Box::new(move |a: &Args| Ok(h().parse_rules_add_options(a)?.dry_run))),
+            ("rules.delete", vec![("rule_id", "INPUT")], Box::new(move |a: &Args| Ok(h().parse_rules_delete_options(a)?.dry_run))),
+            ("rules.reload", vec![], Box::new(move |a: &Args| Ok(h().parse_rules_reload_options(a)?.dry_run))),
+            ("enable", vec![], Box::new(move |a: &Args| Ok(h().parse_enable_options(a)?.dry_run))),
+            ("disable", vec![], Box::new(move |a: &Args| Ok(h().parse_disable_options(a)?.dry_run))),
+        ]
+    }
+
+    #[test]
+    fn dry_run_spellings_are_consistent() {
+        for (verb, base, parse) in parsers() {
+            for v in ["true", "1", "yes", "on", "TRUE"] {
+                assert!(parse(&with(&base, Some(v))).unwrap(), "{verb} dry_run={v}");
+            }
+            for v in ["false", "0", "no", "off"] {
+                assert!(!parse(&with(&base, Some(v))).unwrap(), "{verb} dry_run={v}");
+            }
+            for v in ["maybe", "", "2", "tru"] {
+                assert!(parse(&with(&base, Some(v))).is_err(), "{verb} accepted dry_run={v:?}");
+            }
+            // Missing: the parser's own default, which is not a dry run.
+            assert!(parse(&with(&base, None)).is_ok(), "{verb}");
+        }
+    }
+}
+
+// FUNC-03: enable/disable take a real backup before changing rules, report
+// its true path, and change nothing when a required backup fails. Every
+// firewall command is redirected to mock scripts for the test thread.
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    const NFT_RULES: &str = "table ip filter {\n\tchain input {\n\t\ttype filter hook input priority 0; policy drop;\n\t\ttcp dport 22 accept\n\t}\n}\n";
+    const IPT_RULES_EMPTY: &str = "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\nCOMMIT\n";
+    const IPT_RULES: &str = "*filter\n:INPUT DROP [0:0]\n:FORWARD DROP [0:0]\n:OUTPUT ACCEPT [0:0]\n-A INPUT -p tcp --dport 22 -j ACCEPT\nCOMMIT\n";
+
+    struct Fixture {
+        dir: TempDir,
+        backups: std::path::PathBuf,
+    }
+
+    impl Fixture {
+        /// Mock nft/iptables tools. `rules` is what the save/list commands
+        /// print; `apply_exit` is the exit code of the rule-changing calls.
+        fn new(nft_rules: &str, ipt_rules: &str, apply_exit: i32) -> Self {
+            let dir = TempDir::new().unwrap();
+            let bin = dir.path().join("bin");
+            fs::create_dir(&bin).unwrap();
+            fs::write(dir.path().join("nft.rules"), nft_rules).unwrap();
+            fs::write(dir.path().join("ipt.rules"), ipt_rules).unwrap();
+            let log = dir.path().join("calls.log");
+            let script = format!(
+                "#!/bin/sh\nname=$(basename \"$0\")\necho \"$name $*\" >> '{log}'\n\
+                 case \"$name $1\" in\n\
+                 \"nft list\") cat '{d}/nft.rules' ;;\n\
+                 \"iptables-save \"*|\"ip6tables-save \"*) cat '{d}/ipt.rules' ;;\n\
+                 \"nft -f\"|\"iptables-restore \"*|\"ip6tables-restore \"*|\"nft flush\"|\"iptables -F\"|\"iptables -P\") exit {apply_exit} ;;\n\
+                 esac\nexit 0\n",
+                log = log.display(),
+                d = dir.path().display(),
+            );
+            for tool in ["nft", "iptables", "ip6tables", "iptables-save", "ip6tables-save", "iptables-restore", "ip6tables-restore"] {
+                let p = bin.join(tool);
+                fs::write(&p, &script).unwrap();
+                fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let backups = dir.path().join("backups");
+            Fixture { dir, backups }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            fs::read_to_string(self.dir.path().join("calls.log"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        fn backup_files(&self) -> Vec<std::path::PathBuf> {
+            match fs::read_dir(&self.backups) {
+                Ok(rd) => rd.map(|e| e.unwrap().path()).collect(),
+                Err(_) => Vec::new(),
+            }
+        }
+
+        fn rules_file(&self) -> String {
+            let p = self.dir.path().join("new.rules");
+            fs::write(&p, "# new rules\n").unwrap();
+            p.to_string_lossy().into_owned()
+        }
+
+        /// Runs a verb with commands and backups redirected into the fixture.
+        fn run(&self, verb: &str, pairs: &[(&str, &str)]) -> (Status, Value) {
+            let _seam = test_seam::install(self.dir.path().join("bin"), self.backups.clone());
+            let h = FirewallHandle::from_url(&Url::parse("firewall://").unwrap()).unwrap();
+            let args: Args = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let mut i: &[u8] = &[];
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let status = {
+                let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+                h.call(verb, &args, &mut io).unwrap()
+            };
+            let text = if o.is_empty() { e } else { o };
+            (status, serde_json::from_slice(&text).unwrap_or(Value::Null))
+        }
+    }
+
+    fn position(calls: &[String], prefix: &str) -> Option<usize> {
+        calls.iter().position(|c| c.starts_with(prefix))
+    }
+
+    #[test]
+    fn nft_disable_writes_backup_before_flushing() {
+        let fx = Fixture::new(NFT_RULES, IPT_RULES_EMPTY, 0);
+        let (status, json) = fx.run("disable", &[("backend", "nftables")]);
+        assert!(status.ok, "{json}");
+        assert_eq!(json["ok"], true);
+
+        let reported = json["result"]["backup_path"].as_str().unwrap_or_else(|| panic!("no backup_path: {json} {:?}", fx.calls()));
+        let files = fx.backup_files();
+        assert_eq!(files, vec![std::path::PathBuf::from(reported)], "reported path is the file on disk");
+        assert_eq!(fs::read_to_string(reported).unwrap(), NFT_RULES);
+        assert_eq!(fs::metadata(reported).unwrap().permissions().mode() & 0o777, 0o600);
+
+        let calls = fx.calls();
+        let flush = position(&calls, "nft flush ruleset").expect("flush ran");
+        // The last ruleset listing before the flush is the backup capture.
+        assert!(calls[..flush].iter().any(|c| c == "nft list ruleset"), "{calls:?}");
+    }
+
+    #[test]
+    fn iptables_enable_backs_up_then_restores_without_a_shell() {
+        let fx = Fixture::new("", IPT_RULES_EMPTY, 0);
+        let rules = fx.rules_file();
+        let (status, json) = fx.run("enable", &[("backend", "iptables"), ("family", "ipv4"), ("path", &rules)]);
+        assert!(status.ok, "{json}");
+
+        let reported = json["result"]["backup_path"].as_str().unwrap_or_else(|| panic!("no backup_path: {json} {:?}", fx.calls()));
+        assert_eq!(fs::read_to_string(reported).unwrap(), IPT_RULES_EMPTY);
+        assert!(reported.starts_with(fx.backups.to_str().unwrap()));
+
+        let calls = fx.calls();
+        let restore = position(&calls, "iptables-restore").expect("restore ran");
+        assert_eq!(calls[restore], format!("iptables-restore {}", rules), "rules file is one argument");
+        assert!(position(&calls, "iptables-save").unwrap() < restore);
+        assert!(!calls.iter().any(|c| c.starts_with("sh ")));
+    }
+
+    #[test]
+    fn backup_write_failure_prevents_any_change() {
+        for (backend, rules_nft, rules_ipt, change) in [
+            ("nftables", NFT_RULES, IPT_RULES_EMPTY, "nft flush"),
+            ("iptables", "", IPT_RULES, "iptables -"),
+        ] {
+            let fx = Fixture::new(rules_nft, rules_ipt, 0);
+            // The backup directory path is an existing regular file.
+            fs::write(&fx.backups, "not a directory").unwrap();
+            let (status, json) = fx.run("disable", &[("backend", backend)]);
+            assert!(!status.ok, "{backend}: {json}");
+            assert_ne!(status.code, Some(0));
+            assert!(status.reason.as_deref().unwrap_or("").contains("backup"), "{:?}", status.reason);
+            assert_eq!(json["ok"], false);
+            let calls = fx.calls();
+            assert!(!calls.iter().any(|c| c.starts_with(change)), "{backend} changed rules: {calls:?}");
+        }
+    }
+
+    #[test]
+    fn backup_directory_permission_failure_prevents_change() {
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root bypasses directory permissions
+        }
+        let fx = Fixture::new(NFT_RULES, IPT_RULES_EMPTY, 0);
+        let locked = fx.dir.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+        let fx = Fixture { backups: locked.join("backups"), ..fx };
+
+        let (status, json) = fx.run("disable", &[("backend", "nftables")]);
+        assert!(!status.ok, "{json}");
+        assert!(json["error"]["error"]["message"].as_str().unwrap().contains("Permission denied"), "{json}");
+        assert!(!fx.calls().iter().any(|c| c.starts_with("nft flush")));
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn symlinked_backup_directory_is_refused() {
+        let fx = Fixture::new(NFT_RULES, IPT_RULES_EMPTY, 0);
+        let elsewhere = fx.dir.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &fx.backups).unwrap();
+
+        let (status, _) = fx.run("disable", &[("backend", "nftables")]);
+        assert!(!status.ok);
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+        assert!(!fx.calls().iter().any(|c| c.starts_with("nft flush")));
+    }
+
+    #[test]
+    fn mutation_failure_after_backup_is_a_failure() {
+        let fx = Fixture::new("", IPT_RULES_EMPTY, 3);
+        let rules = fx.rules_file();
+        let (status, json) = fx.run("enable", &[("backend", "nftables"), ("path", &rules)]);
+        assert!(!status.ok, "{json}");
+        assert_ne!(status.code, Some(0));
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["error"]["code"], "firewall.command_failed", "{json}");
+        assert!(status.reason.as_deref().unwrap().contains("exit code 3"), "{:?}", status.reason);
+        // The backup taken before the failed change is still there.
+        assert_eq!(fx.backup_files().len(), 1);
+    }
+
+    #[test]
+    fn no_backup_requested_means_none_reported() {
+        let fx = Fixture::new(NFT_RULES, IPT_RULES_EMPTY, 0);
+        let (status, json) = fx.run("disable", &[("backend", "nftables"), ("backup_before_apply", "no")]);
+        assert!(status.ok, "{json}");
+        assert!(json["result"]["backup_path"].is_null());
+        assert!(fx.backup_files().is_empty());
+        assert!(!fx.run("disable", &[("backend", "nftables"), ("backup_before_apply", "maybe")]).0.ok);
+    }
+
+    #[test]
+    fn dry_run_writes_no_backup_and_changes_nothing() {
+        let fx = Fixture::new(NFT_RULES, IPT_RULES, 0);
+        let rules = fx.rules_file();
+        for (verb, backend) in [("disable", "nftables"), ("disable", "iptables"), ("enable", "nftables"), ("enable", "iptables")] {
+            for dry in ["true", "1", "yes"] {
+                let (status, json) = fx.run(verb, &[("backend", backend), ("path", &rules), ("dry_run", dry)]);
+                assert!(status.ok, "{verb} {backend}: {json}");
+                assert!(json["result"]["backup_path"].is_null());
+            }
+        }
+        assert!(fx.backup_files().is_empty());
+        let calls = fx.calls();
+        assert!(
+            !calls.iter().any(|c| c.starts_with("nft -f") || c.starts_with("nft flush")
+                || c.starts_with("iptables-restore") || c.starts_with("iptables -")),
+            "dry run changed rules: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn write_rules_backup_never_overwrites() {
+        let dir = TempDir::new().unwrap();
+        let first = write_rules_backup(dir.path(), "b.rules", b"one").unwrap();
+        assert_eq!(fs::read(&first).unwrap(), b"one");
+        assert!(write_rules_backup(dir.path(), "b.rules", b"two").is_err());
+        assert_eq!(fs::read(&first).unwrap(), b"one");
+        // A planted symlink at the file name is not followed.
+        let target = dir.path().join("target");
+        std::os::unix::fs::symlink(&target, dir.path().join("c.rules")).unwrap();
+        assert!(write_rules_backup(dir.path(), "c.rules", b"x").is_err());
+        assert!(!target.exists());
+    }
+}
+
+/// Stage 3 (SEC-08): firewall `timeout_ms` is enforced. Commands resolve to
+/// per-test mock executables; the host firewall tools are never run.
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Instant;
+    use tempfile::TempDir;
+
+    fn mock_tool(bin: &std::path::Path, name: &str, body: &str) {
+        let p = bin.join(name);
+        fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn fixture() -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        (dir, bin)
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+    }
+
+    #[test]
+    fn hung_command_is_killed_and_reaped_at_the_deadline() {
+        let (dir, bin) = fixture();
+        let pidfile = dir.path().join("pid");
+        mock_tool(&bin, "nft", &format!("echo $$ > '{}'\nexec sleep 30", pidfile.display()));
+        let _seam = test_seam::install(bin, dir.path().join("backups"));
+
+        let start = Instant::now();
+        let err = rt().block_on(run_command_with_timeout("nft", &["list", "ruleset"], 300)).unwrap_err();
+        let elapsed = start.elapsed();
+        assert!(err.to_string().contains("timed out after 300ms"), "{err}");
+        assert!(elapsed >= Duration::from_millis(300), "returned before the deadline: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(5), "timeout did not fire: {elapsed:?}");
+
+        let pid: libc::pid_t = fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        // The child was killed and reaped: the pid no longer exists.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "timed-out command {pid} is still running");
+    }
+
+    #[test]
+    fn completed_command_keeps_exit_code_and_output() {
+        let (dir, bin) = fixture();
+        mock_tool(&bin, "nft", "echo out; echo err >&2; exit 3");
+        let _seam = test_seam::install(bin, dir.path().join("backups"));
+        let (code, out, err) = rt().block_on(run_command_with_timeout("nft", &["list", "ruleset"], 5000)).unwrap();
+        assert_eq!((code, out.as_str(), err.as_str()), (3, "out\n", "err\n"));
+    }
+
+    #[test]
+    fn large_output_does_not_deadlock_before_the_deadline() {
+        let (dir, bin) = fixture();
+        mock_tool(&bin, "nft", "head -c 400000 /dev/zero | tr '\\0' 'x'");
+        let _seam = test_seam::install(bin, dir.path().join("backups"));
+        let (code, out, _) = rt().block_on(run_command_with_timeout("nft", &[], 5000)).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(out.len(), 400000);
+    }
+
+    #[test]
+    fn missing_command_is_an_error() {
+        let (dir, bin) = fixture();
+        let _seam = test_seam::install(bin, dir.path().join("backups"));
+        assert!(rt().block_on(run_command_with_timeout("nft", &[], 1000)).is_err());
     }
 }

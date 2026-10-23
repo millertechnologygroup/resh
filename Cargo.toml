@@ -2,6 +2,8 @@
 name = "resh"
 version = "1.0.2-beta"
 edition = "2024"
+# Lowest toolchain verified to build the locked dependency set.
+rust-version = "1.88"
 authors = ["Scott Miller <smiller@millertechnologygroupllc.com>"]
 license = "Apache-2.0"
 description = "AI-Native Automation Platform for Modern Infrastructure"

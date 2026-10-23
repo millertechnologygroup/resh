@@ -3,7 +3,79 @@
 These issues were found while writing the per-verb `--help` metadata, and each
 one was then checked against the code by a separate read-only review.
 
-## Status (2026-10-16)
+## Release-candidate status (2026-10-23)
+
+This section supersedes the test counts and "Still open" list in the
+2026-10-16 status below. The full evidence is in `docs/reviews/`
+(Stage 1-3 remediation reports and the Stage 4 release assessment).
+
+- **Tests:** `cargo test --locked` passes: 1,181 lib and 1,185 bin unit
+  tests, plus the help, documentation-example and CLI regression suites; 11
+  infrastructure tests are `#[ignore]`d and pass against disposable git,
+  PostgreSQL and MariaDB with `--ignored`.
+- **Fixed in Stage 4 (release-candidate verification):**
+  - `pkg update/upgrade security_only=true` silently ran a full upgrade on
+    apt, pacman, apk and brew (and yum for upgrade). It is now refused
+    before anything runs where resh cannot restrict the upgrade.
+  - `backup create/prune` treated a malformed `dry_run` as false and ran
+    for real; `backup restore dry_run=true` performed a real restore. Both
+    are now refused.
+  - `mail://send` ignored `dry_run` (including the bare word) and sent the
+    message. A dry-run request is now refused before any SMTP connection.
+  - `fs mount/unmount` treated a malformed `dry_run` as false; it is now an
+    error.
+  - `fs resize` on ext3/ext4 asked `resize2fs` for a quarter of the
+    requested size; the size argument is now correct.
+  - `file rename to=<bare name> overwrite=true` deleted the destination and
+    then failed; bare destination names now work for rename, copy and move,
+    and the parent is checked before anything is deleted.
+  - `archive add/remove` on `.tar.zst` wrote a truncated archive; the zstd
+    stream is now finished.
+  - `mail://config` wrote SMTP profiles (with base64 passwords) using the
+    umask, typically world-readable; the file is now 0600.
+  - `firewall rules.reload` from a normalized JSON snapshot wrote the rules to
+    a predictable `/tmp` name that a local user could pre-create as a
+    symlink; it now uses a securely created temporary file.
+  - `resh` with no stage panicked (exit 101); it now prints an error and
+    exits 2.
+  - A verb without a dry-run mode ignored `dry_run=true` and made the real
+    change (for example `file delete dry_run=true` deleted the file), and
+    misspelled dry-run words and keys (`dry-run`, `DRY_RUN=true`) were
+    dropped. A top-level `dry_run=true` was also ignored by `pkg`, which
+    reads it only from `input=`. The dispatcher now refuses all of these
+    before the handle runs.
+  - `archive add` rebuilt existing tar entries without their headers (mode
+    0, owner 0, mtime 0, symlinks became empty files); it now keeps the
+    original headers. Archive rewrites use unpredictable, non-following
+    temporary files with the original permissions, and compression errors
+    at the end of the stream fail the operation.
+  - `fs resize` ran `lvextend`/`lvreduce` through `sh -c`; it now runs them
+    without a shell.
+  - TLS dependencies patched (rustls 0.23.46, rustls-webpki 0.103.16,
+    webpki-roots 1.0.10), plus bytes 1.11.1 and h2 0.4.16.
+- **Significant limitations that remain** (each is documented in its
+  handle's page under `docs/`):
+  - Unsupported by design in this release: encrypted ZIP creation, git sync
+    merge/rebase (fast-forward only), secret encryption at rest and
+    `rotate`, ssh `tunnel`/`keys.list`/`key.add`, backup `schedule`
+    installation, pkg restore version pinning/rollback, dns `zone.update`
+    (simulated) and TSIG, cert CMS and encrypted keys, `proc limits.set` on
+    other processes.
+  - SMTP profile passwords are base64-encoded, not encrypted. Since Stage 4
+    the profile file is written owner-only (0600).
+  - No dry-run mode for svc, proc, file writes, cache/db writes, mq, ssh
+    (except exec), mail send and backup restore; for these `dry_run=true` is
+    refused before anything runs; git `timeout_ms` is rejected; pkg and fs timeouts stop waiting
+    but do not kill the child process.
+  - `net ping` exits 0 even when the host is unreachable; `http head`,
+    `headers` and `json` exit 0 for 4xx/5xx statuses.
+  - Option-injection hardening (`--` separators) is missing in backup
+    backend argv and user `primary_group`; cron does not reject newlines in
+    job fields.
+  - Plugin enabled state is written and read from different files, so
+    `installed.list` reports enabled plugins as disabled.
+
+## Status (2026-10-16, historical)
 
 All **Critical**, **High** and **Low** issues below have been fixed. Each fix
 has unit tests, and the help metadata was updated to match the new behavior.
@@ -29,9 +101,8 @@ devices (firewall, user, ssh, cache/db servers, restic/borg repositories, fs
 resize/check) were tested through unit tests on the exact commands they
 build, plus dry runs. They have not been run against live systems.
 
-Test suite: 1044 passed, 15 failed. Before the fixes it was 795 passed, 57
-failed. The 15 remaining failures were already failing before; see Still
-open.
+Test suite at that time: 1044 passed, 15 failed (all 15 were fixed in
+Stages 1 and 3; see the release-candidate status above).
 
 ### Fixed
 
@@ -89,12 +160,14 @@ open.
 
 These were found during the fixes, or are Medium items that were not fixed:
 
-- **Timeouts:** backup timeouts never fire, because
-  `execute_backend_command` takes the child process before the timer can
-  kill it. This was already the case before the fixes.
-- **Event hooks:** `MQHook` and `LogHook` print status lines with `println!`,
-  which corrupts JSON output. `list-topics` returns mock catalogs, and
-  `hooks.disable` always reports success.
+- **Timeouts:** fixed in Stage 2 (FUNC-08). Backup timeouts now kill the
+  backend at the deadline and fail with a `TIMEOUT` error. Stage 3: firewall
+  `timeout_ms` is enforced the same way. Git operations cannot be
+  interrupted (blocking libgit2 calls), so git now rejects `timeout_ms`
+  instead of ignoring it.
+- **Event hooks:** the built-in hook notes now go to stderr, so JSON on
+  stdout stays valid (Stage 2). `list-topics` still returns mock catalogs,
+  and `hooks.disable` still always reports success.
 - **cache key parsing:** a numeric key such as `key=123` is rejected as a
   missing key.
 - **cache test speed:** the existing cache tests try `127.0.0.1:11211` with
@@ -108,10 +181,11 @@ These were found during the fixes, or are Medium items that were not fixed:
 - **ssh `exec env=`:** sets variables on the local ssh process, not on the
   remote host.
 - **backup `schedule`:** installs nothing.
-- **Pre-existing test failures (15):**
-  - 11 `userh` tests are themselves broken: stale verb counts, or a mock
-    backend that is built but never used.
-  - 3 `gith` tests and `archiveh::test_path_sanitization`.
+- **Pre-existing test failures (15):** all fixed. `archiveh::test_path_sanitization`
+  in Stage 1; the 11 `userh` and 3 `gith` tests in Stage 3 (details in
+  `docs/reviews/resh-cli-stage3-build-test-security.md`). Tests that need a
+  database server or a git remote are marked `#[ignore]` and run with
+  `--ignored` against disposable infrastructure.
 
 ---
 
@@ -423,13 +497,11 @@ typed structs:
     `delete` prefer `body`.
   - The doc comment on `json` (`:3181`) claims it sets
     `Accept: application/json`; it doesn't.
-- **ssh simulated or stubbed verbs** (`src/handles/network/sshh.rs`):
-  - `upload` only sleeps and reports success (`:4612-4711`). It also fakes
-    errors for magic substrings in the destination path.
-  - `key.add` is a mock (`:8050`).
-  - The `test` checks always pass (`:9145-9228`).
-  - `keys.list` (`:7396`) and `tunnel` (`:7087`) are unimplemented unless
-    `dry_run`.
+- **ssh simulated or stubbed verbs** (`src/handles/network/sshh.rs`).
+  Updated 2026-10-23: `upload` and `download` perform real transfers
+  (fixed, C4). Still stubs: `tunnel`, `keys.list` and `key.add` fail with
+  `ssh.not_implemented` unless `dry_run`; in `test`, the `sftp` and
+  `hostkey` checks always fail.
 - **ssh `exec` with `cwd=`.**
   - The SSH arguments are added twice (`:6318, 6329-6330`).
   - For sh and bash, the `cd` is also applied twice (`:5722`).

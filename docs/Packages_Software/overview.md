@@ -4,213 +4,150 @@
 
 ### Definition
 
-Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The **Packages & Software** domain provides tools for managing system software and version-controlled code repositories.
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The **Packages & Software** domain covers two handles:
+
+* `pkg://` – system packages through the host package manager (apt, dnf, yum, pacman, apk, brew). See [pkg.md](pkg.md).
+* `git://` – local Git repositories through libgit2. See [git.md](git.md).
 
 ### Purpose
 
-This domain enables:
+This domain provides:
 
-* Installation, update, removal, and inspection of software packages
-* Cross-platform package manager abstraction
-* Git repository management and version control workflows
-* Deterministic, structured output for automation
-
-### Architectural Problem Addressed
-
-Traditional package and Git tooling:
-
-* Produces unstructured terminal output
-* Varies across platforms and package managers
-* Requires manual scripting for automation
-* Provides inconsistent exit semantics
-
-resh addresses these issues by:
-
-* Standardizing package and Git operations behind typed handles
-* Providing structured JSON output
-* Enforcing explicit verbs and parameters
-* Supporting automation-friendly execution
+* Installation, update, removal, search and inspection of system packages
+* Snapshots of the installed package set as a lockfile
+* Git repository status, diffs, branches, tags, commits, merges, rebases, clone, pull, push and fast-forward sync
+* JSON output for automation
 
 ### Resource-Oriented URI Model
 
-resh commands follow:
-
+```text
+resh pkg://<alias>.<verb> input=<json>
+resh git://<alias>.<verb> path=<repo-dir> [key=value ...]
 ```
-handle://target.verb(options)
-```
 
-For package and Git operations:
+* **alias**: a free-form label (for example `system` or `main`), echoed in the output
+* **pkg** verbs take all options as one JSON object in `input`, which must include `manager` (`apt`, `dnf`, `yum`, `pacman`, `apk`, `brew` or `auto`)
+* **git** verbs take `key=value` arguments and always need `path`, the repository directory
 
-* **handle**: `pkg://`, `git://`
-* **target**: System, repository, or project
-* **verb**: Operation such as install, update, clone, commit
-* **options**: Explicit parameters
+Examples:
 
-Example:
-
-```
-pkg://system.install(name="nginx")
-git://repo.clone(url="https://github.com/org/project.git")
+```bash
+resh pkg://system.install 'input={"manager":"auto","packages":[{"name":"nginx"}]}'
+resh git://main.clone url=https://github.com/org/project.git path=/srv/project
 ```
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Verbs
 
-### Structured Interface Model
+| Handle | Registered verbs |
+| ------ | ---------------- |
+| `pkg`  | `install`, `remove`, `update`, `upgrade`, `info`, `search`, `list_installed`, `snapshot`, `restore`, `apply_lock` (alias for `restore`) |
+| `git`  | `status`, `status_summary`, `status_short`, `diff`, `branch`, `tag`, `commit`, `merge`, `rebase`, `clone`, `pull`, `push`, `sync` |
 
-* Each capability is exposed via a typed handle.
-* Verbs represent explicit operations.
-* Parameters are validated before execution.
-* Output is consistent and machine-readable.
-
----
-
-### Safety-First Execution
-
-* Explicit install/update/remove verbs.
-* Dry-run capabilities where supported.
-* Explicit overwrite and dependency behavior.
-* Version tracking for Git repositories.
-
----
-
-### Deterministic Behavior
-
-* Identical inputs yield consistent output structure.
-* Exit codes reflect operation success or failure.
-* Platform-specific differences are abstracted where possible.
-
----
-
-### JSON-Based Structured Output
-
-Operations return structured responses including:
-
-* `ok`
-* Operation metadata
-* Result summary
-* Error details when applicable
-
----
-
-### AI-Readiness
-
-Structured responses allow:
-
-* Automated dependency validation
-* Repository state inspection
-* Package version auditing
-* Programmatic remediation workflows
+Built-in help: `resh pkg --help`, `resh git --help`, `resh <handle> <verb> --help`.
 
 ---
 
 ## 3. Command Syntax and Execution Model
 
-### 3.1 URI Structure
-
-```
-handle://target.verb(options)
-```
-
-| Component | Description                                      |
-| --------- | ------------------------------------------------ |
-| `handle`  | `pkg://` or `git://`                             |
-| `target`  | System or repository context                     |
-| `verb`    | Operation (install, update, clone, commit, etc.) |
-| `options` | Structured parameters                            |
-
----
-
-### Production Examples
+### 3.1 Examples
 
 #### Install Software Package
 
-```
-pkg://system.install(name="curl")
-```
-
-#### Update All Packages
-
-```
-pkg://system.update
+```bash
+resh pkg://system.install 'input={"manager":"auto","packages":[{"name":"curl"}]}'
 ```
 
-#### Remove Package
+#### Check for Updates
 
+```bash
+resh pkg://system.update 'input={"manager":"auto","check_only":true}'
 ```
-pkg://system.remove(name="nginx")
+
+#### Remove Package (Dry Run)
+
+```bash
+resh pkg://system.remove 'input={"manager":"auto","packages":[{"name":"nginx"}],"dry_run":true}'
 ```
 
 #### Search for Software
 
-```
-pkg://system.search(query="database")
+```bash
+resh pkg://system.search 'input={"manager":"auto","query":"database"}'
 ```
 
 #### Clone Git Repository
 
-```
-git://repo.clone(url="https://github.com/example/project.git")
+```bash
+resh git://repo.clone url=https://github.com/example/project.git path=/srv/project
 ```
 
 #### Commit Changes
 
-```
-git://repo.commit(message="Fix configuration issue")
+```bash
+resh git://repo.commit path=/srv/project 'message=Fix configuration issue' all=true
 ```
 
-#### Pull Updates
+#### Pull Updates (fast-forward only)
 
-```
-git://repo.pull
+```bash
+resh git://repo.pull path=/srv/project remote=origin
 ```
 
 ---
 
-## 3.2 Execution Semantics
+### 3.2 Execution Semantics
 
-### Deterministic Behavior
+* `pkg` runs the package manager directly with an argument vector (no shell) and validates package names, versions and architectures before running anything.
+* `git` uses libgit2 linked into resh; it does not run the `git` binary or Git credential helpers.
+* Each `resh` invocation is a separate process; nothing is kept between invocations.
 
-* Explicit package manager abstraction.
-* Git operations reflect repository state.
-* Structured reporting of versions and status.
+### 3.3 Timeouts
 
----
+* `pkg`: every verb enforces `timeout_ms` (a key inside the JSON). Defaults range from 5 s (`info`, `search`) to 15 min (`update`, `upgrade`); see [pkg.md](pkg.md).
+* `git`: `timeout_ms` is **rejected** with exit code 2 for every verb, because libgit2 calls cannot be interrupted. Git operations are not time-limited; use an external `timeout(1)` if needed.
 
-### Structured Output Contracts
+### 3.4 Output
 
-Representative JSON example (package install):
+Both handles print one JSON object on success. Representative `pkg install` output (apt):
 
 ```json
 {
-  "ok": true,
-  "operation": "install",
-  "package": "curl",
+  "alias": "system",
+  "backend": "pkg",
+  "dry_run": false,
   "manager": "apt",
-  "result": {
-    "installed": true,
-    "version": "7.88.1",
-    "changed": true
-  }
+  "packages": [
+    {
+      "action": "installed",
+      "from_cache": false,
+      "installed_version": "1.7.1-3build1",
+      "name": "jq",
+      "requested_version": null
+    }
+  ],
+  "summary": {
+    "failed": 0,
+    "installed": 1,
+    "reinstalled": 0,
+    "unchanged": 0,
+    "upgraded": 0
+  },
+  "update_cache": true
 }
 ```
 
----
+### 3.5 Errors
 
-### Error Handling Structure
+Errors are printed as one line on standard error and the exit code is 1 (git `timeout_ms` rejection: 2). There is no JSON error object. Examples:
 
-Structured error example:
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "pkg.package_not_found",
-    "message": "Package not found in repositories"
-  }
-}
+```text
+Error: Invalid info configuration: Invalid JSON: missing field `manager` at line 1 column 18
+Error: git.repository_not_found: repository not found: /srv/project
 ```
+
+A `pkg` verb that changes packages exits 1 if any package operation failed (for example `pkg install: 1 of 2 package operations failed`), after printing its JSON result.
 
 ---
 
@@ -218,170 +155,75 @@ Structured error example:
 
 ### 4.1 Automation Utilities
 
-**Scope**
-
-Automated system setup and dependency management.
-
-**Use Cases**
-
 * CI/CD dependency provisioning
 * Automated environment bootstrapping
 * System maintenance automation
 
----
-
 ### 4.2 Data & State Management
 
-**Scope**
-
-Package version tracking and repository state inspection.
-
-**Use Cases**
-
-* Dependency auditing
-* Version validation
-* Repository status inspection
-
----
+* Dependency auditing (`list_installed`, `info`, `snapshot`)
+* Repository status inspection (`status`, `status_summary`)
 
 ### 4.3 Filesystem & Storage
-
-**Scope**
-
-Git repository storage and working tree management.
-
-**Use Cases**
 
 * Cloning repositories
 * Managing branches
 * Staging and committing changes
 
----
-
 ### 4.4 Network & Remote Operations
 
-**Scope**
-
-Fetching packages from remote repositories and pulling Git changes.
-
-**Use Cases**
-
-* Downloading updates
-* Cloning remote repositories
-* Synchronizing codebases
-
----
+* Downloading packages from the configured repositories
+* Cloning, pulling (fast-forward only), pushing, and fast-forward `sync`
 
 ### 4.5 Packages & Software
 
-**Supported Handles**
-
-* `pkg://` (Package Management)
-* `git://` (Git Version Control)
-
 **Package Management Capabilities**
 
-* Install software
-* Update software
-* Remove packages
-* Search for software
+* Install, update, upgrade and remove packages
+* Search the package index
 * Inspect installed versions
+* Snapshot the installed package set. `restore` reinstalls missing packages by name; it does **not** pin the locked versions (see [pkg.md](pkg.md)).
 
 **Git Capabilities**
 
-* Clone repositories
-* Commit changes
-* Pull updates
-* Branch management
-* Version tracking
+* Clone repositories (no shallow clone, no submodules)
+* Commit, branch, tag, diff
+* Explicit `merge` and `rebase` verbs
+* `pull` and `sync` fast-forward only; they never merge or rebase diverged branches
 
----
-
-### 4.6 Process & Service Management
-
-Indirectly supports:
-
-* Installing services
-* Updating service binaries
-* Removing deprecated services
-
----
-
-### 4.7 Security & Secrets
-
-**Security Considerations**
+### 4.6 Security & Secrets
 
 * Install from trusted repositories.
-* Keep systems updated.
+* `pkg` package-manager commands generally need root; resh does not elevate privileges.
+* Git credentials passed as arguments (`password=`, `token=`) are visible in the process list and shell history.
 * Avoid committing sensitive data.
-* Use version control to track changes.
-
----
-
-### 4.8 System Information
-
-Provides structured reporting of:
-
-* Installed package versions
-* Repository status
-* Branch information
-* Commit history metadata
 
 ---
 
 ## 5. Platform Support
 
-Package management supports multiple platform-specific managers:
-
-* `apt` (Ubuntu/Debian)
-* `brew` (macOS)
-* `dnf` (Fedora)
-* Other system managers where available
-
-Git operations are cross-platform where Git is installed.
-
-No additional OS-specific limitations are defined in the provided documentation.
+* Linux is the only supported platform for resh.
+* `pkg`: the apt, dnf, yum, pacman and apk backends were exercised in Linux test sandboxes; the brew backend exists in the code but was never executed in testing.
+* `git`: uses the libgit2 built into resh; no `git` binary is required.
 
 ---
 
 ## 6. Operational Best Practices
 
-### Safe Usage Guidelines
-
-* Update software regularly.
-* Install only required packages.
-* Use official repositories.
-* Test updates before applying to production.
-
----
-
-### Automation Considerations
-
-* Use structured output for dependency validation.
-* Validate versions before deployment.
-* Use dry-run where supported.
-* Automate environment provisioning.
-
----
+* Use `dry_run` (inside the `pkg` JSON) before changing packages.
+* Check the exit code and `summary.failed` after `pkg` changes.
+* Use `git status_summary` before destructive Git operations.
+* When `git sync` reports diverged history, rebase or merge explicitly, then sync again.
 
 ### CI/CD Integration
 
 Typical workflow:
 
-1. Install required dependencies via `pkg`.
-2. Clone repository via `git`.
-3. Pull updates before build.
+1. Install required dependencies via `pkg install`.
+2. Clone the repository via `git clone`.
+3. `git pull` (fast-forward) before build.
 4. Commit changes during automation workflows.
-5. Validate installed versions.
-
----
-
-### Production Environment Recommendations
-
-* Maintain consistent package versions.
-* Regularly apply security updates.
-* Keep repositories clean and organized.
-* Avoid committing temporary or sensitive files.
+5. Validate installed versions with `pkg list_installed` or `pkg info`.
 
 ---
 
@@ -393,23 +235,11 @@ Typical workflow:
 * Automate dependency installation.
 * Manage repository workflows.
 
----
-
 ### SRE Engineers
 
-* Ensure systems remain patched.
+* Keep systems patched.
 * Audit package versions.
 * Track infrastructure code changes.
-
----
-
-### Network Administrators
-
-* Install networking tools.
-* Maintain secure system packages.
-* Audit system software inventory.
-
----
 
 ### AI / Automation Engineers
 
@@ -421,39 +251,6 @@ Typical workflow:
 
 ## 8. Technical Foundation
 
-### Rust Implementation Advantages
-
-resh is implemented in Rust, providing:
-
-* Memory safety
-* Strong compile-time guarantees
-* Deterministic execution behavior
-* Efficient process invocation
-
----
-
-### Type Safety
-
-* Enumerated verbs
-* Explicit parameter validation
-* Structured error codes
-* Consistent output schemas
-
----
-
-### Performance Characteristics
-
-* Native binary execution
-* Efficient package manager invocation
-* Controlled Git command execution
-* Minimal parsing overhead
-
----
-
-### Cross-Platform Architecture
-
-* CLI-based execution model
-* Platform-specific package manager abstraction
-* Cross-platform Git integration
-* Consistent structured JSON output
-
+* Implemented in Rust.
+* `pkg` runs package managers as subprocesses with argument vectors; `git` uses libgit2 in-process.
+* Fixed verb sets with per-verb argument validation.

@@ -463,7 +463,7 @@ Shown with --json-pretty. An existing compatible mount returns action
   "action": "success",
   "actions": [
     {
-      "command": "resize2fs /dev/sdb1 52428800K",
+      "command": "resize2fs /dev/sdb1 209715200K",
       "status": "success",
       "tool": "resize2fs",
       "type": "filesystem_resize"
@@ -1951,7 +1951,7 @@ impl FsHandle {
                                 config.network = self.parse_bool_value(value);
                             }
                             "dry_run" => {
-                                config.dry_run = self.parse_bool_value(value);
+                                config.dry_run = self.parse_dry_run_value(value)?;
                             }
                             "timeout_ms" => {
                                 config.timeout_ms = value.as_str()
@@ -1977,6 +1977,23 @@ impl FsHandle {
         }
 
         Ok(config)
+    }
+
+    /// `dry_run` for mount and unmount. Unlike the other switches, a value
+    /// that is not a recognised boolean is an error: a mistyped dry run must
+    /// not mount or unmount for real.
+    fn parse_dry_run_value(&self, value: &Value) -> Result<bool, anyhow::Error> {
+        let parsed = match value {
+            Value::Bool(b) => Some(*b),
+            Value::String(s) => crate::core::lenient::parse_bool(s),
+            _ => None,
+        };
+        parsed.ok_or_else(|| {
+            FsError::InvalidMountConfig(format!(
+                "invalid dry_run value {value}: expected true/false/1/0/yes/no/on/off"
+            ))
+            .into()
+        })
     }
 
     /// Helper to parse boolean values from JSON Value (handles string "true"/"false")
@@ -2379,7 +2396,7 @@ impl FsHandle {
                                 config.fail_if_not_mounted = self.parse_bool_value(value);
                             }
                             "dry_run" => {
-                                config.dry_run = self.parse_bool_value(value);
+                                config.dry_run = self.parse_dry_run_value(value)?;
                             }
                             "timeout_ms" => {
                                 config.timeout_ms = value.as_str()
@@ -5642,11 +5659,15 @@ impl FsHandle {
             format!("lvextend -L {}b {}", target_size, device)
         };
 
-        let output = AsyncCommand::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .output()
-            .await?;
+        // Run the tool directly (no shell), so the device path stays one
+        // argument; `command` above is only the reported text.
+        let size = format!("{}b", target_size);
+        let mut cmd = AsyncCommand::new(if is_shrink { "lvreduce" } else { "lvextend" });
+        cmd.arg("-L").arg(&size);
+        if is_shrink {
+            cmd.arg("-f");
+        }
+        let output = cmd.arg(device).output().await?;
 
         let status = if output.status.success() {
             "success".to_string()
@@ -5699,15 +5720,12 @@ impl FsHandle {
 
     /// Resize ext3/ext4 filesystem
     async fn resize_ext_filesystem(&self, fs_info: &ResizeFilesystemInfo, target_size: u64) -> Result<ResizeAction, anyhow::Error> {
-        // Calculate target in filesystem blocks (4KB blocks for ext)
-        let block_size = 4096; // Default ext4 block size
-        let target_blocks = target_size / block_size;
-        
-        let command = format!("resize2fs {} {}K", fs_info.source, target_blocks);
+        let size_arg = resize2fs_size_arg(target_size);
+        let command = format!("resize2fs {} {}", fs_info.source, size_arg);
         
         let output = AsyncCommand::new("resize2fs")
             .arg(&fs_info.source)
-            .arg(format!("{}K", target_blocks))
+            .arg(&size_arg)
             .output()
             .await?;
 
@@ -5817,8 +5835,7 @@ impl FsHandle {
         if !config.volume_resize_only {
             let (tool, command) = match fs_info.fstype.as_str() {
                 "ext3" | "ext4" => {
-                    let target_blocks = target_size / 4096;
-                    ("resize2fs".to_string(), format!("resize2fs {} {}K", fs_info.source, target_blocks))
+                    ("resize2fs".to_string(), format!("resize2fs {} {}", fs_info.source, resize2fs_size_arg(target_size)))
                 }
                 "xfs" => {
                     let mount_point = if fs_info.mounted {
@@ -7228,6 +7245,51 @@ impl Handle for FsHandle {
 /// Register the filesystem handle with the registry
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("fs", |u| Ok(Box::new(FsHandle::from_url(u.clone())?)));
+}
+
+/// The size argument for resize2fs. resize2fs reads a `K` suffix as KiB, so
+/// the byte count is divided by 1024 (it used to be divided by the 4 KiB block
+/// size, which asked for a quarter of the requested size).
+fn resize2fs_size_arg(target_bytes: u64) -> String {
+    format!("{}K", target_bytes / 1024)
+}
+
+// Stage 4 regression tests: resize size argument and strict dry_run.
+#[cfg(test)]
+mod stage4_tests {
+    use super::*;
+
+    #[test]
+    fn resize2fs_gets_the_requested_size() {
+        let gib = 1024u64 * 1024 * 1024;
+        assert_eq!(resize2fs_size_arg(200 * gib), "209715200K");
+        assert_eq!(resize2fs_size_arg(gib), "1048576K");
+        // Never rounds up past the requested size.
+        assert_eq!(resize2fs_size_arg(1024 * 10 + 1023), "10K");
+    }
+
+    #[test]
+    fn mount_and_unmount_dry_run_parse_strictly() {
+        let h = FsHandle { alias: "test".to_string() };
+        for bad in ["ture", "maybe", "2", ""] {
+            assert!(h.parse_mount_config(json!({"target": "/mnt/x", "source": "/dev/x", "dry_run": bad})).is_err(), "{bad:?}");
+            assert!(h.parse_unmount_config(json!({"target": "/mnt/x", "dry_run": bad})).is_err(), "{bad:?}");
+        }
+        for (v, want) in [("true", true), ("1", true), ("YES", true), ("on", true), ("false", false), ("0", false), ("off", false)] {
+            assert_eq!(h.parse_mount_config(json!({"target": "/mnt/x", "source": "/dev/x", "dry_run": v})).unwrap().dry_run, want, "{v}");
+            assert_eq!(h.parse_unmount_config(json!({"target": "/mnt/x", "dry_run": v})).unwrap().dry_run, want, "{v}");
+        }
+        // Through call(): a mistyped dry run fails before any mount command.
+        let mut args = Args::new();
+        for (k, v) in [("target", "/nonexistent/resh-test-mnt"), ("source", "/dev/null"), ("dry_run", "ture")] {
+            args.insert(k.into(), v.into());
+        }
+        let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+        let st = h.call("mount", &args, &mut io).unwrap();
+        assert!(!st.ok);
+        assert!(!std::path::Path::new("/nonexistent/resh-test-mnt").exists());
+    }
 }
 
 #[cfg(test)]

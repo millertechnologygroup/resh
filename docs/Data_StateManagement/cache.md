@@ -2,462 +2,254 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command-line framework that standardizes system automation using a resource-oriented URI execution model.
+Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs.
 
-The `cache://` handle provides high-performance access to in-memory data stores, specifically Redis and Memcached. It enables structured storage, retrieval, mutation, and inspection of cached data through a consistent URI-based interface.
+The `cache://` handle reads and writes keys in Redis or Memcached. It supports key namespaces, TTLs, conditional writes and value encoding, and prints its results as JSON.
 
-Traditional cache interaction typically involves:
+The target names a backend and a connection alias:
 
-* Backend-specific CLI tools
-* Direct driver integration in application code
-* Unstructured command output
-* Manual error handling
-* Inconsistent key management patterns
-
-The `cache://` handle addresses these issues by:
-
-* Providing a uniform resource-oriented command structure
-* Supporting multiple cache backends through a consistent interface
-* Returning structured JSON responses
-* Enabling deterministic automation and orchestration workflows
-
-All cache operations follow the resh URI pattern:
-
-```
-cache://backend/alias.verb(options)
+```text
+resh cache://<backend>/<alias>.<verb> url=<connection-url> [key=value ...]
 ```
 
-Where:
+* `backend` is `redis` or `memcached` (exactly these words; `memcache` is rejected).
+* `alias` is a label for the connection. If it is omitted, the alias is `default`.
+* `verb` is one of `connect`, `get`, `exists`, `ttl`, `keys`, `set`, `incr`, `del`.
 
-* `backend` identifies the cache system (`redis`, `memcached`)
-* `alias` identifies a named connection profile
-* `verb` defines the operation
-* `options` define execution parameters
+**Connections do not persist between `resh` invocations.** Each `resh` command is a separate process and runs one stage. A connection made by `connect` lives only in that process, so in practice every verb must be given `url=` and connects on demand. `connect` on its own is useful only as a connectivity check.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Design Notes
 
-The `cache://` handle adheres to resh architectural principles.
-
-### Structured Interface Model
-
-All cache operations follow:
-
-```
-cache://backend/alias.verb(options)
-```
-
-This standardizes access to Redis and Memcached through a consistent command grammar.
-
-### Safety-First Execution
-
-Operations include:
-
-* Explicit timeout controls (`timeout_ms`)
-* Conditional writes (`only_if_not_exists`, `only_if_exists`)
-* Structured error reporting
-* Namespace isolation
-
-These reduce unintended overwrites and unsafe concurrency behavior.
-
-### Deterministic Behavior
-
-Each operation:
-
-* Produces structured JSON output
-* Separates metadata from payload
-* Uses explicit success/error indicators
-* Provides consistent field names across verbs
-
-### JSON-Based Structured Output
-
-All responses are machine-readable, enabling:
-
-* CI/CD pipeline integration
-* Monitoring system ingestion
-* Programmatic cache inspection
-* Automation gating
-
-### AI-Readiness
-
-The structured interface and predictable response format enable safe integration into automated and AI-driven workflows.
+* Each verb prints one JSON object to stdout.
+* On failure the handle prints a JSON error object to stdout (not stderr), and resh also prints `Error: <reason>` to stderr. The exit code is 1.
+* Keys can be prefixed with a namespace (`namespace=prod` turns `user:1` into `prod:user:1`).
+* Conditional writes (`only_if_not_exists`, `only_if_exists`) can stop a write from overwriting a value, or from creating one.
+* There is no dry-run mode. `set`, `incr` and `del` change the server immediately.
 
 ---
 
 ## 3. Command Syntax and Execution Model
 
-### 3.1 URI Structure
-
-```
-cache://backend/alias.verb(options)
-```
-
-#### Components
+### 3.1 URL structure
 
 | Component | Description                                                                 |
 | --------- | --------------------------------------------------------------------------- |
-| `cache`   | Handle identifier                                                           |
+| `cache`   | Handle scheme                                                               |
 | `backend` | `redis` or `memcached`                                                      |
-| `alias`   | Logical connection profile                                                  |
-| `verb`    | Operation (`connect`, `get`, `set`, `del`, `incr`, `exists`, `keys`, `ttl`) |
-| `options` | Named execution parameters                                                  |
+| `alias`   | Connection label (default `default`)                                        |
+| `verb`    | `connect`, `get`, `exists`, `ttl`, `keys`, `set`, `incr`, `del`             |
+| arguments | `key=value` words after the stage, or `(key=value,...)` inside quotes       |
 
----
+### 3.2 Connection URLs
 
-### Example Commands
+| Backend     | Accepted `url=` schemes                          | Example                        |
+| ----------- | ------------------------------------------------ | ------------------------------ |
+| `redis`     | `redis://`, `rediss://`, `redis+unix://`, `unix://` | `redis://localhost:6379/0`  |
+| `memcached` | `memcache://`, `memcached://`                    | `memcache://localhost:11211`   |
 
-Connect to Redis:
+`connect_timeout_ms` (default 5000) limits how long opening and verifying the connection may take (Redis `PING`, Memcached `VERSION`). It is read by every verb, because every verb may connect on demand.
 
-```sh
-cache://redis/main.connect(url="redis://localhost:6379/0")
+**Security note:** a password in `url=` (for example `redis://:secret@host/0`) is visible to other local users in the process list while resh runs, and may be kept in shell history. The `endpoint` field in the output does not include credentials.
+
+### 3.3 Example commands
+
+Connectivity check:
+
+```bash
+resh --json-pretty cache://redis/main.connect url=redis://localhost:6379/0
 ```
 
-Set value:
+Store a value with a 60-second TTL:
 
-```sh
-cache://redis/main.set(key="user:123", value="John Doe", encode="utf8")
+```bash
+resh cache://redis/main.set key=user:123 value=alice ttl_ms=60000 url=redis://localhost:6379/0
 ```
 
-Get value:
+Read it back:
 
-```sh
-cache://redis/main.get(key="user:123", decode="utf8")
+```bash
+resh cache://redis/main.get key=user:123 url=redis://localhost:6379/0
 ```
 
-Increment counter:
+Increment a counter:
 
-```sh
-cache://redis/main.incr(key="page_views", by="1")
+```bash
+resh cache://redis/main.incr key=page_views by=1 url=redis://localhost:6379/0
 ```
 
-Check TTL:
+Check the remaining TTL:
 
-```sh
-cache://redis/main.ttl(key="session:abc")
+```bash
+resh cache://redis/main.ttl key=user:123 url=redis://localhost:6379/0
 ```
 
----
+### 3.4 Output
 
-### 3.2 Execution Semantics
-
-All operations return structured JSON envelopes.
-
-#### Representative Success Response
+Successful `get` (shown with `--json-pretty`):
 
 ```json
 {
-  "backend": "redis",
   "alias": "main",
+  "backend": "redis",
+  "hit": true,
   "key": "user:123",
-  "value": "John Doe",
-  "hit": true
+  "value": "alice"
 }
 ```
 
-#### Representative Error Response
+Error (for example, no `url=` given):
 
 ```json
 {
-  "error": true,
-  "message": "Connection timeout after 1000ms",
-  "code": "TIMEOUT"
+  "error": {
+    "code": "cache.connection_not_found",
+    "details": { "alias": "main", "backend": "redis" },
+    "message": "connection not found for backend 'redis' alias 'main'. Pass url=<connection-url> (or run connect earlier in the same pipeline)"
+  }
 }
 ```
 
-Automation logic must evaluate structured response fields rather than parsing raw output.
+Error codes have the form `cache.<kind>`, for example `cache.invalid_get_config`, `cache.connect_failed`, `cache.get_timeout`, `cache.keys_unsupported`.
 
 ---
 
-## 4. Functional Domains – Cache Handle
+## 4. Verbs
 
----
+### 4.1 connect
 
-### 4.1 Supported Backends
+Opens and verifies a connection and registers it under the alias for the rest of the same process.
 
-| Backend   | Characteristics                                                   |
-| --------- | ----------------------------------------------------------------- |
-| Redis     | In-memory data store with persistence options and rich features   |
-| Memcached | Lightweight, high-performance in-memory cache without persistence |
+Arguments: `url` (required), `connect_timeout_ms`.
 
-Redis supports all documented verbs. Memcached supports core key-value operations.
+Output fields: `alias`, `backend`, `endpoint`, `status` (`"connected"`).
 
----
+### 4.2 get
 
-### 4.2 Connection Management
+Reads one key (`key=`) or a list of keys (`keys=<json-array>`).
 
-**Verb:** `connect`
+| Argument     | Description                                        | Default  |
+| ------------ | -------------------------------------------------- | -------- |
+| `key`/`keys` | Exactly one is required                            |          |
+| `namespace`  | Prefix added as `<namespace>:<key>`                | none     |
+| `decode`     | `utf8`, `bytes` or `json`                          | `utf8`   |
+| `default`    | Value returned on a miss                           | `null`   |
+| `timeout_ms` | Operation timeout                                  | 1000     |
 
-Required:
-
-* `url`
-
-Example:
-
-```sh
-cache://redis/main.connect(url="redis://localhost:6379/0")
+```bash
+resh cache://redis/main.get 'keys=["user:1","user:2"]' url=redis://localhost:6379/0
 ```
 
-Expected response:
+With `keys=` the output has `alias`, `backend` and a `results` array of `key`, `value`, `hit`.
+
+### 4.3 set
+
+Stores `value=` under `key=`, or `values=<json-array>` under `keys=<json-array>` (same length).
+
+| Argument             | Description                                          | Default |
+| -------------------- | ---------------------------------------------------- | ------- |
+| `ttl_ms`             | Expiry in milliseconds                               | none    |
+| `encode`             | `utf8`, `bytes` or `json`                            | `utf8` for a string value, otherwise `json` |
+| `only_if_not_exists` | Write only if the key is missing                     | `false` |
+| `only_if_exists`     | Write only if the key exists                         | `false` |
+| `namespace`          | Key prefix                                           | none    |
+| `timeout_ms`         | Operation timeout                                    | 1000    |
+
+```bash
+resh cache://redis/main.set key=lock:deploy value=host-a only_if_not_exists=true ttl_ms=30000 url=redis://localhost:6379/0
+```
+
+A write skipped by a condition reports `"stored": false` and `"reason": "condition_not_met"`. The two conditions cannot both be true.
+
+### 4.4 del
+
+Deletes `key=` or `keys=<json-array>`. With `keys=` the output has a `results` array and `total_deleted`.
+
+```bash
+resh cache://redis/main.del 'keys=["session:1","session:2"]' url=redis://localhost:6379/0
+```
+
+### 4.5 incr
+
+Increments an integer counter. Arguments: `key` (required), `by` (default 1), `initial` (starting value when the key is missing, default 0), `ttl_ms`, `namespace`, `timeout_ms`.
+
+Output (with `--json-pretty`):
 
 ```json
 {
-  "backend": "redis",
   "alias": "main",
-  "status": "connected"
-}
-```
-
----
-
-### 4.3 Key Retrieval
-
-**Verb:** `get`
-
-Supports:
-
-* Single key retrieval
-* Batch retrieval
-* Namespace prefixing
-* Decode formats (`utf8`, `json`, `bytes`)
-* Default fallback values
-
-Example:
-
-```sh
-cache://redis/main.get(key="session:abc", decode="json")
-```
-
-Batch example:
-
-```sh
-cache://redis/main.get(keys=["user:1","user:2"])
-```
-
----
-
-### 4.4 Key Storage
-
-**Verb:** `set`
-
-Supports:
-
-* Single or multiple key writes
-* TTL configuration (`ttl_ms`)
-* Conditional writes
-* Encoding options
-
-Example:
-
-```sh
-cache://redis/main.set(
-  key="session:abc",
-  value="{\"user_id\":42}",
-  encode="json",
-  ttl_ms="1800000"
-)
-```
-
----
-
-### 4.5 Key Deletion
-
-**Verb:** `del`
-
-Supports single or batch deletion.
-
-Example:
-
-```sh
-cache://redis/main.del(keys=["session:1","session:2"])
-```
-
----
-
-### 4.6 Increment Operations
-
-**Verb:** `incr`
-
-Used for counters and rate tracking.
-
-Example:
-
-```sh
-cache://redis/main.incr(key="api_calls", by="10")
-```
-
-Response:
-
-```json
-{
   "backend": "redis",
-  "alias": "main",
-  "key": "api_calls",
-  "value": 110,
-  "created": false
+  "created": false,
+  "key": "page_views",
+  "value": 47
 }
 ```
 
----
+### 4.6 exists
 
-### 4.7 Existence Checks
+Reports whether `key=` (or each of `keys=`) exists. With `keys=` the output has a `results` array and `total_exists`. See the Memcached limitation in section 5.
 
-**Verb:** `exists`
+### 4.7 keys
 
-Example:
+Lists keys that match a glob `pattern=` (default `*`) one page at a time with Redis `SCAN`. Arguments: `pattern`, `namespace`, `cursor`, `limit` (default 100; the `COUNT` sent to Redis is capped at 1000), `timeout_ms`.
 
-```sh
-cache://redis/main.exists(key="lock:resource")
+```bash
+resh --json-pretty cache://redis/main.keys 'pattern=user:*' url=redis://localhost:6379/0
 ```
 
----
+Output fields: `alias`, `backend`, `keys`, `count`, `cursor` (a string, or `null` when there are no more pages), `has_more`. Memcached cannot list keys and returns the `cache.keys_unsupported` error.
 
-### 4.8 Key Discovery
+### 4.8 ttl
 
-**Verb:** `keys`
+Reports `exists`, `has_expiry`, `supports_ttl` and `ttl_ms` for `key=` or each of `keys=`. Only Redis can report a TTL; Memcached reports `supports_ttl: false` and `ttl_ms: null`.
 
-Supports pattern matching.
+### 4.9 Encoding
 
-Example:
+| Format  | On `set`                             | On `get`                               |
+| ------- | ------------------------------------ | -------------------------------------- |
+| `utf8`  | Stores the text                      | Returns a string; fails on invalid UTF-8 |
+| `json`  | Stores the value serialized as JSON  | Parses the stored bytes as JSON        |
+| `bytes` | Expects base64 text, stores the bytes | Returns the bytes base64-encoded      |
 
-```sh
-cache://redis/main.keys(pattern="user:*")
-```
+### 4.10 timeout_ms
 
----
-
-### 4.9 Expiration Inspection
-
-**Verb:** `ttl`
-
-Example:
-
-```sh
-cache://redis/main.ttl(key="session:abc")
-```
+* `get`, `set`, `del`, `incr`, `exists`, `keys` and `ttl` enforce `timeout_ms` (default 1000 ms) around the operation. On expiry they fail with `cache.<verb>_timeout`. `timeout_ms=0` is rejected.
+* A `timeout_ms` value that is not a plain number (for example `timeout_ms=abc`) is silently ignored and the default is used.
+* `connect` does not read `timeout_ms`; it uses `connect_timeout_ms`.
 
 ---
 
-### 4.10 Namespaces
+## 5. Limitations
 
-Namespaces prepend logical prefixes to keys for environment isolation:
+These are behaviours of the current code, not plans:
 
-* Without namespace: `user:123`
-* With namespace `prod`: `prod:user:123`
-
-This enables separation of development, staging, and production environments.
-
----
-
-### 4.11 Encoding Options
-
-| Format  | Use Case                     |
-| ------- | ---------------------------- |
-| `utf8`  | Plain text values            |
-| `json`  | Structured data              |
-| `bytes` | Binary data (base64 encoded) |
+* **Numeric-looking values are dropped or rejected.** Each argument value that parses as JSON is passed to the verb as JSON, and the key, namespace and cursor options are read only as strings. So `key=42` is rejected ("exactly one of 'key' or 'keys' is required"), `namespace=2024` is silently ignored, and `cursor=17` is silently ignored, so `keys` paging restarts from the beginning instead of advancing. The same applies to `true`, `false` and `null`. Workaround: quote the value as a JSON string, for example `'key="42"'`, `'namespace="2024"'` or `'cursor="17"'`.
+* **Memcached `exists` and `ttl` report `exists: true` for missing keys**, because a miss is not distinguished from a hit. Do not rely on them with Memcached; use `get` and check `hit`.
+* **Memcached `incr`** treats any increment error (missing key, non-numeric value, server error) as "missing" and overwrites the key with `initial + by`. Negative results are clamped to 0.
+* **Memcached TTLs are whole seconds.** `ttl_ms` is divided by 1000 and rounded down; with `set`, a `ttl_ms` below 1000 becomes 0, which means no expiry.
+* `keys` is Redis-only.
+* Connections are per process (section 1). There is no persistent connection profile.
 
 ---
 
-## 5. Platform Support
+## 6. Platform Support
 
-| Platform   | Support Level |
-| ---------- | ------------- |
-| Linux      | Supported     |
-| Unix/macOS | Supported     |
-| Windows    | Supported     |
-
-Functionality depends on availability of Redis or Memcached services.
+Linux is the only supported and tested platform. The handle needs network (or Unix socket) access to a Redis or Memcached server.
 
 ---
 
-## 6. Operational Best Practices
+## 7. Usage Guidance
 
-### Safe Usage Guidelines
-
-* Use TTL values to prevent memory bloat.
-* Use namespaces to isolate environments.
-* Avoid unbounded key patterns in production.
-* Use conditional writes for distributed locks.
-
-### Automation Considerations
-
-* Parse JSON output rather than CLI output.
-* Validate `hit` or `exists` fields explicitly.
-* Implement fallback logic for cache misses.
-* Use batch operations for efficiency.
-
-### CI/CD Integration
-
-* Use cache for build artifact acceleration.
-* Store ephemeral pipeline state.
-* Validate connectivity during pipeline initialization.
-
-### Production Recommendations
-
-* Monitor timeout values.
-* Use consistent key naming conventions.
-* Apply TTL to session and lock keys.
-* Monitor cache hit rates and adjust accordingly.
+* Pass `url=` on every command; scripts can keep it in a variable.
+* Check `hit` (for `get`) and `stored` (for `set`) rather than only the exit code.
+* Use `only_if_not_exists=true` with `ttl_ms` for simple locks on Redis.
+* Use namespaces to separate environments (`namespace=prod`, `namespace=staging`).
+* Quote numeric keys, namespaces and cursors as JSON strings (section 5).
 
 ---
 
-## 7. Use Cases by Role
+## 8. Implementation Notes
 
-### DevOps Engineers
-
-* Store build metadata.
-* Implement distributed locks.
-* Accelerate deployment workflows.
-
-### SRE Engineers
-
-* Monitor cache performance.
-* Manage rate-limiting counters.
-* Inspect TTL values during incident response.
-
-### Network Administrators
-
-* Store temporary configuration state.
-* Track session-based network metrics.
-* Implement distributed coordination.
-
-### AI/Automation Engineers
-
-* Use deterministic cache responses for orchestration.
-* Implement structured rate limiting.
-* Integrate counters into automation workflows.
-
----
-
-## 8. Technical Foundation
-
-The `cache://` handle operates within resh, implemented in Rust.
-
-### Rust Implementation Advantages
-
-* Memory safety
-* Strong compile-time validation
-* Deterministic execution model
-
-### Type Safety
-
-Arguments and response structures are type-validated, ensuring consistent contract enforcement.
-
-### Performance Characteristics
-
-* Low-latency in-memory access
-* Efficient batch operations
-* Controlled timeout enforcement
-
-### Cross-Platform Architecture
-
-Supported across:
-
-* Linux
-* macOS/Unix
-* Windows
-
-Behavior is dependent on backend service availability and network configuration.
-
-
+* Written in Rust, using the `redis` crate (async connection manager) and the `memcache` crate (blocking calls run on a worker thread).
+* Arguments are validated before the server is contacted: `key`/`keys` must be non-empty, `decode`/`encode` must be one of the listed formats, and `ttl_ms` and `limit` must be greater than 0.

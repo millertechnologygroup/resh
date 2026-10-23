@@ -4,539 +4,262 @@
 
 ### Definition
 
-Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations using structured URI-based commands. The `user://` handle manages user accounts, groups, passwords, and group memberships on Linux/Unix systems.
+Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations as URI-style commands. The `user://` handle creates, deletes, and inspects local Linux user accounts, groups, and group memberships, changes passwords, and locks or unlocks accounts.
 
-### Purpose
+### How it works
 
-The user domain enables:
+* The default **system** backend reads the user database with `getpwnam`, `getgrnam`, and `getgrouplist`, and makes changes by running `useradd`, `groupadd`, `usermod`, `userdel`, `groupdel`, `gpasswd`, or `chpasswd`. Changes normally need root.
+* `dry_run=true` runs no changing command; the planned commands are reported in `planned_commands`.
+* `backend=mock` uses an empty in-memory store that exists only for the life of the one `resh` process. It is useful for checking argument handling, not for persisting anything.
+* `backend=file` and `backend=ldap` are accepted names but fail with `user.backend_not_supported`.
 
-* Creation and deletion of users and groups
-* Group membership management
-* Password management
-* Account locking and unlocking
-* Existence checks and group inspection
-* Safe automation using dry-run and protection controls
-* Support for both system and mock backends
+Each verb prints one JSON object (pretty-printed) on stdout, or text with `format=text`.
 
-All operations return structured JSON output suitable for automation, CI/CD workflows, and infrastructure orchestration.
+---
 
-### Architectural Problem Addressed
+## 2. Command Syntax
 
-Traditional user management tools:
-
-* Use imperative CLI flags
-* Produce unstructured text output
-* Require manual parsing for automation
-* Provide inconsistent safety controls
-* Lack structured dry-run and idempotent behavior
-
-resh addresses these limitations by:
-
-* Exposing user lifecycle operations as typed verbs
-* Using structured parameters
-* Returning deterministic JSON output
-* Enforcing safety controls for system accounts
-* Supporting idempotent scripting patterns
-
-### Resource-Oriented URI Model
-
-User operations follow:
-
-```
-handle://target.verb(options)
+```text
+resh user://<name>.<verb> [key=value ...]
 ```
 
-For user management:
+Targets:
 
-* **handle**: `user://`
-* **target**: user, group, or membership identifier
-* **verb**: action (`add`, `delete`, `passwd`, `lock`, `unlock`, `groups`, `exists`)
-* **options**: structured parameters
+| Target form                 | Meaning                          |
+| --------------------------- | -------------------------------- |
+| `user://alice`              | User `alice`                     |
+| `user://group/admins`       | Group `admins` (for `mode=group`) |
+| `user://membership/alice`   | Memberships of `alice` (for `mode=membership`) |
 
-Examples:
+The three-slash forms (`user:///alice`) also work. The name can instead be passed as `username=`, `group_name=`, or `member=`.
 
-```
-user://alice.add(mode=user,username=alice)
-user://group/admins.add(mode=group,group_name=admins)
-user://alice.passwd(new_password_plain=Secret123!)
+Built-in help:
+
+```bash
+resh user --help
+resh user add --help
 ```
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 3. Verbs
 
-### Structured Interface Model
+| Verb     | Purpose                                                         | Changes the system |
+| -------- | --------------------------------------------------------------- | ------------------ |
+| `exists` | Report whether a user exists (by username, optionally checking `uid`) | No |
+| `groups` | List a user's groups, marked primary / supplementary / system   | No                 |
+| `add`    | Create a user, a group, or memberships (`mode=user\|group\|membership`, default `user`) | Yes |
+| `delete` | Remove a user, a group, or memberships (same `mode` values)      | Yes                |
+| `passwd` | Set a password from `new_password_plain` or `new_password_hash`  | Yes                |
+| `lock`   | Lock an account (`usermod -L`)                                   | Yes                |
+| `unlock` | Unlock an account (`usermod -U`)                                 | Yes                |
 
-* Seven explicitly defined verbs.
-* Typed `mode` for add/delete operations.
-* Backend abstraction (`system`, `mock`).
-* Deterministic JSON output.
-* Explicit identity resolution via username or UID.
+### exists
 
----
-
-### Safety-First Execution
-
-* `dry_run=true` supported for all mutating verbs.
-* System user protection (UID < 1000).
-* `protect_system_users=true` by default.
-* `force=true` required to override safety checks.
-* `ignore_if_missing` and `ignore_if_exists` for idempotency.
-* Minimum UID enforcement for destructive operations.
-
----
-
-### Deterministic Behavior
-
-* Explicit parameter validation.
-* Username and group validation rules.
-* Structured output regardless of format.
-* Consistent exit codes.
-* Backend-specific behavior abstracted.
-
----
-
-### JSON-Based Structured Output
-
-Representative example (user creation):
-
-```json
-{
-  "ok": true,
-  "mode": "user",
-  "backend": "mock",
-  "dry_run": false,
-  "user": {
-    "username": "alice",
-    "uid": 1001,
-    "created": true,
-    "existed": false
-  },
-  "warnings": []
-}
+```bash
+resh user://alice.exists
+resh user://alice.exists uid=1001
 ```
 
-All operations return structured objects describing:
-
-* User existence state
-* Changes performed
-* Warnings
-* Backend used
-
----
-
-### AI-Readiness
-
-Structured output enables:
-
-* Automated user provisioning workflows
-* Compliance validation
-* System account protection auditing
-* Idempotent infrastructure scripts
-* Drift detection in access control
-
----
-
-## 3. Command Syntax and Execution Model
-
-### 3.1 URI Structure
-
-```
-user://target.VERB(options)
-```
-
-| Component | Description                    |
-| --------- | ------------------------------ |
-| `handle`  | `user://`                      |
-| `target`  | Username, group, or membership |
-| `VERB`    | Action                         |
-| `options` | Structured arguments           |
-
----
-
-### Available Verbs
-
-| Verb     | Purpose                           |
-| -------- | --------------------------------- |
-| `add`    | Create user, group, or membership |
-| `delete` | Remove user, group, or membership |
-| `passwd` | Change password                   |
-| `lock`   | Lock account                      |
-| `unlock` | Unlock account                    |
-| `groups` | List group memberships            |
-| `exists` | Check existence                   |
-
----
-
-### Production Examples
-
-#### Create User
-
-```
-user://alice.add(mode=user,username=alice,backend=system)
-```
-
-#### Create Group
-
-```
-user://group/dev.add(mode=group,group_name=dev)
-```
-
-#### Add Membership
-
-```
-user://membership/alice.add(mode=membership,member=alice,groups=dev,docker)
-```
-
-#### Delete User Safely
-
-```
-user://alice.delete(
-  mode=user,
-  remove_home=true,
-  remove_from_all_groups=true,
-  ignore_if_missing=true
-)
-```
-
-#### Lock Account
-
-```
-user://alice.lock
-```
-
-#### Check Existence
-
-```
-user://alice.exists
-```
-
----
-
-## 3.2 Execution Semantics
-
-### Deterministic Behavior
-
-* Must provide `username` or `uid` for identity-based operations.
-* `mode` required for add/delete.
-* Conflicting password sources rejected.
-* UID mismatch produces explicit failure.
-* Dry-run produces structured preview without changes.
-
----
-
-### Structured Output Contracts
-
-Example: Password Change
+A missing user is **not** a failure: the command exits 0 with `"ok": true`, `"exists": false`, and a warning. Test the `user.exists` field. If `uid=` is given and the user exists with a different UID, the command fails.
 
 ```json
 {
   "ok": true,
   "backend": "system",
-  "user": {
-    "username": "alice",
-    "existed": true
-  },
-  "password": {
-    "changed": true,
-    "scheme": "sha512_crypt",
-    "source": "plain"
-  },
-  "warnings": []
+  "query": { "username": "nosuch", "uid": null },
+  "user": { "exists": false, "username": null, "uid": null },
+  "warnings": ["User nosuch does not exist in backend system."]
 }
 ```
 
-Example: Existence Check
+### groups
+
+```bash
+resh user://alice.groups include_system_groups=false
+```
+
+Options: `include_primary`, `include_supplementary`, `include_system_groups` (all default `true`), `min_gid_for_system=<n>` (default 1000; a group below it is a system group), `group_name_filter=<group>`, `ignore_if_missing`.
+
+### add
+
+```bash
+resh user://alice.add shell=/bin/zsh dry_run=true
+resh user://alice.add supplementary_groups=dev,docker
+resh user://group/dev.add mode=group
+resh user://membership/alice.add mode=membership groups=dev,docker
+```
+
+`mode=user` options:
+
+| Option                    | Meaning                                                              |
+| ------------------------- | -------------------------------------------------------------------- |
+| `uid=<n>`                 | UID. Must be 1000-65533 unless `force=true` (which allows < 1000). An unparsable value is ignored and the next free UID is used. |
+| `primary_group=<group>`   | Primary group (default: a group named after the user, created if missing) |
+| `supplementary_groups=<g1,g2>` (or `groups=`) | Extra groups. Each must already exist; checked before anything changes. |
+| `home=<path>`             | Home directory (default `/home/<user>`). It is always created (`useradd -m`). |
+| `shell=<path>`            | Login shell (default `/bin/bash`)                                     |
+| `gecos=<text>`            | Comment field                                                         |
+| `ignore_if_exists`        | Default `true`: an existing user is reported with `"existed": true` and nothing changes. `false` makes it an error. |
+
+`mode=group` options: `group_name=`, `gid=<n>` (same range rule as `uid`). `mode=membership` options: `member=`, `groups=<g1,g2>`.
+
+Not supported on `add` (parsed but ignored, do not rely on them):
+
+* `create_home`: the home directory is always created.
+* `password_hash`: no password is set by `add`. Use `passwd` afterwards.
+
+When `ignore_if_exists` returns an existing user, only `uid` is read from the system; the reported `primary_group`, `home`, and `shell` are defaults, not the account's real values.
+
+### delete
+
+```bash
+resh user://alice.delete remove_home=true dry_run=true
+resh user://group/dev.delete mode=group
+resh user://membership/alice.delete mode=membership groups=docker
+```
+
+`mode=user` options: `remove_home` (default `false`; uses `userdel -r`, which also removes the mail spool), `remove_mail` (default `false`), `remove_from_all_groups` (default `true`), `protect_system_users` (default `true`), `min_uid_for_delete` (default 1000), `ignore_if_missing` (default `true`: a missing user is reported, not an error).
+
+`mode=group` options: `group_name=`, `only_if_empty` (default `true`), `protect_system_groups` (default `true`), `min_gid_for_delete` (default 1000).
+
+`mode=membership` options: `member=`, `groups=<g1,g2>` or `all_groups=true`.
+
+In the output, `home.was_present` (and the mail spool's) is always `true`; it is not checked against the filesystem.
+
+### passwd
+
+```bash
+resh user://alice.passwd new_password_plain=S3cr3t dry_run=true
+```
+
+Options: `new_password_plain=` or `new_password_hash=` (exactly one), `hash_scheme=backend_default|sha512_crypt|bcrypt|argon2id`, `require_old_password=true` with `old_password_plain=`, `ignore_if_missing`.
+
+* The system backend passes the password to `chpasswd` on stdin and rejects `argon2id`.
+* `require_old_password` needs read access to `/etc/shadow` and can verify only bcrypt and argon2 hashes; others give an unsupported error.
+* **The password is on the `resh` command line** and is visible in the process list and shell history. There is no environment-variable or file alternative.
+
+### lock / unlock
+
+```bash
+resh user://alice.lock
+resh user://alice.unlock dry_run=true
+```
+
+Options: `protect_system_users` (default `true`), `min_uid_for_lock` / `min_uid_for_unlock` (default 1000), `force`, `ignore_if_missing`. The current lock state comes from `/etc/shadow` or `passwd -S`; if neither can be read the verb fails (a dry run reports `was_locked: null` with a warning). Locking an already locked account, or unlocking an already unlocked one, succeeds with `"changed": false`.
+
+---
+
+## 4. Safety Controls
+
+### dry_run
+
+`dry_run` is accepted by `add`, `delete`, `passwd`, `lock`, and `unlock`. It accepts `true/false`, `1/0`, `yes/no`, `on/off` (any case); a bare `dry_run` word means `true`; any other value is an error and nothing runs. In a dry run no changing command is executed and the commands are listed in `planned_commands`. Lookups (does the user exist, which groups) still run.
+
+### System-account protection and force
+
+* `delete`, `lock`, and `unlock` refuse a user whose UID is below `min_uid_for_delete` / `min_uid_for_lock` / `min_uid_for_unlock` (default 1000). That includes `root` (UID 0). The error is `user.system_user_protected`; the check runs in dry runs too.
+* `delete mode=group` refuses a group whose GID is below `min_gid_for_delete` (default 1000) and a group that still has members (`only_if_empty`).
+* **`force=true` overrides all of these protections**, and on `add` it also allows a UID/GID below 1000. The operation then proceeds with a warning. Use it only deliberately, never as a default in scripts.
+* `force` is parsed strictly, like `dry_run`: `force=maybe` is an error, not a silent `false`.
+* Setting `protect_system_users=false`, or lowering `min_uid_for_*`, also disables the user protection.
+
+### Other booleans
+
+Only `dry_run` and `force` accept the `1/0/yes/no/on/off` spellings. Every other boolean option (`remove_home`, `ignore_if_missing`, `protect_system_users`, `include_*`, ...) accepts only the literal `true` or `false`; any other value silently falls back to that option's default. For example `remove_home=yes` is treated as `false`, and `protect_system_users=no` is treated as `true`.
+
+### Validation
+
+* Usernames and group names (for `mode=group`) must be 1-32 characters of ASCII letters, digits, `_` or `-`, and must not start with `-`.
+* **`primary_group=` is not validated.** Its value is passed to `groupadd` and `useradd -g` as given. Use only trusted values.
+
+---
+
+## 5. Output and Errors
+
+Successful output is the verb's JSON object on stdout (see `resh user <verb> --help` for full examples). Example for `add` with `dry_run=true`:
 
 ```json
 {
   "ok": true,
-  "query": {
-    "username": "alice",
-    "uid": null
-  },
+  "mode": "user",
+  "backend": "system",
+  "dry_run": true,
+  "planned_commands": [
+    "groupadd -g 1001 alice",
+    "useradd -u 1001 -g alice -d /home/alice -m -s /bin/zsh alice"
+  ],
   "user": {
-    "exists": true,
     "username": "alice",
-    "uid": 1001
-  }
+    "uid": 1001,
+    "primary_group": "alice",
+    "supplementary_groups": [],
+    "home": "/home/alice",
+    "shell": "/bin/zsh",
+    "gecos": null,
+    "created": false,
+    "existed": false
+  },
+  "groups": [
+    { "name": "alice", "gid": 1001, "created": false, "existed": false }
+  ]
 }
 ```
 
----
+(Abbreviated field order; `planned_commands` is omitted when empty.)
 
-### Error Handling Structure
-
-Representative error:
+Errors are printed as JSON on **stderr**:
 
 ```json
 {
-  "ok": false,
   "error": {
-    "code": "user.invalid_username",
-    "message": "username cannot be empty"
-  }
+    "code": "user.system_user_protected",
+    "details": { "min_uid_for_delete": 1000, "uid": 0, "username": "root" },
+    "message": "refusing to delete system user 'root' (uid=0) because protect_system_users=true and force=false"
+  },
+  "ok": false
 }
 ```
 
----
+### Exit codes
 
-### Exit Codes
+| Exit status | Meaning                                                    |
+| ----------- | ---------------------------------------------------------- |
+| 0           | Success (including `exists` for a missing user)            |
+| 1           | Any failure; the `error.code` field says which             |
 
-| Code | Meaning                |
-| ---- | ---------------------- |
-| 0    | Success                |
-| 1    | General error          |
-| 2    | Not found              |
-| 3    | Already exists         |
-| 4    | Validation error       |
-| 5    | Permission denied      |
-| 6    | System user protection |
-| 7    | Invalid arguments      |
+The user handle uses no other exit codes. Distinguish failures by `error.code` (for example `user.not_found`, `user.system_user_protected`, `user.invalid_mode`, `user.backend_not_supported`).
 
 ---
 
-## 4. Functional Domains
+## 6. Options That Are Not Supported
+
+* `timeout_ms`: ignored. The system commands (`useradd`, `userdel`, ...) run with no deadline.
+* `create_home`, `password_hash` on `add`: parsed but ignored (see above).
+* `force` on `passwd`: parsed but ignored.
+* `format=` values other than `json` and `text` silently fall back to JSON.
 
 ---
 
-### 4.1 Automation Utilities
+## 7. Platform Support
 
-**Handle**
-
-* `user://`
-
-**Scope**
-
-* Automated user provisioning
-* Idempotent infrastructure scripts
-* Access lifecycle management
-* Dev environment bootstrapping
+Linux only. The system backend needs the shadow-utils tools (`useradd`, `usermod`, `userdel`, `groupadd`, `groupdel`, `gpasswd`, `chpasswd`) and root for any change. macOS, BSD, and Windows are not supported.
 
 ---
 
-### 4.2 Data & State Management
+## 8. Usage Guidance
 
-**Scope**
+* Preview every change with `dry_run=true` and review `planned_commands`.
+* Keep `protect_system_users=true` and avoid `force=true` in automation.
+* For idempotent provisioning, rely on the defaults `ignore_if_exists=true` (add) and `ignore_if_missing=true` (delete), and check `existed` / `missing` in the output.
+* Check `ok` and the exit status; for `exists`, check `user.exists`.
+* Lock an account (`lock`) before deleting it if you may need to restore access.
 
-* Existence verification
-* Group membership inspection
-* UID/GID validation
-* User lifecycle tracking
+Typical workflow:
 
-Example:
-
+```bash
+resh user://deploy.exists
+resh user://deploy.add shell=/bin/bash supplementary_groups=docker dry_run=true
+resh user://deploy.add shell=/bin/bash supplementary_groups=docker
+resh user://deploy.groups
 ```
-user://alice.groups(include_system_groups=false)
-```
-
----
-
-### 4.3 Filesystem & Storage
-
-Operations interact with:
-
-* `/etc/passwd`
-* `/etc/shadow`
-* `/etc/group`
-
-Home directory management supported via:
-
-```
-remove_home=true
-```
-
----
-
-### 4.4 Network & Remote Operations
-
-Indirectly supports:
-
-* SSH access management
-* Service account provisioning
-* Identity-based access control for remote services
-
----
-
-### 4.5 Packages & Software
-
-Supports:
-
-* Service account creation during deployment
-* Post-install user/group configuration
-* Permission assignment for applications
-
----
-
-### 4.6 Process & Service Management
-
-Integrates with:
-
-* `svc://` for restarting services after account changes
-* `exec://` for command execution under specific users
-* `file://` for verifying home directory state
-
----
-
-### 4.7 Security & Secrets
-
-Primary capabilities:
-
-* Password hashing (sha512_crypt, pbkdf2)
-* System user protection
-* UID/GID validation
-* Forced operations require explicit override
-* Lock/unlock operations for incident response
-
----
-
-### 4.8 System Information
-
-Structured reporting includes:
-
-* UID
-* Primary group
-* Supplementary groups
-* System group flag
-* Existence state
-* Lock status
-
----
-
-## 5. Platform Support
-
-| Platform   | Support Level   |
-| ---------- | --------------- |
-| Linux      | Full support    |
-| Unix/macOS | Limited support |
-| Windows    | Not supported   |
-
-System backend relies on native system tools:
-
-* `useradd`
-* `userdel`
-* `usermod`
-* `passwd`
-
-Mock backend provides test-only functionality.
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Use `dry_run=true` before destructive operations.
-* Keep `protect_system_users=true`.
-* Avoid `force=true` in automation.
-* Use `ignore_if_missing=true` for idempotent scripts.
-* Lock accounts before deletion when appropriate.
-
----
-
-### Automation Considerations
-
-* Always check `ok` field.
-* Use `exists` before `add` in idempotent workflows.
-* Validate UID ranges.
-* Use explicit backend selection in CI.
-
----
-
-### CI/CD Integration
-
-Example workflow:
-
-1. `user://alice.exists`
-2. `user://alice.add(...)` if missing
-3. `user://alice.groups`
-4. Validate membership
-5. Continue deployment
-
----
-
-### Production Environment Recommendations
-
-* Audit group memberships regularly.
-* Use service accounts for applications.
-* Rotate passwords periodically.
-* Remove access immediately when no longer needed.
-* Log all user management operations.
-* Avoid modifying system users unless necessary.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Automate developer account provisioning.
-* Manage service accounts.
-* Enforce least-privilege group memberships.
-* Integrate user lifecycle into pipelines.
-
----
-
-### SRE Engineers
-
-* Lock compromised accounts.
-* Audit UID/GID conflicts.
-* Validate group assignments.
-* Investigate authentication issues.
-
----
-
-### Network Administrators
-
-* Manage SSH-enabled users.
-* Control administrative group membership.
-* Enforce account policies.
-
----
-
-### AI / Automation Engineers
-
-* Parse structured group membership data.
-* Detect policy violations.
-* Trigger remediation workflows.
-* Enforce UID/GID standards programmatically.
-
----
-
-## 8. Technical Foundation
-
-### Rust Implementation Advantages
-
-resh is implemented in Rust, providing:
-
-* Memory safety
-* Deterministic command parsing
-* Strong type validation
-* Secure system interaction
-
----
-
-### Type Safety
-
-* Enumerated verbs
-* Strict validation rules
-* Explicit backend abstraction
-* Structured error modeling
-
----
-
-### Performance Characteristics
-
-* Lightweight execution model
-* Fast mock backend for testing
-* Efficient group membership scanning
-* Deterministic JSON serialization
-
----
-
-### Cross-Platform Architecture
-
-* Backend abstraction layer
-* System and mock backend support
-* Deterministic structured output
-* Explicit unsupported-platform signaling

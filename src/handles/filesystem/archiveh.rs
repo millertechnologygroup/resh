@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs::{File, create_dir_all};
+use std::fs::{self, File, create_dir_all};
 use std::io::{Write, Read, BufWriter, copy};
 use std::path::{Path, PathBuf, Component};
 use std::time::{SystemTime, UNIX_EPOCH, Instant};
@@ -216,15 +216,16 @@ Shown with --json-pretty."#,
         },
         VerbHelp {
             name: "create",
-            definition: "Creates a tar, tar.gz, zip, or gzip archive from source files and \
-                directories, with optional glob filters, and reports the archived files as JSON.",
+            definition: "Creates an unencrypted tar, tar.gz, zip, or gzip archive from source \
+                files and directories, with optional glob filters, and reports the archived files \
+                as JSON (password= is rejected).",
             detail: Some(VerbDetail {
                 usage: "resh archive://.create output=<path> sources=<json-array>\n  \
                     [format=auto|tar|tar.gz|zip|gzip] [base_dir=<dir>]\n  \
                     [compression_level=<n>] [include_patterns=<json-array>]\n  \
                     [exclude_patterns=<json-array>] [include_hidden=true|false]\n  \
                     [follow_symlinks=true|false] [overwrite=true|false]\n  \
-                    [password=<text>] [preserve_permissions=true|false]\n  \
+                    [preserve_permissions=true|false]\n  \
                     [preserve_timestamps=true|false] [max_files=<n>]\n  \
                     [max_size_mb=<n>] [progress=true|false]\n  \
                     [format_output=json|text]",
@@ -570,8 +571,12 @@ impl ArchiveFormat {
         matches!(self, Self::TarGz | Self::TarXz | Self::TarZstd | Self::Zip | Self::SevenZ | Self::Gzip | Self::Raw)
     }
 
+    /// Whether `create` can write a password-protected archive in this
+    /// format. None can: the zip writer (zip 0.6) cannot encrypt entries,
+    /// and 7z creation is not supported. A password is therefore rejected
+    /// rather than silently producing an unencrypted archive.
     pub fn supports_password(&self) -> bool {
-        matches!(self, Self::Zip | Self::SevenZ)
+        false
     }
 
     pub fn default_compression_level(&self) -> u32 {
@@ -1159,18 +1164,17 @@ impl ArchiveCreateOptions {
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let follow_symlinks = args.get("follow_symlinks")
-            .map(|s| s.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let follow_symlinks = crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
 
         let password = args.get("password").cloned();
         if password.is_some() && !format.supports_password() {
-            bail!("Password protection not supported for format {}", format.as_str());
+            bail!(
+                "Password protection not supported for format {}: encrypted archives cannot be created, so no archive was written",
+                format.as_str()
+            );
         }
 
-        let overwrite = args.get("overwrite")
-            .map(|s| s.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let overwrite = crate::core::lenient::bool_arg(args, "overwrite")?.unwrap_or(false);
 
         let preserve_permissions = args.get("preserve_permissions")
             .map(|s| s.parse::<bool>().unwrap_or(true))
@@ -1291,9 +1295,7 @@ impl ArchiveExtractOptions {
             vec![]
         };
 
-        let overwrite = args.get("overwrite")
-            .map(|s| s.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let overwrite = crate::core::lenient::bool_arg(args, "overwrite")?.unwrap_or(false);
 
         let create_destination = args.get("create_destination")
             .map(|s| s.parse::<bool>().unwrap_or(true))
@@ -1307,21 +1309,13 @@ impl ArchiveExtractOptions {
             .map(|s| s.parse::<u32>().unwrap_or(0))
             .unwrap_or(0);
 
-        let allow_absolute_paths = args.get("allow_absolute_paths")
-            .map(|s| s.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let allow_absolute_paths = crate::core::lenient::bool_arg(args, "allow_absolute_paths")?.unwrap_or(false);
 
-        let allow_parent_traversal = args.get("allow_parent_traversal")
-            .map(|s| s.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let allow_parent_traversal = crate::core::lenient::bool_arg(args, "allow_parent_traversal")?.unwrap_or(false);
 
-        let allow_symlinks = args.get("allow_symlinks")
-            .map(|s| s.parse::<bool>().unwrap_or(true))
-            .unwrap_or(true);
+        let allow_symlinks = crate::core::lenient::bool_arg(args, "allow_symlinks")?.unwrap_or(true);
 
-        let follow_symlinks = args.get("follow_symlinks")
-            .map(|s| s.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let follow_symlinks = crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
 
         let max_entries = args.get("max_entries")
             .map(|s| s.parse::<u64>().unwrap_or(1000000))
@@ -1725,13 +1719,9 @@ impl ArchiveAddOptions {
             vec![]
         };
 
-        let follow_symlinks = args.get("follow_symlinks")
-            .map(|s| s.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let follow_symlinks = crate::core::lenient::bool_arg(args, "follow_symlinks")?.unwrap_or(false);
 
-        let overwrite = args.get("overwrite")
-            .map(|s| s.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let overwrite = crate::core::lenient::bool_arg(args, "overwrite")?.unwrap_or(false);
 
         let keep_existing_dirs = args.get("keep_existing_dirs")
             .map(|s| s.parse::<bool>().unwrap_or(true))
@@ -1871,9 +1861,7 @@ impl ArchiveRemoveOptions {
             .map(|s| s.parse::<bool>().unwrap_or(true))
             .unwrap_or(true);
 
-        let dry_run = args.get("dry_run")
-            .map(|s| s.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
+        let dry_run = crate::core::lenient::dry_run(args)?;
 
         let max_entries = args.get("max_entries")
             .map(|s| s.parse::<u64>().unwrap_or(1000000))
@@ -2732,6 +2720,7 @@ pub const ARCHIVE_EXTRACT_INVALID_MAX_FILE_SIZE: &str = "archive.extract_invalid
 pub const ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED: &str = "archive.extract_path_traversal_detected";
 pub const ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED: &str = "archive.extract_absolute_path_rejected";
 pub const ARCHIVE_EXTRACT_SYMLINK_REJECTED: &str = "archive.extract_symlink_rejected";
+pub const ARCHIVE_EXTRACT_UNSUPPORTED_ENTRY_TYPE: &str = "archive.extract_unsupported_entry_type";
 pub const ARCHIVE_EXTRACT_IO_ERROR: &str = "archive.extract_io_error";
 pub const ARCHIVE_EXTRACT_ARCHIVE_READ_ERROR: &str = "archive.extract_archive_read_error";
 pub const ARCHIVE_EXTRACT_COMPRESSION_ERROR: &str = "archive.extract_compression_error";
@@ -4531,7 +4520,10 @@ pub fn extract_archive(opts: ArchiveExtractOptions) -> Result<ArchiveExtractResp
         }
         Err(e) => {
             response.ok = false;
-            response.error = Some((ARCHIVE_EXTRACT_ARCHIVE_READ_ERROR.to_string(), e.to_string()));
+            let code = e.downcast_ref::<UnsafeEntryError>()
+                .map(|u| u.code)
+                .unwrap_or(ARCHIVE_EXTRACT_ARCHIVE_READ_ERROR);
+            response.error = Some((code.to_string(), e.to_string()));
         }
     }
 
@@ -4908,9 +4900,9 @@ fn add_to_tar_archive(
     let tmp_path = if let Some(ref tmp_dir) = opts.tmp_dir {
         let tmp_dir_path = Path::new(tmp_dir);
         create_dir_all(tmp_dir_path)?;
-        tmp_dir_path.join(format!(".tmp_archive_{}", std::process::id()))
+        tmp_dir_path.join(temp_archive_name(".tmp_archive_"))
     } else {
-        archive_path.with_extension(&format!("tmp_{}", std::process::id()))
+        archive_path.with_extension(temp_archive_name("tmp_"))
     };
 
     // Create backup if requested
@@ -4995,6 +4987,11 @@ fn add_to_tar_archive(
 struct ExistingTarEntry {
     path: String,
     size: u64,
+    /// The entry's original header (mode, owner, mtime, type), written back
+    /// unchanged when the archive is rebuilt.
+    header: tar::Header,
+    /// Target of a symlink or hard link entry.
+    link_name: Option<PathBuf>,
     data: Vec<u8>,
     replaced: bool,
 }
@@ -5016,13 +5013,21 @@ fn read_existing_tar_entries(archive_path: &str, compression: &CompressionKind) 
         let mut entry = entry?;
         let path = entry.path()?.to_string_lossy().to_string();
         let size = entry.size();
-        
+        let header = entry.header().clone();
+        let link_name = if header.entry_type().is_symlink() || header.entry_type().is_hard_link() {
+            entry.link_name()?.map(|l| l.into_owned())
+        } else {
+            None
+        };
+
         let mut data = Vec::new();
         entry.read_to_end(&mut data)?;
 
         entries.push(ExistingTarEntry {
             path,
             size,
+            header,
+            link_name,
             data,
             replaced: false,
         });
@@ -5037,32 +5042,55 @@ fn write_tar_archive(
     new_entries: &[NewArchiveEntry],
     format: &ArchiveFormat,
     compression: &CompressionKind,
-    _opts: &ArchiveAddOptions,
+    opts: &ArchiveAddOptions,
 ) -> Result<()> {
-    let file = File::create(output_path)?;
-    
-    let writer: Box<dyn Write> = match compression {
-        CompressionKind::None => Box::new(file),
-        CompressionKind::Gzip => Box::new(GzEncoder::new(file, flate2::Compression::default())),
-        CompressionKind::Xz => Box::new(XzEncoder::new(file, 6)),
-        CompressionKind::Zstd => Box::new(ZstdEncoder::new(file, 3)?),
+    let _ = format;
+    let file = create_temp_output(output_path, Path::new(&opts.archive))?;
+
+    // Each compressor is finished explicitly so that an error writing the end
+    // of the stream (for example ENOSPC) fails the operation instead of
+    // leaving a truncated archive to be renamed over the original.
+    let file = match compression {
+        CompressionKind::None => fill_tar(tar::Builder::new(file), existing_entries, new_entries)?,
+        CompressionKind::Gzip => fill_tar(
+            tar::Builder::new(GzEncoder::new(file, flate2::Compression::default())),
+            existing_entries,
+            new_entries,
+        )?
+        .finish()?,
+        CompressionKind::Xz => {
+            fill_tar(tar::Builder::new(XzEncoder::new(file, 6)), existing_entries, new_entries)?.finish()?
+        }
+        CompressionKind::Zstd => fill_tar(
+            tar::Builder::new(ZstdEncoder::new(file, 3)?),
+            existing_entries,
+            new_entries,
+        )?
+        .finish()?,
         _ => return Err(anyhow::anyhow!("Unsupported compression: {:?}", compression)),
     };
+    file.sync_all()?;
+    Ok(())
+}
 
-    let mut tar = tar::Builder::new(writer);
-
-    // Write existing entries (not replaced)
+/// Writes the kept existing entries, with their original headers and link
+/// targets, then the new entries, and returns the underlying writer.
+fn fill_tar<W: Write>(
+    mut tar: tar::Builder<W>,
+    existing_entries: &[ExistingTarEntry],
+    new_entries: &[NewArchiveEntry],
+) -> Result<W> {
     for entry in existing_entries {
-        if !entry.replaced {
-            let mut header = tar::Header::new_gnu();
-            header.set_path(&entry.path)?;
-            header.set_size(entry.size);
-            header.set_cksum();
-            tar.append(&header, entry.data.as_slice())?;
+        if entry.replaced {
+            continue;
+        }
+        let mut header = entry.header.clone();
+        match &entry.link_name {
+            Some(target) => tar.append_link(&mut header, &entry.path, target)?,
+            None => tar.append_data(&mut header, &entry.path, entry.data.as_slice())?,
         }
     }
 
-    // Write new entries
     for entry in new_entries {
         if entry.is_dir {
             tar.append_dir(&entry.archive_path, &entry.source_path)?;
@@ -5071,8 +5099,29 @@ fn write_tar_archive(
         }
     }
 
-    tar.finish()?;
-    Ok(())
+    Ok(tar.into_inner()?)
+}
+
+/// Opens a new temporary output file for an archive rewrite: never an
+/// existing file or symlink (`create_new` + `O_NOFOLLOW`), and with the
+/// original archive's permission bits (0600 if it has none), so a private
+/// archive does not become world-readable when it is replaced.
+fn create_temp_output(path: &Path, original: &Path) -> Result<File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mode = std::fs::metadata(original).map(|m| m.permissions().mode() & 0o777).unwrap_or(0o600);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .with_context(|| format!("cannot create temporary archive {}", path.display()))?;
+    Ok(file)
+}
+
+/// A temporary-file name that another local user cannot predict.
+fn temp_archive_name(prefix: &str) -> String {
+    format!("{prefix}{}_{}", std::process::id(), uuid::Uuid::new_v4().simple())
 }
 
 fn add_to_zip_archive(
@@ -5091,9 +5140,9 @@ fn add_to_zip_archive(
     let tmp_path = if let Some(ref tmp_dir) = opts.tmp_dir {
         let tmp_dir_path = Path::new(tmp_dir);
         create_dir_all(tmp_dir_path)?;
-        tmp_dir_path.join(format!(".tmp_archive_{}", std::process::id()))
+        tmp_dir_path.join(temp_archive_name(".tmp_archive_"))
     } else {
-        archive_path.with_extension(&format!("tmp_{}", std::process::id()))
+        archive_path.with_extension(temp_archive_name("tmp_"))
     };
 
     // Create backup if requested
@@ -5145,7 +5194,7 @@ fn add_to_zip_archive(
     }
 
     // Write new ZIP archive
-    write_zip_archive(&tmp_path, &final_entries, &entries_to_add)?;
+    write_zip_archive(&tmp_path, &final_entries, &entries_to_add, archive_path)?;
 
     // Get new archive size
     let archive_size_after = tmp_path.metadata()?.len();
@@ -5174,10 +5223,13 @@ fn add_to_zip_archive(
     Ok((summary, details, warnings))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct ExistingZipEntry {
     path: String,
     size: u64,
+    /// The entry's original options (Unix mode, modification time,
+    /// compression), written back unchanged when the archive is rebuilt.
+    options: FileOptions,
     data: Vec<u8>,
     replaced: bool,
 }
@@ -5191,13 +5243,20 @@ fn read_existing_zip_entries(archive_path: &str) -> Result<Vec<ExistingZipEntry>
         let mut file = archive.by_index(i)?;
         let path = file.name().to_string();
         let size = file.size();
-        
+        let mut options = FileOptions::default()
+            .compression_method(file.compression())
+            .last_modified_time(file.last_modified());
+        if let Some(mode) = file.unix_mode() {
+            options = options.unix_permissions(mode & 0o7777);
+        }
+
         let mut data = Vec::new();
         std::io::copy(&mut file, &mut data)?;
 
         entries.push(ExistingZipEntry {
             path,
             size,
+            options,
             data,
             replaced: false,
         });
@@ -5210,15 +5269,20 @@ fn write_zip_archive(
     output_path: &Path,
     existing_entries: &[ExistingZipEntry],
     new_entries: &[NewArchiveEntry],
+    original: &Path,
 ) -> Result<()> {
-    let file = File::create(output_path)?;
+    let file = create_temp_output(output_path, original)?;
     let mut zip = ZipWriter::new(file);
 
     // Write existing entries (not replaced)
     for entry in existing_entries {
         if !entry.replaced {
-            zip.start_file(&entry.path, FileOptions::default())?;
-            zip.write_all(&entry.data)?;
+            if entry.path.ends_with('/') {
+                zip.add_directory(&entry.path, entry.options)?;
+            } else {
+                zip.start_file(&entry.path, entry.options)?;
+                zip.write_all(&entry.data)?;
+            }
         }
     }
 
@@ -5283,6 +5347,8 @@ fn extract_tar_archive(
     let mut manifest = Vec::new();
     let mut warnings = Vec::new();
 
+    let mut created_symlinks: Vec<PathBuf> = Vec::new();
+
     for entry_result in tar.entries()? {
         let mut entry = entry_result?;
         entries_total += 1;
@@ -5308,26 +5374,35 @@ fn extract_tar_archive(
             continue;
         }
 
-        // Security checks
-        let safe_path = match sanitize_path(&stripped_path, dest_path, opts) {
-            Ok(p) => p,
-            Err(e) => {
-                warnings.push(format!("Skipped unsafe path '{}': {}", path_str, e));
-                entries_skipped += 1;
-                continue;
-            }
-        };
+        // Security checks: an unsafe entry stops the extraction with an error
+        let safe_path = sanitize_path(&stripped_path, dest_path, opts)
+            .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?;
 
-        // Check if target exists and handle overwrite
-        if safe_path.exists() && !opts.overwrite {
+        let entry_type = entry.header().entry_type();
+        if matches!(entry_type, tar::EntryType::Char | tar::EntryType::Block) {
+            return Err(stop_unsafe(
+                unsafe_entry(ARCHIVE_EXTRACT_UNSUPPORTED_ENTRY_TYPE, "device nodes are not extracted".to_string()),
+                &path_str,
+                entries_extracted,
+            ));
+        }
+
+        // The destination directory itself (e.g. a "./" entry)
+        if safe_path == dest_path {
+            entries_skipped += 1;
+            continue;
+        }
+
+        // Check if target exists (a dangling symlink counts) and handle overwrite
+        if fs::symlink_metadata(&safe_path).is_ok() && !opts.overwrite {
             warnings.push(format!("Skipped existing file '{}' (overwrite=false)", stripped_path));
             entries_skipped += 1;
             continue;
         }
 
         // Extract the entry
-        let is_dir = entry.header().entry_type().is_dir();
-        let is_symlink = entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link();
+        let is_dir = entry_type.is_dir();
+        let is_symlink = entry_type.is_symlink() || entry_type.is_hard_link();
         let size = entry.header().size()?;
 
         // Check file size limits
@@ -5351,13 +5426,42 @@ fn extract_tar_archive(
             continue;
         }
 
-        // Create parent directories
-        if let Some(parent) = safe_path.parent() {
-            create_dir_all(parent)?;
+        // Validate link targets before anything on disk is changed
+        let hard_link_src = if entry_type.is_hard_link() {
+            Some(hard_link_source(&entry, dest_path, opts)
+                .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?)
+        } else {
+            None
+        };
+        if entry_type.is_symlink() {
+            let target = entry.link_name()?.map(|t| t.into_owned()).unwrap_or_default();
+            if !symlink_target_stays_inside(dest_path, &safe_path, &target) {
+                return Err(stop_unsafe(
+                    unsafe_entry(
+                        ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+                        format!("symlink target '{}' points outside the destination", target.display()),
+                    ),
+                    &path_str,
+                    entries_extracted,
+                ));
+            }
         }
 
-        // Extract the entry
-        entry.unpack(&safe_path)?;
+        // Create parent directories without following any symlink, then
+        // make sure an existing final component is not a link we would
+        // write or chmod through.
+        prepare_parent_dirs(dest_path, &safe_path)
+            .and_then(|_| clear_existing_target(&safe_path, is_dir))
+            .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?;
+
+        if let Some(link_src) = hard_link_src {
+            fs::hard_link(&link_src, &safe_path)?;
+        } else {
+            entry.unpack(&safe_path)?;
+            if entry_type.is_symlink() {
+                created_symlinks.push(safe_path.clone());
+            }
+        }
         entries_extracted += 1;
 
         if !is_dir {
@@ -5371,6 +5475,10 @@ fn extract_tar_archive(
             is_symlink,
         });
     }
+
+    // Lexical checks cannot see through chains of links created by the
+    // archive; resolve every created link and reject any that leaves.
+    verify_symlinks_inside(dest_path, &created_symlinks)?;
 
     let summary = ArchiveExtractSummary {
         archive: opts.archive.clone(),
@@ -5425,18 +5533,18 @@ fn extract_zip_archive(
             continue;
         }
 
-        // Security checks
-        let safe_path = match sanitize_path(&stripped_path, dest_path, opts) {
-            Ok(p) => p,
-            Err(e) => {
-                warnings.push(format!("Skipped unsafe path '{}': {}", path_str, e));
-                entries_skipped += 1;
-                continue;
-            }
-        };
+        // Security checks: an unsafe entry stops the extraction with an error
+        let safe_path = sanitize_path(&stripped_path, dest_path, opts)
+            .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?;
 
-        // Check if target exists and handle overwrite
-        if safe_path.exists() && !opts.overwrite {
+        // The destination directory itself
+        if safe_path == dest_path {
+            entries_skipped += 1;
+            continue;
+        }
+
+        // Check if target exists (a dangling symlink counts) and handle overwrite
+        if fs::symlink_metadata(&safe_path).is_ok() && !opts.overwrite {
             warnings.push(format!("Skipped existing file '{}' (overwrite=false)", stripped_path));
             entries_skipped += 1;
             continue;
@@ -5459,15 +5567,18 @@ fn extract_zip_archive(
             }
         }
 
-        // Create parent directories
-        if let Some(parent) = safe_path.parent() {
-            create_dir_all(parent)?;
-        }
+        // Create parent directories without following any symlink, and
+        // never write through an existing link at the final component.
+        prepare_parent_dirs(dest_path, &safe_path)
+            .and_then(|_| clear_existing_target(&safe_path, is_dir))
+            .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?;
 
         if is_dir {
-            create_dir_all(&safe_path)?;
+            if !safe_path.is_dir() {
+                fs::create_dir(&safe_path)?;
+            }
         } else {
-            let mut output = File::create(&safe_path)?;
+            let mut output = fs::OpenOptions::new().write(true).create_new(true).open(&safe_path)?;
             std::io::copy(&mut file, &mut output)?;
             bytes_written += size;
         }
@@ -5510,8 +5621,8 @@ fn extract_raw_compressed_file(
     
     let output_path = dest_path.join(output_name);
 
-    // Check if target exists and handle overwrite
-    if output_path.exists() && !opts.overwrite {
+    // Check if target exists (a dangling symlink counts) and handle overwrite
+    if fs::symlink_metadata(&output_path).is_ok() && !opts.overwrite {
         return Ok((
             ArchiveExtractSummary {
                 archive: opts.archive.clone(),
@@ -5537,7 +5648,9 @@ fn extract_raw_compressed_file(
         _ => bail!("Invalid compression for raw format: {}", opts.compression.as_str()),
     };
 
-    let mut output_file = File::create(&output_path)?;
+    // Do not write through a planted symlink at the output name
+    clear_existing_target(&output_path, false)?;
+    let mut output_file = fs::OpenOptions::new().write(true).create_new(true).open(&output_path)?;
     let bytes_written = std::io::copy(&mut decoder, &mut output_file)? as u64;
 
     // Check size limits
@@ -5610,18 +5723,57 @@ fn should_extract_path(
     true
 }
 
+/// An archive entry that cannot be extracted without risking a write outside
+/// the destination. Extraction stops and the response reports `code`.
+#[derive(Debug)]
+pub struct UnsafeEntryError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl std::fmt::Display for UnsafeEntryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for UnsafeEntryError {}
+
+fn unsafe_entry(code: &'static str, message: String) -> anyhow::Error {
+    anyhow::Error::new(UnsafeEntryError { code, message })
+}
+
+/// Name the entry in an unsafe-entry error and say how much was already
+/// written, so a stopped extraction is never mistaken for a clean one.
+fn stop_unsafe(err: anyhow::Error, entry: &str, extracted: u64) -> anyhow::Error {
+    let code = err.downcast_ref::<UnsafeEntryError>()
+        .map(|u| u.code)
+        .unwrap_or(ARCHIVE_EXTRACT_IO_ERROR);
+    unsafe_entry(code, format!(
+        "Unsafe archive entry '{}': {}; extraction stopped after {} entries were written",
+        entry, err, extracted
+    ))
+}
+
 // Made public for testing
+/// Map an archive entry path to a path inside `dest_path`, by its text.
+/// Absolute paths are rejected unless `allow_absolute_paths`, in which case
+/// they are re-rooted under the destination; `..` is rejected unless
+/// `allow_parent_traversal`, and may then never climb above the destination.
+/// Symlinks on disk are handled separately by `prepare_parent_dirs`.
 pub fn sanitize_path(path: &str, dest_path: &Path, opts: &ArchiveExtractOptions) -> Result<PathBuf> {
     let path_buf = Path::new(path);
     
     // Handle absolute paths
-    let relative_path = if path_buf.is_absolute() {
+    let relative_path = if path_buf.has_root() {
         if !opts.allow_absolute_paths {
-            // Strip leading slash and treat as relative
-            path_buf.strip_prefix("/").unwrap_or(path_buf)
-        } else {
-            return Err(anyhow::anyhow!("Absolute paths not allowed in safe mode"));
+            return Err(unsafe_entry(
+                ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED,
+                "Absolute paths not allowed (allow_absolute_paths=false)".to_string(),
+            ));
         }
+        // Re-root under the destination
+        path_buf.strip_prefix("/").unwrap_or(path_buf)
     } else {
         path_buf
     };
@@ -5634,25 +5786,206 @@ pub fn sanitize_path(path: &str, dest_path: &Path, opts: &ArchiveExtractOptions)
             Component::CurDir => {}, // Skip current dir
             Component::ParentDir => {
                 if !opts.allow_parent_traversal {
-                    return Err(anyhow::anyhow!("Path traversal detected (..)"));
+                    return Err(unsafe_entry(
+                        ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED,
+                        "Path traversal detected (..)".to_string(),
+                    ));
+                }
+                if safe_path.as_path() == dest_path {
+                    return Err(unsafe_entry(
+                        ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED,
+                        "Path escapes destination directory".to_string(),
+                    ));
                 }
                 safe_path.pop();
             }
-            Component::RootDir => {
-                if !opts.allow_absolute_paths {
-                    return Err(anyhow::anyhow!("Root directory component not allowed"));
-                }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(unsafe_entry(
+                    ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED,
+                    "Root directory component not allowed".to_string(),
+                ));
             }
-            _ => return Err(anyhow::anyhow!("Invalid path component")),
         }
     }
 
     // Ensure the final path is still within destination
     if !safe_path.starts_with(dest_path) {
-        return Err(anyhow::anyhow!("Path escapes destination directory"));
+        return Err(unsafe_entry(
+            ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED,
+            "Path escapes destination directory".to_string(),
+        ));
     }
 
     Ok(safe_path)
+}
+
+/// Create the missing parent directories of `target` (a path inside `dest`
+/// from `sanitize_path`) one level at a time. Every existing component must
+/// be a real directory: a symlink, whether created earlier by the archive or
+/// already present in the destination, is refused rather than followed.
+fn prepare_parent_dirs(dest: &Path, target: &Path) -> Result<()> {
+    let rel = target.strip_prefix(dest).map_err(|_| unsafe_entry(
+        ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED,
+        "Path escapes destination directory".to_string(),
+    ))?;
+    let parents: Vec<_> = rel.components().collect();
+    let mut cur = dest.to_path_buf();
+    for comp in parents.iter().take(parents.len().saturating_sub(1)) {
+        cur.push(comp);
+        match fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(unsafe_entry(
+                    ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+                    format!("parent '{}' is a symlink", cur.display()),
+                ));
+            }
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => anyhow::bail!("parent '{}' is not a directory", cur.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Err(e) = fs::create_dir(&cur) {
+                    // Lost a race with another creator: accept only a real directory
+                    let ok = e.kind() == std::io::ErrorKind::AlreadyExists
+                        && fs::symlink_metadata(&cur).map(|m| m.is_dir()).unwrap_or(false);
+                    if !ok {
+                        return Err(e.into());
+                    }
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Before (over)writing `target`: remove an existing symlink or file there
+/// so the write cannot follow it. An existing real directory is kept for a
+/// directory entry; for a file entry it is an error.
+fn clear_existing_target(target: &Path, is_dir: bool) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(m) if m.is_dir() => {
+            if is_dir {
+                Ok(())
+            } else {
+                anyhow::bail!("'{}' is an existing directory", target.display())
+            }
+        }
+        Ok(_) => Ok(fs::remove_file(target)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// True if a symlink at `link` (inside `dest`) with `target` resolves, by
+/// its text, to a location inside `dest`. Absolute targets are refused.
+fn symlink_target_stays_inside(dest: &Path, link: &Path, target: &Path) -> bool {
+    if target.as_os_str().is_empty() || target.has_root() {
+        return false;
+    }
+    let parent = match link.parent().and_then(|p| p.strip_prefix(dest).ok()) {
+        Some(p) => p,
+        None => return false,
+    };
+    let mut depth: Vec<&std::ffi::OsStr> = Vec::new();
+    for c in parent.components().chain(target.components()) {
+        match c {
+            Component::Normal(n) => depth.push(n),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if depth.pop().is_none() {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Physical location `p` refers to: canonical for the longest existing
+/// prefix, with the missing tail appended.
+fn physical_location(p: &Path) -> std::io::Result<PathBuf> {
+    match p.canonicalize() {
+        Ok(c) => Ok(c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            match (p.parent(), p.file_name()) {
+                (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+                    Ok(physical_location(parent)?.join(name))
+                }
+                _ => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// After extraction: every symlink the archive created must resolve inside
+/// the destination. Offending links are removed and the extraction fails.
+fn verify_symlinks_inside(dest: &Path, links: &[PathBuf]) -> Result<()> {
+    if links.is_empty() {
+        return Ok(());
+    }
+    let root = dest.canonicalize()?;
+    let mut bad = Vec::new();
+    for link in links {
+        let inside = fs::read_link(link)
+            .ok()
+            .and_then(|t| link.parent().map(|p| p.join(t)))
+            .and_then(|t| physical_location(&t).ok())
+            .map(|t| t.starts_with(&root))
+            .unwrap_or(false);
+        if !inside {
+            let _ = fs::remove_file(link);
+            bad.push(link.display().to_string());
+        }
+    }
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(unsafe_entry(
+            ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+            format!("symlinks resolving outside the destination were removed: {}", bad.join(", ")),
+        ))
+    }
+}
+
+/// Source of a hard-link entry: the link name is an archive path, so it is
+/// mapped like an entry path and must name an existing regular file inside
+/// the destination, reached without symlinks.
+fn hard_link_source<R: Read>(
+    entry: &tar::Entry<R>,
+    dest: &Path,
+    opts: &ArchiveExtractOptions,
+) -> Result<PathBuf> {
+    let name = entry.link_name()?
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = apply_strip_components(&name, opts.strip_components);
+    if name.is_empty() {
+        return Err(unsafe_entry(ARCHIVE_EXTRACT_SYMLINK_REJECTED, "hard link has no target".to_string()));
+    }
+    let src = sanitize_path(&name, dest, opts)?;
+    let rel = src.strip_prefix(dest)?;
+    let mut cur = dest.to_path_buf();
+    for comp in rel.components() {
+        cur.push(comp);
+        let m = fs::symlink_metadata(&cur).map_err(|_| unsafe_entry(
+            ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+            format!("hard link target '{}' does not exist in the destination", name),
+        ))?;
+        if m.file_type().is_symlink() {
+            return Err(unsafe_entry(
+                ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+                format!("hard link target '{}' goes through a symlink", name),
+            ));
+        }
+    }
+    if !fs::symlink_metadata(&src)?.is_file() {
+        return Err(unsafe_entry(
+            ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+            format!("hard link target '{}' is not a regular file", name),
+        ));
+    }
+    Ok(src)
 }
 
 #[cfg(test)]
@@ -5687,8 +6020,9 @@ mod tests {
 
     #[test]
     fn test_password_support() {
-        assert!(ArchiveFormat::Zip.supports_password());
-        assert!(ArchiveFormat::SevenZ.supports_password());
+        // FUNC-06: no format can be written encrypted.
+        assert!(!ArchiveFormat::Zip.supports_password());
+        assert!(!ArchiveFormat::SevenZ.supports_password());
         assert!(!ArchiveFormat::Tar.supports_password());
         assert!(!ArchiveFormat::TarGz.supports_password());
     }
@@ -6617,7 +6951,7 @@ fn perform_actual_removal(
         archive_dir
     };
     
-    let temp_path = temp_dir.join(format!(".tmp_archive_{}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()));
+    let temp_path = temp_dir.join(temp_archive_name(".tmp_archive_"));
     
     match format {
         ArchiveFormat::Tar | ArchiveFormat::TarGz | ArchiveFormat::TarXz | ArchiveFormat::TarZstd => {
@@ -6632,39 +6966,49 @@ fn perform_actual_removal(
     Ok(temp_path)
 }
 
+/// Flushes the buffered writer and syncs the file to disk.
+fn finish_output(w: BufWriter<File>) -> Result<()> {
+    w.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    Ok(())
+}
+
 fn create_new_tar_archive(
     original_path: &str,
     new_path: &PathBuf,
     compression: &CompressionKind,
     entries_to_keep: &[ArchiveEntry],
 ) -> Result<()> {
-    let new_file = File::create(new_path)?;
+    let new_file = create_temp_output(new_path, Path::new(original_path))?;
     let new_file = BufWriter::new(new_file);
     
     // Create the new archive with appropriate compression
     match compression {
+        // Each compressor is finished explicitly and the file synced, so an
+        // error at the end of the stream fails the remove instead of leaving
+        // a truncated archive in place of the original. (Dropping the zstd
+        // encoder without finish() always truncated it.)
         CompressionKind::Gzip => {
             let encoder = GzEncoder::new(new_file, Compression::default());
             let mut new_archive = tar::Builder::new(encoder);
             copy_tar_entries(original_path, &mut new_archive, compression, entries_to_keep)?;
-            new_archive.finish()?;
+            finish_output(new_archive.into_inner()?.finish()?)?;
         }
         CompressionKind::Xz => {
             let encoder = XzEncoder::new(new_file, 6);
             let mut new_archive = tar::Builder::new(encoder);
             copy_tar_entries(original_path, &mut new_archive, compression, entries_to_keep)?;
-            new_archive.finish()?;
+            finish_output(new_archive.into_inner()?.finish()?)?;
         }
         CompressionKind::Zstd => {
             let encoder = ZstdEncoder::new(new_file, 3)?;
             let mut new_archive = tar::Builder::new(encoder);
             copy_tar_entries(original_path, &mut new_archive, compression, entries_to_keep)?;
-            new_archive.finish()?;
+            finish_output(new_archive.into_inner()?.finish()?)?;
         }
         CompressionKind::None => {
             let mut new_archive = tar::Builder::new(new_file);
             copy_tar_entries(original_path, &mut new_archive, compression, entries_to_keep)?;
-            new_archive.finish()?;
+            finish_output(new_archive.into_inner()?)?;
         }
         _ => bail!("Unsupported compression for tar archive"),
     }
@@ -6730,7 +7074,7 @@ fn create_new_zip_archive(
     new_path: &PathBuf,
     entries_to_keep: &[ArchiveEntry],
 ) -> Result<()> {
-    let new_file = File::create(new_path)?;
+    let new_file = create_temp_output(new_path, Path::new(original_path))?;
     let mut new_zip = ZipWriter::new(new_file);
     
     // Open original zip for reading
@@ -6778,4 +7122,685 @@ fn normalize_archive_path(path: &str) -> String {
 fn should_show_help(verb: &str, args: &Args) -> bool {
     verb == "--help" || verb == "-h" || verb == "help" ||
     args.get("help").is_some() || args.get("h").is_some()
+}
+
+// SEC-01: extraction must never write outside the destination. Each test
+// builds its archive in a fresh temporary sandbox laid out as
+//   <sandbox>/dest            extraction destination
+//   <sandbox>/outside/keep.txt  sentinel that must stay unchanged
+// so even a regression could only touch the sandbox.
+#[cfg(test)]
+mod extract_safety_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::{symlink, MetadataExt};
+    use tar::{Builder, EntryType, Header};
+    use tempfile::TempDir;
+
+    struct Sandbox {
+        _tmp: TempDir,
+        root: PathBuf,
+        dest: PathBuf,
+        outside: PathBuf,
+    }
+
+    fn sandbox() -> Sandbox {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let dest = root.join("dest");
+        let outside = root.join("outside");
+        fs::create_dir_all(&dest).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), b"sentinel").unwrap();
+        Sandbox { _tmp: tmp, root, dest, outside }
+    }
+
+    impl Sandbox {
+        fn assert_outside_intact(&self) {
+            let names: Vec<_> = fs::read_dir(&self.outside).unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, vec!["keep.txt"], "outside dir was modified");
+            assert_eq!(fs::read(self.outside.join("keep.txt")).unwrap(), b"sentinel");
+            // nothing may appear next to dest either
+            let mut top: Vec<_> = fs::read_dir(&self.root).unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.ends_with(".tar") && !n.ends_with(".zip") && !n.ends_with(".gz"))
+                .collect();
+            top.sort();
+            assert_eq!(top, vec!["dest", "outside"]);
+        }
+    }
+
+    /// One tar entry; names and link names are written raw so that unsafe
+    /// values that `tar::Builder` would refuse can still be produced.
+    enum E<'a> {
+        File(&'a str, &'a [u8]),
+        Dir(&'a str),
+        Symlink(&'a str, &'a str),
+        HardLink(&'a str, &'a str),
+        Device(&'a str),
+    }
+
+    fn raw_header(name: &str, kind: EntryType, link: &str, size: u64) -> Header {
+        let mut h = Header::new_gnu();
+        {
+            let old = h.as_old_mut();
+            assert!(name.len() < 100 && link.len() < 100);
+            old.name = [0; 100];
+            old.name[..name.len()].copy_from_slice(name.as_bytes());
+            old.linkname = [0; 100];
+            old.linkname[..link.len()].copy_from_slice(link.as_bytes());
+        }
+        h.set_entry_type(kind);
+        h.set_size(size);
+        h.set_mode(if kind == EntryType::Directory { 0o755 } else { 0o644 });
+        h.set_mtime(1);
+        h.set_cksum();
+        h
+    }
+
+    fn write_tar(path: &Path, entries: &[E]) {
+        let mut b = Builder::new(File::create(path).unwrap());
+        for e in entries {
+            match e {
+                E::File(n, data) => b.append(&raw_header(n, EntryType::Regular, "", data.len() as u64), *data).unwrap(),
+                E::Dir(n) => b.append(&raw_header(n, EntryType::Directory, "", 0), &[][..]).unwrap(),
+                E::Symlink(n, t) => b.append(&raw_header(n, EntryType::Symlink, t, 0), &[][..]).unwrap(),
+                E::HardLink(n, t) => b.append(&raw_header(n, EntryType::Link, t, 0), &[][..]).unwrap(),
+                E::Device(n) => b.append(&raw_header(n, EntryType::Char, "", 0), &[][..]).unwrap(),
+            }
+        }
+        b.finish().unwrap();
+    }
+
+    fn opts(archive: &Path, dest: &Path, format: ArchiveFormat) -> ArchiveExtractOptions {
+        ArchiveExtractOptions {
+            archive: archive.to_string_lossy().to_string(),
+            destination: dest.to_string_lossy().to_string(),
+            format,
+            compression: CompressionKind::None,
+            includes: vec![],
+            excludes: vec![],
+            overwrite: false,
+            create_destination: true,
+            fail_on_missing_archive: true,
+            strip_components: 0,
+            allow_absolute_paths: false,
+            allow_parent_traversal: false,
+            allow_symlinks: true,
+            follow_symlinks: false,
+            max_entries: 1000000,
+            max_total_bytes: None,
+            max_file_bytes: None,
+            include_manifest: true,
+            format_output: OutputFormat::Json,
+        }
+    }
+
+    fn extract_tar(sb: &Sandbox, entries: &[E], tweak: impl Fn(&mut ArchiveExtractOptions)) -> ArchiveExtractResponse {
+        let archive = sb.root.join("t.tar");
+        write_tar(&archive, entries);
+        let mut o = opts(&archive, &sb.dest, ArchiveFormat::Tar);
+        tweak(&mut o);
+        let r = extract_archive(o).unwrap();
+        fs::remove_file(&archive).unwrap();
+        r
+    }
+
+    fn assert_rejected(r: &ArchiveExtractResponse, code: &str) {
+        assert!(!r.ok, "unsafe archive reported ok: {:?}", r.warnings);
+        let (c, msg) = r.error.clone().unwrap();
+        assert_eq!(c, code, "{msg}");
+        assert!(msg.contains("extraction stopped"), "{msg}");
+        assert!(r.summary.is_none() && r.manifest.is_none(), "no success summary on failure");
+    }
+
+    #[test]
+    fn normal_archive_with_nested_dirs_extracts() {
+        let sb = sandbox();
+        let r = extract_tar(&sb, &[
+            E::Dir("./"),
+            E::Dir("dir/"),
+            E::File("a.txt", b"a"),
+            E::File("./rel.txt", b"r"),
+            E::File("dir/sub/deep/b.txt", b"b"),
+            E::Symlink("dir/link", "sub/deep/b.txt"),
+            E::HardLink("hard.txt", "a.txt"),
+        ], |_| {});
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read(sb.dest.join("a.txt")).unwrap(), b"a");
+        assert_eq!(fs::read(sb.dest.join("rel.txt")).unwrap(), b"r");
+        assert_eq!(fs::read(sb.dest.join("dir/sub/deep/b.txt")).unwrap(), b"b");
+        assert_eq!(fs::read(sb.dest.join("dir/link")).unwrap(), b"b");
+        assert_eq!(
+            fs::metadata(sb.dest.join("hard.txt")).unwrap().ino(),
+            fs::metadata(sb.dest.join("a.txt")).unwrap().ino()
+        );
+        assert_eq!(r.summary.as_ref().unwrap().entries_extracted, 6);
+        sb.assert_outside_intact();
+    }
+
+    #[test]
+    fn parent_traversal_is_rejected() {
+        for name in ["../outside/evil.txt", "a/../../outside/evil.txt", ".."] {
+            let sb = sandbox();
+            let r = extract_tar(&sb, &[E::File(name, b"x")], |_| {});
+            assert_rejected(&r, ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED);
+            sb.assert_outside_intact();
+        }
+        // allow_parent_traversal=true still cannot climb above dest
+        let sb = sandbox();
+        let r = extract_tar(&sb, &[E::File("../outside/evil.txt", b"x")], |o| o.allow_parent_traversal = true);
+        assert_rejected(&r, ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED);
+        sb.assert_outside_intact();
+        let r = extract_tar(&sb, &[E::File("a/../ok.txt", b"x")], |o| o.allow_parent_traversal = true);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(sb.dest.join("ok.txt").is_file());
+    }
+
+    #[test]
+    fn absolute_paths_are_rejected_or_rerooted() {
+        let sb = sandbox();
+        let abs = format!("{}/evil.txt", sb.outside.display());
+        let r = extract_tar(&sb, &[E::File(&abs, b"x")], |_| {});
+        assert_rejected(&r, ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED);
+        sb.assert_outside_intact();
+
+        // allow_absolute_paths=true re-roots under dest; never writes there
+        let r = extract_tar(&sb, &[E::File(&abs, b"x")], |o| o.allow_absolute_paths = true);
+        assert!(r.ok, "{:?}", r.error);
+        let rerooted = sb.dest.join(abs.trim_start_matches('/'));
+        assert_eq!(fs::read(rerooted).unwrap(), b"x");
+        sb.assert_outside_intact();
+    }
+
+    /// The reproduction from the verification report: `lnk -> ..` followed
+    /// by `lnk/escaped_via_symlink.txt`.
+    #[test]
+    fn archive_symlink_cannot_redirect_later_entries() {
+        let sb = sandbox();
+        let r = extract_tar(&sb, &[
+            E::Symlink("lnk", ".."),
+            E::File("lnk/escaped_via_symlink.txt", b"x"),
+        ], |_| {});
+        assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
+        assert!(!sb.root.join("escaped_via_symlink.txt").exists());
+        sb.assert_outside_intact();
+
+        for target in ["../outside", "../outside/keep.txt", "/etc", "a/../../outside", ""] {
+            let sb = sandbox();
+            let r = extract_tar(&sb, &[E::Symlink("lnk", target), E::File("lnk/keep.txt", b"pwned")], |_| {});
+            assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
+            assert!(fs::symlink_metadata(sb.dest.join("lnk")).is_err(), "{target}");
+            sb.assert_outside_intact();
+        }
+    }
+
+    #[test]
+    fn in_destination_symlink_is_never_written_through() {
+        let sb = sandbox();
+        let r = extract_tar(&sb, &[
+            E::Dir("sub/"),
+            E::Symlink("inner", "sub"),
+            E::File("inner/x.txt", b"x"),
+        ], |_| {});
+        assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
+        assert!(!sb.dest.join("sub/x.txt").exists());
+        sb.assert_outside_intact();
+    }
+
+    #[test]
+    fn symlink_chain_escaping_destination_is_removed() {
+        // sub/x -> ..  (dest) and y -> sub/x/..  (lexically "sub", but
+        // physically the parent of dest)
+        let sb = sandbox();
+        let r = extract_tar(&sb, &[
+            E::Dir("sub/"),
+            E::Symlink("sub/x", ".."),
+            E::Symlink("y", "sub/x/.."),
+        ], |_| {});
+        assert!(!r.ok);
+        assert_eq!(r.error.as_ref().unwrap().0, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
+        assert!(fs::symlink_metadata(sb.dest.join("y")).is_err(), "escaping link left behind");
+        sb.assert_outside_intact();
+    }
+
+    #[test]
+    fn preexisting_destination_symlink_is_not_followed() {
+        // parent component planted in dest
+        let sb = sandbox();
+        symlink(&sb.outside, sb.dest.join("pre")).unwrap();
+        let r = extract_tar(&sb, &[E::File("pre/keep.txt", b"pwned"), E::File("pre/new.txt", b"x")], |o| o.overwrite = true);
+        assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
+        sb.assert_outside_intact();
+
+        // final component planted in dest, overwrite=true: replaced, not followed
+        let sb = sandbox();
+        symlink(sb.outside.join("keep.txt"), sb.dest.join("target.txt")).unwrap();
+        let r = extract_tar(&sb, &[E::File("target.txt", b"new")], |o| o.overwrite = true);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(!fs::symlink_metadata(sb.dest.join("target.txt")).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(sb.dest.join("target.txt")).unwrap(), b"new");
+        sb.assert_outside_intact();
+
+        // final component is a dangling planted link, overwrite=false: skipped
+        let sb = sandbox();
+        symlink(sb.outside.join("new.txt"), sb.dest.join("dangling")).unwrap();
+        let r = extract_tar(&sb, &[E::File("dangling", b"x")], |_| {});
+        assert!(r.ok);
+        assert_eq!(r.summary.as_ref().unwrap().entries_skipped, 1);
+        sb.assert_outside_intact();
+
+        // directory entry over a planted dir link must not chmod the target
+        let sb = sandbox();
+        symlink(&sb.outside, sb.dest.join("d")).unwrap();
+        let before = fs::metadata(&sb.outside).unwrap().mode();
+        let r = extract_tar(&sb, &[E::Dir("d/")], |o| o.overwrite = true);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(fs::symlink_metadata(sb.dest.join("d")).unwrap().is_dir());
+        assert_eq!(fs::metadata(&sb.outside).unwrap().mode(), before);
+        sb.assert_outside_intact();
+    }
+
+    #[test]
+    fn hard_link_targets_must_stay_inside() {
+        let abs = |sb: &Sandbox| format!("{}/keep.txt", sb.outside.display());
+        for target in ["../outside/keep.txt", "missing.txt", "", "dir"] {
+            let sb = sandbox();
+            let r = extract_tar(&sb, &[E::Dir("dir/"), E::HardLink("hl", target)], |_| {});
+            assert!(!r.ok, "{target:?}");
+            assert!(fs::symlink_metadata(sb.dest.join("hl")).is_err());
+            sb.assert_outside_intact();
+        }
+        let sb = sandbox();
+        let a = abs(&sb);
+        let r = extract_tar(&sb, &[E::HardLink("hl", &a)], |_| {});
+        assert_rejected(&r, ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED);
+        let r = extract_tar(&sb, &[E::HardLink("hl", &a)], |o| o.allow_absolute_paths = true);
+        assert!(!r.ok, "re-rooted target does not exist, so it must not link outside");
+        assert_eq!(fs::metadata(sb.outside.join("keep.txt")).unwrap().nlink(), 1);
+        sb.assert_outside_intact();
+
+        // hard link through an in-dest symlink
+        let sb = sandbox();
+        let r = extract_tar(&sb, &[E::Symlink("s", "."), E::File("f", b"f"), E::HardLink("hl", "s/f")], |_| {});
+        assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
+        sb.assert_outside_intact();
+    }
+
+    #[test]
+    fn device_nodes_are_rejected() {
+        let sb = sandbox();
+        let r = extract_tar(&sb, &[E::Device("null")], |_| {});
+        assert_rejected(&r, ARCHIVE_EXTRACT_UNSUPPORTED_ENTRY_TYPE);
+        assert!(fs::symlink_metadata(sb.dest.join("null")).is_err());
+    }
+
+    #[test]
+    fn allow_symlinks_false_still_skips_links() {
+        let sb = sandbox();
+        let r = extract_tar(&sb, &[E::Symlink("lnk", "../outside"), E::File("a", b"a")], |o| o.allow_symlinks = false);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(fs::symlink_metadata(sb.dest.join("lnk")).is_err());
+        assert!(r.warnings.iter().any(|w| w.contains("allow_symlinks=false")));
+        sb.assert_outside_intact();
+    }
+
+    fn extract_args(sb: &Sandbox, archive: &Path, extra: &[(&str, &str)]) -> Args {
+        let mut a = Args::new();
+        a.insert("archive".into(), archive.to_string_lossy().into_owned());
+        a.insert("destination".into(), sb.dest.to_string_lossy().into_owned());
+        for (k, v) in extra {
+            a.insert(k.to_string(), v.to_string());
+        }
+        a
+    }
+
+    /// SEC-08: `allow_symlinks=no` used to parse as true. Every false
+    /// spelling now disables link extraction end to end; true spellings keep
+    /// the (contained) default.
+    #[test]
+    fn allow_symlinks_false_spellings_are_honored() {
+        for v in ["false", "no", "0", "off", "NO", "Off"] {
+            let sb = sandbox();
+            let archive = sb.root.join("t.tar");
+            write_tar(&archive, &[E::File("a", b"a"), E::Symlink("lnk", "a")]);
+            let o = ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[("allow_symlinks", v)])).unwrap();
+            assert!(!o.allow_symlinks, "allow_symlinks={v} parsed as true");
+            let r = extract_archive(o).unwrap();
+            assert!(r.ok, "{:?}", r.error);
+            assert!(fs::symlink_metadata(sb.dest.join("lnk")).is_err(), "allow_symlinks={v} still extracted a link");
+            assert!(sb.dest.join("a").is_file());
+        }
+        for v in ["true", "yes", "1", "on"] {
+            let sb = sandbox();
+            let archive = sb.root.join("t.tar");
+            write_tar(&archive, &[E::File("a", b"a")]);
+            assert!(ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[("allow_symlinks", v)])).unwrap().allow_symlinks);
+        }
+    }
+
+    /// SEC-08: malformed security booleans fail explicitly instead of
+    /// silently taking a default, and alternate true spellings are honored.
+    #[test]
+    fn malformed_security_booleans_are_rejected() {
+        let sb = sandbox();
+        let archive = sb.root.join("t.tar");
+        write_tar(&archive, &[E::File("a", b"a")]);
+        for key in ["allow_symlinks", "allow_absolute_paths", "allow_parent_traversal", "overwrite", "follow_symlinks"] {
+            for bad in ["maybe", "", "2", "y"] {
+                let err = ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[(key, bad)]))
+                    .expect_err(&format!("{key}={bad:?} accepted"));
+                assert!(err.to_string().contains(key), "{err}");
+            }
+        }
+        let o = ArchiveExtractOptions::from_args(&extract_args(&sb, &archive, &[("overwrite", "yes")])).unwrap();
+        assert!(o.overwrite, "overwrite=yes was ignored");
+        assert!(fs::read_dir(&sb.dest).unwrap().next().is_none(), "parsing extracted something");
+        sb.assert_outside_intact();
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut z = ZipWriter::new(File::create(path).unwrap());
+        for (name, data) in entries {
+            if name.ends_with('/') {
+                z.add_directory(*name, FileOptions::default()).unwrap();
+            } else {
+                z.start_file(*name, FileOptions::default()).unwrap();
+                z.write_all(data).unwrap();
+            }
+        }
+        z.finish().unwrap();
+    }
+
+    fn extract_zip(sb: &Sandbox, entries: &[(&str, &[u8])], tweak: impl Fn(&mut ArchiveExtractOptions)) -> ArchiveExtractResponse {
+        let archive = sb.root.join("t.zip");
+        write_zip(&archive, entries);
+        let mut o = opts(&archive, &sb.dest, ArchiveFormat::Zip);
+        tweak(&mut o);
+        let r = extract_archive(o).unwrap();
+        fs::remove_file(&archive).unwrap();
+        r
+    }
+
+    #[test]
+    fn zip_extraction_is_contained() {
+        let sb = sandbox();
+        let r = extract_zip(&sb, &[("d/", b""), ("d/e/f.txt", b"f"), ("top.txt", b"t")], |_| {});
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read(sb.dest.join("d/e/f.txt")).unwrap(), b"f");
+
+        let r = extract_zip(&sb, &[("../outside/evil.txt", b"x")], |_| {});
+        assert_rejected(&r, ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED);
+        let abs = format!("{}/evil.txt", sb.outside.display());
+        let r = extract_zip(&sb, &[(abs.as_str(), b"x")], |_| {});
+        assert_rejected(&r, ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED);
+        sb.assert_outside_intact();
+
+        symlink(&sb.outside, sb.dest.join("pre")).unwrap();
+        let r = extract_zip(&sb, &[("pre/evil.txt", b"x")], |o| o.overwrite = true);
+        assert_rejected(&r, ARCHIVE_EXTRACT_SYMLINK_REJECTED);
+        symlink(sb.outside.join("keep.txt"), sb.dest.join("leaf.txt")).unwrap();
+        let r = extract_zip(&sb, &[("leaf.txt", b"new")], |o| o.overwrite = true);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read(sb.dest.join("leaf.txt")).unwrap(), b"new");
+        sb.assert_outside_intact();
+    }
+
+    #[test]
+    fn raw_decompression_does_not_follow_planted_link() {
+        let sb = sandbox();
+        let gz = sb.root.join("data.gz");
+        let mut enc = flate2::write::GzEncoder::new(File::create(&gz).unwrap(), flate2::Compression::default());
+        enc.write_all(b"payload").unwrap();
+        enc.finish().unwrap();
+        symlink(sb.outside.join("keep.txt"), sb.dest.join("data")).unwrap();
+        let mut o = opts(&gz, &sb.dest, ArchiveFormat::Raw);
+        o.compression = CompressionKind::Gzip;
+        o.overwrite = true;
+        let r = extract_archive(o).unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read(sb.dest.join("data")).unwrap(), b"payload");
+        fs::remove_file(&gz).unwrap();
+        sb.assert_outside_intact();
+    }
+
+    #[test]
+    fn sanitize_path_codes() {
+        let sb = sandbox();
+        let o = opts(Path::new("x.tar"), &sb.dest, ArchiveFormat::Tar);
+        let code = |p: &str| sanitize_path(p, &sb.dest, &o).unwrap_err()
+            .downcast_ref::<UnsafeEntryError>().unwrap().code;
+        assert_eq!(code("/etc/passwd"), ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED);
+        assert_eq!(code("../x"), ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED);
+        assert_eq!(sanitize_path("a/./b", &sb.dest, &o).unwrap(), sb.dest.join("a/b"));
+    }
+}
+
+// FUNC-06: a password request never yields an unencrypted archive.
+// Stage 4: add and remove rewrite tar archives. The result must be a
+// complete stream (zstd was truncated), existing entries must keep their
+// headers (add used to rebuild them with mode 0, uid 0, mtime 0, and turn
+// symlinks into empty files), and a private archive must stay private.
+#[cfg(test)]
+mod zstd_rewrite_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    #[derive(Debug, PartialEq)]
+    struct Meta {
+        path: String,
+        mode: u32,
+        uid: u64,
+        mtime: u64,
+        kind: String,
+        link: Option<String>,
+    }
+
+    fn reader(path: &Path) -> Box<dyn Read> {
+        let f = File::open(path).unwrap();
+        let name = path.to_string_lossy();
+        if name.ends_with(".zst") {
+            Box::new(ZstdDecoder::new(f).unwrap())
+        } else if name.ends_with(".gz") {
+            Box::new(GzDecoder::new(f))
+        } else {
+            Box::new(f)
+        }
+    }
+
+    fn entries(path: &Path) -> Vec<Meta> {
+        let mut ar = tar::Archive::new(reader(path));
+        let mut v: Vec<Meta> = ar
+            .entries()
+            .unwrap()
+            .map(|e| {
+                let e = e.unwrap();
+                let h = e.header();
+                Meta {
+                    path: e.path().unwrap().display().to_string(),
+                    mode: h.mode().unwrap(),
+                    uid: h.uid().unwrap(),
+                    mtime: h.mtime().unwrap(),
+                    kind: format!("{:?}", h.entry_type()),
+                    link: e.link_name().unwrap().map(|l| l.display().to_string()),
+                }
+            })
+            .collect();
+        v.sort_by(|a, b| a.path.cmp(&b.path));
+        v
+    }
+
+    fn call(verb: &str, kv: &[(&str, String)]) -> Status {
+        let h = ArchiveHandle::from_url(&Url::parse("archive://").unwrap()).unwrap();
+        let args: Args = kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+        let st = h.call(verb, &args, &mut io).unwrap();
+        assert!(st.ok, "{verb}: {} {}", String::from_utf8_lossy(&o), String::from_utf8_lossy(&e));
+        st
+    }
+
+    fn build(path: &Path) {
+        let f = File::create(path).unwrap();
+        let w: Box<dyn Write> = if path.to_string_lossy().ends_with(".zst") {
+            Box::new(ZstdEncoder::new(f, 3).unwrap().auto_finish())
+        } else if path.to_string_lossy().ends_with(".gz") {
+            Box::new(GzEncoder::new(f, flate2::Compression::default()))
+        } else {
+            Box::new(f)
+        };
+        let mut b = tar::Builder::new(w);
+        let mut h = tar::Header::new_gnu();
+        h.set_size(4);
+        h.set_mode(0o755);
+        h.set_uid(1234);
+        h.set_mtime(1_700_000_000);
+        h.set_entry_type(tar::EntryType::Regular);
+        b.append_data(&mut h, "run.sh", &b"#!x\n"[..]).unwrap();
+        let mut h = tar::Header::new_gnu();
+        h.set_size(3);
+        h.set_mode(0o640);
+        h.set_uid(1234);
+        h.set_mtime(1_700_000_001);
+        b.append_data(&mut h, "two.txt", &b"two"[..]).unwrap();
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(tar::EntryType::Symlink);
+        h.set_size(0);
+        h.set_mode(0o777);
+        h.set_uid(1234);
+        h.set_mtime(1_700_000_002);
+        b.append_link(&mut h, "link", "run.sh").unwrap();
+        b.into_inner().unwrap().flush().unwrap();
+    }
+
+    #[test]
+    fn add_and_remove_keep_tar_entries_intact() {
+        for name in ["a.tar", "a.tar.gz", "a.tar.zst"] {
+            let tmp = TempDir::new().unwrap();
+            let archive = tmp.path().join(name);
+            build(&archive);
+            std::fs::set_permissions(&archive, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let before = entries(&archive);
+            assert_eq!(before.len(), 3);
+
+            let extra = tmp.path().join("three.txt");
+            std::fs::write(&extra, "three").unwrap();
+            let a = archive.display().to_string();
+            call("add", &[("archive", a.clone()), ("inputs", format!("[\"{}\"]", extra.display())),
+                ("base_dir", tmp.path().display().to_string())]);
+            let after_add = entries(&archive);
+            assert_eq!(after_add.len(), 4, "{name}");
+            for m in &before {
+                assert!(after_add.contains(m), "{name}: add changed {m:?}; now {after_add:?}");
+            }
+            assert_eq!(std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
+
+            call("remove", &[("archive", a.clone()), ("paths", "[\"three.txt\"]".to_string())]);
+            assert_eq!(entries(&archive), before, "{name}: remove changed the kept entries");
+            assert_eq!(std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
+            // No temporary file is left behind.
+            let left: Vec<_> = std::fs::read_dir(tmp.path()).unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| n.contains("tmp"))
+                .collect();
+            assert!(left.is_empty(), "{name}: {left:?}");
+        }
+    }
+}
+
+// RC-09: ZIP `add` rewrote existing entries with default options, losing
+// their Unix mode and modification time.
+#[cfg(test)]
+mod zip_add_metadata_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn zip_add_keeps_existing_entry_mode_and_time() {
+        let tmp = TempDir::new().unwrap();
+        let archive = tmp.path().join("a.zip");
+        let when = zip::DateTime::from_date_and_time(2020, 1, 2, 3, 4, 6).unwrap();
+        {
+            let mut z = ZipWriter::new(File::create(&archive).unwrap());
+            z.start_file("run.sh", FileOptions::default().unix_permissions(0o755).last_modified_time(when)).unwrap();
+            z.write_all(b"#!x").unwrap();
+            z.finish().unwrap();
+        }
+        let extra = tmp.path().join("n.txt");
+        std::fs::write(&extra, "n").unwrap();
+        let h = ArchiveHandle::from_url(&Url::parse("archive://").unwrap()).unwrap();
+        let args: Args = [
+            ("archive".to_string(), archive.display().to_string()),
+            ("inputs".to_string(), format!("[\"{}\"]", extra.display())),
+            ("base_dir".to_string(), tmp.path().display().to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+        let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+        assert!(h.call("add", &args, &mut io).unwrap().ok, "{}", String::from_utf8_lossy(&e));
+        let mut z = ZipArchive::new(File::open(&archive).unwrap()).unwrap();
+        assert_eq!(z.len(), 2);
+        let f = z.by_name("run.sh").unwrap();
+        assert_eq!(f.unix_mode().map(|m| m & 0o777), Some(0o755));
+        let t = f.last_modified();
+        assert_eq!((t.year(), t.month(), t.day(), t.hour(), t.minute()), (2020, 1, 2, 3, 4));
+    }
+}
+
+#[cfg(test)]
+mod zip_password_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn create(dir: &Path, extra: &[(&str, &str)]) -> (Status, String, String) {
+        let h = ArchiveHandle::from_url(&Url::parse("archive://").unwrap()).unwrap();
+        let src = dir.join("secret.txt");
+        fs::write(&src, b"top secret payload").unwrap();
+        let mut args: Args = [
+            ("output", dir.join("out.zip").to_string_lossy().into_owned()),
+            ("sources", format!("[\"{}\"]", src.display())),
+            ("format", "zip".to_string()),
+        ].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        for (k, v) in extra {
+            args.insert(k.to_string(), v.to_string());
+        }
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let status = {
+            let mut io = IoStreams { stdin: &mut i, stdout: &mut o, stderr: &mut e };
+            h.call("create", &args, &mut io).unwrap()
+        };
+        (status, String::from_utf8(o).unwrap(), String::from_utf8(e).unwrap())
+    }
+
+    #[test]
+    fn plain_zip_creation_still_works() {
+        let dir = TempDir::new().unwrap();
+        let (status, out, _) = create(dir.path(), &[]);
+        assert!(status.ok, "{out}");
+        let mut zip = zip::ZipArchive::new(fs::File::open(dir.path().join("out.zip")).unwrap()).unwrap();
+        assert_eq!(zip.len(), 1);
+        let mut body = String::new();
+        std::io::Read::read_to_string(&mut zip.by_index(0).unwrap(), &mut body).unwrap();
+        assert_eq!(body, "top secret payload");
+    }
+
+    #[test]
+    fn password_request_is_rejected_and_writes_nothing() {
+        for pw in ["hunter2", ""] {
+            let dir = TempDir::new().unwrap();
+            let (status, out, err) = create(dir.path(), &[("password", pw)]);
+            assert!(!status.ok, "password={pw:?} must fail: {out}");
+            assert_ne!(status.exit_code(), 0);
+            let text = format!("{}{}{}", out, err, status.reason.clone().unwrap_or_default());
+            assert!(text.contains(ARCHIVE_CREATE_PASSWORD_NOT_SUPPORTED), "{text}");
+            assert!(!dir.path().join("out.zip").exists(), "no plaintext fallback archive");
+            assert!(!text.contains("hunter2"), "password must not be echoed");
+        }
+    }
 }

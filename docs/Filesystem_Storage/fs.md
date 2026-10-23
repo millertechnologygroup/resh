@@ -2,552 +2,253 @@
 
 ## 1. Overview
 
-Resource Shell (resh) is a structured command execution framework that standardizes infrastructure operations using a resource-oriented URI model.
+The `fs://` handle works with mounted filesystems on the local Linux host:
+mount and unmount, mount-table listing and lockfile snapshots, disk usage,
+quotas, resizing and consistency checks. It reads `/proc/mounts` and
+`statvfs` data and runs system tools: `mount`, `umount`, `df`, `quota`,
+`resize2fs`, `xfs_growfs`, `btrfs`, `fsck`, `xfs_repair`, and
+`lvextend`/`lvreduce` when volume management is requested.
 
-The `fs://` handle provides comprehensive management of mounted filesystems and storage devices. It supports:
-
-* Mounting and unmounting filesystems
-* Disk usage monitoring
-* Filesystem resizing
-* Integrity checks and repair
-* Quota inspection
-* Mount configuration snapshotting
-* Mount inventory reporting
-
-Traditional filesystem administration relies on heterogeneous tools (`mount`, `umount`, `df`, `fsck`, `quota`, `resize2fs`, etc.), each with different syntax and output formats. This fragmentation complicates automation and increases parsing complexity.
-
-The `fs://` handle addresses this by:
-
-* Providing a unified URI-based interface
-* Standardizing argument structures
-* Returning structured output where applicable
-* Defining explicit exit codes
-* Supporting dry-run and timeout controls for safety
-
-All filesystem operations follow:
-
-```
-fs://alias.VERB(arguments)
-```
-
-Where `alias` represents a logical filesystem profile (e.g., `system`, `local`, or a custom-defined alias).
+Most changing operations (mount, unmount, resize, repair) need root.
+Platform: Linux only is supported and tested.
 
 ---
 
-## 2. Design Philosophy and Core Principles
+## 2. Command Syntax
 
-### Structured Interface Model
-
-Filesystem operations use a consistent URI structure:
-
-```
-fs://alias.verb(arguments)
+```text
+resh fs://<alias>.<verb> key=value ...
+resh 'fs://<alias>.<verb>(key=value,...)'
 ```
 
-Examples:
+The URL host (`local`, `system`, ...) is a free-form alias that is echoed
+back in the JSON result as `alias`. It does not select a profile or a
+remote host.
+
+List arguments (`options`, `paths`, `include_types`, ...) are given as
+comma-separated values, e.g. `include_types=ext4,xfs`.
+
+Help: `resh fs --help`, `resh fs <verb> --help`, or the `help`/`h` verb.
+
+### Verbs
+
+| Verb | Description |
+| ---- | ----------- |
+| `list-mounts` | Mount table with options and read-only/pseudo/network/loop flags |
+| `usage` | Size, used, free and inodes per filesystem, per path, or aggregated |
+| `snapshot` | Current mount table as an `fs-lock/v1` lockfile string |
+| `quota` | Quota usage and limits of one user/group/project on one filesystem |
+| `quota_summary` | Quota of one user or group across all mounted filesystems |
+| `mount` | Mount a device, network share or bind source |
+| `unmount` / `umount` | Unmount by mount point or source device |
+| `resize` | Grow or shrink a filesystem (see the warnings in 3.7) |
+| `check` / `fsck` | Check (and optionally repair) a filesystem |
+
+Every verb prints one JSON object on success.
+
+### Exit status
+
+0 on success. Failures use the codes mapped in the handle source:
+
+| Verb | Codes |
+| ---- | ----- |
+| all | 1 invalid arguments, 32 tool/operation failure, 62 timeout, 95 unknown verb |
+| `mount` | 3 unsupported, 13 permission denied, 16 already mounted, 17 conflicting mount, 18 target directory could not be created, 19 not mounted |
+| `unmount` | 3 unsupported, 13 permission denied, 16 busy, 19 not mounted, 95 unsupported option |
+| `snapshot`, `list-mounts` | 3 unsupported |
+| `quota` | 3 unsupported (for example the `quota` tool is missing), 4 quotas not enabled, 5 subject not found |
+| `quota_summary` | 3 unsupported, 4 no filesystem with quotas, 5 subject not found |
+| `usage` | 2 path not found, 3 unsupported, 4 nothing selected |
+| `resize` | 2 target not found, 3 unsupported filesystem, 4 shrink not allowed, 5 shrink not supported for this filesystem, 6 shrink requires unmount, 7 would violate `min_free_space_percent`, 8 target exceeds device, 9 invalid target size, 10 volume management unsupported |
+| `check` | 2 target not found, 3 unsupported filesystem, 4 repair not allowed, 5 repair requires unmount, 6 must be offline, 7 tool not available |
+
+The reason is printed on stderr as `Error: <reason>`.
+
+### timeout_ms
+
+Every fs verb enforces `timeout_ms`: the operation is abandoned and the
+command exits 62 when it runs longer. Defaults: 5000 ms for `mount`,
+`unmount`, `snapshot`, `quota` and `usage`; 8000 ms for `quota_summary`;
+3000 ms for `list-mounts`; 600000 ms (10 minutes) for `resize` and `check`.
+`timeout_ms=0` selects the default for `mount`, `unmount`, `snapshot`,
+`quota`, `quota_summary` and `list-mounts`, and is rejected (exit 1) by
+`usage`, `resize` and `check`. A timeout stops resh waiting; it does not
+guarantee that an external tool already started (for example `resize2fs`
+or `fsck`) was stopped.
+
+### Boolean arguments
+
+For `usage`, `snapshot`, `quota`, `quota_summary`, `resize`, `check` and
+`list-mounts`, booleans accept `true/false/1/0/yes/no/on/off` and any other
+value is an error (exit 1). For `mount` and `unmount`, `dry_run` is
+parsed the same strict way (a mistyped `dry_run=ture` is an error and
+nothing is mounted or unmounted), but their other booleans (`force`,
+`lazy`, `read_only`, ...) treat `true/1/yes/on` as true and every other
+value as false.
+
+---
+
+## 3. Verb Reference
+
+### 3.1 list-mounts
 
 ```bash
-fs://system.mount(target="/mnt/usb",source="/dev/sdb1")
-fs://system.usage()
-fs://system.check(target="/dev/sdb1")
+resh --json-pretty fs://local.list-mounts
+resh fs://local.list-mounts include_types=ext4,xfs include_pseudo=false
 ```
 
-The handle provides **9 verbs** grouped into functional categories.
+Arguments: `paths`, `include_mountpoints`, `exclude_mountpoints`,
+`include_types`, `exclude_types`, `include_sources`, `exclude_sources`,
+`include_readonly` (default `true`), `include_readwrite` (`true`),
+`include_pseudo` (`false`), `include_loop` (`true`), `include_network`
+(`true`), `normalize_paths`, `resolve_labels`, `resolve_fs_features`,
+`timeout_ms`.
 
----
-
-### Safety-First Execution
-
-Safety mechanisms include:
-
-* `dry_run=true` support for non-destructive validation
-* Explicit flags for risky operations (`allow_shrink`, `allow_repair`, `force`)
-* Timeout controls (`timeout_ms`)
-* Explicit remount and fail-if conditions
-* Automatic directory creation safeguards
-* Explicit unmount requirements before shrink or repair operations
-
-Most operations require root privileges and return exit code `13` if insufficient permissions are detected.
-
----
-
-### Deterministic Behavior
-
-Filesystem operations:
-
-* Require explicit `target` paths or devices
-* Use structured argument validation
-* Return consistent exit codes
-* Avoid ambiguous positional arguments
-* Support explicit selection of resolution methods (`by=auto|mountpoint|device`)
-
----
-
-### JSON-Based Structured Output
-
-Structured output is provided for:
-
-* `snapshot`
-* `quota`
-* `quota_summary`
-* `usage`
-* `list-mounts`
-
-Example snapshot output:
-
-```json
-{
-  "timestamp": "2025-02-07T10:30:00Z",
-  "mounts": [
-    {
-      "target": "/",
-      "source": "/dev/sda1",
-      "type": "ext4",
-      "options": ["rw", "relatime"],
-      "usage": {
-        "total_bytes": 107374182400,
-        "used_bytes": 53687091200,
-        "available_bytes": 53687091200,
-        "used_percent": 50.0
-      }
-    }
-  ]
-}
-```
-
-Automation systems should rely on structured JSON and exit codes rather than parsing textual output.
-
----
-
-### AI-Readiness
-
-The URI grammar and structured outputs enable:
-
-* Infrastructure automation
-* Policy validation workflows
-* Predictable orchestration
-* Deterministic error handling
-* Programmatic inspection of filesystem state
-
----
-
-## 3. Command Syntax and Execution Model
-
-### 3.1 URI Structure
-
-```
-fs://alias.verb(arguments)
-```
-
-#### Components
-
-| Component   | Description                |
-| ----------- | -------------------------- |
-| `fs`        | Filesystem handle          |
-| `alias`     | Logical filesystem profile |
-| `verb`      | Operation to perform       |
-| `arguments` | Named parameters           |
-
-**Common aliases:**
-
-* `system`
-* `local`
-* Custom-defined aliases
-
----
-
-### Example Commands
-
-Mount USB device:
+### 3.2 usage
 
 ```bash
-fs://system.mount(target="/mnt/usb",source="/dev/sdb1",type="ext4")
+resh --json-pretty fs://local.usage units=megabytes
+resh fs://local.usage mode=aggregate human_readable=true
+resh fs://local.usage mode=paths paths=/var,/home
+resh fs://local.usage threshold_used_percent_min=80
 ```
 
-List mounts:
+| Argument | Notes |
+| -------- | ----- |
+| `mode` | `mounts` (default), `paths` (needs `paths`, adds `path_to_filesystem`), `aggregate` (adds an `aggregate` object) |
+| `units` | `auto`, `bytes`, `kilobytes`, `megabytes`, `gigabytes`, `blocks` |
+| `human_readable` | Adds `size_human`, `used_human`, `free_human` strings |
+| `threshold_used_percent_min` / `_max` | Keep only filesystems within the range (0-100) |
+| `include_inodes`, `include_readonly`, include/exclude filters | as for `list-mounts` |
+
+Mounts whose usage cannot be read are skipped and listed in `warnings`.
+
+### 3.3 snapshot
 
 ```bash
-fs://system.list-mounts()
+resh --json-pretty fs://local.snapshot format=json
+resh fs://local.snapshot format=text include_usage=false
 ```
 
-Check disk usage:
+Arguments: `format=json|yaml|text`, `include_usage` (default `true`),
+`include_inodes`, `include_fs_metadata`, `include_os_metadata`,
+`normalize_paths`, the include/exclude filters, `timeout_ms`.
+
+The result is a JSON object whose `lockfile` field holds the lockfile as a
+string (`fs-lock/v1`: generation time, alias, host, filters, one entry per
+mount), plus a `parsed` summary. `format=yaml` currently produces the same
+JSON text as `format=json`. Nothing is written to disk.
+
+### 3.4 quota
 
 ```bash
-fs://system.usage(human_readable=true)
+resh --json-pretty fs://local.quota path=/home subject=alice
 ```
 
-Resize filesystem:
+Arguments: `path` (default `/`), `subject` (default current user),
+`subject_type=auto|user|group|project`, `units=auto|blocks|bytes`,
+`include_space`, `include_inodes`, `include_grace`, `resolve_uid_gid`,
+`timeout_ms`. Requires the `quota` tool; without it the command exits 3
+("Quota operations are not supported on this platform").
+
+`all_subjects=true` is not implemented: it fails with
+"all_subjects=true is not yet implemented" (exit 32).
+
+### 3.5 quota_summary
 
 ```bash
-fs://system.resize(target="/data",delta="+50G")
+resh --json-pretty fs://local.quota_summary subject=alice
 ```
 
-Repair filesystem:
+Same arguments as `quota` (without `path`) plus the include/exclude
+filters. Filesystems without quotas are listed in
+`filesystems_without_quotas`. `all_subjects=true` is not implemented
+(exit 32).
+
+### 3.6 mount / unmount
 
 ```bash
-fs://system.check(target="/dev/sdb1",mode="repair",allow_repair=true)
+resh --json-pretty fs://local.mount target=/mnt/usb source=/dev/sdb1 type=ext4 dry_run
+resh fs://local.mount target=/mnt/data source=/dev/sdb1 create_target=true options=noexec,nosuid,nodev
+resh fs://local.mount target=/mnt/nfs source=server:/export type=nfs network=true
+resh fs://local.mount target=/srv/chroot/data source=/data bind=true read_only=true
+resh --json-pretty fs://local.unmount target=/mnt/usb
+resh fs://local.unmount target=/dev/sdb1 by=source detach_children=true
 ```
 
----
+`mount` arguments: `target` (required), `source`, `type`, `options`
+(comma-separated), `read_only` (adds `ro`), `bind`, `remount`, `network`,
+`create_target`, `make_parents`, `fail_if_mounted`, `dry_run`,
+`timeout_ms`. An existing compatible mount returns action
+`already_mounted`; `dry_run` returns action `planned` with a `plan`.
 
-### 3.2 Execution Semantics
+`unmount` arguments: `target` (required), `by=target|source|auto`, `force`,
+`lazy`, `detach_children`, `fail_if_not_mounted`, `dry_run`, `timeout_ms`.
 
-Operations may:
+See the boolean warning in section 2 for these two verbs.
 
-* Return no output (success indicated by exit code 0)
-* Return structured JSON (snapshot, quota, usage)
-* Return error codes for safety or system conditions
-
-Common exit codes:
-
-| Code | Meaning                    |
-| ---- | -------------------------- |
-| 0    | Success                    |
-| 1    | Invalid arguments          |
-| 2    | Target not found           |
-| 3    | Unsupported                |
-| 13   | Permission denied          |
-| 16   | Resource busy              |
-| 17   | Conflicting operation      |
-| 18   | Failed to create directory |
-| 19   | Not mounted                |
-| 32   | General failure            |
-| 62   | Timeout                    |
-| 95   | Unknown verb               |
-
-Automation should always inspect exit codes.
-
----
-
-## 4. Functional Domains
-
-### 4.1 Automation Utilities
-
-#### snapshot
-
-Creates a mount configuration snapshot.
-
-Use cases:
-
-* Change auditing
-* Pre-maintenance capture
-* Compliance tracking
-
-Example:
+### 3.7 resize
 
 ```bash
-fs://system.snapshot(format="json",include_usage=true)
+resh --json-pretty fs://local.resize target=/data size=200G dry_run
+resh fs://local.resize target=/data delta=+50G dry_run
 ```
 
----
+Arguments: `target` (required), exactly one of `size` or `delta`,
+`by=auto|mountpoint|device`, `size_units` (unit for bare numbers),
+`mode=grow|shrink|auto`, `allow_shrink`, `min_free_space_percent`,
+`manage_underlying_volume` (LVM only: runs `lvextend`/`lvreduce`),
+`volume_resize_only`, `filesystem_resize_only`,
+`require_unmounted_for_shrink`, `force`, `dry_run`, `timeout_ms`.
+Sizes accept `K`, `M`, `G`, `T` suffixes (powers of 1024). A size equal to
+the current size returns action `noop`. Shrinking needs
+`allow_shrink=true`, is refused for xfs, and needs an unmounted ext3/ext4
+filesystem.
 
-### 4.2 Data & State Management
+Known problems (always run with `dry_run` first and read the planned
+command):
 
-#### usage
+* **ext3/ext4 size argument.** `resize2fs` receives the target size in
+  KiB (`size=200G` gives `resize2fs <dev> 209715200K`). Earlier builds
+  divided by 4096 instead and asked for a quarter of the requested size;
+  check the planned command with `dry_run` before resizing.
+* **A negative `delta` never works.** `delta=-10G` is rejected with
+  "calculated size cannot be negative". To shrink, pass the absolute
+  target with `size=`.
 
-Reports disk usage.
+### 3.8 check / fsck
 
 ```bash
-fs://system.usage(mode="aggregate")
+resh --json-pretty fs://local.check target=/dev/sdb1
+resh fs://local.check target=/dev/sdb1 mode=repair allow_repair=true dry_run
 ```
 
-#### quota
-
-Reports quota information.
-
-```bash
-fs://system.quota(subject="alice",path="/home")
-```
-
-#### quota_summary
-
-Aggregates quota data across filesystems.
-
-```bash
-fs://system.quota_summary(all_subjects=true)
-```
-
-Use cases:
-
-* Capacity planning
-* Multi-tenant system monitoring
-* Threshold-based alerting
+Arguments: `target` (required), `by=auto|mountpoint|device`,
+`filesystem_type`, `mode=check|repair|auto`, `allow_repair`,
+`aggressiveness=safe|normal|aggressive`, `allow_online_check`,
+`require_unmounted_for_repair`, `skip_if_mounted`, `force`,
+`btrfs_use_scrub`, `btrfs_allow_offline_check`, `dry_run`, `timeout_ms`.
+`mode=check` (default) is read-only (`fsck -n`). `mode=repair` with
+`allow_repair=true` runs `fsck -p`, `xfs_repair` or `btrfs check --repair`
+on an unmounted filesystem. `max_pass` is accepted but has no effect.
 
 ---
 
-### 4.3 Filesystem & Storage
+## 4. Limitations
 
-#### mount
-
-Mount filesystem to target.
-
-#### unmount (alias: umount)
-
-Unmount filesystem.
-
-#### list-mounts
-
-Inventory mounted filesystems.
-
-Example:
-
-```bash
-fs://system.mount(target="/mnt/data",source="/dev/sdb1",create_target=true)
-fs://system.unmount(target="/mnt/data")
-```
-
-Use cases:
-
-* USB drive management
-* NFS/CIFS mounting
-* Bind mounts
-* Secure chroot environments
+* `resize` cannot use negative deltas (see 3.7).
+* `quota` and `quota_summary` with `all_subjects=true` are not implemented.
+* `snapshot format=yaml` outputs JSON.
+* `mount`/`unmount` silently treat unrecognized boolean values as false.
+* Linux only.
 
 ---
 
-### 4.4 Storage Management
-
-#### resize
-
-Resize filesystem and optionally underlying volumes.
-
-```bash
-fs://system.resize(target="/data",delta="+50G",manage_underlying_volume=true)
-```
-
-#### check (alias: fsck)
-
-Check and optionally repair filesystem.
-
-```bash
-fs://system.check(target="/dev/sdb1",mode="check")
-```
-
-Use cases:
-
-* Volume expansion
-* LVM workflows
-* Maintenance windows
-* Filesystem integrity verification
-
----
-
-### 4.5 Network & Remote Operations
-
-Network mounts supported via:
-
-* NFS
-* CIFS
-
-Example:
-
-```bash
-fs://system.mount(target="/mnt/nfs",source="server:/export",type="nfs",network=true)
-```
-
-Use cases:
-
-* Centralized storage
-* Backup targets
-* Shared enterprise filesystems
-
----
-
-### 4.6 Packages & Software
-
-Not applicable to `fs://`.
-
----
-
-### 4.7 Process & Service Management
-
-Not applicable to `fs://`.
-
----
-
-### 4.8 Security & Secrets
-
-Security-related operations include:
-
-* Read-only mounts (`read_only=true`)
-* Security mount options (`noexec`, `nosuid`, `nodev`)
-* Quota enforcement
-* Permission enforcement via root-only execution
-
-Example:
-
-```bash
-fs://system.mount(target="/secure",source="/dev/sdb1",options=["noexec","nosuid","nodev"])
-```
-
----
-
-### 4.9 System Information
-
-#### list-mounts
-
-Enumerates mount table.
-
-#### usage
-
-Reports usage metrics.
-
-Supports:
-
-* Type filtering
-* Source filtering
-* Threshold filtering
-* Label resolution
-
-Example:
-
-```bash
-fs://system.list-mounts(include_types=["ext4","xfs"])
-```
-
----
-
-## 5. Platform Support
-
-Based on provided documentation:
-
-* Designed for Unix-like systems.
-* Requires root privileges for most operations.
-* Supports Linux filesystem types including ext4, xfs, btrfs, ntfs, vfat, exfat, NFS, CIFS.
-* Virtual filesystem filtering supported (`proc`, `sysfs`, `tmpfs`, `devtmpfs`).
-
-No Windows-native support details provided in the source documentation.
-
----
-
-## 6. Operational Best Practices
-
-### Safe Usage Guidelines
-
-* Always test with `dry_run=true`.
-* Create `snapshot` before major changes.
-* Use explicit flags for shrink or repair.
-* Avoid `force=true` unless required.
-* Exclude pseudo filesystems during monitoring.
-* Use read-only mounts where applicable.
-
----
-
-### Automation Considerations
-
-* Use threshold filters in monitoring workflows.
-* Use `aggregate` mode for capacity dashboards.
-* Always verify resize operations with `usage`.
-* Set explicit `timeout_ms` for long-running operations.
-
----
-
-### CI/CD Integration
-
-Typical patterns:
-
-```bash
-# Snapshot before deployment
-fs://system.snapshot(format="json")
-
-# Verify mount state
-fs://system.list-mounts()
-
-# Validate capacity
-fs://system.usage(threshold_used_percent_min=80)
-```
-
----
-
-### Production Recommendations
-
-* Use read-only mounts for backups.
-* Enable quotas in multi-user environments.
-* Monitor grace periods.
-* Exclude pseudo filesystems in monitoring.
-* Use bind mounts for isolation patterns.
-* Verify health with `check` before resizing.
-
----
-
-## 7. Use Cases by Role
-
-### DevOps Engineers
-
-* Automate mount management during deployment.
-* Monitor storage thresholds.
-* Resize volumes in CI/CD.
-* Snapshot configuration before infrastructure changes.
-
----
-
-### SRE Engineers
-
-* Diagnose resource exhaustion.
-* Perform safe filesystem repair.
-* Monitor quota enforcement.
-* Track mount drift via snapshots.
-
----
-
-### Network Administrators
-
-* Mount and manage NFS/CIFS shares.
-* Secure mounts with restrictive options.
-* Monitor remote storage availability.
-* Enforce quota policies.
-
----
-
-### AI / Automation Engineers
-
-* Use structured JSON outputs for monitoring systems.
-* Integrate `usage` thresholds into alerting engines.
-* Automate capacity expansion workflows.
-* Orchestrate deterministic maintenance procedures.
-
----
-
-## 8. Technical Foundation
-
-The filesystem handle is implemented within resh’s Rust-based execution framework.
-
-### Rust Implementation Advantages
-
-* Memory safety guarantees
-* Strong type enforcement
-* Deterministic error handling
-* Controlled privilege operations
-
----
-
-### Type Safety
-
-* Strict argument parsing
-* Explicit mode flags
-* Enumerated option validation
-* Explicit exit code mapping
-
----
-
-### Performance Characteristics
-
-* Timeout-controlled long-running operations
-* Structured mount filtering
-* Targeted filesystem resolution methods
-* Efficient mount inventory reporting
-
----
-
-### Cross-Platform Architecture
-
-The documentation describes integration with Unix-style filesystem management tools and filesystem types.
-
-Operations assume:
-
-* Standard mount interfaces
-* Unix-style permission model
-* Root privilege model
-
-No non-Unix implementation details are provided in the source documentation.
-
+## 5. Best Practices
+
+* Run `mount`, `unmount`, `resize` and `check mode=repair` with `dry_run`
+  first, and inspect the `plan`.
+* Run `check` before resizing; keep `allow_shrink` and `allow_repair` off
+  unless needed.
+* Capture `fs://local.snapshot` before maintenance and keep the output.
+* Exclude pseudo filesystems (the default for `list-mounts`) in monitoring.
