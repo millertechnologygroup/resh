@@ -195,7 +195,7 @@ archive, rsync opens every file, and problems give a VERIFY_FAILED error."#,
                     [password=<secret>|password_file=<path>] [tag=<tag>;...]\n  \
                     [label=<text>] [exclude=<pattern>;...] [dry_run=true|false]\n  \
                     [timeout_ms=<ms>]",
-                example: "resh --json-pretty backup://db.create src=/etc backend=tar \
+                example: "resh backup://db.create src=/etc backend=tar repo_url=/srv/backup \
                     dry_run=true",
                 example_output: Some(
                     r#"{
@@ -203,7 +203,7 @@ archive, rsync opens every file, and problems give a VERIFY_FAILED error."#,
     "command": [
       "tar",
       "-czf",
-      "/tmp/resh_backup_default/backup_20261016_091244.tar.gz",
+      "/srv/backup/backup_20261016_091244.tar.gz",
       "/etc"
     ],
     "env_redacted": {},
@@ -248,10 +248,13 @@ archive, rsync opens every file, and problems give a VERIFY_FAILED error."#,
   ]
 }
 
-Shown for a tar dry run with --json-pretty. A real run reports the archive,
-directory or restic snapshot id, such as backup_20261016_091244, and the raw
-output. restic and borg need password, password_file, RESTIC_PASSWORD(_FILE)
-or BORG_PASSPHRASE/BORG_PASSCOMMAND, else they fail with MISSING_PASSWORD."#,
+Shown for a tar dry run, indented as with --json-pretty. A real run
+reports the archive, directory or restic snapshot id, such as
+backup_20261016_091244, and the raw output. restic and borg need password,
+password_file, RESTIC_PASSWORD(_FILE) or BORG_PASSPHRASE/BORG_PASSCOMMAND,
+else they fail with MISSING_PASSWORD.
+tar, rsync and borg need repo_url (there is no default repository), else
+every verb fails with INVALID_ARGS; use a directory only you can write."#,
                 ),
             }),
         },
@@ -582,10 +585,6 @@ const DEFAULT_VERIFY_TIMEOUT_MS: u64 = 3_600_000; // 60 minutes
 const DEFAULT_PRUNE_TIMEOUT_MS: u64 = 3_600_000; // 60 minutes
 const DEFAULT_SCHEDULE_TIMEOUT_MS: u64 = 10_000; // 10 seconds
 
-/// Default repository locations when repo_url is not given
-const DEFAULT_RSYNC_REPO: &str = "/tmp/rsync_backup";
-const DEFAULT_BORG_REPO: &str = "/tmp/borg_repo";
-
 /// Maximum output capture size per specification (256KB)
 const MAX_OUTPUT_SIZE: usize = 256 * 1024;
 
@@ -680,17 +679,36 @@ fn repeat_flag(flag: &str, values: &[String]) -> Vec<String> {
 }
 
 /// Local repository directory for tar/rsync, accepting `file://` URLs.
-fn local_repo_path(repo_url: Option<&String>, default: &str) -> String {
-    match repo_url {
-        Some(u) => u.strip_prefix("file://").unwrap_or(u).to_string(),
-        None => default.to_string(),
-    }
+/// `repo_or_return!` has already rejected a missing `repo_url`.
+fn local_repo_path(repo_url: Option<&String>) -> String {
+    repo_url
+        .map(|u| u.strip_prefix("file://").unwrap_or(u).to_string())
+        .unwrap_or_default()
 }
 
 fn borg_repo(repo_url: Option<&String>) -> String {
-    repo_url
-        .cloned()
-        .unwrap_or_else(|| DEFAULT_BORG_REPO.to_string())
+    repo_url.cloned().unwrap_or_default()
+}
+
+/// tar, rsync and borg have no safe default repository: the former `/tmp`
+/// defaults were world-readable and accepted directories planted by other
+/// users. restic reads `RESTIC_REPOSITORY` itself when `repo_url` is absent.
+fn repo_url_required(backend: &BackendType, args: &Args) -> Option<String> {
+    let needs = matches!(
+        backend,
+        BackendType::Tar | BackendType::Rsync | BackendType::Borg
+    );
+    let given = args
+        .get("repo_url")
+        .map(|u| !u.trim().is_empty() && u.trim() != "file://")
+        .unwrap_or(false);
+    (needs && !given).then(|| {
+        format!(
+            "repo_url is required for the {} backend (there is no default repository); \
+             pass a directory only you can write, for example repo_url=/var/backups/resh/<profile>",
+            backend
+        )
+    })
 }
 
 /// Snapshot (archive or directory) name: `<label>_<ts>` or `backup_<ts>`.
@@ -1427,10 +1445,6 @@ impl BackupHandle {
         })
     }
 
-    fn default_tar_repo(&self) -> String {
-        format!("/tmp/resh_backup_{}", &self.repo)
-    }
-
     /// Get capabilities for a specific backend per specification
     fn get_capabilities(&self, backend: &BackendType) -> BackupCapabilities {
         match backend {
@@ -1737,6 +1751,17 @@ macro_rules! select_or_return {
     }};
 }
 
+/// Writes an INVALID_ARGS envelope (before anything runs) and returns when
+/// the backend needs `repo_url` and none was given.
+macro_rules! repo_or_return {
+    ($self:ident, $r:ident, $io:ident, $args:ident, $backend:expr, $timeout:expr) => {{
+        if let Some(msg) = repo_url_required(&$backend, $args) {
+            let info = $self.backend_info(&$backend, None, $timeout, $r.dry_run);
+            return $self.fail(&$r, $io, info, "INVALID_ARGS", &msg, None, vec![], 1);
+        }
+    }};
+}
+
 /// Adds the repository password to `spec`, or writes a MISSING_PASSWORD
 /// envelope (before anything runs) and returns.
 macro_rules! secret_or_return {
@@ -1761,6 +1786,7 @@ impl BackupHandle {
         let timeout_ms = arg_timeout(args, DEFAULT_CREATE_TIMEOUT_MS);
         let r = Reply::new("create", args, crate::core::lenient::dry_run(args)?);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
+        repo_or_return!(self, r, io, args, backend, timeout_ms);
 
         let sources = split_list(src, ';');
         let mut tags = args
@@ -1782,7 +1808,7 @@ impl BackupHandle {
         // (command, snapshot id known in advance, repo dir to create, tar archive)
         let (mut spec, known_id, repo_dir, archive) = match backend {
             BackendType::Tar => {
-                let repo = local_repo_path(repo_url, &self.default_tar_repo());
+                let repo = local_repo_path(repo_url);
                 let archive = format!("{}/{}.tar.gz", repo, name);
                 (
                     build_tar_create(&archive, &sources, &exclude),
@@ -1804,7 +1830,7 @@ impl BackupHandle {
                 None,
             ),
             BackendType::Rsync => {
-                let repo = local_repo_path(repo_url, DEFAULT_RSYNC_REPO);
+                let repo = local_repo_path(repo_url);
                 let dest = format!("{}/{}/", repo, name);
                 (
                     build_rsync_create(&dest, &sources, &exclude),
@@ -1893,6 +1919,7 @@ impl BackupHandle {
         let timeout_ms = arg_timeout(args, DEFAULT_LIST_TIMEOUT_MS);
         let r = Reply::new("list", args, false);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
+        repo_or_return!(self, r, io, args, backend, timeout_ms);
         let repo_url = args.get("repo_url");
         let mut tags = args
             .get("tag")
@@ -1905,12 +1932,7 @@ impl BackupHandle {
             BackendType::Restic => build_restic_list(repo_url, &tags),
             BackendType::Borg => build_borg_list(&borg_repo(repo_url)),
             BackendType::Tar | BackendType::Rsync => {
-                let default = if backend == BackendType::Tar {
-                    self.default_tar_repo()
-                } else {
-                    DEFAULT_RSYNC_REPO.to_string()
-                };
-                let repo = local_repo_path(repo_url, &default);
+                let repo = local_repo_path(repo_url);
                 let info = self.backend_info(&backend, None, timeout_ms, false);
                 let snaps = match scan_local_snapshots(&backend, Path::new(&repo), false) {
                     Ok(s) => s,
@@ -1979,6 +2001,7 @@ impl BackupHandle {
         }
         let r = Reply::new("restore", args, false);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
+        repo_or_return!(self, r, io, args, backend, timeout_ms);
 
         let repo_url = args.get("repo_url");
         let include = args
@@ -2005,11 +2028,11 @@ impl BackupHandle {
                 build_borg_restore(&borg_repo(repo_url), snapshot_id, dest, &exclude)
             }
             BackendType::Tar => {
-                let repo = local_repo_path(repo_url, &self.default_tar_repo());
+                let repo = local_repo_path(repo_url);
                 build_tar_restore(&format!("{}/{}.tar.gz", repo, snapshot_id), dest, &exclude)
             }
             BackendType::Rsync => {
-                let repo = local_repo_path(repo_url, DEFAULT_RSYNC_REPO);
+                let repo = local_repo_path(repo_url);
                 build_rsync_restore(&format!("{}/{}/", repo, snapshot_id), dest, &exclude)
             }
         };
@@ -2046,6 +2069,7 @@ impl BackupHandle {
         let timeout_ms = arg_timeout(args, DEFAULT_VERIFY_TIMEOUT_MS);
         let r = Reply::new("verify", args, false);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
+        repo_or_return!(self, r, io, args, backend, timeout_ms);
         let mode = args
             .get("mode")
             .cloned()
@@ -2084,7 +2108,7 @@ impl BackupHandle {
                 (info, verification)
             }
             BackendType::Tar => {
-                let repo = local_repo_path(repo_url, &self.default_tar_repo());
+                let repo = local_repo_path(repo_url);
                 let mut info = self.backend_info(&backend, None, timeout_ms, false);
                 let archives = match scan_local_snapshots(&backend, Path::new(&repo), false) {
                     Ok(a) => a,
@@ -2129,7 +2153,7 @@ impl BackupHandle {
                 (info, verification)
             }
             BackendType::Rsync => {
-                let repo = local_repo_path(repo_url, DEFAULT_RSYNC_REPO);
+                let repo = local_repo_path(repo_url);
                 let info = self.backend_info(&backend, None, timeout_ms, false);
                 if !Path::new(&repo).is_dir() {
                     let msg = format!("Repository directory {} does not exist", repo);
@@ -2178,6 +2202,7 @@ impl BackupHandle {
         let timeout_ms = arg_timeout(args, DEFAULT_PRUNE_TIMEOUT_MS);
         let r = Reply::new("prune", args, crate::core::lenient::dry_run(args)?);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
+        repo_or_return!(self, r, io, args, backend, timeout_ms);
         let repo_url = args.get("repo_url");
         let capabilities = self.get_capabilities(&backend);
 
@@ -2247,12 +2272,7 @@ impl BackupHandle {
                 self.ok(&r, io, info, result, warnings)
             }
             BackendType::Tar | BackendType::Rsync => {
-                let default = if backend == BackendType::Tar {
-                    self.default_tar_repo()
-                } else {
-                    DEFAULT_RSYNC_REPO.to_string()
-                };
-                let repo = local_repo_path(repo_url, &default);
+                let repo = local_repo_path(repo_url);
                 let info = self.backend_info(&backend, None, timeout_ms, false);
                 let snaps = match scan_local_snapshots(&backend, Path::new(&repo), true) {
                     Ok(s) => s,
@@ -2655,10 +2675,10 @@ mod tests {
     #[test]
     fn local_repo_path_strips_file_scheme() {
         assert_eq!(
-            local_repo_path(Some(&"file:///srv/b".to_string()), "/d"),
+            local_repo_path(Some(&"file:///srv/b".to_string())),
             "/srv/b"
         );
-        assert_eq!(local_repo_path(None, "/d"), "/d");
+        assert_eq!(local_repo_path(Some(&"/srv/b".to_string())), "/srv/b");
     }
 
     // ---- C1: repository password ----
@@ -3038,15 +3058,6 @@ mod profile_tests {
     fn profile_comes_from_the_url_host() {
         assert_eq!(repo("backup://db"), "db");
         assert_eq!(repo("backup://web"), "web");
-        assert_ne!(
-            BackupHandle::from_url(Url::parse("backup://db").unwrap())
-                .unwrap()
-                .default_tar_repo(),
-            BackupHandle::from_url(Url::parse("backup://web").unwrap())
-                .unwrap()
-                .default_tar_repo(),
-            "profiles must not share a repository"
-        );
         // Unchanged forms.
         assert_eq!(repo("backup://"), "default");
         assert_eq!(repo("backup:///legacy"), "legacy");
@@ -3064,6 +3075,84 @@ mod profile_tests {
 // Stage 4: a dry-run request never performs a real backup, prune or
 // restore. Malformed dry_run values are errors (shared lenient parser), and
 // restore, which has no dry-run mode, refuses dry_run=true.
+// tar, rsync and borg have no default repository (v1.0.3-beta, release gate
+// RB-3: the former /tmp defaults leaked backups and accepted directories
+// planted by other users).
+#[cfg(test)]
+mod repo_url_required_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn args(kv: &[(&str, &str)]) -> Args {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn local_backends_require_repo_url() {
+        for b in [BackendType::Tar, BackendType::Rsync, BackendType::Borg] {
+            assert!(repo_url_required(&b, &args(&[])).is_some(), "{b}");
+            assert!(
+                repo_url_required(&b, &args(&[("repo_url", " ")])).is_some(),
+                "{b}"
+            );
+            assert!(
+                repo_url_required(&b, &args(&[("repo_url", "file://")])).is_some(),
+                "{b}"
+            );
+            assert!(
+                repo_url_required(&b, &args(&[("repo_url", "/srv/b")])).is_none(),
+                "{b}"
+            );
+        }
+        // restic falls back to its own RESTIC_REPOSITORY.
+        assert!(repo_url_required(&BackendType::Restic, &args(&[])).is_none());
+    }
+
+    #[test]
+    fn tar_without_repo_url_fails_before_running() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        let h = BackupHandle::from_url(Url::parse("backup://rb3").unwrap()).unwrap();
+        for (verb, extra) in [
+            ("create", vec![("src", src.to_str().unwrap())]),
+            (
+                "create",
+                vec![("src", src.to_str().unwrap()), ("dry_run", "true")],
+            ),
+            ("list", vec![]),
+            ("verify", vec![]),
+            ("prune", vec![("keep_daily", "1")]),
+            (
+                "restore",
+                vec![
+                    ("snapshot_id", "backup_1"),
+                    ("dest", tmp.path().to_str().unwrap()),
+                ],
+            ),
+        ] {
+            let mut kv = vec![("backend", "tar")];
+            kv.extend(extra);
+            let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
+            let st = h.call(verb, &args(&kv), &mut io).unwrap();
+            assert!(!st.ok, "{verb} {kv:?}");
+            let out = String::from_utf8_lossy(&o);
+            assert!(
+                out.contains("INVALID_ARGS") && out.contains("repo_url is required"),
+                "{verb}: {out}"
+            );
+        }
+        assert!(!Path::new("/tmp/resh_backup_rb3").exists());
+    }
+}
+
 #[cfg(test)]
 mod dry_run_tests {
     use super::*;

@@ -3,6 +3,7 @@ pub mod help;
 pub mod lenient;
 pub mod parse;
 pub mod registry;
+pub mod secure_fs;
 pub mod status;
 
 pub use envelope::{BackendInfo, BackupEnvelope, BackupError, BackupEvent, Timer};

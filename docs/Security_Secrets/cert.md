@@ -230,7 +230,8 @@ Success is always 0.
 ## 6. File Safety
 
 * Existing files are not replaced unless `overwrite=true`.
-* Private keys are written with the normal file mode and then changed to 0600. There is a short window in which a new key file has the default (umask) permissions, so write keys only into directories other users cannot read. On `csr.create`, a failure to set 0600 is ignored.
+* Private keys (`generate`, `renew key_strategy=rekey`, `csr.create key_strategy=generate`) are created with mode 0600 from the start, never through a symlink: an existing symlink at the key path is refused, with or without `overwrite`. With `overwrite=true` the key is written to a new temporary file that is renamed over the old one. `csr.create` also refuses an existing `new_key_output_path` unless `overwrite=true`. (Before v1.0.3-beta keys were written with the umask mode and then changed to 0600, which let another local user open the key in between, and a planted symlink redirected the write.)
+* A dangling symlink at an output path counts as an existing file for `overwrite=false`.
 * Certificates and CSRs are written with default permissions.
 
 ---

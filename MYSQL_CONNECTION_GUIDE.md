@@ -20,7 +20,7 @@ resh db://mysql/stocks.query sql="SELECT * FROM your_table LIMIT 10"
 
 1. **Connect to the Database**
    ```bash
-   resh db://mysql/stocks.connect dsn='mysql://smiller:Gaphan8b$@192.168.1.115:3306/stocks'
+   resh db://mysql/stocks.connect dsn='mysql://appuser:pa$$word@db.example.com:3306/stocks'
    ```
 
 2. **Execute a Query**
@@ -37,12 +37,12 @@ resh db://mysql/stocks.query sql="SELECT * FROM your_table LIMIT 10"
 
 1. **Query with Auto-Connect**
    ```bash
-   resh db://mysql/stocks.query dsn='mysql://smiller:Gaphan8b$@192.168.1.115:3306/stocks' sql="SELECT * FROM stocks LIMIT 5"
+   resh db://mysql/stocks.query dsn='mysql://appuser:pa$$word@db.example.com:3306/stocks' sql="SELECT * FROM stocks LIMIT 5"
    ```
 
 2. **Exec with Auto-Connect**
    ```bash
-   resh db://mysql/stocks.exec dsn='mysql://smiller:Gaphan8b$@192.168.1.115:3306/stocks' sql="INSERT INTO stocks (symbol, price) VALUES ('AAPL', 150.00)"
+   resh db://mysql/stocks.exec dsn='mysql://appuser:pa$$word@db.example.com:3306/stocks' sql="INSERT INTO stocks (symbol, price) VALUES ('AAPL', 150.00)"
    ```
 
 > **Note**: When using auto-connect, the DSN parameter can be provided directly to `query` and `exec` commands. If no existing connection is found for the alias, resh will automatically establish a connection using the provided DSN.
@@ -67,12 +67,12 @@ If your password contains special characters (like `$`, `@`, `#`, etc.), you hav
 
 #### Option 1: Use Single Quotes (Recommended)
 ```bash
-resh db://mysql/stocks.connect dsn='mysql://smiller:Gaphan8b$@192.168.1.115:3306/stocks'
+resh db://mysql/stocks.connect dsn='mysql://appuser:pa$$word@db.example.com:3306/stocks'
 ```
 
 #### Option 2: URL-Encode Special Characters
 ```bash
-resh db://mysql/stocks.connect dsn=mysql://smiller:Gaphan8b%24@192.168.1.115:3306/stocks
+resh db://mysql/stocks.connect dsn=mysql://appuser:pa%24%24word@db.example.com:3306/stocks
 ```
 
 **Common URL Encodings:**

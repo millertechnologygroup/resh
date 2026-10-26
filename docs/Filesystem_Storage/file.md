@@ -231,7 +231,7 @@ else as false.
   you pipe into it.
 * Use `create=false` to avoid creating files by accident and keep
   `overwrite` off unless needed.
-* Use `replace dry_run` or `backup=<suffix>` before editing configuration.
+* Use `replace dry_run` or `backup=<suffix>` before editing configuration. The backup (`<file><suffix>`) is written to a new temporary file and renamed into place with the original's permission bits; an existing symlink at the backup name is refused and the replace fails without changing the file.
 * Use SHA-256, SHA-512 or BLAKE3 for integrity checks; MD5 and SHA-1 are
   for compatibility only.
 * Bound `find` with `max_depth`/`limit` and `grep` with `max`.

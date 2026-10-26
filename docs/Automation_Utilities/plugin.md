@@ -27,6 +27,8 @@ Local state (all under the XDG directories of the user running resh):
 | `available.search` cache | `$XDG_STATE_HOME/resh/plugins/index-cache.json` |
 | `available.info` index cache | `$RESH_STATE_DIR/cache/plugin-indexes`, or `~/.resh/cache/plugin-indexes` |
 
+**Do not run plugin verbs as root with another user's environment** (for example `sudo -E resh plugin://...`, or a sudo policy that keeps `HOME` or `XDG_*`). The locations above then resolve into that user's directories, which the user controls: `remove` deletes the binary path recorded in the store's `metadata.json` without checking that it lies inside the store, and `remove purge=true` follows a symlinked parent directory under the state, cache and config locations. Run plugin verbs as the user who owns the store, or as root with root's own `HOME` (for example `sudo -H` or `sudo -i`).
+
 ---
 
 ## 2. Security Model for Installation

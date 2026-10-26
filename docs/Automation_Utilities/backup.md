@@ -18,7 +18,7 @@ Where:
 
 * `<profile>` names the backup profile. It is taken from the URL host, so `backup://db.create` uses the profile `db`. `backup:///db` (path form) names the same profile, and `backup://db/sub` gives the profile `db/sub`. With no profile, the profile is `default`.
 * `<verb>` is one of `create`, `list`, `restore`, `verify`, `prune`, `schedule`.
-* `key=value` words are the verb's arguments. The form `'backup://db.list(backend=tar)'` (quoted for the shell) is also accepted.
+* `key=value` words are the verb's arguments. The form `'backup://db.list(backend=restic)'` (quoted for the shell) is also accepted.
 
 The profile is only used to name the default tar repository and the reported schedule definition path. Everything else about the repository comes from the arguments.
 
@@ -41,7 +41,7 @@ The profile is only used to name the default tar repository and the reported sch
 | Argument        | Verbs                                   | Meaning |
 | --------------- | --------------------------------------- | ------- |
 | `backend`       | all                                     | `restic`, `borg`, `rsync` or `tar`. Without it, the first of these found on `PATH` is used, in that order. An unknown name fails with `BACKEND_NOT_FOUND`. |
-| `repo_url`      | create, list, restore, verify, prune    | Repository location. restic receives it as `RESTIC_REPOSITORY`; borg uses it as the repository path; tar and rsync use it as a local directory (a `file://` prefix is stripped). |
+| `repo_url`      | create, list, restore, verify, prune    | Repository location. **Required for tar, rsync and borg.** restic receives it as `RESTIC_REPOSITORY`; borg uses it as the repository path; tar and rsync use it as a local directory (a `file://` prefix is stripped). |
 | `password`      | create, list, restore, verify, prune    | restic/borg repository password (passed to the backend in its environment, redacted in the output). It still appears in the `resh` command line and shell history; prefer `password_file` or the environment variables. |
 | `password_file` | create, list, restore, verify, prune    | File holding the password. restic receives it as `RESTIC_PASSWORD_FILE`; for borg resh reads the file and passes the content as `BORG_PASSPHRASE`. |
 | `timeout_ms`    | all                                     | Backend deadline in milliseconds. A value that is not a non-negative integer is **silently ignored** and the default is used. |
@@ -49,16 +49,11 @@ The profile is only used to name the default tar repository and the reported sch
 
 **Password sources (restic and borg only).** restic and borg need a repository password from `password=`, `password_file=`, or their usual environment variables (`RESTIC_PASSWORD`, `RESTIC_PASSWORD_FILE`, `RESTIC_PASSWORD_COMMAND`; `BORG_PASSPHRASE`, `BORG_PASSCOMMAND`, `BORG_PASSPHRASE_FD`). With none of these, the verb fails with error kind `MISSING_PASSWORD` before the backend is run. tar and rsync need no password.
 
-**Default repositories.** When `repo_url` is not given:
+**No default repository.** tar, rsync and borg require `repo_url`. Without it every verb (including a dry run) fails with error kind `INVALID_ARGS` before anything runs. restic without `repo_url` uses `RESTIC_REPOSITORY` from the environment and fails if that is not set.
 
-| Backend | Default repository |
-| ------- | ------------------ |
-| tar     | `/tmp/resh_backup_<profile>` |
-| rsync   | `/tmp/rsync_backup` |
-| borg    | `/tmp/borg_repo` |
-| restic  | none: restic uses `RESTIC_REPOSITORY` from the environment, and fails if that is not set |
+Before v1.0.3-beta, tar, rsync and borg fell back to `/tmp/resh_backup_<profile>`, `/tmp/rsync_backup` and `/tmp/borg_repo`. Those directories were created with default permissions (archives readable by every local user) and were accepted when another user had created them first, so they were removed.
 
-These defaults are in the world-writable `/tmp` directory, are created with default permissions, and are accepted if another user created them first. `prune` deletes inside them. Always pass an explicit `repo_url` for real backups.
+Choose a repository directory that only you (or root) can write. resh creates a missing tar or rsync repository directory with the default (umask) permissions and does not check the ownership or mode of an existing one; for sensitive data create it yourself first, for example `install -d -m 0700 /var/backups/resh/db`.
 
 ### 3.2 Response envelope
 
@@ -180,7 +175,7 @@ Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 1
 
 Backend commands: `tar -czf <repo>/<name>.tar.gz ...`, `rsync -a --stats ... <repo>/<name>/`, `borg create --json --compression lz4 <repo>::<name> ...`, `restic backup ... --json`. The snapshot id is the archive or directory name for tar/rsync/borg, and the restic snapshot id read from restic's output. For tar and rsync the repository directory is created if missing.
 
-Source paths are passed to the backend as plain arguments with no `--` separator, so a path beginning with `-` is read as a backend option. Do not pass untrusted values in `src`, `exclude`, `snapshot_id` or `dest`.
+Source paths are passed to the backend as plain arguments with no `--` separator, so a value beginning with `-` is read as a backend option. Options such as tar `--checkpoint-action=exec=`, rsync `--rsh` or restic `--password-command` run arbitrary commands, so this amounts to command execution. Do not pass untrusted values in `src`, `snapshot_id`, `dest` or `repo_url`.
 
 ### 4.2 list
 
@@ -302,7 +297,7 @@ Only Linux is supported and verified. The backend programs must be installed and
 
 ## 6. Operational Notes
 
-* Always pass `repo_url`; the defaults are shared locations under `/tmp` (see 3.1).
+* tar, rsync and borg require `repo_url`; use a directory only you can write (see 3.1).
 * For restic and borg, provide the password with `password_file=` or the backend's environment variables rather than `password=` on the command line.
 * Use `dry_run=true` before `prune`. A mistyped value is refused rather than run.
 * `restore` cannot be simulated; restore into an empty scratch directory first if unsure.

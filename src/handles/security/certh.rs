@@ -37,6 +37,7 @@ use sha2::Digest;
 use crate::core::{
     help::{self, HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
+    secure_fs,
     status::Status,
 };
 
@@ -2329,9 +2330,11 @@ impl CertHandle {
         // Determine what files would be created
         let base_path = &self.target_path;
 
+        // entry_exists also sees a dangling symlink, which Path::exists treats
+        // as absent.
         if opts.output.write_key {
             let key_path = format!("{}-key.pem", base_path);
-            if std::path::Path::new(&key_path).exists() {
+            if secure_fs::entry_exists(std::path::Path::new(&key_path)) {
                 existing_paths.push(key_path);
             }
         }
@@ -2343,14 +2346,14 @@ impl CertHandle {
             )
         {
             let cert_path = format!("{}.pem", base_path);
-            if std::path::Path::new(&cert_path).exists() {
+            if secure_fs::entry_exists(std::path::Path::new(&cert_path)) {
                 existing_paths.push(cert_path);
             }
         }
 
         if opts.output.write_csr && matches!(opts.mode, CertGenerateMode::Csr) {
             let csr_path = format!("{}.csr", base_path);
-            if std::path::Path::new(&csr_path).exists() {
+            if secure_fs::entry_exists(std::path::Path::new(&csr_path)) {
                 existing_paths.push(csr_path);
             }
         }
@@ -2358,20 +2361,9 @@ impl CertHandle {
         Ok(existing_paths)
     }
 
-    fn write_key_to_file(&self, key_data: &[u8], path: &str) -> Result<()> {
-        std::fs::write(path, key_data)
-            .with_context(|| format!("Failed to write key to {}", path))?;
-
-        // Set secure permissions (0600) on Unix-like systems
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(path)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(path, perms)?;
-        }
-
-        Ok(())
+    fn write_key_to_file(&self, key_data: &[u8], path: &str, overwrite: bool) -> Result<()> {
+        secure_fs::write_private_file(std::path::Path::new(path), key_data, overwrite)
+            .with_context(|| format!("Failed to write key to {}", path))
     }
 
     fn write_cert_to_file(&self, cert_data: &[u8], path: &str) -> Result<()> {
@@ -2531,7 +2523,7 @@ impl CertHandle {
 
         if opts.output.write_key && !final_key_data.is_empty() {
             let key_path = format!("{}-key.pem", self.target_path);
-            self.write_key_to_file(&final_key_data, &key_path)?;
+            self.write_key_to_file(&final_key_data, &key_path, opts.overwrite)?;
             key_stored_at = Some(key_path);
         }
 
@@ -3057,17 +3049,7 @@ impl CertHandle {
         )
         .with_context(|| format!("Failed to write certificate to {}", new_cert_path))?;
         if let (Some(bytes), Some(key_path)) = (&new_key_bytes, &new_key_path) {
-            self.write_file(key_path, bytes)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let fs_path = key_path
-                    .strip_prefix("cert://")
-                    .or_else(|| key_path.strip_prefix("file://"))
-                    .unwrap_or(key_path);
-                fs::set_permissions(fs_path, fs::Permissions::from_mode(0o600))
-                    .with_context(|| format!("Failed to set permissions on {}", key_path))?;
-            }
+            self.write_private_key_file(key_path, bytes, opts.overwrite)?;
             key_info.stored_at = Some(key_path.clone());
         }
 
@@ -6830,6 +6812,15 @@ impl CertHandle {
                     self.target_path
                 ));
             }
+            if matches!(opts.key_strategy, CsrKeyStrategy::Generate)
+                && let Some(ref key_path) = opts.new_key_output_path
+                && self.target_file_exists(key_path)?
+            {
+                return Err(anyhow::anyhow!(
+                    "Key output '{}' already exists. Use overwrite=true to replace it.",
+                    key_path
+                ));
+            }
         }
 
         // Handle key strategy
@@ -6869,26 +6860,7 @@ impl CertHandle {
         if matches!(opts.key_strategy, CsrKeyStrategy::Generate) {
             if let Some(ref key_output_path) = opts.new_key_output_path {
                 let key_data = self.serialize_key_for_output(&private_key, opts)?;
-                self.write_file(key_output_path, &key_data)
-                    .with_context(|| format!("Failed to write key to: {}", key_output_path))?;
-
-                // Set secure permissions (0600) on Unix-like systems
-                #[cfg(unix)]
-                {
-                    let file_path = if key_output_path.starts_with("cert://") {
-                        &key_output_path[7..]
-                    } else if key_output_path.starts_with("file://") {
-                        &key_output_path[7..]
-                    } else {
-                        key_output_path
-                    };
-
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(mut perms) = std::fs::metadata(file_path).map(|m| m.permissions()) {
-                        perms.set_mode(0o600);
-                        let _ = std::fs::set_permissions(file_path, perms);
-                    }
-                }
+                self.write_private_key_file(key_output_path, &key_data, opts.overwrite)?;
             }
         }
 
@@ -7949,16 +7921,14 @@ impl CertHandle {
         }
     }
 
+    /// Whether anything (a dangling symlink included) exists at an output
+    /// path, so `overwrite=false` cannot be bypassed through a planted link.
     fn target_file_exists(&self, path: &str) -> Result<bool> {
-        if path.starts_with("file://") {
-            let file_path = &path[7..];
-            Ok(std::path::Path::new(file_path).exists())
-        } else if path.starts_with("cert://") {
-            let cert_path = &path[7..];
-            Ok(std::path::Path::new(cert_path).exists())
-        } else {
-            Ok(std::path::Path::new(path).exists())
-        }
+        let file_path = path
+            .strip_prefix("file://")
+            .or_else(|| path.strip_prefix("cert://"))
+            .unwrap_or(path);
+        Ok(secure_fs::entry_exists(std::path::Path::new(file_path)))
     }
 
     /// Check if the CSR target path exists
@@ -9394,6 +9364,24 @@ impl CertHandle {
         }
 
         fs::write(file_path, data).with_context(|| format!("Failed to write file: {}", file_path))
+    }
+
+    /// Writes a private key: mode 0600 from creation, never through a
+    /// symlink, and without `overwrite` never over an existing entry.
+    fn write_private_key_file(&self, path: &str, data: &[u8], overwrite: bool) -> Result<()> {
+        let file_path = path
+            .strip_prefix("cert://")
+            .or_else(|| path.strip_prefix("file://"))
+            .unwrap_or(path);
+        if let Some(parent) = std::path::Path::new(file_path).parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create parent directories for {}", file_path)
+                })?;
+            }
+        }
+        secure_fs::write_private_file(std::path::Path::new(file_path), data, overwrite)
+            .with_context(|| format!("Failed to write key to {}", file_path))
     }
 }
 
@@ -11701,6 +11689,109 @@ mod tests {
 
         let response = handle.generate(opts).unwrap();
         assert!(response.ok); // Should succeed with overwrite
+    }
+
+    // Private keys are created 0600 and never written through a symlink
+    // (v1.0.3-beta, release gate RB-1).
+    mod private_key_write_tests {
+        use super::*;
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        fn key_opts(overwrite: bool) -> CertGenerateOptions {
+            CertGenerateOptions {
+                mode: CertGenerateMode::Key,
+                algorithm: CertAlgorithm::Ecdsa,
+                overwrite,
+                output: CertGenerateOutputOptions {
+                    write_key: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }
+
+        fn mode(p: &Path) -> u32 {
+            fs::metadata(p).unwrap().permissions().mode() & 0o777
+        }
+
+        #[test]
+        fn generated_key_is_0600() {
+            let dir = tempfile::tempdir().unwrap();
+            let handle = CertHandle {
+                target_path: dir.path().join("srv").to_string_lossy().to_string(),
+            };
+            assert!(handle.generate(key_opts(false)).unwrap().ok);
+            assert_eq!(mode(&dir.path().join("srv-key.pem")), 0o600);
+        }
+
+        #[test]
+        fn generate_refuses_dangling_symlink_without_overwrite() {
+            let dir = tempfile::tempdir().unwrap();
+            let victim = dir.path().join("stolen-key.pem");
+            symlink(&victim, dir.path().join("srv-key.pem")).unwrap();
+            let handle = CertHandle {
+                target_path: dir.path().join("srv").to_string_lossy().to_string(),
+            };
+            let response = handle.generate(key_opts(false)).unwrap();
+            assert!(!response.ok);
+            assert!(!victim.exists());
+        }
+
+        #[test]
+        fn generate_refuses_symlink_with_overwrite() {
+            let dir = tempfile::tempdir().unwrap();
+            let victim = dir.path().join("victim");
+            fs::write(&victim, "keep").unwrap();
+            symlink(&victim, dir.path().join("srv-key.pem")).unwrap();
+            let handle = CertHandle {
+                target_path: dir.path().join("srv").to_string_lossy().to_string(),
+            };
+            assert!(handle.generate(key_opts(true)).is_err());
+            assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+        }
+
+        fn csr_opts(dir: &Path, overwrite: bool) -> CsrCreateOptions {
+            let mut opts = CsrCreateOptions {
+                key_strategy: CsrKeyStrategy::Generate,
+                algorithm: Some(CertAlgorithm::Ecdsa),
+                overwrite,
+                new_key_output_path: Some(dir.join("new-key.pem").to_string_lossy().to_string()),
+                ..Default::default()
+            };
+            opts.subject.common_name = Some("example.com".to_string());
+            opts
+        }
+
+        #[test]
+        fn csr_create_key_is_0600() {
+            let dir = tempfile::tempdir().unwrap();
+            let handle = create_test_handle(&dir.path().join("a.csr").to_string_lossy());
+            handle.create_csr(&csr_opts(dir.path(), false)).unwrap();
+            assert_eq!(mode(&dir.path().join("new-key.pem")), 0o600);
+        }
+
+        #[test]
+        fn csr_create_does_not_replace_existing_key_without_overwrite() {
+            let dir = tempfile::tempdir().unwrap();
+            let key = dir.path().join("new-key.pem");
+            fs::write(&key, "existing key").unwrap();
+            let handle = create_test_handle(&dir.path().join("a.csr").to_string_lossy());
+            assert!(handle.create_csr(&csr_opts(dir.path(), false)).is_err());
+            assert_eq!(fs::read_to_string(&key).unwrap(), "existing key");
+            assert!(!dir.path().join("a.csr").exists());
+        }
+
+        #[test]
+        fn csr_create_refuses_symlinked_key_path() {
+            for overwrite in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let victim = dir.path().join("victim");
+                symlink(&victim, dir.path().join("new-key.pem")).unwrap();
+                let handle = create_test_handle(&dir.path().join("a.csr").to_string_lossy());
+                assert!(handle.create_csr(&csr_opts(dir.path(), overwrite)).is_err());
+                assert!(!victim.exists(), "overwrite={overwrite}");
+            }
+        }
     }
 
     // CSR Creation Tests
