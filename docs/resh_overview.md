@@ -16,7 +16,7 @@ resh gives these operations one command form:
 resh <handle>://<target>.<verb> key=value ...
 ```
 
-Status: v1.0.2-beta, 28 handles. Linux is the only supported platform. Known limitations are listed in each handle's page and in [known_issues.md](known_issues.md).
+Status: v1.0.3-beta, 28 handles. Linux is the only supported platform. Known limitations are listed in each handle's page and in [known_issues.md](known_issues.md).
 
 ---
 

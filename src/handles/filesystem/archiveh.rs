@@ -5179,7 +5179,9 @@ fn add_to_tar_archive(
                 .to_string_lossy(),
             suffix
         ));
-        std::fs::copy(&opts.archive, &backup_path).context("Failed to create backup")?;
+        // Never follows a symlink planted at the backup name.
+        crate::core::secure_fs::copy_no_follow(Path::new(&opts.archive), &backup_path)
+            .context("Failed to create backup")?;
     }
 
     // Build index of existing entries for conflict detection
@@ -5456,7 +5458,9 @@ fn add_to_zip_archive(
                 .to_string_lossy(),
             suffix
         ));
-        std::fs::copy(&opts.archive, &backup_path).context("Failed to create backup")?;
+        // Never follows a symlink planted at the backup name.
+        crate::core::secure_fs::copy_no_follow(Path::new(&opts.archive), &backup_path)
+            .context("Failed to create backup")?;
     }
 
     // Build index of existing entries for conflict detection
@@ -8516,6 +8520,94 @@ mod zip_add_metadata_tests {
             (t.year(), t.month(), t.day(), t.hour(), t.minute()),
             (2020, 1, 2, 3, 4)
         );
+    }
+}
+
+// `add backup_suffix=` must not write through a symlink planted at the
+// backup name (v1.0.3-beta, release gate RB-2).
+#[cfg(test)]
+mod backup_symlink_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use tempfile::TempDir;
+
+    fn make_archive(dir: &Path, name: &str) -> PathBuf {
+        let archive = dir.join(name);
+        let src = dir.join("old.txt");
+        std::fs::write(&src, "old").unwrap();
+        if name.ends_with(".zip") {
+            let mut z = ZipWriter::new(File::create(&archive).unwrap());
+            z.start_file("old.txt", FileOptions::default()).unwrap();
+            z.write_all(b"old").unwrap();
+            z.finish().unwrap();
+        } else {
+            let mut b = tar::Builder::new(File::create(&archive).unwrap());
+            b.append_path_with_name(&src, "old.txt").unwrap();
+            b.finish().unwrap();
+        }
+        archive
+    }
+
+    fn add_with_backup(dir: &Path, archive: &Path) -> bool {
+        let extra = dir.join("n.txt");
+        std::fs::write(&extra, "n").unwrap();
+        let h = ArchiveHandle::from_url(&Url::parse("archive://").unwrap()).unwrap();
+        let args: Args = [
+            ("archive".to_string(), archive.display().to_string()),
+            ("inputs".to_string(), format!("[\"{}\"]", extra.display())),
+            ("base_dir".to_string(), dir.display().to_string()),
+            ("backup_suffix".to_string(), "bak".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        h.call("add", &args, &mut io).map(|s| s.ok).unwrap_or(false)
+    }
+
+    #[test]
+    fn add_backup_refuses_planted_symlink() {
+        for name in ["a.zip", "a.tar"] {
+            let tmp = TempDir::new().unwrap();
+            let archive = make_archive(tmp.path(), name);
+            let victim = tmp.path().join("victim");
+            std::fs::write(&victim, "victim").unwrap();
+            std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+            symlink(&victim, tmp.path().join(format!("{}.bak", name))).unwrap();
+
+            assert!(!add_with_backup(tmp.path(), &archive), "{}", name);
+            assert_eq!(
+                std::fs::read_to_string(&victim).unwrap(),
+                "victim",
+                "{}",
+                name
+            );
+            let mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{}", name);
+        }
+    }
+
+    #[test]
+    fn add_backup_still_writes_a_regular_backup() {
+        for name in ["a.zip", "a.tar"] {
+            let tmp = TempDir::new().unwrap();
+            let archive = make_archive(tmp.path(), name);
+            let before = std::fs::read(&archive).unwrap();
+
+            assert!(add_with_backup(tmp.path(), &archive), "{}", name);
+            let bak = tmp.path().join(format!("{}.bak", name));
+            assert!(
+                !std::fs::symlink_metadata(&bak)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(std::fs::read(&bak).unwrap(), before, "{}", name);
+        }
     }
 }
 

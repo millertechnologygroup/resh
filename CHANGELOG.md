@@ -25,6 +25,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.3-beta] - 2026-10-26
+
+Fixes for the release blockers found by the v1.0.2-beta release gate
+(`docs/reviews/resh-cli-v1.0.2-beta-release-gate.md`). v1.0.2-beta was
+tagged but not published as a release; use this version instead.
+
+### Security
+- cert: private keys (`generate`, `renew key_strategy=rekey`,
+  `csr.create key_strategy=generate`) are created with mode 0600 from the
+  start instead of being chmod'ed after the write, so another local user
+  can no longer open them in between. A symlink at the key path is refused,
+  and a dangling symlink no longer bypasses `overwrite=false`.
+- file `replace backup=<suffix>` and archive `add backup_suffix=` no longer
+  write through a symlink planted at the backup name (which overwrote and
+  re-moded the symlink's target); the backup is written to a new temporary
+  file and renamed into place.
+- backup: the `/tmp` default repositories are removed. They left archives
+  readable by every local user and accepted directories another user had
+  created first.
+- docs: a real MySQL connection string was removed from
+  `MYSQL_CONNECTION_GUIDE.md`.
+
+### Changed (compatibility)
+- backup: tar, rsync and borg require `repo_url`; without it every verb,
+  including a dry run, fails with `INVALID_ARGS` before anything runs.
+  restic still falls back to `RESTIC_REPOSITORY`.
+- cert: `csr.create` refuses an existing `new_key_output_path` unless
+  `overwrite=true`; a symlink at a key path is an error even with
+  `overwrite=true`.
+- file `replace backup=` and archive `add backup_suffix=` fail when the
+  backup name is a symlink.
+
+### Documentation
+- Platform requirements: Linux x86_64; OpenSSL 3 shared libraries from the
+  OS (libssh2 and libgit2 are bundled and updated through resh releases);
+  Rust 1.88 or later to build. A prebuilt binary built on a current
+  distribution needs glibc 2.39 or later.
+- pkg/fs timeouts: a timed-out tool either keeps running or is killed by
+  SIGPIPE part-way through; check system state afterwards.
+- plugin: do not run plugin verbs as root with another user's
+  `HOME`/`XDG_*`.
+- `docs/known_issues.md` lists the remaining accepted beta risks (backup
+  argument option injection, cron newlines, ssh `command_args` quoting,
+  archive extraction into shared directories, SMTP passwords stored
+  base64-encoded).
+- README: systemd and brew are marked as not yet verified live.
+
+---
+
 ## [1.0.2-beta] - 2026-10-23
 
 Release-candidate stabilization: security, correctness and documentation

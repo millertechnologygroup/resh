@@ -92,9 +92,9 @@ resh template://newsletter.html.test
 
 ### 4.1 backup://
 
-* The profile comes from the URL host (`backup://mydata` is profile `mydata`). It names the default tar repository `/tmp/resh_backup_<profile>` and the reported schedule path; nothing else.
+* The profile comes from the URL host (`backup://mydata` is profile `mydata`). It names the reported schedule path; nothing else.
 * Backend: `backend=restic|borg|rsync|tar`, or the first of these found on `PATH`.
-* Pass `repo_url` explicitly. The defaults (`/tmp/resh_backup_<profile>`, `/tmp/rsync_backup`, `/tmp/borg_repo`) are in world-writable `/tmp`; restic has no default and uses `RESTIC_REPOSITORY`.
+* tar, rsync and borg require `repo_url` (there is no default repository; the former `/tmp` defaults were removed in v1.0.3-beta). restic without `repo_url` uses `RESTIC_REPOSITORY`.
 * Encryption, deduplication and remote repositories are whatever the chosen backend provides (restic and borg encrypt; tar and rsync do not).
 
 ### 4.2 plugin://

@@ -1781,7 +1781,8 @@ impl FileHandle {
             let backup_path = format!("{}{}", resolved_path.to_string_lossy(), suffix);
             let backup_pathbuf = PathBuf::from(&backup_path);
 
-            std::fs::copy(&resolved_path, &backup_pathbuf)
+            // Never follows a symlink planted at the backup name.
+            crate::core::secure_fs::copy_no_follow(&resolved_path, &backup_pathbuf)
                 .with_context(|| format!("failed to create backup: {:?}", backup_pathbuf))?;
         }
 
@@ -5637,5 +5638,86 @@ mod relative_dir_tests {
         std::os::unix::fs::symlink("real", tmp.path().join("link")).unwrap();
         let link = tmp.path().join("link");
         assert_eq!(resolve_file_path(&link).unwrap(), link);
+    }
+}
+
+// `replace backup=<suffix>` must not write through a symlink planted at the
+// backup name (v1.0.3-beta, release gate RB-2).
+#[cfg(test)]
+mod backup_symlink_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use tempfile::TempDir;
+
+    fn replace_with_backup(file: &std::path::Path) -> Status {
+        let h = FileHandle::from_url(Url::parse(&format!("file://{}", file.display())).unwrap())
+            .unwrap();
+        let args: Args = [
+            ("pattern", "ORIGINAL"),
+            ("replacement", "NEW"),
+            ("backup", ".bak"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        h.call("replace", &args, &mut io)
+            .unwrap_or_else(|err| Status::err(1, err.to_string()))
+    }
+
+    #[test]
+    fn replace_backup_refuses_planted_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("app.conf");
+        std::fs::write(&file, "ORIGINAL CONTENT\n").unwrap();
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, "victim secret\n").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&victim, tmp.path().join("app.conf.bak")).unwrap();
+
+        assert!(!replace_with_backup(&file).ok);
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "victim secret\n");
+        let mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "ORIGINAL CONTENT\n"
+        );
+    }
+
+    #[test]
+    fn replace_backup_refuses_dangling_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("app.conf");
+        std::fs::write(&file, "ORIGINAL CONTENT\n").unwrap();
+        let created = tmp.path().join("created_by_follow");
+        symlink(&created, tmp.path().join("app.conf.bak")).unwrap();
+
+        assert!(!replace_with_backup(&file).ok);
+        assert!(!created.exists());
+    }
+
+    #[test]
+    fn replace_backup_still_writes_a_regular_backup() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("app.conf");
+        std::fs::write(&file, "ORIGINAL CONTENT\n").unwrap();
+
+        assert!(replace_with_backup(&file).ok);
+        let bak = tmp.path().join("app.conf.bak");
+        assert!(
+            !std::fs::symlink_metadata(&bak)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "ORIGINAL CONTENT\n");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "NEW CONTENT\n");
     }
 }

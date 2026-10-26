@@ -141,7 +141,7 @@ Every verb enforces `timeout_ms` (a key inside the JSON) as a wall-clock limit o
 | `install`, `remove`, `list_installed` | 600000 (10 min) |
 | `update`, `upgrade` | 900000 (15 min) |
 
-`timeout_ms` must be greater than 0. `search` runs an extra query per match (for example `apt-cache policy` on apt), so on slow systems it may need a larger `timeout_ms` than the 5 s default. When the timeout expires, resh stops waiting and reports a timeout error; the package-manager process it started is not explicitly killed.
+`timeout_ms` must be greater than 0. `search` runs an extra query per match (for example `apt-cache policy` on apt), so on slow systems it may need a larger `timeout_ms` than the 5 s default. When the timeout expires, resh stops waiting and reports a timeout error (exit 1); the package-manager process it started is not explicitly killed. What happens next depends on the tool: one that writes no more output keeps running and may finish the change after resh has reported the timeout; one that writes output afterwards is killed by `SIGPIPE` at that point, possibly in the middle of a transaction. After a timeout, check the package manager's state (for example `dpkg --audit` / `dpkg --configure -a` on apt systems) before retrying.
 
 ### 3.4 Restore Behavior and Limitations
 

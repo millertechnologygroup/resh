@@ -357,6 +357,7 @@ compressed tar archives with fixed default levels.
 * Set `max_total_bytes` and `max_file_bytes` when extracting untrusted
   archives; keep the default `allow_absolute_paths=false` and
   `allow_parent_traversal=false`.
+* `add` writes its `backup_suffix` copy to a new temporary file and renames it into place; an existing symlink at the backup name is refused and the `add` fails before the archive is changed.
 * Run `remove` with `dry_run` first, and use `backup_suffix` for
   modifications of archives you cannot recreate.
 * Check the exit code and `ok` in CI.

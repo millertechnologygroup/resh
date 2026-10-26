@@ -53,4 +53,24 @@ ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    # The five entries below were assessed in
+    # docs/reviews/resh-cli-v1.0.3-beta-release-execution.md (advisory-db
+    # 2026-10-26).
+    # zstd 0.13.3: context reuse leaks an abandoned stream. Only
+    # raw::{Encoder,Decoder}::with_context are affected; resh uses
+    # stream::read::Decoder and stream::write::Encoder only. Fix: zstd >= 0.14.3.
+    "RUSTSEC-2026-0391",
+    # zstd-safe 5.0.2 (zip 0.6.6) and 7.2.4: uninitialized memory on a failed
+    # legacy-frame decompress through stream::write::Decoder. resh and zip
+    # decompress only through stream::read::Decoder, which is not affected.
+    "RUSTSEC-2026-0403",
+    # zstd-safe 7.2.4: Seekable::decompress; the `seekable` feature is off.
+    "RUSTSEC-2026-0398",
+    # zstd-sys 2.0.16: WebAssembly allocator shim only; resh is x86_64 Linux.
+    "RUSTSEC-2026-0410",
+    # crypto-bigint 0.5.5 (p256/p384 via elliptic-curve 0.13): timing
+    # variability in constant-time arithmetic. Reached by local ECDSA key
+    # generation and signing in cert; no network signing oracle. Fix needs
+    # p256/p384 0.14 (crypto-bigint 0.7.6), a major upgrade.
+    "RUSTSEC-2026-0387",
 ]

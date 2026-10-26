@@ -119,6 +119,9 @@ jobs:
           httph::allow_insecure_tests dbh::tests::failed_ping
           backuph::dry_run_tests mailh::send_dry_run_tests mailh::private_file_tests
           fsh::stage4_tests archiveh::zstd_rewrite_tests archiveh::zip_add_metadata_tests
+          core::secure_fs certh::tests::private_key_write_tests
+          fileh::backup_symlink_tests archiveh::backup_symlink_tests
+          backuph::repo_url_required_tests
       - run: cargo test --locked --test stage4_regressions
 
   # Run from the Actions tab (Run workflow, tick "infrastructure"), with the

@@ -3,6 +3,33 @@
 These issues were found while writing the per-verb `--help` metadata, and each
 one was then checked against the code by a separate read-only review.
 
+## v1.0.3-beta release gate (2026-10-23)
+
+The v1.0.2-beta release gate
+(`docs/reviews/resh-cli-v1.0.2-beta-release-gate.md`) re-assessed the
+remaining Medium risks and found three that are release blockers. They are
+fixed in v1.0.3-beta, each with regression tests:
+
+- **cert private keys** (`generate`, `renew key_strategy=rekey`,
+  `csr.create key_strategy=generate`) were written with the umask mode and
+  then changed to 0600, so another local user could open the key in between;
+  the write also followed a symlink at the key path, and a dangling symlink
+  bypassed `overwrite=false`. Keys are now created 0600 from the start and a
+  symlink at the key path is refused. `csr.create` no longer replaces an
+  existing `new_key_output_path` without `overwrite=true`.
+- **`file replace backup=<suffix>` and `archive add backup_suffix=`** copied
+  through a symlink planted at the backup name, overwriting its target and
+  changing its mode. The backup is now written to a new temporary file and
+  renamed into place; a symlink at the backup name is refused.
+- **backup default repositories** under `/tmp` (`/tmp/resh_backup_<profile>`,
+  `/tmp/rsync_backup`, `/tmp/borg_repo`) left archives readable by every
+  local user and were accepted when another user had created them first.
+  The defaults are removed: tar, rsync and borg now require `repo_url`.
+
+Also corrected: a real MySQL connection string with a password was removed
+from `MYSQL_CONNECTION_GUIDE.md`. It is still in earlier tags and in the
+repository history, so it must be treated as compromised.
+
 ## Release-candidate status (2026-10-23)
 
 This section supersedes the test counts and "Still open" list in the
@@ -66,12 +93,29 @@ This section supersedes the test counts and "Still open" list in the
   - No dry-run mode for svc, proc, file writes, cache/db writes, mq, ssh
     (except exec), mail send and backup restore; for these `dry_run=true` is
     refused before anything runs; git `timeout_ms` is rejected; pkg and fs timeouts stop waiting
-    but do not kill the child process.
+    but do not kill the child process: it either keeps running and finishes
+    after the timeout is reported, or is killed by `SIGPIPE` part-way through
+    when it next writes output. Check package-manager or filesystem state
+    after a timeout.
   - `net ping` exits 0 even when the host is unreachable; `http head`,
     `headers` and `json` exit 0 for 4xx/5xx statuses.
   - Option-injection hardening (`--` separators) is missing in backup
-    backend argv and user `primary_group`; cron does not reject newlines in
-    job fields.
+    backend argv and user `primary_group`; a backup `src`, `snapshot_id`,
+    `dest` or `repo_url` beginning with `-` can run arbitrary commands
+    through backend options. cron does not reject newlines in job fields
+    (an extra crontab line or unit directive) and does not restrict
+    `unit_name`. Never pass untrusted input in these arguments.
+  - ssh `command_args` are quoted only when they contain a space or a quote,
+    so shell metacharacters in them run on the remote host (see `ssh.md`).
+  - Archive extraction checks paths but not against a concurrent process
+    changing the destination tree; never extract as root into a directory
+    other users can write.
+  - Do not run plugin verbs as root with another user's `HOME`/`XDG_*`
+    (for example `sudo -E`): `remove` and `remove purge=true` then act on a
+    store that user controls and can be made to delete files outside it.
+  - Existing tar or rsync repository directories are used as they are:
+    resh does not check their owner or mode. Use a directory only you can
+    write.
   - Plugin enabled state is written and read from different files, so
     `installed.list` reports enabled plugins as disabled.
 

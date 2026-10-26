@@ -73,8 +73,12 @@ command exits 62 when it runs longer. Defaults: 5000 ms for `mount`,
 `timeout_ms=0` selects the default for `mount`, `unmount`, `snapshot`,
 `quota`, `quota_summary` and `list-mounts`, and is rejected (exit 1) by
 `usage`, `resize` and `check`. A timeout stops resh waiting; it does not
-guarantee that an external tool already started (for example `resize2fs`
-or `fsck`) was stopped.
+stop an external tool already started (for example `mount`, `lvextend`,
+`resize2fs` or `fsck`). Such a tool either keeps running and completes
+after resh has reported the timeout, or is killed by `SIGPIPE` the next
+time it writes output, possibly part-way through. A multi-step `resize`
+can therefore leave the volume and the filesystem at different sizes;
+check them after a timeout.
 
 ### Boolean arguments
 

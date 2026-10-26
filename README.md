@@ -3,14 +3,14 @@
 **AI-Native Automation Platform for Modern Infrastructure**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.0.2--beta-blue.svg)](https://github.com/millertechnologygroup/resh/releases)
+[![Version](https://img.shields.io/badge/version-v1.0.3--beta-blue.svg)](https://github.com/millertechnologygroup/resh/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)]()
 
 ---
 
-## v1.0.2-beta - 28 Handles (Beta)
+## v1.0.3-beta - 28 Handles (Beta)
 
-**resh v1.0.2-beta is available for testing.** This beta release includes 28 handles, among them automation utilities for backups, plugins and template rendering. It is beta software: some verbs are stubs or have known limitations, listed in each handle's documentation and in [docs/known_issues.md](docs/known_issues.md).
+**resh v1.0.3-beta is available for testing.** This beta release includes 28 handles, among them automation utilities for backups, plugins and template rendering. It is beta software: some verbs are stubs or have known limitations, listed in each handle's documentation and in [docs/known_issues.md](docs/known_issues.md).
 
 ⭐ **Star this repo** to follow development and be notified of updates!
 
@@ -27,7 +27,7 @@
 
 resh (Resource Shell) is a command-line tool that runs operations on resources named by URLs (`svc://nginx.status`, `file:///etc/hosts.read`) and prints structured results, mostly JSON, that both scripts and AI agents can consume without text parsing.
 
-**v1.0.2-beta has 28 handles, including the backup, plugin and template automation utilities.**
+**v1.0.3-beta has 28 handles, including the backup, plugin and template automation utilities.**
 
 ### The Problem
 
@@ -71,7 +71,7 @@ resh db://sqlite/app.query 'sql=SELECT COUNT(*) AS n FROM users' dsn=sqlite:app.
 - Each handle documents its real output fields (there is no single shared response envelope)
 
 **Broad coverage**
-28 handles in v1.0.2-beta: automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
+28 handles in v1.0.3-beta: automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
 
 ---
 
@@ -159,7 +159,7 @@ resh template://config.yml.render context_file=vars.json
 
 ---
 
-## Implemented in v1.0.2-beta (28 Handles)
+## Implemented in v1.0.3-beta (28 Handles)
 
 Each handle's page under [docs/](docs/) lists its registered verbs, arguments, real output fields and known limitations. `resh <handle> --help` prints the same verb list.
 
@@ -177,7 +177,7 @@ Each handle's page under [docs/](docs/) lists its registered verbs, arguments, r
 
 ### Process & Service Management ✅
 - ✅ `proc://` - Signals and nice values for a process (signal, nice.get/set, setPriority; `limits.set` only affects the resh process itself)
-- ✅ `svc://` - Service management (systemd and OpenRC)
+- ✅ `svc://` - Service management (systemd and OpenRC; systemd has not yet been verified on a live host)
 - ✅ `cron://` - Scheduled jobs as crontab entries or systemd timers (list, add, enable, disable, rm)
 
 ### Network & Remote Operations ✅
@@ -203,7 +203,7 @@ Each handle's page under [docs/](docs/) lists its registered verbs, arguments, r
 
 ### System & Software ✅
 - ✅ `system://` - System information (info, uptime, load, memory, cpu, disk, env.list)
-- ✅ `pkg://` - Package manager (apt, dnf, yum, pacman, apk, brew): install, remove, update, upgrade, search, info, snapshot; `restore` is best effort and does not pin locked versions; `security_only` works only for dnf/yum `update` and dnf `upgrade` and is refused elsewhere
+- ✅ `pkg://` - Package manager (apt, dnf, yum, pacman, apk; brew is supported but not yet verified): install, remove, update, upgrade, search, info, snapshot; `restore` is best effort and does not pin locked versions; `security_only` works only for dnf/yum `update` and dnf `upgrade` and is refused elsewhere
 - ✅ `git://` - Git through libgit2 (clone, pull, push, commit, status, diff, branch, tag, merge, rebase, sync); `pull` and `sync` fast-forward only
 
 **Total: 28 handles** (25 core + 3 automation utilities), beta quality. See [docs/known_issues.md](docs/known_issues.md) for open issues.
@@ -233,7 +233,7 @@ Each handle's page under [docs/](docs/) lists its registered verbs, arguments, r
 | v0.7 Alpha (25 handles) | November 2025 | ✅ **Completed** |
 | v0.8 Alpha (27 handles) | December 2025 | ✅ **Completed** |
 | v1.0 Beta (28 handles) | January 2026 | ✅ **Released** (v1.0.0-beta) |
-| v1.0.2-beta (28 handles) | - | Current beta |
+| v1.0.3-beta (28 handles) | - | Current beta |
 | v1.1 (30 handles) | Not yet scheduled | ⏱️ Planned |
 | v1.0 Stable | Not yet scheduled | ⏱️ Planned |
 
@@ -243,14 +243,14 @@ Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md)
 
 ## Current Status
 
-**What's working in v1.0.2-beta:**
+**What's working in v1.0.3-beta:**
 - ✅ 28 handles registered, with per-handle and per-verb `--help`
 - ✅ Automation utilities (backup, plugin, template)
 - ✅ URI parser and resource dispatcher
 - ✅ JSON output (`--json-pretty` to indent); some verbs also offer text output
 - ✅ SSH remote execution through the system `ssh` client
 - ✅ Database operations (PostgreSQL, MySQL/MariaDB, SQLite)
-- ✅ Service management (systemd and OpenRC)
+- ✅ Service management (OpenRC verified; systemd not yet verified on a live host)
 - ✅ Template rendering with the Tera engine
 - ✅ Plugin installs from HTTPS registries with SHA-256 verification
 - ✅ Backup create/list/restore/verify/prune through restic, borg, rsync or tar
@@ -265,7 +265,7 @@ Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md)
 
 **Beta limitations:**
 - ⚠️ Some verbs are stubs or simulated (for example `ssh tunnel`, `dns zone.update`, `secret rotate`); each handle page says so
-- ⚠️ The test suite still has known failures; see [docs/known_issues.md](docs/known_issues.md)
+- ⚠️ The default test suite passes, but integrations (systemd, real root, SMTP/SSH/DNS servers, brew) are not verified live; see [docs/known_issues.md](docs/known_issues.md)
 - ⚠️ Fixes involving root, real devices or remote servers were tested with unit tests and dry runs, not against live systems
 - ⚠️ Performance not yet optimized
 - ⚠️ Error messages need improvement
@@ -285,6 +285,7 @@ Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md)
 - **Rust 1.88 or later** - Install from [rustup.rs](https://rustup.rs)
 - **Git** - For cloning the repository
 - **Linux x86_64** - The only supported platform. macOS and Windows are not supported.
+- **OpenSSL 3** shared libraries (`libssl.so.3`, `libcrypto.so.3`) at run time. resh uses the system OpenSSL, so its security updates come from your distribution. libssh2 and libgit2 are compiled into resh and are updated through resh releases.
 
 What has been verified: resh builds and its tests run on Gentoo Linux x86_64 (an OpenRC host). The `pkg://` handle was exercised against apt (Debian bookworm), dnf (Fedora 42), yum (Amazon Linux 2), pacman (Arch) and apk (Alpine 3.20) in unprivileged sandboxes. brew and systemd hosts have not been exercised.
 
@@ -295,8 +296,8 @@ What has been verified: resh builds and its tests run on Gentoo Linux x86_64 (an
 git clone https://github.com/millertechnologygroup/resh.git
 cd resh
 
-# Checkout the v1.0.2-beta release
-git checkout v1.0.2-beta
+# Checkout the v1.0.3-beta release
+git checkout v1.0.3-beta
 
 # Build in release mode, using the dependency versions in Cargo.lock
 cargo build --release --locked
@@ -338,13 +339,13 @@ cargo test
 - Arch Linux (AUR)
 - Generic Linux (tar.gz)
 
-These are plans; no binary packages are published yet.
+These are plans; no distribution packages are published yet. If a prebuilt Linux x86_64 binary is attached to a GitHub release, it needs **glibc 2.39 or later** (for example Ubuntu 24.04, Debian 13, Fedora 40+) and OpenSSL 3; older distributions such as RHEL 8/9, Debian 12 and Ubuntu 22.04 must build from source. Check the binary against the SHA-256 checksum published with the release.
 
 ---
 
 ## Contributing
 
-**resh v1.0.2-beta is available for testing.** We welcome:
+**resh v1.0.3-beta is available for testing.** We welcome:
 
 ### How You Can Help Now
 
@@ -438,7 +439,7 @@ Built with frustration from years of fragile automation tools and excitement abo
 ## FAQ
 
 **Q: Can I use resh now?**  
-A: Yes. v1.0.2-beta is available for testing and feedback. Some verbs are stubs or have known limitations; check the handle's page and [docs/known_issues.md](docs/known_issues.md).
+A: Yes. v1.0.3-beta is available for testing and feedback. Some verbs are stubs or have known limitations; check the handle's page and [docs/known_issues.md](docs/known_issues.md).
 
 **Q: Is v1.0-beta production-ready?**  
 A: No. This is a beta release with 28 handles. Test it in non-production environments. A stable release (v1.0 stable) is planned but not yet scheduled.
@@ -472,6 +473,6 @@ A: Functional but not yet optimized. Current focus is correctness.
 
 ---
 
-**v1.0.2-beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
+**v1.0.3-beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
 
-[Download v1.0.2-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.2-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
+[Download v1.0.3-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.3-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
