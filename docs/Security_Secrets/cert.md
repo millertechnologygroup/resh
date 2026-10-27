@@ -141,6 +141,8 @@ resh --json-pretty cert://./ca.sign signer_key=ca-key.pem data_source=app.tar si
 
 The target (`./ca`) is only a label in the output. Options: `signer_key` (required), `data_source=<path>` or `data_bytes_base64=`, `signature_algorithm`, `signature_encoding=base64|pem|der`, `signature_output_path`, `include_signature_bytes=true`. Without `signature_output_path` or `include_signature_bytes=true` the signature is computed but not kept.
 
+`signature_algorithm` defaults to the key's natural algorithm (`rsa_pss_sha256` for RSA, `ecdsa_sha256` for P-256, `ecdsa_sha384` for P-384, `ed25519`). An explicit value is honoured exactly or refused: `ecdsa_sha512` with a P-384 key signs a SHA-512 digest (truncated to 384 bits, as ECDSA specifies), and a key/algorithm pair resh does not implement, such as P-256 with `ecdsa_sha384` or `ecdsa_sha512`, fails without writing a signature. Before v1.0.4-beta, `ecdsa_sha512` with a P-384 key silently produced a SHA-384 signature, which verifiers expecting SHA-512 reject; re-create such signatures.
+
 `signature_format=cms_detached` or `cms_attached` is accepted and echoed in the output, but **CMS is not implemented**: a raw signature is produced regardless. Do not rely on CMS output.
 
 Issuing a certificate from a CSR (`mode=csr`):

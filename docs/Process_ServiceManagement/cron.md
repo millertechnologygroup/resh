@@ -171,6 +171,16 @@ resh cron://<label>.add schedule=<expr> command=<cmd>
 * `allow_duplicate` defaults to **true**, so the same job can be added twice. With `allow_duplicate=false`, an existing job with the same schedule and command makes `add` return `"ok": true, "duplicate": true` without writing.
 * A `timezone` argument is accepted but not used.
 
+**Argument checks (since v1.0.4-beta).** Before anything is written, and before a dry-run preview is returned, every value is checked against the syntax of the place it is written to. A refused value gives `"ok": false`, exit 1, error code `cron.add_invalid_argument` and `error.field` naming the argument:
+
+* No argument may contain a line break or other control character.
+* `schedule` must be five crontab fields or one of `@reboot`, `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@hourly` (a malformed schedule keeps the code `cron.add_invalid_schedule`).
+* `id` is 1-128 characters of letters, digits and `. _ @ : + -`.
+* Cron backend: `command` must not contain an unescaped `%` (cron would turn it into a line break and feed the rest to the command's standard input); write `\%` for a literal `%`. As in cron, `\\` is an escaped backslash, so the `%` in `\\%` is unescaped and refused. `user` must be a user name. With `scope=system`, `cron_file` must be `/etc/crontab` or `/etc/cron.d/<name>` with a name of letters, digits, `_` and `-`, and resh refuses to read or write it through a symbolic link. The file is replaced atomically (through a hidden temporary file in the same directory, which cron ignores) and keeps its permission bits; if it exists but cannot be read, `add` fails instead of replacing it.
+* systemd backend: the unit name (`unit_name`, else `id`, else derived from the command) must be letters, digits and `_ . : @ -`, not starting with `-` or `.` and not ending with `@`. `service_user` must be a user name, `service_working_dir` an absolute path (or `~`), `accuracy_sec`/`random_delay_sec` a time span such as `30s` or `5min`, and `env` names letters, digits and `_`. `command` must not start with a systemd `ExecStart=` prefix (`@ - : + !`), and no value written into a unit may end with a backslash. Existing unit files that are symbolic links are not replaced.
+
+In the unit files, `%` is written as `%%` (so it is not a systemd specifier) and `env` values are escaped for systemd's double quotes, so each value means exactly what was passed. The timer is enabled with `systemctl enable --now -- <unit>.timer`.
+
 ```bash
 resh cron://local.add schedule=@daily command=/opt/backup.sh backend=cron
 resh cron://local.add 'schedule=30 3 * * *' command=/opt/rotate.sh backend=cron id=rotate allow_duplicate=false
@@ -221,6 +231,7 @@ resh cron://<label>.rm|enable|disable [id=<id>] [schedule=<expr>] [command=<cmd>
 * `disable` comments a crontab line out by prefixing `# `; `enable` removes the prefix. `enable` only uncomments a commented line that starts with a real cron schedule (five valid time fields, or an `@` keyword, followed by a command). Ordinary comments are left alone. A commented line that is itself a valid cron entry (such as an example in a distribution's crontab header) is treated as a disabled job and can be enabled by a broad `match_command`.
 * systemd timers are found by the UNIT column of `systemctl list-timers --all --plain`. `disable` disables the timer and, with `stop_now` (default true), stops it. `enable` enables it and, with `start_now` (default true), starts it. `rm` stops and disables it and, with `remove_units` (default true), deletes the `.timer` and `.service` files.
 * If systemd is not available, the systemd part is skipped with a warning.
+* `disable cron_file=<path>` rewrites that file, so (since v1.0.4-beta) it accepts only `/etc/crontab` or `/etc/cron.d/<name>`, like `add`; any other path gives `"ok": false` with code `cron.disable_invalid_argument` and exit 1, and nothing is read or written.
 
 ```bash
 resh cron://local.disable match_command=backup backend=cron scope=current
@@ -280,7 +291,7 @@ Error codes used in the `error.code` field include `cron.add_invalid_schedule`, 
 These are current behaviors of this release, verified in `src/handles/processes/cronh.rs`:
 
 * **Weekday numbering.** Schedules are validated and next-run times computed with the `cron` crate, which numbers weekdays 1-7 with Sunday = 1, while crontab uses 0-7 with Sunday = 0 (and 7). As a result `add` rejects a numeric weekday of `0` (for example `0 0 * * 0`), and `next_run_*` for numeric weekdays 1-7 is one day early (crontab's 1 = Monday is computed as Sunday). Three-letter day names (`sun`, `mon`, …) are interpreted correctly.
-* **Six-field expressions.** `add` also accepts the `cron` crate's six-field form (with seconds) and writes it unchanged, which crontab cannot read. Use five fields.
+* **Six-field expressions.** Before v1.0.4-beta `add` accepted the `cron` crate's six-field form (with seconds) and wrote it unchanged, so cron read the sixth field as the start of the command. Such schedules are now refused; use five fields.
 * **`@midnight`** is not accepted by `add` (use `@daily`).
 * **systemd OnCalendar translation** (`add` with the systemd backend) handles only simple schedules, and some translations are wrong:
   * `* * * * *` becomes `*:*:*`, which systemd runs every **second**, not every minute.
@@ -289,7 +300,7 @@ These are current behaviors of this release, verified in `src/handles/processes/
   * Schedules with steps (`*/5`) or a specific day of month, month or weekday (other than the fixed patterns for hourly, daily, monthly and yearly) are rejected with `cron.add_schedule_translation_unsupported`.
   * `@reboot` is rejected for systemd.
 * **`allow_duplicate` defaults to true.** Pass `allow_duplicate=false` to skip an identical existing job.
-* **No newline validation.** Newlines in `description`, `id`, `command` or `env` values are not rejected and are written into the crontab line or unit file, where they can create extra crontab lines or unit directives. `unit_name` is used in file paths without validation, and `%` in commands is not escaped for crontab. Only pass trusted values.
+* **Commands are code.** `command` is run by a shell (cron) or by systemd exactly as given; the checks above stop it from adding crontab lines or unit directives, not from doing what it says. Only schedule commands you trust. Before v1.0.4-beta line breaks in job fields and path characters in `unit_name` were not rejected (see 3.3).
 
 ---
 
