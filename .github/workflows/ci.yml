@@ -88,7 +88,7 @@ jobs:
           key: test-stable-${{ hashFiles('Cargo.lock') }}
       - run: cargo test --locked --no-fail-fast
 
-  # The Stage 1-4 security and correctness regression tests, run by name so a
+  # The Stage 1-4 and 6B security and correctness regression tests, run by name so a
   # failure is visible on its own. They are also part of test-msrv.
   test-security-regression:
     runs-on: ubuntu-latest
@@ -122,7 +122,12 @@ jobs:
           core::secure_fs certh::tests::private_key_write_tests
           fileh::backup_symlink_tests archiveh::backup_symlink_tests
           backuph::repo_url_required_tests
+          backuph::argument_safety_tests cronh::injection_tests
+          sshh::remote_argument_tests certh::ecdsa_algorithm_tests
       - run: cargo test --locked --test stage4_regressions
+      # Stage 6B (v1.0.4-beta): backup/cron/ssh injection, dry-run and
+      # cert signing regressions through the real binary.
+      - run: cargo test --locked --test stage6b_security
 
   # Run from the Actions tab (Run workflow, tick "infrastructure"), with the
   # repository secrets pointing at DISPOSABLE services: a throwaway bare git
