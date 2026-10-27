@@ -7990,7 +7990,13 @@ impl CertHandle {
                 Ok(signature.to_der().as_bytes().to_vec())
             }
             (SignerKey::EcdsaP384(ecdsa_key), SignatureAlgorithm::EcdsaSha512) => {
-                let signature: P384Signature = ecdsa_key.sign(data);
+                // ECDSA over a SHA-512 digest. `sign` would hash with the
+                // curve's default SHA-384; sign_prehash takes the SHA-512
+                // digest and uses its leftmost 384 bits, as ECDSA specifies
+                // for a digest longer than the group order (FIPS 186-5).
+                use p384::ecdsa::signature::hazmat::PrehashSigner;
+                let digest = sha2::Sha512::digest(data);
+                let signature: P384Signature = ecdsa_key.sign_prehash(&digest)?;
                 Ok(signature.to_der().as_bytes().to_vec())
             }
             (SignerKey::Ed25519(ed25519_key), SignatureAlgorithm::Ed25519) => {
@@ -7998,8 +8004,13 @@ impl CertHandle {
                 Ok(signature.to_bytes().to_vec())
             }
             _ => bail!(
-                "Unsupported key/algorithm combination: {:?} with {:?}",
-                std::mem::discriminant(key),
+                "Unsupported key/algorithm combination: a {} key cannot sign with {:?}; nothing was signed",
+                match key {
+                    SignerKey::Rsa(_) => "RSA",
+                    SignerKey::EcdsaP256(_) => "P-256 ECDSA",
+                    SignerKey::EcdsaP384(_) => "P-384 ECDSA",
+                    SignerKey::Ed25519(_) => "Ed25519",
+                },
                 algorithm
             ),
         }
@@ -13886,4 +13897,79 @@ struct ParsedCert {
 struct TrustStore {
     anchors: Vec<ParsedCert>,
     intermediates: Vec<ParsedCert>,
+}
+
+/// Stage 6B: `signature_algorithm` is honoured exactly; an ECDSA signature
+/// is never silently made with a different digest.
+#[cfg(test)]
+mod ecdsa_algorithm_tests {
+    use super::*;
+    use p384::ecdsa::VerifyingKey as P384VerifyingKey;
+    use p384::ecdsa::signature::hazmat::PrehashVerifier;
+
+    fn handle() -> CertHandle {
+        CertHandle {
+            target_path: "./sig".to_string(),
+        }
+    }
+
+    /// Verifies with ring, an independent implementation (it supports
+    /// P-384 with SHA-384 only).
+    fn ring_p384_sha384_ok(vk: &P384VerifyingKey, data: &[u8], der: &[u8]) -> bool {
+        let point = vk.to_encoded_point(false);
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ECDSA_P384_SHA384_ASN1,
+            point.as_bytes(),
+        )
+        .verify(data, der)
+        .is_ok()
+    }
+
+    #[test]
+    fn p384_sha512_uses_a_sha512_digest() {
+        let key = P384SigningKey::random(&mut OsRng);
+        let vk = *key.verifying_key();
+        let data = b"resh stage 6b signing fixture";
+        let der = handle()
+            .create_signature(
+                data,
+                &SignerKey::EcdsaP384(key),
+                &SignatureAlgorithm::EcdsaSha512,
+            )
+            .unwrap();
+        let sig = P384Signature::from_der(&der).unwrap();
+        assert!(vk.verify_prehash(&sha2::Sha512::digest(data), &sig).is_ok());
+        // Before the fix this was a SHA-384 signature.
+        assert!(!ring_p384_sha384_ok(&vk, data, &der));
+    }
+
+    #[test]
+    fn p384_sha384_is_unchanged() {
+        let key = P384SigningKey::random(&mut OsRng);
+        let vk = *key.verifying_key();
+        let data = b"resh stage 6b signing fixture";
+        let der = handle()
+            .create_signature(
+                data,
+                &SignerKey::EcdsaP384(key),
+                &SignatureAlgorithm::EcdsaSha384,
+            )
+            .unwrap();
+        assert!(ring_p384_sha384_ok(&vk, data, &der));
+    }
+
+    #[test]
+    fn mismatched_curve_and_digest_is_refused() {
+        let key = SignerKey::EcdsaP256(P256SigningKey::random(&mut OsRng));
+        for alg in [
+            SignatureAlgorithm::EcdsaSha384,
+            SignatureAlgorithm::EcdsaSha512,
+        ] {
+            let err = handle().create_signature(b"x", &key, &alg).unwrap_err();
+            assert!(
+                err.to_string().contains("P-256 ECDSA key cannot sign"),
+                "{err}"
+            );
+        }
+    }
 }
