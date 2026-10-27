@@ -25,6 +25,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.4-beta] - 2026-10-27
+
+Security release. Upgrading is recommended for everyone, and especially for
+anyone who passes values from scripts, templates or AI agents into
+`backup`, `cron add` or `ssh exec`, or who runs resh as root. Versions
+v1.0.3-beta and earlier are affected; there is no configuration workaround
+other than not passing untrusted values to the affected arguments.
+
+### Security
+- backup: argument values (`src`, `snapshot_id`, `dest`, `repo_url`) are
+  validated before anything runs, including dry runs. Backend command lines
+  attach option values with `=`, put positional values after `--`, run tar
+  with `--force-local`, and give rsync local relative paths a `./` prefix,
+  so a value can no longer be read as a backend option or a remote
+  location. For borg and restic, a remote repository whose host part starts
+  with `-` is refused. Refused values give `INVALID_ARGS` with
+  `details.field`.
+- backup prune: arguments are validated before restic or borg run in their
+  own dry-run mode.
+- cron add: every job field is checked against the syntax of the crontab or
+  unit file it is written to (no line breaks or control characters; valid
+  ids, user names, unit names, paths and time spans). `cron_file` is limited
+  to `/etc/crontab` and `/etc/cron.d/<name>`, also for `disable`. systemd
+  unit values are escaped, and the timer is enabled with
+  `systemctl enable --now -- <unit>`. Refused values give
+  `cron.add_invalid_argument` with `error.field`.
+- cron: crontab and unit files are replaced atomically, through a hidden
+  temporary file that cron ignores, and are never read or written through
+  symbolic links. An existing file keeps its permission bits. An existing
+  system cron file that cannot be read is no longer replaced by the new
+  line alone; `add` fails instead.
+- ssh exec: each `command_args` element reaches the remote program as
+  exactly one argument, quoted for POSIX login shells. `shell_mode=cmd` and
+  `powershell` refuse arguments and `cwd` values that would need quoting,
+  and ssh receives `--` before the destination.
+- cert sign: `signature_algorithm=ecdsa_sha512` with a P-384 key now
+  produces a SHA-512 signature; previously it silently produced a SHA-384
+  signature. Unsupported key and algorithm pairs are refused and no file is
+  written.
+
+### Changed (may affect scripts)
+- backup: the result has a new `dry_run_mode` field: `plan` means no
+  program ran; `backend` means restic or borg ran with its own `--dry-run`
+  (prune only). `backend.command` shows the new argument forms
+  (`--exclude=<p>`, `--`, `--force-local`, `./` prefixes).
+- cron add: six-field (seconds) schedules, `cron_file` outside the cron
+  locations, an unescaped `%` in a cron-backend command (write `\%`), and
+  systemd commands that start with an `ExecStart=` prefix character are
+  refused. `%` in systemd unit values is written as `%%`.
+- ssh exec: `command_args` are no longer subject to remote shell expansion
+  (globs, variables); put shell syntax in `command`. An unknown `shell_mode`
+  is an error (`PARSE_ERROR`) instead of meaning `none`. `command.raw` is
+  now the exact string sent, including the `cd` prefix for `cwd`.
+- ssh: error envelopes report the requested `dry_run` instead of always
+  `false`; an exec request refused before ssh starts also reports
+  `result.executed: false`.
+- cert sign: ECDSA P-384 signatures made earlier with `ecdsa_sha512` are
+  SHA-384 signatures and should be re-created.
+
+### Documentation
+- backup: a restic/borg `prune dry_run=true` runs the backend. It opens and
+  authenticates to the repository, connects over the network for a remote
+  repository, may create and remove a repository lock (a write that can
+  delay or fail a concurrent backup), and may update the backend's cache
+  and logs. These effects are expected from upstream behaviour, not
+  verified by resh's tests. Do not use it where a dry run must start no
+  program.
+- ssh: argument quoting is tested with sh, dash and bash. fish, csh and
+  tcsh login shells quote differently and are not supported for
+  `command_args`; `command` is always a command line, run by the remote
+  shell as written.
+- Platform requirements are unchanged: the prebuilt binary is Linux x86_64
+  and needs glibc 2.39 or later plus OpenSSL 3 (for example Ubuntu 24.04,
+  Debian 13, Fedora 40); older distributions must build from source with
+  Rust 1.88 or later.
+
+---
+
 ## [1.0.3-beta] - 2026-10-26
 
 Fixes for the release blockers found by the v1.0.2-beta release gate

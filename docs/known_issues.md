@@ -3,11 +3,11 @@
 These issues were found while writing the per-verb `--help` metadata, and each
 one was then checked against the code by a separate read-only review.
 
-## v1.0.4-beta security remediation (in preparation, 2026-10-27)
+## v1.0.4-beta security release (2026-10-27)
 
-These fixes are on the v1.0.4-beta security branch, each with regression
-tests (`tests/stage6b_security.rs` and unit tests in the affected handles).
-They are not in v1.0.3-beta or earlier.
+These fixes are in v1.0.4-beta, each with regression tests
+(`tests/stage6b_security.rs` and unit tests in the affected handles). They
+are not in v1.0.3-beta or earlier.
 
 - **backup argument handling.** Values from `src`, `snapshot_id`, `dest` and
   `repo_url` could be read by tar, rsync, borg or restic as options or as
