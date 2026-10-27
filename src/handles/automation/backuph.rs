@@ -202,8 +202,10 @@ archive, rsync opens every file, and problems give a VERIFY_FAILED error."#,
   "backend": {
     "command": [
       "tar",
+      "--force-local",
       "-czf",
       "/srv/backup/backup_20261016_091244.tar.gz",
+      "--",
       "/etc"
     ],
     "env_redacted": {},
@@ -231,6 +233,7 @@ archive, rsync opens every file, and problems give a VERIFY_FAILED error."#,
       "retention": true,
       "verify": true
     },
+    "dry_run_mode": "plan",
     "snapshot": {
       "created_at": "2026-10-16T09:12:44.930811+00:00",
       "id": "dry-run-id",
@@ -670,12 +673,22 @@ impl CmdSpec {
     }
 }
 
-/// `--flag v1 --flag v2 ...`
+/// `--flag=v1 --flag=v2 ...`. The value is attached with `=` so that every
+/// backend's option parser (GNU getopt, popt, pflag, argparse) reads a value
+/// starting with `-` as the value, never as another option.
 fn repeat_flag(flag: &str, values: &[String]) -> Vec<String> {
-    values
-        .iter()
-        .flat_map(|v| [flag.to_string(), v.clone()])
-        .collect()
+    values.iter().map(|v| format!("{}={}", flag, v)).collect()
+}
+
+/// A local path as an rsync argument. rsync reads `host:path` (a `:` before
+/// the first `/`) as a remote location and starts a remote shell for it, so
+/// a relative path gets a `./` prefix and is always local.
+fn rsync_local(path: &str) -> String {
+    if path.starts_with('/') || path.starts_with("./") {
+        path.to_string()
+    } else {
+        format!("./{}", path)
+    }
 }
 
 /// Local repository directory for tar/rsync, accepting `file://` URLs.
@@ -733,6 +746,148 @@ pub(crate) fn snapshot_name(label: Option<&str>, timestamp: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Argument validation (runs before any plan is reported or backend is run)
+// ---------------------------------------------------------------------------
+
+/// A caller value refused before anything runs: the argument it came from
+/// and why.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UnsafeArg {
+    pub field: &'static str,
+    pub message: String,
+}
+
+fn unsafe_arg(field: &'static str, reason: impl std::fmt::Display) -> UnsafeArg {
+    UnsafeArg {
+        field,
+        message: format!("{} {}; nothing was run", field, reason),
+    }
+}
+
+/// A value attached to a backend option (`--exclude=<v>`): any text without
+/// control characters.
+fn check_option_value(field: &'static str, value: &str) -> Result<(), UnsafeArg> {
+    if value.chars().any(char::is_control) {
+        return Err(unsafe_arg(field, "must not contain control characters"));
+    }
+    Ok(())
+}
+
+/// A value passed as a backend positional or as the value of a short option:
+/// additionally non-empty and not starting with `-`, which a backend would
+/// read as an option even where `--` is not available.
+fn check_positional(field: &'static str, value: &str) -> Result<(), UnsafeArg> {
+    check_option_value(field, value)?;
+    if value.is_empty() {
+        return Err(unsafe_arg(field, "must not be empty"));
+    }
+    if value.starts_with('-') {
+        return Err(unsafe_arg(
+            field,
+            format!(
+                "must not start with '-' (got {:?}); prefix a relative path with ./",
+                value
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A tar archive or rsync snapshot name: one entry of the repository
+/// directory, so it cannot name a file outside it.
+fn check_snapshot_entry(field: &'static str, value: &str) -> Result<(), UnsafeArg> {
+    check_positional(field, value)?;
+    if value.contains('/') || value == "." || value == ".." {
+        return Err(unsafe_arg(
+            field,
+            "must be a snapshot name in the repository, not a path",
+        ));
+    }
+    Ok(())
+}
+
+/// A restic or borg repository location. Both can reach a repository over
+/// ssh (borg `ssh://host/...` and `user@host:path`, restic `sftp:host:path`)
+/// and pass the host to ssh, which would read a host starting with `-` as an
+/// option. No component may start with `-`.
+fn check_remote_repo(value: &str) -> Result<(), UnsafeArg> {
+    check_positional("repo_url", value)?;
+    let bytes = value.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        let after_sep =
+            matches!(b, b':' | b'@' | b'[') || (*b == b'/' && i > 0 && bytes[i - 1] == b'/');
+        if after_sep && bytes.get(i + 1) == Some(&b'-') {
+            return Err(unsafe_arg(
+                "repo_url",
+                format!(
+                    "has a host or user component starting with '-' (got {:?})",
+                    value
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Checks every caller value that `verb` places in a backend command line.
+pub(crate) fn validate_request(
+    backend: &BackendType,
+    verb: &str,
+    args: &Args,
+) -> Result<(), UnsafeArg> {
+    if let Some(repo) = args.get("repo_url") {
+        match backend {
+            BackendType::Restic | BackendType::Borg => check_remote_repo(repo)?,
+            // A local directory: tar uses --force-local, rsync gets ./.
+            BackendType::Tar | BackendType::Rsync => check_positional("repo_url", repo)?,
+        }
+    }
+    let list = |key: &'static str, sep: char| -> Vec<String> {
+        args.get(key)
+            .map(|v| split_list(v, sep))
+            .unwrap_or_default()
+    };
+    for tag in list("tag", ';') {
+        check_option_value("tag", &tag)?;
+    }
+    for pattern in list("exclude", ';') {
+        check_option_value("exclude", &pattern)?;
+    }
+    match verb {
+        "create" => {
+            let sources = list("src", ';');
+            if sources.is_empty() {
+                return Err(unsafe_arg("src", "must name at least one path"));
+            }
+            for src in &sources {
+                check_positional("src", src)?;
+            }
+            if let Some(label) = args.get("label") {
+                check_option_value("label", label)?;
+            }
+        }
+        "restore" => {
+            if let Some(id) = args.get("snapshot_id") {
+                match backend {
+                    BackendType::Tar | BackendType::Rsync => {
+                        check_snapshot_entry("snapshot_id", id)?
+                    }
+                    BackendType::Restic | BackendType::Borg => check_positional("snapshot_id", id)?,
+                }
+            }
+            if let Some(dest) = args.get("dest") {
+                check_positional("dest", dest)?;
+            }
+            for pattern in list("include", ',') {
+                check_option_value("include", &pattern)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn restic_base(repo_url: Option<&String>, sub: &str) -> CmdSpec {
     let mut c = CmdSpec::new("restic").arg(sub);
     if let Some(repo) = repo_url {
@@ -756,10 +911,16 @@ fn keep_flags(policy: &RetentionPolicy) -> Vec<String> {
     v
 }
 
+// Positional values always follow `--`, and the values have been checked by
+// `validate_request` (no leading `-`, no control characters) as well.
+// `--force-local` stops GNU tar from reading an archive name containing `:`
+// as `host:file` on a remote host.
+
 pub(crate) fn build_tar_create(archive: &str, sources: &[String], exclude: &[String]) -> CmdSpec {
     CmdSpec::new("tar")
-        .args(["-czf", archive])
+        .args(["--force-local", "-czf", archive])
         .args(repeat_flag("--exclude", exclude))
+        .arg("--")
         .args(sources.iter().cloned())
 }
 
@@ -772,10 +933,11 @@ pub(crate) fn build_restic_create(
 ) -> CmdSpec {
     let mut c = restic_base(repo_url, "backup").args(repeat_flag("--tag", tags));
     if let Some(label) = label {
-        c = c.args(["--hostname", label]);
+        c = c.arg(format!("--hostname={}", label));
     }
     c.args(repeat_flag("--exclude", exclude))
         .arg("--json")
+        .arg("--")
         .args(sources.iter().cloned())
 }
 
@@ -788,6 +950,7 @@ pub(crate) fn build_borg_create(
     CmdSpec::new("borg")
         .args(["create", "--json", "--compression", "lz4"])
         .args(repeat_flag("--exclude", exclude))
+        .arg("--")
         .arg(format!("{}::{}", repo, archive))
         .args(sources.iter().cloned())
 }
@@ -800,8 +963,9 @@ pub(crate) fn build_rsync_create(
     CmdSpec::new("rsync")
         .args(["-a", "--stats"])
         .args(repeat_flag("--exclude", exclude))
-        .args(sources.iter().cloned())
-        .arg(dest_dir)
+        .arg("--")
+        .args(sources.iter().map(|s| rsync_local(s)))
+        .arg(rsync_local(dest_dir))
 }
 
 pub(crate) fn build_restic_list(repo_url: Option<&String>, tags: &[String]) -> CmdSpec {
@@ -811,7 +975,7 @@ pub(crate) fn build_restic_list(repo_url: Option<&String>, tags: &[String]) -> C
 }
 
 pub(crate) fn build_borg_list(repo: &str) -> CmdSpec {
-    CmdSpec::new("borg").args(["list", "--json", repo])
+    CmdSpec::new("borg").args(["list", "--json", "--", repo])
 }
 
 pub(crate) fn build_restic_restore(
@@ -822,9 +986,10 @@ pub(crate) fn build_restic_restore(
     exclude: &[String],
 ) -> CmdSpec {
     restic_base(repo_url, "restore")
-        .args([snapshot_id, "--target", dest])
+        .arg(format!("--target={}", dest))
         .args(repeat_flag("--include", include))
         .args(repeat_flag("--exclude", exclude))
+        .args(["--", snapshot_id])
 }
 
 /// borg extracts into its working directory, so the destination is the cwd.
@@ -837,6 +1002,7 @@ pub(crate) fn build_borg_restore(
     let mut c = CmdSpec::new("borg")
         .arg("extract")
         .args(repeat_flag("--exclude", exclude))
+        .arg("--")
         .arg(format!("{}::{}", repo, snapshot_id));
     c.cwd = Some(dest.to_string());
     c
@@ -844,7 +1010,7 @@ pub(crate) fn build_borg_restore(
 
 pub(crate) fn build_tar_restore(archive: &str, dest: &str, exclude: &[String]) -> CmdSpec {
     CmdSpec::new("tar")
-        .args(["-xzf", archive])
+        .args(["--force-local", "-xzf", archive])
         .args(repeat_flag("--exclude", exclude))
         .args(["-C", dest])
 }
@@ -853,7 +1019,8 @@ pub(crate) fn build_rsync_restore(snapshot_dir: &str, dest: &str, exclude: &[Str
     CmdSpec::new("rsync")
         .arg("-av")
         .args(repeat_flag("--exclude", exclude))
-        .args([snapshot_dir, dest])
+        .arg("--")
+        .args([rsync_local(snapshot_dir), rsync_local(dest)])
 }
 
 pub(crate) fn build_restic_verify(repo_url: Option<&String>, read_data: bool) -> CmdSpec {
@@ -868,11 +1035,11 @@ pub(crate) fn build_borg_verify(repo: &str, verify_data: bool) -> CmdSpec {
     } else {
         c
     };
-    c.arg(repo)
+    c.args(["--", repo])
 }
 
 pub(crate) fn build_tar_verify(archive: &str) -> CmdSpec {
-    CmdSpec::new("tar").args(["-tzf", archive])
+    CmdSpec::new("tar").args(["--force-local", "-tzf", archive])
 }
 
 pub(crate) fn build_restic_prune(
@@ -891,7 +1058,7 @@ pub(crate) fn build_borg_prune(repo: &str, policy: &RetentionPolicy, dry_run: bo
         .args(["prune", "--list"])
         .args(keep_flags(policy))
         .arg(if dry_run { "--dry-run" } else { "--stats" })
-        .arg(repo)
+        .args(["--", repo])
 }
 
 // ---------------------------------------------------------------------------
@@ -1762,6 +1929,28 @@ macro_rules! repo_or_return {
     }};
 }
 
+/// Writes an INVALID_ARGS envelope (before anything runs or a dry-run plan
+/// is reported) and returns when a caller value is unsafe for the backend
+/// command line.
+macro_rules! validated_or_return {
+    ($self:ident, $r:ident, $io:ident, $args:ident, $backend:expr, $timeout:expr) => {{
+        if let Err(e) = validate_request(&$backend, $r.verb, $args) {
+            let info = $self.backend_info(&$backend, None, $timeout, $r.dry_run);
+            let details = json!({ "field": e.field });
+            return $self.fail(
+                &$r,
+                $io,
+                info,
+                "INVALID_ARGS",
+                &e.message,
+                Some(details),
+                vec![],
+                1,
+            );
+        }
+    }};
+}
+
 /// Adds the repository password to `spec`, or writes a MISSING_PASSWORD
 /// envelope (before anything runs) and returns.
 macro_rules! secret_or_return {
@@ -1787,6 +1976,7 @@ impl BackupHandle {
         let r = Reply::new("create", args, crate::core::lenient::dry_run(args)?);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
         repo_or_return!(self, r, io, args, backend, timeout_ms);
+        validated_or_return!(self, r, io, args, backend, timeout_ms);
 
         let sources = split_list(src, ';');
         let mut tags = args
@@ -1859,7 +2049,8 @@ impl BackupHandle {
             let result = json!({
                 "capabilities": capabilities,
                 "snapshot": snapshot,
-                "backend_raw": { "stdout": "", "stderr": "" }
+                "backend_raw": { "stdout": "", "stderr": "" },
+                "dry_run_mode": "plan"
             });
             warnings.push("Dry run: no backup was created".to_string());
             return self.ok(&r, io, info, result, warnings);
@@ -1920,6 +2111,7 @@ impl BackupHandle {
         let r = Reply::new("list", args, false);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
         repo_or_return!(self, r, io, args, backend, timeout_ms);
+        validated_or_return!(self, r, io, args, backend, timeout_ms);
         let repo_url = args.get("repo_url");
         let mut tags = args
             .get("tag")
@@ -2002,6 +2194,7 @@ impl BackupHandle {
         let r = Reply::new("restore", args, false);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
         repo_or_return!(self, r, io, args, backend, timeout_ms);
+        validated_or_return!(self, r, io, args, backend, timeout_ms);
 
         let repo_url = args.get("repo_url");
         let include = args
@@ -2070,6 +2263,7 @@ impl BackupHandle {
         let r = Reply::new("verify", args, false);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
         repo_or_return!(self, r, io, args, backend, timeout_ms);
+        validated_or_return!(self, r, io, args, backend, timeout_ms);
         let mode = args
             .get("mode")
             .cloned()
@@ -2203,6 +2397,7 @@ impl BackupHandle {
         let r = Reply::new("prune", args, crate::core::lenient::dry_run(args)?);
         let backend = select_or_return!(self, r, io, args, timeout_ms);
         repo_or_return!(self, r, io, args, backend, timeout_ms);
+        validated_or_return!(self, r, io, args, backend, timeout_ms);
         let repo_url = args.get("repo_url");
         let capabilities = self.get_capabilities(&backend);
 
@@ -2264,6 +2459,16 @@ impl BackupHandle {
                     "policy": policy_json,
                     "capabilities": capabilities
                 });
+                if r.dry_run {
+                    // Only the backend can apply its retention policy to its
+                    // repository, so this dry run runs it with its own
+                    // --dry-run flag (documented in backup.md 4.5).
+                    result["dry_run_mode"] = json!("backend");
+                    warnings.push(format!(
+                        "Dry run: {} ran in its own --dry-run mode; nothing was removed",
+                        backend
+                    ));
+                }
                 result[stats_key] = json!({
                     "snapshots_removed": removed,
                     "bytes_freed": null,
@@ -2328,6 +2533,9 @@ impl BackupHandle {
                     "policy": policy_json,
                     "capabilities": capabilities
                 });
+                if r.dry_run {
+                    result["dry_run_mode"] = json!("plan");
+                }
                 result[stats_key] = stats;
                 self.ok(&r, io, info, result, warnings)
             }
@@ -2489,10 +2697,11 @@ mod tests {
             build_tar_create("/r/backup_1.tar.gz", &src, &ex).argv(),
             s(&[
                 "tar",
+                "--force-local",
                 "-czf",
                 "/r/backup_1.tar.gz",
-                "--exclude",
-                "*.tmp",
+                "--exclude=*.tmp",
+                "--",
                 "/etc",
                 "/home"
             ])
@@ -2504,13 +2713,11 @@ mod tests {
             s(&[
                 "restic",
                 "backup",
-                "--tag",
-                "daily",
-                "--hostname",
-                "web01",
-                "--exclude",
-                "*.tmp",
+                "--tag=daily",
+                "--hostname=web01",
+                "--exclude=*.tmp",
                 "--json",
+                "--",
                 "/etc",
                 "/home"
             ])
@@ -2524,8 +2731,8 @@ mod tests {
                 "--json",
                 "--compression",
                 "lz4",
-                "--exclude",
-                "*.tmp",
+                "--exclude=*.tmp",
+                "--",
                 "/srv/borg::backup_1",
                 "/etc",
                 "/home"
@@ -2537,8 +2744,8 @@ mod tests {
                 "rsync",
                 "-a",
                 "--stats",
-                "--exclude",
-                "*.tmp",
+                "--exclude=*.tmp",
+                "--",
                 "/etc",
                 "/home",
                 "/r/backup_1/"
@@ -2551,11 +2758,11 @@ mod tests {
         let repo = "/srv/restic".to_string();
         assert_eq!(
             build_restic_list(Some(&repo), &s(&["a"])).argv(),
-            s(&["restic", "snapshots", "--json", "--tag", "a"])
+            s(&["restic", "snapshots", "--json", "--tag=a"])
         );
         assert_eq!(
             build_borg_list("/b").argv(),
-            s(&["borg", "list", "--json", "/b"])
+            s(&["borg", "list", "--json", "--", "/b"])
         );
 
         assert_eq!(
@@ -2563,25 +2770,30 @@ mod tests {
             s(&[
                 "restic",
                 "restore",
-                "4f2a",
-                "--target",
-                "/tmp/r",
-                "--include",
-                "*.conf",
-                "--exclude",
-                "*.tmp"
+                "--target=/tmp/r",
+                "--include=*.conf",
+                "--exclude=*.tmp",
+                "--",
+                "4f2a"
             ])
         );
         let b = build_borg_restore("/b", "backup_1", "/tmp/r", &[]);
-        assert_eq!(b.argv(), s(&["borg", "extract", "/b::backup_1"]));
+        assert_eq!(b.argv(), s(&["borg", "extract", "--", "/b::backup_1"]));
         assert_eq!(b.cwd.as_deref(), Some("/tmp/r"));
         assert_eq!(
             build_tar_restore("/r/backup_1.tar.gz", "/tmp/r", &[]).argv(),
-            s(&["tar", "-xzf", "/r/backup_1.tar.gz", "-C", "/tmp/r"])
+            s(&[
+                "tar",
+                "--force-local",
+                "-xzf",
+                "/r/backup_1.tar.gz",
+                "-C",
+                "/tmp/r"
+            ])
         );
         assert_eq!(
             build_rsync_restore("/r/backup_1/", "/tmp/r", &[]).argv(),
-            s(&["rsync", "-av", "/r/backup_1/", "/tmp/r"])
+            s(&["rsync", "-av", "--", "/r/backup_1/", "/tmp/r"])
         );
 
         assert_eq!(
@@ -2594,11 +2806,11 @@ mod tests {
         );
         assert_eq!(
             build_borg_verify("/b", true).argv(),
-            s(&["borg", "check", "--verify-data", "/b"])
+            s(&["borg", "check", "--verify-data", "--", "/b"])
         );
         assert_eq!(
             build_tar_verify("/r/a.tar.gz").argv(),
-            s(&["tar", "-tzf", "/r/a.tar.gz"])
+            s(&["tar", "--force-local", "-tzf", "/r/a.tar.gz"])
         );
 
         let p = RetentionPolicy {
@@ -2643,6 +2855,7 @@ mod tests {
                 "--keep-monthly",
                 "12",
                 "--dry-run",
+                "--",
                 "/b"
             ])
         );
@@ -2657,6 +2870,7 @@ mod tests {
                 "--keep-monthly",
                 "12",
                 "--stats",
+                "--",
                 "/b"
             ])
         );
@@ -3334,5 +3548,187 @@ mod timeout_tests {
         };
         let res = h.execute_backend_command(&quick, 5000).unwrap();
         assert_eq!(res.exit_code, 0);
+    }
+}
+
+/// Stage 6B (B1-B3): caller values are checked before a backend command is
+/// built, and the command line keeps them out of option position.
+#[cfg(test)]
+mod argument_safety_tests {
+    use super::*;
+
+    fn args(kv: &[(&str, &str)]) -> Args {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn field(backend: BackendType, verb: &str, kv: &[(&str, &str)]) -> Option<&'static str> {
+        validate_request(&backend, verb, &args(kv))
+            .err()
+            .map(|e| e.field)
+    }
+
+    #[test]
+    fn option_shaped_and_control_values_are_refused() {
+        use BackendType::*;
+        let repo = ("repo_url", "/srv/repo");
+        for b in [Tar, Rsync, Borg, Restic] {
+            for src in ["-v", "--probe", "/etc;-x", "a\nb", "a\0b", ""] {
+                assert_eq!(
+                    field(b.clone(), "create", &[repo, ("src", src)]),
+                    Some("src"),
+                    "{src:?}"
+                );
+            }
+            assert_eq!(
+                field(b.clone(), "create", &[("repo_url", "-r"), ("src", "/etc")]),
+                Some("repo_url")
+            );
+            assert_eq!(
+                field(
+                    b.clone(),
+                    "create",
+                    &[repo, ("src", "/etc"), ("exclude", "a\rb")]
+                ),
+                Some("exclude")
+            );
+            assert_eq!(
+                field(
+                    b.clone(),
+                    "create",
+                    &[repo, ("src", "/etc"), ("label", "a\nb")]
+                ),
+                Some("label")
+            );
+            assert_eq!(
+                field(b.clone(), "list", &[repo, ("tag", "a\nb")]),
+                Some("tag")
+            );
+            assert_eq!(
+                field(
+                    b.clone(),
+                    "restore",
+                    &[repo, ("snapshot_id", "-x"), ("dest", "/d")]
+                ),
+                Some("snapshot_id")
+            );
+            assert_eq!(
+                field(
+                    b.clone(),
+                    "restore",
+                    &[repo, ("snapshot_id", "s1"), ("dest", "-d")]
+                ),
+                Some("dest")
+            );
+            assert_eq!(
+                field(
+                    b.clone(),
+                    "restore",
+                    &[
+                        repo,
+                        ("snapshot_id", "s1"),
+                        ("dest", "/d"),
+                        ("include", "a\nb")
+                    ]
+                ),
+                Some("include")
+            );
+            // Legitimate values, including option-looking values that are
+            // attached to their option with `=`.
+            assert_eq!(
+                field(
+                    b.clone(),
+                    "create",
+                    &[
+                        repo,
+                        ("src", "/etc;rel/dir;a:b"),
+                        ("exclude", "-x;*.tmp"),
+                        ("label", "web 01")
+                    ]
+                ),
+                None
+            );
+            assert_eq!(
+                field(
+                    b.clone(),
+                    "restore",
+                    &[repo, ("snapshot_id", "backup_1"), ("dest", "./-d")]
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn local_snapshot_ids_stay_in_the_repository() {
+        use BackendType::*;
+        for b in [Tar, Rsync] {
+            for id in ["../x", "a/b", "..", "."] {
+                let kv = [("repo_url", "/r"), ("snapshot_id", id), ("dest", "/d")];
+                assert_eq!(
+                    field(b.clone(), "restore", &kv),
+                    Some("snapshot_id"),
+                    "{id}"
+                );
+            }
+        }
+        // restic `<id>:<subfolder>` and borg archive names are not paths.
+        let kv = [
+            ("repo_url", "/r"),
+            ("snapshot_id", "latest:/etc"),
+            ("dest", "/d"),
+        ];
+        assert_eq!(field(Restic, "restore", &kv), None);
+    }
+
+    #[test]
+    fn remote_repository_hosts_cannot_be_options() {
+        use BackendType::*;
+        for repo in [
+            "ssh://-oX/repo",
+            "ssh://user@-oX/repo",
+            "-oX:repo",
+            "user@-oX:repo",
+            "sftp:-oX:/repo",
+            "sftp:user@-oX:/repo",
+            "ssh://[-oX]/repo",
+        ] {
+            for b in [Borg, Restic] {
+                assert_eq!(
+                    field(b, "list", &[("repo_url", repo)]),
+                    Some("repo_url"),
+                    "{repo}"
+                );
+            }
+        }
+        for repo in [
+            "/srv/borg",
+            "/srv/a-b/-c",
+            "ssh://backup@host.example:2222/./repo",
+            "backup@host.example:repo",
+            "sftp:backup@host.example:/srv/restic",
+            "s3:https://s3.example/bucket",
+        ] {
+            for b in [Borg, Restic] {
+                assert_eq!(field(b, "list", &[("repo_url", repo)]), None, "{repo}");
+            }
+        }
+        // A local repository path may contain `:-`: tar uses --force-local
+        // and rsync gets a ./ prefix, so nothing is remote.
+        assert_eq!(field(Tar, "list", &[("repo_url", "/srv/a:-b")]), None);
+    }
+
+    #[test]
+    fn rsync_local_paths_never_look_remote() {
+        assert_eq!(rsync_local("/abs/a:b"), "/abs/a:b");
+        assert_eq!(rsync_local("host:path"), "./host:path");
+        assert_eq!(rsync_local("rsync://host/x"), "./rsync://host/x");
+        assert_eq!(rsync_local("./x"), "./x");
+        let c = build_rsync_create("repo/backup_1/", &["data".to_string()], &[]);
+        assert_eq!(
+            c.argv(),
+            ["rsync", "-a", "--stats", "--", "./data", "./repo/backup_1/"]
+        );
     }
 }
