@@ -1148,6 +1148,26 @@ fn exec_failure(result: &SshExecResult) -> Option<SshErrorDetails> {
     })
 }
 
+/// The `dry_run` mode the caller asked for, for error envelopes built before
+/// the options were parsed. A missing or malformed value reports `false`.
+fn requested_dry_run(args: &Args) -> bool {
+    crate::core::lenient::dry_run(args).unwrap_or(false)
+}
+
+/// Exec result for a request refused before ssh was started: `dry_run` in the
+/// envelope is the requested mode, `executed` says whether anything ran.
+fn not_executed() -> SshExecResult {
+    SshExecResult {
+        executed: false,
+        exit_code: None,
+        signal: None,
+        timed_out: false,
+        output_truncated: false,
+        stdout: None,
+        stderr: None,
+    }
+}
+
 /// Complete SSH exec response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshExecResponse {
@@ -3413,7 +3433,10 @@ impl SshHandle {
                 "bash" => ShellMode::Bash,
                 "cmd" => ShellMode::Cmd,
                 "powershell" => ShellMode::Powershell,
-                _ => ShellMode::None,
+                other => bail!(
+                    "Invalid shell_mode '{}'. Supported: none, sh, bash, cmd, powershell",
+                    other
+                ),
             };
         }
 
@@ -4091,7 +4114,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshUploadResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: requested_dry_run(args),
                     connection: SshConnectionInfo {
                         host: "unknown".to_string(),
                         port: 22,
@@ -4120,7 +4143,7 @@ impl SshHandle {
         if let Err(e) = self.validate_upload_options(&options) {
             let error_response = SshUploadResponse {
                 ok: false,
-                dry_run: false,
+                dry_run: options.dry_run,
                 connection: SshConnectionInfo {
                     host: options
                         .host
@@ -4158,7 +4181,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshUploadResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: options.dry_run,
                     connection: SshConnectionInfo {
                         host: options
                             .host
@@ -4197,7 +4220,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshUploadResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: options.dry_run,
                     connection: SshConnectionInfo {
                         host: host.clone(),
                         port,
@@ -4450,7 +4473,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshDownloadResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: requested_dry_run(args),
                     connection: SshConnectionInfo {
                         host: "unknown".to_string(),
                         port: 22,
@@ -4479,7 +4502,7 @@ impl SshHandle {
         if let Err(e) = self.validate_download_options(&options) {
             let error_response = SshDownloadResponse {
                 ok: false,
-                dry_run: false,
+                dry_run: options.dry_run,
                 connection: SshConnectionInfo {
                     host: options
                         .host
@@ -4517,7 +4540,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshDownloadResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: options.dry_run,
                     connection: SshConnectionInfo {
                         host: options
                             .host
@@ -5256,22 +5279,28 @@ impl SshHandle {
         }
     }
 
-    /// Build final command string based on shell mode
+    /// Build final command string based on shell mode.
+    ///
+    /// ssh joins its remote arguments with spaces and the remote login shell
+    /// parses the result again, so `command` is sent as written (it is a
+    /// command line by design) and every `command_args` element is quoted to
+    /// stay exactly one argument, using only POSIX single-quote rules (tested
+    /// against the POSIX shells installed where the tests run; fish, csh and
+    /// tcsh quote differently). cmd.exe and PowerShell quoting cannot be
+    /// made exact through ssh, so for those modes an argument (or cwd) that
+    /// would need quoting is refused.
     fn build_command(&self, options: &SshExecOptions) -> Result<String> {
         let base_command = options.command.as_ref().ok_or(SshError::CommandRequired)?;
+        Self::check_exec_arguments(options)?;
 
         match options.shell_mode {
             ShellMode::None => {
-                if options.command_args.is_empty() {
-                    Ok(base_command.clone())
-                } else {
-                    // Simple concatenation for direct execution
-                    Ok(format!(
-                        "{} {}",
-                        base_command,
-                        options.command_args.join(" ")
-                    ))
+                let mut cmd = base_command.clone();
+                for arg in &options.command_args {
+                    cmd.push(' ');
+                    cmd.push_str(&Self::posix_quote(arg));
                 }
+                Ok(cmd)
             }
             ShellMode::Sh | ShellMode::Bash => {
                 let shell = if options.shell_mode == ShellMode::Bash {
@@ -5280,15 +5309,9 @@ impl SshHandle {
                     "sh"
                 };
                 let mut cmd = base_command.clone();
-
-                // Add arguments with basic shell escaping
                 for arg in &options.command_args {
                     cmd.push(' ');
-                    if arg.contains(' ') || arg.contains('"') || arg.contains('\'') {
-                        cmd.push_str(&format!("'{}'", arg.replace('\'', "'\"'\"'")));
-                    } else {
-                        cmd.push_str(arg);
-                    }
+                    cmd.push_str(&Self::posix_quote(arg));
                 }
 
                 // Apply cwd inside the shell script, then quote the whole script once
@@ -5333,6 +5356,54 @@ impl SshHandle {
     /// Escape string for shell usage
     fn shell_escape(s: &str) -> String {
         format!("'{}'", s.replace('\'', "'\"'\"'"))
+    }
+
+    /// One argument for a POSIX shell: left bare when it only has characters
+    /// no POSIX shell (zsh included) treats specially, otherwise single-quoted.
+    fn posix_quote(arg: &str) -> String {
+        let bare = !arg.is_empty()
+            && arg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_@%+:,./-".contains(c));
+        if bare {
+            arg.to_string()
+        } else {
+            Self::shell_escape(arg)
+        }
+    }
+
+    /// Refuses `command_args` and `cwd` values whose meaning on the remote
+    /// host cannot be guaranteed: control characters in any mode, and for
+    /// cmd/PowerShell anything outside letters, digits and `_ . : / \ + @ -`.
+    fn check_exec_arguments(options: &SshExecOptions) -> Result<()> {
+        let windows = matches!(options.shell_mode, ShellMode::Cmd | ShellMode::Powershell);
+        let values = options
+            .command_args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (format!("command_args[{}]", i), a))
+            .chain(options.cwd.iter().map(|c| ("cwd".to_string(), c)));
+        for (field, value) in values {
+            if value.chars().any(char::is_control) {
+                bail!(
+                    "{} must not contain line breaks or other control characters; nothing was run",
+                    field
+                );
+            }
+            let windows_safe = !value.is_empty()
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_.:/\\+@-".contains(c));
+            if windows && !windows_safe {
+                bail!(
+                    "{} would need quoting, which shell_mode={} cannot pass through ssh \
+                     exactly; put the complete command line in `command` instead; nothing was run",
+                    field,
+                    format!("{:?}", options.shell_mode).to_lowercase()
+                );
+            }
+        }
+        Ok(())
     }
 
     // ========== keys.list helper functions ==========
@@ -5600,7 +5671,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshExecResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: requested_dry_run(args),
                     connection: SshConnectionInfo {
                         host: "unknown".to_string(),
                         port: 22,
@@ -5608,7 +5679,7 @@ impl SshHandle {
                         backend: "system".to_string(),
                     },
                     command: None,
-                    result: None,
+                    result: Some(not_executed()),
                     timing: None,
                     error: Some(SshErrorDetails {
                         code: "PARSE_ERROR".to_string(),
@@ -5630,7 +5701,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshExecResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: options.dry_run,
                     connection: SshConnectionInfo {
                         host: options
                             .host
@@ -5644,7 +5715,7 @@ impl SshHandle {
                         backend: "system".to_string(),
                     },
                     command: None,
-                    result: None,
+                    result: Some(not_executed()),
                     timing: None,
                     error: Some(error_details(&e, "CONNECTION_ERROR")),
                     warnings: vec![],
@@ -5662,7 +5733,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshExecResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: options.dry_run,
                     connection: SshConnectionInfo {
                         host: host.clone(),
                         port,
@@ -5670,7 +5741,7 @@ impl SshHandle {
                         backend: "system".to_string(),
                     },
                     command: None,
-                    result: None,
+                    result: Some(not_executed()),
                     timing: None,
                     error: Some(error_details(&e, "AUTH_ERROR")),
                     warnings: vec![],
@@ -5692,7 +5763,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshExecResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: options.dry_run,
                     connection: SshConnectionInfo {
                         host: host.clone(),
                         port,
@@ -5700,7 +5771,7 @@ impl SshHandle {
                         backend: "system".to_string(),
                     },
                     command: None,
-                    result: None,
+                    result: Some(not_executed()),
                     timing: None,
                     error: Some(error_details(&e, "COMMAND_ERROR")),
                     warnings: vec![],
@@ -5720,8 +5791,9 @@ impl SshHandle {
             backend: "system".to_string(),
         };
 
+        // `raw` is exactly the string the remote shell receives.
         let command_info = SshCommandInfo {
-            raw: command_str.clone(),
+            raw: Self::exec_remote_command(&options, &command_str),
             shell_mode: format!("{:?}", options.shell_mode).to_lowercase(),
             env: options.env.clone(),
             cwd: options.cwd.clone(),
@@ -5735,15 +5807,7 @@ impl SshHandle {
                 dry_run: true,
                 connection: connection_info,
                 command: Some(command_info),
-                result: Some(SshExecResult {
-                    executed: false,
-                    exit_code: None,
-                    signal: None,
-                    timed_out: false,
-                    output_truncated: false,
-                    stdout: None,
-                    stderr: None,
-                }),
+                result: Some(not_executed()),
                 timing: None,
                 error: None,
                 warnings: vec!["Dry run: command was not executed.".to_string()],
@@ -6309,7 +6373,7 @@ impl SshHandle {
             Err(e) => {
                 let error_response = SshTunnelResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: requested_dry_run(args),
                     connection: None,
                     tunnel: None,
                     lifetime: None,
@@ -6714,7 +6778,7 @@ impl SshHandle {
             Err(e) => {
                 let response = SshKeysListResponse {
                     ok: false,
-                    dry_run: false,
+                    dry_run: requested_dry_run(args),
                     connection: None,
                     scope: KeysScope::default(),
                     files: None,
@@ -11563,5 +11627,161 @@ mod tests {
         let args = args_from_pairs(&[("verb", "download")]);
         let (stdout, _stderr, _status) = capture_output(|io| handle.call("help", &args, io));
         assert!(stdout.contains("Verb: download"), "{}", stdout);
+    }
+}
+
+/// Stage 6B (S1): `command_args` keep their boundaries on the remote host.
+#[cfg(test)]
+mod remote_argument_tests {
+    use super::*;
+
+    /// The arguments a POSIX shell sees after parsing `quoted`.
+    fn parse_with(shell: &str, quoted: &str) -> Vec<String> {
+        let out = std::process::Command::new(shell)
+            .arg("-c")
+            .arg(format!("printf '%s\\0' {}", quoted))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{shell}: {quoted}");
+        out.stdout
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8(s.to_vec()).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn posix_quoting_round_trips_through_real_shells() {
+        let printable: String = (0x20u8..0x7f).map(char::from).collect();
+        let samples = [
+            printable.as_str(),
+            "$(touch x)",
+            "`id`",
+            "a;b",
+            "a'b",
+            "'",
+            "''",
+            "\\",
+            "\\'",
+            "*",
+            "~",
+            "=cmd",
+            "{a,b}",
+            "!x",
+            "$HOME",
+            "-l",
+            "plain_value-1.2",
+        ];
+        let shells: Vec<&str> = ["sh", "bash", "dash", "zsh", "ksh"]
+            .into_iter()
+            .filter(|s| which::which(s).is_ok())
+            .collect();
+        assert!(shells.contains(&"sh"));
+        for shell in shells {
+            for s in samples {
+                let q = SshHandle::posix_quote(s);
+                assert_eq!(parse_with(shell, &q), vec![s.to_string()], "{shell}: {q}");
+            }
+        }
+    }
+
+    fn exec(shell: ShellMode, args: &[&str], cwd: Option<&str>) -> Result<String> {
+        let handle = SshHandle::from_url(&Url::parse("ssh://u@h.invalid").unwrap()).unwrap();
+        let o = SshExecOptions {
+            command: Some("tool".into()),
+            command_args: args.iter().map(|s| s.to_string()).collect(),
+            cwd: cwd.map(str::to_string),
+            shell_mode: shell,
+            ..Default::default()
+        };
+        handle.build_command(&o)
+    }
+
+    #[test]
+    fn every_argument_is_quoted_for_posix_modes() {
+        assert_eq!(
+            exec(ShellMode::None, &["-l", "a b", "$(x)"], None).unwrap(),
+            "tool -l 'a b' '$(x)'"
+        );
+        assert_eq!(
+            exec(ShellMode::Sh, &["a;b"], Some("/srv")).unwrap(),
+            r#"sh -c 'cd '"'"'/srv'"'"' && tool '"'"'a;b'"'"''"#
+        );
+        for shell in [ShellMode::None, ShellMode::Sh, ShellMode::Bash] {
+            assert!(exec(shell.clone(), &["a\nb"], None).is_err());
+            assert!(exec(shell, &["a"], Some("/a\rb")).is_err());
+        }
+    }
+
+    #[test]
+    fn windows_modes_refuse_arguments_that_need_quoting() {
+        for shell in [ShellMode::Cmd, ShellMode::Powershell] {
+            for bad in [
+                "a b", "a&b", "%PATH%", "$x", "a\"b", "a'b", "a^b", "(x)", "",
+            ] {
+                assert!(exec(shell.clone(), &[bad], None).is_err(), "{bad:?}");
+                assert!(exec(shell.clone(), &["ok"], Some(bad)).is_err(), "{bad:?}");
+            }
+            assert!(
+                exec(
+                    shell.clone(),
+                    &[r"C:\Logs", "/b", "-x", "a.b@c+d"],
+                    Some(r"D:\work")
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn error_envelopes_report_the_requested_dry_run() {
+        let args = |v: Option<&str>| -> Args {
+            v.map(|v| ("dry_run".to_string(), v.to_string()))
+                .into_iter()
+                .collect()
+        };
+        assert!(requested_dry_run(&args(Some("true"))));
+        assert!(requested_dry_run(&args(Some("yes"))));
+        assert!(!requested_dry_run(&args(Some("false"))));
+        assert!(!requested_dry_run(&args(None)));
+        assert!(!requested_dry_run(&args(Some("maybe"))));
+    }
+
+    #[test]
+    fn refused_exec_envelope_serializes_mode_and_execution_separately() {
+        let response = SshExecResponse {
+            ok: false,
+            dry_run: true,
+            connection: SshConnectionInfo {
+                host: "h.invalid".into(),
+                port: 22,
+                username: "u".into(),
+                backend: "system".into(),
+            },
+            command: None,
+            result: Some(not_executed()),
+            timing: None,
+            error: Some(SshErrorDetails {
+                code: "COMMAND_ERROR".into(),
+                message: "nothing was run".into(),
+                details: HashMap::new(),
+            }),
+            warnings: vec![],
+        };
+        let v: serde_json::Value = serde_json::to_value(&response).unwrap();
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["dry_run"], true);
+        assert_eq!(v["result"]["executed"], false);
+        assert!(v["result"]["exit_code"].is_null());
+        assert_eq!(v["error"]["code"], "COMMAND_ERROR");
+        assert!(v.get("command").is_none());
+    }
+
+    #[test]
+    fn windows_refusal_names_the_field_without_its_value() {
+        let err = exec(ShellMode::Cmd, &["ok", "secret value"], None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("command_args[1]"), "{msg}");
+        assert!(!msg.contains("secret value"), "{msg}");
     }
 }
