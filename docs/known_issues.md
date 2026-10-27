@@ -3,6 +3,38 @@
 These issues were found while writing the per-verb `--help` metadata, and each
 one was then checked against the code by a separate read-only review.
 
+## v1.0.4-beta security remediation (in preparation, 2026-10-27)
+
+These fixes are on the v1.0.4-beta security branch, each with regression
+tests (`tests/stage6b_security.rs` and unit tests in the affected handles).
+They are not in v1.0.3-beta or earlier.
+
+- **backup argument handling.** Values from `src`, `snapshot_id`, `dest` and
+  `repo_url` could be read by tar, rsync, borg or restic as options or as
+  remote locations, which could run commands. Values are now validated before
+  anything runs (including dry runs), option values are attached with `=`,
+  positional values follow `--`, tar runs with `--force-local`, and rsync
+  gets local relative paths with a `./` prefix. See `backup.md` 3.3.
+- **backup `prune dry_run=true`** validated nothing before running restic or
+  borg in their own dry-run mode. Validation now comes first, and the result
+  states which kind of dry run ran (`dry_run_mode`: `plan` or `backend`).
+- **cron `add`** wrote line breaks in job fields into crontabs and unit
+  files (extra jobs or unit directives), used `unit_name` in file paths
+  unchecked, accepted any file as `cron_file` for `scope=system` (and
+  `disable cron_file=` rewrote any file), and wrote six-field schedules that
+  cron misreads. Every field is now checked against its own syntax before
+  anything is written or previewed, `cron_file` is limited to `/etc/crontab`
+  and `/etc/cron.d/<name>`, unit values are escaped, and crontab and unit
+  files are never written through symbolic links. See `cron.md` 3.3.
+- **ssh `exec`** passed `command_args` to the remote shell mostly unquoted.
+  Each argument is now quoted for POSIX login shells; cmd/PowerShell modes
+  refuse arguments that would need quoting; an unknown `shell_mode` is an
+  error; and `command.raw` is the exact remote string. ssh error envelopes
+  now report the requested `dry_run` instead of always `false`. See `ssh.md`.
+- **cert `sign signature_algorithm=ecdsa_sha512`** with a P-384 key produced
+  a SHA-384 signature. It now signs a SHA-512 digest; unsupported key and
+  algorithm pairs are refused.
+
 ## v1.0.3-beta release gate (2026-10-23)
 
 The v1.0.2-beta release gate
@@ -99,14 +131,12 @@ This section supersedes the test counts and "Still open" list in the
     after a timeout.
   - `net ping` exits 0 even when the host is unreachable; `http head`,
     `headers` and `json` exit 0 for 4xx/5xx statuses.
-  - Option-injection hardening (`--` separators) is missing in backup
-    backend argv and user `primary_group`; a backup `src`, `snapshot_id`,
-    `dest` or `repo_url` beginning with `-` can run arbitrary commands
-    through backend options. cron does not reject newlines in job fields
-    (an extra crontab line or unit directive) and does not restrict
-    `unit_name`. Never pass untrusted input in these arguments.
-  - ssh `command_args` are quoted only when they contain a space or a quote,
-    so shell metacharacters in them run on the remote host (see `ssh.md`).
+  - Option-injection hardening (`--` separators) for backup argv, cron job
+    fields and ssh `command_args` is in v1.0.4-beta (see the section
+    above); in v1.0.3-beta and earlier, never pass untrusted input in
+    backup `src`, `snapshot_id`, `dest` or `repo_url`, in cron job fields,
+    or in ssh `command_args`. Still open: user `primary_group` and fs
+    `mount` `source`/`target` are passed without a `--` separator.
   - Archive extraction checks paths but not against a concurrent process
     changing the destination tree; never extract as root into a directory
     other users can write.

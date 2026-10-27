@@ -93,7 +93,7 @@ resh ssh://alice@192.0.2.10.exec command='rm -rf /srv/cache/*' dry_run=true
 | -------------------- | ------- | ----- |
 | `command`            | (required) | Command text. |
 | `command_args`       | (none)  | Extra arguments, **split on commas**. An argument cannot contain a comma. |
-| `shell_mode`         | `none`  | `none`, `sh`, `bash`, `cmd`, `powershell`. Unknown values mean `none`. |
+| `shell_mode`         | `none`  | `none`, `sh`, `bash`, `cmd`, `powershell`. Any other value is an error and nothing runs. |
 | `cwd`                | (none)  | Remote working directory (quoted). |
 | `allocate_pty`       | `false` | `ssh -t`. |
 | `connect_timeout_ms` | `10000` | ssh `ConnectTimeout`, rounded up to whole seconds. |
@@ -106,23 +106,34 @@ resh ssh://alice@192.0.2.10.exec command='rm -rf /srv/cache/*' dry_run=true
 | `format`             | `json`  | `json` or `text`. |
 
 **How the remote command is quoted.** ssh sends one command string to the
-remote user's login shell, which parses it again. resh does not make that
-safe for you:
+remote user's login shell, which parses it again. `command` is a command line
+and is sent **as written**: its spaces, quotes, `$`, `;`, `|` and so on are
+interpreted by the remote shell, so treat it as code. `command_args` are
+arguments, and since v1.0.4-beta each one reaches the remote program as
+exactly one argument:
 
-* `shell_mode=none`: the string is `command` followed by `command_args`
-  joined with spaces, with **no quoting**. Spaces, `$`, `*`, `;`, `|`, `&`,
-  backticks and quotes in either are interpreted by the remote shell. Only
-  `cwd` is quoted (`cd '<cwd>' && ...`).
-* `shell_mode=sh` or `bash`: an argument is single-quoted only if it contains
-  a space or a quote character. Other shell metacharacters (`$`, `*`, `;`,
-  `|`, `&`, `>`, backticks) are left as is and are interpreted by the inner
-  `sh -c`/`bash -c`. The whole script is then single-quoted for the login
-  shell.
-* `shell_mode=cmd` and `powershell`: no quoting at all.
+* `shell_mode=none`: the string is `command` followed by every
+  `command_args` element, each single-quoted unless it consists only of
+  letters, digits and `_ @ % + : , . / -`. With `cwd` the string starts with
+  `cd '<cwd>' && `.
+* `shell_mode=sh` or `bash`: the same quoting inside the script, which is then
+  single-quoted as a whole for `sh -c`/`bash -c`.
+* The quoting relies only on POSIX single-quote rules. The regression tests
+  check it against sh, bash and dash (and ksh and zsh when they are
+  installed, which the CI runners do not do by default). It is **not**
+  guaranteed for a remote account whose login shell is fish, csh or tcsh,
+  which quote differently; do not pass untrusted arguments to such accounts.
+* `shell_mode=cmd` and `powershell`: cmd.exe and PowerShell quoting cannot be
+  made exact through ssh, so each `command_args` element and `cwd` may only
+  contain letters, digits and `_ . : / \ + @ -`. Anything else (including a
+  space) is refused with error code `COMMAND_ERROR` and ssh is not run; put
+  the complete command line in `command` instead.
+* A line break or other control character in `command_args` or `cwd` is
+  refused in every mode.
 
-Never build `command` or `command_args` from untrusted input. Use
-`dry_run=true` to see exactly what would run: the `command.raw` field shows the
-final string.
+Use `dry_run=true` to see exactly what would run: `command.raw` is the exact
+string the remote shell receives (including the `cd` prefix). A refused value
+fails the dry run as well.
 
 `env=KEY=value,KEY2=value2` is accepted, but the variables are set on the
 **local** ssh process. They reach the remote command only if your ssh
@@ -154,6 +165,14 @@ Exit status:
   which is indistinguishable by exit code from a remote command that exits
   255; read `error.code`.
 * A command timeout, a missing `sshpass`, or an argument error exits 1.
+
+In an error envelope, `dry_run` is the mode the request asked for (a missing
+or malformed `dry_run` value reports `false`); it does not mean anything ran.
+A request refused before ssh starts also reports `result.executed: false` and
+omits `command`; the refusal names the offending field, not its value. When
+ssh could not be started or was stopped by the command timeout, `result` is
+omitted, because resh cannot tell how much of the remote command ran. The
+other ssh verbs also report the requested `dry_run` in their error envelopes.
 
 ### upload
 
