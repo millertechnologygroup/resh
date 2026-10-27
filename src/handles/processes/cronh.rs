@@ -1066,6 +1066,37 @@ impl CronHandle {
             return Ok(serde_json::to_string_pretty(&error_response)?);
         }
 
+        // disable rewrites cron_file, so it may only name a system cron file.
+        if let Some(Err(e)) = args.get("cron_file").map(|f| check_system_cron_file(f)) {
+            let error_response = CronDisableResponse {
+                ok: false,
+                timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
+                dry_run: crate::core::lenient::dry_run(args)?,
+                backend: backend.clone(),
+                disabled: CronDisableDisabledSummary {
+                    cron: Vec::new(),
+                    systemd: Vec::new(),
+                },
+                matched_count: CronDisableMatchedCount {
+                    cron: 0,
+                    systemd: 0,
+                },
+                already_disabled_count: CronDisableAlreadyDisabledCount {
+                    cron: 0,
+                    systemd: 0,
+                },
+                cron_modified_sources: Vec::new(),
+                systemd_scopes_touched: Vec::new(),
+                error: Some(json!({
+                    "code": "cron.disable_invalid_argument",
+                    "message": e.message,
+                    "field": e.field
+                })),
+                warnings: Vec::new(),
+            };
+            return Ok(serde_json::to_string_pretty(&error_response)?);
+        }
+
         // Build options from args
         let options = CronDisableOptions {
             id: args.get("id").cloned(),
@@ -1733,6 +1764,27 @@ impl CronProvider for SystemCronProvider {
         let start_time = self.get_current_time();
         let timestamp_unix_ms = start_time.timestamp_millis();
         let mut warnings = Vec::new();
+        let invalid_argument = |e: InvalidField, warnings: Vec<String>| CronAddResponse {
+            ok: false,
+            timestamp_unix_ms,
+            backend_used: None,
+            dry_run: options.dry_run,
+            duplicate: false,
+            job: None,
+            preview: None,
+            error: Some(json!({
+                "code": "cron.add_invalid_argument",
+                "message": e.message,
+                "field": e.field
+            })),
+            warnings,
+        };
+
+        // Fields shared by both backends are checked before anything else;
+        // the backend-specific checks follow once the backend is known.
+        if let Err(e) = validate_add_options(options, "", None) {
+            return Ok(invalid_argument(e, warnings));
+        }
 
         // Validate schedule
         let schedule_validation = validate_cron_schedule(&options.schedule);
@@ -1792,6 +1844,11 @@ impl CronProvider for SystemCronProvider {
                 });
             }
         };
+
+        let unit_name = (backend_used == "systemd").then(|| self.systemd_unit_name(options));
+        if let Err(e) = validate_add_options(options, &backend_used, unit_name.as_deref()) {
+            return Ok(invalid_argument(e, warnings));
+        }
 
         // Dispatch to appropriate backend implementation
         match backend_used.as_str() {
@@ -2361,12 +2418,7 @@ impl SystemCronProvider {
             }
         };
 
-        // Determine unit name
-        let unit_name = options
-            .unit_name
-            .clone()
-            .or_else(|| options.id.clone())
-            .unwrap_or_else(|| self.derive_unit_name_from_command(&options.command));
+        let unit_name = self.systemd_unit_name(options);
 
         // Check for duplicates
         let duplicate = if !options.allow_duplicate {
@@ -2487,17 +2539,22 @@ impl CronEditor for SystemCronEditor {
     }
 
     fn read_system_file(&self, path: &str) -> Result<String> {
-        fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path, e))
+        use std::io::Read as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        refuse_symlink(path)?;
+        // O_NOFOLLOW: a link swapped in after the check is not read either.
+        let mut content = String::new();
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .and_then(|mut f| f.read_to_string(&mut content))
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path, e))?;
+        Ok(content)
     }
 
     fn write_system_file(&self, path: &str, content: &str) -> Result<()> {
-        // Atomic write using temp file
-        let temp_path = format!("{}.tmp.{}", path, std::process::id());
-        fs::write(&temp_path, content)
-            .map_err(|e| anyhow::anyhow!("Failed to write temp file {}: {}", temp_path, e))?;
-
-        fs::rename(&temp_path, path)
-            .map_err(|e| anyhow::anyhow!("Failed to rename {} to {}: {}", temp_path, path, e))
+        write_file_atomically(path, content)
     }
 
     fn file_exists(&self, path: &str) -> bool {
@@ -2521,13 +2578,7 @@ impl SystemSystemdEditor {
 
 impl SystemdEditor for SystemSystemdEditor {
     fn write_unit_file(&self, path: &str, content: &str) -> Result<()> {
-        // Atomic write using temp file
-        let temp_path = format!("{}.tmp.{}", path, std::process::id());
-        fs::write(&temp_path, content)
-            .map_err(|e| anyhow::anyhow!("Failed to write temp file {}: {}", temp_path, e))?;
-
-        fs::rename(&temp_path, path)
-            .map_err(|e| anyhow::anyhow!("Failed to rename {} to {}: {}", temp_path, path, e))
+        write_file_atomically(path, content)
     }
 
     fn systemctl_daemon_reload(&self, user_mode: bool) -> Result<()> {
@@ -2556,7 +2607,7 @@ impl SystemdEditor for SystemSystemdEditor {
         if user_mode {
             cmd.arg("--user");
         }
-        cmd.args(&["enable", "--now", timer_name]);
+        cmd.args(["enable", "--now", "--", timer_name]);
 
         let output = cmd
             .output()
@@ -2633,7 +2684,381 @@ impl SystemdEditor for SystemSystemdEditor {
 // Helper functions for cron add functionality
 // ===========================================================================
 
+// ---------------------------------------------------------------------------
+// Field validation for `add` (and `disable cron_file=`). Each value written
+// into a crontab or unit file is checked against the syntax of the place it
+// is written to, before any dry-run plan is reported or any file is touched.
+// ---------------------------------------------------------------------------
+
+/// A refused `add` argument and why.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct InvalidField {
+    pub field: &'static str,
+    pub message: String,
+}
+
+fn invalid(field: &'static str, reason: impl std::fmt::Display) -> InvalidField {
+    InvalidField {
+        field,
+        message: format!("{} {}; nothing was written", field, reason),
+    }
+}
+
+/// No control characters: a line break would start a new crontab line or
+/// unit-file directive.
+fn check_single_line(field: &'static str, value: &str) -> Result<(), InvalidField> {
+    if value.chars().any(char::is_control) {
+        return Err(invalid(
+            field,
+            "must not contain line breaks or other control characters",
+        ));
+    }
+    Ok(())
+}
+
+/// Five crontab time fields, or an `@` keyword. A sixth field would be read
+/// by cron as the start of the command.
+fn check_schedule_syntax(schedule: &str) -> Result<(), InvalidField> {
+    const SPECIAL: &[&str] = &[
+        "@reboot",
+        "@yearly",
+        "@annually",
+        "@monthly",
+        "@weekly",
+        "@daily",
+        "@hourly",
+    ];
+    if schedule.starts_with('@') {
+        return if SPECIAL.contains(&schedule) {
+            Ok(())
+        } else {
+            Err(invalid(
+                "schedule",
+                format!("{:?} is not a supported @ keyword", schedule),
+            ))
+        };
+    }
+    let fields: Vec<&str> = schedule.split(' ').filter(|f| !f.is_empty()).collect();
+    if fields.len() != 5 || !fields.iter().all(|f| is_cron_field(f)) {
+        return Err(invalid(
+            "schedule",
+            format!(
+                "must be five crontab fields (minute hour day month weekday) or an @ keyword, got {:?}",
+                schedule
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A job id is one word of `[A-Za-z0-9._@:+-]`, as read back by
+/// `extract_job_id`.
+fn check_job_id(id: &str) -> Result<(), InvalidField> {
+    let ok = !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '@' | ':' | '+' | '-'));
+    if !ok {
+        return Err(invalid(
+            "id",
+            "must be 1-128 characters of letters, digits and . _ @ : + -",
+        ));
+    }
+    Ok(())
+}
+
+/// A user or group name (or numeric id) as accepted by crontab and systemd's
+/// `User=`: no leading `-`, no whitespace.
+fn check_user_name(field: &'static str, name: &str) -> Result<(), InvalidField> {
+    let body = name.strip_suffix('$').unwrap_or(name);
+    let ok = !body.is_empty()
+        && name.len() <= 32
+        && !body.starts_with('-')
+        && body
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    if !ok {
+        return Err(invalid(
+            field,
+            format!(
+                "must be a user name (letters, digits, _ . -; not starting with -), got {:?}",
+                name
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The only files `scope=system` writes: /etc/crontab, or a file directly in
+/// /etc/cron.d whose name cron reads (letters, digits, `_`, `-`).
+pub(crate) fn check_system_cron_file(path: &str) -> Result<(), InvalidField> {
+    if path == "/etc/crontab" {
+        return Ok(());
+    }
+    let ok = path.strip_prefix("/etc/cron.d/").is_some_and(|name| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+    });
+    if !ok {
+        return Err(invalid(
+            "cron_file",
+            format!(
+                "must be /etc/crontab or /etc/cron.d/<name> (letters, digits, _ and -), got {:?}",
+                path
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A systemd unit name without its suffix: stays inside the unit directory
+/// and cannot be read as a systemctl option.
+fn check_unit_name(field: &'static str, name: &str) -> Result<(), InvalidField> {
+    let ok = !name.is_empty()
+        && name.len() <= 240
+        && !name.starts_with('-')
+        && !name.starts_with('.')
+        && !name.ends_with('@')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '@' | '-'));
+    if !ok {
+        return Err(invalid(
+            field,
+            format!(
+                "must be a systemd unit name (letters, digits, _ . : @ -; not starting with - or .), got {:?}",
+                name
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A unit-file value must not end in `\`, which continues the line into the
+/// next directive.
+fn check_no_continuation(field: &'static str, value: &str) -> Result<(), InvalidField> {
+    if value.ends_with('\\') {
+        return Err(invalid(field, "must not end with a backslash"));
+    }
+    Ok(())
+}
+
+/// A systemd time span such as `1min`, `30s` or `1h 30min`.
+fn check_timespan(field: &'static str, value: &str) -> Result<(), InvalidField> {
+    let ok = value.starts_with(|c: char| c.is_ascii_digit())
+        && !value.ends_with(' ')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ' ');
+    if !ok {
+        return Err(invalid(
+            field,
+            format!(
+                "must be a systemd time span such as 30s or 5min, got {:?}",
+                value
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Checks every `add` argument that `backend` writes into a crontab or unit
+/// file, and the unit name used for the unit file paths.
+pub(crate) fn validate_add_options(
+    options: &CronAddOptions,
+    backend: &str,
+    unit_name: Option<&str>,
+) -> Result<(), InvalidField> {
+    check_single_line("schedule", &options.schedule)?;
+    check_single_line("command", &options.command)?;
+    if let Some(id) = &options.id {
+        check_single_line("id", id)?;
+        check_job_id(id)?;
+    }
+    if let Some(desc) = &options.description {
+        check_single_line("description", desc)?;
+    }
+    match backend {
+        "cron" => {
+            // cron turns an unescaped % into a line break and sends the
+            // rest of the command to its stdin. Like cron, a `\` escapes the
+            // next character, so in `\\%` the `%` is unescaped.
+            let mut escaped = false;
+            let unescaped_percent = options.command.chars().any(|c| {
+                let hit = c == '%' && !escaped;
+                escaped = c == '\\' && !escaped;
+                hit
+            });
+            if unescaped_percent {
+                return Err(invalid(
+                    "command",
+                    "contains an unescaped % (cron turns it into a line break); write \\% for a literal %",
+                ));
+            }
+            if let Some(user) = &options.user {
+                check_user_name("user", user)?;
+            }
+            if options.scope == "system"
+                && let Some(file) = &options.cron_file
+            {
+                check_single_line("cron_file", file)?;
+                check_system_cron_file(file)?;
+            }
+        }
+        "systemd" => {
+            if let Some(desc) = &options.description {
+                check_no_continuation("description", desc)?;
+            }
+            // ExecStart= prefixes change how the command runs ("+" ignores
+            // User=, "-" ignores failure).
+            if options
+                .command
+                .trim_start()
+                .starts_with(['@', '-', ':', '+', '!'])
+            {
+                return Err(invalid(
+                    "command",
+                    "must not start with a systemd ExecStart prefix (@ - : + !)",
+                ));
+            }
+            check_no_continuation("command", &options.command)?;
+            if let Some(name) = unit_name {
+                let field = if options.unit_name.is_some() {
+                    "unit_name"
+                } else if options.id.is_some() {
+                    "id"
+                } else {
+                    "command"
+                };
+                check_single_line(field, name)?;
+                check_unit_name(field, name)?;
+            }
+            if let Some(user) = &options.service_user {
+                check_single_line("service_user", user)?;
+                check_user_name("service_user", user)?;
+            }
+            if let Some(dir) = &options.service_working_dir {
+                check_single_line("service_working_dir", dir)?;
+                check_no_continuation("service_working_dir", dir)?;
+                if !(dir.starts_with('/') || dir == "~") || dir.trim() != dir {
+                    return Err(invalid(
+                        "service_working_dir",
+                        format!("must be an absolute path, got {:?}", dir),
+                    ));
+                }
+            }
+            for (field, value) in [
+                ("accuracy_sec", &options.accuracy_sec),
+                ("random_delay_sec", &options.random_delay_sec),
+            ] {
+                if let Some(v) = value {
+                    check_single_line(field, v)?;
+                    check_timespan(field, v)?;
+                }
+            }
+            for (key, value) in options.env.iter().flatten() {
+                let key_ok = key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if !key_ok {
+                    return Err(invalid(
+                        "env",
+                        format!("variable name {:?} must be letters, digits and _", key),
+                    ));
+                }
+                check_single_line("env", value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// A value for a unit file: `%` is a systemd specifier, so it is doubled to
+/// stay literal.
+fn unit_literal(value: &str) -> String {
+    value.replace('%', "%%")
+}
+
+/// `Environment="KEY=value"` with the value escaped for systemd's quoting.
+fn unit_environment(key: &str, value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
+    format!("Environment=\"{}={}\"\n", key, escaped)
+}
+
+/// Refuses to write through or replace a symlink at a crontab or unit path.
+fn refuse_symlink(path: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(anyhow::anyhow!(
+            "{} is a symbolic link; refusing to write through it",
+            path
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The temporary file used while replacing `path`: in the same directory, and
+/// hidden, because cronie loads every other file in /etc/cron.d, so a leftover
+/// `job.tmp.N` would run as a second copy of the jobs.
+fn atomic_temp_path(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some((dir, name)) => format!("{}/.{}.tmp.{}", dir, name, std::process::id()),
+        None => format!(".{}.tmp.{}", path, std::process::id()),
+    }
+}
+
+/// Writes `content` to `path` through a new temporary file in the same
+/// directory (never following a link planted at the temporary name) and an
+/// atomic rename, refusing a symlink at `path`. The rename replaces a link
+/// swapped in after the check instead of writing through it.
+///
+/// An existing file keeps its permission bits (cron ignores a cron.d file
+/// that is group- or world-writable, so the umask must not loosen it); a new
+/// file is created 0644 less the umask.
+fn write_file_atomically(path: &str, content: &str) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    refuse_symlink(path)?;
+    let existing_mode = fs::symlink_metadata(path)
+        .ok()
+        .map(|m| m.permissions().mode() & 0o777);
+    let temp_path = atomic_temp_path(path);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&temp_path)
+        .map_err(|e| anyhow::anyhow!("Failed to create temp file {}: {}", temp_path, e))?;
+    let written = existing_mode
+        .map_or(Ok(()), |mode| {
+            file.set_permissions(fs::Permissions::from_mode(mode))
+        })
+        .and_then(|()| file.write_all(content.as_bytes()))
+        .and_then(|()| file.sync_all());
+    if let Err(e) = written {
+        let _ = fs::remove_file(&temp_path);
+        return Err(anyhow::anyhow!(
+            "Failed to write temp file {}: {}",
+            temp_path,
+            e
+        ));
+    }
+    drop(file);
+    fs::rename(&temp_path, path).map_err(|e| {
+        let _ = fs::remove_file(&temp_path);
+        anyhow::anyhow!("Failed to rename {} to {}: {}", temp_path, path, e)
+    })
+}
+
 fn validate_cron_schedule(schedule: &str) -> Result<()> {
+    // The cron crate also accepts six- and seven-field expressions, which
+    // crontab would misread, so the crontab shape is checked first.
+    check_schedule_syntax(schedule).map_err(|e| anyhow::anyhow!(e.message))?;
     // Handle special cron entries
     if schedule.starts_with('@') {
         let valid_specials = [
@@ -3465,7 +3890,14 @@ impl SystemCronProvider {
         comment_line: &Option<String>,
         editor: &dyn CronEditor,
     ) -> Result<u32> {
-        let existing_content = editor.read_system_file(file_path).unwrap_or_default();
+        refuse_symlink(file_path)?;
+        // Only a missing file starts empty: a file that exists but cannot be
+        // read must not be replaced by the new line alone.
+        let existing_content = if editor.file_exists(file_path) {
+            editor.read_system_file(file_path)?
+        } else {
+            String::new()
+        };
         let mut lines: Vec<&str> = existing_content.lines().collect();
 
         if let Some(comment) = comment_line {
@@ -3497,6 +3929,15 @@ impl SystemCronProvider {
             }
             _ => "user".to_string(), // default fallback
         }
+    }
+
+    /// `unit_name`, else `id`, else a name derived from the command.
+    fn systemd_unit_name(&self, options: &CronAddOptions) -> String {
+        options
+            .unit_name
+            .clone()
+            .or_else(|| options.id.clone())
+            .unwrap_or_else(|| self.derive_unit_name_from_command(&options.command))
     }
 
     fn derive_unit_name_from_command(&self, command: &str) -> String {
@@ -3551,14 +3992,14 @@ impl SystemCronProvider {
         } else {
             format!("Cron job: {}", unit_name)
         };
-        content.push_str(&format!("Description={}\n\n", description));
+        content.push_str(&format!("Description={}\n\n", unit_literal(&description)));
 
         // [Service] section
         content.push_str("[Service]\n");
         content.push_str("Type=oneshot\n");
 
         if let Some(ref working_dir) = options.service_working_dir {
-            content.push_str(&format!("WorkingDirectory={}\n", working_dir));
+            content.push_str(&format!("WorkingDirectory={}\n", unit_literal(working_dir)));
         }
 
         if let Some(ref user) = options.service_user {
@@ -3566,8 +4007,10 @@ impl SystemCronProvider {
         }
 
         if let Some(ref env_map) = options.env {
-            for (key, value) in env_map {
-                content.push_str(&format!("Environment=\"{}={}\"\n", key, value));
+            let mut vars: Vec<_> = env_map.iter().collect();
+            vars.sort();
+            for (key, value) in vars {
+                content.push_str(&unit_environment(key, value));
             }
         }
 
@@ -3582,7 +4025,7 @@ impl SystemCronProvider {
         } else {
             options.command.clone()
         };
-        content.push_str(&format!("ExecStart={}\n\n", exec_start));
+        content.push_str(&format!("ExecStart={}\n\n", unit_literal(&exec_start)));
 
         // [Install] section
         content.push_str("[Install]\n");
@@ -3612,7 +4055,7 @@ impl SystemCronProvider {
         } else {
             format!("Timer for {}", unit_name)
         };
-        content.push_str(&format!("Description={}\n\n", description));
+        content.push_str(&format!("Description={}\n\n", unit_literal(&description)));
 
         // [Timer] section
         content.push_str("[Timer]\n");
@@ -3702,6 +4145,8 @@ impl SystemCronProvider {
         // Write unit files
         let service_path = format!("{}/{}.service", unit_dir, unit_name);
         let timer_path = format!("{}/{}.timer", unit_dir, unit_name);
+        refuse_symlink(&service_path)?;
+        refuse_symlink(&timer_path)?;
 
         editor.write_unit_file(&service_path, service_content)?;
         editor.write_unit_file(&timer_path, timer_content)?;
@@ -6777,5 +7222,255 @@ mod dry_run_tests {
             "enable" => "enable",
             _ => "disable",
         }
+    }
+}
+
+/// Stage 6B (C1/C2): every value written into a crontab or unit file is
+/// checked against its own syntax, and files are never written through links.
+#[cfg(test)]
+mod injection_tests {
+    use super::*;
+
+    fn options(backend: &str) -> CronAddOptions {
+        CronAddOptions {
+            schedule: "0 4 * * *".to_string(),
+            command: "/bin/true".to_string(),
+            backend: backend.to_string(),
+            id: None,
+            description: None,
+            allow_duplicate: true,
+            dry_run: true,
+            scope: "current".to_string(),
+            user: None,
+            cron_file: None,
+            unit_name: None,
+            unit_scope: "user".to_string(),
+            persistent: true,
+            accuracy_sec: None,
+            random_delay_sec: None,
+            service_working_dir: None,
+            service_user: None,
+            env: None,
+            include_next_run: false,
+            now_unix: None,
+            timezone: None,
+            format: OutputFormat::Json,
+        }
+    }
+
+    fn field(o: &CronAddOptions, unit: Option<&str>) -> Option<&'static str> {
+        validate_add_options(o, &o.backend, unit)
+            .err()
+            .map(|e| e.field)
+    }
+
+    #[test]
+    fn schedules_must_be_five_crontab_fields() {
+        for ok in [
+            "0 4 * * *",
+            "*/5 9-17 * * mon-fri",
+            "@daily",
+            "30 3 1,15 * *",
+        ] {
+            assert!(check_schedule_syntax(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "0 0 4 * * *",
+            "0 4 * * * 2027",
+            "0 4 * *",
+            "@midnight",
+            "0 4 * * x;y",
+        ] {
+            assert!(check_schedule_syntax(bad).is_err(), "{bad}");
+            assert!(validate_cron_schedule(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn crontab_fields_are_single_line() {
+        let mut o = options("cron");
+        o.description = Some("a\nb".into());
+        assert_eq!(field(&o, None), Some("description"));
+        let mut o = options("cron");
+        o.id = Some("job id".into());
+        assert_eq!(field(&o, None), Some("id"));
+        let mut o = options("cron");
+        o.command = "/bin/true\r* * * * * x".into();
+        assert_eq!(field(&o, None), Some("command"));
+        let mut o = options("cron");
+        o.command = "date +%F".into();
+        assert_eq!(field(&o, None), Some("command"));
+        o.command = r"date +\%F".into();
+        assert_eq!(field(&o, None), None);
+        // An escaped backslash does not escape the `%` after it.
+        o.command = r"printf '\\%s'".into();
+        assert_eq!(field(&o, None), Some("command"));
+        o.command = r"printf '\\\%s'".into();
+        assert_eq!(field(&o, None), None);
+    }
+
+    #[test]
+    fn system_cron_files_are_limited_to_cron_directories() {
+        for ok in ["/etc/crontab", "/etc/cron.d/resh_backup", "/etc/cron.d/a-b"] {
+            assert!(check_system_cron_file(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "/etc/passwd",
+            "/etc/cron.d/",
+            "/etc/cron.d/../passwd",
+            "/etc/cron.d/sub/x",
+            "/etc/cron.d/has.dot",
+            "etc/crontab",
+            "/tmp/x",
+        ] {
+            assert!(check_system_cron_file(bad).is_err(), "{bad}");
+        }
+        let mut o = options("cron");
+        o.scope = "system".into();
+        o.cron_file = Some("/root/.bashrc".into());
+        assert_eq!(field(&o, None), Some("cron_file"));
+        o.cron_file = None;
+        o.user = Some("-u".into());
+        assert_eq!(field(&o, None), Some("user"));
+        o.user = Some("www-data".into());
+        assert_eq!(field(&o, None), None);
+    }
+
+    #[test]
+    fn unit_names_stay_in_the_unit_directory() {
+        let o = options("systemd");
+        for ok in ["nightly-report", "a.b_c:d", "inst@1"] {
+            assert_eq!(field(&o, Some(ok)), None, "{ok}");
+        }
+        for bad in ["../x", "a/b", "-x", ".x", "", "x@", "a b", "é"] {
+            assert!(field(&o, Some(bad)).is_some(), "{bad:?}");
+        }
+        // The field named is where the name came from.
+        let mut o = options("systemd");
+        o.id = Some("ok-id".into());
+        assert_eq!(field(&o, Some("..")), Some("id"));
+        o.unit_name = Some("..".into());
+        assert_eq!(field(&o, Some("..")), Some("unit_name"));
+    }
+
+    #[test]
+    fn unit_values_cannot_add_directives() {
+        let check = |f: fn(&mut CronAddOptions)| {
+            let mut o = options("systemd");
+            f(&mut o);
+            field(&o, Some("job"))
+        };
+        assert_eq!(
+            check(|o| o.service_user = Some("root\nGroup=x".into())),
+            Some("service_user")
+        );
+        assert_eq!(
+            check(|o| o.service_working_dir = Some("/a\\".into())),
+            Some("service_working_dir")
+        );
+        assert_eq!(
+            check(|o| o.service_working_dir = Some("rel".into())),
+            Some("service_working_dir")
+        );
+        assert_eq!(
+            check(|o| o.accuracy_sec = Some("1s User=x".into())),
+            Some("accuracy_sec")
+        );
+        assert_eq!(check(|o| o.command = "!/bin/true".into()), Some("command"));
+        assert_eq!(
+            check(|o| o.description = Some("x\\".into())),
+            Some("description")
+        );
+        assert_eq!(
+            check(|o| o.env = Some(HashMap::from([("A B".to_string(), "x".to_string())]))),
+            Some("env")
+        );
+        assert_eq!(check(|o| o.accuracy_sec = Some("1h 30min".into())), None);
+        assert_eq!(check(|o| o.service_working_dir = Some("~".into())), None);
+    }
+
+    #[test]
+    fn unit_values_are_serialized_literally() {
+        assert_eq!(unit_literal("100% %h"), "100%% %%h");
+        assert_eq!(
+            unit_environment("K", r#"a "b" \c %d"#),
+            "Environment=\"K=a \\\"b\\\" \\\\c %%d\"\n"
+        );
+        let p = SystemCronProvider::new();
+        let mut o = options("systemd");
+        o.command = "/opt/run --at %H".into();
+        o.description = Some("50%".into());
+        let unit = p.build_service_unit(&o, "job").unwrap();
+        assert!(unit.contains("ExecStart=/opt/run --at %%H\n"), "{unit}");
+        assert!(unit.contains("Description=50%%\n"), "{unit}");
+    }
+
+    #[test]
+    fn writes_never_follow_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        fs::write(&outside, "keep").unwrap();
+
+        // A link at the destination is refused, not replaced.
+        let dest = dir.path().join("job.service");
+        std::os::unix::fs::symlink(&outside, &dest).unwrap();
+        assert!(write_file_atomically(dest.to_str().unwrap(), "x").is_err());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
+
+        // A link planted at the temporary name is not written through.
+        let dest = dir.path().join("job.timer");
+        let temp = atomic_temp_path(dest.to_str().unwrap());
+        std::os::unix::fs::symlink(&outside, &temp).unwrap();
+        assert!(write_file_atomically(dest.to_str().unwrap(), "x").is_err());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
+        assert!(!dest.exists());
+
+        // An ordinary file is replaced.
+        let dest = dir.path().join("plain");
+        fs::write(&dest, "old").unwrap();
+        write_file_atomically(dest.to_str().unwrap(), "new").unwrap();
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "new");
+    }
+
+    #[test]
+    fn temporary_files_are_hidden_from_cron() {
+        let pid = std::process::id();
+        assert_eq!(
+            atomic_temp_path("/etc/cron.d/resh_job"),
+            format!("/etc/cron.d/.resh_job.tmp.{pid}")
+        );
+        assert_eq!(
+            atomic_temp_path("/etc/crontab"),
+            format!("/etc/.crontab.tmp.{pid}")
+        );
+
+        // Nothing is left behind after a write.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("resh_job");
+        write_file_atomically(dest.to_str().unwrap(), "x").unwrap();
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("resh_job")]);
+    }
+
+    #[test]
+    fn replaced_files_keep_their_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("resh_job");
+        fs::write(&dest, "old").unwrap();
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o600)).unwrap();
+        write_file_atomically(dest.to_str().unwrap(), "new").unwrap();
+        let mode = fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "new");
+
+        // A new file is never group- or world-writable.
+        let fresh = dir.path().join("fresh");
+        write_file_atomically(fresh.to_str().unwrap(), "x").unwrap();
+        let mode = fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode & 0o022, 0, "{mode:o}");
     }
 }
