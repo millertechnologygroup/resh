@@ -10930,7 +10930,6 @@ mod result_status_tests {
 #[cfg(test)]
 mod cmdline_safety_tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     fn handle() -> PkgHandle {
@@ -11415,7 +11414,6 @@ mod cmdline_safety_tests {
     }
 
     fn fs_write_exec(path: &std::path::Path, script: &str) {
-        std::fs::write(path, script).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::core::test_support::write_executable(path, script);
     }
 }

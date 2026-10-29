@@ -7,9 +7,10 @@
 //! shell). Probe values are option-shaped or shell-shaped markers that only
 //! show where a value ends up; none of them is a working payload.
 
+mod common;
+
 use assert_cmd::Command;
 use serde_json::Value;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -80,9 +81,7 @@ impl Fixture {
     }
 
     fn script(&self, name: &str, body: &str) {
-        let p = self.bin().join(name);
-        std::fs::write(&p, body).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        common::write_executable(&self.bin().join(name), body);
     }
 
     fn resh(&self) -> Command {
