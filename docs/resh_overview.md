@@ -133,6 +133,7 @@ Error: git.repository_not_found: repository not found: /srv/project
   * `svc` has no dry run; `dry_run=true` is refused and nothing runs.
   * `mail send` refuses `dry_run` (exit 2, nothing sent); use `mail://send_template ... dry_run=true` to preview a message.
   * `backup restore` has no dry run and refuses `dry_run=true`.
+  * `backup prune dry_run=true` with restic or borg runs the backend's own dry run. It removes nothing, but it takes a repository lock (exclusive for borg), writes the backend's local cache and needs the repository credentials. See `backup.md` 4.5.
   * `ssh tunnel`, `keys.list` and `key.add` are stubs that only succeed with `dry_run=true`.
   * `pkg` reads `dry_run` inside its `input=` JSON. A top-level `dry_run=true` next to `input=` is refused (exit 2) instead of being ignored.
 * Check the handle's page before relying on a dry run.
