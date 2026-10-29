@@ -25,6 +25,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.5-beta] - 2026-10-29
+
+Security and stabilization release. Upgrading is recommended for everyone
+who lists, tests, inspects or extracts archives from untrusted sources, or
+installs plugins from untrusted `.tar.gz` artifacts. Versions v1.0.4-beta
+and earlier are affected by both archive issues below.
+
+### Security
+- archive extract: `max_file_bytes` and `max_total_bytes` are enforced on the
+  bytes each entry actually produces while it is decompressed, for zip, tar
+  and raw streams, instead of on the sizes the archive records. Writing stops
+  at the limit. Previously a crafted archive could write past both limits
+  and fill the destination filesystem, and a raw stream was written in full
+  before the limits were checked. The error code
+  (`archive.extract_archive_read_error`) and exit code are unchanged.
+- archive extract: each file is written to a temporary name and renamed into
+  place only when complete. A failed entry (size limit, corrupt or truncated
+  data) leaves no partial file, and an existing file of the same name is
+  left unchanged. Entries completed before the failure are kept.
+  `summary.bytes_written` and manifest sizes report the bytes written.
+- archive extract: `max_file_bytes` and `max_total_bytes` must be a whole
+  number of bytes (digits only). Any other value, such as `1e6`, `1.5`, `-1`,
+  `10MB` or an empty value, is refused before extraction with exit code 1
+  and `archive.extract_invalid_max_file_size` or
+  `archive.extract_invalid_max_size`. Previously such a value silently meant
+  no limit.
+- archive (all verbs that read tar archives) and plugin install: a member
+  preceded by more than 1 MiB of tar header data (PAX extended headers, GNU
+  long name and long link headers, GNU sparse extension blocks), counted
+  after decompression, is refused. Previously that header data was read into
+  memory up to the size the archive declared, so a small compressed archive
+  could make `list`, `test`, `info`, `extract`, `add`, `remove` or
+  `plugin install` use gigabytes of memory, and `test` reported such an
+  archive as valid. `max_file_bytes` and `max_total_bytes` did not cover it.
+  The command fails with its existing archive read error and exit code 1.
+  Ordinary archives, including long names, extended attributes and sparse
+  files, are unaffected.
+- fs mount: `source` and `target` values that start with `-` are refused, and
+  `mount`/`umount` receive their operands after `--`. Dry-run plans show the
+  separator.
+- user add: a `primary_group` that starts with `-` is refused
+  (`user.group_name_invalid`), and `useradd`, `groupadd` and `usermod -a -G`
+  receive their operands after `--`. `planned_commands` show the separator.
+  No other naming rule was added; existing group names keep working.
+
+### Dependencies
+- libz-sys 1.1.23 -> 1.1.31 (RUSTSEC-2026-0418). The advisory concerns the
+  libz-sys build script, which could write the build environment into
+  cargo's `target/` directory when compiled with cc 1.6.0 or later; it does
+  not affect the resh executable at runtime. resh's locked dependencies use
+  an earlier cc, and still link the system zlib. Other accepted dependency
+  advisories and warnings are unchanged (see `.cargo/audit.toml`).
+
+### Removed
+- The unused `handles::automation::backup` helper module (crate-private, not
+  compiled into any command).
+
+### Documentation
+- backup prune: a restic or borg `dry_run=true` removes nothing, but takes a
+  repository lock (exclusive for borg), writes the backend's local cache and
+  needs credentials; remote repositories were not tested. See `backup.md` 4.5.
+- archive and plugin: the extraction limits, temporary-file behaviour and
+  the tar header data limit are described in `archive.md` 3.2 and 6 and in
+  `plugin.md` 2.3.
+- `.cargo/audit.toml`: corrected three accepted-advisory rationales
+  (quick-xml, crypto-bigint, h2). No accepted advisory was added or removed.
+
+### Fixed (tests and CI)
+- Firewall, package and security test fixtures that wrote and then executed
+  mock tools could fail with "Text file busy" under parallel test runs.
+- The CI security job runs the new archive and tar header regression tests.
+
+---
+
 ## [1.0.4-beta] - 2026-10-27
 
 Security release. Upgrading is recommended for everyone, and especially for
