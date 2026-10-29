@@ -3,6 +3,54 @@
 These issues were found while writing the per-verb `--help` metadata, and each
 one was then checked against the code by a separate read-only review.
 
+## v1.0.5-beta security release (2026-10-29)
+
+These fixes are in v1.0.5-beta, each with regression tests
+(`tests/stage7a_security.rs`, `tests/stage7b_security.rs` and unit tests in
+the affected handles). They are not in v1.0.4-beta or earlier.
+
+- **archive extract size limits** were checked against the sizes a zip or tar
+  archive records, not the bytes written, and a raw stream was written in
+  full before they were checked, so a crafted archive could write past
+  `max_file_bytes` and `max_total_bytes`. Limits now apply to the bytes
+  written, files are written to a temporary name first, and a limit that is
+  not a whole number of bytes is refused instead of meaning no limit. See
+  `archive.md` 3.2.
+- **tar header data** (PAX extended headers, GNU long name and long link
+  headers) was read into memory up to the size the archive declared, so a
+  small compressed tar archive could make `archive list`, `test`, `info`,
+  `extract`, `add`, `remove` or `plugin install` use gigabytes of memory.
+  More than 1 MiB of header data for one member is now refused. See
+  `archive.md` 3.2 and 6.
+- **fs `mount` `source`/`target` and user `add` `primary_group`** values
+  starting with `-` could be read as options by `mount`, `umount`,
+  `useradd`, `groupadd` or `usermod`. They are now refused and operands are
+  passed after `--`.
+
+Limitations that remain in v1.0.5-beta:
+
+- **Accepted dependency advisories.** `cargo audit` passes only with the
+  advisories listed in `.cargo/audit.toml`, each with its assessment, and it
+  still reports warnings for unmaintained, unsound and yanked crates. None
+  of these is removed by this release.
+- **`archive add` memory use.** `add` reads the data of every existing
+  member of the archive (tar or zip) into memory before rewriting it. Use it
+  only on archives whose size you know.
+- **Relative `fs mount` targets** only print a warning and are resolved from
+  the current directory. Pass absolute targets.
+- **Remote restic and borg dry runs** (`backup prune dry_run=true`) were not
+  tested; see `backup.md` 4.5.
+- **Concurrent changes to the filesystem.** Archive extraction and other
+  path checks protect against malicious input, not against another process
+  changing the tree at the same time; never extract as root into a directory
+  other users can write.
+- **Release artifacts** carry a SHA-256 checksum (`SHA256SUMS`) but no
+  signature or build provenance attestation. The checksum detects corruption
+  in transit, not a compromised release.
+- **Platforms.** The prebuilt binary is Linux x86_64 only and needs glibc
+  2.39 or later plus OpenSSL 3; other systems must build from source with
+  Rust 1.88 or later.
+
 ## v1.0.4-beta security release (2026-10-27)
 
 These fixes are in v1.0.4-beta, each with regression tests

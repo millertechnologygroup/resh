@@ -88,7 +88,7 @@ jobs:
           key: test-stable-${{ hashFiles('Cargo.lock') }}
       - run: cargo test --locked --no-fail-fast
 
-  # The Stage 1-4, 6B and 7A security and correctness regression tests, run by name so a
+  # The Stage 1-4, 6B, 7A and 7B security and correctness regression tests, run by name so a
   # failure is visible on its own. They are also part of test-msrv.
   test-security-regression:
     runs-on: ubuntu-latest

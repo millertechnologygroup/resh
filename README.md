@@ -3,14 +3,14 @@
 **AI-Native Automation Platform for Modern Infrastructure**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.0.4--beta-blue.svg)](https://github.com/millertechnologygroup/resh/releases)
+[![Version](https://img.shields.io/badge/version-v1.0.5--beta-blue.svg)](https://github.com/millertechnologygroup/resh/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)]()
 
 ---
 
-## v1.0.4-beta - 28 Handles (Beta)
+## v1.0.5-beta - 28 Handles (Beta)
 
-**resh v1.0.4-beta is available for testing.** This beta release includes 28 handles, among them automation utilities for backups, plugins and template rendering. It is beta software: some verbs are stubs or have known limitations, listed in each handle's documentation and in [docs/known_issues.md](docs/known_issues.md).
+**resh v1.0.5-beta is available for testing.** This beta release includes 28 handles, among them automation utilities for backups, plugins and template rendering. It is beta software: some verbs are stubs or have known limitations, listed in each handle's documentation and in [docs/known_issues.md](docs/known_issues.md).
 
 ⭐ **Star this repo** to follow development and be notified of updates!
 
@@ -27,7 +27,7 @@
 
 resh (Resource Shell) is a command-line tool that runs operations on resources named by URLs (`svc://nginx.status`, `file:///etc/hosts.read`) and prints structured results, mostly JSON, that both scripts and AI agents can consume without text parsing.
 
-**v1.0.4-beta has 28 handles, including the backup, plugin and template automation utilities.**
+**v1.0.5-beta has 28 handles, including the backup, plugin and template automation utilities.**
 
 ### The Problem
 
@@ -71,7 +71,7 @@ resh db://sqlite/app.query 'sql=SELECT COUNT(*) AS n FROM users' dsn=sqlite:app.
 - Each handle documents its real output fields (there is no single shared response envelope)
 
 **Broad coverage**
-28 handles in v1.0.4-beta: automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
+28 handles in v1.0.5-beta: automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
 
 ---
 
@@ -159,7 +159,7 @@ resh template://config.yml.render context_file=vars.json
 
 ---
 
-## Implemented in v1.0.4-beta (28 Handles)
+## Implemented in v1.0.5-beta (28 Handles)
 
 Each handle's page under [docs/](docs/) lists its registered verbs, arguments, real output fields and known limitations. `resh <handle> --help` prints the same verb list.
 
@@ -233,7 +233,7 @@ Each handle's page under [docs/](docs/) lists its registered verbs, arguments, r
 | v0.7 Alpha (25 handles) | November 2025 | ✅ **Completed** |
 | v0.8 Alpha (27 handles) | December 2025 | ✅ **Completed** |
 | v1.0 Beta (28 handles) | January 2026 | ✅ **Released** (v1.0.0-beta) |
-| v1.0.4-beta (28 handles) | - | Current beta |
+| v1.0.5-beta (28 handles) | - | Current beta |
 | v1.1 (30 handles) | Not yet scheduled | ⏱️ Planned |
 | v1.0 Stable | Not yet scheduled | ⏱️ Planned |
 
@@ -243,7 +243,7 @@ Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md)
 
 ## Current Status
 
-**What's working in v1.0.4-beta:**
+**What's working in v1.0.5-beta:**
 - ✅ 28 handles registered, with per-handle and per-verb `--help`
 - ✅ Automation utilities (backup, plugin, template)
 - ✅ URI parser and resource dispatcher
@@ -296,8 +296,8 @@ What has been verified: resh builds and its tests run on Gentoo Linux x86_64 (an
 git clone https://github.com/millertechnologygroup/resh.git
 cd resh
 
-# Checkout the v1.0.4-beta release
-git checkout v1.0.4-beta
+# Checkout the v1.0.5-beta release
+git checkout v1.0.5-beta
 
 # Build in release mode, using the dependency versions in Cargo.lock
 cargo build --release --locked
@@ -345,7 +345,7 @@ These are plans; no distribution packages are published yet. If a prebuilt Linux
 
 ## Contributing
 
-**resh v1.0.4-beta is available for testing.** We welcome:
+**resh v1.0.5-beta is available for testing.** We welcome:
 
 ### How You Can Help Now
 
@@ -439,7 +439,7 @@ Built with frustration from years of fragile automation tools and excitement abo
 ## FAQ
 
 **Q: Can I use resh now?**  
-A: Yes. v1.0.4-beta is available for testing and feedback. Some verbs are stubs or have known limitations; check the handle's page and [docs/known_issues.md](docs/known_issues.md).
+A: Yes. v1.0.5-beta is available for testing and feedback. Some verbs are stubs or have known limitations; check the handle's page and [docs/known_issues.md](docs/known_issues.md).
 
 **Q: Is v1.0-beta production-ready?**  
 A: No. This is a beta release with 28 handles. Test it in non-production environments. A stable release (v1.0 stable) is planned but not yet scheduled.
@@ -473,6 +473,6 @@ A: Functional but not yet optimized. Current focus is correctness.
 
 ---
 
-**v1.0.4-beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
+**v1.0.5-beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
 
-[Download v1.0.4-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.4-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
+[Download v1.0.5-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.5-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
