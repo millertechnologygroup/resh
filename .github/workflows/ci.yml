@@ -125,6 +125,7 @@ jobs:
           backuph::argument_safety_tests cronh::injection_tests
           sshh::remote_argument_tests certh::ecdsa_algorithm_tests
           archiveh::extract_limit_tests fsh::mount_argument_tests userh::primary_group_tests
+          tar_limit::tests archiveh::tar_header_limit_tests
       - run: cargo test --locked --test stage4_regressions
       # Stage 6B (v1.0.4-beta): backup/cron/ssh injection, dry-run and
       # cert signing regressions through the real binary.
@@ -132,6 +133,9 @@ jobs:
       # Stage 7A (v1.0.5-beta): archive extraction size limits, fs mount and
       # user add operands, through the real binary.
       - run: cargo test --locked --test stage7a_security
+      # Stage 7B (v1.0.5-beta): tar header data limit, through the real
+      # binary.
+      - run: cargo test --locked --test stage7b_security
 
   # Run from the Actions tab (Run workflow, tick "infrastructure"), with the
   # repository secrets pointing at DISPOSABLE services: a throwaway bare git
