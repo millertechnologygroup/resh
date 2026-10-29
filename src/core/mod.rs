@@ -5,6 +5,8 @@ pub mod parse;
 pub mod registry;
 pub mod secure_fs;
 pub mod status;
+#[cfg(test)]
+pub mod test_support;
 
 pub use envelope::{BackendInfo, BackupEnvelope, BackupError, BackupEvent, Timer};
 pub use registry::{Args, Handle, IoStreams, Registry};

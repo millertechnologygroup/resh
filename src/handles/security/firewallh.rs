@@ -11265,9 +11265,7 @@ mod backup_tests {
                 "iptables-restore",
                 "ip6tables-restore",
             ] {
-                let p = bin.join(tool);
-                fs::write(&p, &script).unwrap();
-                fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+                crate::core::test_support::write_executable(&bin.join(tool), &script);
             }
             let backups = dir.path().join("backups");
             Fixture { dir, backups }
@@ -11540,14 +11538,14 @@ mod backup_tests {
 #[cfg(test)]
 mod timeout_tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
     use tempfile::TempDir;
 
     fn mock_tool(bin: &std::path::Path, name: &str, body: &str) {
-        let p = bin.join(name);
-        fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::core::test_support::write_executable(
+            &bin.join(name),
+            &format!("#!/bin/sh\n{body}\n"),
+        );
     }
 
     fn fixture() -> (TempDir, std::path::PathBuf) {
