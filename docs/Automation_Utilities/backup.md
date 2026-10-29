@@ -283,7 +283,15 @@ The result reports `pruned` (or `would_prune` in a dry run) with `snapshots_remo
 
   What resh's tests verify: the arguments are validated before the backend starts, the backend receives its own `--dry-run` flag (and never `--prune` or `--stats`), and the result is labelled as above.
 
-  What resh does **not** verify, and should be expected of a backend dry run: it opens and authenticates to the repository (decrypting the key with the password you supply); for a remote repository it connects over the network (ssh, sftp, S3 and so on); it may create and then remove a repository lock, which is a write to the repository and can make a concurrent backup wait or fail; and it may update the backend's local cache and security metadata (for example `~/.cache/restic`, `~/.cache/borg`, `~/.config/borg/security`) and write its own logs. Removing snapshots is the only effect the backend's dry-run mode is documented to skip.
+  **A restic or borg prune dry run is not free of side effects.** The following was observed with restic 0.18.0 and borg 1.4.0 on local repositories (verified for v1.0.5-beta):
+
+  * Repository data was not changed: the same snapshots and archives existed before and after.
+  * Both took a repository lock, which is a write to the repository: restic creates and then deletes a lock file; borg creates and then removes an **exclusive** lock (`lock.exclusive`, `lock.roster`). Because borg's lock is exclusive, it can block a concurrent backup (`borg create`) of the same repository while the dry run holds it.
+  * Both wrote to their local cache (restic's cache directory; borg's cache lock and cache metadata). borg also created and removed temporary files in `/tmp`.
+  * Both needed the repository credentials (restic's password, borg's passphrase).
+  * Neither made a network connection for a local repository.
+
+  Not verified: remote repositories. A dry run against a remote repository (ssh, sftp, S3 and so on) is expected to connect to it, authenticate and take the same lock there; resh's tests do not cover this. Backend logging, if you have configured it, may also be written.
 
 ### 4.6 schedule
 

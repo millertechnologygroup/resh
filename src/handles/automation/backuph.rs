@@ -393,9 +393,12 @@ and bytes_restored is always 0. include is used only by restic."#,
 
 Shown for a restic dry run with --json-pretty and RESTIC_PASSWORD_FILE set
 in the environment. A dry run runs the backend's
-own dry run, and a real run reports pruned instead of would_prune. tar and
-rsync apply the policy to archives or snapshot directories by modification
-time (UTC days) and report bytes_freed. At least one keep_* is required."#,
+own dry run, which leaves snapshots alone but takes a repository lock
+(exclusive for borg), writes the backend's local cache and needs the
+repository credentials. A real run reports pruned instead of would_prune.
+tar and rsync apply the policy to archives or snapshot directories by
+modification time (UTC days) and report bytes_freed. At least one keep_* is
+required."#,
                 ),
             }),
         },
