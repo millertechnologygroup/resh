@@ -212,6 +212,16 @@ resh archive://.extract archive=release.tar.gz destination=app strip_components=
   `archive.extract_invalid_max_file_size` on stderr, like the other
   extract option errors. Earlier versions ignored such a value, which meant
   no limit.
+* Since v1.0.5-beta every verb that reads a tar archive (`list`, `test`,
+  `info`, `extract`, `add`, `remove`, and plugin installation) refuses a
+  member preceded by more than 1 MiB (1048576 bytes) of tar header data:
+  its header, PAX extended headers, GNU long name and long link headers and
+  GNU sparse extension blocks, counted after decompression. Earlier
+  versions read that header data into memory, up to the size the header
+  declared, before any size limit applied. File contents do not count
+  toward this limit. The verb fails with its usual archive read error and
+  exit code 1, and the message names the limit; `test` reports it as
+  `archive.test_entry_header_error` on the entry.
 * Every regular file is written to a temporary file next to its final name
   and renamed into place only when complete. If an entry fails (a size
   limit, corrupt data, a truncated archive), its temporary file and any
@@ -373,6 +383,9 @@ compressed tar archives with fixed default levels.
 * Only `extract` refuses an unreadable `max_total_bytes` or
   `max_file_bytes`. `list`, `test`, `info`, `add` and `remove` still treat
   such a value as no limit.
+* The 1 MiB limit on tar header data per member is fixed. A tar archive
+  whose members carry more metadata than that (for example, very large
+  extended attributes stored as PAX records) cannot be read.
 * Linux only.
 
 ---

@@ -855,13 +855,14 @@ impl ExecutionEngine {
     /// with `create_new` and `O_NOFOLLOW`, and their mode is reduced to
     /// 0644 or 0755 (no setuid/setgid/sticky, no group/other write).
     fn extract_tar_gz(&self, data: &[u8], staging_dir: &Path) -> Result<std::path::PathBuf> {
+        use crate::handles::filesystem::tar_limit::limited_archive;
         use flate2::read::GzDecoder;
         use std::io::Cursor;
-        use tar::{Archive, EntryType};
+        use tar::EntryType;
 
         let cursor = Cursor::new(data);
         let gz_decoder = GzDecoder::new(cursor);
-        let mut archive = Archive::new(gz_decoder);
+        let mut archive = limited_archive(gz_decoder);
 
         let entries = archive.entries().context("Failed to read tar.gz archive")?;
         for entry in entries {
@@ -2591,5 +2592,69 @@ mod artifact_security_tests {
         assert!(client.verify_checksum(b"abc", "").is_err());
         assert!(parse_sha256(&sum[..62]).is_err());
         assert!(parse_sha256(&format!("{sum}0")).is_err());
+    }
+
+    /// A PAX extended header declaring 8 GiB of data (2 MiB present) is
+    /// refused once its data passes the per-member header limit, instead of
+    /// being read into memory.
+    #[test]
+    fn oversized_tar_header_data_is_refused() {
+        let (dir, _s, mut engine) = setup();
+        let data = tar_gz(|b| {
+            let mut h = Header::new_ustar();
+            h.set_path("PaxHeader").unwrap();
+            h.set_entry_type(EntryType::XHeader);
+            h.set_size(8 << 30);
+            h.set_cksum();
+            b.append(&h, &vec![b'a'; 2 * 1024 * 1024][..]).unwrap();
+            raw(b, "bin/plugin", EntryType::Regular, None, 0o755, b"x");
+        });
+        // The install reports only the outer context; the cause is checked on
+        // the extraction itself.
+        let staging = dir.path().join("staging");
+        fs::create_dir(&staging).unwrap();
+        let err = engine.extract_tar_gz(&data, &staging).unwrap_err();
+        assert!(
+            format!("{err:#}")
+                .contains("tar header data for one archive member exceeds 1048576 bytes"),
+            "{err:#}"
+        );
+        let src = write_artifact(&dir, "demo.tar.gz", &data);
+        let env = engine.run_plugin_op(args(src, VerifyMode::None, false, false));
+        assert!(!env.ok, "oversized header data was accepted");
+        assert!(
+            env.error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("Failed to read tar.gz archive entry"),
+            "{:?}",
+            env.error
+        );
+        nothing_installed(&dir);
+    }
+
+    #[test]
+    fn artifact_with_pax_and_long_name_headers_installs() {
+        let (dir, _s, mut engine) = setup();
+        let long = format!("share/{}/README", "d".repeat(200));
+        let data = tar_gz(|b| {
+            raw(b, "bin/", EntryType::Directory, None, 0o755, b"");
+            let mut h = Header::new_gnu();
+            h.set_entry_type(EntryType::Regular);
+            h.set_mode(0o644);
+            h.set_size(6);
+            // Builder writes a GNU long-name header for paths over 100 bytes.
+            b.append_data(&mut h, &long, &b"readme"[..]).unwrap();
+            b.append_pax_extensions([("comment", &[b'c'; 60 * 1024][..])])
+                .unwrap();
+            raw(b, "bin/plugin", EntryType::Regular, None, 0o755, b"x");
+        });
+        let src = write_artifact(&dir, "demo.tar.gz", &data);
+        let env = engine.run_plugin_op(args(src, VerifyMode::None, false, false));
+        assert!(env.ok, "{:?}", env.error.as_ref().map(|e| &e.message));
+        let v = dir.path().join("plugins/demo/versions/local");
+        assert_eq!(fs::read(v.join(&long)).unwrap(), b"readme");
+        assert_eq!(fs::read(v.join("bin/plugin")).unwrap(), b"x");
     }
 }
