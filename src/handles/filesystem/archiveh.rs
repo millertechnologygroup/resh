@@ -16,12 +16,12 @@ use crate::core::{
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
+use crate::handles::filesystem::tar_limit::{LimitedArchive, limited_archive};
 
 // Archive format imports
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use tar::Archive;
 use xz2::read::XzDecoder;
 use xz2::write::XzEncoder;
 use zip::write::{FileOptions, ZipWriter};
@@ -3893,22 +3893,14 @@ fn list_tar_archive(
     let mut bytes_total = 0u64;
 
     // Create appropriate reader based on compression
-    let mut archive: Archive<Box<dyn Read>> = match compression {
-        CompressionKind::None => Archive::new(Box::new(file)),
-        CompressionKind::Gzip => {
-            let decoder = GzDecoder::new(file);
-            Archive::new(Box::new(decoder))
-        }
-        CompressionKind::Xz => {
-            let decoder = XzDecoder::new(file);
-            Archive::new(Box::new(decoder))
-        }
-        CompressionKind::Zstd => {
-            let decoder = ZstdDecoder::new(file)?;
-            Archive::new(Box::new(decoder))
-        }
+    let reader: Box<dyn Read> = match compression {
+        CompressionKind::None => Box::new(file),
+        CompressionKind::Gzip => Box::new(GzDecoder::new(file)),
+        CompressionKind::Xz => Box::new(XzDecoder::new(file)),
+        CompressionKind::Zstd => Box::new(ZstdDecoder::new(file)?),
         _ => bail!("Unsupported compression for tar: {:?}", compression),
     };
+    let mut archive = limited_archive(reader);
 
     for entry_result in archive.entries()? {
         entries_total += 1;
@@ -4340,7 +4332,7 @@ fn test_tar_archive(
         _ => {} // No compression or auto-detected
     }
 
-    let mut tar = Archive::new(archive);
+    let mut tar = limited_archive(archive);
     let mut entries = Vec::new();
     let mut bytes_tested = 0u64;
     let mut entries_tested = 0u64;
@@ -5314,7 +5306,7 @@ fn read_existing_tar_entries(
         _ => return Ok(Vec::new()),
     };
 
-    let mut archive = tar::Archive::new(reader);
+    let mut archive = limited_archive(reader);
     let mut entries = Vec::new();
 
     for entry in archive.entries()? {
@@ -5678,7 +5670,7 @@ fn extract_tar_archive(
         _ => {} // No compression or auto-detected
     }
 
-    let mut tar = Archive::new(archive);
+    let mut tar = limited_archive(archive);
     let dest_path = Path::new(&opts.destination);
 
     let mut entries_total = 0u64;
@@ -6772,7 +6764,7 @@ mod tests {
             } else {
                 Box::new(file)
             };
-            let mut names: Vec<String> = Archive::new(reader)
+            let mut names: Vec<String> = tar::Archive::new(reader)
                 .entries()?
                 .map(|e| {
                     e.unwrap()
@@ -7042,7 +7034,7 @@ fn scan_tar_entries(
         _ => bail!("Invalid tar format"),
     };
 
-    let mut tar = Archive::new(archive);
+    let mut tar = limited_archive(archive);
 
     let mut entries_count = 0u64;
     let mut files_count = 0u64;
@@ -7441,21 +7433,21 @@ fn analyze_tar_archive(
     match compression {
         CompressionKind::Gzip => {
             let decoder = GzDecoder::new(file);
-            let mut archive = tar::Archive::new(decoder);
+            let mut archive = limited_archive(decoder);
             read_tar_entries(&mut archive, &mut entries_before)?;
         }
         CompressionKind::Xz => {
             let decoder = XzDecoder::new(file);
-            let mut archive = tar::Archive::new(decoder);
+            let mut archive = limited_archive(decoder);
             read_tar_entries(&mut archive, &mut entries_before)?;
         }
         CompressionKind::Zstd => {
             let decoder = ZstdDecoder::new(file)?;
-            let mut archive = tar::Archive::new(decoder);
+            let mut archive = limited_archive(decoder);
             read_tar_entries(&mut archive, &mut entries_before)?;
         }
         CompressionKind::None => {
-            let mut archive = tar::Archive::new(file);
+            let mut archive = limited_archive(file);
             read_tar_entries(&mut archive, &mut entries_before)?;
         }
         _ => bail!("Unsupported compression for tar archive"),
@@ -7468,7 +7460,7 @@ fn analyze_tar_archive(
 }
 
 fn read_tar_entries<R: Read>(
-    archive: &mut tar::Archive<R>,
+    archive: &mut LimitedArchive<R>,
     entries: &mut Vec<ArchiveEntry>,
 ) -> Result<()> {
     for entry in archive.entries()? {
@@ -7718,21 +7710,21 @@ fn copy_tar_entries<W: Write>(
     match compression {
         CompressionKind::Gzip => {
             let decoder = GzDecoder::new(file);
-            let mut archive = tar::Archive::new(decoder);
+            let mut archive = limited_archive(decoder);
             copy_tar_entries_from_archive(&mut archive, new_archive, entries_to_keep)?;
         }
         CompressionKind::Xz => {
             let decoder = XzDecoder::new(file);
-            let mut archive = tar::Archive::new(decoder);
+            let mut archive = limited_archive(decoder);
             copy_tar_entries_from_archive(&mut archive, new_archive, entries_to_keep)?;
         }
         CompressionKind::Zstd => {
             let decoder = ZstdDecoder::new(file)?;
-            let mut archive = tar::Archive::new(decoder);
+            let mut archive = limited_archive(decoder);
             copy_tar_entries_from_archive(&mut archive, new_archive, entries_to_keep)?;
         }
         CompressionKind::None => {
-            let mut archive = tar::Archive::new(file);
+            let mut archive = limited_archive(file);
             copy_tar_entries_from_archive(&mut archive, new_archive, entries_to_keep)?;
         }
         _ => bail!("Unsupported compression for tar archive"),
@@ -7742,7 +7734,7 @@ fn copy_tar_entries<W: Write>(
 }
 
 fn copy_tar_entries_from_archive<R: Read, W: Write>(
-    source_archive: &mut tar::Archive<R>,
+    source_archive: &mut LimitedArchive<R>,
     dest_archive: &mut tar::Builder<W>,
     entries_to_keep: &[ArchiveEntry],
 ) -> Result<()> {
@@ -9645,5 +9637,115 @@ mod extract_limit_tests {
         }
         assert!(!dest.exists());
         sb.assert_outside_intact();
+    }
+}
+
+#[cfg(test)]
+mod tar_header_limit_tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    const LIMIT_MESSAGE: &str = "tar header data for one archive member exceeds 1048576 bytes";
+
+    /// A .tar.gz whose first member is a PAX header declaring 8 GiB of data,
+    /// with 2 MiB of it present.
+    fn oversized_header_tar_gz() -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_ustar();
+        h.set_path("PaxHeader").unwrap();
+        h.set_entry_type(tar::EntryType::XHeader);
+        h.set_size(8 << 30);
+        h.set_cksum();
+        b.append(&h, &vec![b'a'; 2 * 1024 * 1024][..]).unwrap();
+        let mut h = tar::Header::new_gnu();
+        h.set_size(2);
+        h.set_mode(0o644);
+        b.append_data(&mut h, "a.txt", &b"ok"[..]).unwrap();
+        gzip(&b.into_inner().unwrap())
+    }
+
+    /// A .tar.gz with a 60 KiB PAX record and a GNU long name.
+    fn legitimate_tar_gz(long: &str) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        b.append_pax_extensions([("comment", &[b'c'; 60 * 1024][..])])
+            .unwrap();
+        let mut h = tar::Header::new_gnu();
+        h.set_size(2);
+        h.set_mode(0o644);
+        b.append_data(&mut h, "a.txt", &b"ok"[..]).unwrap();
+        let mut h = tar::Header::new_gnu();
+        h.set_size(4);
+        h.set_mode(0o644);
+        b.append_data(&mut h, long, &b"long"[..]).unwrap();
+        gzip(&b.into_inner().unwrap())
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn write(dir: &TempDir, name: &str, data: &[u8]) -> String {
+        let path = dir.path().join(name);
+        fs::write(&path, data).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn assert_limit<T>(result: Result<T>) {
+        let Err(err) = result else {
+            panic!("archive should be refused");
+        };
+        assert!(format!("{err:#}").contains(LIMIT_MESSAGE), "{err:#}");
+    }
+
+    #[test]
+    fn add_reads_existing_entries_within_the_limit() {
+        let dir = TempDir::new().unwrap();
+        let path = write(&dir, "bad.tar.gz", &oversized_header_tar_gz());
+        assert_limit(read_existing_tar_entries(&path, &CompressionKind::Gzip));
+
+        let long = format!("{}/b.txt", "d".repeat(200));
+        let path = write(&dir, "good.tar.gz", &legitimate_tar_gz(&long));
+        let entries = read_existing_tar_entries(&path, &CompressionKind::Gzip).unwrap();
+        let names: Vec<_> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, ["a.txt", long.as_str()]);
+        assert_eq!(entries[1].data, b"long");
+    }
+
+    #[test]
+    fn remove_reads_and_copies_entries_within_the_limit() {
+        let dir = TempDir::new().unwrap();
+        let bad = write(&dir, "bad.tar.gz", &oversized_header_tar_gz());
+        let mut entries = Vec::new();
+        let file = File::open(&bad).unwrap();
+        assert_limit(read_tar_entries(
+            &mut limited_archive(GzDecoder::new(file)),
+            &mut entries,
+        ));
+        let mut out = tar::Builder::new(Vec::new());
+        assert_limit(copy_tar_entries(
+            &bad,
+            &mut out,
+            &CompressionKind::Gzip,
+            &[],
+        ));
+
+        let long = format!("{}/b.txt", "d".repeat(200));
+        let good = write(&dir, "good.tar.gz", &legitimate_tar_gz(&long));
+        let mut entries = Vec::new();
+        let file = File::open(&good).unwrap();
+        read_tar_entries(&mut limited_archive(GzDecoder::new(file)), &mut entries).unwrap();
+        assert_eq!(entries.len(), 2);
+        let mut out = tar::Builder::new(Vec::new());
+        copy_tar_entries(&good, &mut out, &CompressionKind::Gzip, &entries[..1]).unwrap();
+        let copied = out.into_inner().unwrap();
+        let names: Vec<String> = tar::Archive::new(&copied[..])
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["a.txt"]);
     }
 }

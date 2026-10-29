@@ -56,6 +56,7 @@ Local state (all under the XDG directories of the user running resh):
 * An artifact whose name ends in `.tar.gz` is unpacked; anything else is installed as a single executable file.
 * A `.tar.gz` artifact may contain only regular files and directories with plain relative paths. A symbolic link, hard link, device node, FIFO, absolute path or `..` entry fails the whole install, and nothing is installed. An existing installed version is left untouched.
 * File modes are reduced to 0644 or 0755: setuid, setgid and sticky bits and group/other write bits are dropped.
+* Since v1.0.5-beta an entry preceded by more than 1 MiB of tar header data (PAX extended headers, GNU long name or long link headers) fails the whole install with `PLUGIN_EXTRACT_FAILED`, and nothing is installed.
 
 ### 2.4 Plugin ids and versions
 
