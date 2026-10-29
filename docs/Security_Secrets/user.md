@@ -171,7 +171,7 @@ Only `dry_run` and `force` accept the `1/0/yes/no/on/off` spellings. Every other
 ### Validation
 
 * Usernames and group names (for `mode=group`) must be 1-32 characters of ASCII letters, digits, `_` or `-`, and must not start with `-`.
-* **`primary_group=` is not validated.** Its value is passed to `groupadd` and `useradd -g` as given. Use only trusted values.
+* `primary_group=` must not start with `-`; no other rule is applied, so an existing group with any name the system accepts can be used. When the group does not exist, it is created with `groupadd`, which applies its own naming rules. The shadow-utils commands that `add` runs receive the user and group names after `--`, so they are never read as options.
 
 ---
 
@@ -186,8 +186,8 @@ Successful output is the verb's JSON object on stdout (see `resh user <verb> --h
   "backend": "system",
   "dry_run": true,
   "planned_commands": [
-    "groupadd -g 1001 alice",
-    "useradd -u 1001 -g alice -d /home/alice -m -s /bin/zsh alice"
+    "groupadd -g 1001 -- alice",
+    "useradd -u 1001 -g alice -d /home/alice -m -s /bin/zsh -- alice"
   ],
   "user": {
     "username": "alice",

@@ -135,8 +135,10 @@ This section supersedes the test counts and "Still open" list in the
     fields and ssh `command_args` is in v1.0.4-beta (see the section
     above); in v1.0.3-beta and earlier, never pass untrusted input in
     backup `src`, `snapshot_id`, `dest` or `repo_url`, in cron job fields,
-    or in ssh `command_args`. Still open: user `primary_group` and fs
-    `mount` `source`/`target` are passed without a `--` separator.
+    or in ssh `command_args`. User `primary_group` and fs `mount`
+    `source`/`target` are refused when they start with `-` and passed after
+    a `--` separator from v1.0.5-beta; in v1.0.4-beta and earlier, never
+    pass untrusted input in them.
   - Archive extraction checks paths but not against a concurrent process
     changing the destination tree; never extract as root into a directory
     other users can write.

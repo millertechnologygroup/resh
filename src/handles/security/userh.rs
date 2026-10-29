@@ -135,8 +135,8 @@ listed first, then the supplementary groups from getgrouplist."#,
   "mode": "user",
   "ok": true,
   "planned_commands": [
-    "groupadd -g 1001 alice",
-    "useradd -u 1001 -g alice -d /home/alice -m -s /bin/zsh alice"
+    "groupadd -g 1001 -- alice",
+    "useradd -u 1001 -g alice -d /home/alice -m -s /bin/zsh -- alice"
   ],
   "user": {
     "created": false,
@@ -1860,6 +1860,7 @@ pub fn system_commands(op: &BackendOp) -> Result<Vec<SystemCommand>> {
                 argv.push("-c".into());
                 argv.push(gecos.clone());
             }
+            argv.push("--".into());
             argv.push(info.username.clone());
             vec![SystemCommand::new(&argv)]
         }
@@ -1868,12 +1869,13 @@ pub fn system_commands(op: &BackendOp) -> Result<Vec<SystemCommand>> {
                 "groupadd",
                 "-g",
                 info.gid.to_string().as_str(),
+                "--",
                 info.name.as_str(),
             ])]
         }
         BackendOp::AddMembership { username, group } => {
             vec![SystemCommand::new(&[
-                "usermod", "-a", "-G", group, username,
+                "usermod", "-a", "-G", group, "--", username,
             ])]
         }
         BackendOp::DeleteUser {
@@ -3826,6 +3828,13 @@ impl UserHandle {
             .primary_group
             .clone()
             .unwrap_or_else(|| username.clone());
+        // An option-shaped value would be read by groupadd as an option
+        if primary_group.starts_with('-') {
+            return Err(UserError::GroupNameInvalid(
+                "primary_group cannot start with dash".to_string(),
+            )
+            .into());
+        }
 
         // Check if primary group exists, create if needed
         let mut planned = Vec::new();
@@ -7640,6 +7649,7 @@ mod tests {
                 "/bin/bash",
                 "-c",
                 "Test User",
+                "--",
                 "testuser123"
             ]
         );
@@ -7679,7 +7689,7 @@ mod tests {
         );
         assert_eq!(
             log.lock().unwrap().last().unwrap().argv,
-            vec!["groupadd", "-g", "5000", "testgroup456"]
+            vec!["groupadd", "-g", "5000", "--", "testgroup456"]
         );
 
         // Test with empty group name - should fail
@@ -9181,6 +9191,7 @@ mod tests {
                 "-m",
                 "-s",
                 "/bin/zsh",
+                "--",
                 "alice"
             ]]
         );
@@ -9192,14 +9203,14 @@ mod tests {
         };
         assert_eq!(
             argv(BackendOp::CreateGroup(&g)),
-            vec![vec!["groupadd", "-g", "2000", "devs"]]
+            vec![vec!["groupadd", "-g", "2000", "--", "devs"]]
         );
         assert_eq!(
             argv(BackendOp::AddMembership {
                 username: "alice",
                 group: "devs"
             }),
-            vec![vec!["usermod", "-a", "-G", "devs", "alice"]]
+            vec![vec!["usermod", "-a", "-G", "devs", "--", "alice"]]
         );
         assert_eq!(
             argv(BackendOp::RemoveMembership {
@@ -9487,8 +9498,8 @@ mod tests {
         assert_eq!(
             resp.planned_commands,
             vec![
-                "groupadd -g 54321 reshtestnouser".to_string(),
-                "useradd -u 54321 -g reshtestnouser -d /home/reshtestnouser -m -s /bin/sh reshtestnouser".to_string(),
+                "groupadd -g 54321 -- reshtestnouser".to_string(),
+                "useradd -u 54321 -g reshtestnouser -d /home/reshtestnouser -m -s /bin/sh -- reshtestnouser".to_string(),
             ]
         );
         let json = serde_json::to_value(&resp).unwrap();
@@ -9805,5 +9816,98 @@ mod dry_run_tests {
                 .unwrap_or(false);
             assert!(!ok, "{verb} accepted dry_run=maybe");
         }
+    }
+}
+
+// v1.0.5-beta: `primary_group` cannot be read as an option by groupadd, and
+// the shadow-utils commands of `user add` take their operands after `--`.
+#[cfg(test)]
+mod primary_group_tests {
+    use super::*;
+
+    fn add(primary_group: Option<&str>, dry_run: bool) -> (Result<UserAddResponse>, usize) {
+        let handle = UserHandle {
+            alias: String::new(),
+        };
+        let target = UserTarget {
+            path: "reshtest7a".to_string(),
+        };
+        let (mut backend, log) = SystemBackend::recording();
+        let opts = UserAddOptions {
+            username: Some("reshtest7a".into()),
+            uid: Some(54321),
+            primary_group: primary_group.map(str::to_string),
+            dry_run,
+            ..Default::default()
+        };
+        let r = handle.add_user(&target, &opts, &mut backend);
+        let calls = log.lock().unwrap().len();
+        (r, calls)
+    }
+
+    #[test]
+    fn option_shaped_primary_group_is_refused_before_anything_runs() {
+        for dry_run in [false, true] {
+            for pg in ["-probe", "--probe", "-", "-o"] {
+                let (r, calls) = add(Some(pg), dry_run);
+                let err = r.expect_err(pg);
+                let ue = err.downcast_ref::<UserError>().unwrap();
+                assert_eq!(ue.code(), "user.group_name_invalid", "{pg}");
+                assert!(err.to_string().contains("primary_group"), "{err}");
+                assert_eq!(calls, 0, "{pg}: a command was run");
+            }
+        }
+    }
+
+    #[test]
+    fn new_primary_group_names_keep_working_and_follow_a_separator() {
+        // Names validate_group_name would refuse are still passed on, so
+        // groupadd's own rules decide as before.
+        for pg in ["reshtest7a-devs", "reshtest7a.team", "ReshTest7a_Ops"] {
+            let (r, calls) = add(Some(pg), true);
+            let resp = r.unwrap();
+            assert_eq!(calls, 0);
+            let groupadd = &resp.planned_commands[0];
+            assert!(groupadd.starts_with("groupadd -g "), "{groupadd}");
+            assert!(groupadd.ends_with(&format!(" -- {pg}")), "{groupadd}");
+            let useradd = &resp.planned_commands[1];
+            assert!(useradd.contains(&format!(" -g {pg} ")), "{useradd}");
+            assert!(useradd.ends_with(" -- reshtest7a"), "{useradd}");
+        }
+    }
+
+    #[test]
+    fn default_primary_group_is_the_username() {
+        let (r, _) = add(None, true);
+        let resp = r.unwrap();
+        assert_eq!(
+            resp.planned_commands,
+            vec![
+                "groupadd -g 54321 -- reshtest7a".to_string(),
+                "useradd -u 54321 -g reshtest7a -d /home/reshtest7a -m -s /bin/bash -- reshtest7a"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn shadow_utils_argv_puts_operands_after_a_separator() {
+        let info = GroupInfo {
+            name: "-x".into(),
+            gid: 2000,
+            created: false,
+            existed: false,
+        };
+        let cmds = system_commands(&BackendOp::CreateGroup(&info)).unwrap();
+        assert_eq!(cmds[0].argv, vec!["groupadd", "-g", "2000", "--", "-x"]);
+        let cmds = system_commands(&BackendOp::AddMembership {
+            username: "alice",
+            group: "devs",
+        })
+        .unwrap();
+        assert_eq!(
+            cmds[0].argv,
+            vec!["usermod", "-a", "-G", "devs", "--", "alice"]
+        );
     }
 }
