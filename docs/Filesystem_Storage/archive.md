@@ -169,7 +169,7 @@ resh archive://.extract archive=release.tar.gz destination=app strip_components=
 | `allow_symlinks` | `true` | `false` skips symlink entries with a warning |
 | `follow_symlinks` | `false` | |
 | `max_entries` | 1000000 | |
-| `max_total_bytes`, `max_file_bytes` | no limit | Byte limits on uncompressed data |
+| `max_total_bytes`, `max_file_bytes` | no limit | Byte limits on uncompressed data; digits only |
 | `fail_on_missing_archive` | `true` | |
 | `include_manifest` | `true` | |
 | `format`, `compression`, `format_output` | auto / auto / json | |
@@ -197,6 +197,29 @@ resh archive://.extract archive=release.tar.gz destination=app strip_components=
   destination.
 * There is no default size cap: set `max_total_bytes` / `max_file_bytes`
   when extracting untrusted archives. `max_entries` defaults to 1000000.
+* Since v1.0.5-beta the size limits apply to the bytes each entry actually
+  produces when it is decompressed, for zip, tar and raw streams, not only
+  to the size the archive records. An entry whose size is known in advance
+  and too large is refused before anything is written; otherwise writing
+  stops at the limit. Either way extraction fails with
+  `archive.extract_archive_read_error`, exit code 1.
+* Since v1.0.5-beta `max_total_bytes` and `max_file_bytes` must be a whole
+  number of bytes written with the digits 0-9 only (`0` allows only empty
+  files). Any other value, such as `1e6`, `1.5`, `-1`, `+1`, `10MB`, an
+  empty value or a number above 18446744073709551615, is refused before
+  anything is extracted, with exit code 1 and
+  `archive.extract_invalid_max_size` or
+  `archive.extract_invalid_max_file_size` on stderr, like the other
+  extract option errors. Earlier versions ignored such a value, which meant
+  no limit.
+* Every regular file is written to a temporary file next to its final name
+  and renamed into place only when complete. If an entry fails (a size
+  limit, corrupt data, a truncated archive), its temporary file and any
+  directories created only for it are removed, and an existing file of the
+  same name is left unchanged. Entries extracted before the failing one are
+  kept; extraction does not roll back completed entries. If resh is killed
+  mid-entry, a `.resh-extract-*` temporary file can remain in the
+  destination.
 * The containment checks are path-based. They protect against a malicious
   archive, not against another process that modifies the destination tree
   while the extraction runs. Extract only into a directory that other users
@@ -347,6 +370,9 @@ compressed tar archives with fixed default levels.
   all.
 * No password-protected (encrypted) archive creation.
 * `timeout_ms` is ignored by every verb.
+* Only `extract` refuses an unreadable `max_total_bytes` or
+  `max_file_bytes`. `list`, `test`, `info`, `add` and `remove` still treat
+  such a value as no limit.
 * Linux only.
 
 ---

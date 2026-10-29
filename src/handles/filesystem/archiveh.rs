@@ -1355,15 +1355,9 @@ impl ArchiveExtractOptions {
             .map(|s| s.parse::<u64>().unwrap_or(1000000))
             .unwrap_or(1000000);
 
-        let max_total_bytes = args
-            .get("max_total_bytes")
-            .map(|s| s.parse::<u64>().ok())
-            .flatten();
+        let max_total_bytes = byte_limit_arg(args, "max_total_bytes")?;
 
-        let max_file_bytes = args
-            .get("max_file_bytes")
-            .map(|s| s.parse::<u64>().ok())
-            .flatten();
+        let max_file_bytes = byte_limit_arg(args, "max_file_bytes")?;
 
         let include_manifest = args
             .get("include_manifest")
@@ -1402,6 +1396,27 @@ impl ArchiveExtractOptions {
             format_output,
         })
     }
+}
+
+/// Read byte-limit argument `key`: `None` when absent (no limit), an error
+/// when present but not a whole number of bytes. Only ASCII digits are
+/// accepted, so a sign, fraction, exponent, unit, whitespace or a value
+/// past `u64::MAX` is refused instead of silently disabling the limit.
+fn byte_limit_arg(args: &Args, key: &str) -> Result<Option<u64>> {
+    let Some(v) = args.get(key) else {
+        return Ok(None);
+    };
+    if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) {
+        if let Ok(n) = v.parse::<u64>() {
+            return Ok(Some(n));
+        }
+    }
+    bail!(
+        "invalid value for {}: {:?} (expected a whole number of bytes from 0 to {})",
+        key,
+        v,
+        u64::MAX
+    )
 }
 
 impl ArchiveListOptions {
@@ -3317,6 +3332,10 @@ fn map_extract_validation_error(err: &anyhow::Error) -> String {
         format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_INCLUDE_PATTERN, err_str)
     } else if err_str.contains("Invalid excludes") {
         format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_EXCLUDE_PATTERN, err_str)
+    } else if err_str.contains("invalid value for max_total_bytes") {
+        format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_MAX_SIZE, err_str)
+    } else if err_str.contains("invalid value for max_file_bytes") {
+        format!("[{}] {}", ARCHIVE_EXTRACT_INVALID_MAX_FILE_SIZE, err_str)
     } else {
         format!("[{}] {}", ARCHIVE_EXTRACT_INTERNAL_ERROR, err_str)
     }
@@ -5731,26 +5750,10 @@ fn extract_tar_archive(
         // Extract the entry
         let is_dir = entry_type.is_dir();
         let is_symlink = entry_type.is_symlink() || entry_type.is_hard_link();
-        let size = entry.header().size()?;
-
-        // Check file size limits
-        if let Some(max_size) = opts.max_file_bytes {
-            if size > max_size {
-                bail!(
-                    "File '{}' size ({}) exceeds maximum file size ({})",
-                    path_str,
-                    size,
-                    max_size
-                );
-            }
-        }
-
-        // Check total size limits
-        if let Some(max_total) = opts.max_total_bytes {
-            if bytes_written + size > max_total {
-                bail!("Total extraction size would exceed maximum ({})", max_total);
-            }
-        }
+        // The size the tar reader will write: a PAX size record overrides
+        // the header field, and a sparse file's size includes its holes.
+        let size = entry.size();
+        check_entry_size(opts, &path_str, size, bytes_written)?;
 
         // Handle symlinks
         if is_symlink && !opts.allow_symlinks {
@@ -5791,15 +5794,30 @@ fn extract_tar_archive(
             }
         }
 
+        // Regular files are written through a temporary file, so a failed
+        // entry neither leaves partial data nor destroys an existing file.
+        let via_temp =
+            entry_type.is_file() || entry_type.is_contiguous() || entry_type.is_gnu_sparse();
+
         // Create parent directories without following any symlink, then
         // make sure an existing final component is not a link we would
         // write or chmod through.
-        prepare_parent_dirs(dest_path, &safe_path)
-            .and_then(|_| clear_existing_target(&safe_path, is_dir))
+        let created_dirs = prepare_parent_dirs(dest_path, &safe_path)
+            .and_then(|created| {
+                if via_temp {
+                    refuse_existing_dir(&safe_path)?;
+                } else {
+                    clear_existing_target(&safe_path, is_dir)?;
+                }
+                Ok(created)
+            })
             .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?;
 
         if let Some(link_src) = hard_link_src {
             fs::hard_link(&link_src, &safe_path)?;
+        } else if via_temp {
+            write_via_temp(&safe_path, |tmp| Ok(entry.unpack(tmp)?))
+                .inspect_err(|_| remove_created_dirs(&created_dirs))?;
         } else {
             entry.unpack(&safe_path)?;
             if entry_type.is_symlink() {
@@ -5809,7 +5827,9 @@ fn extract_tar_archive(
         entries_extracted += 1;
 
         if !is_dir {
-            bytes_written += size;
+            bytes_written = bytes_written
+                .checked_add(size)
+                .context("extracted byte count overflow")?;
         }
 
         manifest.push(ArchiveExtractManifestEntry {
@@ -5902,31 +5922,21 @@ fn extract_zip_archive(
         }
 
         let is_dir = file.is_dir();
-        let size = file.size();
-
-        // Check file size limits
-        if let Some(max_size) = opts.max_file_bytes {
-            if size > max_size {
-                bail!(
-                    "File '{}' size ({}) exceeds maximum file size ({})",
-                    path_str,
-                    size,
-                    max_size
-                );
-            }
-        }
-
-        // Check total size limits
-        if let Some(max_total) = opts.max_total_bytes {
-            if bytes_written + size > max_total {
-                bail!("Total extraction size would exceed maximum ({})", max_total);
-            }
-        }
+        // The size the archive records; checked early, but not trusted
+        let mut size = file.size();
+        check_entry_size(opts, &path_str, size, bytes_written)?;
 
         // Create parent directories without following any symlink, and
         // never write through an existing link at the final component.
-        prepare_parent_dirs(dest_path, &safe_path)
-            .and_then(|_| clear_existing_target(&safe_path, is_dir))
+        let created_dirs = prepare_parent_dirs(dest_path, &safe_path)
+            .and_then(|created| {
+                if is_dir {
+                    clear_existing_target(&safe_path, true)?;
+                } else {
+                    refuse_existing_dir(&safe_path)?;
+                }
+                Ok(created)
+            })
             .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?;
 
         if is_dir {
@@ -5934,12 +5944,20 @@ fn extract_zip_archive(
                 fs::create_dir(&safe_path)?;
             }
         } else {
-            let mut output = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&safe_path)?;
-            std::io::copy(&mut file, &mut output)?;
-            bytes_written += size;
+            let budget = entry_byte_budget(opts, bytes_written);
+            let written = write_via_temp(&safe_path, |tmp| {
+                let mut output = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(tmp)?;
+                copy_limited(&mut file, &mut output, budget)?
+                    .ok_or_else(|| entry_limit_error(opts, &path_str, bytes_written))
+            })
+            .inspect_err(|_| remove_created_dirs(&created_dirs))?;
+            size = written;
+            bytes_written = bytes_written
+                .checked_add(written)
+                .context("extracted byte count overflow")?;
         }
 
         entries_extracted += 1;
@@ -6018,34 +6036,29 @@ fn extract_raw_compressed_file(
         ),
     };
 
-    // Do not write through a planted symlink at the output name
-    clear_existing_target(&output_path, false)?;
-    let mut output_file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&output_path)?;
-    let bytes_written = std::io::copy(&mut decoder, &mut output_file)? as u64;
-
-    // Check size limits
-    if let Some(max_total) = opts.max_total_bytes {
-        if bytes_written > max_total {
-            bail!(
-                "Extracted size ({}) exceeds maximum total size ({})",
-                bytes_written,
-                max_total
-            );
+    // Write through a temporary file: a planted symlink at the output name
+    // is replaced, not followed, and a failure leaves no partial output.
+    refuse_existing_dir(&output_path)?;
+    let budget = entry_byte_budget(opts, 0);
+    let bytes_written = write_via_temp(&output_path, |tmp| {
+        let mut output_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)?;
+        match copy_limited(&mut decoder, &mut output_file, budget)? {
+            Some(n) => Ok(n),
+            None if opts.max_total_bytes == Some(budget) => bail!(
+                "Extracted size (more than {}) exceeds maximum total size ({})",
+                budget,
+                budget
+            ),
+            None => bail!(
+                "Extracted file size (more than {}) exceeds maximum file size ({})",
+                budget,
+                budget
+            ),
         }
-    }
-
-    if let Some(max_file) = opts.max_file_bytes {
-        if bytes_written > max_file {
-            bail!(
-                "Extracted file size ({}) exceeds maximum file size ({})",
-                bytes_written,
-                max_file
-            );
-        }
-    }
+    })?;
 
     let summary = ArchiveExtractSummary {
         archive: opts.archive.clone(),
@@ -6212,7 +6225,8 @@ pub fn sanitize_path(
 /// from `sanitize_path`) one level at a time. Every existing component must
 /// be a real directory: a symlink, whether created earlier by the archive or
 /// already present in the destination, is refused rather than followed.
-fn prepare_parent_dirs(dest: &Path, target: &Path) -> Result<()> {
+/// Returns the directories it created, outermost first.
+fn prepare_parent_dirs(dest: &Path, target: &Path) -> Result<Vec<PathBuf>> {
     let rel = target.strip_prefix(dest).map_err(|_| {
         unsafe_entry(
             ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED,
@@ -6221,6 +6235,7 @@ fn prepare_parent_dirs(dest: &Path, target: &Path) -> Result<()> {
     })?;
     let parents: Vec<_> = rel.components().collect();
     let mut cur = dest.to_path_buf();
+    let mut created = Vec::new();
     for comp in parents.iter().take(parents.len().saturating_sub(1)) {
         cur.push(comp);
         match fs::symlink_metadata(&cur) {
@@ -6232,8 +6247,9 @@ fn prepare_parent_dirs(dest: &Path, target: &Path) -> Result<()> {
             }
             Ok(m) if m.is_dir() => {}
             Ok(_) => anyhow::bail!("parent '{}' is not a directory", cur.display()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if let Err(e) = fs::create_dir(&cur) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match fs::create_dir(&cur) {
+                Ok(()) => created.push(cur.clone()),
+                Err(e) => {
                     // Lost a race with another creator: accept only a real directory
                     let ok = e.kind() == std::io::ErrorKind::AlreadyExists
                         && fs::symlink_metadata(&cur)
@@ -6243,11 +6259,11 @@ fn prepare_parent_dirs(dest: &Path, target: &Path) -> Result<()> {
                         return Err(e.into());
                     }
                 }
-            }
+            },
             Err(e) => return Err(e.into()),
         }
     }
-    Ok(())
+    Ok(created)
 }
 
 /// Before (over)writing `target`: remove an existing symlink or file there
@@ -6265,6 +6281,125 @@ fn clear_existing_target(target: &Path, is_dir: bool) -> Result<()> {
         Ok(_) => Ok(fs::remove_file(target)?),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Before writing a file at `target` through `write_via_temp`: an existing
+/// directory there is an error. A file or link is left for the final rename.
+fn refuse_existing_dir(target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(m) if m.is_dir() => anyhow::bail!("'{}' is an existing directory", target.display()),
+        _ => Ok(()),
+    }
+}
+
+/// Write a file entry to a new temporary file next to `target` and rename
+/// it into place only if `write` succeeds. On failure the temporary file is
+/// removed, so a failed entry leaves no partial output and an existing file
+/// at `target` is untouched. The rename replaces a file or symlink at
+/// `target` itself and never follows it.
+fn write_via_temp<T>(target: &Path, write: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("'{}' has no parent directory", target.display()))?;
+    let tmp = parent.join(temp_archive_name(".resh-extract-"));
+    let result = write(&tmp).and_then(|v| {
+        fs::rename(&tmp, target)?;
+        Ok(v)
+    });
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Remove directories `prepare_parent_dirs` created for an entry that then
+/// failed, deepest first. Only empty directories can be removed.
+fn remove_created_dirs(dirs: &[PathBuf]) {
+    for d in dirs.iter().rev() {
+        let _ = fs::remove_dir(d);
+    }
+}
+
+/// Copy `reader` to `writer`, writing at most `limit` bytes. Returns the
+/// number of bytes copied, or `None` if the reader had more than `limit`
+/// (nothing past the limit is written). This counts what the decoder
+/// produces, whatever size the archive records for the entry.
+fn copy_limited<R: Read + ?Sized, W: Write + ?Sized>(
+    reader: &mut R,
+    writer: &mut W,
+    limit: u64,
+) -> std::io::Result<Option<u64>> {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut copied = 0u64;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => return Ok(Some(copied)),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        match copied.checked_add(n as u64) {
+            Some(next) if next <= limit => {
+                writer.write_all(&buf[..n])?;
+                copied = next;
+            }
+            _ => return Ok(None),
+        }
+    }
+}
+
+/// Bytes the next entry may still write: the smaller of `max_file_bytes`
+/// and what is left of `max_total_bytes` after `written` bytes.
+fn entry_byte_budget(opts: &ArchiveExtractOptions, written: u64) -> u64 {
+    let file = opts.max_file_bytes.unwrap_or(u64::MAX);
+    let total = opts
+        .max_total_bytes
+        .map_or(u64::MAX, |max| max.saturating_sub(written));
+    file.min(total)
+}
+
+/// Refuse an entry whose size already breaks a limit before anything is
+/// written. For zip this is the size the archive records, which may be
+/// wrong, so the copy is limited again by `entry_byte_budget`.
+fn check_entry_size(
+    opts: &ArchiveExtractOptions,
+    path_str: &str,
+    size: u64,
+    written: u64,
+) -> Result<()> {
+    if let Some(max_size) = opts.max_file_bytes {
+        if size > max_size {
+            bail!(
+                "File '{}' size ({}) exceeds maximum file size ({})",
+                path_str,
+                size,
+                max_size
+            );
+        }
+    }
+    if let Some(max_total) = opts.max_total_bytes {
+        if written.checked_add(size).is_none_or(|t| t > max_total) {
+            bail!("Total extraction size would exceed maximum ({})", max_total);
+        }
+    }
+    Ok(())
+}
+
+/// The error for an entry that produced more than `entry_byte_budget`
+/// allowed after `written` bytes, naming the limit that budget came from.
+fn entry_limit_error(opts: &ArchiveExtractOptions, path_str: &str, written: u64) -> anyhow::Error {
+    let file = opts.max_file_bytes.unwrap_or(u64::MAX);
+    match opts.max_total_bytes {
+        Some(max_total) if max_total.saturating_sub(written) < file => {
+            anyhow::anyhow!("Total extraction size would exceed maximum ({})", max_total)
+        }
+        _ => anyhow::anyhow!(
+            "File '{}' size (more than {}) exceeds maximum file size ({})",
+            path_str,
+            file,
+            file
+        ),
     }
 }
 
@@ -8685,5 +8820,830 @@ mod zip_password_tests {
             );
             assert!(!text.contains("hunter2"), "password must not be echoed");
         }
+    }
+}
+
+// v1.0.5-beta: max_file_bytes and max_total_bytes are enforced on the bytes
+// an entry actually produces, not on the size the archive records for it.
+// A failed entry leaves neither a partial file nor a damaged existing file.
+#[cfg(test)]
+mod extract_limit_tests {
+    use super::*;
+    use std::fs;
+    use std::io::Cursor;
+    use std::os::unix::fs::symlink;
+    use tempfile::TempDir;
+
+    struct Sandbox {
+        _tmp: TempDir,
+        root: PathBuf,
+        dest: PathBuf,
+        outside: PathBuf,
+    }
+
+    fn sandbox() -> Sandbox {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let dest = root.join("dest");
+        let outside = root.join("outside");
+        fs::create_dir_all(&dest).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), b"sentinel").unwrap();
+        Sandbox {
+            _tmp: tmp,
+            root,
+            dest,
+            outside,
+        }
+    }
+
+    impl Sandbox {
+        /// Names in the destination, recursively, sorted.
+        fn dest_tree(&self) -> Vec<String> {
+            let mut out: Vec<String> = WalkDir::new(&self.dest)
+                .min_depth(1)
+                .into_iter()
+                .map(|e| {
+                    e.unwrap()
+                        .path()
+                        .strip_prefix(&self.dest)
+                        .unwrap()
+                        .display()
+                        .to_string()
+                })
+                .collect();
+            out.sort();
+            out
+        }
+
+        fn assert_outside_intact(&self) {
+            assert_eq!(
+                fs::read(self.outside.join("keep.txt")).unwrap(),
+                b"sentinel"
+            );
+            assert_eq!(fs::read_dir(&self.outside).unwrap().count(), 1);
+        }
+    }
+
+    fn opts(archive: &Path, dest: &Path, format: ArchiveFormat) -> ArchiveExtractOptions {
+        ArchiveExtractOptions {
+            archive: archive.to_string_lossy().to_string(),
+            destination: dest.to_string_lossy().to_string(),
+            format,
+            compression: CompressionKind::None,
+            includes: vec![],
+            excludes: vec![],
+            overwrite: false,
+            create_destination: true,
+            fail_on_missing_archive: true,
+            strip_components: 0,
+            allow_absolute_paths: false,
+            allow_parent_traversal: false,
+            allow_symlinks: true,
+            follow_symlinks: false,
+            max_entries: 1000000,
+            max_total_bytes: None,
+            max_file_bytes: None,
+            include_manifest: true,
+            format_output: OutputFormat::Json,
+        }
+    }
+
+    fn zip_bytes(entries: &[(&str, &[u8], CompressionMethod)]) -> Vec<u8> {
+        let mut z = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data, method) in entries {
+            z.start_file(*name, FileOptions::default().compression_method(*method))
+                .unwrap();
+            z.write_all(data).unwrap();
+        }
+        z.finish().unwrap().into_inner()
+    }
+
+    fn u16_at(b: &[u8], at: usize) -> usize {
+        u16::from_le_bytes([b[at], b[at + 1]]) as usize
+    }
+
+    fn u32_at(b: &[u8], at: usize) -> usize {
+        u32::from_le_bytes(b[at..at + 4].try_into().unwrap()) as usize
+    }
+
+    /// Overwrite the uncompressed size recorded for entry `index`, in both
+    /// its central directory record and its local header. The data and CRC
+    /// are left as they are, so the entry decodes to more (or fewer) bytes
+    /// than it claims.
+    fn set_recorded_size(zip: &mut [u8], index: usize, size: u32) {
+        let eocd = zip.len() - 22;
+        assert_eq!(&zip[eocd..eocd + 4], b"PK\x05\x06");
+        let mut p = u32_at(zip, eocd + 16);
+        for i in 0..u16_at(zip, eocd + 10) {
+            assert_eq!(&zip[p..p + 4], b"PK\x01\x02");
+            let local = u32_at(zip, p + 42);
+            if i == index {
+                zip[p + 24..p + 28].copy_from_slice(&size.to_le_bytes());
+                zip[local + 22..local + 26].copy_from_slice(&size.to_le_bytes());
+            }
+            p += 46 + u16_at(zip, p + 28) + u16_at(zip, p + 30) + u16_at(zip, p + 32);
+        }
+    }
+
+    fn extract_zip_bytes(
+        sb: &Sandbox,
+        zip: &[u8],
+        tweak: impl Fn(&mut ArchiveExtractOptions),
+    ) -> ArchiveExtractResponse {
+        let archive = sb.root.join("t.zip");
+        fs::write(&archive, zip).unwrap();
+        let mut o = opts(&archive, &sb.dest, ArchiveFormat::Zip);
+        tweak(&mut o);
+        extract_archive(o).unwrap()
+    }
+
+    fn assert_limit_refused(r: &ArchiveExtractResponse, what: &str) {
+        assert!(!r.ok, "over-limit archive reported ok: {:?}", r.summary);
+        let (code, msg) = r.error.clone().unwrap();
+        assert_eq!(code, ARCHIVE_EXTRACT_ARCHIVE_READ_ERROR, "{msg}");
+        assert!(msg.contains(what), "{msg}");
+        assert!(r.summary.is_none() && r.manifest.is_none());
+    }
+
+    const DEFLATE: CompressionMethod = CompressionMethod::Deflated;
+    const STORED: CompressionMethod = CompressionMethod::Stored;
+
+    #[test]
+    fn understated_zip_entry_is_refused_under_max_file_bytes() {
+        let sb = sandbox();
+        let data = vec![0u8; 64 * 1024];
+        let mut zip = zip_bytes(&[("big.bin", &data, DEFLATE)]);
+        set_recorded_size(&mut zip, 0, 10);
+        let r = extract_zip_bytes(&sb, &zip, |o| o.max_file_bytes = Some(100));
+        assert_limit_refused(&r, "maximum file size (100)");
+        assert!(sb.dest_tree().is_empty(), "{:?}", sb.dest_tree());
+    }
+
+    #[test]
+    fn understated_zip_entry_is_refused_under_max_total_bytes() {
+        let sb = sandbox();
+        let data = vec![0u8; 64 * 1024];
+        let mut zip = zip_bytes(&[("big.bin", &data, DEFLATE)]);
+        set_recorded_size(&mut zip, 0, 10);
+        let r = extract_zip_bytes(&sb, &zip, |o| o.max_total_bytes = Some(100));
+        assert_limit_refused(&r, "Total extraction size would exceed maximum (100)");
+        assert!(sb.dest_tree().is_empty(), "{:?}", sb.dest_tree());
+    }
+
+    #[test]
+    fn understated_stored_zip_entry_is_refused() {
+        let sb = sandbox();
+        let data = vec![b'x'; 1000];
+        let mut zip = zip_bytes(&[("big.bin", &data, STORED)]);
+        set_recorded_size(&mut zip, 0, 10);
+        let r = extract_zip_bytes(&sb, &zip, |o| o.max_file_bytes = Some(100));
+        assert_limit_refused(&r, "maximum file size (100)");
+        assert!(sb.dest_tree().is_empty());
+    }
+
+    #[test]
+    fn honest_zip_within_both_limits_extracts() {
+        let sb = sandbox();
+        let zip = zip_bytes(&[("a.txt", b"hello", DEFLATE), ("d/b.txt", b"world!", STORED)]);
+        let r = extract_zip_bytes(&sb, &zip, |o| {
+            o.max_file_bytes = Some(6);
+            o.max_total_bytes = Some(11);
+        });
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.summary.as_ref().unwrap().bytes_written, 11);
+        assert_eq!(fs::read(sb.dest.join("a.txt")).unwrap(), b"hello");
+        assert_eq!(fs::read(sb.dest.join("d/b.txt")).unwrap(), b"world!");
+        assert_eq!(sb.dest_tree(), vec!["a.txt", "d", "d/b.txt"]);
+    }
+
+    #[test]
+    fn zip_entry_exactly_at_the_file_limit_extracts() {
+        let sb = sandbox();
+        let data = vec![b'x'; 100];
+        let zip = zip_bytes(&[("f", &data, DEFLATE)]);
+        let r = extract_zip_bytes(&sb, &zip, |o| {
+            o.max_file_bytes = Some(100);
+            o.max_total_bytes = Some(100);
+        });
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read(sb.dest.join("f")).unwrap(), data);
+
+        // The limit applies to the data, so a wrong recorded size that does
+        // not take the entry over the limit is not itself a failure.
+        let sb = sandbox();
+        let mut zip = zip_bytes(&[("f", &data, DEFLATE)]);
+        set_recorded_size(&mut zip, 0, 1);
+        let r = extract_zip_bytes(&sb, &zip, |o| o.max_file_bytes = Some(100));
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.summary.as_ref().unwrap().bytes_written, 100);
+        assert_eq!(r.manifest.as_ref().unwrap()[0].size, 100);
+    }
+
+    #[test]
+    fn zip_entry_one_byte_over_the_file_limit_is_refused() {
+        let data = vec![b'x'; 101];
+        let sb = sandbox();
+        let zip = zip_bytes(&[("f", &data, DEFLATE)]);
+        let r = extract_zip_bytes(&sb, &zip, |o| o.max_file_bytes = Some(100));
+        assert_limit_refused(&r, "exceeds maximum file size (100)");
+        assert!(sb.dest_tree().is_empty());
+
+        let sb = sandbox();
+        let mut zip = zip_bytes(&[("f", &data, DEFLATE)]);
+        set_recorded_size(&mut zip, 0, 100);
+        let r = extract_zip_bytes(&sb, &zip, |o| o.max_file_bytes = Some(100));
+        assert_limit_refused(&r, "exceeds maximum file size (100)");
+        assert!(sb.dest_tree().is_empty());
+    }
+
+    /// Entries completed before the failing one stay; the failing entry
+    /// leaves nothing.
+    #[test]
+    fn entries_whose_sum_exceeds_max_total_bytes_are_refused() {
+        let chunk = vec![b'x'; 40];
+        for understate in [false, true] {
+            let sb = sandbox();
+            let mut zip = zip_bytes(&[
+                ("1", &chunk, DEFLATE),
+                ("2", &chunk, DEFLATE),
+                ("3", &chunk, DEFLATE),
+            ]);
+            if understate {
+                for i in 0..3 {
+                    set_recorded_size(&mut zip, i, 1);
+                }
+            }
+            let r = extract_zip_bytes(&sb, &zip, |o| o.max_total_bytes = Some(100));
+            assert_limit_refused(&r, "Total extraction size would exceed maximum (100)");
+            assert_eq!(sb.dest_tree(), vec!["1", "2"], "understate={understate}");
+            assert_eq!(fs::read(sb.dest.join("2")).unwrap(), chunk);
+        }
+    }
+
+    #[test]
+    fn small_recorded_size_with_much_larger_data_is_refused() {
+        let sb = sandbox();
+        let data = vec![0u8; 256 * 1024];
+        let mut zip = zip_bytes(&[("ok.txt", b"fine", DEFLATE), ("big.bin", &data, DEFLATE)]);
+        assert!(zip.len() < 2048, "fixture must stay small");
+        set_recorded_size(&mut zip, 1, 1);
+        let r = extract_zip_bytes(&sb, &zip, |o| {
+            o.max_file_bytes = Some(1024);
+            o.max_total_bytes = Some(4096);
+        });
+        assert_limit_refused(&r, "maximum file size (1024)");
+        assert_eq!(sb.dest_tree(), vec!["ok.txt"]);
+    }
+
+    #[test]
+    fn zero_byte_limits() {
+        let sb = sandbox();
+        let zip = zip_bytes(&[("empty", b"", DEFLATE)]);
+        let r = extract_zip_bytes(&sb, &zip, |o| {
+            o.max_file_bytes = Some(0);
+            o.max_total_bytes = Some(0);
+        });
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read(sb.dest.join("empty")).unwrap(), b"");
+
+        for total in [false, true] {
+            let sb = sandbox();
+            let mut zip = zip_bytes(&[("f", b"12345", STORED)]);
+            set_recorded_size(&mut zip, 0, 0);
+            let r = extract_zip_bytes(&sb, &zip, |o| {
+                if total {
+                    o.max_total_bytes = Some(0)
+                } else {
+                    o.max_file_bytes = Some(0)
+                }
+            });
+            assert!(!r.ok, "total={total}");
+            assert!(sb.dest_tree().is_empty(), "total={total}");
+        }
+    }
+
+    #[test]
+    fn maximum_limits_do_not_overflow() {
+        let sb = sandbox();
+        let mut zip = zip_bytes(&[("a", b"abc", DEFLATE), ("b", b"defg", DEFLATE)]);
+        set_recorded_size(&mut zip, 1, u32::MAX);
+        let r = extract_zip_bytes(&sb, &zip, |o| {
+            o.max_file_bytes = Some(u64::MAX);
+            o.max_total_bytes = Some(u64::MAX);
+        });
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.summary.as_ref().unwrap().bytes_written, 7);
+
+        // Parsed from the command line as well
+        let mut args = Args::new();
+        args.insert("archive".into(), "x.zip".into());
+        args.insert("destination".into(), "d".into());
+        args.insert("max_total_bytes".into(), u64::MAX.to_string());
+        args.insert("max_file_bytes".into(), "0".into());
+        let o = ArchiveExtractOptions::from_args(&args).unwrap();
+        assert_eq!(o.max_total_bytes, Some(u64::MAX));
+        assert_eq!(o.max_file_bytes, Some(0));
+    }
+
+    #[test]
+    fn corrupt_entry_data_leaves_no_partial_file() {
+        let sb = sandbox();
+        let data = vec![b'x'; 1000];
+        let mut zip = zip_bytes(&[("f", &data, STORED)]);
+        let at = zip.windows(16).position(|w| w == [b'x'; 16]).unwrap();
+        zip[at + 500] = b'y'; // the CRC no longer matches
+        let r = extract_zip_bytes(&sb, &zip, |_| {});
+        assert!(!r.ok);
+        assert!(sb.dest_tree().is_empty(), "{:?}", sb.dest_tree());
+    }
+
+    #[test]
+    fn truncated_or_malformed_zip_is_refused_without_output() {
+        let data = vec![b'x'; 1000];
+        let zip = zip_bytes(&[("f", &data, DEFLATE)]);
+        for bad in [
+            &zip[..zip.len() / 2],
+            &zip[..zip.len() - 1],
+            b"PK\x03\x04junk",
+        ] {
+            let sb = sandbox();
+            let r = extract_zip_bytes(&sb, bad, |o| o.max_file_bytes = Some(10_000));
+            assert!(!r.ok);
+            assert!(sb.dest_tree().is_empty());
+        }
+    }
+
+    #[test]
+    fn failed_entry_keeps_the_existing_file() {
+        let data = vec![b'x'; 1000];
+        // Over the limit, and corrupt within the limit
+        let mut over = zip_bytes(&[("f", &data, STORED)]);
+        set_recorded_size(&mut over, 0, 10);
+        let mut corrupt = zip_bytes(&[("f", &data, STORED)]);
+        let at = corrupt.windows(16).position(|w| w == [b'x'; 16]).unwrap();
+        corrupt[at + 500] = b'y';
+        for zip in [over, corrupt] {
+            let sb = sandbox();
+            fs::write(sb.dest.join("f"), b"original").unwrap();
+            let r = extract_zip_bytes(&sb, &zip, |o| {
+                o.overwrite = true;
+                o.max_file_bytes = Some(100);
+            });
+            assert!(!r.ok);
+            assert_eq!(fs::read(sb.dest.join("f")).unwrap(), b"original");
+            assert_eq!(sb.dest_tree(), vec!["f"]);
+        }
+    }
+
+    #[test]
+    fn failed_entry_removes_directories_it_created() {
+        let sb = sandbox();
+        fs::create_dir(sb.dest.join("keep")).unwrap();
+        let data = vec![0u8; 4096];
+        let mut zip = zip_bytes(&[("keep/a/b/big.bin", &data, DEFLATE)]);
+        set_recorded_size(&mut zip, 0, 1);
+        let r = extract_zip_bytes(&sb, &zip, |o| o.max_file_bytes = Some(100));
+        assert_limit_refused(&r, "maximum file size (100)");
+        assert_eq!(sb.dest_tree(), vec!["keep"]);
+    }
+
+    #[test]
+    fn limit_failure_never_follows_or_removes_a_link() {
+        let sb = sandbox();
+        symlink(sb.outside.join("keep.txt"), sb.dest.join("leaf")).unwrap();
+        let data = vec![0u8; 4096];
+        let mut zip = zip_bytes(&[("leaf", &data, DEFLATE)]);
+        set_recorded_size(&mut zip, 0, 1);
+        let r = extract_zip_bytes(&sb, &zip, |o| {
+            o.overwrite = true;
+            o.max_file_bytes = Some(100);
+        });
+        assert_limit_refused(&r, "maximum file size (100)");
+        assert!(
+            fs::symlink_metadata(sb.dest.join("leaf"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        sb.assert_outside_intact();
+
+        // Within the limit the link itself is replaced, never written through
+        let zip = zip_bytes(&[("leaf", b"new", DEFLATE)]);
+        let r = extract_zip_bytes(&sb, &zip, |o| {
+            o.overwrite = true;
+            o.max_file_bytes = Some(100);
+        });
+        assert!(r.ok, "{:?}", r.error);
+        assert!(sb.dest.join("leaf").is_file());
+        assert_eq!(fs::read(sb.dest.join("leaf")).unwrap(), b"new");
+        sb.assert_outside_intact();
+    }
+
+    #[test]
+    fn traversal_and_link_parents_are_still_refused_with_limits() {
+        let sb = sandbox();
+        let zip = zip_bytes(&[("../outside/evil", b"x", DEFLATE)]);
+        let r = extract_zip_bytes(&sb, &zip, |o| o.max_file_bytes = Some(100));
+        assert_eq!(
+            r.error.unwrap().0,
+            ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED.to_string()
+        );
+        let zip = zip_bytes(&[("/abs/evil", b"x", DEFLATE)]);
+        let r = extract_zip_bytes(&sb, &zip, |o| o.max_file_bytes = Some(100));
+        assert_eq!(
+            r.error.unwrap().0,
+            ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED.to_string()
+        );
+        symlink(&sb.outside, sb.dest.join("pre")).unwrap();
+        let zip = zip_bytes(&[("pre/evil", b"x", DEFLATE)]);
+        let r = extract_zip_bytes(&sb, &zip, |o| {
+            o.overwrite = true;
+            o.max_file_bytes = Some(100);
+        });
+        assert_eq!(
+            r.error.unwrap().0,
+            ARCHIVE_EXTRACT_SYMLINK_REJECTED.to_string()
+        );
+        sb.assert_outside_intact();
+    }
+
+    /// A PAX `size` record overrides the size field of the header that
+    /// follows it; the tar reader honours it, so the limits must too.
+    fn tar_with_pax_size(data: &[u8], header_size: u64) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        let body = format!("size={}\n", data.len());
+        let mut len = body.len() + 2;
+        while format!("{len} {body}").len() != len {
+            len = format!("{len} {body}").len();
+        }
+        let record = format!("{len} {body}");
+        let mut pax = tar::Header::new_ustar();
+        pax.set_path("PaxHeader/big.bin").unwrap();
+        pax.set_entry_type(tar::EntryType::XHeader);
+        pax.set_size(record.len() as u64);
+        pax.set_cksum();
+        b.append(&pax, record.as_bytes()).unwrap();
+        let mut h = tar::Header::new_ustar();
+        h.set_path("big.bin").unwrap();
+        h.set_mode(0o644);
+        h.set_size(header_size);
+        h.set_cksum();
+        // append writes all of `data` whatever the header says
+        b.append(&h, data).unwrap();
+        b.into_inner().unwrap()
+    }
+
+    fn extract_tar_bytes(
+        sb: &Sandbox,
+        tar: &[u8],
+        tweak: impl Fn(&mut ArchiveExtractOptions),
+    ) -> ArchiveExtractResponse {
+        let archive = sb.root.join("t.tar");
+        fs::write(&archive, tar).unwrap();
+        let mut o = opts(&archive, &sb.dest, ArchiveFormat::Tar);
+        tweak(&mut o);
+        extract_archive(o).unwrap()
+    }
+
+    #[test]
+    fn tar_pax_size_is_the_size_that_is_limited() {
+        let data = vec![b'x'; 4096];
+        let tar = tar_with_pax_size(&data, 10);
+        for total in [false, true] {
+            let sb = sandbox();
+            let r = extract_tar_bytes(&sb, &tar, |o| {
+                if total {
+                    o.max_total_bytes = Some(100)
+                } else {
+                    o.max_file_bytes = Some(100)
+                }
+            });
+            assert!(!r.ok, "total={total}: {:?}", r.summary);
+            assert!(sb.dest_tree().is_empty(), "{:?}", sb.dest_tree());
+        }
+        // Without limits the entry is extracted and counted at its real size
+        let sb = sandbox();
+        let r = extract_tar_bytes(&sb, &tar, |_| {});
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.summary.as_ref().unwrap().bytes_written, 4096);
+        assert_eq!(fs::read(sb.dest.join("big.bin")).unwrap(), data);
+    }
+
+    /// A PAX size record that pushes the running total over
+    /// `max_total_bytes` stops extraction at that entry, in a plain and a
+    /// gzip-compressed tar: earlier entries are kept, and the failed entry
+    /// leaves no file, temporary file or directory.
+    #[test]
+    fn tar_pax_size_counts_toward_the_total_limit() {
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_ustar();
+        h.set_path("a.txt").unwrap();
+        h.set_mode(0o644);
+        h.set_size(60);
+        h.set_cksum();
+        b.append(&h, &[b'a'; 60][..]).unwrap();
+        let record = "11 size=60\n";
+        let mut pax = tar::Header::new_ustar();
+        pax.set_path("PaxHeader/b.bin").unwrap();
+        pax.set_entry_type(tar::EntryType::XHeader);
+        pax.set_size(record.len() as u64);
+        pax.set_cksum();
+        b.append(&pax, record.as_bytes()).unwrap();
+        let mut h = tar::Header::new_ustar();
+        h.set_path("d/b.bin").unwrap();
+        h.set_mode(0o644);
+        h.set_size(10);
+        h.set_cksum();
+        b.append(&h, &[b'b'; 60][..]).unwrap();
+        let tar = b.into_inner().unwrap();
+
+        for compression in [CompressionKind::None, CompressionKind::Gzip] {
+            let sb = sandbox();
+            let bytes = if compression == CompressionKind::Gzip {
+                gzip(&tar)
+            } else {
+                tar.clone()
+            };
+            let r = extract_tar_bytes(&sb, &bytes, |o| {
+                o.compression = compression.clone();
+                o.max_total_bytes = Some(100);
+            });
+            assert_limit_refused(&r, "Total extraction size would exceed maximum (100)");
+            assert_eq!(sb.dest_tree(), vec!["a.txt"], "{compression:?}");
+            sb.assert_outside_intact();
+
+            let sb = sandbox();
+            let r = extract_tar_bytes(&sb, &bytes, |o| {
+                o.compression = compression.clone();
+                o.max_total_bytes = Some(120);
+            });
+            assert!(r.ok, "{:?}", r.error);
+            assert_eq!(r.summary.as_ref().unwrap().bytes_written, 120);
+            assert_eq!(fs::read(sb.dest.join("d/b.bin")).unwrap(), [b'b'; 60]);
+        }
+    }
+
+    /// A GNU sparse entry stores 512 bytes but unpacks to a file of its
+    /// real size; that is the size the limits see and report.
+    #[test]
+    fn tar_sparse_entry_is_limited_by_its_real_size() {
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_path("sparse.bin").unwrap();
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::GNUSparse);
+        h.set_size(512);
+        {
+            let gnu = h.as_gnu_mut().unwrap();
+            gnu.sparse[0].set_offset(64 * 1024 - 512);
+            gnu.sparse[0].set_length(512);
+            gnu.set_real_size(64 * 1024);
+        }
+        h.set_cksum();
+        b.append(&h, &[b'x'; 512][..]).unwrap();
+        let tar = b.into_inner().unwrap();
+
+        let sb = sandbox();
+        let r = extract_tar_bytes(&sb, &tar, |o| o.max_file_bytes = Some(1024));
+        assert_limit_refused(&r, "maximum file size (1024)");
+        assert!(sb.dest_tree().is_empty());
+
+        let sb = sandbox();
+        let r = extract_tar_bytes(&sb, &tar, |o| o.max_file_bytes = Some(64 * 1024));
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.summary.as_ref().unwrap().bytes_written, 64 * 1024);
+        assert_eq!(
+            fs::metadata(sb.dest.join("sparse.bin")).unwrap().len(),
+            64 * 1024
+        );
+    }
+
+    #[test]
+    fn copy_limited_boundaries() {
+        let copy = |data: &[u8], limit: u64| {
+            let mut out = Vec::new();
+            let r = copy_limited(&mut &data[..], &mut out, limit).unwrap();
+            (r, out.len())
+        };
+        assert_eq!(copy(b"", 0), (Some(0), 0));
+        assert_eq!(copy(b"a", 0), (None, 0));
+        assert_eq!(copy(b"abc", 3), (Some(3), 3));
+        assert_eq!(copy(b"abcd", 3), (None, 0));
+        assert_eq!(copy(b"abc", u64::MAX), (Some(3), 3));
+        // Past the first buffer: nothing beyond the limit is written
+        let big = vec![1u8; 200 * 1024];
+        assert_eq!(copy(&big, 200 * 1024), (Some(200 * 1024), 200 * 1024));
+        let (r, n) = copy(&big, 100 * 1024 + 1);
+        assert_eq!(r, None);
+        assert!(n <= 100 * 1024 + 1, "{n}");
+    }
+
+    #[test]
+    fn limit_arithmetic_saturates_instead_of_wrapping() {
+        let mut o = opts(Path::new("x.zip"), Path::new("d"), ArchiveFormat::Zip);
+        assert_eq!(entry_byte_budget(&o, u64::MAX), u64::MAX);
+        o.max_total_bytes = Some(u64::MAX);
+        assert_eq!(entry_byte_budget(&o, u64::MAX - 1), 1);
+        assert_eq!(entry_byte_budget(&o, u64::MAX), 0);
+        o.max_total_bytes = Some(10);
+        assert_eq!(entry_byte_budget(&o, 11), 0);
+        o.max_file_bytes = Some(3);
+        assert_eq!(entry_byte_budget(&o, 0), 3);
+
+        // A recorded size near u64::MAX must not wrap the running total
+        let o = {
+            let mut o = opts(Path::new("x.zip"), Path::new("d"), ArchiveFormat::Zip);
+            o.max_total_bytes = Some(100);
+            o
+        };
+        assert!(check_entry_size(&o, "f", u64::MAX - 5, 10).is_err());
+        assert!(check_entry_size(&o, "f", 90, 10).is_ok());
+        assert!(check_entry_size(&o, "f", 91, 10).is_err());
+    }
+
+    #[test]
+    fn truncated_tar_entry_keeps_the_existing_file() {
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_ustar();
+        h.set_path("f").unwrap();
+        h.set_mode(0o644);
+        h.set_size(4096);
+        h.set_cksum();
+        b.append(&h, &vec![b'x'; 4096][..]).unwrap();
+        let tar = b.into_inner().unwrap();
+        let sb = sandbox();
+        fs::write(sb.dest.join("f"), b"original").unwrap();
+        let r = extract_tar_bytes(&sb, &tar[..512 + 1000], |o| o.overwrite = true);
+        assert!(!r.ok);
+        assert_eq!(fs::read(sb.dest.join("f")).unwrap(), b"original");
+        assert_eq!(sb.dest_tree(), vec!["f"]);
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn extract_raw_bytes(
+        sb: &Sandbox,
+        gz: &[u8],
+        tweak: impl Fn(&mut ArchiveExtractOptions),
+    ) -> ArchiveExtractResponse {
+        let archive = sb.root.join("data.gz");
+        fs::write(&archive, gz).unwrap();
+        let mut o = opts(&archive, &sb.dest, ArchiveFormat::Raw);
+        o.compression = CompressionKind::Gzip;
+        tweak(&mut o);
+        extract_archive(o).unwrap()
+    }
+
+    #[test]
+    fn raw_stream_over_a_limit_writes_nothing() {
+        let gz = gzip(&vec![0u8; 64 * 1024]);
+        for total in [false, true] {
+            let sb = sandbox();
+            let r = extract_raw_bytes(&sb, &gz, |o| {
+                if total {
+                    o.max_total_bytes = Some(100)
+                } else {
+                    o.max_file_bytes = Some(100)
+                }
+            });
+            assert_limit_refused(&r, "(100)");
+            assert!(sb.dest_tree().is_empty(), "{:?}", sb.dest_tree());
+        }
+        // Exactly at the limit
+        let sb = sandbox();
+        let r = extract_raw_bytes(&sb, &gzip(&[7u8; 100]), |o| {
+            o.max_file_bytes = Some(100);
+            o.max_total_bytes = Some(100);
+        });
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read(sb.dest.join("data")).unwrap(), vec![7u8; 100]);
+    }
+
+    #[test]
+    fn raw_failure_keeps_the_existing_file() {
+        let gz = gzip(&vec![0u8; 64 * 1024]);
+        let truncated = &gz[..gz.len() / 2];
+        for (data, limit) in [(&gz[..], Some(100)), (truncated, None)] {
+            let sb = sandbox();
+            fs::write(sb.dest.join("data"), b"original").unwrap();
+            let r = extract_raw_bytes(&sb, data, |o| {
+                o.overwrite = true;
+                o.max_file_bytes = limit;
+            });
+            assert!(!r.ok);
+            assert_eq!(fs::read(sb.dest.join("data")).unwrap(), b"original");
+            assert_eq!(sb.dest_tree(), vec!["data"]);
+        }
+    }
+
+    fn limit_args(pairs: &[(&str, &str)]) -> Args {
+        let mut a: Args = [("archive", "t.tar"), ("destination", "out")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        for (k, v) in pairs {
+            a.insert(k.to_string(), v.to_string());
+        }
+        a
+    }
+
+    #[test]
+    fn byte_limits_parse_whole_numbers_only() {
+        for key in ["max_file_bytes", "max_total_bytes"] {
+            let o = ArchiveExtractOptions::from_args(&limit_args(&[])).unwrap();
+            assert_eq!((o.max_file_bytes, o.max_total_bytes), (None, None));
+            for (v, want) in [
+                ("0", 0),
+                ("1", 1),
+                ("100", 100),
+                ("007", 7),
+                ("18446744073709551615", u64::MAX),
+            ] {
+                let o = ArchiveExtractOptions::from_args(&limit_args(&[(key, v)])).unwrap();
+                let got = if key == "max_file_bytes" {
+                    o.max_file_bytes
+                } else {
+                    o.max_total_bytes
+                };
+                assert_eq!(got, Some(want), "{key}={v}");
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_byte_limits_are_refused() {
+        let bad = [
+            "",
+            " ",
+            "\t",
+            " 100",
+            "100 ",
+            "-1",
+            "-0",
+            "+100",
+            "1e6",
+            "1E6",
+            "1.5",
+            "100.0",
+            ".5",
+            "0x10",
+            "10k",
+            "10MB",
+            "1_000",
+            "1,000",
+            "abc",
+            "none",
+            "null",
+            "unlimited",
+            "inf",
+            "NaN",
+            "18446744073709551616",
+            "99999999999999999999999999",
+            "\u{0661}",
+        ];
+        for (key, code) in [
+            ("max_file_bytes", ARCHIVE_EXTRACT_INVALID_MAX_FILE_SIZE),
+            ("max_total_bytes", ARCHIVE_EXTRACT_INVALID_MAX_SIZE),
+        ] {
+            for v in bad {
+                let err = ArchiveExtractOptions::from_args(&limit_args(&[(key, v)]))
+                    .expect_err(&format!("{key}={v:?} accepted"));
+                let msg = map_extract_validation_error(&err);
+                assert!(msg.starts_with(&format!("[{code}] ")), "{key}={v:?}: {msg}");
+                assert!(msg.contains(&format!("{v:?}")), "{msg}");
+            }
+        }
+    }
+
+    /// An invalid limit stops the operation before any output exists, even
+    /// next to a valid one and with an archive that would otherwise extract.
+    #[test]
+    fn invalid_byte_limit_is_refused_before_extraction() {
+        let sb = sandbox();
+        let archive = sb.root.join("t.tar");
+        let mut b = tar::Builder::new(File::create(&archive).unwrap());
+        let mut h = tar::Header::new_gnu();
+        h.set_size(5);
+        h.set_mode(0o644);
+        h.set_cksum();
+        b.append_data(&mut h, "a", &b"hello"[..]).unwrap();
+        b.finish().unwrap();
+        let dest = sb.root.join("new-dest");
+        for pairs in [
+            &[("max_file_bytes", "1e6")][..],
+            &[("max_file_bytes", "100"), ("max_total_bytes", "-1")][..],
+        ] {
+            let mut a = limit_args(pairs);
+            a.insert("archive".into(), archive.display().to_string());
+            a.insert("destination".into(), dest.display().to_string());
+            assert!(ArchiveExtractOptions::from_args(&a).is_err());
+        }
+        assert!(!dest.exists());
+        sb.assert_outside_intact();
     }
 }
