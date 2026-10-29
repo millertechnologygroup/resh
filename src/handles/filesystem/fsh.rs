@@ -2049,6 +2049,18 @@ impl FsHandle {
             .into());
         }
 
+        // An option-shaped operand would be read by mount as an option
+        if config.target.starts_with('-') {
+            return Err(
+                FsError::InvalidMountConfig("target cannot start with '-'".to_string()).into(),
+            );
+        }
+        if config.source.as_ref().is_some_and(|s| s.starts_with('-')) {
+            return Err(
+                FsError::InvalidMountConfig("source cannot start with '-'".to_string()).into(),
+            );
+        }
+
         // Contradictory flags
         if config.remount && config.fail_if_mounted {
             return Err(FsError::InvalidMountConfig(
@@ -2214,6 +2226,7 @@ impl FsHandle {
                 cmd.push(config.options.join(","));
             }
 
+            cmd.push("--".to_string());
             if let Some(ref source) = config.source {
                 cmd.push(source.clone());
             }
@@ -2298,6 +2311,8 @@ impl FsHandle {
             cmd.arg("-o").arg(config.options.join(","));
         }
 
+        // Operands after `--` are never read as options
+        cmd.arg("--");
         if let Some(ref source) = config.source {
             cmd.arg(source);
         }
@@ -2644,6 +2659,7 @@ impl FsHandle {
                 cmd_parts.push("-f".to_string());
             }
 
+            cmd_parts.push("--".to_string());
             cmd_parts.push(mount.target.clone());
 
             commands.push(cmd_parts.join(" "));
@@ -2752,6 +2768,7 @@ impl FsHandle {
             cmd.arg("-f");
         }
 
+        cmd.arg("--");
         cmd.arg(&mount.target);
 
         // Set environment variables if provided
@@ -10476,5 +10493,110 @@ mod tests {
         h.call("help", &args, &mut io).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("Handle: fs\nVerb: resize"));
+    }
+}
+
+// v1.0.5-beta: mount and umount operands cannot be read as options.
+#[cfg(test)]
+mod mount_argument_tests {
+    use super::*;
+
+    fn handle() -> FsHandle {
+        FsHandle {
+            alias: "local".to_string(),
+        }
+    }
+
+    fn config(source: Option<&str>, target: &str) -> MountConfig {
+        MountConfig {
+            source: source.map(str::to_string),
+            target: target.to_string(),
+            r#type: Some("ext4".to_string()),
+            dry_run: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn option_shaped_source_or_target_is_refused() {
+        let h = handle();
+        for (source, target, field) in [
+            (Some("-Pprobe"), "/mnt/x", "source"),
+            (Some("--probe"), "/mnt/x", "source"),
+            (Some("/dev/sdb1"), "-probe", "target"),
+            (None, "--probe-target-only", "target"),
+            (Some("-"), "/mnt/x", "source"),
+        ] {
+            let err = h
+                .validate_mount_config(&config(source, target))
+                .expect_err(&format!("{source:?} {target}"));
+            assert!(
+                err.to_string()
+                    .contains(&format!("{field} cannot start with '-'")),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_sources_and_targets_are_accepted() {
+        let h = handle();
+        for (source, target) in [
+            (Some("/dev/sdb1"), "/mnt/usb"),
+            (Some("server:/export"), "/mnt/nfs"),
+            (Some("//host/share"), "/mnt/smb"),
+            (Some("UUID=1234-abcd"), "/mnt/data"),
+            (Some("tmpfs"), "/mnt/a-b"),
+            (Some("/data/-odd-name"), "/mnt/-odd"),
+            (None, "/mnt/fstab-entry"),
+            // Relative targets still only warn
+            (Some("/dev/sdb1"), "mnt/rel"),
+        ] {
+            assert!(
+                h.validate_mount_config(&config(source, target)).is_ok(),
+                "{source:?} {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn planned_mount_puts_operands_after_a_separator() {
+        let h = handle();
+        let mut c = config(Some("/dev/sdb1"), "/nonexistent/resh-7a-mnt");
+        c.options = vec!["noatime".to_string()];
+        c.create_target = false;
+        let r = h.create_mount_plan(&c, false).unwrap();
+        assert_eq!(
+            r.plan.unwrap().mount_commands,
+            vec!["mount -t ext4 -o noatime -- /dev/sdb1 /nonexistent/resh-7a-mnt"]
+        );
+
+        let c = config(None, "/nonexistent/resh-7a-mnt");
+        let r = h.create_mount_plan(&c, false).unwrap();
+        assert!(r.plan.unwrap().mount_commands[0].ends_with(" -- /nonexistent/resh-7a-mnt"));
+    }
+
+    #[test]
+    fn option_shaped_values_are_refused_through_the_handle() {
+        let h = handle();
+        for (k, v) in [("source", "-Pprobe"), ("target", "-probe")] {
+            for dry_run in ["true", "false"] {
+                let mut args = Args::new();
+                args.insert("target".into(), "/nonexistent/resh-7a-mnt".into());
+                args.insert("source".into(), "/dev/null".into());
+                args.insert(k.into(), v.into());
+                args.insert("dry_run".into(), dry_run.into());
+                let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+                let mut io = IoStreams {
+                    stdin: &mut i,
+                    stdout: &mut o,
+                    stderr: &mut e,
+                };
+                let st = h.call("mount", &args, &mut io).unwrap();
+                assert!(!st.ok, "{k}={v} dry_run={dry_run}");
+                assert!(!std::path::Path::new(v).exists());
+                assert!(!std::path::Path::new("/nonexistent/resh-7a-mnt").exists());
+            }
+        }
     }
 }

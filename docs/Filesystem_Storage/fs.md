@@ -185,6 +185,9 @@ resh fs://local.unmount target=/dev/sdb1 by=source detach_children=true
 `create_target`, `make_parents`, `fail_if_mounted`, `dry_run`,
 `timeout_ms`. An existing compatible mount returns action
 `already_mounted`; `dry_run` returns action `planned` with a `plan`.
+`source` and `target` must not start with `-`; they are passed to `mount`
+after `--`, so they are never read as options. A relative `target` still
+only prints a warning and is resolved from the current directory.
 
 `unmount` arguments: `target` (required), `by=target|source|auto`, `force`,
 `lazy`, `detach_children`, `fail_if_not_mounted`, `dry_run`, `timeout_ms`.
