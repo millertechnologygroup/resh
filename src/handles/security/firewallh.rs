@@ -3305,8 +3305,7 @@ impl FirewallHandle {
     pub fn validate_port_value(&self, port: &str) -> Result<()> {
         // Handle port ranges like "1000-2000" or single ports like "80"
         let number = |part: &str| {
-            let digits = !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-            digits
+            is_canonical_decimal(part)
                 .then(|| part.parse::<u16>().ok())
                 .flatten()
                 .filter(|p| *p != 0)
@@ -5699,8 +5698,8 @@ impl FirewallHandle {
         match proto.to_lowercase().as_str() {
             "tcp" | "udp" | "icmp" | "icmpv6" | "any" | "all" => Ok(()),
             _ => {
-                // Allow numeric protocol numbers
-                if proto.bytes().all(|b| b.is_ascii_digit()) && proto.parse::<u8>().is_ok() {
+                // Allow numeric protocol numbers (decimal only; see R5-03).
+                if is_canonical_decimal(proto) && proto.parse::<u8>().is_ok() {
                     Ok(())
                 } else {
                     Err(FirewallError::InvalidProto {
@@ -5726,7 +5725,7 @@ impl FirewallHandle {
         let addr: std::net::IpAddr = addr.parse().map_err(|_| invalid())?;
         if let Some(prefix) = prefix {
             let max = if addr.is_ipv4() { 32 } else { 128 };
-            let digits = !prefix.is_empty() && prefix.bytes().all(|b| b.is_ascii_digit());
+            let digits = is_canonical_decimal(prefix);
             if !digits || prefix.parse::<u8>().map_or(true, |p| p > max) {
                 return Err(invalid());
             }
@@ -10271,6 +10270,16 @@ fn any_address(family: &str) -> &'static str {
 
 /// Normalizes an address for comparison: unset and "any" addresses
 /// (0.0.0.0/0, ::/0, any, Anywhere) compare equal to None.
+/// A numeric firewall field (port, protocol number, CIDR prefix length) must
+/// be an unambiguous decimal literal. A leading zero on a multi-digit value
+/// ("022", "010") is rejected rather than guessed: iptables/nft and the C
+/// resolvers behind them read such a token as octal, so "022" would install
+/// port 18 and "/010" an 8-bit prefix while resh validated and reported 22 and
+/// 10 (R5-03). One grammar, decimal only, no silent re-interpretation.
+fn is_canonical_decimal(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s.len() == 1 || !s.starts_with('0'))
+}
+
 fn normalize_address(addr: Option<&String>) -> Option<String> {
     let a = addr?;
     match a.to_lowercase().as_str() {
@@ -11427,6 +11436,67 @@ COMMIT
             h.rules_match(&spec, &commented[0]),
             "a comment alone does not narrow a rule"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // R5-03: numeric fields are unambiguous decimal; leading-zero (octal)
+    // forms are rejected, not silently re-read by the backend.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn r5_03_canonical_decimal_grammar() {
+        // Single zero is a legitimate value (e.g. /0, proto 0).
+        assert!(is_canonical_decimal("0"));
+        assert!(is_canonical_decimal("22"));
+        assert!(is_canonical_decimal("65535"));
+        // Multi-digit leading zero is ambiguous (octal) and rejected.
+        assert!(!is_canonical_decimal("00"));
+        assert!(!is_canonical_decimal("022"));
+        assert!(!is_canonical_decimal("010"));
+        // Not decimal at all.
+        assert!(!is_canonical_decimal(""));
+        assert!(!is_canonical_decimal("0x16"));
+        assert!(!is_canonical_decimal("+22"));
+        assert!(!is_canonical_decimal("2-3"));
+    }
+
+    #[test]
+    fn r5_03_leading_zero_port_is_rejected() {
+        let h = handle();
+        // Baseline accepted "022" (parsed decimal 22) then handed "022" to the
+        // backend, which reads it as octal 18. Now rejected outright.
+        assert!(h.validate_port_value("022").is_err());
+        assert!(h.validate_port_value("010").is_err());
+        assert!(h.validate_port_value("0100-200").is_err());
+        // Canonical decimal still accepted, including ranges.
+        assert!(h.validate_port_value("22").is_ok());
+        assert!(h.validate_port_value("100-200").is_ok());
+        // Overflow and zero remain rejected (unchanged).
+        assert!(h.validate_port_value("99999").is_err());
+        assert!(h.validate_port_value("0").is_err());
+    }
+
+    #[test]
+    fn r5_03_leading_zero_prefix_is_rejected() {
+        let h = handle();
+        // "/010" would be an 8-bit prefix to the backend (octal), far broader
+        // than the /10 resh validated and reported.
+        assert!(h.validate_cidr("10.0.0.0/010").is_err());
+        assert!(h.validate_cidr("2001:db8::/040").is_err());
+        // Canonical prefixes accepted, including the single-zero /0.
+        assert!(h.validate_cidr("10.0.0.0/10").is_ok());
+        assert!(h.validate_cidr("0.0.0.0/0").is_ok());
+        assert!(h.validate_cidr("2001:db8::/40").is_ok());
+        // Out-of-range prefix still rejected.
+        assert!(h.validate_cidr("10.0.0.0/33").is_err());
+    }
+
+    #[test]
+    fn r5_03_leading_zero_proto_number_is_rejected() {
+        let h = handle();
+        assert!(h.validate_proto("06").is_err());
+        assert!(h.validate_proto("6").is_ok());
+        assert!(h.validate_proto("tcp").is_ok());
     }
 
     // -----------------------------------------------------------------------
