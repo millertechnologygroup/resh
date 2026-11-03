@@ -2,6 +2,7 @@ pub mod envelope;
 pub mod help;
 pub mod lenient;
 pub mod parse;
+pub mod process;
 pub mod registry;
 pub mod secure_fs;
 pub mod status;
@@ -23,6 +24,8 @@ pub fn dispatch_stage(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<Status> {
+    // Each stage has its own time; an earlier deadline must not end this one.
+    process::clear_limit();
     let mut parsed = parse::parse_stage(stage_str)?;
 
     // Add CLI arguments to parsed arguments
