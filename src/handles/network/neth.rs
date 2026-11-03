@@ -351,7 +351,8 @@ impl DnsResolver for SystemDnsResolver {
                 // Use system resolver
                 let mut opts = ResolverOpts::default();
                 opts.timeout = timeout;
-                TokioAsyncResolver::tokio(ResolverConfig::default(), opts)
+                let config = crate::handles::network::dnsh::system_resolver_config()?;
+                TokioAsyncResolver::tokio(config, opts)
             };
 
             self.perform_lookup(&resolver, name, rtype).await
@@ -1014,8 +1015,9 @@ impl NetHandle {
 
         cmd.arg(host);
 
-        let output = cmd
-            .output()
+        // ping's own -W bounds a reply, not a stuck tool.
+        let limit = Duration::from_millis(timeout_ms.saturating_mul(count as u64 + 1));
+        let output = crate::core::process::run(&mut cmd, Some(limit))
             .with_context(|| format!("Failed to execute ping command"))?;
 
         let stdout_str = String::from_utf8_lossy(&output.stdout);
@@ -1505,6 +1507,12 @@ impl NetHandle {
         });
 
         writeln!(io.stdout, "{}", serde_json::to_string(&output)?)?;
+        // Every probe failing, for example on a name that does not resolve,
+        // says nothing about the ports.
+        let ports = output["ports"].as_array();
+        if ports.is_some_and(|p| !p.is_empty() && p.iter().all(|p| p["state"] == "error")) {
+            return Ok(Status::err(1, "no port could be probed"));
+        }
         Ok(Status::ok())
     }
 

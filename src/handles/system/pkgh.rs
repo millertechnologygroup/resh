@@ -1,3 +1,4 @@
+use crate::core::process::AsyncBoundedOutput as _;
 use anyhow::{Result, bail};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -1645,7 +1646,7 @@ impl PkgHandle {
 
         // Perform actual install with timeout
         let result = timeout(
-            Duration::from_millis(config.timeout_ms),
+            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
             self.perform_install(&config, &manager),
         )
         .await
@@ -2087,17 +2088,11 @@ impl PkgHandle {
         };
         cmd.arg(package_name);
 
-        let output = cmd
-            .command()
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            .map_err(|e| {
-                PkgError::InstallFailed(format!("Failed to check package status: {}", e))
-            })?;
+        let output = cmd.command().bounded_output().await.map_err(|e| {
+            PkgError::InstallFailed(format!("Failed to check package status: {}", e))
+        })?;
 
-        Ok(output.success())
+        Ok(output.status.success())
     }
 
     /// Update package cache
@@ -2108,7 +2103,7 @@ impl PkgHandle {
             .command()
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::UpdateCacheFailed(format!("Failed to update cache: {}", e)))?;
 
@@ -2179,7 +2174,7 @@ impl PkgHandle {
         let output = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::InstallFailed(format!("Failed to execute install: {}", e)))?;
 
@@ -2236,7 +2231,7 @@ impl PkgHandle {
 
         let output = cmd
             .command()
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::InstallFailed(format!("Failed to get version: {}", e)))?;
 
@@ -2314,7 +2309,7 @@ impl PkgHandle {
 
         // Perform actual remove with timeout
         let result = timeout(
-            Duration::from_millis(config.timeout_ms),
+            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
             self.perform_remove(&config, &manager),
         )
         .await
@@ -2586,7 +2581,7 @@ impl PkgHandle {
         let output = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::RemoveFailed(format!("Failed to execute remove: {}", e)))?;
 
@@ -2714,7 +2709,7 @@ impl PkgHandle {
                 .command()
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .output()
+                .bounded_output()
                 .await
                 .map_err(|e| PkgError::RemoveFailed(format!("Failed to run autoremove: {}", e)))?;
 
@@ -2812,7 +2807,7 @@ impl PkgHandle {
 
         // Perform actual update with timeout
         let result = timeout(
-            Duration::from_millis(config.timeout_ms),
+            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
             self.perform_update(&config, &manager),
         )
         .await
@@ -3015,7 +3010,7 @@ impl PkgHandle {
 
         // Perform actual upgrade with timeout
         let result = timeout(
-            Duration::from_millis(config.timeout_ms),
+            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
             self.perform_upgrade(&config, &manager),
         )
         .await
@@ -3189,7 +3184,7 @@ impl PkgHandle {
         let (cmd, ignore_status, skip_header) =
             self.list_updates_command(&config.packages, manager)?;
 
-        let output = cmd.command().output().await.map_err(|e| {
+        let output = cmd.command().bounded_output().await.map_err(|e| {
             PkgError::UpdateCheckFailed(format!("Failed to check for updates: {}", e))
         })?;
 
@@ -3467,9 +3462,7 @@ impl PkgHandle {
             .command()
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| PkgError::UpgradeCheckFailed(format!("Failed to spawn command: {}", e)))?
-            .wait_with_output()
+            .bounded_output()
             .await
             .map_err(|e| {
                 PkgError::UpgradeCheckFailed(format!("Failed to execute command: {}", e))
@@ -3598,16 +3591,9 @@ impl PkgHandle {
             }
         }
 
-        let output = command
-            .spawn()
-            .map_err(|e| {
-                PkgError::UpgradeFailed(format!("Failed to spawn upgrade command: {}", e))
-            })?
-            .wait_with_output()
-            .await
-            .map_err(|e| {
-                PkgError::UpgradeFailed(format!("Failed to execute upgrade command: {}", e))
-            })?;
+        let output = command.bounded_output().await.map_err(|e| {
+            PkgError::UpgradeFailed(format!("Failed to execute upgrade command: {}", e))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3855,7 +3841,7 @@ impl PkgHandle {
         let output = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::UpdateFailed(format!("Failed to execute upgrade: {}", e)))?;
 
@@ -3917,7 +3903,7 @@ impl PkgHandle {
 
         // Perform info query with timeout
         let result = timeout(
-            Duration::from_millis(config.timeout_ms),
+            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
             self.perform_info_query(&config, &manager),
         )
         .await
@@ -4736,7 +4722,7 @@ impl PkgHandle {
 
         // Perform search query with timeout
         let result = timeout(
-            Duration::from_millis(config.timeout_ms),
+            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
             self.perform_search_query(&config, &manager),
         )
         .await
@@ -5583,7 +5569,7 @@ impl PkgHandle {
         }
 
         let output = command
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::InfoQueryFailed(format!("Failed to run {}: {}", cmd, e)))?;
 
@@ -5604,7 +5590,7 @@ impl PkgHandle {
 
         // Perform list installed operation with timeout
         let result = timeout(
-            Duration::from_millis(config.timeout_ms),
+            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
             self.perform_list_installed(&config, &manager),
         )
         .await
@@ -5731,7 +5717,7 @@ impl PkgHandle {
             }
         }
 
-        let output = cmd.output().await.map_err(|e| {
+        let output = cmd.bounded_output().await.map_err(|e| {
             PkgError::ListInstalledFailed(format!("dpkg-query command failed: {}", e))
         })?;
 
@@ -5791,7 +5777,7 @@ impl PkgHandle {
         let mut cmd = AsyncCommand::new("apt-cache");
         cmd.arg("policy").arg(package_name);
 
-        let output = cmd.output().await.map_err(|e| {
+        let output = cmd.bounded_output().await.map_err(|e| {
             PkgError::ListInstalledFailed(format!("apt-cache policy failed: {}", e))
         })?;
 
@@ -5817,7 +5803,7 @@ impl PkgHandle {
             .arg(package_name);
 
         let output = cmd
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::ListInstalledFailed(format!("dpkg-query size failed: {}", e)))?;
 
@@ -5834,7 +5820,7 @@ impl PkgHandle {
         let mut cmd = AsyncCommand::new("apt-mark");
         cmd.arg("showmanual");
 
-        let output = cmd.output().await.map_err(|e| {
+        let output = cmd.bounded_output().await.map_err(|e| {
             PkgError::ListInstalledFailed(format!("apt-mark showmanual failed: {}", e))
         })?;
 
@@ -5882,7 +5868,7 @@ impl PkgHandle {
         }
 
         let output = cmd
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::ListInstalledFailed(format!("rpm command failed: {}", e)))?;
 
@@ -5950,7 +5936,7 @@ impl PkgHandle {
             .arg("%{repoid}")
             .arg(package_name);
 
-        let output = cmd.output().await.map_err(|e| {
+        let output = cmd.bounded_output().await.map_err(|e| {
             PkgError::ListInstalledFailed(format!("{} repoquery failed: {}", manager_cmd, e))
         })?;
 
@@ -5969,7 +5955,7 @@ impl PkgHandle {
         cmd.arg("-qi").arg(package_name);
 
         let output = cmd
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::ListInstalledFailed(format!("rpm -qi failed: {}", e)))?;
 
@@ -5996,7 +5982,7 @@ impl PkgHandle {
             .arg("%{installreason}")
             .arg(package_name);
 
-        let output = cmd.output().await.map_err(|e| {
+        let output = cmd.bounded_output().await.map_err(|e| {
             PkgError::ListInstalledFailed(format!("dnf repoquery installreason failed: {}", e))
         })?;
 
@@ -6030,7 +6016,7 @@ impl PkgHandle {
         }
 
         let output = cmd
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::ListInstalledFailed(format!("pacman -Q failed: {}", e)))?;
 
@@ -6088,7 +6074,7 @@ impl PkgHandle {
         cmd.arg("-Qi").arg(package_name);
 
         let output = cmd
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::ListInstalledFailed(format!("pacman -Qi failed: {}", e)))?;
 
@@ -6167,7 +6153,7 @@ impl PkgHandle {
         }
 
         let output = cmd
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::ListInstalledFailed(format!("apk info -v failed: {}", e)))?;
 
@@ -6236,7 +6222,7 @@ impl PkgHandle {
         cmd.arg("info").arg("-s").arg(package_name);
 
         let output = cmd
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::ListInstalledFailed(format!("apk info -s failed: {}", e)))?;
 
@@ -6277,7 +6263,7 @@ impl PkgHandle {
         let mut cmd = AsyncCommand::new("brew");
         cmd.arg("info").arg("--json=v2").arg("--installed");
 
-        let output = cmd.output().await.map_err(|e| {
+        let output = cmd.bounded_output().await.map_err(|e| {
             PkgError::ListInstalledFailed(format!("brew info --json failed: {}", e))
         })?;
 
@@ -6340,7 +6326,7 @@ impl PkgHandle {
             }
         }
 
-        let output = cmd.output().await.map_err(|e| {
+        let output = cmd.bounded_output().await.map_err(|e| {
             PkgError::ListInstalledFailed(format!("brew list --versions failed: {}", e))
         })?;
 
@@ -6401,7 +6387,7 @@ impl PkgHandle {
 
         // Perform restore operation with timeout
         let result = timeout(
-            Duration::from_millis(config.timeout_ms),
+            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
             self.perform_restore(&config, &lockfile, &manager),
         )
         .await
@@ -6458,7 +6444,7 @@ impl PkgHandle {
 
         // Perform snapshot operation with timeout
         let result = timeout(
-            Duration::from_millis(config.timeout_ms),
+            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
             self.perform_snapshot(&config, &manager),
         )
         .await
@@ -6603,7 +6589,7 @@ impl PkgHandle {
         // Get OS info - try different methods
         if let Ok(output) = AsyncCommand::new("uname")
             .args(&["-s", "-r", "-m"])
-            .output()
+            .bounded_output()
             .await
         {
             if output.status.success() {
@@ -6619,7 +6605,7 @@ impl PkgHandle {
         // Try to get distribution info
         if let Ok(output) = AsyncCommand::new("lsb_release")
             .args(&["-i", "-r"])
-            .output()
+            .bounded_output()
             .await
         {
             if output.status.success() {
@@ -6690,7 +6676,10 @@ impl PkgHandle {
             ManagerKind::Brew => ("brew", "--version"),
         };
 
-        let version = if let Ok(output) = AsyncCommand::new(binary).arg(version_arg).output().await
+        let version = if let Ok(output) = AsyncCommand::new(binary)
+            .arg(version_arg)
+            .bounded_output()
+            .await
         {
             if output.status.success() {
                 let version_str = String::from_utf8_lossy(&output.stdout);
@@ -6824,7 +6813,7 @@ impl PkgHandle {
         // Get installed packages using dpkg-query
         let output = AsyncCommand::new("dpkg-query")
             .args(&["-W", "-f", "${Package}\\t${Version}\\t${Architecture}\\n"])
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::SnapshotFailed(format!("dpkg-query failed: {}", e)))?;
 
@@ -6897,7 +6886,7 @@ impl PkgHandle {
     async fn get_apt_manual_packages(&self) -> Result<std::collections::HashSet<String>, PkgError> {
         let output = AsyncCommand::new("apt-mark")
             .arg("showmanual")
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::SnapshotFailed(format!("apt-mark showmanual failed: {}", e)))?;
 
@@ -6912,7 +6901,7 @@ impl PkgHandle {
     async fn get_apt_held_packages(&self) -> Result<std::collections::HashSet<String>, PkgError> {
         let output = AsyncCommand::new("apt-mark")
             .arg("showhold")
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::SnapshotFailed(format!("apt-mark showhold failed: {}", e)))?;
 
@@ -6927,7 +6916,7 @@ impl PkgHandle {
     async fn get_apt_package_repository(&self, package_name: &str) -> Option<String> {
         if let Ok(output) = AsyncCommand::new("apt-cache")
             .args(&["policy", package_name])
-            .output()
+            .bounded_output()
             .await
         {
             if output.status.success() {
@@ -6960,7 +6949,7 @@ impl PkgHandle {
                 "--queryformat",
                 "%{NAME}|%{EPOCHNUM}:%{VERSION}-%{RELEASE}|%{ARCH}\\n",
             ])
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::SnapshotFailed(format!("rpm query failed: {}", e)))?;
 
@@ -7042,7 +7031,7 @@ impl PkgHandle {
         // We can query this using dnf history userinstalled or repoquery
         let output = AsyncCommand::new("dnf")
             .args(&["history", "userinstalled"])
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| {
                 PkgError::SnapshotFailed(format!("dnf history userinstalled failed: {}", e))
@@ -7108,7 +7097,7 @@ impl PkgHandle {
                 "%{REPOID}",
                 package_name,
             ])
-            .output()
+            .bounded_output()
             .await
         {
             if output.status.success() {
@@ -7136,7 +7125,7 @@ impl PkgHandle {
                 "--queryformat",
                 "%{NAME}|%{EPOCHNUM}:%{VERSION}-%{RELEASE}|%{ARCH}\\n",
             ])
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| PkgError::SnapshotFailed(format!("rpm query failed: {}", e)))?;
 
@@ -7221,7 +7210,7 @@ impl PkgHandle {
         // Try using yumdb if available
         let output = AsyncCommand::new("yumdb")
             .args(&["search", "reason", "user"])
-            .output()
+            .bounded_output()
             .await;
 
         if let Ok(output) = output {
@@ -7294,7 +7283,7 @@ impl PkgHandle {
         // YUM's repoquery command can show from which repo a package was installed
         if let Ok(output) = AsyncCommand::new("yum")
             .args(&["info", "installed", package_name])
-            .output()
+            .bounded_output()
             .await
         {
             if output.status.success() {
@@ -7317,7 +7306,7 @@ impl PkgHandle {
         // Fallback: try repoquery if available (part of yum-utils)
         if let Ok(output) = AsyncCommand::new("repoquery")
             .args(&["--installed", "--queryformat", "%{REPOID}", package_name])
-            .output()
+            .bounded_output()
             .await
         {
             if output.status.success() {
@@ -7460,7 +7449,7 @@ impl PkgHandle {
         // Get explicitly installed packages using pacman -Qe
         let output = tokio::process::Command::new("pacman")
             .args(&["-Qe", "-q"])
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| {
                 PkgError::SnapshotFailed(format!("Failed to execute pacman -Qe: {}", e))
@@ -7512,7 +7501,7 @@ impl PkgHandle {
         // Query package information using pacman -Qi
         let output = tokio::process::Command::new("pacman")
             .args(&["-Qi", package_name])
-            .output()
+            .bounded_output()
             .await
             .ok()?;
 
@@ -7541,7 +7530,7 @@ impl PkgHandle {
         // Query package architecture using pacman -Qi
         let output = tokio::process::Command::new("pacman")
             .args(&["-Qi", package_name])
-            .output()
+            .bounded_output()
             .await
             .ok()?;
 
@@ -7765,7 +7754,7 @@ impl PkgHandle {
         // Query package repository using apk policy
         let output = tokio::process::Command::new("apk")
             .args(&["policy", package_name])
-            .output()
+            .bounded_output()
             .await
             .ok()?;
 
@@ -7799,7 +7788,7 @@ impl PkgHandle {
         // Query package architecture using apk info
         let output = tokio::process::Command::new("apk")
             .args(&["info", "-a", package_name])
-            .output()
+            .bounded_output()
             .await
             .ok()?;
 
@@ -7944,7 +7933,7 @@ impl PkgHandle {
         // Get leaf packages (explicitly installed, not dependencies)
         let output = tokio::process::Command::new("brew")
             .args(&["leaves"])
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| {
                 PkgError::SnapshotFailed(format!("Failed to execute brew leaves: {}", e))
@@ -7971,7 +7960,7 @@ impl PkgHandle {
         // Get pinned packages using brew list --pinned
         let output = tokio::process::Command::new("brew")
             .args(&["list", "--pinned"])
-            .output()
+            .bounded_output()
             .await
             .map_err(|e| {
                 PkgError::SnapshotFailed(format!("Failed to execute brew list --pinned: {}", e))
@@ -7998,7 +7987,7 @@ impl PkgHandle {
         // Query package version using brew info --json
         let output = tokio::process::Command::new("brew")
             .args(&["info", "--json=v2", package_name])
-            .output()
+            .bounded_output()
             .await
             .ok()?;
 
@@ -8043,7 +8032,7 @@ impl PkgHandle {
         // Query package tap (repository) using brew info --json
         let output = tokio::process::Command::new("brew")
             .args(&["info", "--json=v2", package_name])
-            .output()
+            .bounded_output()
             .await
             .ok()?;
 
@@ -8076,7 +8065,7 @@ impl PkgHandle {
         // Homebrew bottles are architecture-specific
         let output = tokio::process::Command::new("uname")
             .arg("-m")
-            .output()
+            .bounded_output()
             .await
             .ok()?;
 
@@ -8776,7 +8765,7 @@ impl PkgHandle {
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let output = cmd.output().await.map_err(|e| {
+        let output = cmd.bounded_output().await.map_err(|e| {
             PkgError::RestoreApplyFailed(format!("Command execution failed: {}", e))
         })?;
 
@@ -8967,7 +8956,7 @@ async fn detect_os_name_and_version() -> Result<(Option<String>, Option<String>)
         // Fallback to lsb_release command
         if let Ok(output) = AsyncCommand::new("lsb_release")
             .args(&["-si"])
-            .output()
+            .bounded_output()
             .await
         {
             if output.status.success() {
@@ -8976,7 +8965,7 @@ async fn detect_os_name_and_version() -> Result<(Option<String>, Option<String>)
                 // Get version
                 let os_version = if let Ok(version_output) = AsyncCommand::new("lsb_release")
                     .args(&["-sr"])
-                    .output()
+                    .bounded_output()
                     .await
                 {
                     if version_output.status.success() {
@@ -8997,7 +8986,11 @@ async fn detect_os_name_and_version() -> Result<(Option<String>, Option<String>)
         }
 
         // Fallback to uname
-        if let Ok(output) = AsyncCommand::new("uname").args(&["-s"]).output().await {
+        if let Ok(output) = AsyncCommand::new("uname")
+            .args(&["-s"])
+            .bounded_output()
+            .await
+        {
             if output.status.success() {
                 let os_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 return Ok((Some(os_name), None));
@@ -9013,7 +9006,7 @@ async fn detect_os_name_and_version() -> Result<(Option<String>, Option<String>)
         let os_name = Some("macOS".to_string());
         let os_version = if let Ok(output) = AsyncCommand::new("sw_vers")
             .args(&["-productVersion"])
-            .output()
+            .bounded_output()
             .await
         {
             if output.status.success() {
@@ -9032,18 +9025,18 @@ async fn detect_os_name_and_version() -> Result<(Option<String>, Option<String>)
     {
         // Get Windows version from ver command or registry
         let os_name = Some("Windows".to_string());
-        let os_version =
-            if let Ok(output) = AsyncCommand::new("cmd").args(&["/c", "ver"]).output().await {
-                if output.status.success() {
-                    let version_str = String::from_utf8_lossy(&output.stdout);
-                    // Extract version number from output like "Microsoft Windows [Version 10.0.19041.1234]"
-                    if let Some(start) = version_str.find("Version ") {
-                        let version_part = &version_str[start + 8..];
-                        if let Some(end) = version_part.find(']') {
-                            Some(version_part[..end].trim().to_string())
-                        } else {
-                            None
-                        }
+        let os_version = if let Ok(output) = AsyncCommand::new("cmd")
+            .args(&["/c", "ver"])
+            .bounded_output()
+            .await
+        {
+            if output.status.success() {
+                let version_str = String::from_utf8_lossy(&output.stdout);
+                // Extract version number from output like "Microsoft Windows [Version 10.0.19041.1234]"
+                if let Some(start) = version_str.find("Version ") {
+                    let version_part = &version_str[start + 8..];
+                    if let Some(end) = version_part.find(']') {
+                        Some(version_part[..end].trim().to_string())
                     } else {
                         None
                     }
@@ -9052,7 +9045,10 @@ async fn detect_os_name_and_version() -> Result<(Option<String>, Option<String>)
                 }
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         Ok((os_name, os_version))
     }
@@ -9060,13 +9056,19 @@ async fn detect_os_name_and_version() -> Result<(Option<String>, Option<String>)
     #[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
     {
         // BSD systems
-        if let Ok(output) = AsyncCommand::new("uname").args(&["-s"]).output().await {
+        if let Ok(output) = AsyncCommand::new("uname")
+            .args(&["-s"])
+            .bounded_output()
+            .await
+        {
             if output.status.success() {
                 let os_name = Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
 
                 // Get version
-                let os_version = if let Ok(version_output) =
-                    AsyncCommand::new("uname").args(&["-r"]).output().await
+                let os_version = if let Ok(version_output) = AsyncCommand::new("uname")
+                    .args(&["-r"])
+                    .bounded_output()
+                    .await
                 {
                     if version_output.status.success() {
                         Some(
@@ -9111,7 +9113,11 @@ async fn detect_kernel_version() -> Option<String> {
         target_os = "netbsd"
     ))]
     {
-        if let Ok(output) = AsyncCommand::new("uname").args(&["-r"]).output().await {
+        if let Ok(output) = AsyncCommand::new("uname")
+            .args(&["-r"])
+            .bounded_output()
+            .await
+        {
             if output.status.success() {
                 return Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
             }
@@ -9123,7 +9129,11 @@ async fn detect_kernel_version() -> Option<String> {
     {
         // Windows kernel version is typically the same as OS version
         // Get from wmic or systeminfo
-        if let Ok(output) = AsyncCommand::new("cmd").args(&["/c", "ver"]).output().await {
+        if let Ok(output) = AsyncCommand::new("cmd")
+            .args(&["/c", "ver"])
+            .bounded_output()
+            .await
+        {
             if output.status.success() {
                 let version_str = String::from_utf8_lossy(&output.stdout);
                 if let Some(start) = version_str.find("Version ") {
@@ -11341,7 +11351,7 @@ mod cmdline_safety_tests {
     fn execution_failures_are_reported() {
         let missing = CmdLine::lit("/nonexistent/resh-test-pkg-manager");
         assert!(
-            rt().block_on(async { missing.command().output().await })
+            rt().block_on(async { missing.command().bounded_output().await })
                 .is_err()
         );
         let dir = TempDir::new().unwrap();
@@ -11349,7 +11359,7 @@ mod cmdline_safety_tests {
         fs_write_exec(&mock, "#!/bin/sh\necho boom >&2\nexit 3\n");
         let failing = CmdLine::lit(&mock.display().to_string());
         let out = rt()
-            .block_on(async { failing.command().output().await })
+            .block_on(async { failing.command().bounded_output().await })
             .unwrap();
         assert_eq!(out.status.code(), Some(3));
         assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "boom");

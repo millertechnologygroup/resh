@@ -3183,6 +3183,7 @@ fn run_real_process(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
+    crate::core::process::contain(&mut command);
     let mut child = command
         .spawn()
         .map_err(|e| RunError::Spawn(cmd.program.clone(), e))?;
@@ -3234,8 +3235,8 @@ fn run_real_process(
         }
         if let Some(t) = timeout {
             if start.elapsed() >= t {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::core::process::stop_tree(&cmd.program, child.id() as libc::pid_t);
+                let _ = child.try_wait();
                 return Err(RunError::Timeout);
             }
         }

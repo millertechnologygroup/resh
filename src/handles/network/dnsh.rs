@@ -160,8 +160,8 @@ ptr_name and forward_addresses fields."#,
         },
         VerbHelp {
             name: "trace",
-            definition: "Walks DNS delegation from the root servers toward a name, querying \
-                each zone's name servers, and reports every hop.",
+            definition: "Asks the given root_servers, or the system resolvers, for a name and \
+                reports the answer, without following referrals or filling authority.",
             detail: Some(VerbDetail {
                 usage: "resh dns://.trace name=<name> [rtype=<type>] [root_servers=<ip,...>]\n  \
                     [timeout_ms=<ms>] [max_depth=<n>] [prefer_ipv6=true|false]\n  \
@@ -3037,7 +3037,7 @@ pub async fn perform_dns_lookup(opts: DnsLookupOptions) -> Result<DnsLookupRespo
             resolver_opts.validate = true;
         }
 
-        (ResolverConfig::default(), resolver_opts)
+        (system_resolver_config()?, resolver_opts)
     } else {
         // Use custom servers
         let mut config = ResolverConfig::new();
@@ -3333,6 +3333,16 @@ impl DnsHandle {
     }
 
     fn verb_resolve(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        // Only a reverse lookup has anything to validate.
+        if args.get("validate_reverse").is_some_and(|v| v == "true")
+            && args.get("mode").map(String::as_str) != Some("reverse")
+        {
+            return Ok(Status::err(
+                2,
+                "validate_reverse=true needs mode=reverse; nothing was done",
+            ));
+        }
+
         // Parse arguments
         let opts = match DnsResolveOptions::from_args(args) {
             Ok(opts) => opts,
@@ -4027,9 +4037,17 @@ async fn perform_zone_fetch(opts: DnsZoneFetchOptions) -> Result<DnsZoneFetchRes
     Ok(response)
 }
 
+/// The host's own resolvers. There is no fallback: a query sent to a public
+/// resolver instead would leak the name and answer for a different view.
+pub(crate) fn system_resolver_config() -> Result<ResolverConfig> {
+    let (config, _) = trust_dns_resolver::system_conf::read_system_conf()
+        .context("failed to read the system resolver configuration")?;
+    Ok(config)
+}
+
 // Helper function to resolve authoritative servers for a zone
 async fn resolve_authoritative_servers(zone: &str, prefer_ipv6: bool) -> Result<Vec<String>> {
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+    let resolver = TokioAsyncResolver::tokio(system_resolver_config()?, ResolverOpts::default());
 
     // Query for NS records
     let zone_name = Name::from_str(zone)?;
@@ -5165,7 +5183,7 @@ async fn resolve_target_servers(opts: &DnsZoneUpdateOptions) -> Result<Vec<Strin
     }
 
     // Auto-discover authoritative nameservers for the zone
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+    let resolver = TokioAsyncResolver::tokio(system_resolver_config()?, ResolverOpts::default());
 
     let zone_name = normalize_zone_name(&opts.zone);
     let zone_name = Name::from_str(&zone_name)?;

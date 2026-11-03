@@ -1,4 +1,5 @@
 // src/handles/logh.rs
+use crate::core::process::BoundedOutput as _;
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 use std::fs::{File, metadata};
@@ -232,10 +233,14 @@ impl LogHandle {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .bounded_output()
             .with_context(|| format!("Failed to execute journalctl for service {}", service))?;
 
-        if !output.status.success() {
+        // journalctl exits 0 when it may not show the journal: no lines then
+        // means nothing was read, not that nothing was logged.
+        let denied =
+            String::from_utf8_lossy(&output.stderr).contains("not seeing messages from other");
+        if !output.status.success() || denied {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let error_msg = if stderr.is_empty() {
                 format!("journalctl failed for service {}", service)
@@ -256,7 +261,10 @@ impl LogHandle {
             } else {
                 writeln!(io.stderr, "Error: {}", error_msg)?;
             }
-            return Ok(Status::err(output.status.code().unwrap_or(1), &error_msg));
+            return Ok(Status::err(
+                output.status.code().filter(|c| *c != 0).unwrap_or(1),
+                &error_msg,
+            ));
         }
 
         let text = String::from_utf8_lossy(&output.stdout);

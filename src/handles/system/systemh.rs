@@ -1,3 +1,4 @@
+use crate::core::process::BoundedOutput as _;
 use anyhow::{Result, bail};
 use chrono;
 use regex::Regex;
@@ -1497,7 +1498,7 @@ impl SystemProvider for RealSystemProvider {
 
         let output = Command::new("uname")
             .arg("-a")
-            .output()
+            .bounded_output()
             .map_err(|e| SystemError::InternalError(format!("uname failed: {}", e)))?;
 
         let full = String::from_utf8_lossy(&output.stdout).to_string();
@@ -1515,7 +1516,7 @@ impl SystemProvider for RealSystemProvider {
         use std::process::Command;
 
         let output = Command::new("hostname")
-            .output()
+            .bounded_output()
             .map_err(|e| SystemError::InternalError(format!("hostname failed: {}", e)))?;
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -3228,7 +3229,8 @@ impl SystemHandle {
         let mut processed_vars = Vec::new();
 
         for (name, value) in filtered_vars {
-            let should_mask = !opts.include_sensitive && self.is_sensitive_env_var(&name);
+            let should_mask = !opts.include_sensitive
+                && (self.is_sensitive_env_var(&name) || self.value_has_credentials(&value));
             let source_str = self.format_source_kind(&source_kind);
 
             let (final_value, masked, truncated, value_length) = if opts.include_values {
@@ -3390,10 +3392,28 @@ impl SystemHandle {
             || name_lower.contains("secret")
             || name_lower.contains("token")
             || name_lower.contains("api_key")
+            || name_lower.contains("apikey")
+            || name_lower.contains("pass")
+            || name_lower.contains("pwd")
+            || name_lower.contains("cred")
+            || name_lower.contains("cookie")
+            || name_lower.contains("session")
+            || name_lower.contains("database_url")
+            || name_lower.contains("dsn")
             || name_lower.contains("access_key")
             || name_lower.contains("private_key")
             || name_lower.contains("client_secret")
             || (name_lower.contains("auth") && name_lower.contains("key"))
+    }
+
+    /// A URL with user information carries its password whatever the name is.
+    fn value_has_credentials(&self, value: &str) -> bool {
+        value.split_once("://").is_some_and(|(_, rest)| {
+            rest.split(['/', '?', '#'])
+                .next()
+                .unwrap_or("")
+                .contains('@')
+        })
     }
 
     fn truncate_value(&self, value: &str, max_length: u32) -> (String, bool) {

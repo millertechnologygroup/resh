@@ -211,7 +211,13 @@ fn main() -> Result<()> {
         &mut std::io::stdin(),
         &mut buf,
         &mut stderr,
-    )?;
+    );
+
+    let status = match status {
+        Ok(status) => status,
+        Err(e) if core::process::has_lost() => core::status::Status::err(1, e.to_string()),
+        Err(e) => return Err(e),
+    };
 
     if cli.json_pretty {
         if let Ok(text) = String::from_utf8(buf.clone()) {
@@ -229,6 +235,20 @@ fn main() -> Result<()> {
     } else {
         use std::io::Write;
         let _ = std::io::stdout().write_all(&buf);
+    }
+
+    // A tool lost to its deadline decides the outcome, whatever the handle
+    // made of the error: what it did before it stopped is unknown.
+    if let Some(lost) = core::process::take_lost() {
+        let state = match lost.stopped {
+            core::process::Stopped::NotStarted => "was not started; nothing was done",
+            core::process::Stopped::Terminated => {
+                "was stopped; it may already have made changes, so check before retrying"
+            }
+            core::process::Stopped::StillRunning => "could not be stopped and may still be running",
+        };
+        eprintln!("Error: outcome unknown: {} {state}", lost.tool);
+        std::process::exit(124);
     }
 
     if !status.ok {
