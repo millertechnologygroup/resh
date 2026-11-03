@@ -25,6 +25,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.6-beta] - 2026-11-03
+
+Security hotfix built directly on v1.0.5-beta. It is a narrowly scoped
+security maintenance release: it changes only the firewall handle and the
+external-tool execution path, adds no dependencies, and leaves the public
+CLI syntax and the `firewall://.rules.list` JSON schema unchanged. Upgrading
+is recommended for anyone who uses `firewall://` to add or delete rules, or
+who relies on operation timeouts to stop external tools. v1.0.5-beta and,
+for the firewall and timeout issues, earlier versions are affected.
+
+### Security
+- **firewall command injection (R4-02):** every rule field is now validated
+  as a single token before any backend command is built, and a rule a
+  backend cannot express in full is refused rather than silently narrowed.
+  Previously a crafted field value (for example an address, table, chain or
+  comment) could inject additional `nft`/`firewalld` statements at the
+  privilege of the caller.
+- **ambiguous numeric parsing (R5-03):** ports, numeric protocols and CIDR
+  prefix lengths must be written as unambiguous decimal. A leading-zero value
+  such as `dport=022` or `saddr=10.0.0.0/010` is now refused rather than
+  validated as decimal and then applied by the backend as octal (port 18, a
+  /8 prefix), which previously widened or shifted the rule from what was
+  requested and reported.
+- **incorrect rule deletion (R5-02):** a rule's action is read from the rule
+  itself, not from its free-text comment, so `rules.delete action=accept` can
+  no longer select and remove a `drop` rule whose comment happens to contain
+  the word "accept".
+- **incorrect idempotence (R5-01):** an `idempotent` add no longer treats a
+  rule narrowed by an unmodeled match (for example `conntrack --ctstate NEW`
+  or `multiport`) as satisfying a broader request, so the broader rule the
+  operator asked for is actually added instead of silently skipped.
+- **timeout containment (R4-01):** external tools run in a contained process
+  group bounded by the operation deadline; the whole tool tree, including
+  descendants that call `setsid`, is stopped at the deadline, captured output
+  is bounded, and an operation whose outcome cannot be confirmed reports exit
+  code 124 instead of a possibly false success. This covers external tools;
+  the service-manager completion-verification limitation is tracked as a
+  known issue (see `docs/known_issues.md`).
+
+### Notes
+- No dependency changes (`Cargo.lock` is identical to v1.0.5-beta except this
+  package's version).
+- Behavioural changes are safety tightenings: malformed, injection-shaped,
+  ambiguous-numeric or unexpressible firewall inputs that earlier versions
+  accepted are now refused with a `firewall.*` error code and a non-zero exit.
+
+---
+
 ## [1.0.5-beta] - 2026-10-29
 
 Security and stabilization release. Upgrading is recommended for everyone

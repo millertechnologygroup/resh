@@ -3,6 +3,47 @@
 These issues were found while writing the per-verb `--help` metadata, and each
 one was then checked against the code by a separate read-only review.
 
+## v1.0.6-beta security release (2026-11-03)
+
+Security hotfix on top of v1.0.5-beta, scoped to the `firewall://` handle and
+the external-tool execution path. Each fix has regression tests (unit tests in
+`firewallh`, `tests/process_containment.rs`) and was validated against real
+nftables, iptables and ufw backends. No dependencies changed.
+
+- **firewall command injection (R4-02):** rule fields are validated as single
+  tokens before any backend command is built, and a rule a backend cannot
+  express in full is refused. A crafted field value could previously inject
+  extra `nft`/`firewalld` statements.
+- **ambiguous numeric parsing (R5-03):** ports, numeric protocols and CIDR
+  prefix lengths must be unambiguous decimal; leading-zero (octal) forms such
+  as `022` or `/010` are refused instead of being applied by the backend as
+  octal.
+- **incorrect rule deletion (R5-02):** an nftables rule's action is read from
+  the rule, not from its comment, so a delete by action cannot select a rule
+  whose comment merely mentions that action.
+- **incorrect idempotence (R5-01):** an idempotent iptables add no longer
+  treats a rule narrowed by an unmodeled match as satisfying a broader
+  request.
+- **timeout containment (R4-01):** external tools and their `setsid`
+  descendants are stopped at the operation deadline; an unconfirmed outcome
+  reports exit 124 rather than a false success.
+
+Limitations that remain in v1.0.6-beta:
+
+- **Service start/restart report request acceptance, not confirmed readiness.**
+  `svc://<unit>.start` and `.restart` submit the job to the service manager
+  (systemd over D-Bus in `replace` mode) and report success when the job is
+  accepted, not when the unit is confirmed active; a job that later fails is
+  not reflected in that result. This is pre-existing (present in v1.0.5-beta
+  and earlier), is unchanged by this release, and is out of the hotfix's
+  scope. To confirm a service actually reached the desired state, follow a
+  `start`/`restart` with `svc://<unit>.status` or `svc://<unit>.wait`. A
+  corrective change is planned for a later release.
+- **firewalld** shares the validated field-acceptance path with nftables,
+  iptables and ufw (so injection and numeric rejection apply equally), but its
+  rule *rendering* and read-back were not exercised on a live firewalld/D-Bus
+  backend for this release; see the release risk-acceptance record.
+
 ## v1.0.5-beta security release (2026-10-29)
 
 These fixes are in v1.0.5-beta, each with regression tests
