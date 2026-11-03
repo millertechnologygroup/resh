@@ -3843,8 +3843,18 @@ impl FirewallHandle {
             },
         };
 
-        // Parse rule components from the line
-        let line_lower = line.to_lowercase();
+        // Parse rule components from the line. The comment's text must never
+        // be read as a match or verdict: nft prints it as `comment "..."`
+        // after the rule, so everything the extractors look at is taken from
+        // the part before it. The comment itself is read from the raw line.
+        // (R5-02: a `drop` rule commented "never accept this" otherwise
+        // listed as action=accept, and `rules.delete action=accept` then
+        // selected that drop rule.)
+        let full_lower = line.to_lowercase();
+        let line_lower = match full_lower.find("comment \"") {
+            Some(i) => full_lower[..i].to_string(),
+            None => full_lower,
+        };
 
         // Extract protocol
         if let Some(proto) = self.extract_nft_protocol(&line_lower) {
@@ -5918,7 +5928,9 @@ impl FirewallHandle {
         let list_opts = RulesListOptions {
             backend: backend.clone(),
             family: IpFamily::from_str(&rule_spec.family)?,
-            include_backend_raw: false,
+            // Needed so rules_match can see match conditions the model does
+            // not represent (R5-01). Internal only; not surfaced to callers.
+            include_backend_raw: true,
             include_counters: false,
             max_rules: 10000,
             timeout_ms: opts.timeout_ms,
@@ -5963,6 +5975,54 @@ impl FirewallHandle {
             // A listed rule shows no rate limit, so one in force cannot be
             // assumed: an unlimited rule would otherwise satisfy this request.
             && spec.rate_limit.is_none()
+            // A listed rule narrowed by match conditions the model cannot
+            // represent is not the rule the caller asked for (R5-01).
+            && !self.rule_has_unmodeled_narrowing(rule)
+    }
+
+    /// True when an iptables rule carries match conditions the model does not
+    /// represent (conntrack/state, multiport, limit, mark, tcp-flags, ...).
+    /// Such a rule matches a narrower set of packets than its modeled fields
+    /// alone suggest, so an idempotence check must not treat it as equal to a
+    /// plain spec and skip adding the broader rule the caller requested.
+    /// Requires the listing to carry the backend's raw line.
+    fn rule_has_unmodeled_narrowing(&self, rule: &FirewallRule) -> bool {
+        if rule.backend != "iptables" {
+            return false;
+        }
+        let Some(raw) = rule.raw.as_deref() else {
+            // Without the raw line nothing can be ruled out; fail safe by
+            // treating the rule as narrowed so a broadening add proceeds.
+            return true;
+        };
+        let tokens = tokenize_rule_line(raw);
+        let mut i = 0;
+        while i < tokens.len() {
+            match tokens[i].as_str() {
+                // Every iptables match extension is introduced with `-m`.
+                // Only these carry nothing the model omits.
+                "-m" => {
+                    let benign = tokens
+                        .get(i + 1)
+                        .map(|m| matches!(m.as_str(), "tcp" | "udp" | "comment"))
+                        .unwrap_or(false);
+                    if !benign {
+                        return true;
+                    }
+                    i += 2;
+                    continue;
+                }
+                // Any long option the parser does not fold into a modeled
+                // field (e.g. --ctstate, --state, --dports, --limit, --mark,
+                // --tcp-flags) narrows the rule.
+                t if t.starts_with("--") && !matches!(t, "--dport" | "--sport" | "--comment") => {
+                    return true;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     /// Builds the commands (as argument vectors) that add `rule_spec`.
@@ -11228,6 +11288,144 @@ COMMIT
         assert!(
             !h.rules_match(&spec, &rules[9]),
             "the IPv6 rule is a different family"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // R5-02: an nft rule's action, protocol and ports come from the rule, not
+    // from the free text of its comment.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn r5_02_nft_action_is_read_from_verdict_not_comment() {
+        let h = handle();
+        let rule = h
+            .parse_nftables_rule(
+                "tcp dport 22 drop comment \"never accept this\"",
+                &Some(("ip".to_string(), "filter".to_string())),
+                &Some(("input".to_string(), "input".to_string())),
+                1,
+                &raw_list_opts(),
+            )
+            .unwrap();
+        // Before the fix the "accept" inside the comment was returned here.
+        assert_eq!(
+            rule.action.as_deref(),
+            Some("drop"),
+            "action must come from the verdict, not the comment"
+        );
+        assert_eq!(rule.comment.as_deref(), Some("never accept this"));
+    }
+
+    #[test]
+    fn r5_02_delete_by_action_does_not_select_a_commented_drop() {
+        let h = handle();
+        let chain = (
+            Some(("ip".to_string(), "filter".to_string())),
+            Some(("input".to_string(), "input".to_string())),
+        );
+        // A DROP rule whose comment contains the word "accept", and a genuine
+        // ACCEPT rule on a different port.
+        let commented_drop = h
+            .parse_nftables_rule(
+                "tcp dport 22 drop comment \"never accept this\" # handle 1",
+                &chain.0,
+                &chain.1,
+                1,
+                &raw_list_opts(),
+            )
+            .unwrap();
+        let real_accept = h
+            .parse_nftables_rule(
+                "tcp dport 80 accept # handle 2",
+                &chain.0,
+                &chain.1,
+                2,
+                &raw_list_opts(),
+            )
+            .unwrap();
+        let rules = vec![commented_drop, real_accept];
+
+        // `rules.delete action=accept match_mode=subset` must select only the
+        // genuine accept. Before the fix the commented DROP listed as accept
+        // and was selected here, removing a DROP rule the caller never named.
+        let accepted = select(
+            &FirewallBackend::Nftables,
+            rules.clone(),
+            &[("action", "accept"), ("match_mode", "subset")],
+        )
+        .unwrap();
+        assert_eq!(accepted.len(), 1, "exactly the genuine accept rule");
+        assert_eq!(accepted[0].rule_id.as_deref(), Some("2"));
+
+        // And `action=drop` selects the DROP rule, not the accept.
+        let dropped = select(
+            &FirewallBackend::Nftables,
+            rules,
+            &[("action", "drop"), ("match_mode", "subset")],
+        )
+        .unwrap();
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].rule_id.as_deref(), Some("1"));
+    }
+
+    // -----------------------------------------------------------------------
+    // R5-01: an iptables rule narrowed by match conditions the model cannot
+    // represent is not an idempotent match for a plain, broader request.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn r5_01_narrowed_iptables_rule_is_not_an_idempotent_match() {
+        let h = handle();
+        let opts = h
+            .parse_rules_add_options(&args(&[
+                ("proto", "tcp"),
+                ("dport", "22"),
+                ("direction", "input"),
+                ("action", "drop"),
+            ]))
+            .unwrap();
+        let spec = h
+            .normalize_rule_specs(&opts, &FirewallBackend::Iptables)
+            .unwrap()
+            .remove(0);
+
+        // Existing rule only drops NEW-state packets: narrower than requested.
+        let narrow = h.parse_iptables_save_output(
+            "*filter\n:INPUT DROP [0:0]\n\
+             -A INPUT -p tcp -m tcp --dport 22 -m conntrack --ctstate NEW -j DROP\nCOMMIT\n",
+            "ipv4",
+            &raw_list_opts(),
+        );
+        assert_eq!(narrow.len(), 1);
+        assert!(
+            !h.rules_match(&spec, &narrow[0]),
+            "a NEW-only drop must not satisfy a request to drop all states"
+        );
+
+        // An identical, un-narrowed rule is still a match (no false add).
+        let broad = h.parse_iptables_save_output(
+            "*filter\n:INPUT DROP [0:0]\n\
+             -A INPUT -p tcp -m tcp --dport 22 -j DROP\nCOMMIT\n",
+            "ipv4",
+            &raw_list_opts(),
+        );
+        assert_eq!(broad.len(), 1);
+        assert!(
+            h.rules_match(&spec, &broad[0]),
+            "an identical broad drop is a legitimate idempotent match"
+        );
+
+        // A rule carrying only a comment is not treated as narrowed.
+        let commented = h.parse_iptables_save_output(
+            "*filter\n:INPUT DROP [0:0]\n\
+             -A INPUT -p tcp -m tcp --dport 22 -m comment --comment \"x\" -j DROP\nCOMMIT\n",
+            "ipv4",
+            &raw_list_opts(),
+        );
+        assert!(
+            h.rules_match(&spec, &commented[0]),
+            "a comment alone does not narrow a rule"
         );
     }
 
