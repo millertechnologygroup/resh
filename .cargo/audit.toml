@@ -55,6 +55,23 @@ ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    # zip 0.6.6 RUSTSEC-2026-0429 (High): ZipArchive::extract aborts the
+    # process on a symlink entry whose declared uncompressed size is large.
+    # NOT REACHABLE in resh (proven in
+    # resh-security-private/v1.0.5-beta/dependency-disposition-and-release-freeze/
+    # RUSTSEC-2026-0429-REACHABILITY.md): resh never calls ZipArchive::extract
+    # or ZipStreamReader; extract_zip_archive iterates by_index and writes each
+    # entry itself; it does NOT trust the entry's declared size (copy_limited
+    # with a byte budget) and never creates symlinks (writes regular files,
+    # is_symlink:false). The vulnerable abort path (the convenience extractor
+    # reacting to a symlink entry's declared size) is therefore never invoked.
+    # Residual risk: none while resh does not call the zip extract helpers.
+    # Scope: this dependency graph (zip 0.6.6) only. Owner accepts the residual
+    # in OWNER-RISK-DECISIONS.md (reviewer records the technical rationale, not
+    # the acceptance). Review date: 2026-11-03. Revalidate if resh adds any
+    # call to zip's extract/ZipStreamReader APIs or bumps zip. Follow-up:
+    # upgrade to zip >= 9.0 in v1.0.7-beta (retires 0367/0368/0369/0429).
+    "RUSTSEC-2026-0429",
     # The five entries below were assessed in
     # docs/reviews/resh-cli-v1.0.3-beta-release-execution.md (advisory-db
     # 2026-10-26).
