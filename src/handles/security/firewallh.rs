@@ -79,7 +79,7 @@ static FIREWALL_HELP: HandleHelp = HandleHelp {
         the iptables, nftables, ufw, and firewalld command-line tools, detecting an \
         available backend automatically unless backend is given. The URL has no target, \
         so every stage takes the form firewall://.<verb> followed by key=value arguments.",
-    usage: "resh firewall://.<verb>[(key=value,...)]",
+    usage: "resh firewall://.<verb>[(key=value)]",
     verbs: &[
         VerbHelp {
             name: "status",
@@ -516,7 +516,7 @@ Shown for a ufw host with --json-pretty."#,
                     [backend=auto|iptables|nftables|ufw|firewalld]\n  \
                     [family=any|ipv4|ipv6]\n  \
                     [source_format=auto|backend_native|normalized_json]\n  \
-                    [dry_run=true|false] [validate_only=true|false]\n  \
+                    [dry_run=true|false]\n  \
                     [backup_before_apply=true|false]\n  \
                     [fail_if_already_enabled=true|false] [timeout_ms=<ms>]\n  \
                     [format_output=json|text]",
@@ -573,7 +573,7 @@ Shown with --json-pretty. In a dry run the states are assumed, not queried."#,
                     [backend=auto|iptables|nftables|ufw|firewalld]\n  \
                     [family=any|ipv4|ipv6]\n  \
                     [source_format=auto|backend_native|normalized_json]\n  \
-                    [dry_run=true|false] [validate_only=true|false]\n  \
+                    [dry_run=true|false]\n  \
                     [backup_before_apply=true|false]\n  \
                     [fail_if_already_disabled=true|false] [timeout_ms=<ms>]\n  \
                     [format_output=json|text]",
@@ -1155,6 +1155,9 @@ pub enum FirewallError {
     #[error("Invalid position: {position}")]
     InvalidPosition { position: String },
 
+    #[error("Invalid value for {field}: {value:?}")]
+    InvalidField { field: String, value: String },
+
     #[error("Zone required for firewalld backend")]
     ZoneRequired,
 
@@ -1344,6 +1347,7 @@ impl FirewallError {
             Self::InvalidCidr { .. } => "firewall.rules_add_invalid_cidr",
             Self::InvalidProto { .. } => "firewall.rules_add_invalid_proto",
             Self::InvalidPosition { .. } => "firewall.rules_add_invalid_position",
+            Self::InvalidField { .. } => "firewall.invalid_field",
             Self::ZoneRequired => "firewall.rules_add_zone_required",
             Self::NoBackendAvailable => "firewall.no_backend_available",
             Self::BackendUnavailable { .. } => "firewall.backend_unavailable",
@@ -1432,6 +1436,7 @@ impl FirewallError {
                     Self::InvalidCidr { cidr } => json!({ "cidr": cidr }),
                     Self::InvalidProto { proto } => json!({ "proto": proto }),
                     Self::InvalidPosition { position } => json!({ "position": position }),
+                    Self::InvalidField { field, value } => json!({ "field": field, "value": value }),
                     Self::ZoneRequired => json!({}),
                     Self::BackendUnavailable { backend } => json!({ "backend": backend }),
                     Self::CommandFailed { command, code, stderr } => json!({
@@ -3211,6 +3216,7 @@ impl FirewallHandle {
         }
 
         // Parse filters
+        self.validate_rule_fields(args)?;
         opts.table = args.get("table").cloned();
         opts.chain = args.get("chain").cloned();
         opts.direction = args.get("direction").cloned();
@@ -3298,35 +3304,22 @@ impl FirewallHandle {
 
     pub fn validate_port_value(&self, port: &str) -> Result<()> {
         // Handle port ranges like "1000-2000" or single ports like "80"
-        if port.contains('-') {
-            let parts: Vec<&str> = port.split('-').collect();
-            if parts.len() != 2 {
-                return Err(FirewallError::InvalidPort {
-                    port: port.to_string(),
-                }
-                .into());
-            }
-            for part in parts {
-                let port_num: u16 = part.parse().map_err(|_| FirewallError::InvalidPort {
-                    port: port.to_string(),
-                })?;
-                if port_num == 0 {
-                    return Err(FirewallError::InvalidPort {
-                        port: port.to_string(),
-                    }
-                    .into());
-                }
-            }
-        } else {
-            let port_num: u16 = port.parse().map_err(|_| FirewallError::InvalidPort {
+        let number = |part: &str| {
+            let digits = !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+            digits
+                .then(|| part.parse::<u16>().ok())
+                .flatten()
+                .filter(|p| *p != 0)
+        };
+        let valid = match port.split_once('-') {
+            Some((low, high)) => number(low).zip(number(high)).is_some_and(|(l, h)| l <= h),
+            None => number(port).is_some(),
+        };
+        if !valid {
+            return Err(FirewallError::InvalidPort {
                 port: port.to_string(),
-            })?;
-            if port_num == 0 {
-                return Err(FirewallError::InvalidPort {
-                    port: port.to_string(),
-                }
-                .into());
             }
+            .into());
         }
         Ok(())
     }
@@ -5588,6 +5581,7 @@ impl FirewallHandle {
         }
 
         // Parse rule fields
+        self.validate_rule_fields(args)?;
         opts.table = args.get("table").cloned();
         opts.chain = args.get("chain").cloned();
 
@@ -5696,7 +5690,7 @@ impl FirewallHandle {
             "tcp" | "udp" | "icmp" | "icmpv6" | "any" | "all" => Ok(()),
             _ => {
                 // Allow numeric protocol numbers
-                if proto.parse::<u8>().is_ok() {
+                if proto.bytes().all(|b| b.is_ascii_digit()) && proto.parse::<u8>().is_ok() {
                     Ok(())
                 } else {
                     Err(FirewallError::InvalidProto {
@@ -5709,42 +5703,103 @@ impl FirewallHandle {
     }
 
     fn validate_cidr(&self, cidr: &str) -> Result<()> {
-        // Basic CIDR validation - check for IP address format and optional /prefix
-        if cidr.contains('/') {
-            let parts: Vec<&str> = cidr.split('/').collect();
-            if parts.len() != 2 {
-                return Err(FirewallError::InvalidCidr {
-                    cidr: cidr.to_string(),
-                }
-                .into());
+        let invalid = || -> anyhow::Error {
+            FirewallError::InvalidCidr {
+                cidr: cidr.to_string(),
             }
-            // Validate prefix length
-            if let Ok(prefix) = parts[1].parse::<u8>() {
-                // IPv4 max prefix is 32, IPv6 max is 128
-                if parts[0].contains(':') && prefix > 128 {
-                    return Err(FirewallError::InvalidCidr {
-                        cidr: cidr.to_string(),
-                    }
-                    .into());
-                } else if !parts[0].contains(':') && prefix > 32 {
-                    return Err(FirewallError::InvalidCidr {
-                        cidr: cidr.to_string(),
-                    }
-                    .into());
-                }
-            } else {
-                return Err(FirewallError::InvalidCidr {
-                    cidr: cidr.to_string(),
+            .into()
+        };
+        let (addr, prefix) = match cidr.split_once('/') {
+            Some((addr, prefix)) => (addr, Some(prefix)),
+            None => (cidr, None),
+        };
+        let addr: std::net::IpAddr = addr.parse().map_err(|_| invalid())?;
+        if let Some(prefix) = prefix {
+            let max = if addr.is_ipv4() { 32 } else { 128 };
+            let digits = !prefix.is_empty() && prefix.bytes().all(|b| b.is_ascii_digit());
+            if !digits || prefix.parse::<u8>().map_or(true, |p| p > max) {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks every value that ends up in a backend command. nft joins its
+    /// arguments and parses them as a script, and firewalld does the same with
+    /// a rich rule, so separate arguments are no protection: a value must be
+    /// unable to be anything but the one token it claims to be.
+    fn validate_rule_fields(&self, args: &Args) -> Result<()> {
+        let name = |v: &str, max: usize| {
+            !v.is_empty()
+                && v.len() <= max
+                && v.bytes()
+                    .next()
+                    .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                && v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+        };
+        let iface = |v: &str| {
+            !v.is_empty()
+                && v.len() <= 15
+                && v.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':' | b'@')
+                })
+        };
+        // A rule id is looked up in the listed rules, and a firewalld one
+        // holds the rule's text. It selects; it never reaches a command.
+        let rule_id =
+            |v: &str| !v.is_empty() && v.len() <= 1024 && !v.chars().any(char::is_control);
+        let comment = |v: &str| {
+            v.len() <= 128
+                && v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b" _.,:/=+@-".contains(&b))
+        };
+        let rate = |v: &str| match v.split_once('/') {
+            Some((count, unit)) => {
+                !count.is_empty()
+                    && count.len() <= 9
+                    && count.bytes().all(|b| b.is_ascii_digit())
+                    && matches!(
+                        unit,
+                        "second"
+                            | "minute"
+                            | "hour"
+                            | "day"
+                            | "sec"
+                            | "min"
+                            | "s"
+                            | "m"
+                            | "h"
+                            | "d"
+                    )
+            }
+            None => false,
+        };
+        let checks: [(&str, &dyn Fn(&str) -> bool); 10] = [
+            ("table", &|v| name(v, 64)),
+            ("chain", &|v| name(v, 64)),
+            ("zone", &|v| name(v, 32)),
+            ("in_iface", &iface),
+            ("out_iface", &iface),
+            ("comment", &comment),
+            ("rate_limit", &rate),
+            ("rule_id", &rule_id),
+            ("before_rule_id", &rule_id),
+            ("after_rule_id", &rule_id),
+        ];
+        for (key, valid) in checks {
+            if let Some(value) = args.get(key).filter(|v| !valid(v)) {
+                return Err(FirewallError::InvalidField {
+                    field: key.to_string(),
+                    value: value.to_string(),
                 }
                 .into());
             }
         }
-        // Basic IP format check (simplified)
-        if !cidr.contains('.') && !cidr.contains(':') {
-            return Err(FirewallError::InvalidCidr {
-                cidr: cidr.to_string(),
+        for key in ["saddr", "daddr"] {
+            if let Some(value) = args.get(key) {
+                self.validate_cidr(value)?;
             }
-            .into());
         }
         Ok(())
     }
@@ -5905,6 +5960,9 @@ impl FirewallHandle {
             && normalize_address(spec.daddr.as_ref()) == normalize_address(rule.daddr.as_ref())
             && spec.in_iface == rule.in_iface
             && spec.out_iface == rule.out_iface
+            // A listed rule shows no rate limit, so one in force cannot be
+            // assumed: an unlimited rule would otherwise satisfy this request.
+            && spec.rate_limit.is_none()
     }
 
     /// Builds the commands (as argument vectors) that add `rule_spec`.
@@ -5913,6 +5971,7 @@ impl FirewallHandle {
         rule_spec: &FirewallRuleSpec,
         opts: &RulesAddOptions,
     ) -> Result<Vec<Vec<String>>> {
+        self.require_expressible(rule_spec, opts)?;
         match FirewallBackend::from_str(&rule_spec.backend)? {
             FirewallBackend::Iptables => self.generate_iptables_add_command(rule_spec, opts),
             FirewallBackend::Nftables => self.generate_nftables_add_command(rule_spec, opts),
@@ -5924,8 +5983,67 @@ impl FirewallHandle {
         }
     }
 
-    /// Rejects ports without a port-carrying protocol, which iptables and
-    /// nftables cannot express (the port would otherwise be dropped and the
+    /// Refuses a rule the backend's generator cannot write out in full. An
+    /// option it left out would make the rule wider than the one requested
+    /// and still report success.
+    fn require_expressible(
+        &self,
+        rule_spec: &FirewallRuleSpec,
+        opts: &RulesAddOptions,
+    ) -> Result<()> {
+        self.require_port_proto(rule_spec)?;
+        let unsupported = |option: &str, message: &str| -> Result<()> {
+            Err(FirewallError::UnsupportedOption {
+                option: option.to_string(),
+                backend: rule_spec.backend.clone(),
+                message: message.to_string(),
+            }
+            .into())
+        };
+        if rule_spec.log_prefix.is_some() {
+            return unsupported("log_prefix", "no backend applies log_prefix");
+        }
+        let position = opts.position.to_lowercase();
+        if position == "before" || position == "after" {
+            return unsupported("position", "only append and insert are implemented");
+        }
+        let backend = FirewallBackend::from_str(&rule_spec.backend)?;
+        if !matches!(backend, FirewallBackend::Ufw | FirewallBackend::Firewalld) {
+            return Ok(());
+        }
+        let not_written = [
+            ("sport", rule_spec.sport.is_some()),
+            ("in_iface", rule_spec.in_iface.is_some()),
+            ("out_iface", rule_spec.out_iface.is_some()),
+            ("rate_limit", rule_spec.rate_limit.is_some()),
+            ("table", opts.table.is_some()),
+            ("chain", opts.chain.is_some()),
+            ("position", position != "append"),
+            (
+                "comment",
+                backend == FirewallBackend::Firewalld && rule_spec.comment.is_some(),
+            ),
+        ];
+        if let Some((option, _)) = not_written.iter().find(|(_, given)| *given) {
+            return unsupported(option, "this backend's rule does not carry it");
+        }
+        let direction = rule_spec.direction.as_str();
+        let direction_ok =
+            direction == "input" || (backend == FirewallBackend::Ufw && direction == "output");
+        if !direction_ok {
+            return unsupported("direction", "this backend's rule does not carry it");
+        }
+        if !matches!(
+            rule_spec.action.to_lowercase().as_str(),
+            "accept" | "drop" | "reject"
+        ) {
+            return unsupported("action", "only accept, drop and reject are written");
+        }
+        Ok(())
+    }
+
+    /// Rejects ports without a port-carrying protocol, which no backend's
+    /// generator can express (the port would otherwise be dropped and the
     /// rule would match every port).
     fn require_port_proto(&self, rule_spec: &FirewallRuleSpec) -> Result<()> {
         let has_port = rule_spec.sport.is_some() || rule_spec.dport.is_some();
@@ -5958,7 +6076,6 @@ impl FirewallHandle {
         rule_spec: &FirewallRuleSpec,
         opts: &RulesAddOptions,
     ) -> Result<Vec<Vec<String>>> {
-        self.require_port_proto(rule_spec)?;
         let binary = match rule_spec.family.as_str() {
             "ipv4" => "iptables",
             "ipv6" => "ip6tables",
@@ -6003,10 +6120,10 @@ impl FirewallHandle {
             push(&["-o", out_iface]);
         }
         if let Some(sport) = &rule_spec.sport {
-            push(&["--sport", sport]);
+            push(&["--sport", &sport.replace('-', ":")]);
         }
         if let Some(dport) = &rule_spec.dport {
-            push(&["--dport", dport]);
+            push(&["--dport", &dport.replace('-', ":")]);
         }
         if let Some(rate_limit) = &rule_spec.rate_limit {
             push(&["-m", "limit", "--limit", rate_limit]);
@@ -6023,9 +6140,8 @@ impl FirewallHandle {
     fn generate_nftables_add_command(
         &self,
         rule_spec: &FirewallRuleSpec,
-        _opts: &RulesAddOptions,
+        opts: &RulesAddOptions,
     ) -> Result<Vec<Vec<String>>> {
-        self.require_port_proto(rule_spec)?;
         let family = match rule_spec.family.as_str() {
             "ipv4" => "ip",
             "ipv6" => "ip6",
@@ -6046,7 +6162,11 @@ impl FirewallHandle {
             .unwrap_or_else(|| "input".to_string())
             .to_lowercase();
 
-        let mut cmd: Vec<String> = ["nft", "add", "rule", family, &table, &chain]
+        let verb = match opts.position.to_lowercase().as_str() {
+            "insert" => "insert",
+            _ => "add",
+        };
+        let mut cmd: Vec<String> = ["nft", verb, "rule", family, &table, &chain]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -6087,10 +6207,11 @@ impl FirewallHandle {
         if let Some(rate_limit) = &rule_spec.rate_limit {
             push(&["limit", "rate", rate_limit]);
         }
+        // nft takes the comment after the verdict.
+        push(&[&rule_spec.action.to_lowercase()]);
         if let Some(comment) = &rule_spec.comment {
             push(&["comment", &format!("\"{}\"", comment.replace('"', "\\\""))]);
         }
-        push(&[&rule_spec.action.to_lowercase()]);
 
         Ok(vec![cmd])
     }
@@ -6104,7 +6225,12 @@ impl FirewallHandle {
             "accept" => "allow",
             "drop" => "deny",
             "reject" => "reject",
-            _ => "allow",
+            other => {
+                return Err(FirewallError::InternalError {
+                    message: format!("ufw has no action '{}'", other),
+                }
+                .into());
+            }
         };
         let mut cmd: Vec<String> = vec!["ufw".to_string(), ufw_action.to_string()];
         let mut push = |args: &[&str]| cmd.extend(args.iter().map(|s| s.to_string()));
@@ -6154,8 +6280,15 @@ impl FirewallHandle {
         if let Some(daddr) = normalize_address(rule_spec.daddr.as_ref()) {
             rich_rule.push_str(&format!(" destination address=\"{}\"", daddr));
         }
-        if let (Some(proto), Some(dport)) = (&rule_spec.proto, &rule_spec.dport) {
-            rich_rule.push_str(&format!(" port protocol=\"{}\" port=\"{}\"", proto, dport));
+        match (&rule_spec.proto, &rule_spec.dport) {
+            (Some(proto), Some(dport)) => {
+                rich_rule.push_str(&format!(" port protocol=\"{}\" port=\"{}\"", proto, dport));
+            }
+            // A protocol alone needs its own element, or the rule matches all.
+            (Some(proto), None) if proto != "any" && proto != "all" => {
+                rich_rule.push_str(&format!(" protocol value=\"{}\"", proto));
+            }
+            _ => {}
         }
         rich_rule.push_str(&format!(" {}", rule_spec.action.to_lowercase()));
 
@@ -6364,6 +6497,7 @@ impl FirewallHandle {
         opts.rule_id = args.get("rule_id").filter(|s| !s.is_empty()).cloned();
 
         // Parse match criteria
+        self.validate_rule_fields(args)?;
         opts.table = args.get("table").cloned();
         opts.chain = args.get("chain").cloned();
 
@@ -6908,6 +7042,18 @@ impl FirewallHandle {
         };
 
         response.backend = backend_to_use.as_str().to_string();
+
+        // Only nftables has a check to run; anything else would report a
+        // validation that never happened.
+        if opts.validate_only && !matches!(backend_to_use, FirewallBackend::Nftables) {
+            return Err(FirewallError::ReloadFailed {
+                message: format!(
+                    "validate_only is not supported on {}; nothing was done",
+                    backend_to_use.as_str()
+                ),
+            }
+            .into());
+        }
         response.family = opts.family.as_str().to_string();
 
         // Determine reload mode
@@ -7691,6 +7837,21 @@ impl FirewallHandle {
             .get_iptables_family_status("ip6tables-save", opts)
             .await;
 
+        // The rules could not be read, so nothing is known about them.
+        if ipv4_count.is_none() && ipv6_count.is_none() {
+            return Ok(FirewallBackendStatus {
+                backend: "iptables".to_string(),
+                available: false,
+                active: false,
+                enabled: false,
+                default_policy: None,
+                rule_count_ipv4: None,
+                rule_count_ipv6: None,
+                details: None,
+                warnings: vec!["iptables-save and ip6tables-save both failed".to_string()],
+            });
+        }
+
         let active = ipv4_active || ipv6_active;
         let enabled = active; // iptables doesn't have separate enabled/active states
 
@@ -7741,6 +7902,7 @@ impl FirewallHandle {
                 let mut rule_count = 0u64;
                 let mut default_policy = None;
                 let mut has_custom_rules = false;
+                let mut filter_table = false;
 
                 for line in stdout.lines() {
                     let line = line.trim();
@@ -7750,8 +7912,11 @@ impl FirewallHandle {
                         || line.starts_with(":FORWARD ")
                     {
                         if let Some(policy_part) = line.split_whitespace().nth(1) {
+                            has_custom_rules |= filter_table && policy_part != "ACCEPT";
                             default_policy = Some(policy_part.to_string());
                         }
+                    } else if let Some(table) = line.strip_prefix('*') {
+                        filter_table = table == "filter";
                     } else if line.starts_with("-A ") {
                         rule_count += 1;
                         if !line.contains("state --state") && !line.contains("RELATED,ESTABLISHED")
@@ -7829,7 +7994,7 @@ impl FirewallHandle {
                 ));
                 Ok(FirewallBackendStatus {
                     backend: "nftables".to_string(),
-                    available,
+                    available: false,
                     active: false,
                     enabled: false,
                     default_policy: None,
@@ -7964,7 +8129,7 @@ impl FirewallHandle {
                 ));
                 Ok(FirewallBackendStatus {
                     backend: "ufw".to_string(),
-                    available,
+                    available: false,
                     active: false,
                     enabled: false,
                     default_policy: None,
@@ -8276,6 +8441,21 @@ impl FirewallHandle {
             other => other.clone(),
         };
 
+        // ufw and firewalld have no rules file to load, so `path` would be ignored.
+        if opts.path.is_some()
+            && matches!(backend, FirewallBackend::Ufw | FirewallBackend::Firewalld)
+        {
+            return Ok(EnableResponse::with_error(
+                backend.as_str(),
+                FirewallError::UnsupportedOption {
+                    option: "path".to_string(),
+                    backend: backend.as_str().to_string(),
+                    message: "this backend does not load a rules file".to_string(),
+                },
+                opts.format_output.clone(),
+            ));
+        }
+
         // For dry_run or validate_only, skip backend availability checks
         if opts.dry_run || opts.validate_only {
             return self.handle_dry_run_or_validate(&backend, &opts).await;
@@ -8309,8 +8489,9 @@ impl FirewallHandle {
             ));
         }
 
-        // If already enabled and not fail_if_already_enabled, return no-op success
-        if previous_state.enabled && !opts.fail_if_already_enabled {
+        // If already enabled and not fail_if_already_enabled, return no-op
+        // success. A rules file was asked to be loaded, so it still is.
+        if previous_state.enabled && !opts.fail_if_already_enabled && opts.path.is_none() {
             let mut response = EnableResponse::new(backend.as_str(), opts.format_output.clone());
             response.ok = true;
             response.query = self.enable_options_to_json(&opts, &backend);
@@ -9165,6 +9346,15 @@ impl FirewallHandle {
                     ));
                 }
             };
+            if !previous_state.available {
+                return Ok(DisableResponse::with_error(
+                    backend.as_str(),
+                    FirewallError::DisableBackendUnavailable {
+                        backend: backend.as_str().to_string(),
+                    },
+                    opts.format_output.clone(),
+                ));
+            }
             return self
                 .handle_disable_dry_run_or_validate(&backend, &opts, &previous_state)
                 .await;
@@ -9197,6 +9387,17 @@ impl FirewallHandle {
                 ));
             }
         };
+
+        // "Already disabled" needs a state that was actually read.
+        if !previous_state.available {
+            return Ok(DisableResponse::with_error(
+                backend.as_str(),
+                FirewallError::DisableBackendUnavailable {
+                    backend: backend.as_str().to_string(),
+                },
+                opts.format_output.clone(),
+            ));
+        }
 
         // Create response structure
         let mut response = DisableResponse::new(backend.as_str(), opts.format_output.clone());
@@ -9561,120 +9762,74 @@ impl FirewallHandle {
         let mut actions = Vec::new();
         let mut backup_path: Option<String> = None;
 
-        // Take backup if requested, of the family about to be changed
-        // (ipv4 for Ipv4/Any, as below). No change without it.
+        // family=any covers both families, as enable does. A host without
+        // ip6tables has no IPv6 firewall to change.
+        let mut families: Vec<(&str, &str, &str)> = Vec::new();
+        if !matches!(opts.family, IpFamily::Ipv6) {
+            families.push(("ipv4", "iptables", "iptables-restore"));
+        }
+        // A rules file is written for one family, so family=any restores it as IPv4.
+        if matches!(opts.family, IpFamily::Ipv6)
+            || (matches!(opts.family, IpFamily::Any)
+                && opts.path.is_none()
+                && is_command_available("ip6tables"))
+        {
+            families.push(("ipv6", "ip6tables", "ip6tables-restore"));
+        } else if matches!(opts.family, IpFamily::Any) && opts.path.is_some() {
+            response
+                .warnings
+                .push("path was restored to IPv4 only; IPv6 rules were not changed".to_string());
+        }
+
+        // Take a backup if requested, of each family about to be changed.
+        // No change without it.
         if opts.backup_before_apply {
-            let family = if matches!(opts.family, IpFamily::Ipv6) {
-                "ipv6"
-            } else {
-                "ipv4"
-            };
-            match self.create_iptables_backup(family, opts.timeout_ms).await {
-                Ok(written) => {
-                    actions.push(format!("firewall.rules.save(...) -> {}", written));
-                    backup_path = Some(written);
-                }
-                Err(e) => {
-                    return Ok(DisableResponse::with_error(
-                        "iptables",
-                        backup_failure(e),
-                        opts.format_output.clone(),
-                    ));
+            for (family, _, _) in &families {
+                match self.create_iptables_backup(family, opts.timeout_ms).await {
+                    Ok(written) => {
+                        actions.push(format!("firewall.rules.save(...) -> {}", written));
+                        backup_path.get_or_insert(written);
+                    }
+                    Err(e) => {
+                        return Ok(DisableResponse::with_error(
+                            "iptables",
+                            backup_failure(e),
+                            opts.format_output.clone(),
+                        ));
+                    }
                 }
             }
         }
 
         // Apply disable configuration
-        if let Some(path) = &opts.path {
-            // File-based restore
-            match opts.family {
-                IpFamily::Ipv4 | IpFamily::Any => {
-                    actions.push(format!("iptables-restore < {}", path));
-                    let (exit_code, _stdout, stderr) =
-                        run_command_with_timeout("iptables-restore", &[path], opts.timeout_ms)
-                            .await?;
-                    if exit_code != 0 {
-                        return Ok(DisableResponse::with_error(
-                            "iptables",
-                            FirewallError::DisableCommandFailed {
-                                backend: "iptables".to_string(),
-                                message: stderr,
-                            },
-                            opts.format_output.clone(),
-                        ));
-                    }
-                }
-                IpFamily::Ipv6 => {
-                    actions.push(format!("ip6tables-restore < {}", path));
-                    let (exit_code, _stdout, stderr) =
-                        run_command_with_timeout("ip6tables-restore", &[path], opts.timeout_ms)
-                            .await?;
-                    if exit_code != 0 {
-                        return Ok(DisableResponse::with_error(
-                            "iptables",
-                            FirewallError::DisableCommandFailed {
-                                backend: "iptables".to_string(),
-                                message: stderr,
-                            },
-                            opts.format_output.clone(),
-                        ));
-                    }
-                }
-            }
-        } else {
-            // Flush mode - reset to open/accepting state
-            match opts.family {
-                IpFamily::Ipv4 | IpFamily::Any => {
-                    let commands = [
-                        ("iptables", vec!["-P", "INPUT", "ACCEPT"]),
-                        ("iptables", vec!["-P", "OUTPUT", "ACCEPT"]),
-                        ("iptables", vec!["-P", "FORWARD", "ACCEPT"]),
-                        ("iptables", vec!["-F"]),
-                        ("iptables", vec!["-t", "nat", "-F"]),
-                        ("iptables", vec!["-t", "mangle", "-F"]),
-                    ];
-
-                    for (cmd, args) in &commands {
-                        actions.push(format!("{} {}", cmd, args.join(" ")));
-                        let (exit_code, _stdout, stderr) =
-                            run_command_with_timeout(cmd, args, opts.timeout_ms).await?;
-                        if exit_code != 0 {
-                            return Ok(DisableResponse::with_error(
-                                "iptables",
-                                FirewallError::DisableCommandFailed {
-                                    backend: "iptables".to_string(),
-                                    message: stderr,
-                                },
-                                opts.format_output.clone(),
-                            ));
-                        }
-                    }
-                }
-                IpFamily::Ipv6 => {
-                    let commands = [
-                        ("ip6tables", vec!["-P", "INPUT", "ACCEPT"]),
-                        ("ip6tables", vec!["-P", "OUTPUT", "ACCEPT"]),
-                        ("ip6tables", vec!["-P", "FORWARD", "ACCEPT"]),
-                        ("ip6tables", vec!["-F"]),
-                        ("ip6tables", vec!["-t", "nat", "-F"]),
-                        ("ip6tables", vec!["-t", "mangle", "-F"]),
-                    ];
-
-                    for (cmd, args) in &commands {
-                        actions.push(format!("{} {}", cmd, args.join(" ")));
-                        let (exit_code, _stdout, stderr) =
-                            run_command_with_timeout(cmd, args, opts.timeout_ms).await?;
-                        if exit_code != 0 {
-                            return Ok(DisableResponse::with_error(
-                                "iptables",
-                                FirewallError::DisableCommandFailed {
-                                    backend: "iptables".to_string(),
-                                    message: stderr,
-                                },
-                                opts.format_output.clone(),
-                            ));
-                        }
-                    }
+        for (_, flush_cmd, restore_cmd) in &families {
+            let steps: Vec<(&str, Vec<&str>)> = if let Some(path) = &opts.path {
+                // File-based restore
+                vec![(*restore_cmd, vec![path.as_str()])]
+            } else {
+                // Flush mode - reset to open/accepting state
+                vec![
+                    (*flush_cmd, vec!["-P", "INPUT", "ACCEPT"]),
+                    (*flush_cmd, vec!["-P", "OUTPUT", "ACCEPT"]),
+                    (*flush_cmd, vec!["-P", "FORWARD", "ACCEPT"]),
+                    (*flush_cmd, vec!["-F"]),
+                    (*flush_cmd, vec!["-t", "nat", "-F"]),
+                    (*flush_cmd, vec!["-t", "mangle", "-F"]),
+                ]
+            };
+            for (cmd, args) in &steps {
+                actions.push(format!("{} {}", cmd, args.join(" ")));
+                let (exit_code, _stdout, stderr) =
+                    run_command_with_timeout(cmd, args, opts.timeout_ms).await?;
+                if exit_code != 0 {
+                    return Ok(DisableResponse::with_error(
+                        "iptables",
+                        FirewallError::DisableCommandFailed {
+                            backend: "iptables".to_string(),
+                            message: stderr,
+                        },
+                        opts.format_output.clone(),
+                    ));
                 }
             }
         }
@@ -9947,28 +10102,13 @@ async fn run_command_with_timeout(
     args: &[&str],
     timeout_ms: u64,
 ) -> Result<(i32, String, String)> {
-    use std::process::Stdio;
-
-    let child = Command::new(resolve_program(command))
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to execute command: {}", e))?;
-
-    match crate::handles::automation::backuph::wait_with_deadline(
-        child,
-        Duration::from_millis(timeout_ms),
-    )? {
-        Some(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let exit_code = output.status.code().unwrap_or(-1);
-            Ok((exit_code, stdout, stderr))
-        }
-        None => Err(anyhow::anyhow!("Command timed out after {}ms", timeout_ms)),
-    }
+    let output = crate::core::process::run(
+        Command::new(resolve_program(command)).args(args),
+        Some(Duration::from_millis(timeout_ms)),
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Ok((output.status.code().unwrap_or(-1), stdout, stderr))
 }
 
 // Utility function to check if a binary is available in PATH
@@ -11578,7 +11718,7 @@ mod timeout_tests {
             .block_on(run_command_with_timeout("nft", &["list", "ruleset"], 300))
             .unwrap_err();
         let elapsed = start.elapsed();
-        assert!(err.to_string().contains("timed out after 300ms"), "{err}");
+        assert!(err.to_string().contains("timed out"), "{err}");
         assert!(
             elapsed >= Duration::from_millis(300),
             "returned before the deadline: {elapsed:?}"
