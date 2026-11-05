@@ -67,7 +67,7 @@ The five exceptions added in `dcce21a` were assessed in
 | RUSTSEC-2026-0403 | zstd-safe 7.2.4 / 5.0.2 | No (code-level) | Accepted |
 | RUSTSEC-2026-0398 | zstd-safe 7.2.4 | No (`seekable` off) | Accepted |
 | RUSTSEC-2026-0410 | zstd-sys 2.0.16 | No (WASM only) | Accepted |
-| RUSTSEC-2026-0387 | crypto-bigint 0.5.5 | In principle (cert ECDSA) | Accepted, low risk: local timing side channel only, no signing oracle; fix needs p256/p384 0.14 |
+| RUSTSEC-2026-0387 | crypto-bigint 0.5.5 | In principle (cert ECDSA) | Accepted, low risk: local timing side channel only, no network signing oracle; fix needs p256/p384 0.14 |
 
 None of these conceals a reachable vulnerability that should block the
 release.
