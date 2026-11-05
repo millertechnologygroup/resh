@@ -5,6 +5,8 @@ Outcome: **READY FOR PUBLICATION APPROVAL**
 
 > **Superseded artifact.** The archive (`d91693b1…3087`) and binary (`d531fea4…`) described in this report were **never published**. They were rebuilt with build-path remapping before publication. The published artifact is `resh-v1.0.3-beta-linux-x86_64.tar.gz`, SHA-256 `3838022fa6fa45a64b48c8fe7cb89d28dae2eae3ff0b1df09babfee1e47175dd` (binary `38740f05…1edb`). See `resh-cli-v1.0.3-beta-publication.md`. The tests, behaviour checks and container results below were repeated on the final binary with identical results.
 
+> **Corrections (2026-10-27, Stage 6A).** This report originally said `.cargo/audit.toml` had 22 ignore entries; it has 23. It also said crypto-bigint does no ECDSA signing in resh; it does, in `cert sign` data mode. The affected passages below are corrected in place. The conclusion (accepted, not a release blocker) is unchanged. See `resh-cli-stage6a-security-and-documentation.md`.
+
 At the time of this gate, nothing had been uploaded, published, committed, pushed, merged or tagged, and this report was untracked. Local paths have been generalized for publication.
 
 ## Executive summary
@@ -18,7 +20,7 @@ All identity checks pass. On the tagged source, the full test suite passes with 
 
 A second clean build on the same host produced a byte-identical binary. The archive was packaged deterministically, checked against the tag and build output, and given a SHA-256 checksum.
 
-The one reachable advisory, RUSTSEC-2026-0387 in crypto-bigint, was re-assessed against the code. resh's real exposure is narrower than earlier reports stated: crypto-bigint does **no ECDSA signing** in resh. It is **not a release blocker**.
+The one reachable advisory, RUSTSEC-2026-0387 in crypto-bigint, was re-assessed against the code. It is reached only by local P-256/P-384 key operations in `cert`, including raw data signatures in `cert sign`. Certificates and CSRs are signed by rcgen with ring. It is **not a release blocker**.
 
 There are no blockers. The only gate not passed is the owner's publication approval, which is PENDING.
 
@@ -86,7 +88,7 @@ The credential remains in the history of `main` and of the tags `v1.0.0-beta`, `
 
 ### Advisory exceptions
 
-There are 22 ignore entries in `.cargo/audit.toml` at the tag. The Stage 4 entries and the four zstd entries keep the dispositions recorded in earlier gates, and the tag CI audit passed with this list. The reachable advisory was re-assessed from the code instead of relying on the earlier "low risk" label:
+There are 23 ignore entries in `.cargo/audit.toml` at the tag: the 18 Stage 4 entries, the four zstd entries and RUSTSEC-2026-0387. The Stage 4 entries and the four zstd entries keep the dispositions recorded in earlier gates, and the tag CI audit passed with this list. The reachable advisory was re-assessed from the code instead of relying on the earlier "low risk" label:
 
 #### RUSTSEC-2026-0387: crypto-bigint timing variability
 
@@ -95,12 +97,12 @@ There are 22 ignore entries in `.cargo/audit.toml` at the tag. The Stage 4 entri
 | Advisory | RUSTSEC-2026-0387, published 2026-10-23, category `crypto-failure`. Branches that depend on secret values in subtraction, zero counting, division and Montgomery multiplication, plus early-exit `UintRef` equality and `BoxedMontyForm::invert`. Patched in `>= 0.7.6`. |
 | Affected crate | `crypto-bigint 0.5.5` (Cargo.lock) |
 | Dependency path | `resh → p256 0.13.2 / p384 0.13.1 → (ecdsa 0.16.9, primeorder 0.13.6) → elliptic-curve 0.13.8 → crypto-bigint 0.5.5`. `cargo tree -i p256` shows **resh is the only dependent** of p256 and p384. |
-| Resh operations that invoke it | Only `cert` (`src/handles/security/certh.rs`): (1) `generate_ecdsa_key`, `SigningKey::random` for new P-256/P-384 keys (`generate`, `renew key_strategy=rekey`, `csr.create key_strategy=generate`); (2) `SigningKey::from_bytes` / `from_pkcs8_der` / `from_pkcs8_pem` / `from_sec1_der` and `to_pkcs8_der` / `to_sec1_der`, which parse and re-encode a local ECDSA key and derive its public point by scalar multiplication. |
-| **Correction to earlier reports** | Earlier reports said "key generation **and signing**". In fact **all ECDSA signatures are made by `rcgen 0.12` with the `ring` backend**. Keys are converted to an `rcgen::KeyPair` (ring `EcdsaKeyPair`) before certificates and CSRs are signed, and rcgen does not depend on p256 or p384. **crypto-bigint never runs a signature in resh.** |
-| Secret-dependent? | Yes. The ECDSA private scalar is processed during generation, parsing and public-key derivation. |
-| Can an attacker influence the inputs? | No. The scalar comes from the OS RNG (`rand::thread_rng`) or from a key file the operator names. resh exposes no network service, daemon or API, and it does not process attacker-supplied ECDSA keys on anyone else's behalf. |
-| Are timing observations realistic? | Only to a co-resident local attacker measuring timing or microarchitectural effects during a short-lived CLI run. Each new key is handled a few times in one process, and an existing key once per invocation. There is no oracle that lets an attacker trigger thousands of operations on one key. Published exploitation of this kind of leak needs many observations under attacker control. |
-| Conclusion | **Acceptable for this beta.** There is no credible path to expose a secret under supported deployment, which is an operator running a local CLI. Residual risk: an attacker who already has local code execution on a shared host and can watch repeated key operations. That is a weaker position than simply reading the key file, which resh creates with mode 0600. The fix (p256/p384 0.14 → crypto-bigint 0.7.6) is a major upgrade for a later release. **Not a release blocker.** |
+| Resh operations that invoke it | Only `cert` (`src/handles/security/certh.rs`): (1) `generate_ecdsa_key`, `SigningKey::random` for new P-256/P-384 keys (`generate`, `renew key_strategy=rekey`, `csr.create key_strategy=generate`); (2) `SigningKey::from_bytes` / `from_pkcs8_der` / `from_pkcs8_pem` / `from_sec1_der` and `to_pkcs8_der` / `to_sec1_der`, which parse and re-encode a local ECDSA key and derive its public point by scalar multiplication; (3) `cert sign` in data mode (`sign_data` → `create_signature`), which signs a file or base64 data with a P-256/P-384 `SigningKey` (`p256::ecdsa`/`p384::ecdsa`, RFC 6979 nonces). |
+| Signing paths | **Corrected 2026-10-27.** This row originally said that crypto-bigint never runs a signature in resh. That is wrong. Certificates and CSRs (`generate`, `renew`, `csr.create`, `sign mode=csr`) are signed by `rcgen 0.12` with the `ring` backend, after the key is converted to an `rcgen::KeyPair`. Raw data signatures from `cert sign` (data mode) are made by `p256`/`p384` and therefore run crypto-bigint on the private scalar and nonce. Verified on a disposable P-256 key: the signature verifies with OpenSSL. The earlier "key generation and signing" wording was correct. |
+| Secret-dependent? | Yes. The ECDSA private scalar is processed during generation, parsing and public-key derivation, and the scalar and per-signature nonce are processed during `cert sign` data signatures. |
+| Can an attacker influence the inputs? | Not the key. The scalar comes from the OS RNG (`rand::thread_rng`) or from a key file the operator names. resh exposes no network service, daemon or API. The **data** signed by `cert sign` can come from anywhere the operator points `data_source` at. |
+| Are timing observations realistic? | Only to a co-resident local attacker measuring timing or microarchitectural effects during a short-lived CLI run. resh itself offers no oracle. If an operator builds automation that runs `cert sign` repeatedly with one key over data an attacker can submit, that automation is a local signing oracle. Published attacks of this kind need many signatures plus fine-grained timing measurements under attacker control. |
+| Conclusion | **Acceptable for this beta.** There is no credible path to expose a secret under supported deployment, which is an operator running a local CLI. Residual risk: an attacker who already has local code execution on a shared host and can watch repeated key operations, including repeated `cert sign` runs that automation performs on the attacker's behalf. That is a weaker position than simply reading the key file, which resh creates with mode 0600. The fix (p256/p384 0.14 → crypto-bigint 0.7.6) is a major upgrade for a later release. **Not a release blocker.** |
 
 ## D-03 Build environment and clean build
 
