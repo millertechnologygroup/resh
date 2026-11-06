@@ -31,7 +31,7 @@ This roadmap covers the open-source resh command-line tool in this repository. C
 | v1.0.3-beta | October 2026 | Security and correctness fixes from the release gate |
 | v1.0.4-beta | October 2026 | Security release |
 | v1.0.5-beta | October 2026 | Security release |
-| v1.0.6-beta | November 2026 | Security release: `firewall://` input validation and rule matching, containment of external tools at their deadline |
+| v1.0.6-beta | November 2026 | Security release: `firewall://` input validation and rule matching, containment of external tools at their deadline in some handles (see known issues) |
 
 Details are in [CHANGELOG.md](CHANGELOG.md).
 

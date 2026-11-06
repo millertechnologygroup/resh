@@ -24,9 +24,12 @@ nftables, iptables and ufw backends. No dependencies changed.
 - **incorrect idempotence (R5-01):** an idempotent iptables add no longer
   treats a rule narrowed by an unmodeled match as satisfying a broader
   request.
-- **timeout containment (R4-01):** external tools and their `setsid`
-  descendants are stopped at the operation deadline; an unconfirmed outcome
-  reports exit 124 rather than a false success.
+- **timeout containment (R4-01):** for the `firewall`, `pkg`, `ssh`, `net`,
+  `system` and `log` handles, external tools and their `setsid` descendants
+  are stopped at the operation deadline; an unconfirmed outcome reports exit
+  124 rather than a false success. This does not cover every handle; see
+  "Timeout containment is incomplete" below. *(Corrected 2026-11-06: this
+  item originally said external tools in general were covered.)*
 
 Limitations that remain in v1.0.6-beta:
 
@@ -43,6 +46,19 @@ Limitations that remain in v1.0.6-beta:
   iptables and ufw (so injection and numeric rejection apply equally). Its
   rule rendering and read-back were checked only against firewalld running in
   a container, not on a full systemd host.
+- **Timeout containment is incomplete.** The process containment described
+  above applies only to the `firewall`, `pkg`, `ssh`, `net`, `system` and
+  `log` handles, with exceptions. It does not cover `backup`, `fs` (for
+  example mount, resize and check), `cron`, `user`, `svc` (including its
+  `systemctl` fallback), `firewall` reload from a file on the iptables
+  backend, and `net route.list`.
+  For these, either no deadline applies, or resh stops waiting at the
+  deadline without confirming that the tool and the processes it started have
+  stopped. A tool may therefore keep running, and keep making changes, after
+  resh has exited, and the exit code does not always report that the outcome
+  is unknown. After a timeout or failure of one of these operations, check
+  the state of the resource before retrying. Extending containment to every
+  handle is planned for v1.0.7-beta.
 - **Service-manager jobs are not covered by timeout containment.** A job
   started through systemd belongs to the service manager, so stopping resh at
   its deadline does not stop the job.
