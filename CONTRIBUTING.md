@@ -78,7 +78,6 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 - Handle enhancement suggestions
 
 **Community infrastructure:**
-- GitHub Discussions activated
 - Discord server launched
 - Community calls initiated
 - Contribution guidelines finalized
@@ -624,7 +623,7 @@ We believe in recognizing contributors!
 
 ### Active Now (v1.0 Beta)
 - **GitHub Issues** - Bug reports and feature requests
-- **GitHub Discussions** - Coming with v1.0 stable for questions and community
+- **[GitHub Discussions](https://github.com/millertechnologygroup/resh/discussions)** - Questions, ideas and general support (report vulnerabilities privately per [SECURITY.md](SECURITY.md), not here)
 - **LinkedIn** - Development updates and announcements
 - **Twitter/X** - Daily progress and quick updates
 
@@ -661,7 +660,7 @@ All contributions must be your original work, or properly attributed if derived 
 ### About Contributing
 - **When can I submit PRs?** Code contributions open with v1.0 stable
 - **How can I help now?** Test, report bugs, provide feedback, spread the word
-- **Where to discuss?** GitHub Issues for specific bugs/features; Discussions coming with v1.0 stable
+- **Where to discuss?** GitHub Issues for specific bugs/features; [GitHub Discussions](https://github.com/millertechnologygroup/resh/discussions) for questions and ideas
 
 ### General Questions
 - Review the [README](README.md) for current status
@@ -692,6 +691,6 @@ We're building resh in public, and you're helping us build it right.
 **Last Updated:** November 2026 (v1.0.6-beta)\
 **Next Review:** when code contributions open with v1.0 stable
 
-For questions about contributing, please open a [GitHub Issue](https://github.com/millertechnologygroup/resh/issues) or check back as we set up GitHub Discussions with v1.0 stable.
+For questions about contributing, please ask in [GitHub Discussions](https://github.com/millertechnologygroup/resh/discussions) or open a [GitHub Issue](https://github.com/millertechnologygroup/resh/issues).
 
 **Star the repo • Test the beta • Report bugs • Help us build the future**

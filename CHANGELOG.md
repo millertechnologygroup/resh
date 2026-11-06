@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Binary releases for major distributions
 - Production hardening and security audit
 - Comprehensive documentation polish
-- Community infrastructure (Discord, Discussions)
+- Community infrastructure (Discord)
 
 ---
 

@@ -61,7 +61,8 @@ In scope:
 Report these elsewhere:
 
 - Vulnerabilities in a dependency (a Rust crate, OpenSSL, or a tool resh runs such as `nft` or `systemctl`) go to that project. If resh exposes the vulnerability in a way the dependency alone does not, report that part here.
-- Each advisory listed in `.cargo/audit.toml` has a written assessment there: most are not reachable from resh, and some are accepted risks. If you find that one is reachable, or has more impact than its assessment says, report it here.
+- Each advisory ignored in `.cargo/audit.toml` has a written assessment there. Most are assessed as not reachable from resh (the vulnerable code is not compiled into the release binary, or resh never calls the affected API). `RUSTSEC-2026-0387` (crypto-bigint timing variability) is different: the affected code is reachable, and it is an accepted risk, not an unreachable one. If you find that an advisory assessed as not reachable is reachable, or that one has more impact than its assessment says, report it here.
+- `cargo audit` also prints informational warnings (unmaintained, unsound or yanked crates) that are not vulnerabilities and are not listed in `.cargo/audit.toml`. Upgrades that would remove several of these advisories and warnings are deferred to a later release; see [ROADMAP.md](ROADMAP.md).
 
 Behavior that is already documented as a limitation (see [docs/known_issues.md](docs/known_issues.md) and each handle's page) is not treated as a new vulnerability unless you show an impact the documentation does not describe.
 
