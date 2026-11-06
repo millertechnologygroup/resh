@@ -109,6 +109,32 @@ Options: `family=ipv4|ipv6|any` (default `ipv4`), `direction=input|output|forwar
 * With `family=any` and no address, iptables and nftables get one rule per family.
 * A `saddr`/`daddr` sets the family; an explicit family that differs is rejected (`firewall.rules_add_family_mismatch`).
 * A dry run reports the exact `backend_commands` and changes nothing.
+* Every value is validated before any backend command is built, also in a dry run (see [Input validation](#input-validation)).
+* `idempotent=true` skips the add only when an existing rule matches the request exactly. An existing rule with extra match conditions that resh does not model (for example `conntrack --ctstate NEW` or `multiport`) is narrower than the request, so it does not count, and the requested rule is added.
+
+#### Input validation
+
+Since v1.0.6-beta, `rules.add` and `rules.delete` refuse a value that could be read as anything other than the single token it claims to be. Nothing is run, and resh exits 1 with the error code shown.
+
+| Field | Accepted | Error code |
+| ----- | -------- | ---------- |
+| `dport`, `sport` | A port 1-65535 or a range `low-high`, in plain decimal | `firewall.invalid_port` |
+| `proto` | `tcp`, `udp`, `icmp`, `icmpv6`, `any`, `all`, or a protocol number 0-255 in plain decimal | `firewall.rules_add_invalid_proto` |
+| `saddr`, `daddr` | An IPv4 or IPv6 address, optionally with `/prefix` in plain decimal (at most 32 or 128) | `firewall.rules_add_invalid_cidr` |
+| `table`, `chain` | Up to 64 characters: letters, digits, `_`, `-`, `.`, starting with a letter or `_` | `firewall.invalid_field` |
+| `zone` | As `table`, up to 32 characters | `firewall.invalid_field` |
+| `in_iface`, `out_iface` | Up to 15 characters: letters, digits, `_`, `-`, `.`, `:`, `@` | `firewall.invalid_field` |
+| `comment` | Up to 128 characters: letters, digits, space and `_.,:/=+@-` | `firewall.invalid_field` |
+| `rate_limit` | `<count>/<unit>`, unit `second`, `minute`, `hour`, `day` or `sec`, `min`, `s`, `m`, `h`, `d` | `firewall.invalid_field` |
+| `rule_id` | Up to 1024 characters, no control characters | `firewall.invalid_field` |
+
+"Plain decimal" means digits only, with no leading zero: `22` and `/10` are accepted, `022` and `/010` are refused. Backends read a leading-zero number as octal (`022` is port 18), so resh does not guess.
+
+A rule that the chosen backend cannot write in full is refused with `firewall.unsupported_option`, instead of being written without the option, which would make it broader than requested:
+
+* `log_prefix` and `position=before|after` are refused on every backend.
+* `sport`/`dport` need `proto=tcp` or `proto=udp`.
+* On ufw and firewalld: `sport`, `in_iface`, `out_iface`, `rate_limit`, `table`, `chain` and `position=insert` are refused, `direction` must be `input` (ufw also allows `output`), and `action` must be `accept`, `drop` or `reject`. firewalld also refuses `comment`.
 
 ### rules.delete
 
@@ -120,6 +146,8 @@ resh firewall://.rules.delete backend=iptables direction=input proto=tcp dport=2
 * `rule_id` is the id that `rules.delete` reports in `matched_rules` (run it with filters and `dry_run=true` to see the ids; `rules.list` does not print them): `CHAIN:LINE` for iptables, the handle for nftables, the rule number for ufw, `ZONE:KIND:VALUE` for firewalld.
 * Without `rule_id`, at least one filter is required. `match_mode=exact` (default) selects rules whose fields equal the given ones and that have no other match conditions; `match_mode=subset` selects every rule the filters fit. **Review a `subset` delete with `dry_run=true` first.**
 * Other options: `limit=<n>`, `require_match` (default `true`), `zone` (firewalld only), `family`, `table`, `timeout_ms`.
+* A rule's `action` is read from the rule itself, never from its comment, so `action=accept` cannot select a `drop` rule whose comment mentions "accept".
+* Filter values are validated as for `rules.add` (see [Input validation](#input-validation)).
 
 ### rules.save
 
@@ -183,7 +211,7 @@ resh firewall://.disable backend=iptables family=ipv4 dry_run=true
 
 ## 5. Timeouts
 
-`timeout_ms` is accepted by every verb and is **enforced**: each backend command is a child process that is killed when the deadline passes, and the verb fails with "Command timed out after <n>ms".
+`timeout_ms` is accepted by every verb and is **enforced**: each backend command runs in its own process group, and when the deadline passes resh stops the command and every process it started. resh then exits with status **124** and prints `Error: outcome unknown: <tool> was stopped; it may already have made changes, so check before retrying` on stderr. Check the firewall state before you retry.
 
 | Verbs                                              | Default  |
 | -------------------------------------------------- | -------- |
@@ -228,6 +256,7 @@ Failures produce a JSON object with `"ok": false` and an `error` object on stdou
 | ----------- | --------------------------------------------------------- |
 | 0           | Success (`"ok": true`)                                    |
 | 1           | Any failure; `error.code` says which                       |
+| 124         | A backend command reached its deadline and was stopped; the outcome is unknown (see section 5) |
 
 The firewall handle uses no other exit codes. A response with `"ok": false` exits with status 1 for every verb that reports `ok`, including `enable` and `disable`.
 
@@ -241,7 +270,7 @@ The firewall handle uses no other exit codes. A response with `"ok": false` exit
 * **`disable` on iptables** with `family=any` covers IPv4 only.
 * **No backups for ufw/firewalld.**
 * **`rules.save` native data** for iptables with `family=any` contains `iptables-save` output only (IPv4).
-* Only tested at the command-construction and mock-executable level; no live firewall was changed while verifying this document.
+* Most of this document was verified at the command-construction and mock-executable level. For v1.0.6-beta, input validation, `rules.add` and `rules.delete` were also checked against real nftables, iptables and ufw in disposable containers, and against firewalld running in a container (not on a full systemd host).
 
 ---
 
