@@ -59,13 +59,19 @@ for the firewall and timeout issues, earlier versions are affected.
   rule narrowed by an unmodeled match (for example `conntrack --ctstate NEW`
   or `multiport`) as satisfying a broader request, so the broader rule the
   operator asked for is actually added instead of silently skipped.
-- **timeout containment (R4-01):** external tools run in a contained process
-  group bounded by the operation deadline; the whole tool tree, including
+- **timeout containment (R4-01):** for the `firewall`, `pkg`, `ssh`, `net`,
+  `system` and `log` handles, external tools run in a contained process group
+  bounded by the operation deadline; the whole tool tree, including
   descendants that call `setsid`, is stopped at the deadline, captured output
   is bounded, and an operation whose outcome cannot be confirmed reports exit
-  code 124 instead of a possibly false success. This covers external tools;
-  the service-manager completion-verification limitation is tracked as a
-  known issue (see `docs/known_issues.md`).
+  code 124 instead of a possibly false success. Containment is incomplete:
+  `backup`, `fs` (for example mount, resize and check), `cron`, `user`, `svc`
+  (including its `systemctl` fallback), `firewall` reload from a file on the
+  iptables backend, and `net route.list` are not covered (see
+  `docs/known_issues.md`). The service-manager completion-verification
+  limitation is also tracked there.
+  *Corrected 2026-11-06: this entry originally said that external tools in
+  general were covered.*
 
 ### Notes
 - No dependency changes (`Cargo.lock` is identical to v1.0.5-beta except this
