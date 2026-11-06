@@ -40,9 +40,15 @@ Limitations that remain in v1.0.6-beta:
   `start`/`restart` with `svc://<unit>.status` or `svc://<unit>.wait`. A
   corrective change is planned for a later release.
 - **firewalld** shares the validated field-acceptance path with nftables,
-  iptables and ufw (so injection and numeric rejection apply equally), but its
-  rule *rendering* and read-back were not exercised on a live firewalld/D-Bus
-  backend for this release; see the release risk-acceptance record.
+  iptables and ufw (so injection and numeric rejection apply equally). Its
+  rule rendering and read-back were checked only against firewalld running in
+  a container, not on a full systemd host.
+- **Service-manager jobs are not covered by timeout containment.** A job
+  started through systemd belongs to the service manager, so stopping resh at
+  its deadline does not stop the job.
+- **Install script.** `get.reshshell.dev` has not been updated for this
+  release and installs an older version. Install from the GitHub release (see
+  the README).
 
 ## v1.0.5-beta security release (2026-10-29)
 

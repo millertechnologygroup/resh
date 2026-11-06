@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v1.1 (March 2026)
+### Planned for v1.1 (not yet scheduled)
 - webhook:// handle - Webhook receiver for event-driven automation
 - lock:// handle - Distributed locking mechanisms (Redis, etcd, Consul)
 - Enhanced integration test suite (85%+ coverage)
@@ -15,17 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell completion scripts (bash, zsh, fish)
 - Improved error messages with actionable suggestions
 
-### Planned for v1.0 Stable (Q2 2026)
+### Planned for v1.0 Stable (not yet scheduled)
 - API stability guarantee (semver compliance)
 - Complete test coverage (95%+)
 - Binary releases for major distributions
 - Production hardening and security audit
 - Comprehensive documentation polish
-- Community infrastructure (Discord, Discussions)
+- Community infrastructure (Discord)
 
 ---
 
 ## [1.0.6-beta] - 2026-11-03
+
+Published as a GitHub pre-release on 2026-11-05. The date above is the
+release freeze date.
 
 Security hotfix built directly on v1.0.5-beta. It is a narrowly scoped
 security maintenance release: it changes only the firewall handle and the
@@ -346,7 +349,8 @@ fixes on top of the help-system work below. Details and evidence:
 ### Added
 - Contextual help for every handle and verb: `resh <handle> --help` and
   `resh <handle> <verb> --help`, with definition, usage, example and example
-  output for all 28 handles and 239 verbs
+  output for all 28 handles and 229 verbs (this entry originally said 239;
+  corrected after a recount of the registered verbs)
 - In-URL help forms (for example `svc://--help`, `--help=<verb>`) show the
   same help
 - CLI string arguments now fill typed options (booleans, numbers, lists) in
