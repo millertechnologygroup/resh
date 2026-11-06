@@ -16,7 +16,7 @@ resh gives these operations one command form:
 resh <handle>://<target>.<verb> key=value ...
 ```
 
-Status: v1.0.3-beta, 28 handles. Linux is the only supported platform. Known limitations are listed in each handle's page and in [known_issues.md](known_issues.md).
+Status: v1.0.6-beta, 28 handles with 229 verbs. Linux x86_64 is the only supported platform; installation is described in the [README](../README.md#installation). Known limitations are listed in each handle's page and in [known_issues.md](known_issues.md).
 
 ---
 
@@ -107,6 +107,7 @@ resh 'svc://nginx.restart(timeout_ms=5000)'
 * **One stage per process.** Each `resh` invocation parses one stage, runs it and exits. Nothing in memory (connections, database transactions, sessions) survives between invocations. State persists only where a handle writes it to disk, for example `config` (under `$XDG_CONFIG_HOME/resh/`), `event`, `mq` and `snapshot` (under `$XDG_STATE_HOME/resh/`), and the plugin store (under `$XDG_DATA_HOME/resh/plugins`). The handle pages give the exact locations.
 * **Help never touches the resource.** `resh <handle> --help` and `resh <handle> <verb> --help` print built-in help without running anything. The format is described in [cli_help_format.md](cli_help_format.md).
 * **Timeouts are per handle.** `timeout_ms` is enforced by some verbs and ignored by others; each category overview has a table.
+* **External tools are contained.** Where a handle runs an external tool under a deadline (for example `firewall`, `pkg`, `ssh`, `net`, `system`, `log`), the tool runs in its own process group. At the deadline resh stops the tool and every process it started, including ones that call `setsid`, and exits 124 (see 3.3). Stopping a tool does not undo what it already did. Jobs handed to a service manager (systemd) are outside this containment.
 
 ### 3.3 Exit Codes and Errors
 
@@ -115,6 +116,7 @@ resh 'svc://nginx.restart(timeout_ms=5000)'
 | Success | 0 | (handle-specific, usually nothing) |
 | Failure, handle sets a code in 1-255 | that code | `Error: <reason>`, unless the handle already wrote to stderr |
 | Failure, no code or a code outside 1-255 | 1 | `Error: <reason>`, unless the handle already wrote to stderr |
+| An external tool reached its deadline and was stopped, or could not be stopped | 124 | `Error: outcome unknown: <tool> ...`; the tool may already have made changes, so check the resource before retrying |
 
 Some handles also describe the failure in their JSON output (for example an `ok`, `error` or `code` field). The per-handle codes and error fields are documented on each handle's page; do not assume a code means the same thing in two handles.
 
@@ -285,7 +287,7 @@ resh system://.disk 'input={"mount_points":["/"]}'
 
 | Platform | Support |
 | -------- | ------- |
-| Linux x86_64 | Supported. Built and tested on Gentoo Linux x86_64 (OpenRC) |
+| Linux x86_64 | Supported. The prebuilt binary needs glibc 2.39 or later and OpenSSL 3 (verified on Ubuntu 24.04, Debian 13, Fedora 40). Builds from source are tested in CI on Debian 12 and on Gentoo Linux (OpenRC) |
 | macOS, BSD, Windows | Not supported. The code uses Unix-only system calls and Linux interfaces such as `/proc`; nothing has been built or tested on these systems |
 
 Many handles drive system tools (`systemctl` or `rc-service`, package managers, `ssh`, `restic`, `iptables`, and so on). A handle works only where its tools are installed. The `pkg` handle was exercised against apt, dnf, yum, pacman and apk in unprivileged sandboxes; brew and systemd hosts have not been exercised. See each handle's page for its requirements.
