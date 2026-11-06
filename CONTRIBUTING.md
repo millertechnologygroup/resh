@@ -46,7 +46,7 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 
 ## Contribution Timeline
 
-### ✅ Now: v1.0 Beta (January-March 2026)
+### ✅ Now: v1.0 Beta (current release: v1.0.6-beta)
 **Currently accepting:**
 - Bug reports and issue submissions
 - Feature requests and suggestions
@@ -61,7 +61,7 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 - Multiple output formats (JSON, table, log)
 - Comprehensive automation utilities
 
-### v1.1 Feature Complete (March 2026)
+### v1.1 Feature Complete (not yet scheduled)
 **Continued focus:**
 - Bug fix validation
 - Performance testing
@@ -69,7 +69,7 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 - Real-world workflow testing
 - Documentation refinement
 
-### v1.0 Stable (Q2 2026)
+### v1.0 Stable (not yet scheduled)
 **We will begin accepting:**
 - Bug fix pull requests
 - Documentation improvements
@@ -83,7 +83,7 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 - Community calls initiated
 - Contribution guidelines finalized
 
-### v1.2+ Enhanced (Q3 2026+)
+### v1.2+ Enhanced (not yet scheduled)
 **Expanded contribution opportunities:**
 - Feature development contributions
 - Performance optimization PRs
@@ -98,10 +98,12 @@ While we're not accepting code pull requests yet, there are many valuable ways t
 
 We welcome and encourage bug reports! Good bug reports help us improve resh quickly.
 
+**Security vulnerabilities are not reported here.** Do not open a public issue for a vulnerability; follow [SECURITY.md](SECURITY.md) instead.
+
 ### Before Reporting
 
 1. **Check existing issues** - Your bug may already be reported
-2. **Update to latest** - Ensure you're running the latest v1.0-beta release
+2. **Update to latest** - Ensure you're running the latest beta release (currently v1.0.6-beta)
 3. **Verify it's a bug** - Not a documentation or usage issue
 
 ### Bug Report Template
@@ -109,7 +111,7 @@ We welcome and encourage bug reports! Good bug reports help us improve resh quic
 When reporting bugs, please include:
 
 **Environment:**
-- OS and version (e.g., Ubuntu 22.04, Debian 12, RHEL 9, Alpine 3.18)
+- OS and version (e.g., Ubuntu 24.04, Debian 13, Fedora 40)
 - resh version: `resh --version`
 - Installation method (built from source, script, etc.)
 
@@ -136,12 +138,12 @@ What actually happened. Include full error output.
 **Title:** svc:// handle fails on OpenRC systems
 
 **Environment:**
-- Alpine Linux 3.18
-- resh v1.0.5-beta
+- Gentoo Linux (OpenRC)
+- resh v1.0.6-beta
 - Built from source
 
 **Command:**
-resh svc://nginx.status --format json
+resh svc://nginx.status
 
 **Expected:**
 JSON output with service status
@@ -150,7 +152,7 @@ JSON output with service status
 Error: "systemd not found"
 
 **Context:**
-Alpine uses OpenRC, not systemd. The handle should detect
+Gentoo uses OpenRC, not systemd. The handle should detect
 and use OpenRC but appears to only check for systemd.
 ```
 
@@ -297,7 +299,7 @@ Beyond bug reports, we'd love to hear:
 
 ## Future Contribution Guidelines (v1.0 Stable+)
 
-When code contributions open with v1.0 stable in Q2 2026, here's what the development workflow will look like:
+When code contributions open with v1.0 stable, here's what the development workflow will look like:
 
 ### Development Setup (Future)
 
@@ -402,7 +404,7 @@ Instances of abusive, harassing, or otherwise unacceptable behavior may be repor
 
 ## Pull Request Process (Future - v1.0 Stable+)
 
-When we begin accepting PRs with v1.0 stable (Q2 2026), this will be the process:
+When we begin accepting PRs with v1.0 stable, this will be the process:
 
 ### Before Submitting
 
@@ -626,7 +628,7 @@ We believe in recognizing contributors!
 - **LinkedIn** - Development updates and announcements
 - **Twitter/X** - Daily progress and quick updates
 
-### Coming Soon (v1.0 Stable - Q2 2026)
+### Coming Soon (v1.0 Stable)
 - **Discord Server** - Real-time community chat
 - **Community Calls** - Quarterly roadmap reviews
 - **Office Hours** - Weekly Q&A with maintainers
@@ -657,7 +659,7 @@ All contributions must be your original work, or properly attributed if derived 
 - **Have a feature idea?** Submit a feature request
 
 ### About Contributing
-- **When can I submit PRs?** Code contributions open with v1.0 stable (Q2 2026)
+- **When can I submit PRs?** Code contributions open with v1.0 stable
 - **How can I help now?** Test, report bugs, provide feedback, spread the word
 - **Where to discuss?** GitHub Issues for specific bugs/features; Discussions coming with v1.0 stable
 
@@ -687,8 +689,8 @@ We're building resh in public, and you're helping us build it right.
 
 ---
 
-**Last Updated:** January 2026 (v1.0 Beta)  
-**Next Review:** Q2 2026 (when code contributions open with v1.0 stable)
+**Last Updated:** November 2026 (v1.0.6-beta)\
+**Next Review:** when code contributions open with v1.0 stable
 
 For questions about contributing, please open a [GitHub Issue](https://github.com/millertechnologygroup/resh/issues) or check back as we set up GitHub Discussions with v1.0 stable.
 

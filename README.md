@@ -3,19 +3,19 @@
 **AI-Native Automation Platform for Modern Infrastructure**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.0.5--beta-blue.svg)](https://github.com/millertechnologygroup/resh/releases)
+[![Version](https://img.shields.io/badge/version-v1.0.6--beta-blue.svg)](https://github.com/millertechnologygroup/resh/releases)
 [![Status](https://img.shields.io/badge/status-beta-blue.svg)]()
 
 ---
 
-## v1.0.5-beta - 28 Handles (Beta)
+## v1.0.6-beta - 28 Handles (Beta)
 
-**resh v1.0.5-beta is available for testing.** This beta release includes 28 handles, among them automation utilities for backups, plugins and template rendering. It is beta software: some verbs are stubs or have known limitations, listed in each handle's documentation and in [docs/known_issues.md](docs/known_issues.md).
+**resh v1.0.6-beta is available for testing.** It is a security release that hardens the `firewall://` handle and how resh stops external tools at a timeout (see [Security](#security)). resh has 28 handles, among them automation utilities for backups, plugins and template rendering. It is beta software: some verbs are stubs or have known limitations, listed in each handle's documentation and in [docs/known_issues.md](docs/known_issues.md).
 
 ⭐ **Star this repo** to follow development and be notified of updates!
 
 **Current Status:**
-- ✅ 28 handles registered, each with built-in help (`resh <handle> --help`)
+- ✅ 28 handles and 229 verbs registered, each with built-in help (`resh <handle> --help`)
 - ✅ Most verbs print JSON; some also offer a text format (see each handle's docs)
 - ✅ URI-based resource model
 - ⏱️ 2 additional handles planned for v1.1
@@ -27,7 +27,7 @@
 
 resh (Resource Shell) is a command-line tool that runs operations on resources named by URLs (`svc://nginx.status`, `file:///etc/hosts.read`) and prints structured results, mostly JSON, that both scripts and AI agents can consume without text parsing.
 
-**v1.0.5-beta has 28 handles, including the backup, plugin and template automation utilities.**
+**v1.0.6-beta has 28 handles, including the backup, plugin and template automation utilities.**
 
 ### The Problem
 
@@ -71,7 +71,7 @@ resh db://sqlite/app.query 'sql=SELECT COUNT(*) AS n FROM users' dsn=sqlite:app.
 - Each handle documents its real output fields (there is no single shared response envelope)
 
 **Broad coverage**
-28 handles in v1.0.5-beta: automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
+28 handles in v1.0.6-beta: automation utilities (backup, plugin, template) plus files, processes, services, databases, secrets, certificates, networking, and more.
 
 ---
 
@@ -159,7 +159,7 @@ resh template://config.yml.render context_file=vars.json
 
 ---
 
-## Implemented in v1.0.5-beta (28 Handles)
+## Implemented in v1.0.6-beta (28 Handles, 229 Verbs)
 
 Each handle's page under [docs/](docs/) lists its registered verbs, arguments, real output fields and known limitations. `resh <handle> --help` prints the same verb list.
 
@@ -190,7 +190,7 @@ Each handle's page under [docs/](docs/) lists its registered verbs, arguments, r
 ### Security & Secrets ✅
 - ✅ `secret://` - Local keystore file (mode 0600, **not encrypted**) and read-only environment lookup; the `vault` scope and `rotate` are not implemented
 - ✅ `cert://` - X.509 certificates, keys and CSRs in local files (info, verify, chain.info, generate, csr.create, sign, renew)
-- ✅ `firewall://` - Firewall rules and state (iptables, nftables, ufw, firewalld)
+- ✅ `firewall://` - Firewall rules and state (iptables, nftables, ufw, firewalld); rule fields are validated before any backend command is built (see [firewall.md](docs/Security_Secrets/firewall.md))
 - ✅ `user://` - User management (exists, groups, add, delete, passwd, lock, unlock)
 
 ### Data & State Management ✅
@@ -206,7 +206,7 @@ Each handle's page under [docs/](docs/) lists its registered verbs, arguments, r
 - ✅ `pkg://` - Package manager (apt, dnf, yum, pacman, apk; brew is supported but not yet verified): install, remove, update, upgrade, search, info, snapshot; `restore` is best effort and does not pin locked versions; `security_only` works only for dnf/yum `update` and dnf `upgrade` and is refused elsewhere
 - ✅ `git://` - Git through libgit2 (clone, pull, push, commit, status, diff, branch, tag, merge, rebase, sync); `pull` and `sync` fast-forward only
 
-**Total: 28 handles** (25 core + 3 automation utilities), beta quality. See [docs/known_issues.md](docs/known_issues.md) for open issues.
+**Total: 28 handles** (25 core + 3 automation utilities) with 229 verbs, beta quality. See [docs/known_issues.md](docs/known_issues.md) for open issues.
 
 ---
 
@@ -233,7 +233,7 @@ Each handle's page under [docs/](docs/) lists its registered verbs, arguments, r
 | v0.7 Alpha (25 handles) | November 2025 | ✅ **Completed** |
 | v0.8 Alpha (27 handles) | December 2025 | ✅ **Completed** |
 | v1.0 Beta (28 handles) | January 2026 | ✅ **Released** (v1.0.0-beta) |
-| v1.0.5-beta (28 handles) | - | Current beta |
+| v1.0.6-beta (28 handles) | November 2026 | Current beta (security release) |
 | v1.1 (30 handles) | Not yet scheduled | ⏱️ Planned |
 | v1.0 Stable | Not yet scheduled | ⏱️ Planned |
 
@@ -243,8 +243,8 @@ Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md)
 
 ## Current Status
 
-**What's working in v1.0.5-beta:**
-- ✅ 28 handles registered, with per-handle and per-verb `--help`
+**What's working in v1.0.6-beta:**
+- ✅ 28 handles and 229 verbs registered, with per-handle and per-verb `--help`
 - ✅ Automation utilities (backup, plugin, template)
 - ✅ URI parser and resource dispatcher
 - ✅ JSON output (`--json-pretty` to indent); some verbs also offer text output
@@ -260,7 +260,7 @@ Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md)
 - ⏱️ webhook:// and lock:// handles (planned for v1.1)
 - ⏱️ Enhanced integration test suite (v1.1)
 - ⏱️ Performance optimization (v1.1)
-- ⏱️ Binary releases for major distributions (v1.0 stable)
+- ⏱️ Distribution packages: .deb, .rpm, AUR (v1.0 stable)
 - ⏱️ Production hardening and polish (v1.0 stable)
 
 **Beta limitations:**
@@ -272,7 +272,7 @@ Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md)
 - ⚠️ Some edge cases not fully handled
 
 **Try it out:**
-- Download and build from source
+- Download the prebuilt binary or build from source (see [Installation](#installation))
 - Report bugs and feedback via GitHub Issues
 - Join early testing community
 
@@ -280,43 +280,79 @@ Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md)
 
 ## Installation
 
-### Prerequisites
+resh runs on **Linux x86_64 only**. Install the prebuilt binary from the GitHub release, or build from source.
 
-- **Rust 1.88 or later** - Install from [rustup.rs](https://rustup.rs)
-- **Git** - For cloning the repository
-- **Linux x86_64** - The only supported platform. macOS and Windows are not supported.
-- **OpenSSL 3** shared libraries (`libssl.so.3`, `libcrypto.so.3`) at run time. resh uses the system OpenSSL, so its security updates come from your distribution. libssh2 and libgit2 are compiled into resh and are updated through resh releases.
+> **Install script.** The install script at `get.reshshell.dev` has not been updated for v1.0.6-beta and installs an older release. Until this notice is removed, install from the GitHub release as described below.
 
-What has been verified: resh builds and its tests run on Gentoo Linux x86_64 (an OpenRC host). The `pkg://` handle was exercised against apt (Debian bookworm), dnf (Fedora 42), yum (Amazon Linux 2), pacman (Arch) and apk (Alpine 3.20) in unprivileged sandboxes. brew and systemd hosts have not been exercised.
+### Supported platforms
 
-### Building from Source
+| | Prebuilt binary | Build from source |
+| --- | --- | --- |
+| Architecture | Linux x86_64 | Linux x86_64 |
+| glibc | **2.39 or later** | The system's glibc (CI builds and tests on Debian 12, glibc 2.36) |
+| Run-time libraries | OpenSSL 3 (`libssl.so.3`, `libcrypto.so.3`), `libz.so.1`, `liblzma.so.5`, `libgcc_s.so.1` | Same |
+| Verified | Ubuntu 24.04, Debian 13, Fedora 40 | Debian 12 (CI), Gentoo |
+| Does not run | Ubuntu 22.04, Debian 12 and Fedora 39 (tested); RHEL 8/9 (glibc 2.28/2.34, not tested) and any other system with glibc older than 2.39 | Not tested on systems other than those above |
+
+macOS, Windows, BSD, ARM and musl are not supported, and no binaries are provided for them. resh uses the system OpenSSL, so its security updates come from your distribution. libssh2 and libgit2 are compiled into resh and are updated through resh releases.
+
+Many handles drive system tools (`systemctl` or `rc-service`, `nft`/`iptables`, package managers, `ssh`, `restic`, and so on). A handle works only where its tools are installed; see each handle's page.
+
+### Install the prebuilt binary
+
+Release page: [v1.0.6-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.6-beta) (pre-release, published November 5, 2026). It has two assets: `resh-v1.0.6-beta-linux-x86_64.tar.gz` and `SHA256SUMS`.
 
 ```bash
-# Clone the repository
+VERSION=v1.0.6-beta
+BASE=https://github.com/millertechnologygroup/resh/releases/download/$VERSION
+curl -fLO "$BASE/resh-$VERSION-linux-x86_64.tar.gz"
+curl -fLO "$BASE/SHA256SUMS"
+
+# Verify before unpacking; this must print "...: OK"
+sha256sum -c SHA256SUMS
+
+tar -xzf "resh-$VERSION-linux-x86_64.tar.gz"
+"./resh-$VERSION-linux-x86_64/resh" --version    # resh 1.0.6-beta
+
+# Install to /usr/local/bin (requires sudo)
+sudo install -m 0755 "resh-$VERSION-linux-x86_64/resh" /usr/local/bin/resh
+resh --version
+```
+
+The SHA-256 of `resh-v1.0.6-beta-linux-x86_64.tar.gz` is:
+
+```text
+ada3337201f3a4b3d44cde372dbc8ec239219098e41577978674853a4be8d8c9
+```
+
+Release assets are checksummed but **not signed**. A matching checksum shows that the download is intact, not who published it, so download both files from the GitHub release page over HTTPS.
+
+The archive contains the `resh` executable, `LICENSE`, `README.md`, `CHANGELOG.md` and `docs/known_issues.md`.
+
+### Build from source
+
+Prerequisites:
+
+- **Rust 1.88 or later** - Install from [rustup.rs](https://rustup.rs)
+- **Git**
+- A C compiler, `pkg-config` and the OpenSSL 3 development headers (`libssl-dev` on Debian and Ubuntu, `openssl-devel` on Fedora)
+
+```bash
 git clone https://github.com/millertechnologygroup/resh.git
 cd resh
 
-# Checkout the v1.0.5-beta release
-git checkout v1.0.5-beta
+# Check out the v1.0.6-beta release
+git checkout v1.0.6-beta
 
 # Build in release mode, using the dependency versions in Cargo.lock
 cargo build --release --locked
+./target/release/resh --version    # resh 1.0.6-beta
 
-# Binary will be at: ./target/release/resh
-./target/release/resh --version
-```
-
-### Quick Installation
-
-```bash
 # Install to /usr/local/bin (requires sudo)
-cargo build --release --locked
-sudo cp target/release/resh /usr/local/bin/
-sudo chmod +x /usr/local/bin/resh
-
-# Verify installation
-resh --version
+sudo install -m 0755 target/release/resh /usr/local/bin/resh
 ```
+
+A source build links against the system's own glibc, so it is the option for systems with glibc older than 2.39. Source builds have been tested only on the systems listed under *Verified* above.
 
 ### Development Build
 
@@ -331,27 +367,61 @@ cargo run -- svc://sshd.status
 cargo test
 ```
 
-### Binary Releases
+### Upgrading from v1.0.5-beta
 
-**Coming in v1.0 stable** - Pre-built binaries for:
-- Ubuntu/Debian (.deb)
-- RHEL/Fedora/CentOS (.rpm)
-- Arch Linux (AUR)
-- Generic Linux (tar.gz)
+Replace the binary. The CLI syntax and output formats are unchanged, with two intended tightenings:
 
-These are plans; no distribution packages are published yet. If a prebuilt Linux x86_64 binary is attached to a GitHub release, it needs **glibc 2.39 or later** (for example Ubuntu 24.04, Debian 13, Fedora 40+) and OpenSSL 3; older distributions such as RHEL 8/9, Debian 12 and Ubuntu 22.04 must build from source. Check the binary against the SHA-256 checksum published with the release.
+- `firewall://` refuses rule values that earlier versions accepted: malformed or injection-shaped fields, numbers with a leading zero (`dport=022`, `saddr=10.0.0.0/010`), and options the chosen backend cannot write. The command exits 1 with a `firewall.*` error code. Write numbers in plain decimal (`22`, `/10`).
+- When an external tool reaches its deadline, resh stops it and its child processes and exits **124** with `Error: outcome unknown: ...`. The tool may already have made changes, so check the state before retrying.
+
+See [CHANGELOG.md](CHANGELOG.md) for details.
+
+### Troubleshooting installation
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `version 'GLIBC_2.39' not found` | The system's glibc is older than 2.39. Build from source. |
+| `libssl.so.3: cannot open shared object file` | OpenSSL 3 is missing. Install it (`libssl3` or `libssl3t64` on Debian and Ubuntu, `openssl-libs` on Fedora), or use a distribution that ships OpenSSL 3. |
+| `sha256sum: WARNING: 1 computed checksum did NOT match` | The download is corrupt or not the published file. Delete it and download both assets again from the release page. Do not run it. |
+| A handle reports that a tool or backend is not available | Install the tool the handle drives (for example `nft`, `systemctl`, `restic`). |
+| Exit code 124 | An operation reached its deadline; see [docs/resh_overview.md](docs/resh_overview.md) 3.3. |
+
+### Distribution packages
+
+Distribution packages (.deb, .rpm, AUR) are planned for v1.0 stable. None are published yet.
+
+---
+
+## Security
+
+v1.0.6-beta is a security release. It fixes these issues:
+
+- **firewall command injection:** every rule field is validated as a single token before any backend command is built, and a rule that a backend cannot write in full is refused instead of being silently narrowed.
+- **ambiguous numbers in firewall rules:** ports, protocol numbers and CIDR prefix lengths must be plain decimal. A leading-zero value is refused instead of being applied by the backend as octal.
+- **wrong firewall rule deleted:** a rule's action is read from the rule itself, not from its comment.
+- **broader firewall rule skipped:** an `idempotent` add no longer treats an existing, narrower rule as satisfying the request.
+- **timeouts:** external tools, including descendants that call `setsid`, are stopped at the operation deadline, and an unconfirmed outcome exits 124 instead of possibly reporting success.
+
+v1.0.5-beta is affected by all of these, and earlier versions by the firewall and timeout issues. Upgrading is recommended for anyone who uses `firewall://` to add or delete rules, or who relies on timeouts to stop external tools. Earlier security fixes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+Limitations that remain are listed in [docs/known_issues.md](docs/known_issues.md), including:
+
+- `svc://<unit>.start` and `.restart` report that the service manager accepted the job, not that the unit became active. Confirm with `svc://<unit>.status` or `svc://<unit>.wait`.
+- `cargo audit` passes only with the advisory exceptions in `.cargo/audit.toml`, each with its assessment. A dependency refresh is planned for v1.0.7-beta.
+
+These fixes do not make resh free of vulnerabilities. To report one, follow [SECURITY.md](SECURITY.md); do not open a public issue.
 
 ---
 
 ## Contributing
 
-**resh v1.0.5-beta is available for testing.** We welcome:
+**resh v1.0.6-beta is available for testing.** We welcome:
 
 ### How You Can Help Now
 
 **1. 🐛 Test and Report Bugs**
 - Try resh in your environment
-- Report issues via [GitHub Issues](https://github.com/millertechnologygroup/resh/issues)
+- Report issues via [GitHub Issues](https://github.com/millertechnologygroup/resh/issues) (security vulnerabilities: see [SECURITY.md](SECURITY.md))
 - Include: OS, resh version, command run, expected vs actual output
 
 **2. 💡 Provide Feedback**
@@ -439,7 +509,7 @@ Built with frustration from years of fragile automation tools and excitement abo
 ## FAQ
 
 **Q: Can I use resh now?**  
-A: Yes. v1.0.5-beta is available for testing and feedback. Some verbs are stubs or have known limitations; check the handle's page and [docs/known_issues.md](docs/known_issues.md).
+A: Yes. v1.0.6-beta is available for testing and feedback. Some verbs are stubs or have known limitations; check the handle's page and [docs/known_issues.md](docs/known_issues.md).
 
 **Q: Is v1.0-beta production-ready?**  
 A: No. This is a beta release with 28 handles. Test it in non-production environments. A stable release (v1.0 stable) is planned but not yet scheduled.
@@ -473,6 +543,6 @@ A: Functional but not yet optimized. Current focus is correctness.
 
 ---
 
-**v1.0.5-beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
+**v1.0.6-beta available now. Test it. Break it. Help us build the future of infrastructure automation.** 🚀
 
-[Download v1.0.5-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.5-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)
+[Download v1.0.6-beta](https://github.com/millertechnologygroup/resh/releases/tag/v1.0.6-beta) • [Report Issues](https://github.com/millertechnologygroup/resh/issues) • [Read Docs](docs/) • [View Roadmap](ROADMAP.md)

@@ -213,6 +213,8 @@ On systemd, `enabled` is true when the unit file state is `enabled`, `static` or
 
 On systemd, resh calls `StartUnit`/`RestartUnit` over D-Bus and falls back to `systemctl start`/`restart` if D-Bus fails. On OpenRC it runs `rc-service <name> start|restart`. On failure a JSON object with an `error` field is written to stderr and resh exits 1. OpenRC output reports the name without the `.service` suffix.
 
+**`"result": "success"` means the request was accepted, not that the service is running.** On systemd, `start` and `restart` return once the service manager has accepted the job (mode `replace`); a unit that fails afterwards is not reflected in this result. To confirm the outcome, follow with `wait` (see [Start and verify](#start-and-verify)) or `status`. This is a known limitation; see [known_issues.md](../known_issues.md).
+
 ### stop
 
 ```json
