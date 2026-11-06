@@ -211,7 +211,7 @@ resh firewall://.disable backend=iptables family=ipv4 dry_run=true
 
 ## 5. Timeouts
 
-`timeout_ms` is accepted by every verb and is **enforced**: each backend command runs in its own process group, and when the deadline passes resh stops the command and every process it started. resh then exits with status **124** and prints `Error: outcome unknown: <tool> was stopped; it may already have made changes, so check before retrying` on stderr. Check the firewall state before you retry.
+`timeout_ms` is accepted by every verb and is **enforced**, except for `reload` from a file on the iptables backend, where `iptables-restore` is not yet run under the deadline (see `docs/known_issues.md`). Each other backend command runs in its own process group, and when the deadline passes resh stops the command and every process it started. resh then exits with status **124** and prints `Error: outcome unknown: <tool> was stopped; it may already have made changes, so check before retrying` on stderr. Check the firewall state before you retry.
 
 | Verbs                                              | Default  |
 | -------------------------------------------------- | -------- |

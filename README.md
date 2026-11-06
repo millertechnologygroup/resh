@@ -400,12 +400,13 @@ v1.0.6-beta is a security release. It fixes these issues:
 - **ambiguous numbers in firewall rules:** ports, protocol numbers and CIDR prefix lengths must be plain decimal. A leading-zero value is refused instead of being applied by the backend as octal.
 - **wrong firewall rule deleted:** a rule's action is read from the rule itself, not from its comment.
 - **broader firewall rule skipped:** an `idempotent` add no longer treats an existing, narrower rule as satisfying the request.
-- **timeouts:** external tools, including descendants that call `setsid`, are stopped at the operation deadline, and an unconfirmed outcome exits 124 instead of possibly reporting success.
+- **timeouts:** for the `firewall`, `pkg`, `ssh`, `net`, `system` and `log` handles, external tools, including descendants that call `setsid`, are stopped at the operation deadline, and an unconfirmed outcome exits 124 instead of possibly reporting success. Other handles are not yet covered (see below).
 
 v1.0.5-beta is affected by all of these, and earlier versions by the firewall and timeout issues. Upgrading is recommended for anyone who uses `firewall://` to add or delete rules, or who relies on timeouts to stop external tools. Earlier security fixes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Limitations that remain are listed in [docs/known_issues.md](docs/known_issues.md), including:
 
+- Timeout containment is incomplete: it does not cover `backup`, `fs` (for example mount, resize and check), `cron`, `user`, `svc` (including its `systemctl` fallback), `firewall` reload from a file on the iptables backend, and `net route.list`. After a timeout or failure of one of these operations, check the resource before retrying.
 - `svc://<unit>.start` and `.restart` report that the service manager accepted the job, not that the unit became active. Confirm with `svc://<unit>.status` or `svc://<unit>.wait`.
 - `cargo audit` passes only with the advisory exceptions in `.cargo/audit.toml`, each with its assessment. A dependency refresh is planned for v1.0.7-beta.
 
