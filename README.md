@@ -455,7 +455,7 @@ Formal contribution guidelines coming with v1.0 stable.
 ### Community
 
 - **GitHub Issues:** Bug reports and feature requests
-- **GitHub Discussions:** Questions and ideas (coming soon)
+- **[GitHub Discussions](https://github.com/millertechnologygroup/resh/discussions):** Questions, ideas and general support (not for security reports; see [SECURITY.md](SECURITY.md))
 - **Discord:** Real-time community (coming with v1.1)
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
