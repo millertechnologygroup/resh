@@ -1,0 +1,27 @@
+Handle: mq
+
+Description:
+  The mq handle provides a local, file-based FIFO message queue, storing each
+  message as an owner-only file under the user's state directory, normally
+  ~/.local/state/resh/mq/<queue>. The queue is named by the URL, such as
+  mq://jobs, using letters, digits, '.', '-' and '_'. Producers and consumers
+  may run at the same time: each message is taken by exactly one get, in the
+  order the puts finished.
+
+Available Verbs:
+  len      Prints the number of messages waiting in the queue, 0 if the queue
+           does not exist.
+  peek     Prints the oldest message without removing it, failing with exit
+           status 1 and the code mq.empty if the queue is empty.
+  create   Creates the queue's storage directories if they do not already exist.
+  put      Appends a message to the queue, taken from the data argument or, if
+           it is absent, from standard input.
+  get      Removes the oldest message from the queue and prints it, failing with
+           exit status 1 and the code mq.empty if the queue is empty.
+  purge    Deletes every message in the queue, including any left in flight.
+
+Usage:
+  resh mq://<queue>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh mq <verb> --help

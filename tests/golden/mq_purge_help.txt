@@ -1,0 +1,14 @@
+Handle: mq
+Verb: purge
+Definition: Deletes every message in the queue, including any left in flight.
+
+Usage:
+  resh mq://<queue>.purge [timeout_ms=<ms>]
+
+Example:
+  resh mq://jobs.purge
+
+Example Output:
+  Prints nothing on success. timeout_ms limits the wait for the queue lock and
+  the deletion (0 or absent: no limit); past it the command exits 124 with
+  mq.timeout, and messages not yet deleted stay queued.

@@ -4,7 +4,7 @@
 
 Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs.
 
-The `mq://` handle is a local, file-based FIFO queue. Each message is one file in a per-queue directory, so messages put by one `resh` command can be taken by a later one on the same host. It is meant for simple local hand-offs between scripts, not as a message broker.
+The `mq://` handle is a local, file-based FIFO queue. Each message is one file in a per-queue directory, so messages put by one `resh` command can be taken by a later one on the same host. Producers and consumers may run at the same time: every message is taken by exactly one `get`, in the order the `put` commands finished. It is meant for local hand-offs between scripts, not as a message broker; there is no network backend.
 
 ```text
 resh mq://<queue>.<verb> [key=value ...]
@@ -19,8 +19,10 @@ Verbs: `create`, `put`, `get`, `peek`, `len`, `purge`.
 * `get` and `peek` print the message bytes exactly as stored, with no JSON envelope and no trailing newline added.
 * `len` prints a bare number.
 * `create`, `put` and `purge` print nothing on success.
-* An empty queue makes `get` and `peek` exit with code 2 (resh prints `Error: empty` to stderr).
-* There is no dry-run mode; `get` and `purge` delete messages immediately.
+* An empty queue makes `get` and `peek` fail with exit code 1 and the error code `mq.empty`.
+* `get` does not wait for a message to arrive; it fails at once on an empty queue.
+* There is no dry-run mode; `dry_run=true` is refused (exit 2) before anything runs, and `dry_run=false` changes nothing.
+* Every verb refuses arguments it does not take (exit 2, `mq.invalid_argument`, with a "did you mean" hint).
 
 ---
 
@@ -28,21 +30,25 @@ Verbs: `create`, `put`, `get`, `peek`, `len`, `purge`.
 
 ### 3.1 Queue names and storage
 
-The queue name is the URL host plus path. Any character other than letters, digits, `.`, `-` and `_` is replaced with `_`, and the name is cut to 120 characters; for example `mq://team/a` uses the directory `team_a`.
+The queue name is the URL host: 1 to 120 letters, digits, `.`, `-` and `_`, not starting with `.`. Names are case-sensitive (`mq://Jobs` and `mq://jobs` are different queues). A URL with anything else (a path such as `mq://team/a`, a port, a user, a query, a fragment, or percent-encoded characters) is refused with exit 2 and `mq.invalid_target`; names are never rewritten, so two different URLs never share a queue.
 
 Queues are stored in the resh state directory:
 
 ```text
-$XDG_STATE_HOME/resh/mq/<queue>/                (default ~/.local/state/resh/mq/<queue>/)
-  01792761003306294654.msg                       one file per message, named by put time in nanoseconds
-  _inflight/                                     messages being taken by get
+$XDG_STATE_HOME/resh/mq/<queue>/        (default ~/.local/state/resh/mq/<queue>/), mode 0700
+  00000000000000000001.msg               one file per message (mode 0600), numbered in queue order
+  .seq                                   queue lock and the next message number (0600)
+  .tmp/                                  messages being written by put (0700)
+  _inflight/                             messages being taken by get (0700)
 ```
 
-If no state directory can be determined, the handle falls back to `/tmp/resh/mq/`, which is shared with other users. On Linux the state directory is always resolved, so this does not normally happen. Directories and files are created with the default umask, so other local users can usually read messages; do not queue secrets.
+If the state directory cannot be determined (no absolute `XDG_STATE_HOME` and no home directory), every verb fails with exit 1 and `mq.no_state_dir`; there is no fallback to a shared directory such as `/tmp`. Directories resh creates are owner-only, and existing queue directories are tightened to 0700 when a verb uses them. A symlink in place of the mq directory, a queue directory or `.seq` is refused (`mq.unsafe_path`); a symlink named like a message is not treated as one.
+
+Queues made by earlier resh versions (whose messages are numbered by put time in nanoseconds) keep working: new messages are numbered after the existing ones.
 
 ### 3.2 Example commands
 
-Create a queue (optional; every verb creates the directories if needed):
+Create a queue (optional; `put` creates the directories if needed):
 
 ```bash
 resh mq://tasks.create
@@ -78,47 +84,64 @@ resh mq://demo.get
 resh mq://demo.get
 ```
 
-The two `get` commands print `one` and then `two`. Order is by the nanosecond timestamp in the file name.
+The two `get` commands print `one` and then `two`. Messages are numbered from a counter kept in the queue, not from the clock, so the order is the order in which `put` commands finished, even across clock changes.
 
 ### 3.4 Exit codes
 
-These codes are set by the handle (verified in the source):
+| Code | Meaning                                                                 |
+| ---- | ----------------------------------------------------------------------- |
+| 0    | Success                                                                 |
+| 1    | Failed: the queue is empty (`get`, `peek`), or a filesystem error       |
+| 2    | Invalid usage (unknown verb or argument, bad value, invalid queue name); nothing was done |
+| 124  | `timeout_ms` passed (see 4.2)                                           |
 
-| Code | Meaning                             |
-| ---- | ----------------------------------- |
-| 0    | Success                             |
-| 1    | Filesystem error, or unknown verb   |
-| 2    | Queue empty (`get`, `peek`)         |
+Errors are printed on stderr as `Error: [<code>] <message>`:
+
+| Code                  | Exit | Meaning |
+| --------------------- | ---- | ------- |
+| `mq.invalid_argument` | 2    | Unknown verb or argument, `timeout_ms` on a verb that does not take it, a non-numeric `timeout_ms`, or `dry_run=true` |
+| `mq.invalid_target`   | 2    | The URL is not `mq://<queue>` with a valid queue name |
+| `mq.empty`            | 1    | `get` or `peek` found no message (a queue that does not exist is empty) |
+| `mq.timeout`          | 124  | `timeout_ms` passed while waiting for the queue lock (nothing was done) or during `purge` (the rest is still queued) |
+| `mq.no_state_dir`     | 1    | The state directory cannot be determined |
+| `mq.unsafe_path`      | 1    | A queue path is a symlink or not a directory |
+| `mq.io_error`         | 1    | A filesystem error, failure to read stdin, or failure to write the message to stdout |
 
 Script example that tells "empty" apart from errors:
 
 ```bash
-msg=$(resh mq://tasks.get)
-case $? in
-  0) echo "got: $msg" ;;
-  2) echo "queue empty" ;;
-  *) echo "error" >&2 ;;
-esac
+err=$(mktemp)
+if msg=$(resh mq://tasks.get 2>"$err"); then
+  echo "got: $msg"
+elif grep -q '^Error: \[mq\.empty\]' "$err"; then
+  echo "queue empty"
+else
+  cat "$err" >&2
+fi
+rm -f "$err"
 ```
 
 ---
 
 ## 4. Verbs
 
-| Verb     | Description                                                                 |
-| -------- | --------------------------------------------------------------------------- |
-| `create` | Creates the queue directory and its `_inflight` directory (idempotent)      |
-| `put`    | Stores `data=<message>`, or all of stdin when `data` is absent              |
-| `get`    | Moves the oldest message to `_inflight`, prints it, then deletes it         |
-| `peek`   | Prints the oldest message without removing it                               |
-| `len`    | Prints the number of `.msg` files in the queue directory                    |
-| `purge`  | Deletes every `.msg` file in the queue and in `_inflight` (idempotent)      |
+| Verb     | Arguments                    | Description |
+| -------- | ---------------------------- | ----------- |
+| `create` | none                         | Creates the queue directory, `.tmp` and `_inflight` (idempotent) |
+| `put`    | `[data=]` `[timeout_ms=]`    | Stores `data=<message>`, or all of stdin when `data` is absent |
+| `get`    | `[timeout_ms=]`              | Takes the oldest message, prints it and deletes it |
+| `peek`   | none                         | Prints the oldest message without removing it |
+| `len`    | none                         | Prints the number of queued messages (0 for a queue that does not exist) |
+| `purge`  | `[timeout_ms=]`              | Deletes every queued message and every message left in `_inflight` (idempotent) |
+
+`len`, `peek`, `get` and `purge` do not create a queue that does not exist.
 
 ### 4.1 Message content
 
-* `put` from stdin is binary-safe; the bytes are stored unchanged.
-* `data=` stores the argument's text (quote it in the shell if it contains spaces). With `data=`, nothing is read from stdin.
-* There is no size limit other than the filesystem's; `put` from stdin reads the whole input into memory first.
+* `put` from stdin is binary-safe; the bytes are stored unchanged. stdin is streamed to disk, so a large message is not held in memory.
+* `data=` stores the argument's text exactly (quote it in the shell if it contains spaces). With `data=`, nothing is read from stdin.
+* An empty `data=` or empty stdin stores an empty message.
+* There is no size limit other than the filesystem's.
 
 ```bash
 printf '\x00\x01\x02\xff' | resh mq://binary.put
@@ -127,18 +150,22 @@ resh mq://binary.get | od -An -tx1
 
 ### 4.2 timeout_ms
 
-No mq verb reads `timeout_ms`; it is ignored if given. No verb waits: `get` on an empty queue returns at once with exit code 2.
+`put`, `get` and `purge` take `timeout_ms=<ms>`: a whole number of milliseconds, where `0` or no value means no limit (the default). It limits the wait for the queue lock, which another `put`, `get` or `purge` holds only while it numbers, claims or deletes messages. When the limit passes the command exits 124 with `mq.timeout` and nothing was done. For `purge` it also limits the deletion: messages not yet deleted stay queued.
+
+The time `put` spends reading stdin is not limited. `len`, `peek` and `create` never wait for the lock and refuse `timeout_ms` (exit 2). `get` does not wait for a message to arrive.
 
 ---
 
 ## 5. Concurrency and Limitations
 
-* `put` writes the message to a temporary file and renames it into place. **The temporary file name (`tmp-<ns>.msg`) also ends in `.msg`**, so a `get`, `peek` or `len` that runs while a `put` is still writing can see it: `len` counts it, and when it is the only file, `get` or `peek` can read a partial message. Avoid running consumers while a large message is being written, or check message integrity in your own format.
-* `get` claims a message by renaming it into `_inflight`. If two `get` commands pick the same file at once, one wins and the other fails with a filesystem error (exit 1) instead of moving on to the next message.
-* A message whose `get` was interrupted after the rename stays in `_inflight` and is not returned again; `purge` deletes it. There is no acknowledgement, retry or dead-letter mechanism.
-* Ordering relies on the system clock. Messages put on hosts or containers with different clocks, or across a clock step, can be out of order.
-* `len` and `peek` create the queue directories if they do not exist.
-* The queue lives on one host. Sharing it through a network filesystem is not tested.
+* `put` writes the message to a private file in `.tmp` and syncs it, then, holding the queue lock, gives it the next number and renames it into the queue. A consumer never sees a partly written message, and two producers never get the same number.
+* `get` holds the queue lock while it picks the oldest message and moves it into `_inflight`, so two consumers never take the same message. The message is then printed and deleted. If it cannot be written to stdout (for example the reader closed the pipe), it is moved back to the head of the queue and `get` fails with `mq.io_error`; part of it may already have been written.
+* `peek` and `len` take no lock and never wait.
+* The lock is an `flock` on `.seq`; the kernel releases it if the process dies, so a killed command never leaves the queue locked. A process that is stopped (for example with Ctrl-Z) while holding the lock makes other `put`, `get` and `purge` commands wait; use `timeout_ms` to bound that wait.
+* A `get` killed after claiming a message but before printing it leaves the message in `_inflight`; it is not returned again, and `purge` deletes it. There is no acknowledgement, retry or dead-letter mechanism.
+* `purge` deletes temporary files in `.tmp` left by `put` commands whose process no longer exists.
+* `purge` runs under the lock; a `get` that claimed a message just before the purge still prints it.
+* The queue lives on one host. Sharing it through a network filesystem is not tested (`flock` semantics vary).
 
 ---
 
@@ -151,12 +178,12 @@ Linux is the only supported and tested platform.
 ## 7. Usage Guidance
 
 * Use separate queues for separate workflows.
-* Test for exit code 2 to detect an empty queue.
-* Have one consumer per queue if you need each message to be processed exactly once.
-* Check `_inflight` for messages left by interrupted consumers.
+* Test for exit code 1 with `mq.empty` to detect an empty queue; exit 2 means the command itself is wrong.
+* Check `_inflight` for messages left by killed consumers.
+* Message files are owner-only, but they are plain files on disk; use the `secret` handle for credentials.
 
 ---
 
 ## 8. Implementation Notes
 
-* Written in Rust using standard filesystem calls. All verbs run in the calling process; there is no background service.
+* Written in Rust using standard filesystem calls and `flock(2)`. All verbs run in the calling process; there is no background service.

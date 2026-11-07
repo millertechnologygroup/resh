@@ -1,0 +1,10 @@
+Handle: mq
+Verb: create
+Definition: Creates the queue's storage directories if they do not already
+  exist.
+
+Usage:
+  resh mq://<queue>.create
+
+Example:
+  resh mq://jobs.create

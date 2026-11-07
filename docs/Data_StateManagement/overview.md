@@ -34,8 +34,8 @@ The verb is the text after the last dot of the URL. A URL with no target still n
   * `event` prints a JSON object with `ok`, `error` and `warnings`.
   * `config get` prints the stored JSON value as is; `config ls` prints a JSON object; `config watch` prints one JSON object per line.
   * `log tail` prints raw lines, or a JSON object with `mode=json`.
-  * `mq get`/`peek` print the message bytes; `mq len` prints a number.
-* **Exit codes:** 0 on success. On failure, the handle's own code if it sets one (for example `mq get` on an empty queue exits 2), otherwise 1. resh prints `Error: <reason>` to stderr if the handle did not already write to stderr.
+  * `mq get`/`peek` print the message bytes; `mq len` prints a number. Failures print `Error: [mq.<code>] ...` on stderr (exit 1, 2 for invalid usage, 124 for a timeout).
+* **Exit codes:** 0 on success. On failure, the handle's own code if it sets one (for example `cache` and `mq` exit 2 for invalid usage and 124 for a timeout; `mq get` on an empty queue exits 1 with `mq.empty`), otherwise 1. resh prints `Error: <reason>` to stderr if the handle did not already write to stderr.
 * `--json-pretty` (before the stage) re-indents JSON output.
 * Help: `resh <handle> --help` and `resh <handle> <verb> --help`.
 
@@ -133,7 +133,7 @@ Verb: `tail`. Reads files (absolute or `./` relative) or `log://svc/<service>` j
 
 ### 4.6 Message queues (`mq`)
 
-Verbs: `create`, `put`, `get`, `peek`, `len`, `purge`. A local, single-host FIFO queue with one file per message. It is not a distributed queue and has no acknowledgement or retry; a consumer can read a message that is still being written. See [mq.md](mq.md).
+Verbs: `create`, `put`, `get`, `peek`, `len`, `purge`. A local, single-host FIFO queue with one owner-only file per message. Concurrent producers and consumers are safe: each message is taken by exactly one `get`, in the order the puts finished. It is not a distributed queue and has no acknowledgement or retry. See [mq.md](mq.md).
 
 ---
 
@@ -147,7 +147,7 @@ Linux is the only supported and tested platform. The state and config directorie
 
 * Pass connection details (`url=`, `dsn=`) on every `cache` and `db` command. Prefer `DB_<ALIAS>_DSN` for database passwords, because command-line arguments are visible in the process list.
 * Check exit codes, and for JSON output check the handle's own success fields (`hit`, `stored`, `ok`, `status`).
-* Do not store secrets with `config`, `event` or `mq`; their files are plain text. Use the `secret` handle.
+* Do not store secrets with `config`, `event` or `mq`; their files are plain text (`mq` files are owner-only, 0600). Use the `secret` handle.
 * Use `config watch`, `event subscribe wait=true` and `log tail` with limits (`timeout_ms`, `wait_timeout_ms`, `lines`) so scripts always end.
 
 ---
@@ -161,7 +161,7 @@ Linux is the only supported and tested platform. The state and config directorie
 | `config` | `watch` (run time limit; default none)                   | `get`, `set`, `ls`                   |
 | `event`  | none (`subscribe wait=true` uses `wait_timeout_ms`)      | all verbs                            |
 | `log`    | none                                                     | `tail`                               |
-| `mq`     | none                                                     | all verbs                            |
+| `mq`     | `put`, `get`, `purge` (wait for the queue lock, and `purge`'s deletion; default no limit; exit 124) | none (`len`, `peek`, `create` refuse it) |
 
 ---
 

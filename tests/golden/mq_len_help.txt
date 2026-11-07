@@ -1,0 +1,13 @@
+Handle: mq
+Verb: len
+Definition: Prints the number of messages waiting in the queue, 0 if the queue
+  does not exist.
+
+Usage:
+  resh mq://<queue>.len
+
+Example:
+  resh mq://jobs.len
+
+Example Output:
+  2

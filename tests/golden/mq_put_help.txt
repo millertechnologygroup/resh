@@ -1,0 +1,16 @@
+Handle: mq
+Verb: put
+Definition: Appends a message to the queue, taken from the data argument or, if
+  it is absent, from standard input.
+
+Usage:
+  resh mq://<queue>.put [data=<message>] [timeout_ms=<ms>]
+
+Example:
+  resh mq://jobs.put data=backup-db
+
+Example Output:
+  Prints nothing on success. Without data=, all of standard input is the
+  message, stored byte for byte. timeout_ms limits the wait for the queue lock
+  (0 or absent: no limit); past it the command exits 124 with mq.timeout and
+  nothing is queued.

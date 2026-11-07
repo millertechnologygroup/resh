@@ -1,0 +1,15 @@
+Handle: mq
+Verb: peek
+Definition: Prints the oldest message without removing it, failing with exit
+  status 1 and the code mq.empty if the queue is empty.
+
+Usage:
+  resh mq://<queue>.peek
+
+Example:
+  resh mq://jobs.peek
+
+Example Output:
+  backup-db
+
+  The message is printed exactly as stored, with no newline added.
