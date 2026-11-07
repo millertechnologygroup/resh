@@ -1,0 +1,27 @@
+Handle: cache
+Verb: ttl
+Definition: Reports whether keys exist and how many milliseconds remain before
+  they expire.
+
+Usage:
+  resh cache://<backend>/<alias>.ttl key=<key>|keys=<json-array>
+    url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]
+    [connect_timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty cache://redis/main.ttl key=session:1 url=redis://cache
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "redis",
+    "exists": true,
+    "has_expiry": true,
+    "key": "session:1",
+    "supports_ttl": true,
+    "ttl_ms": 59000
+  }
+
+  Shown with --json-pretty. ttl_ms is null for a key without an expiry.
+  Memcached 1.6+ reports whole seconds; older servers report supports_ttl
+  false. With keys= the output has a results array and a found count.

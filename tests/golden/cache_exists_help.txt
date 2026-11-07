@@ -1,0 +1,22 @@
+Handle: cache
+Verb: exists
+Definition: Reports whether one key, or each key in a list, exists.
+
+Usage:
+  resh cache://<backend>/<alias>.exists key=<key>|keys=<json-array>
+    url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]
+    [connect_timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty cache://redis/main.exists key=user:42 url=redis://cache
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "redis",
+    "exists": true,
+    "key": "user:42"
+  }
+
+  Shown with --json-pretty. With keys= the output has a results array
+  and a total_exists count.

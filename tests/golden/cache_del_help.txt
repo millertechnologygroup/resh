@@ -1,0 +1,23 @@
+Handle: cache
+Verb: del
+Definition: Deletes one key or a list of keys and reports which keys were
+  removed.
+
+Usage:
+  resh cache://<backend>/<alias>.del key=<key>|keys=<json-array>
+    url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]
+    [connect_timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty cache://redis/main.del key=user:42 url=redis://cache
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "redis",
+    "deleted": true,
+    "key": "user:42"
+  }
+
+  Shown with --json-pretty. With keys= the output has a results array
+  and a total_deleted count.

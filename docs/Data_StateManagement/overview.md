@@ -30,7 +30,7 @@ The verb is the text after the last dot of the URL. A URL with no target still n
 
 * **Each `resh` command is a separate process that runs one stage.** Nothing held in memory survives between commands. `cache` connections, `db` pools and `db` transactions opened by one command are gone when it exits, so `cache` verbs take `url=` and `db` verbs take `dsn=` (or `DB_<ALIAS>_DSN`) every time. Only `config`, `event` and `mq` keep state, and they keep it on disk in the directories above.
 * **Output formats differ by handle.** There is no common response envelope:
-  * `cache` and `db` print a JSON object for the result, or `{"error": {"code", "message", "details"}}` on failure.
+  * `cache` prints a JSON object for the result, or `{"alias", "backend", "error": {"code", "message"}}` on failure (with `Error: [cache.<code>] ...` on stderr; exit 1, 2 for invalid usage, 124 for a timeout). `db` prints a JSON object for the result, or `{"error": {"code", "message", "details"}}` on failure.
   * `event` prints a JSON object with `ok`, `error` and `warnings`.
   * `config get` prints the stored JSON value as is; `config ls` prints a JSON object; `config watch` prints one JSON object per line.
   * `log tail` prints raw lines, or a JSON object with `mode=json`.
@@ -113,7 +113,7 @@ Error: not found
 
 ### 4.1 Cache (`cache`)
 
-Verbs: `connect`, `get`, `exists`, `ttl`, `keys`, `set`, `incr`, `del`. Supports namespaces, TTLs, conditional writes and utf8/json/bytes encoding. Limitations include numeric-looking keys, namespaces and cursors being dropped unless quoted as JSON strings, and Memcached `exists`/`ttl` reporting missing keys as present. See [cache.md](cache.md).
+Verbs: `connect`, `get`, `exists`, `ttl`, `keys`, `set`, `incr`, `del`. Supports namespaces, TTLs, conditional writes and utf8/json/bytes encoding, and key listing on both backends (Redis `SCAN`, Memcached LRU crawler). Limitations include no TLS (`rediss://` is refused), no Memcached authentication and no Redis Cluster. See [cache.md](cache.md).
 
 ### 4.2 Configuration (`config`)
 
@@ -156,7 +156,7 @@ Linux is the only supported and tested platform. The state and config directorie
 
 | Handle   | Enforces `timeout_ms`                                    | Ignores `timeout_ms`                 |
 | -------- | -------------------------------------------------------- | ------------------------------------ |
-| `cache`  | `get`, `set`, `del`, `incr`, `exists`, `keys`, `ttl` (default 1000; `0` rejected) | `connect` (uses `connect_timeout_ms`) |
+| `cache`  | `get`, `set`, `del`, `incr`, `exists`, `keys`, `ttl` (default 1000, 1-86400000; exit 124); every verb also takes `connect_timeout_ms` (default 5000) | `connect` (uses `connect_timeout_ms` only) |
 | `db`     | `ping` (per attempt, default 1000), `query`, `exec`, `tables`, `schema`, `transaction` (default 5000; `0` and non-numbers rejected) | `connect` (uses `connect_timeout_ms`) |
 | `config` | `watch` (run time limit; default none)                   | `get`, `set`, `ls`                   |
 | `event`  | none (`subscribe wait=true` uses `wait_timeout_ms`)      | all verbs                            |
@@ -167,4 +167,4 @@ Linux is the only supported and tested platform. The state and config directorie
 
 ## 8. Implementation Notes
 
-All six handles are written in Rust and compiled into the single `resh` binary. `cache` uses the `redis` and `memcache` crates, `db` uses `sqlx`, `config watch` uses `notify`, and `log` runs `journalctl` directly without a shell.
+All six handles are written in Rust and compiled into the single `resh` binary. `cache` uses the `redis` crate and its own memcached text-protocol client, `db` uses `sqlx`, `config watch` uses `notify`, and `log` runs `journalctl` directly without a shell.

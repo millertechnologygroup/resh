@@ -1,0 +1,24 @@
+Handle: cache
+Verb: get
+Definition: Reads one key or a list of keys and decodes each value, returning
+  the default value for a missing key.
+
+Usage:
+  resh cache://<backend>/<alias>.get key=<key>|keys=<json-array>
+    url=<connection-url> [namespace=<ns>] [decode=utf8|bytes|json]
+    [default=<value>] [timeout_ms=<ms>] [connect_timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty cache://redis/main.get key=user:42 url=redis://cache
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "redis",
+    "hit": true,
+    "key": "user:42",
+    "value": "alice"
+  }
+
+  Shown with --json-pretty. With keys= the output has alias, backend,
+  and a results array of key, value, hit.

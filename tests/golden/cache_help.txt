@@ -1,0 +1,31 @@
+Handle: cache
+
+Description:
+  The cache handle reads and writes keys in Redis or Memcached, with key
+  namespaces, TTLs, conditional writes and value encodings, and prints JSON. The
+  target names a backend and a connection alias, such as cache://redis/main or
+  cache://memcached/main. Connections last only for one resh process, so every
+  verb takes url=<connection-url> and connects on demand.
+
+Available Verbs:
+  connect   Opens a connection to the server at url, checks that it answers, and
+            registers it under the alias for the rest of the resh process.
+  get       Reads one key or a list of keys and decodes each value, returning
+            the default value for a missing key.
+  exists    Reports whether one key, or each key in a list, exists.
+  ttl       Reports whether keys exist and how many milliseconds remain before
+            they expire.
+  keys      Lists keys that match a glob pattern one page at a time, with Redis
+            SCAN or the Memcached LRU crawler.
+  set       Stores a value under one key, or values under a list of keys, with
+            an optional TTL and an only-if-missing or only-if-present condition.
+  incr      Adds an integer to a counter, creating it from the initial value
+            when the key is missing.
+  del       Deletes one key or a list of keys and reports which keys were
+            removed.
+
+Usage:
+  resh cache://<backend>/<alias>.<verb> url=<connection-url> [key=value ...]
+
+For help with a specific verb:
+  resh cache <verb> --help

@@ -1,0 +1,24 @@
+Handle: cache
+Verb: incr
+Definition: Adds an integer to a counter, creating it from the initial value
+  when the key is missing.
+
+Usage:
+  resh cache://<backend>/<alias>.incr key=<key> url=<connection-url>
+    [by=<n>] [initial=<n>] [ttl_ms=<ms>] [namespace=<ns>]
+    [timeout_ms=<ms>] [connect_timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty cache://redis/main.incr key=views by=5 url=redis://cache
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "redis",
+    "created": false,
+    "key": "views",
+    "value": 47
+  }
+
+  Shown with --json-pretty. by may be negative; Memcached counters stop
+  at 0. ttl_ms sets the counter's expiry on every call.

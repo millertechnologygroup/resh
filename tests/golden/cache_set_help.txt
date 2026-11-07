@@ -1,0 +1,27 @@
+Handle: cache
+Verb: set
+Definition: Stores a value under one key, or values under a list of keys, with
+  an optional TTL and an only-if-missing or only-if-present condition.
+
+Usage:
+  resh cache://<backend>/<alias>.set key=<key>|keys=<json-array>
+    value=<value>|values=<json-array> url=<connection-url>
+    [namespace=<ns>] [ttl_ms=<ms>] [encode=utf8|bytes|json]
+    [only_if_not_exists=true|false] [only_if_exists=true|false]
+    [timeout_ms=<ms>] [connect_timeout_ms=<ms>]
+
+Example:
+  resh cache://redis/main.set key=u1 value=alice ttl_ms=60000 url=redis://cache
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "redis",
+    "key": "u1",
+    "stored": true,
+    "ttl_ms": 60000
+  }
+
+  Shown as --json-pretty output. A write skipped by a condition reports
+  stored false and reason condition_not_met. With keys= the output has a
+  results array and a total_stored count.

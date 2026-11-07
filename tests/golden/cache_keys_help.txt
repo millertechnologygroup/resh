@@ -1,0 +1,28 @@
+Handle: cache
+Verb: keys
+Definition: Lists keys that match a glob pattern one page at a time, with Redis
+  SCAN or the Memcached LRU crawler.
+
+Usage:
+  resh cache://<backend>/<alias>.keys url=<connection-url>
+    [pattern=<glob>] [namespace=<ns>] [cursor=<cursor>] [limit=<n>]
+    [timeout_ms=<ms>] [connect_timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty cache://redis/main.keys 'pattern=user:*' url=redis://cache
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "redis",
+    "count": 2,
+    "cursor": null,
+    "has_more": false,
+    "keys": [
+      "user:42",
+      "user:43"
+    ]
+  }
+
+  Shown with --json-pretty. When has_more is true, pass the returned
+  cursor to fetch the next page. On Redis, limit is a SCAN COUNT hint.

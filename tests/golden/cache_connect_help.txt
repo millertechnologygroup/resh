@@ -1,0 +1,23 @@
+Handle: cache
+Verb: connect
+Definition: Opens a connection to the server at url, checks that it answers, and
+  registers it under the alias for the rest of the resh process.
+
+Usage:
+  resh cache://<backend>/<alias>.connect url=<connection-url>
+    [connect_timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty cache://redis/main.connect url=redis://localhost:6379/0
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "redis",
+    "endpoint": "localhost:6379",
+    "status": "connected"
+  }
+
+  Shown with --json-pretty. Redis takes redis://[:password@]host[:port][/db]
+  or redis+unix:///path; Memcached takes memcache://host[:port]. TLS
+  (rediss://) is not supported. connect_timeout_ms defaults to 5000.
