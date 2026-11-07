@@ -15,6 +15,7 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 time = "0.3"
 chrono = { version = "0.4", features = ["clock", "serde"] }
+chrono-tz = "0.9"
 percent-encoding = "2"
 anyhow = "1"
 thiserror = "1"

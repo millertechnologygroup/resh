@@ -3,6 +3,44 @@
 These issues were found while writing the per-verb `--help` metadata, and each
 one was then checked against the code by a separate read-only review.
 
+## Unreleased: cron and pkg options that were accepted but ignored
+
+These options were parsed and then ignored. Each one now does what its name
+and help define, or is refused with an error where nothing defines it. Unit
+tests drive each verb through the handle (`option_tests` in `cronh.rs` and
+`pkgh.rs`), and `tests/option_wiring.rs` runs the `resh` binary against fake
+`crontab`, `systemctl` and apt tools.
+
+- **cron `add timezone=`** was ignored. systemd timers now get the zone on
+  `OnCalendar=`. The cron backend writes a `CRON_TZ=` line in a time-zone
+  block at the end of the file, so other jobs keep their zone. Only cronie
+  honors `CRON_TZ`, so the cron backend refuses `timezone` unless
+  `crontab -V` identifies cronie (`cron.add_timezone_unsupported`). Unknown
+  zone names are refused. `rm` removes a job's `CRON_TZ` line with it.
+  `list`, `rm`, `enable` and `disable` report each job's zone. See
+  `cron.md` 3.3.
+- **cron `list timezone=`** was ignored. It is now the zone used for
+  next-run times of entries without their own `CRON_TZ`.
+- **cron next-run times** ignored `now_unix` and always counted from the
+  current time. `list now_unix=` and `add now_unix=` (which was also ignored)
+  are now the reference time. A malformed `add now_unix` is refused.
+- **cron `rm cron_file=` and `enable cron_file=`** were ignored, so the verbs
+  acted on the crontabs chosen by `scope`. They now act on that file only,
+  with the same restriction as `disable` (`/etc/crontab` or
+  `/etc/cron.d/<name>`; anything else gives `cron.<verb>_invalid_argument`).
+- **pkg `info include_repo: false`** and **`list_installed include_versions:
+  false`** were ignored. They now set `repository` and `version` to null.
+- **pkg `restore on_repo_mismatch`** and **`include_dependencies`** had no
+  effect. They now compare locked and host repositories (fail, warn or
+  ignore) and leave locked dependencies out of the plan, as described in
+  `pkg.md` 3.4. Restore output has a new `warnings` list.
+- **pkg package `source`** (install and remove) was silently ignored. No
+  manager defines it, so a request that sets it is now refused before
+  anything runs.
+- **Still open:** `pkg snapshot` accepts an `inline` key (default true) that
+  nothing reads. No help text, doc or test defines what it should do, so it
+  is unchanged.
+
 ## v1.0.6-beta security release (2026-11-03)
 
 Security hotfix on top of v1.0.5-beta, scoped to the `firewall://` handle and

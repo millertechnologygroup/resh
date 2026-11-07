@@ -35,7 +35,8 @@ static PKG_HELP: HandleHelp = HandleHelp {
                 usage: "resh pkg://<alias>.info input=<json>\n  \
                     <json> keys: manager, packages (both required),\n  \
                     include_dependencies, include_reverse_deps, include_files,\n  \
-                    include_repo, timeout_ms, extra_args, env",
+                    include_repo (default true; false sets repository to null),\n  \
+                    timeout_ms, extra_args, env",
                 example: "resh pkg://system.info 'input={\"manager\":\"apt\",\"packages\":[\"nginx\"]}'",
                 example_output: Some(
                     r#"{
@@ -111,9 +112,10 @@ Shown for apt."#,
                 by name prefix or substring and paginated.",
             detail: Some(VerbDetail {
                 usage: "resh pkg://<alias>.list_installed input=<json>\n  \
-                    <json> keys: manager (required), filter, prefix, include_versions,\n  \
-                    include_repo, include_size, include_install_reason, limit, offset,\n  \
-                    timeout_ms, extra_args, env",
+                    <json> keys: manager (required), filter, prefix, include_versions\n  \
+                    (default true; false sets version to null), include_repo,\n  \
+                    include_size, include_install_reason, limit, offset, timeout_ms,\n  \
+                    extra_args, env",
                 example: "resh pkg://system.list_installed 'input={\"manager\":\"apt\",\"prefix\":\"nginx\"}'",
                 example_output: Some(
                     r#"{
@@ -189,8 +191,9 @@ Shown for apt with the lockfile string shortened."#,
             detail: Some(VerbDetail {
                 usage: "resh pkg://<alias>.install input=<json>\n  \
                     <json> keys: manager, packages (both required; each package is\n  \
-                    {name, version, source}), update_cache, assume_yes, only_if_missing,\n  \
-                    reinstall, upgrade, dry_run, timeout_ms, arch, extra_args, env",
+                    {name, version}), update_cache, assume_yes, only_if_missing,\n  \
+                    reinstall, upgrade, dry_run, timeout_ms, arch, extra_args, env\n  \
+                    A package source is not supported; a package with source is refused",
                 example: "resh pkg://system.install 'input={\"manager\":\"apt\",\"packages\":[{\"name\":\"jq\"}]}'",
                 example_output: Some(
                     r#"{
@@ -230,7 +233,8 @@ actions instead."#,
                 usage: "resh pkg://<alias>.remove input=<json>\n  \
                     <json> keys: manager, packages (both required), purge, recursive,\n  \
                     assume_yes, only_if_installed, fail_if_missing, dry_run,\n  \
-                    timeout_ms, arch, extra_args, env",
+                    timeout_ms, arch, extra_args, env\n  \
+                    Each package is {name, version}; a package with source is refused",
                 example: "resh pkg://system.remove 'input={\"manager\":\"apt\",\"packages\":[{\"name\":\"jq\"}]}'",
                 example_output: Some(
                     r#"{
@@ -351,6 +355,11 @@ instead of available_upgrades and commands."#,
                     allow_downgrades, allow_removals, allow_newer, on_missing_package,\n  \
                     on_repo_mismatch, on_platform_mismatch, include_dependencies,\n  \
                     dry_run, timeout_ms, extra_args, env\n  \
+                    on_repo_mismatch (fail|warn|ignore, default warn) compares each\n  \
+                    locked repository with the installed package's repository;\n  \
+                    include_dependencies (default true) false leaves packages the\n  \
+                    lockfile records as dependencies out of the plan; mode is only\n  \
+                    echoed, and extra_args is not passed to the restore commands\n  \
                     A text lockfile (name=version lines) restores with the given\n  \
                     manager, or with the detected system manager for manager=auto",
                 example: "resh pkg://system.restore \"input=$(cat restore.json)\"",
@@ -377,7 +386,8 @@ instead of available_upgrades and commands."#,
     "remove": [],
     "unresolved": [],
     "upgrade": []
-  }
+  },
+  "warnings": []
 }
 
 Shown for apt with dry_run true in restore.json. Without dry_run, the
@@ -648,6 +658,8 @@ pub enum PkgError {
     #[error("Repository not available: {0}")]
     #[allow(dead_code)]
     RestoreRepoNotAvailable(String),
+    #[error("Repository mismatch: {0}")]
+    RestoreRepoMismatch(String),
 }
 
 /// Whether `verb` restricts its upgrade to security fixes on `manager` when
@@ -700,8 +712,25 @@ pub enum ManagerKind {
 pub struct PackageSpec {
     pub name: String,
     pub version: Option<String>,
-    #[allow(dead_code)]
+    /// Never defined for any manager; a request that sets it is refused (see
+    /// `check_no_package_source`) instead of being silently ignored.
     pub source: Option<String>,
+}
+
+/// `source` in a package entry has no defined meaning for any manager: no
+/// backend can choose a repository, URL or file from it. A request that sets
+/// it is refused before anything runs (dry run included), so it is never
+/// silently dropped.
+fn check_no_package_source(pkg: &PackageSpec) -> std::result::Result<(), String> {
+    match &pkg.source {
+        None => Ok(()),
+        Some(source) => Err(format!(
+            "package {:?}: source={:?} is not supported by pkg for any manager \
+             (the package is always taken from the manager's configured repositories); \
+             remove source from the request; nothing was run",
+            pkg.name, source
+        )),
+    }
 }
 
 /// Install configuration
@@ -821,7 +850,6 @@ pub struct InfoConfig {
     #[serde(default)]
     pub include_files: bool,
     #[serde(default = "default_true")]
-    #[allow(dead_code)]
     pub include_repo: bool,
     #[serde(default = "default_info_timeout")]
     pub timeout_ms: u64,
@@ -1040,7 +1068,6 @@ pub struct ListInstalledConfig {
     pub filter: Option<String>,
     pub prefix: Option<String>,
     #[serde(default = "default_true")]
-    #[allow(dead_code)]
     pub include_versions: bool,
     #[serde(default = "default_true")]
     pub include_repo: bool,
@@ -1155,12 +1182,10 @@ pub struct RestoreConfig {
     #[serde(default = "default_missing_policy")]
     pub on_missing_package: MissingPolicy,
     #[serde(default = "default_repo_policy")]
-    #[allow(dead_code)]
     pub on_repo_mismatch: RepoPolicy,
     #[serde(default = "default_platform_policy")]
     pub on_platform_mismatch: PlatformPolicy,
     #[serde(default = "default_true")]
-    #[allow(dead_code)]
     pub include_dependencies: bool,
     #[serde(default)]
     pub dry_run: bool,
@@ -1323,6 +1348,10 @@ pub struct RestorePlan {
     pub keep: Vec<String>,
     pub extra: Vec<String>,
     pub unresolved: Vec<UnresolvedPackage>,
+    /// Locked packages left out of the plan by `include_dependencies: false`
+    /// (recorded as installed as a dependency); neither installed nor removed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_dependencies: Vec<String>,
 }
 
 /// Unresolved package with reason
@@ -1686,6 +1715,7 @@ impl PkgHandle {
             if let Some(ref v) = pkg.version {
                 check_pkg_token("version", v).map_err(PkgError::InvalidInstallConfig)?;
             }
+            check_no_package_source(pkg).map_err(PkgError::InvalidInstallConfig)?;
         }
         if let Some(ref arch) = config.arch {
             check_pkg_token("arch", arch).map_err(PkgError::InvalidInstallConfig)?;
@@ -2349,6 +2379,7 @@ impl PkgHandle {
             if let Some(ref v) = pkg.version {
                 check_pkg_token("version", v).map_err(PkgError::InvalidRemoveConfig)?;
             }
+            check_no_package_source(pkg).map_err(PkgError::InvalidRemoveConfig)?;
         }
         if let Some(ref arch) = config.arch {
             check_pkg_token("arch", arch).map_err(PkgError::InvalidRemoveConfig)?;
@@ -3933,7 +3964,14 @@ impl PkgHandle {
                 .query_single_package(package_name, config, manager)
                 .await
             {
-                Ok(package_info) => packages.push(package_info),
+                Ok(mut package_info) => {
+                    // The repository is looked up together with the candidate
+                    // version, so it is dropped here rather than not queried.
+                    if !config.include_repo {
+                        package_info.repository = None;
+                    }
+                    packages.push(package_info)
+                }
                 Err(e) => {
                     eprintln!("Failed to query package {}: {}", package_name, e);
                     partial_failures += 1;
@@ -5679,9 +5717,13 @@ impl PkgHandle {
             results: paginated_packages,
         };
 
-        Ok(serde_json::to_value(results).map_err(|e| {
+        let mut value = serde_json::to_value(results).map_err(|e| {
             PkgError::ListInstalledFailed(format!("Failed to serialize results: {}", e))
-        })?)
+        })?;
+        if !config.include_versions {
+            omit_installed_versions(&mut value);
+        }
+        Ok(value)
     }
 
     fn filter_installed_packages(
@@ -8304,6 +8346,13 @@ impl PkgHandle {
         // Get current installed packages
         let current_packages = self.get_current_packages(manager).await?;
 
+        // on_repo_mismatch (fails before anything runs, dry run included)
+        // and include_dependencies warnings.
+        let mut warnings = self
+            .check_restore_repositories(lockfile, &current_packages, manager, config)
+            .await?;
+        warnings.extend(dependency_filter_warnings(lockfile, config));
+
         // Compute diff between lockfile and current state
         let plan = self.compute_restore_plan(lockfile, &current_packages, config)?;
 
@@ -8317,7 +8366,8 @@ impl PkgHandle {
                 "mode": format!("{:?}", config.mode).to_lowercase(),
                 "dry_run": true,
                 "plan": plan,
-                "commands": self.generate_restore_commands(&plan, manager, config)
+                "commands": self.generate_restore_commands(&plan, manager, config),
+                "warnings": warnings
             }));
         }
 
@@ -8336,8 +8386,52 @@ impl PkgHandle {
             "dry_run": false,
             "plan": plan,
             "results": results,
-            "summary": summary
+            "summary": summary,
+            "warnings": warnings
         }))
+    }
+
+    /// Looks up the host repository of each installed locked package that
+    /// records one (with the same per-manager query snapshot uses, so both
+    /// sides have the same form) and applies `on_repo_mismatch`.
+    async fn check_restore_repositories(
+        &self,
+        lockfile: &Lockfile,
+        current_packages: &[InstalledPackage],
+        manager: &ManagerKind,
+        config: &RestoreConfig,
+    ) -> Result<Vec<String>, PkgError> {
+        let installed: HashSet<String> = current_packages.iter().map(|p| p.name.clone()).collect();
+        let mut host_repos = HashMap::new();
+        if config.on_repo_mismatch != RepoPolicy::Ignore {
+            for pkg in &lockfile.packages {
+                if pkg.repository.is_some()
+                    && installed.contains(&pkg.name)
+                    && !restore_excludes(pkg, config)
+                {
+                    let repo = self.host_package_repository(manager, &pkg.name).await;
+                    host_repos.insert(pkg.name.clone(), repo);
+                }
+            }
+        }
+        repo_mismatch_warnings(lockfile, &installed, &host_repos, config)
+    }
+
+    /// The repository of an installed package as `snapshot` records it.
+    async fn host_package_repository(
+        &self,
+        manager: &ManagerKind,
+        package_name: &str,
+    ) -> Option<String> {
+        match manager {
+            ManagerKind::Apt => self.get_apt_package_repository(package_name).await,
+            ManagerKind::Dnf => self.get_dnf_package_repository(package_name).await,
+            ManagerKind::Yum => self.get_yum_package_repository(package_name).await,
+            ManagerKind::Pacman => self.get_pacman_package_repository(package_name).await,
+            ManagerKind::Apk => self.get_apk_package_repository(package_name).await,
+            ManagerKind::Brew => self.get_brew_package_tap(package_name).await,
+            ManagerKind::Auto => None,
+        }
     }
 
     async fn get_current_packages(
@@ -8362,12 +8456,17 @@ impl PkgHandle {
 
         let results = self.list_installed_async(list_config).await?;
 
-        // Extract packages from the results JSON
-        if let Ok(list_results) = serde_json::from_value::<ListInstalledResults>(results) {
-            Ok(list_results.results)
-        } else {
-            Ok(Vec::new())
-        }
+        // Extract packages from the results JSON. An unreadable list must not
+        // look like an empty host: every locked package would be planned for
+        // install and nothing compared.
+        serde_json::from_value::<ListInstalledResults>(results)
+            .map(|list| list.results)
+            .map_err(|e| {
+                PkgError::RestoreApplyFailed(format!(
+                    "could not read the installed packages: {}; nothing was changed",
+                    e
+                ))
+            })
     }
 
     // Platform detection helpers
@@ -8407,6 +8506,7 @@ impl PkgHandle {
             keep: Vec::new(),
             extra: Vec::new(),
             unresolved: Vec::new(),
+            skipped_dependencies: Vec::new(),
         };
 
         // Create lookup map of current packages
@@ -8417,6 +8517,13 @@ impl PkgHandle {
 
         // Process lockfile packages
         for lock_pkg in &lockfile.packages {
+            if restore_excludes(lock_pkg, config) {
+                // Out of the plan entirely: also not "extra", so
+                // allow_removals never removes it.
+                current_map.remove(&lock_pkg.name);
+                plan.skipped_dependencies.push(lock_pkg.name.clone());
+                continue;
+            }
             match current_map.remove(&lock_pkg.name) {
                 Some(current_pkg) => {
                     if let Some(ref lock_version) = lock_pkg.version {
@@ -10655,6 +10762,7 @@ mod tests {
             keep: vec!["bash".to_string()],
             extra: vec![],
             unresolved: vec![],
+            skipped_dependencies: vec![],
         };
 
         let config = RestoreConfig {
@@ -10889,6 +10997,153 @@ mod tests {
 // SEC-04: package-manager commands run without a shell. Nothing here
 // invokes a real package manager; execution is checked with a mock
 // executable inside a temporary directory.
+/// `list_installed` with `include_versions: false`: every result keeps its
+/// `version` key, set to null (as `repository` is with `include_repo: false`).
+fn omit_installed_versions(list_result: &mut Value) {
+    if let Some(results) = list_result.get_mut("results").and_then(Value::as_array_mut) {
+        for entry in results {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("version".to_string(), Value::Null);
+            }
+        }
+    }
+}
+
+/// Whether a locked package is left out of the restore plan: with
+/// `include_dependencies: false`, packages the lockfile records as installed
+/// as a dependency (`install_reason: "dependency"`).
+fn restore_excludes(pkg: &LockfilePackage, config: &RestoreConfig) -> bool {
+    !config.include_dependencies && pkg.install_reason.as_deref() == Some("dependency")
+}
+
+/// Names for a warning: at most ten, then how many more.
+fn name_list(names: &[String]) -> String {
+    const SHOWN: usize = 10;
+    if names.len() <= SHOWN {
+        names.join(", ")
+    } else {
+        format!(
+            "{} and {} more",
+            names[..SHOWN].join(", "),
+            names.len() - SHOWN
+        )
+    }
+}
+
+/// Warnings for `include_dependencies: false` when the lockfile cannot say
+/// which packages are dependencies (a text lockfile, or a snapshot taken with
+/// `include_install_reason: false`): those packages stay in the plan.
+fn dependency_filter_warnings(lockfile: &Lockfile, config: &RestoreConfig) -> Vec<String> {
+    if config.include_dependencies {
+        return Vec::new();
+    }
+    let unknown: Vec<String> = lockfile
+        .packages
+        .iter()
+        .filter(|p| p.install_reason.is_none())
+        .map(|p| p.name.clone())
+        .collect();
+    if unknown.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "include_dependencies=false: the lockfile records no install reason for {} package(s), \
+         so they stay in the plan: {}",
+        unknown.len(),
+        name_list(&unknown)
+    )]
+}
+
+/// Applies `on_repo_mismatch` to the locked packages that are in the plan.
+///
+/// A locked package's recorded `repository` is compared with the host's
+/// repository for the same package, which is only known for installed
+/// packages (`host_repos`, looked up the same way snapshot records it). A
+/// mismatch fails the restore (`fail`) or adds a warning (`warn`); `ignore`
+/// skips the check. Packages that cannot be compared (no repository in the
+/// lockfile, not installed on the host, or a host repository that could not
+/// be determined) are reported in a warning for `fail` and `warn`, never
+/// silently passed.
+fn repo_mismatch_warnings(
+    lockfile: &Lockfile,
+    installed: &HashSet<String>,
+    host_repos: &HashMap<String, Option<String>>,
+    config: &RestoreConfig,
+) -> Result<Vec<String>, PkgError> {
+    if config.on_repo_mismatch == RepoPolicy::Ignore {
+        return Ok(Vec::new());
+    }
+    let mut mismatched = Vec::new();
+    let mut no_recorded_repo = Vec::new();
+    let mut not_installed = Vec::new();
+    let mut host_unknown = Vec::new();
+    for pkg in lockfile
+        .packages
+        .iter()
+        .filter(|p| !restore_excludes(p, config))
+    {
+        let Some(locked) = &pkg.repository else {
+            no_recorded_repo.push(pkg.name.clone());
+            continue;
+        };
+        if !installed.contains(&pkg.name) {
+            not_installed.push(pkg.name.clone());
+            continue;
+        }
+        match host_repos.get(&pkg.name) {
+            Some(Some(host)) if host == locked => {}
+            Some(Some(host)) => mismatched.push(format!(
+                "{} (lockfile: {}, host: {})",
+                pkg.name, locked, host
+            )),
+            _ => host_unknown.push(pkg.name.clone()),
+        }
+    }
+
+    if !mismatched.is_empty() && config.on_repo_mismatch == RepoPolicy::Fail {
+        return Err(PkgError::RestoreRepoMismatch(format!(
+            "{} package(s) come from a different repository than the lockfile records \
+             (on_repo_mismatch=fail): {}; nothing was changed",
+            mismatched.len(),
+            name_list(&mismatched)
+        )));
+    }
+
+    let mut warnings = Vec::new();
+    if !mismatched.is_empty() {
+        warnings.push(format!(
+            "repository mismatch for {} package(s): {}",
+            mismatched.len(),
+            name_list(&mismatched)
+        ));
+    }
+    if !no_recorded_repo.is_empty() {
+        warnings.push(format!(
+            "on_repo_mismatch: the lockfile records no repository for {} package(s), \
+             so their repository was not checked: {}",
+            no_recorded_repo.len(),
+            name_list(&no_recorded_repo)
+        ));
+    }
+    if !not_installed.is_empty() {
+        warnings.push(format!(
+            "on_repo_mismatch: {} package(s) are not installed on the host, so their \
+             repository could not be compared: {}",
+            not_installed.len(),
+            name_list(&not_installed)
+        ));
+    }
+    if !host_unknown.is_empty() {
+        warnings.push(format!(
+            "on_repo_mismatch: the host repository of {} installed package(s) could not be \
+             determined, so it was not compared: {}",
+            host_unknown.len(),
+            name_list(&host_unknown)
+        ));
+    }
+    Ok(warnings)
+}
+
 /// The exit status for a mutating verb's result: a failure when any package
 /// operation failed (`summary.failed > 0`) or the summary says
 /// `success: false`, even if other packages succeeded.
@@ -11433,5 +11688,245 @@ mod cmdline_safety_tests {
 
     fn fs_write_exec(path: &std::path::Path, script: &str) {
         crate::core::test_support::write_executable(path, script);
+    }
+}
+
+/// The options wired up in this release, checked on the pure parts of each
+/// verb (plan building, policies, output shaping). The verbs themselves are
+/// run end to end against fake package managers in
+/// `tests/option_wiring.rs`, since pkg runs its managers as subprocesses.
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn handle() -> PkgHandle {
+        PkgHandle {
+            alias: "test".to_string(),
+        }
+    }
+
+    fn lockfile(packages: Value) -> Lockfile {
+        serde_json::from_value(json!({
+            "lockfile_version": "pkg-lock/v1", "generated_at": "2026-01-01T00:00:00Z",
+            "manager": { "name": "apt", "alias": "system", "version": null, "config": null },
+            "platform": { "os_family": null, "os_name": null, "os_version": null,
+                          "kernel": null, "architecture": null },
+            "scope": "all", "packages": packages
+        }))
+        .unwrap()
+    }
+
+    fn restore_config(extra: Value) -> RestoreConfig {
+        let mut base = json!({ "manager": "apt", "lockfile": "x" });
+        base.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+
+    fn installed(name: &str, version: &str) -> InstalledPackage {
+        InstalledPackage {
+            name: name.into(),
+            version: version.into(),
+            architecture: None,
+            repository: None,
+            installed_size_bytes: None,
+            install_reason: None,
+            manager_specific: None,
+        }
+    }
+
+    // ---- PackageSpec.source ------------------------------------------------
+
+    #[test]
+    fn package_source_is_refused_for_install_and_remove() {
+        let h = handle();
+        let install: InstallConfig = serde_json::from_value(json!({
+            "manager": "apt",
+            "packages": [{ "name": "jq", "source": "https://example.com/jq.deb" }]
+        }))
+        .unwrap();
+        let err = h.validate_config(&install).unwrap_err().to_string();
+        assert!(
+            err.contains("source=") && err.contains("nothing was run"),
+            "{err}"
+        );
+
+        let remove: RemoveConfig = serde_json::from_value(json!({
+            "manager": "apt", "packages": [{ "name": "jq", "source": "main" }]
+        }))
+        .unwrap();
+        assert!(h.validate_remove_config(&remove).is_err());
+
+        // Without source (or with an explicit null) nothing changes.
+        for spec in [
+            json!({ "name": "jq" }),
+            json!({ "name": "jq", "source": null }),
+        ] {
+            let install: InstallConfig =
+                serde_json::from_value(json!({ "manager": "apt", "packages": [spec] })).unwrap();
+            assert!(h.validate_config(&install).is_ok());
+        }
+    }
+
+    // ---- list_installed include_versions -----------------------------------
+
+    #[test]
+    fn list_installed_versions_are_nulled_when_not_wanted() {
+        let mut value = serde_json::to_value(ListInstalledResults {
+            backend: "pkg".into(),
+            manager: "apt".into(),
+            alias: "system".into(),
+            limit: 500,
+            offset: 0,
+            total_installed: 1,
+            results: vec![installed("jq", "1.7")],
+        })
+        .unwrap();
+        assert_eq!(value["results"][0]["version"], "1.7");
+        omit_installed_versions(&mut value);
+        assert_eq!(value["results"][0]["version"], Value::Null);
+        assert_eq!(value["results"][0]["name"], "jq");
+    }
+
+    // ---- restore include_dependencies --------------------------------------
+
+    #[test]
+    fn excluded_dependencies_are_neither_installed_nor_removed() {
+        let lock = lockfile(json!([
+            { "name": "app", "install_reason": "manual" },
+            { "name": "libdep", "install_reason": "dependency" },
+            { "name": "libold", "install_reason": "dependency" },
+            { "name": "unknown" }
+        ]));
+        // libold is installed; app, libdep and unknown are not.
+        let current = vec![installed("libold", "1.0"), installed("extra", "1.0")];
+
+        let on = restore_config(json!({ "allow_removals": true }));
+        let plan = handle().compute_restore_plan(&lock, &current, &on).unwrap();
+        assert_eq!(plan.install, ["app", "libdep", "unknown"]);
+        assert_eq!(plan.keep, ["libold"]);
+        assert_eq!(plan.remove, ["extra"]);
+        assert!(plan.skipped_dependencies.is_empty());
+        assert!(dependency_filter_warnings(&lock, &on).is_empty());
+
+        let off = restore_config(json!({ "allow_removals": true, "include_dependencies": false }));
+        let plan = handle()
+            .compute_restore_plan(&lock, &current, &off)
+            .unwrap();
+        assert_eq!(plan.install, ["app", "unknown"]);
+        assert!(plan.keep.is_empty());
+        // libold is out of the plan, so allow_removals does not remove it.
+        assert_eq!(plan.remove, ["extra"]);
+        assert_eq!(plan.skipped_dependencies, ["libdep", "libold"]);
+        // "unknown" has no recorded reason: it stays and is reported.
+        let warnings = dependency_filter_warnings(&lock, &off);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("1 package(s)") && warnings[0].contains("unknown"));
+    }
+
+    // ---- restore on_repo_mismatch --------------------------------------------
+
+    fn repo_lock() -> Lockfile {
+        lockfile(json!([
+            { "name": "same", "repository": "stable/main" },
+            { "name": "moved", "repository": "stable/main" },
+            { "name": "absent", "repository": "stable/main" },
+            { "name": "unknownhost", "repository": "stable/main" },
+            { "name": "norepo" }
+        ]))
+    }
+
+    fn host_view() -> (HashSet<String>, HashMap<String, Option<String>>) {
+        let installed: HashSet<String> = ["same", "moved", "unknownhost", "norepo"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let repos = HashMap::from([
+            ("same".to_string(), Some("stable/main".to_string())),
+            ("moved".to_string(), Some("backports/main".to_string())),
+            ("unknownhost".to_string(), None),
+        ]);
+        (installed, repos)
+    }
+
+    #[test]
+    fn repo_mismatch_policies() {
+        let (installed, repos) = host_view();
+        let lock = repo_lock();
+
+        let fail = restore_config(json!({ "on_repo_mismatch": "fail" }));
+        let err = repo_mismatch_warnings(&lock, &installed, &repos, &fail)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("moved (lockfile: stable/main, host: backports/main)")
+                && err.contains("nothing was changed"),
+            "{err}"
+        );
+
+        let warn = restore_config(json!({ "on_repo_mismatch": "warn" }));
+        let warnings = repo_mismatch_warnings(&lock, &installed, &repos, &warn).unwrap();
+        assert_eq!(warnings.len(), 4, "{warnings:?}");
+        assert!(warnings[0].starts_with("repository mismatch for 1 package(s): moved"));
+        assert!(warnings[1].contains("records no repository") && warnings[1].contains("norepo"));
+        assert!(warnings[2].contains("not installed") && warnings[2].contains("absent"));
+        assert!(
+            warnings[3].contains("could not be determined") && warnings[3].contains("unknownhost")
+        );
+        // The default policy is warn.
+        let default = restore_config(json!({}));
+        assert_eq!(
+            repo_mismatch_warnings(&lock, &installed, &repos, &default).unwrap(),
+            warnings
+        );
+
+        let ignore = restore_config(json!({ "on_repo_mismatch": "ignore" }));
+        assert!(
+            repo_mismatch_warnings(&lock, &installed, &repos, &ignore)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn repo_mismatch_fail_without_a_mismatch_only_warns_about_unknowns() {
+        let (installed, repos) = host_view();
+        let lock = lockfile(json!([
+            { "name": "same", "repository": "stable/main" },
+            { "name": "absent", "repository": "stable/main" }
+        ]));
+        let fail = restore_config(json!({ "on_repo_mismatch": "fail" }));
+        let warnings = repo_mismatch_warnings(&lock, &installed, &repos, &fail).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("absent"));
+    }
+
+    #[test]
+    fn excluded_dependencies_are_not_repo_checked() {
+        let (installed, repos) = host_view();
+        let lock = lockfile(json!([
+            { "name": "moved", "repository": "stable/main", "install_reason": "dependency" }
+        ]));
+        let cfg =
+            restore_config(json!({ "on_repo_mismatch": "fail", "include_dependencies": false }));
+        assert!(
+            repo_mismatch_warnings(&lock, &installed, &repos, &cfg)
+                .unwrap()
+                .is_empty()
+        );
+        let cfg = restore_config(json!({ "on_repo_mismatch": "fail" }));
+        assert!(repo_mismatch_warnings(&lock, &installed, &repos, &cfg).is_err());
+    }
+
+    #[test]
+    fn long_name_lists_are_shortened() {
+        let names: Vec<String> = (0..12).map(|i| format!("p{i}")).collect();
+        assert_eq!(
+            name_list(&names),
+            "p0, p1, p2, p3, p4, p5, p6, p7, p8, p9 and 2 more"
+        );
+        assert_eq!(name_list(&names[..2]), "p0, p1");
     }
 }

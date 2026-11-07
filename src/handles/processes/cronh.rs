@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
+use chrono_tz::Tz;
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -35,10 +36,12 @@ static CRON_HELP: HandleHelp = HandleHelp {
                     [include_files=<path,...>] [state=all|enabled|disabled]\n  \
                     [match_command=<text>] [match_comment=<text>] [match_user=<text>]\n  \
                     [match_source=<text>] [include_next_run=true|false]\n  \
-                    [now_unix=<seconds>] [max_entries=<n>]\n  \
+                    [now_unix=<seconds>] [timezone=<IANA zone>] [max_entries=<n>]\n  \
                     [sort_by=none|user|schedule|command|source] [sort_order=asc|desc]\n  \
                     [include_raw=true|false] [include_paths=true|false]\n  \
-                    [format=json|text]",
+                    [format=json|text]\n  \
+                    timezone: zone for next-run times of entries without their own\n  \
+                    CRON_TZ (default UTC); now_unix: reference time (default now)",
                 example: "resh cron://local.list",
                 example_output: Some(
                     r#"{
@@ -95,8 +98,11 @@ users, and the match_* filters are case-insensitive substring matches."#,
                     [backend=auto|cron|systemd] [id=<id>] [description=<text>]\n  \
                     [scope=current|user|system] [user=<name>] [cron_file=<path>]\n  \
                     [unit_name=<name>] [unit_scope=auto|user|system]\n  \
-                    [allow_duplicate=true|false] [dry_run=true|false]\n  \
-                    [format=json|text] [<option>=<value> ...]",
+                    [timezone=<IANA zone>] [include_next_run=true|false]\n  \
+                    [now_unix=<seconds>] [allow_duplicate=true|false]\n  \
+                    [dry_run=true|false] [format=json|text] [<option>=<value> ...]\n  \
+                    timezone: systemd adds it to OnCalendar=; the cron backend writes\n  \
+                    CRON_TZ= and is refused unless the cron daemon is cronie",
                 example: "resh cron://local.add schedule=@daily command=/opt/backup.sh backend=cron",
                 example_output: Some(
                     r#"{
@@ -135,8 +141,10 @@ is written and a preview object holds the line or units to be added."#,
                     [command=<cmd>] [match_command=<text>] [match_comment=<text>]\n  \
                     [unit_name=<name>] [match_unit=<text>] [backend=both|cron|systemd]\n  \
                     [scope=all|current|user|system] [users=<user,...>]\n  \
-                    [unit_scope=auto|user|system|both] [start_now=true|false]\n  \
-                    [require_match=true|false] [dry_run=true|false] [format=json|text]",
+                    [cron_file=<path>] [unit_scope=auto|user|system|both]\n  \
+                    [start_now=true|false]\n  \
+                    [require_match=true|false] [dry_run=true|false] [format=json|text]\n  \
+                    cron_file: /etc/crontab or /etc/cron.d/<name> only; replaces scope",
                 example: "resh cron://local.enable match_command=backup backend=cron scope=current",
                 example_output: Some(
                     r#"{
@@ -240,8 +248,10 @@ match_comment matches the comment line above a job or its inline comment."#,
                     [match_command=<text>] [match_comment=<text>] [unit_name=<name>]\n  \
                     [match_unit=<text>] [backend=both|cron|systemd]\n  \
                     [scope=all|current|user|system] [users=<user,...>]\n  \
-                    [unit_scope=auto|user|system|both] [remove_units=true|false]\n  \
-                    [require_match=true|false] [dry_run=true|false] [format=json|text]",
+                    [cron_file=<path>] [unit_scope=auto|user|system|both]\n  \
+                    [remove_units=true|false]\n  \
+                    [require_match=true|false] [dry_run=true|false] [format=json|text]\n  \
+                    cron_file: /etc/crontab or /etc/cron.d/<name> only; replaces scope",
                 example: "resh cron://local.rm id=backup backend=cron scope=current dry_run=true",
                 example_output: Some(
                     r#"{
@@ -411,6 +421,10 @@ impl CronHandle {
                 output.push_str(&format!("  Comment  : {}\n", comment));
             }
 
+            if let Some(ref tz) = entry.timezone {
+                output.push_str(&format!("  TimeZone : {}\n", tz));
+            }
+
             if let Some(ref next_run) = entry.next_run_iso8601 {
                 output.push_str(&format!("  Next Run : {}\n", next_run));
             }
@@ -448,6 +462,38 @@ impl CronHandle {
             .ok_or_else(|| anyhow::anyhow!("command parameter is required"))?
             .clone();
 
+        // now_unix is the reference time for next_run_*; a value that is not
+        // a representable Unix time is refused, never silently replaced by
+        // the current time.
+        let now_unix = match args.get("now_unix") {
+            None => None,
+            Some(v) => match v.trim().parse::<i64>() {
+                Ok(t) if reference_time_from_unix(t).is_some() => Some(t),
+                _ => {
+                    let error_response = CronAddResponse {
+                        ok: false,
+                        timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
+                        backend_used: None,
+                        dry_run: crate::core::lenient::dry_run(args)?,
+                        duplicate: false,
+                        job: None,
+                        preview: None,
+                        error: Some(json!({
+                            "code": "cron.add_invalid_argument",
+                            "message": format!(
+                                "now_unix must be a Unix time in seconds from 0 to 253402300799 \
+                                 (year 9999), got {:?}; nothing was written",
+                                v
+                            ),
+                            "field": "now_unix"
+                        })),
+                        warnings: Vec::new(),
+                    };
+                    return Ok(serde_json::to_string_pretty(&error_response)?);
+                }
+            },
+        };
+
         let options = CronAddOptions {
             schedule,
             command,
@@ -471,7 +517,7 @@ impl CronHandle {
             service_user: args.get("service_user").cloned(),
             env: parse_env_from_args(args),
             include_next_run: args.get("include_next_run").unwrap_or(&"true".to_string()) == "true",
-            now_unix: args.get("now_unix").and_then(|s| s.parse().ok()),
+            now_unix,
             timezone: args.get("timezone").cloned(),
             format: if args.get("format").unwrap_or(&"json".to_string()) == "text" {
                 OutputFormat::Text
@@ -618,6 +664,34 @@ impl CronHandle {
                 error: Some(
                     json!({"code": "cron.rm_no_selector", "message": "At least one selector must be provided: id, schedule, command, match_command, match_comment, unit_name, or match_unit"}),
                 ),
+                warnings: Vec::new(),
+            };
+            return Ok(serde_json::to_string_pretty(&error_response)?);
+        }
+
+        // Everything that chooses what rm reads and rewrites is checked
+        // before anything is read.
+        if let Err(e) = validate_target_args(args) {
+            let error_response = CronRmResponse {
+                ok: false,
+                timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
+                dry_run: crate::core::lenient::dry_run(args)?,
+                backend: backend.clone(),
+                cron_modified_sources: Vec::new(),
+                systemd_scopes_touched: Vec::new(),
+                removed: CronRmRemovedSummary {
+                    cron: Vec::new(),
+                    systemd: Vec::new(),
+                },
+                matched_count: CronRmMatchedCount {
+                    cron: 0,
+                    systemd: 0,
+                },
+                error: Some(json!({
+                    "code": "cron.rm_invalid_argument",
+                    "message": e.message,
+                    "field": e.field
+                })),
                 warnings: Vec::new(),
             };
             return Ok(serde_json::to_string_pretty(&error_response)?);
@@ -836,6 +910,38 @@ impl CronHandle {
                 error: Some(
                     json!({"code": "cron.enable_no_selector", "message": "At least one selector must be provided: id, schedule, command, match_command, match_comment, unit_name, or match_unit"}),
                 ),
+                warnings: Vec::new(),
+            };
+            return Ok(serde_json::to_string_pretty(&error_response)?);
+        }
+
+        // Everything that chooses what enable reads and rewrites is checked
+        // before anything is read.
+        if let Err(e) = validate_target_args(args) {
+            let error_response = CronEnableResponse {
+                ok: false,
+                timestamp_unix_ms: chrono::Utc::now().timestamp_millis(),
+                dry_run: crate::core::lenient::dry_run(args)?,
+                backend: backend.clone(),
+                enabled: CronEnableEnabledSummary {
+                    cron: Vec::new(),
+                    systemd: Vec::new(),
+                },
+                matched_count: CronEnableMatchedCount {
+                    cron: 0,
+                    systemd: 0,
+                },
+                already_enabled_count: CronEnableAlreadyEnabledCount {
+                    cron: 0,
+                    systemd: 0,
+                },
+                cron_modified_sources: Vec::new(),
+                systemd_scopes_touched: Vec::new(),
+                error: Some(json!({
+                    "code": "cron.enable_invalid_argument",
+                    "message": e.message,
+                    "field": e.field
+                })),
                 warnings: Vec::new(),
             };
             return Ok(serde_json::to_string_pretty(&error_response)?);
@@ -1441,6 +1547,7 @@ pub trait CronProvider: std::fmt::Debug + Send + Sync {
 #[derive(Debug)]
 pub struct SystemCronProvider {
     current_user: String,
+    host: Box<dyn CronHost>,
 }
 
 impl SystemCronProvider {
@@ -1449,7 +1556,157 @@ impl SystemCronProvider {
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "unknown".to_string());
 
-        Self { current_user }
+        Self::with_host(current_user, Box::new(SystemCronHost::new()))
+    }
+
+    /// A provider acting as `current_user` on `host` (tests pass a mock).
+    pub fn with_host(current_user: String, host: Box<dyn CronHost>) -> Self {
+        Self { current_user, host }
+    }
+}
+
+/// Everything the cron provider reads from or changes on the host: crontab
+/// and cron files, systemd units, tool probes and the clock. The provider's
+/// logic only goes through this, so tests can run every verb against a mock.
+pub trait CronHost: std::fmt::Debug + Send + Sync {
+    /// Writes (and `-u` reads) crontabs and system cron files.
+    fn editor(&self) -> &dyn CronEditor;
+    /// Writes unit files and runs systemctl for `add`.
+    fn systemd(&self) -> &dyn SystemdEditor;
+    /// A user's crontab as `list`, `rm`, `enable` and `disable` read it.
+    fn list_user_crontab(&self, user: &str, current_user: &str) -> Result<String>;
+    fn read_system_crontab(&self) -> Result<String>;
+    /// `(file name, content)` of each file in /etc/cron.d.
+    fn read_cron_d_files(&self) -> Result<Vec<(String, String)>>;
+    fn read_file(&self, path: &str) -> Result<String>;
+    /// Whether `program arg` can be run (backend availability).
+    fn command_runs(&self, program: &str, arg: &str) -> bool;
+    /// What `crontab -V` prints when it succeeds. cronie's crontab prints its
+    /// package string (`cronie 1.7.2`); Debian/vixie and busybox crontab have
+    /// no `-V` and fail with a usage message, giving `None`.
+    fn crontab_version(&self) -> Option<String>;
+    fn now(&self) -> DateTime<Utc>;
+}
+
+/// The real host.
+#[derive(Debug)]
+pub struct SystemCronHost {
+    editor: SystemCronEditor,
+    systemd: SystemSystemdEditor,
+}
+
+impl SystemCronHost {
+    pub fn new() -> Self {
+        Self {
+            editor: SystemCronEditor::new(),
+            systemd: SystemSystemdEditor::new(),
+        }
+    }
+}
+
+impl CronHost for SystemCronHost {
+    fn editor(&self) -> &dyn CronEditor {
+        &self.editor
+    }
+
+    fn systemd(&self) -> &dyn SystemdEditor {
+        &self.systemd
+    }
+
+    fn list_user_crontab(&self, user: &str, current_user: &str) -> Result<String> {
+        // Try crontab -l command first
+        if user == current_user {
+            if let Ok(output) = Command::new("crontab").arg("-l").output() {
+                if output.status.success() {
+                    return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+                }
+            }
+        } else {
+            // Try to read for another user (needs privileges)
+            if let Ok(output) = Command::new("crontab").args(&["-u", user, "-l"]).output() {
+                if output.status.success() {
+                    return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+                }
+            }
+        }
+
+        // Fall back to reading spool file directly
+        let spool_paths = [
+            format!("/var/spool/cron/{}", user),
+            format!("/var/spool/cron/crontabs/{}", user),
+            format!("/usr/spool/cron/{}", user),
+        ];
+
+        for path in &spool_paths {
+            if let Ok(content) = fs::read_to_string(path) {
+                return Ok(content);
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "cron.list_user_crontab_unavailable: Could not read crontab for user {}",
+            user
+        ))
+    }
+
+    fn read_system_crontab(&self) -> Result<String> {
+        fs::read_to_string("/etc/crontab").map_err(|_| {
+            anyhow::anyhow!("cron.list_system_crontab_unavailable: Could not read /etc/crontab")
+        })
+    }
+
+    fn read_cron_d_files(&self) -> Result<Vec<(String, String)>> {
+        let cron_d_path = Path::new("/etc/cron.d");
+        let mut files = Vec::new();
+
+        if !cron_d_path.exists() {
+            return Ok(files);
+        }
+
+        let entries = fs::read_dir(cron_d_path).map_err(|_| {
+            anyhow::anyhow!("cron.list_cron_d_unavailable: Could not read /etc/cron.d")
+        })?;
+
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Skip directories and backup files
+            if !path.is_file() || path.file_name().unwrap().to_string_lossy().contains('~') {
+                continue;
+            }
+
+            let filename = path.file_name().unwrap().to_string_lossy().to_string();
+            if let Ok(content) = fs::read_to_string(&path) {
+                files.push((filename, content));
+            }
+        }
+
+        Ok(files)
+    }
+
+    fn read_file(&self, path: &str) -> Result<String> {
+        fs::read_to_string(path).map_err(|_| {
+            anyhow::anyhow!("cron.list_file_unavailable: Could not read file {}", path)
+        })
+    }
+
+    fn command_runs(&self, program: &str, arg: &str) -> bool {
+        Command::new(program).arg(arg).output().is_ok()
+    }
+
+    fn crontab_version(&self) -> Option<String> {
+        let output = Command::new("crontab")
+            .arg("-V")
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (output.status.success() && !version.is_empty()).then_some(version)
+    }
+
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
     }
 }
 
@@ -1589,26 +1846,47 @@ impl CronProvider for SystemCronProvider {
         entries = apply_filters(entries, options);
 
         // Compute next run times if requested
-        let reference_time = if let Some(now_unix) = options.now_unix {
-            Utc.timestamp_opt(now_unix, 0)
-                .single()
-                .unwrap_or(start_time)
-        } else {
-            start_time
-        };
+        let reference_time = options
+            .now_unix
+            .and_then(reference_time_from_unix)
+            .unwrap_or(start_time);
 
         if options.include_next_run {
+            // An entry's own CRON_TZ counts only where cron honors it
+            // (cronie); otherwise the entry runs in the default zone.
+            let has_entry_zones = entries.iter().any(|e| e.timezone.is_some());
+            let honor_entry_zones = has_entry_zones
+                && match cronie_detected(self.host.as_ref()) {
+                    Ok(_) => true,
+                    Err(reason) => {
+                        warnings.push(format!(
+                            "CRON_TZ lines were ignored for next-run times: {}",
+                            reason
+                        ));
+                        false
+                    }
+                };
+            let default_zone = options.timezone.as_deref().and_then(parse_timezone);
             for entry in &mut entries {
                 if entry.enabled && entry.schedule.is_some() {
-                    entry.next_run_unix =
-                        compute_next_run(&entry.schedule.as_ref().unwrap(), reference_time);
-                    if let Some(next_unix) = entry.next_run_unix {
-                        entry.next_run_iso8601 = Some(
-                            Utc.timestamp_opt(next_unix, 0)
-                                .single()
-                                .unwrap_or(reference_time)
-                                .to_rfc3339(),
-                        );
+                    let zone = match &entry.timezone {
+                        Some(tz) if honor_entry_zones => match parse_timezone(tz) {
+                            Some(zone) => Some(zone),
+                            None => {
+                                warnings.push(format!(
+                                    "{}: CRON_TZ={} is not a known time zone; no next run computed",
+                                    entry.id, tz
+                                ));
+                                continue;
+                            }
+                        },
+                        _ => default_zone,
+                    };
+                    if let Some((unix, iso)) =
+                        compute_next_run(entry.schedule.as_ref().unwrap(), reference_time, zone)
+                    {
+                        entry.next_run_unix = Some(unix);
+                        entry.next_run_iso8601 = Some(iso);
                     }
                 }
             }
@@ -1677,81 +1955,19 @@ impl CronProvider for SystemCronProvider {
     }
 
     fn read_user_crontab(&self, user: &str) -> Result<String> {
-        // Try crontab -l command first
-        if user == &self.current_user {
-            if let Ok(output) = Command::new("crontab").arg("-l").output() {
-                if output.status.success() {
-                    return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-                }
-            }
-        } else {
-            // Try to read for another user (needs privileges)
-            if let Ok(output) = Command::new("crontab").args(&["-u", user, "-l"]).output() {
-                if output.status.success() {
-                    return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-                }
-            }
-        }
-
-        // Fall back to reading spool file directly
-        let spool_paths = [
-            format!("/var/spool/cron/{}", user),
-            format!("/var/spool/cron/crontabs/{}", user),
-            format!("/usr/spool/cron/{}", user),
-        ];
-
-        for path in &spool_paths {
-            if let Ok(content) = fs::read_to_string(path) {
-                return Ok(content);
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "cron.list_user_crontab_unavailable: Could not read crontab for user {}",
-            user
-        ))
+        self.host.list_user_crontab(user, &self.current_user)
     }
 
     fn read_system_crontab(&self) -> Result<String> {
-        fs::read_to_string("/etc/crontab").map_err(|_| {
-            anyhow::anyhow!("cron.list_system_crontab_unavailable: Could not read /etc/crontab")
-        })
+        self.host.read_system_crontab()
     }
 
     fn read_cron_d_files(&self) -> Result<Vec<(String, String)>> {
-        let cron_d_path = Path::new("/etc/cron.d");
-        let mut files = Vec::new();
-
-        if !cron_d_path.exists() {
-            return Ok(files);
-        }
-
-        let entries = fs::read_dir(cron_d_path).map_err(|_| {
-            anyhow::anyhow!("cron.list_cron_d_unavailable: Could not read /etc/cron.d")
-        })?;
-
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-
-            // Skip directories and backup files
-            if !path.is_file() || path.file_name().unwrap().to_string_lossy().contains('~') {
-                continue;
-            }
-
-            let filename = path.file_name().unwrap().to_string_lossy().to_string();
-            if let Ok(content) = fs::read_to_string(&path) {
-                files.push((filename, content));
-            }
-        }
-
-        Ok(files)
+        self.host.read_cron_d_files()
     }
 
     fn read_file(&self, path: &str) -> Result<String> {
-        fs::read_to_string(path).map_err(|_| {
-            anyhow::anyhow!("cron.list_file_unavailable: Could not read file {}", path)
-        })
+        self.host.read_file(path)
     }
 
     fn get_current_user(&self) -> String {
@@ -1759,7 +1975,7 @@ impl CronProvider for SystemCronProvider {
     }
 
     fn get_current_time(&self) -> DateTime<Utc> {
-        Utc::now()
+        self.host.now()
     }
 
     fn add_cron_job(&self, options: &CronAddOptions) -> Result<CronAddResponse> {
@@ -1826,7 +2042,7 @@ impl CronProvider for SystemCronProvider {
         }
 
         // Choose backend
-        let backend_choice = choose_backend(&options.backend, &mut warnings);
+        let backend_choice = choose_backend(self.host.as_ref(), &options.backend, &mut warnings);
         let backend_used = match backend_choice {
             Ok(backend) => backend,
             Err(e) => {
@@ -1850,6 +2066,34 @@ impl CronProvider for SystemCronProvider {
         let unit_name = (backend_used == "systemd").then(|| self.systemd_unit_name(options));
         if let Err(e) = validate_add_options(options, &backend_used, unit_name.as_deref()) {
             return Ok(invalid_argument(e, warnings));
+        }
+
+        // A crontab time zone only works under cronie; anywhere else the
+        // CRON_TZ line would be silently ignored, so it is refused (also in
+        // a dry run) before anything is read or written.
+        if backend_used == "cron"
+            && let Some(tz) = &options.timezone
+            && let Err(reason) = cronie_detected(self.host.as_ref())
+        {
+            return Ok(CronAddResponse {
+                ok: false,
+                timestamp_unix_ms,
+                backend_used: Some(backend_used),
+                dry_run: options.dry_run,
+                duplicate: false,
+                job: None,
+                preview: None,
+                error: Some(json!({
+                    "code": "cron.add_timezone_unsupported",
+                    "message": format!(
+                        "timezone={} cannot be applied with the cron backend: {}; \
+                         use backend=systemd or omit timezone; nothing was written",
+                        tz, reason
+                    ),
+                    "field": "timezone"
+                })),
+                warnings,
+            });
         }
 
         // Dispatch to appropriate backend implementation
@@ -2288,7 +2532,7 @@ impl SystemCronProvider {
         timestamp_unix_ms: i64,
         mut warnings: Vec<String>,
     ) -> Result<CronAddResponse> {
-        let cron_editor = Box::new(SystemCronEditor::new());
+        let cron_editor = self.host.editor();
 
         // Determine target crontab/file
         let (scope, user, file_path) = self.determine_cron_target(options, &mut warnings)?;
@@ -2317,7 +2561,20 @@ impl SystemCronProvider {
         // Build new cron line
         let (cron_line, comment_line) = self.build_cron_lines(options, &scope)?;
 
+        let timezone = options.timezone.as_deref();
         if options.dry_run {
+            // With a time zone the preview depends on whether the file
+            // already has the time-zone block, so the target is read (never
+            // written).
+            let preview_lines = match timezone {
+                Some(_) => {
+                    let existing = self.read_add_target(&scope, &user, &file_path, cron_editor)?;
+                    insert_cron_entry(&existing, comment_line.as_deref(), &cron_line, timezone)
+                        .2
+                        .join("\n")
+                }
+                None => format!("{}\n{}", comment_line.unwrap_or_default(), cron_line),
+            };
             return Ok(CronAddResponse {
                 ok: true,
                 timestamp_unix_ms,
@@ -2326,11 +2583,7 @@ impl SystemCronProvider {
                 duplicate: false,
                 job: Some(self.build_cron_job_info(options, &scope, &user, &file_path, None)?),
                 preview: Some(CronAddPreview {
-                    cron_line: Some(format!(
-                        "{}\n{}",
-                        comment_line.unwrap_or_default(),
-                        cron_line
-                    )),
+                    cron_line: Some(preview_lines),
                     service_unit: None,
                     timer_unit: None,
                 }),
@@ -2341,13 +2594,16 @@ impl SystemCronProvider {
 
         // Actually add the job
         let line_added = match scope.as_str() {
-            "current" => {
-                self.add_to_user_crontab(&user, &cron_line, &comment_line, &*cron_editor)?
+            "current" | "user" => {
+                self.add_to_user_crontab(&user, &cron_line, &comment_line, timezone, cron_editor)?
             }
-            "user" => self.add_to_user_crontab(&user, &cron_line, &comment_line, &*cron_editor)?,
-            "system" => {
-                self.add_to_system_file(&file_path, &cron_line, &comment_line, &*cron_editor)?
-            }
+            "system" => self.add_to_system_file(
+                &file_path,
+                &cron_line,
+                &comment_line,
+                timezone,
+                cron_editor,
+            )?,
             _ => return Err(anyhow::anyhow!("Invalid scope: {}", scope)),
         };
 
@@ -2376,7 +2632,7 @@ impl SystemCronProvider {
         timestamp_unix_ms: i64,
         warnings: Vec<String>,
     ) -> Result<CronAddResponse> {
-        let systemd_editor = Box::new(SystemSystemdEditor::new());
+        let systemd_editor = self.host.systemd();
 
         // Check systemd availability
         let unit_scope = self.determine_systemd_scope(options);
@@ -2399,8 +2655,8 @@ impl SystemCronProvider {
             });
         }
 
-        // Convert schedule to OnCalendar format
-        let on_calendar = match convert_cron_to_oncalendar(&options.schedule) {
+        // Convert schedule to OnCalendar format (with the time zone, if any)
+        let on_calendar = match systemd_on_calendar(options) {
             Ok(calendar) => calendar,
             Err(e) => {
                 return Ok(CronAddResponse {
@@ -2424,7 +2680,7 @@ impl SystemCronProvider {
 
         // Check for duplicates
         let duplicate = if !options.allow_duplicate {
-            self.check_systemd_duplicate(&unit_name, user_mode, &*systemd_editor)?
+            self.check_systemd_duplicate(&unit_name, user_mode, systemd_editor)?
         } else {
             false
         };
@@ -2471,7 +2727,7 @@ impl SystemCronProvider {
             &service_content,
             &timer_content,
             user_mode,
-            &*systemd_editor,
+            systemd_editor,
         )?;
 
         Ok(CronAddResponse {
@@ -2816,6 +3072,231 @@ pub(crate) fn check_system_cron_file(path: &str) -> Result<(), InvalidField> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Time zones. systemd timers take an IANA zone after the OnCalendar=
+// expression. In a crontab, only cronie honors CRON_TZ=<zone>, and it applies
+// to every entry below it in the same file (cronie builds each file's
+// environment top to bottom; there is no way to unset a variable, and an
+// empty `CRON_TZ=` is not the same as none: cronie computes it as the local
+// time but skips such jobs while the default zone changes DST, like any
+// zoned job). So `add` keeps zoned jobs in a block at the end of the file:
+//
+//   <existing lines and jobs added without a time zone>
+//   # resh: time-zone block ...      (TZ_BLOCK_MARKER, written once)
+//   CRON_TZ=Europe/Berlin            (one CRON_TZ line per job, directly
+//   # job-id=backup                   above that job and its comment)
+//   0 2 * * * /opt/backup.sh
+//   CRON_TZ=America/New_York
+//   30 6 * * * /opt/report.sh
+//
+// Every zoned job sets its own zone, nothing that resh writes ever follows a
+// zoned job without its own CRON_TZ line (jobs without a zone are inserted
+// above the marker), and no line above the block is affected. `rm` drops a
+// job's CRON_TZ line only when nothing but blank lines separates it from the
+// next CRON_TZ line or the end of the file, so no other line's zone changes.
+// ---------------------------------------------------------------------------
+
+/// First line of the time-zone block that `add` keeps at the end of a crontab.
+const TZ_BLOCK_MARKER: &str = "# resh: time-zone block - each job below runs in the CRON_TZ \
+     set just above it; add jobs without a time zone above this line";
+
+fn is_tz_block_marker(line: &str) -> bool {
+    line.trim().starts_with("# resh: time-zone block")
+}
+
+/// A valid IANA time zone name (as chrono-tz knows it), such as Europe/Berlin.
+fn parse_timezone(name: &str) -> Option<Tz> {
+    name.parse::<Tz>().ok()
+}
+
+fn check_timezone(field: &'static str, name: &str) -> Result<(), InvalidField> {
+    check_single_line(field, name)?;
+    if parse_timezone(name).is_none() {
+        return Err(invalid(
+            field,
+            format!(
+                "must be an IANA time zone name such as Europe/Berlin or UTC, got {:?}",
+                name
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The value of a `CRON_TZ` assignment line (cronie's environment syntax:
+/// `NAME = value`, spaces around `=` allowed, value optionally quoted), or
+/// None if the line is not one. An empty value gives `Some("")`.
+fn cron_tz_assignment(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.starts_with('#') {
+        return None;
+    }
+    let (name, value) = trimmed.split_once('=')?;
+    if name.trim() != "CRON_TZ" {
+        return None;
+    }
+    let value = value.trim();
+    let unquoted = ['"', '\'']
+        .iter()
+        .find_map(|q| value.strip_prefix(*q).and_then(|v| v.strip_suffix(*q)))
+        .unwrap_or(value);
+    Some(unquoted.to_string())
+}
+
+/// The CRON_TZ in effect for `lines[idx]` (the last non-empty assignment
+/// above it), as cronie would apply it.
+fn effective_cron_tz<S: AsRef<str>>(lines: &[S], idx: usize) -> Option<String> {
+    lines[..idx.min(lines.len())]
+        .iter()
+        .rev()
+        .find_map(|l| cron_tz_assignment(l.as_ref()))
+        .filter(|tz| !tz.is_empty())
+}
+
+/// Adds a job (its optional comment line, then the job line) to crontab
+/// `existing`, following the time-zone layout above. Returns the new content,
+/// the 1-based line number of the job line, and the lines added.
+fn insert_cron_entry(
+    existing: &str,
+    comment_line: Option<&str>,
+    cron_line: &str,
+    timezone: Option<&str>,
+) -> (String, u32, Vec<String>) {
+    let mut lines: Vec<String> = existing.lines().map(String::from).collect();
+    let mut added = Vec::new();
+    let job_line;
+    match timezone {
+        Some(tz) => {
+            if !lines.iter().any(|l| is_tz_block_marker(l)) {
+                added.push(TZ_BLOCK_MARKER.to_string());
+            }
+            added.push(format!("CRON_TZ={}", tz));
+            added.extend(comment_line.map(String::from));
+            added.push(cron_line.to_string());
+            lines.extend(added.iter().cloned());
+            job_line = lines.len();
+        }
+        None => {
+            added.extend(comment_line.map(String::from));
+            added.push(cron_line.to_string());
+            match lines.iter().position(|l| is_tz_block_marker(l)) {
+                Some(marker) => {
+                    lines.splice(marker..marker, added.iter().cloned());
+                    job_line = marker + added.len();
+                }
+                None => {
+                    lines.extend(added.iter().cloned());
+                    job_line = lines.len();
+                }
+            }
+        }
+    }
+    let mut content = lines.join("\n");
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    (content, job_line as u32, added)
+}
+
+/// After `rm`: drops each CRON_TZ line at `candidates` (lines that stood
+/// directly above a removed job) when only blank lines separate it from the
+/// next CRON_TZ line or the end of the file, so dropping it changes no other
+/// line's zone; then drops the block marker if nothing but blank lines
+/// follows it.
+fn drop_orphaned_tz_lines(lines: Vec<String>, candidates: &[usize]) -> Vec<String> {
+    let orphaned: std::collections::HashSet<usize> = candidates
+        .iter()
+        .copied()
+        .filter(|&c| {
+            lines[c + 1..]
+                .iter()
+                .find(|l| !l.trim().is_empty())
+                .is_none_or(|l| cron_tz_assignment(l).is_some())
+        })
+        .collect();
+    let mut out: Vec<String> = lines
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !orphaned.contains(i))
+        .map(|(_, l)| l)
+        .collect();
+    if let Some(marker) = out.iter().position(|l| is_tz_block_marker(l))
+        && out[marker + 1..].iter().all(|l| l.trim().is_empty())
+    {
+        out.truncate(marker);
+    }
+    out
+}
+
+/// Whether the cron daemon honors CRON_TZ. Only cronie does; Debian/Ubuntu
+/// cron (vixie) and busybox crond silently ignore it. cronie is recognized by
+/// `crontab -V`, which only cronie's crontab implements (it prints the
+/// package string, e.g. `cronie 1.7.2`); the crontab command and the daemon
+/// come from the same package. Anything else, including no answer, is
+/// treated as not cronie.
+fn cronie_detected(host: &dyn CronHost) -> Result<String, String> {
+    match host.crontab_version() {
+        Some(v) if v.to_ascii_lowercase().contains("cronie") => Ok(v),
+        Some(v) => Err(format!(
+            "this host's cron is {:?}, not cronie, and only cronie honors CRON_TZ",
+            v
+        )),
+        None => Err("the cron implementation could not be identified as cronie \
+             (`crontab -V` printed no version; only cronie's crontab supports -V), \
+             and only cronie honors CRON_TZ"
+            .to_string()),
+    }
+}
+
+/// `value` must be one of `allowed`.
+fn check_choice(field: &'static str, value: &str, allowed: &[&str]) -> Result<(), InvalidField> {
+    if !allowed.contains(&value) {
+        return Err(invalid(
+            field,
+            format!("must be one of {}, got {:?}", allowed.join(", "), value),
+        ));
+    }
+    Ok(())
+}
+
+/// The `rm` and `enable` arguments that choose which crontabs, cron files
+/// and timers are read and rewritten: `cron_file` (a system cron file only),
+/// `scope`, `users` (required, and user names, with `scope=user`) and
+/// `unit_scope`.
+fn validate_target_args(args: &Args) -> Result<(), InvalidField> {
+    if let Some(file) = args.get("cron_file") {
+        check_single_line("cron_file", file)?;
+        check_system_cron_file(file)?;
+    }
+    let scope = args.get("scope").map(String::as_str).unwrap_or("all");
+    check_choice("scope", scope, &["all", "current", "user", "system"])?;
+    let users: Vec<&str> = args
+        .get("users")
+        .map(|u| {
+            u.split(',')
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    for user in &users {
+        check_user_name("users", user)?;
+    }
+    if scope == "user" && users.is_empty() {
+        return Err(invalid(
+            "users",
+            "must name at least one user with scope=user",
+        ));
+    }
+    let unit_scope = args.get("unit_scope").map(String::as_str).unwrap_or("auto");
+    check_choice(
+        "unit_scope",
+        unit_scope,
+        &["auto", "user", "system", "both"],
+    )?;
+    Ok(())
+}
+
 /// A systemd unit name without its suffix: stays inside the unit directory
 /// and cannot be read as a systemctl option.
 fn check_unit_name(field: &'static str, name: &str) -> Result<(), InvalidField> {
@@ -2883,6 +3364,15 @@ pub(crate) fn validate_add_options(
     if let Some(desc) = &options.description {
         check_single_line("description", desc)?;
     }
+    if let Some(tz) = &options.timezone {
+        check_timezone("timezone", tz)?;
+    }
+    check_choice("scope", &options.scope, &["current", "user", "system"])?;
+    check_choice(
+        "unit_scope",
+        &options.unit_scope,
+        &["auto", "user", "system"],
+    )?;
     match backend {
         "cron" => {
             // cron turns an unescaped % into a line break and sends the
@@ -3100,11 +3590,15 @@ fn validate_cron_schedule(schedule: &str) -> Result<()> {
     }
 }
 
-fn choose_backend(requested: &str, warnings: &mut Vec<String>) -> Result<String> {
+fn choose_backend(
+    host: &dyn CronHost,
+    requested: &str,
+    warnings: &mut Vec<String>,
+) -> Result<String> {
     match requested {
         "cron" => {
             // Check if crontab is available
-            if Command::new("crontab").arg("-l").output().is_ok() {
+            if host.command_runs("crontab", "-l") {
                 Ok("cron".to_string())
             } else {
                 Err(anyhow::anyhow!(
@@ -3114,7 +3608,7 @@ fn choose_backend(requested: &str, warnings: &mut Vec<String>) -> Result<String>
         }
         "systemd" => {
             // Check if systemctl is available
-            if Command::new("systemctl").arg("--version").output().is_ok() {
+            if host.command_runs("systemctl", "--version") {
                 Ok("systemd".to_string())
             } else {
                 Err(anyhow::anyhow!(
@@ -3124,9 +3618,9 @@ fn choose_backend(requested: &str, warnings: &mut Vec<String>) -> Result<String>
         }
         "auto" => {
             // Try systemd first, fallback to cron
-            if Command::new("systemctl").arg("--version").output().is_ok() {
+            if host.command_runs("systemctl", "--version") {
                 Ok("systemd".to_string())
-            } else if Command::new("crontab").arg("-l").output().is_ok() {
+            } else if host.command_runs("crontab", "-l") {
                 warnings.push("systemd not available, using cron backend".to_string());
                 Ok("cron".to_string())
             } else {
@@ -3168,6 +3662,17 @@ fn parse_env_from_args(args: &Args) -> Option<HashMap<String, String>> {
     } else {
         Some(env_vars)
     }
+}
+
+/// The timer's `OnCalendar=` value: the translated schedule, followed by the
+/// IANA time zone when `timezone` is given (systemd evaluates the expression
+/// in that zone, e.g. `*-*-* 02:00:00 Europe/Berlin`).
+fn systemd_on_calendar(options: &CronAddOptions) -> Result<String> {
+    let calendar = convert_cron_to_oncalendar(&options.schedule)?;
+    Ok(match &options.timezone {
+        Some(tz) => format!("{} {}", calendar, tz),
+        None => calendar,
+    })
 }
 
 fn convert_cron_to_oncalendar(schedule: &str) -> Result<String> {
@@ -3239,7 +3744,8 @@ pub struct CronListOptions {
     pub match_source: Option<String>,
     pub include_next_run: bool,
     pub now_unix: Option<i64>,
-    #[allow(dead_code)]
+    /// The zone schedules without their own CRON_TZ are read in for
+    /// next-run times (UTC when None).
     pub timezone: Option<String>,
     pub max_entries: u32,
     pub sort_by: String,
@@ -3283,6 +3789,9 @@ pub struct CronEntry {
     pub next_run_iso8601: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_line: Option<String>,
+    /// The CRON_TZ in effect for this line (honored only by cronie).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3343,9 +3852,9 @@ pub struct CronAddOptions {
     pub env: Option<HashMap<String, String>>,
 
     pub include_next_run: bool,
-    #[allow(dead_code)]
+    /// Reference time for `next_run_*` (the current time when None).
     pub now_unix: Option<i64>,
-    #[allow(dead_code)]
+    /// IANA zone: systemd `OnCalendar=` suffix, or a cronie `CRON_TZ` line.
     pub timezone: Option<String>,
 
     pub format: OutputFormat,
@@ -3432,7 +3941,8 @@ pub struct CronRmOptions {
     pub command: Option<String>,
     pub match_command: Option<String>,
     pub match_comment: Option<String>,
-    #[allow(dead_code)]
+    /// A system cron file (/etc/crontab or /etc/cron.d/<name>) to act on
+    /// instead of the crontabs chosen by `scope`.
     pub cron_file: Option<String>,
 
     pub unit_name: Option<String>,
@@ -3459,6 +3969,9 @@ pub struct CronRmCronRemovedEntry {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_number: Option<u32>,
+    /// The CRON_TZ in effect for the job (honored only by cronie).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3518,7 +4031,8 @@ pub struct CronEnableOptions {
     pub command: Option<String>,
     pub match_command: Option<String>,
     pub match_comment: Option<String>,
-    #[allow(dead_code)]
+    /// A system cron file (/etc/crontab or /etc/cron.d/<name>) to act on
+    /// instead of the crontabs chosen by `scope`.
     pub cron_file: Option<String>,
 
     // systemd selectors
@@ -3547,6 +4061,9 @@ pub struct CronEnableCronEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_number: Option<u32>,
     pub was_disabled: bool,
+    /// The CRON_TZ in effect for the job (honored only by cronie).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3645,6 +4162,9 @@ pub struct CronDisableCronEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_number: Option<u32>,
     pub was_enabled: bool,
+    /// The CRON_TZ in effect for the job (honored only by cronie).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3766,23 +4286,28 @@ impl SystemCronProvider {
     ) -> Result<bool> {
         let existing_content = match scope {
             "current" | "user" => self.read_user_crontab(user).unwrap_or_default(),
-            "system" => fs::read_to_string(file_path).unwrap_or_default(),
+            "system" => self.read_file(file_path).unwrap_or_default(),
             _ => return Ok(false),
         };
 
-        for line in existing_content.lines() {
+        let lines: Vec<&str> = existing_content.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
 
-            // Basic duplicate check: same schedule and command
+            // Basic duplicate check: same schedule and command, in the same
+            // time zone (the CRON_TZ in effect for the line).
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
             if parts.len() >= 6 {
                 let existing_schedule = parts[0..5].join(" ");
                 let existing_command = parts[5..].join(" ");
 
-                if existing_schedule == options.schedule && existing_command == options.command {
+                if existing_schedule == options.schedule
+                    && existing_command == options.command
+                    && effective_cron_tz(&lines, idx) == options.timezone
+                {
                     return Ok(true);
                 }
             }
@@ -3825,6 +4350,23 @@ impl SystemCronProvider {
         Ok((cron_line, comment_line))
     }
 
+    /// `add`'s next run: after `now_unix` (else the current time), in
+    /// `timezone` (else UTC), when `include_next_run` is set.
+    fn add_next_run(&self, options: &CronAddOptions) -> (Option<i64>, Option<String>) {
+        if !options.include_next_run {
+            return (None, None);
+        }
+        let reference = options
+            .now_unix
+            .and_then(reference_time_from_unix)
+            .unwrap_or_else(|| self.get_current_time());
+        let zone = options.timezone.as_deref().and_then(parse_timezone);
+        match compute_next_run(&options.schedule, reference, zone) {
+            Some((unix, iso)) => (Some(unix), Some(iso)),
+            None => (None, None),
+        }
+    }
+
     fn build_cron_job_info(
         &self,
         options: &CronAddOptions,
@@ -3833,18 +4375,7 @@ impl SystemCronProvider {
         file_path: &str,
         line_added: Option<u32>,
     ) -> Result<CronAddJobInfo> {
-        let next_run_unix = if options.include_next_run {
-            compute_next_run(&options.schedule, self.get_current_time())
-        } else {
-            None
-        };
-
-        let next_run_iso8601 = next_run_unix.map(|unix| {
-            Utc.timestamp_opt(unix, 0)
-                .single()
-                .unwrap_or_else(|| self.get_current_time())
-                .to_rfc3339()
-        });
+        let (next_run_unix, next_run_iso8601) = self.add_next_run(options);
 
         Ok(CronAddJobInfo {
             id: options.id.clone(),
@@ -3866,30 +4397,48 @@ impl SystemCronProvider {
         })
     }
 
+    /// The current content of the crontab or cron file `add` writes to.
+    fn read_add_target(
+        &self,
+        scope: &str,
+        user: &str,
+        file_path: &str,
+        editor: &dyn CronEditor,
+    ) -> Result<String> {
+        match scope {
+            "system" => self.read_system_target(file_path, editor),
+            _ => editor.read_user_crontab(user),
+        }
+    }
+
+    fn read_system_target(&self, file_path: &str, editor: &dyn CronEditor) -> Result<String> {
+        refuse_symlink(file_path)?;
+        // Only a missing file starts empty: a file that exists but cannot be
+        // read must not be replaced by the new line alone.
+        if editor.file_exists(file_path) {
+            editor.read_system_file(file_path)
+        } else {
+            Ok(String::new())
+        }
+    }
+
     fn add_to_user_crontab(
         &self,
         user: &str,
         cron_line: &str,
         comment_line: &Option<String>,
+        timezone: Option<&str>,
         editor: &dyn CronEditor,
     ) -> Result<u32> {
         let existing_content = editor.read_user_crontab(user)?;
-        let mut lines: Vec<&str> = existing_content.lines().collect();
-
-        if let Some(comment) = comment_line {
-            lines.push(comment);
-        }
-        lines.push(cron_line);
-
-        let new_content = lines.join("\n");
-        let new_content = if !new_content.ends_with('\n') {
-            format!("{}\n", new_content)
-        } else {
-            new_content
-        };
-
+        let (new_content, line, _) = insert_cron_entry(
+            &existing_content,
+            comment_line.as_deref(),
+            cron_line,
+            timezone,
+        );
         editor.write_user_crontab(user, &new_content)?;
-        Ok(lines.len() as u32)
+        Ok(line)
     }
 
     fn add_to_system_file(
@@ -3897,32 +4446,18 @@ impl SystemCronProvider {
         file_path: &str,
         cron_line: &str,
         comment_line: &Option<String>,
+        timezone: Option<&str>,
         editor: &dyn CronEditor,
     ) -> Result<u32> {
-        refuse_symlink(file_path)?;
-        // Only a missing file starts empty: a file that exists but cannot be
-        // read must not be replaced by the new line alone.
-        let existing_content = if editor.file_exists(file_path) {
-            editor.read_system_file(file_path)?
-        } else {
-            String::new()
-        };
-        let mut lines: Vec<&str> = existing_content.lines().collect();
-
-        if let Some(comment) = comment_line {
-            lines.push(comment);
-        }
-        lines.push(cron_line);
-
-        let new_content = lines.join("\n");
-        let new_content = if !new_content.ends_with('\n') {
-            format!("{}\n", new_content)
-        } else {
-            new_content
-        };
-
+        let existing_content = self.read_system_target(file_path, editor)?;
+        let (new_content, line, _) = insert_cron_entry(
+            &existing_content,
+            comment_line.as_deref(),
+            cron_line,
+            timezone,
+        );
         editor.write_system_file(file_path, &new_content)?;
-        Ok(lines.len() as u32)
+        Ok(line)
     }
 
     fn determine_systemd_scope(&self, options: &CronAddOptions) -> String {
@@ -4094,18 +4629,7 @@ impl SystemCronProvider {
         unit_name: &str,
         unit_scope: &str,
     ) -> Result<CronAddJobInfo> {
-        let next_run_unix = if options.include_next_run {
-            compute_next_run(&options.schedule, self.get_current_time())
-        } else {
-            None
-        };
-
-        let next_run_iso8601 = next_run_unix.map(|unix| {
-            Utc.timestamp_opt(unix, 0)
-                .single()
-                .unwrap_or_else(|| self.get_current_time())
-                .to_rfc3339()
-        });
+        let (next_run_unix, next_run_iso8601) = self.add_next_run(options);
 
         let unit_dir = if unit_scope == "user" {
             std::env::var("HOME")
@@ -4118,10 +4642,7 @@ impl SystemCronProvider {
         Ok(CronAddJobInfo {
             id: options.id.clone(),
             backend: "systemd".to_string(),
-            schedule: format!(
-                "OnCalendar={}",
-                convert_cron_to_oncalendar(&options.schedule)?
-            ),
+            schedule: format!("OnCalendar={}", systemd_on_calendar(options)?),
             command: options.command.clone(),
             location: CronAddJobLocation {
                 scope: format!("{}-unit", unit_scope),
@@ -4174,7 +4695,7 @@ impl SystemCronProvider {
     ) -> Result<(Vec<CronRmCronRemovedEntry>, Vec<String>)> {
         let mut removed_entries = Vec::new();
         let mut modified_sources = Vec::new();
-        let cron_editor: Box<dyn CronEditor> = Box::new(SystemCronEditor::new());
+        let cron_editor = self.host.editor();
 
         // Determine which cron sources to check based on scope
         let mut sources_to_check = Vec::new();
@@ -4238,6 +4759,15 @@ impl SystemCronProvider {
             }
         }
 
+        // A cron_file replaces the sources chosen by scope (as for disable).
+        if let Some(cron_file) = &options.cron_file {
+            sources_to_check = vec![(
+                "system".to_string(),
+                "root".to_string(),
+                Some(cron_file.clone()),
+            )];
+        }
+
         // Process each source
         for (scope_type, user, file_path) in sources_to_check {
             if let Ok(content) = self.read_cron_source(&scope_type, &user, file_path.as_deref()) {
@@ -4256,7 +4786,7 @@ impl SystemCronProvider {
                         &user,
                         file_path.as_deref(),
                         &new_content,
-                        cron_editor.as_ref(),
+                        cron_editor,
                     ) {
                         warnings.push(format!(
                             "Failed to update {}: {}",
@@ -4424,7 +4954,7 @@ impl SystemCronProvider {
         let mut enabled_entries = Vec::new();
         let mut already_enabled_count = 0u32;
         let mut modified_sources = Vec::new();
-        let cron_editor: Box<dyn CronEditor> = Box::new(SystemCronEditor::new());
+        let cron_editor = self.host.editor();
 
         // Determine which cron sources to check based on scope
         let mut sources_to_check = Vec::new();
@@ -4487,6 +5017,15 @@ impl SystemCronProvider {
             }
         }
 
+        // A cron_file replaces the sources chosen by scope (as for disable).
+        if let Some(cron_file) = &options.cron_file {
+            sources_to_check = vec![(
+                "system".to_string(),
+                "root".to_string(),
+                Some(cron_file.clone()),
+            )];
+        }
+
         // Check each source
         for (scope_type, user, file_path) in sources_to_check {
             if let Ok(content) = self.read_cron_source(&scope_type, &user, file_path.as_deref()) {
@@ -4507,7 +5046,7 @@ impl SystemCronProvider {
                         &user,
                         file_path.as_deref(),
                         &new_content,
-                        cron_editor.as_ref(),
+                        cron_editor,
                     ) {
                         warnings.push(format!(
                             "Failed to update {}: {}",
@@ -4748,6 +5287,7 @@ impl SystemCronProvider {
                                     id: job_id,
                                     line_number: Some((i + 1) as u32),
                                     was_disabled: true,
+                                    timezone: effective_cron_tz(&lines, i),
                                 });
                             } else {
                                 // Already enabled
@@ -4797,6 +5337,7 @@ impl SystemCronProvider {
                             id: None,
                             line_number: Some((i + 1) as u32),
                             was_disabled: true,
+                            timezone: effective_cron_tz(&lines, i),
                         });
                     } else {
                         // Already enabled
@@ -5019,7 +5560,7 @@ impl SystemCronProvider {
         let mut disabled_entries = Vec::new();
         let mut already_disabled_count = 0u32;
         let mut modified_sources = Vec::new();
-        let cron_editor = Box::new(SystemCronEditor::new());
+        let cron_editor = self.host.editor();
 
         // Determine sources to scan based on scope
         let sources = match options.scope.as_str() {
@@ -5099,7 +5640,7 @@ impl SystemCronProvider {
                                 &user,
                                 file_path.as_deref(),
                                 &new_content,
-                                cron_editor.as_ref(),
+                                cron_editor,
                             ) {
                                 warnings.push(format!(
                                     "Failed to write {}: {}",
@@ -5374,6 +5915,7 @@ impl SystemCronProvider {
                                     id: job_id,
                                     line_number: Some((i + 1) as u32),
                                     was_enabled: true,
+                                    timezone: effective_cron_tz(&lines, i),
                                 });
                             } else {
                                 // Already disabled
@@ -5423,6 +5965,7 @@ impl SystemCronProvider {
                             id: None,
                             line_number: Some((i + 1) as u32),
                             was_enabled: true,
+                            timezone: effective_cron_tz(&lines, i),
                         });
                     } else {
                         // Already disabled
@@ -5642,6 +6185,8 @@ impl SystemCronProvider {
     ) -> Result<(String, Vec<CronRmCronRemovedEntry>)> {
         let mut new_lines = Vec::new();
         let mut removed_entries = Vec::new();
+        // Kept CRON_TZ lines that stood directly above a removed job.
+        let mut tz_candidates = Vec::new();
         let lines: Vec<&str> = content.lines().collect();
         let mut i = 0;
 
@@ -5702,7 +6247,14 @@ impl SystemCronProvider {
                         command: Some(command),
                         id: job_id.clone(),
                         line_number: Some((cron_line_idx + 1) as u32),
+                        timezone: effective_cron_tz(&lines, cron_line_idx),
                     });
+                    if new_lines
+                        .last()
+                        .is_some_and(|l: &String| cron_tz_assignment(l).is_some())
+                    {
+                        tz_candidates.push(new_lines.len() - 1);
+                    }
 
                     // Skip both the comment line (if any) and the cron line
                     if job_id.is_some() && cron_line_idx > i {
@@ -5728,6 +6280,7 @@ impl SystemCronProvider {
             }
         }
 
+        let new_lines = drop_orphaned_tz_lines(new_lines, &tz_candidates);
         Ok((new_lines.join("\n") + "\n", removed_entries))
     }
 
@@ -5973,12 +6526,17 @@ fn parse_user_crontab(
     source_file: Option<&str>,
 ) -> Result<Vec<CronEntry>> {
     let mut entries = Vec::new();
+    let mut current_tz: Option<String> = None;
 
     for (line_num, line) in content.lines().enumerate() {
         let line_number = (line_num + 1) as u32;
         let trimmed = line.trim();
 
         if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(tz) = cron_tz_assignment(trimmed) {
+            current_tz = Some(tz).filter(|tz| !tz.is_empty());
             continue;
         }
 
@@ -5990,7 +6548,10 @@ fn parse_user_crontab(
         };
 
         // Check if it's a comment-only line
-        if line_content.is_empty() || (!enabled && !line_content.contains(' ')) {
+        if line_content.is_empty()
+            || (!enabled && !line_content.contains(' '))
+            || is_tz_block_marker(trimmed)
+        {
             entries.push(CronEntry {
                 id: format!(
                     "user:{}:{}:{}",
@@ -6012,11 +6573,12 @@ fn parse_user_crontab(
                 next_run_unix: None,
                 next_run_iso8601: None,
                 raw_line: Some(line.to_string()),
+                timezone: None,
             });
             continue;
         }
 
-        if let Some(entry) = parse_cron_line(
+        if let Some(mut entry) = parse_cron_line(
             line_content,
             user,
             "user",
@@ -6025,6 +6587,7 @@ fn parse_user_crontab(
             enabled,
             line,
         )? {
+            entry.timezone = current_tz.clone();
             entries.push(entry);
         }
     }
@@ -6034,12 +6597,17 @@ fn parse_user_crontab(
 
 fn parse_system_crontab(content: &str, file_path: &str) -> Result<Vec<CronEntry>> {
     let mut entries = Vec::new();
+    let mut current_tz: Option<String> = None;
 
     for (line_num, line) in content.lines().enumerate() {
         let line_number = (line_num + 1) as u32;
         let trimmed = line.trim();
 
         if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(tz) = cron_tz_assignment(trimmed) {
+            current_tz = Some(tz).filter(|tz| !tz.is_empty());
             continue;
         }
 
@@ -6051,7 +6619,10 @@ fn parse_system_crontab(content: &str, file_path: &str) -> Result<Vec<CronEntry>
         };
 
         // Check if it's a comment-only line
-        if line_content.is_empty() || (!enabled && !line_content.contains(' ')) {
+        if line_content.is_empty()
+            || (!enabled && !line_content.contains(' '))
+            || is_tz_block_marker(trimmed)
+        {
             entries.push(CronEntry {
                 id: format!("system:{}:{}", file_path, line_number),
                 user: None,
@@ -6073,6 +6644,7 @@ fn parse_system_crontab(content: &str, file_path: &str) -> Result<Vec<CronEntry>
                 next_run_unix: None,
                 next_run_iso8601: None,
                 raw_line: Some(line.to_string()),
+                timezone: None,
             });
             continue;
         }
@@ -6087,7 +6659,7 @@ fn parse_system_crontab(content: &str, file_path: &str) -> Result<Vec<CronEntry>
                 "file"
             };
 
-            if let Some(entry) = parse_cron_line(
+            if let Some(mut entry) = parse_cron_line(
                 line_content,
                 &user,
                 source_type,
@@ -6096,6 +6668,7 @@ fn parse_system_crontab(content: &str, file_path: &str) -> Result<Vec<CronEntry>
                 enabled,
                 line,
             )? {
+                entry.timezone = current_tz.clone();
                 entries.push(entry);
             }
         }
@@ -6153,6 +6726,7 @@ fn parse_cron_line(
             next_run_unix: None,
             next_run_iso8601: None,
             raw_line: Some(raw_line.to_string()),
+            timezone: None,
         }));
     }
 
@@ -6201,6 +6775,7 @@ fn parse_cron_line(
         next_run_unix: None,
         next_run_iso8601: None,
         raw_line: Some(raw_line.to_string()),
+        timezone: None,
     }))
 }
 
@@ -6277,15 +6852,28 @@ fn list_options_from_args(args: &Args) -> Result<CronListOptions> {
         match_source: get("match_source").map(String::from),
         include_next_run: flag("include_next_run", false)?,
         now_unix: match get("now_unix") {
-            Some(v) => Some(v.parse::<i64>().map_err(|_| {
-                anyhow::anyhow!(
-                    "cron.list_invalid_argument: now_unix={} is not an integer",
-                    v
-                )
-            })?),
+            Some(v) => match v.parse::<i64>() {
+                Ok(t) if reference_time_from_unix(t).is_some() => Some(t),
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "cron.list_invalid_argument: now_unix={} is not a Unix time in seconds \
+                         from 0 to 253402300799 (year 9999)",
+                        v
+                    ));
+                }
+            },
             None => None,
         },
-        timezone: get("timezone").map(String::from),
+        timezone: match get("timezone") {
+            Some(v) if parse_timezone(v).is_none() => {
+                return Err(anyhow::anyhow!(
+                    "cron.list_invalid_argument: timezone={} is not an IANA time zone name \
+                     such as Europe/Berlin or UTC",
+                    v
+                ));
+            }
+            v => v.map(String::from),
+        },
         max_entries: match get("max_entries") {
             Some(v) => v.parse::<u32>().map_err(|_| {
                 anyhow::anyhow!(
@@ -6478,41 +7066,66 @@ fn apply_sorting(entries: &mut Vec<CronEntry>, sort_by: &str, sort_order: &str) 
 // Next run computation
 // ===========================================================================
 
-fn compute_next_run(schedule_str: &str, reference_time: DateTime<Utc>) -> Option<i64> {
-    // Handle special cron entries
-    match schedule_str {
-        "@reboot" => return None, // Can't compute next reboot time
-        "@yearly" | "@annually" => return compute_next_run("0 0 0 1 1 *", reference_time),
-        "@monthly" => return compute_next_run("0 0 0 1 * *", reference_time),
-        "@weekly" => return compute_next_run("0 0 0 * * 0", reference_time),
-        "@daily" | "@midnight" => return compute_next_run("0 0 0 * * *", reference_time),
-        "@hourly" => return compute_next_run("0 0 * * * *", reference_time),
-        _ => {}
+/// The `now_unix` values accepted as a next-run reference: 1970-01-01T00:00:00Z
+/// through 9999-12-31T23:59:59Z. Times near chrono's limits make the `cron`
+/// crate overflow (a panic), so they are refused.
+const NOW_UNIX_RANGE: std::ops::RangeInclusive<i64> = 0..=253_402_300_799;
+
+/// `now_unix` as a reference time, if it is in `NOW_UNIX_RANGE`.
+fn reference_time_from_unix(now_unix: i64) -> Option<DateTime<Utc>> {
+    if !NOW_UNIX_RANGE.contains(&now_unix) {
+        return None;
     }
+    Utc.timestamp_opt(now_unix, 0).single()
+}
+
+/// The first run of a crontab schedule after `reference_time`, with the
+/// schedule read in `zone` (UTC when None), as the Unix time and as RFC 3339
+/// text in that zone's offset. None for `@reboot`, for a schedule that never
+/// runs again, and for a reference outside `NOW_UNIX_RANGE`.
+fn compute_next_run(
+    schedule_str: &str,
+    reference_time: DateTime<Utc>,
+    zone: Option<Tz>,
+) -> Option<(i64, String)> {
+    if !NOW_UNIX_RANGE.contains(&reference_time.timestamp()) {
+        return None;
+    }
+    // Handle special cron entries
+    let expression = match schedule_str {
+        "@reboot" => return None, // Can't compute next reboot time
+        "@yearly" | "@annually" => "0 0 0 1 1 *",
+        "@monthly" => "0 0 0 1 * *",
+        "@weekly" => "0 0 0 * * 0",
+        "@daily" | "@midnight" => "0 0 0 * * *",
+        "@hourly" => "0 0 * * * *",
+        other => other,
+    };
 
     // Try to parse as 6-field format first
-    let schedule = if let Ok(sched) = Schedule::from_str(schedule_str) {
+    let schedule = if let Ok(sched) = Schedule::from_str(expression) {
         sched
     } else {
         // Try converting from 5-field to 6-field format
-        let parts: Vec<&str> = schedule_str.split_whitespace().collect();
+        let parts: Vec<&str> = expression.split_whitespace().collect();
         if parts.len() == 5 {
-            let six_field = format!("0 {}", schedule_str);
+            let six_field = format!("0 {}", expression);
             Schedule::from_str(&six_field).ok()?
         } else {
             return None;
         }
     };
 
-    // Parse standard cron schedule
-    if let Some(next) = schedule.upcoming(Utc).next() {
-        // Only return if it's after reference time
-        if next > reference_time {
-            return Some(next.timestamp());
-        }
+    match zone {
+        Some(tz) => schedule
+            .after(&reference_time.with_timezone(&tz))
+            .next()
+            .map(|t| (t.timestamp(), t.to_rfc3339())),
+        None => schedule
+            .after(&reference_time)
+            .next()
+            .map(|t| (t.timestamp(), t.to_rfc3339())),
     }
-
-    None
 }
 
 // ===========================================================================
@@ -6528,9 +7141,7 @@ mod tests {
     use std::io::Cursor;
 
     fn provider() -> SystemCronProvider {
-        SystemCronProvider {
-            current_user: "alice".to_string(),
-        }
+        SystemCronProvider::with_host("alice".to_string(), Box::new(SystemCronHost::new()))
     }
 
     fn add_options(id: &str, description: Option<&str>) -> CronAddOptions {
@@ -6994,6 +7605,7 @@ MAILTO=ops@example.com
             next_run_unix: None,
             next_run_iso8601: None,
             raw_line: None,
+            timezone: None,
         };
         let mut o = list_options_from_args(&Args::new()).unwrap();
         o.match_command = Some("BACKUP".to_string());
@@ -7481,5 +8093,1122 @@ mod injection_tests {
         write_file_atomically(fresh.to_str().unwrap(), "x").unwrap();
         let mode = fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode & 0o022, 0, "{mode:o}");
+    }
+}
+
+/// The options wired up in this release (`timezone`, `now_unix`, `rm` and
+/// `enable` `cron_file`), driven through `CronHandle::call` with the same
+/// arguments a user passes, against an in-memory host: no crontab, cron
+/// file, unit file or systemctl on this machine is read or changed.
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug, Default)]
+    struct State {
+        /// user -> crontab content
+        crontabs: HashMap<String, String>,
+        /// path -> content (/etc/crontab, /etc/cron.d/<name>, unit files)
+        files: HashMap<String, String>,
+        /// What `crontab -V` prints (None: no -V, as on Debian).
+        crontab_version: Option<String>,
+        crontab_writes: usize,
+        systemctl: Vec<String>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct MockHost(Arc<Mutex<State>>);
+
+    impl MockHost {
+        fn state(&self) -> std::sync::MutexGuard<'_, State> {
+            self.0.lock().unwrap()
+        }
+    }
+
+    impl CronEditor for MockHost {
+        fn read_user_crontab(&self, user: &str) -> Result<String> {
+            Ok(self.state().crontabs.get(user).cloned().unwrap_or_default())
+        }
+        fn write_user_crontab(&self, user: &str, content: &str) -> Result<()> {
+            let mut st = self.state();
+            st.crontab_writes += 1;
+            st.crontabs.insert(user.into(), content.into());
+            Ok(())
+        }
+        fn read_system_file(&self, path: &str) -> Result<String> {
+            self.state()
+                .files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no {path}"))
+        }
+        fn write_system_file(&self, path: &str, content: &str) -> Result<()> {
+            self.state().files.insert(path.into(), content.into());
+            Ok(())
+        }
+        fn file_exists(&self, path: &str) -> bool {
+            self.state().files.contains_key(path)
+        }
+        fn create_directory(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl SystemdEditor for MockHost {
+        fn write_unit_file(&self, path: &str, content: &str) -> Result<()> {
+            self.state().files.insert(path.into(), content.into());
+            Ok(())
+        }
+        fn systemctl_daemon_reload(&self, _: bool) -> Result<()> {
+            self.state().systemctl.push("daemon-reload".into());
+            Ok(())
+        }
+        fn systemctl_enable_timer(&self, timer: &str, _: bool) -> Result<()> {
+            self.state().systemctl.push(format!("enable --now {timer}"));
+            Ok(())
+        }
+        fn systemctl_is_available(&self, _: bool) -> bool {
+            true
+        }
+        fn list_timers(&self, _: bool) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn get_unit_dir(&self, _: bool) -> Result<String> {
+            Ok("/units".into())
+        }
+        fn file_exists(&self, path: &str) -> bool {
+            self.state().files.contains_key(path)
+        }
+        fn create_directory(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl CronHost for MockHost {
+        fn editor(&self) -> &dyn CronEditor {
+            self
+        }
+        fn systemd(&self) -> &dyn SystemdEditor {
+            self
+        }
+        fn list_user_crontab(&self, user: &str, _: &str) -> Result<String> {
+            CronEditor::read_user_crontab(self, user)
+        }
+        fn read_system_crontab(&self) -> Result<String> {
+            self.read_file("/etc/crontab")
+        }
+        fn read_cron_d_files(&self) -> Result<Vec<(String, String)>> {
+            Ok(self
+                .state()
+                .files
+                .iter()
+                .filter_map(|(p, c)| {
+                    p.strip_prefix("/etc/cron.d/")
+                        .map(|n| (n.to_string(), c.clone()))
+                })
+                .collect())
+        }
+        fn read_file(&self, path: &str) -> Result<String> {
+            self.read_system_file(path)
+        }
+        fn command_runs(&self, _: &str, _: &str) -> bool {
+            true
+        }
+        fn crontab_version(&self) -> Option<String> {
+            self.state().crontab_version.clone()
+        }
+        fn now(&self) -> DateTime<Utc> {
+            // 2026-01-15T00:00:00Z
+            Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap()
+        }
+    }
+
+    const CRONIE: Option<&str> = Some("cronie 1.7.2");
+
+    fn setup(version: Option<&str>) -> (CronHandle, MockHost) {
+        let host = MockHost(Arc::new(Mutex::new(State {
+            crontab_version: version.map(String::from),
+            ..State::default()
+        })));
+        let provider = SystemCronProvider::with_host("alice".into(), Box::new(host.clone()));
+        (CronHandle::new("local".into(), Box::new(provider)), host)
+    }
+
+    /// Runs `verb` like `resh cron://local.<verb> k=v ...`: the exit code and
+    /// the JSON printed. Malformed list arguments fail before any JSON is
+    /// printed (exit code 1, as in the CLI).
+    fn run(h: &CronHandle, verb: &str, args: &[(&str, &str)]) -> (i32, Value) {
+        let args: Args = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        match h.call(verb, &args, &mut io) {
+            Ok(status) => (
+                status.exit_code(),
+                serde_json::from_slice(&o).unwrap_or(Value::Null),
+            ),
+            Err(err) => (1, json!({ "cli_error": err.to_string() })),
+        }
+    }
+
+    fn zones_of_jobs(content: &str) -> Vec<(String, Option<String>)> {
+        let lines: Vec<&str> = content.lines().collect();
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| looks_like_cron_schedule(&l.split_whitespace().collect::<Vec<_>>()))
+            .map(|(i, l)| (l.to_string(), effective_cron_tz(&lines, i)))
+            .collect()
+    }
+
+    // ---- add timezone: systemd -------------------------------------------
+
+    #[test]
+    fn add_systemd_timezone_goes_on_oncalendar() {
+        for dry in ["true", "false"] {
+            let (h, host) = setup(None);
+            let (code, out) = run(
+                &h,
+                "add",
+                &[
+                    ("schedule", "0 2 * * *"),
+                    ("command", "/opt/backup.sh"),
+                    ("backend", "systemd"),
+                    ("unit_scope", "user"),
+                    ("unit_name", "backup"),
+                    ("timezone", "Europe/Berlin"),
+                    ("dry_run", dry),
+                ],
+            );
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(out["job"]["schedule"], "OnCalendar=2:0 Europe/Berlin");
+            let st = host.state();
+            if dry == "true" {
+                let timer = out["preview"]["timer_unit"].as_str().unwrap();
+                assert!(
+                    timer.contains("\nOnCalendar=2:0 Europe/Berlin\n"),
+                    "{timer}"
+                );
+                assert!(st.files.is_empty() && st.systemctl.is_empty());
+            } else {
+                let timer = &st.files["/units/backup.timer"];
+                assert!(
+                    timer.contains("\nOnCalendar=2:0 Europe/Berlin\n"),
+                    "{timer}"
+                );
+                assert_eq!(st.systemctl, ["daemon-reload", "enable --now backup.timer"]);
+            }
+            // The systemd backend never needs cronie and never touches crontabs.
+            assert_eq!(st.crontab_writes, 0);
+        }
+        // Without timezone, OnCalendar has no zone.
+        let (h, _) = setup(None);
+        let (code, out) = run(
+            &h,
+            "add",
+            &[
+                ("schedule", "0 2 * * *"),
+                ("command", "/opt/backup.sh"),
+                ("backend", "systemd"),
+                ("unit_scope", "user"),
+                ("dry_run", "true"),
+            ],
+        );
+        assert_eq!(code, 0);
+        assert_eq!(out["job"]["schedule"], "OnCalendar=2:0");
+    }
+
+    // ---- add timezone: cron backend ----------------------------------------
+
+    #[test]
+    fn add_cron_timezone_is_refused_unless_the_daemon_is_cronie() {
+        for version in [None, Some("cron (Debian) 3.0pl1"), Some("busybox")] {
+            for dry in ["true", "false"] {
+                let (h, host) = setup(version);
+                let (code, out) = run(
+                    &h,
+                    "add",
+                    &[
+                        ("schedule", "0 2 * * *"),
+                        ("command", "/opt/backup.sh"),
+                        ("backend", "cron"),
+                        ("timezone", "Europe/Berlin"),
+                        ("dry_run", dry),
+                    ],
+                );
+                assert_eq!(code, 1, "{version:?} dry={dry}: {out}");
+                assert_eq!(out["ok"], false);
+                assert_eq!(out["error"]["code"], "cron.add_timezone_unsupported");
+                assert_eq!(out["error"]["field"], "timezone");
+                assert_eq!(host.state().crontab_writes, 0, "{version:?}");
+                assert!(out.get("preview").is_none());
+            }
+        }
+        // Without timezone the cron backend does not care which cron it is.
+        let (h, host) = setup(None);
+        let (code, _) = run(
+            &h,
+            "add",
+            &[
+                ("schedule", "0 2 * * *"),
+                ("command", "/opt/backup.sh"),
+                ("backend", "cron"),
+            ],
+        );
+        assert_eq!(code, 0);
+        assert_eq!(host.state().crontabs["alice"], "0 2 * * * /opt/backup.sh\n");
+    }
+
+    #[test]
+    fn add_cron_timezone_keeps_other_jobs_in_their_zones() {
+        let (h, host) = setup(CRONIE);
+        host.state().crontabs.insert(
+            "alice".into(),
+            "MAILTO=ops@example.com\n*/5 * * * * /usr/bin/poll\n".into(),
+        );
+        let add = |args: &[(&str, &str)]| {
+            let mut all = vec![("backend", "cron")];
+            all.extend_from_slice(args);
+            let (code, out) = run(&h, "add", &all);
+            assert_eq!(code, 0, "{out}");
+            out
+        };
+
+        // Dry run: the preview shows the block, nothing is written.
+        let out = add(&[
+            ("schedule", "0 2 * * *"),
+            ("command", "/opt/backup.sh"),
+            ("id", "backup"),
+            ("timezone", "Europe/Berlin"),
+            ("dry_run", "true"),
+        ]);
+        assert_eq!(
+            out["preview"]["cron_line"],
+            format!(
+                "{TZ_BLOCK_MARKER}\nCRON_TZ=Europe/Berlin\n# job-id=backup\n0 2 * * * /opt/backup.sh"
+            )
+        );
+        assert_eq!(host.state().crontab_writes, 0);
+
+        add(&[
+            ("schedule", "0 2 * * *"),
+            ("command", "/opt/backup.sh"),
+            ("id", "backup"),
+            ("timezone", "Europe/Berlin"),
+        ]);
+        // A job without a zone added later goes above the block.
+        add(&[("schedule", "15 * * * *"), ("command", "/opt/hourly.sh")]);
+        // A second zoned job gets its own CRON_TZ line (one marker only).
+        let out = add(&[
+            ("schedule", "30 6 * * *"),
+            ("command", "/opt/report.sh"),
+            ("timezone", "America/New_York"),
+        ]);
+        let content = host.state().crontabs["alice"].clone();
+        assert_eq!(
+            content,
+            format!(
+                "MAILTO=ops@example.com\n*/5 * * * * /usr/bin/poll\n15 * * * * /opt/hourly.sh\n\
+                 {TZ_BLOCK_MARKER}\nCRON_TZ=Europe/Berlin\n# job-id=backup\n0 2 * * * /opt/backup.sh\n\
+                 CRON_TZ=America/New_York\n30 6 * * * /opt/report.sh\n"
+            )
+        );
+        assert_eq!(out["job"]["location"]["line_added"], 9);
+        assert_eq!(
+            zones_of_jobs(&content),
+            vec![
+                ("*/5 * * * * /usr/bin/poll".to_string(), None),
+                ("15 * * * * /opt/hourly.sh".to_string(), None),
+                (
+                    "0 2 * * * /opt/backup.sh".to_string(),
+                    Some("Europe/Berlin".to_string())
+                ),
+                (
+                    "30 6 * * * /opt/report.sh".to_string(),
+                    Some("America/New_York".to_string())
+                ),
+            ]
+        );
+
+        // The same job in another zone is not a duplicate; in its zone it is.
+        let dup = |tz: &str| {
+            add(&[
+                ("schedule", "0 2 * * *"),
+                ("command", "/opt/backup.sh"),
+                ("timezone", tz),
+                ("allow_duplicate", "false"),
+                ("dry_run", "true"),
+            ])["duplicate"]
+                .clone()
+        };
+        assert_eq!(dup("Europe/Berlin"), true);
+        assert_eq!(dup("Asia/Tokyo"), false);
+    }
+
+    #[test]
+    fn add_cron_timezone_in_a_system_file() {
+        let (h, host) = setup(CRONIE);
+        host.state().files.insert(
+            "/etc/cron.d/resh_jobs".into(),
+            "0 1 * * * root /bin/a\n".into(),
+        );
+        let (code, out) = run(
+            &h,
+            "add",
+            &[
+                ("schedule", "0 2 * * *"),
+                ("command", "/bin/b"),
+                ("backend", "cron"),
+                ("scope", "system"),
+                ("cron_file", "/etc/cron.d/resh_jobs"),
+                ("timezone", "UTC"),
+            ],
+        );
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(
+            host.state().files["/etc/cron.d/resh_jobs"],
+            format!(
+                "0 1 * * * root /bin/a\n{TZ_BLOCK_MARKER}\nCRON_TZ=UTC\n0 2 * * * root /bin/b\n"
+            )
+        );
+    }
+
+    #[test]
+    fn add_refuses_unknown_time_zones_for_every_backend() {
+        for backend in ["cron", "systemd"] {
+            for tz in ["Mars/Olympus", "europe/berlin", "", "Europe/Berlin\nX=1"] {
+                let (h, host) = setup(CRONIE);
+                let (code, out) = run(
+                    &h,
+                    "add",
+                    &[
+                        ("schedule", "0 2 * * *"),
+                        ("command", "/bin/true"),
+                        ("backend", backend),
+                        ("unit_scope", "user"),
+                        ("timezone", tz),
+                    ],
+                );
+                assert_eq!(code, 1, "{backend} {tz:?}: {out}");
+                assert_eq!(out["error"]["code"], "cron.add_invalid_argument");
+                assert_eq!(out["error"]["field"], "timezone");
+                let st = host.state();
+                assert!(st.crontab_writes == 0 && st.files.is_empty() && st.systemctl.is_empty());
+            }
+        }
+    }
+
+    // ---- add now_unix / next run -----------------------------------------------
+
+    #[test]
+    fn add_next_run_uses_now_unix_and_timezone() {
+        let ref_time = Utc
+            .with_ymd_and_hms(2026, 3, 1, 12, 0, 0)
+            .unwrap()
+            .timestamp();
+        let next = |extra: &[(&str, &str)]| {
+            let (h, _) = setup(CRONIE);
+            let mut args = vec![
+                ("schedule", "0 2 * * *"),
+                ("command", "/bin/true"),
+                ("backend", "cron"),
+                ("dry_run", "true"),
+            ];
+            args.extend_from_slice(extra);
+            let (code, out) = run(&h, "add", &args);
+            assert_eq!(code, 0, "{out}");
+            (
+                out["job"]["next_run_unix"].as_i64(),
+                out["job"]["next_run_iso8601"].as_str().map(String::from),
+            )
+        };
+        let now = ref_time.to_string();
+        // now_unix is the reference: 02:00 UTC on the next day.
+        assert_eq!(
+            next(&[("now_unix", &now)]),
+            (
+                Some(
+                    Utc.with_ymd_and_hms(2026, 3, 2, 2, 0, 0)
+                        .unwrap()
+                        .timestamp()
+                ),
+                Some("2026-03-02T02:00:00+00:00".into())
+            )
+        );
+        // In Europe/Berlin (UTC+1 in March) 02:00 local is 01:00 UTC.
+        assert_eq!(
+            next(&[("now_unix", &now), ("timezone", "Europe/Berlin")]),
+            (
+                Some(
+                    Utc.with_ymd_and_hms(2026, 3, 2, 1, 0, 0)
+                        .unwrap()
+                        .timestamp()
+                ),
+                Some("2026-03-02T02:00:00+01:00".into())
+            )
+        );
+        // Without now_unix the host's current time (2026-01-15 00:00Z) is used.
+        assert_eq!(
+            next(&[]).0,
+            Some(
+                Utc.with_ymd_and_hms(2026, 1, 15, 2, 0, 0)
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+        // include_next_run=false reports none.
+        assert_eq!(next(&[("include_next_run", "false")]), (None, None));
+
+        for bad in ["soon", "1.5", "99999999999999999", "-1", "253402300800"] {
+            let (h, host) = setup(CRONIE);
+            let (code, out) = run(
+                &h,
+                "add",
+                &[
+                    ("schedule", "0 2 * * *"),
+                    ("command", "/bin/true"),
+                    ("backend", "cron"),
+                    ("now_unix", bad),
+                ],
+            );
+            assert_eq!(code, 1, "{bad}");
+            assert_eq!(out["error"]["code"], "cron.add_invalid_argument", "{bad}");
+            assert_eq!(out["error"]["field"], "now_unix", "{bad}");
+            assert_eq!(host.state().crontab_writes, 0);
+        }
+    }
+
+    // ---- list timezone / CRON_TZ -------------------------------------------
+
+    fn zoned_crontab() -> String {
+        format!(
+            "0 2 * * * /opt/plain.sh\n{TZ_BLOCK_MARKER}\nCRON_TZ=Asia/Tokyo\n# job-id=jp\n0 2 * * * /opt/jp.sh\n"
+        )
+    }
+
+    fn list_entries(out: &Value) -> Vec<(String, Option<String>, Option<String>)> {
+        out["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["comment_only"] == false)
+            .map(|e| {
+                (
+                    e["command"].as_str().unwrap().to_string(),
+                    e["timezone"].as_str().map(String::from),
+                    e["next_run_iso8601"].as_str().map(String::from),
+                )
+            })
+            .collect()
+    }
+
+    fn march_first_noon() -> String {
+        Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0)
+            .unwrap()
+            .timestamp()
+            .to_string()
+    }
+
+    #[test]
+    fn list_computes_next_runs_in_the_right_zone() {
+        let now = march_first_noon();
+        let (h, host) = setup(CRONIE);
+        host.state()
+            .crontabs
+            .insert("alice".into(), zoned_crontab());
+
+        // Default: entries without CRON_TZ in UTC; the zoned one in its zone.
+        let (code, out) = run(
+            &h,
+            "list",
+            &[("include_next_run", "true"), ("now_unix", &now)],
+        );
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(
+            list_entries(&out),
+            vec![
+                (
+                    "/opt/plain.sh".into(),
+                    None,
+                    Some("2026-03-02T02:00:00+00:00".into())
+                ),
+                (
+                    "/opt/jp.sh".into(),
+                    Some("Asia/Tokyo".into()),
+                    Some("2026-03-02T02:00:00+09:00".into())
+                ),
+            ]
+        );
+        // The block marker is a comment, not a disabled job.
+        assert!(
+            out["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| e["enabled"] == true || e["comment_only"] == true),
+            "{out}"
+        );
+
+        // timezone= is the zone for entries without their own CRON_TZ.
+        let (_, out) = run(
+            &h,
+            "list",
+            &[
+                ("include_next_run", "true"),
+                ("now_unix", &now),
+                ("timezone", "America/New_York"),
+            ],
+        );
+        let entries = list_entries(&out);
+        assert_eq!(entries[0].2.as_deref(), Some("2026-03-02T02:00:00-05:00"));
+        assert_eq!(entries[1].2.as_deref(), Some("2026-03-02T02:00:00+09:00"));
+
+        // Without include_next_run nothing is computed; zones are still shown.
+        let (_, out) = run(&h, "list", &[("timezone", "America/New_York")]);
+        let entries = list_entries(&out);
+        assert_eq!(entries[1].1.as_deref(), Some("Asia/Tokyo"));
+        assert!(entries.iter().all(|e| e.2.is_none()));
+    }
+
+    #[test]
+    fn list_ignores_cron_tz_where_cron_is_not_cronie() {
+        let now = march_first_noon();
+        let (h, host) = setup(None);
+        host.state()
+            .crontabs
+            .insert("alice".into(), zoned_crontab());
+        let (code, out) = run(
+            &h,
+            "list",
+            &[("include_next_run", "true"), ("now_unix", &now)],
+        );
+        assert_eq!(code, 0);
+        assert_eq!(
+            list_entries(&out)[1].2.as_deref(),
+            Some("2026-03-02T02:00:00+00:00")
+        );
+        assert!(
+            out["warnings"][0]
+                .as_str()
+                .unwrap()
+                .contains("CRON_TZ lines were ignored"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn list_refuses_unknown_time_zones() {
+        let (h, _) = setup(CRONIE);
+        let (code, out) = run(&h, "list", &[("timezone", "Nowhere/Land")]);
+        assert_eq!(code, 1);
+        assert!(
+            out["cli_error"]
+                .as_str()
+                .unwrap()
+                .contains("cron.list_invalid_argument: timezone=Nowhere/Land"),
+            "{out}"
+        );
+    }
+
+    // ---- rm / enable / disable keep zones consistent -----------------------
+
+    #[test]
+    fn rm_takes_a_jobs_cron_tz_line_with_it_and_nothing_else() {
+        let (h, host) = setup(CRONIE);
+        let add = |args: &[(&str, &str)]| {
+            let mut all = vec![("backend", "cron")];
+            all.extend_from_slice(args);
+            assert_eq!(run(&h, "add", &all).0, 0);
+        };
+        add(&[("schedule", "0 1 * * *"), ("command", "/bin/plain")]);
+        add(&[
+            ("schedule", "0 2 * * *"),
+            ("command", "/bin/de"),
+            ("id", "de"),
+            ("timezone", "Europe/Berlin"),
+        ]);
+        add(&[
+            ("schedule", "0 3 * * *"),
+            ("command", "/bin/jp"),
+            ("id", "jp"),
+            ("timezone", "Asia/Tokyo"),
+        ]);
+        let before = host.state().crontabs["alice"].clone();
+        let rm = |id: &str, dry: &str| {
+            run(
+                &h,
+                "rm",
+                &[
+                    ("id", id),
+                    ("backend", "cron"),
+                    ("scope", "current"),
+                    ("dry_run", dry),
+                ],
+            )
+        };
+
+        // Dry run: reported with its zone, nothing changes.
+        let (code, out) = rm("de", "true");
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["removed"]["cron"][0]["timezone"], "Europe/Berlin");
+        assert_eq!(host.state().crontabs["alice"], before);
+
+        // The first zoned job: its CRON_TZ line goes, the next keeps its own.
+        assert_eq!(rm("de", "false").0, 0);
+        assert_eq!(
+            host.state().crontabs["alice"],
+            format!(
+                "0 1 * * * /bin/plain\n{TZ_BLOCK_MARKER}\nCRON_TZ=Asia/Tokyo\n# job-id=jp\n0 3 * * * /bin/jp\n"
+            )
+        );
+
+        // The last zoned job: its CRON_TZ line and the empty block go.
+        assert_eq!(rm("jp", "false").0, 0);
+        assert_eq!(host.state().crontabs["alice"], "0 1 * * * /bin/plain\n");
+    }
+
+    #[test]
+    fn rm_keeps_a_cron_tz_line_another_job_still_depends_on() {
+        let (h, host) = setup(CRONIE);
+        // A job typed in by hand below a resh zoned job runs in that zone.
+        host.state().crontabs.insert(
+            "alice".into(),
+            format!(
+                "{TZ_BLOCK_MARKER}\nCRON_TZ=Europe/Berlin\n# job-id=de\n0 2 * * * /bin/de\n5 5 * * * /bin/by-hand\n"
+            ),
+        );
+        let (code, _) = run(
+            &h,
+            "rm",
+            &[("id", "de"), ("backend", "cron"), ("scope", "current")],
+        );
+        assert_eq!(code, 0);
+        let content = host.state().crontabs["alice"].clone();
+        assert_eq!(
+            zones_of_jobs(&content),
+            vec![(
+                "5 5 * * * /bin/by-hand".to_string(),
+                Some("Europe/Berlin".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn disable_and_enable_leave_cron_tz_lines_in_place() {
+        let (h, host) = setup(CRONIE);
+        let content = format!(
+            "0 1 * * * /bin/plain\n{TZ_BLOCK_MARKER}\nCRON_TZ=Europe/Berlin\n# job-id=de\n0 2 * * * /bin/de\n"
+        );
+        host.state()
+            .crontabs
+            .insert("alice".into(), content.clone());
+        let args = [("id", "de"), ("backend", "cron"), ("scope", "current")];
+        let (code, out) = run(&h, "disable", &args);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["disabled"]["cron"][0]["timezone"], "Europe/Berlin");
+        assert!(
+            host.state().crontabs["alice"]
+                .contains("CRON_TZ=Europe/Berlin\n# job-id=de\n# 0 2 * * * /bin/de\n")
+        );
+        let (code, out) = run(&h, "enable", &args);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["enabled"]["cron"][0]["timezone"], "Europe/Berlin");
+        assert_eq!(host.state().crontabs["alice"], content);
+    }
+
+    // ---- rm / enable cron_file ---------------------------------------------
+
+    const SYSTEM_FILE: &str = "/etc/cron.d/resh_jobs";
+
+    fn with_job_in_file_and_crontab(disabled: bool) -> (CronHandle, MockHost) {
+        let (h, host) = setup(CRONIE);
+        let job = if disabled { "# 0 2 * * *" } else { "0 2 * * *" };
+        host.state().files.insert(
+            SYSTEM_FILE.into(),
+            format!("# job-id=backup\n{job} root /opt/backup.sh\n"),
+        );
+        host.state().crontabs.insert(
+            "alice".into(),
+            format!("# job-id=backup\n{job} /opt/backup.sh\n"),
+        );
+        (h, host)
+    }
+
+    #[test]
+    fn rm_and_enable_act_only_on_cron_file() {
+        for verb in ["rm", "enable"] {
+            let (h, host) = with_job_in_file_and_crontab(verb == "enable");
+            let crontab_before = host.state().crontabs["alice"].clone();
+            // scope=all would also reach alice's crontab; cron_file replaces it.
+            let (code, out) = run(
+                &h,
+                verb,
+                &[
+                    ("id", "backup"),
+                    ("backend", "cron"),
+                    ("scope", "all"),
+                    ("cron_file", SYSTEM_FILE),
+                ],
+            );
+            assert_eq!(code, 0, "{verb}: {out}");
+            assert_eq!(out["cron_modified_sources"], json!([SYSTEM_FILE]), "{verb}");
+            let st = host.state();
+            assert_eq!(st.crontabs["alice"], crontab_before, "{verb}");
+            assert_eq!(st.crontab_writes, 0, "{verb}");
+            let file = &st.files[SYSTEM_FILE];
+            match verb {
+                "rm" => assert_eq!(file, "\n"),
+                _ => assert_eq!(file, "# job-id=backup\n0 2 * * * root /opt/backup.sh\n"),
+            }
+        }
+    }
+
+    #[test]
+    fn rm_and_enable_without_cron_file_use_scope() {
+        for verb in ["rm", "enable"] {
+            let (h, host) = with_job_in_file_and_crontab(verb == "enable");
+            let file_before = host.state().files[SYSTEM_FILE].clone();
+            let (code, out) = run(
+                &h,
+                verb,
+                &[("id", "backup"), ("backend", "cron"), ("scope", "current")],
+            );
+            assert_eq!(code, 0, "{verb}: {out}");
+            let st = host.state();
+            assert_eq!(st.files[SYSTEM_FILE], file_before, "{verb}");
+            assert_eq!(st.crontab_writes, 1, "{verb}");
+        }
+    }
+
+    #[test]
+    fn rm_and_enable_refuse_other_cron_files() {
+        for verb in ["rm", "enable"] {
+            for bad in [
+                "/etc/passwd",
+                "/etc/cron.d/../shadow",
+                "/etc/cron.d/has.dot",
+                "/tmp/x",
+            ] {
+                for dry in ["true", "false"] {
+                    let (h, host) = with_job_in_file_and_crontab(verb == "enable");
+                    let files_before = host.state().files.clone();
+                    let (code, out) = run(
+                        &h,
+                        verb,
+                        &[
+                            ("id", "backup"),
+                            ("backend", "cron"),
+                            ("cron_file", bad),
+                            ("dry_run", dry),
+                        ],
+                    );
+                    assert_eq!(code, 1, "{verb} {bad}: {out}");
+                    assert_eq!(
+                        out["error"]["code"],
+                        format!("cron.{verb}_invalid_argument")
+                    );
+                    assert_eq!(out["error"]["field"], "cron_file");
+                    let st = host.state();
+                    assert_eq!(st.files, files_before);
+                    assert_eq!(st.crontab_writes, 0);
+                }
+            }
+        }
+    }
+
+    // ---- helpers -------------------------------------------------------------
+
+    #[test]
+    fn cron_tz_assignments_follow_cronie_syntax() {
+        assert_eq!(cron_tz_assignment("CRON_TZ=UTC").as_deref(), Some("UTC"));
+        assert_eq!(
+            cron_tz_assignment(" CRON_TZ = 'Asia/Tokyo' ").as_deref(),
+            Some("Asia/Tokyo")
+        );
+        assert_eq!(
+            cron_tz_assignment("CRON_TZ=\"UTC\"").as_deref(),
+            Some("UTC")
+        );
+        assert_eq!(cron_tz_assignment("CRON_TZ=").as_deref(), Some(""));
+        assert_eq!(cron_tz_assignment("# CRON_TZ=UTC"), None);
+        assert_eq!(cron_tz_assignment("TZ=UTC"), None);
+        assert_eq!(cron_tz_assignment("0 2 * * * x=CRON_TZ"), None);
+        // An empty CRON_TZ= ends the previous zone.
+        let lines = ["CRON_TZ=UTC", "CRON_TZ=", "0 2 * * * x"];
+        assert_eq!(effective_cron_tz(&lines, 2), None);
+        assert_eq!(effective_cron_tz(&lines, 1).as_deref(), Some("UTC"));
+    }
+
+    #[test]
+    fn orphan_cron_tz_lines_are_dropped_only_when_harmless() {
+        let v = |s: &[&str]| s.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        // Followed by another CRON_TZ: dropped.
+        assert_eq!(
+            drop_orphaned_tz_lines(
+                v(&[TZ_BLOCK_MARKER, "CRON_TZ=A", "CRON_TZ=B", "1 1 * * * b"]),
+                &[1]
+            ),
+            v(&[TZ_BLOCK_MARKER, "CRON_TZ=B", "1 1 * * * b"])
+        );
+        // Followed by a job or a disabled job: kept.
+        for next in ["1 1 * * * b", "# 1 1 * * * b"] {
+            let lines = v(&[TZ_BLOCK_MARKER, "CRON_TZ=A", next]);
+            assert_eq!(drop_orphaned_tz_lines(lines.clone(), &[1]), lines);
+        }
+        // Last in the file: dropped, with the block that is now empty.
+        assert_eq!(
+            drop_orphaned_tz_lines(v(&["x", TZ_BLOCK_MARKER, "CRON_TZ=A", ""]), &[2]),
+            v(&["x"])
+        );
+        // Not a candidate: never touched.
+        let lines = v(&["CRON_TZ=A"]);
+        assert_eq!(drop_orphaned_tz_lines(lines.clone(), &[]), lines);
+    }
+
+    #[test]
+    fn cronie_is_recognized_only_by_its_version_string() {
+        let (_, host) = setup(CRONIE);
+        assert!(cronie_detected(&host).is_ok());
+        for other in [None, Some("cron 3.0pl1"), Some("")] {
+            let (_, host) = setup(other);
+            assert!(cronie_detected(&host).is_err(), "{other:?}");
+        }
+    }
+}
+
+/// Next-run times for any accepted `now_unix` and zone, including chrono's
+/// extremes and DST gaps and overlaps, never panic.
+#[cfg(test)]
+mod next_run_edge_tests {
+    use super::*;
+
+    #[test]
+    fn next_run_never_panics_on_extreme_times_or_dst_edges() {
+        let zones = [
+            None,
+            Some(Tz::Asia__Tokyo),
+            Some(Tz::America__Los_Angeles),
+            Some(Tz::Europe__Berlin),
+        ];
+        let times = [
+            DateTime::<Utc>::MAX_UTC,
+            DateTime::<Utc>::MIN_UTC,
+            Utc.timestamp_opt(0, 0).unwrap(),
+            Utc.timestamp_opt(-1, 0).unwrap(),
+            Utc.timestamp_opt(253_402_300_799, 0).unwrap(),
+            // Europe/Berlin DST start and end in 2026.
+            Utc.with_ymd_and_hms(2026, 3, 29, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 10, 25, 0, 0, 0).unwrap(),
+        ];
+        for zone in zones {
+            for t in times {
+                for sched in ["30 2 * * *", "@hourly", "@yearly", "0 0 29 2 *", "@reboot"] {
+                    let _ = compute_next_run(sched, t, zone);
+                }
+            }
+        }
+        // 02:30 does not exist in Berlin on the DST start day; the next
+        // run is still found.
+        let r = compute_next_run(
+            "30 2 * * *",
+            Utc.with_ymd_and_hms(2026, 3, 29, 0, 0, 0).unwrap(),
+            Some(Tz::Europe__Berlin),
+        );
+        assert!(r.is_some());
+    }
+}
+
+/// Every argument error of the verbs changed in this release is reported
+/// before anything is read or written, with its error code and exit 1.
+#[cfg(test)]
+mod argument_error_tests {
+    use super::*;
+
+    /// A host that fails the test if anything is read, written or probed.
+    #[derive(Debug)]
+    struct UntouchableHost;
+
+    impl CronEditor for UntouchableHost {
+        fn read_user_crontab(&self, _: &str) -> Result<String> {
+            panic!("crontab read")
+        }
+        fn write_user_crontab(&self, _: &str, _: &str) -> Result<()> {
+            panic!("crontab written")
+        }
+        fn read_system_file(&self, _: &str) -> Result<String> {
+            panic!("system file read")
+        }
+        fn write_system_file(&self, _: &str, _: &str) -> Result<()> {
+            panic!("system file written")
+        }
+        fn file_exists(&self, _: &str) -> bool {
+            panic!("file probed")
+        }
+        fn create_directory(&self, _: &str) -> Result<()> {
+            panic!("directory created")
+        }
+    }
+
+    impl SystemdEditor for UntouchableHost {
+        fn write_unit_file(&self, _: &str, _: &str) -> Result<()> {
+            panic!("unit written")
+        }
+        fn systemctl_daemon_reload(&self, _: bool) -> Result<()> {
+            panic!("daemon-reload")
+        }
+        fn systemctl_enable_timer(&self, _: &str, _: bool) -> Result<()> {
+            panic!("timer enabled")
+        }
+        fn systemctl_is_available(&self, _: bool) -> bool {
+            panic!("systemctl probed")
+        }
+        fn list_timers(&self, _: bool) -> Result<Vec<String>> {
+            panic!("timers listed")
+        }
+        fn get_unit_dir(&self, _: bool) -> Result<String> {
+            panic!("unit dir")
+        }
+        fn file_exists(&self, _: &str) -> bool {
+            panic!("unit probed")
+        }
+        fn create_directory(&self, _: &str) -> Result<()> {
+            panic!("unit dir created")
+        }
+    }
+
+    impl CronHost for UntouchableHost {
+        fn editor(&self) -> &dyn CronEditor {
+            self
+        }
+        fn systemd(&self) -> &dyn SystemdEditor {
+            self
+        }
+        fn list_user_crontab(&self, _: &str, _: &str) -> Result<String> {
+            panic!("crontab listed")
+        }
+        fn read_system_crontab(&self) -> Result<String> {
+            panic!("/etc/crontab read")
+        }
+        fn read_cron_d_files(&self) -> Result<Vec<(String, String)>> {
+            panic!("/etc/cron.d read")
+        }
+        fn read_file(&self, _: &str) -> Result<String> {
+            panic!("file read")
+        }
+        fn command_runs(&self, _: &str, _: &str) -> bool {
+            // Backend availability is probed before the backend-specific
+            // checks; probing runs nothing on this host.
+            true
+        }
+        fn crontab_version(&self) -> Option<String> {
+            panic!("crontab -V")
+        }
+        fn now(&self) -> DateTime<Utc> {
+            Utc.timestamp_opt(0, 0).unwrap()
+        }
+    }
+
+    fn run(verb: &str, args: &[(&str, &str)]) -> (i32, Value) {
+        let h = CronHandle::new(
+            "local".into(),
+            Box::new(SystemCronProvider::with_host(
+                "alice".into(),
+                Box::new(UntouchableHost),
+            )),
+        );
+        let args: Args = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        match h.call(verb, &args, &mut io) {
+            Ok(status) => (
+                status.exit_code(),
+                serde_json::from_slice(&o).unwrap_or(Value::Null),
+            ),
+            Err(err) => (1, json!({ "cli_error": err.to_string() })),
+        }
+    }
+
+    #[test]
+    fn add_argument_errors() {
+        let base = [
+            ("schedule", "0 2 * * *"),
+            ("command", "/bin/true"),
+            ("dry_run", "true"),
+        ];
+        for (backend, field, value) in [
+            ("cron", "scope", "everyone"),
+            ("cron", "unit_scope", "both"),
+            ("systemd", "unit_scope", "global"),
+            ("cron", "timezone", "Not/AZone"),
+            ("systemd", "timezone", "Not/AZone"),
+            ("cron", "now_unix", "-5"),
+        ] {
+            let mut args = base.to_vec();
+            args.push(("backend", backend));
+            args.push((field, value));
+            let (code, out) = run("add", &args);
+            assert_eq!(code, 1, "{backend} {field}={value}: {out}");
+            assert_eq!(out["error"]["code"], "cron.add_invalid_argument");
+            assert_eq!(out["error"]["field"], field);
+        }
+    }
+
+    #[test]
+    fn rm_and_enable_argument_errors() {
+        for verb in ["rm", "enable"] {
+            for (args, field) in [
+                (vec![("cron_file", "/etc/shadow")], "cron_file"),
+                (vec![("cron_file", "/etc/cron.d/x\ny")], "cron_file"),
+                (vec![("scope", "everyone")], "scope"),
+                (vec![("scope", "user")], "users"),
+                (vec![("scope", "user"), ("users", " , ")], "users"),
+                (vec![("scope", "user"), ("users", "bob,-r")], "users"),
+                (vec![("unit_scope", "global")], "unit_scope"),
+            ] {
+                let mut all = vec![("id", "job"), ("backend", "both"), ("dry_run", "true")];
+                all.extend(args.iter().copied());
+                let (code, out) = run(verb, &all);
+                assert_eq!(code, 1, "{verb} {args:?}: {out}");
+                assert_eq!(
+                    out["error"]["code"],
+                    format!("cron.{verb}_invalid_argument")
+                );
+                assert_eq!(out["error"]["field"], field, "{verb} {args:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn list_argument_errors() {
+        for (key, value) in [
+            ("timezone", "Not/AZone"),
+            ("now_unix", "-1"),
+            ("now_unix", "253402300800"),
+            ("now_unix", "tomorrow"),
+        ] {
+            let (code, out) = run("list", &[(key, value)]);
+            assert_eq!(code, 1, "{key}={value}");
+            let msg = out["cli_error"].as_str().unwrap();
+            assert!(
+                msg.starts_with(&format!("cron.list_invalid_argument: {key}={value}")),
+                "{msg}"
+            );
+        }
     }
 }

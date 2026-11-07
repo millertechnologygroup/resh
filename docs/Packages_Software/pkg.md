@@ -46,9 +46,9 @@ resh pkg://system.install 'input={"manager":"auto","packages":[{"name":"curl"}]}
 | `remove`         | Remove packages, optionally purging configuration and unused dependencies | `manager`, `packages` (array of `{name}`) |
 | `update`         | Refresh the index and by default upgrade all or the listed packages; `check_only` only reports; `security_only` with dnf/yum only (see 4.4) | `manager` |
 | `upgrade`        | Upgrade all or the listed packages; `check_only` only reports; `security_only` with dnf only (see 4.4) | `manager` |
-| `info`           | Details for named packages | `manager`, `packages` (array of names) |
+| `info`           | Details for named packages; `include_repo: false` sets `repository` to null | `manager`, `packages` (array of names) |
 | `search`         | Search the package index | `manager`, `query` |
-| `list_installed` | List installed packages, optionally filtered and paginated | `manager` |
+| `list_installed` | List installed packages, optionally filtered and paginated; `include_versions: false` sets `version` to null | `manager` |
 | `snapshot`       | Capture the installed package set as a lockfile (JSON, YAML or text) | `manager` |
 | `restore`        | Install / remove packages so the host matches a lockfile (best effort, see 3.4) | `manager`, `lockfile` (lockfile content as a string) |
 | `apply_lock`     | Alias for `restore` | same as `restore` |
@@ -75,7 +75,9 @@ resh pkg://system.install 'input={"manager":"auto","packages":[{"name":"curl"},{
 resh pkg://system.install 'input={"manager":"apt","packages":[{"name":"jq","version":"1.7.1-3build1"}]}'
 ```
 
-Version pinning is passed to apt (`name=version`), dnf/yum (`name-version`) and apk (`name=version`). With pacman a version is rejected; with brew it is ignored. The `source` field of a package entry is accepted but not used.
+Version pinning is passed to apt (`name=version`), dnf/yum (`name-version`) and apk (`name=version`). With pacman a version is rejected; with brew it is ignored.
+
+A package entry may not have a `source` field (`install` and `remove`). No manager backend can take a package from a given source; packages always come from the manager's configured repositories. So a request with `source` set is refused before anything runs, dry run included: `Error: ... source="..." is not supported by pkg for any manager ...`, exit 1. Before this release `source` was silently ignored.
 
 #### Remove Package (Dry Run)
 
@@ -152,7 +154,10 @@ Every verb enforces `timeout_ms` (a key inside the JSON) as a wall-clock limit o
 * With `allow_newer` (default `true`) a newer installed version is kept.
 * Packages installed on the host but not in the lockfile are listed in `extra`, or **removed** when `allow_removals` is `true`. Use this with care: on a full system it removes every package missing from the lockfile.
 * `mode` (`exact` / `best_effort`) is echoed in the output but does not change the plan.
-* `on_repo_mismatch` and `include_dependencies` are accepted but have no effect on restore; `extra_args` is not passed to the restore commands.
+* `include_dependencies` (default `true`): with `false`, locked packages whose `install_reason` is `dependency` are left out of the plan. They are not installed, kept, upgraded or removed (not even with `allow_removals`), and are listed in `plan.skipped_dependencies`. A lockfile without install reasons cannot be filtered: a text lockfile, or a snapshot taken with `include_install_reason: false`. Such packages stay in the plan and a warning names them.
+* `on_repo_mismatch` (`fail` / `warn` / `ignore`, default `warn`) compares each locked package's recorded `repository` with the host's repository for that package. The host side is looked up with the same query `snapshot` uses, so both sides have the same form. The host repository is only known for installed packages. A mismatch makes `fail` refuse the restore before anything runs, dry run included (`Error: Repository mismatch: ...`, exit 1). With `warn` it adds a warning; `ignore` skips the check. With `fail` and `warn`, packages that cannot be compared are reported in warnings rather than passed silently: no repository in the lockfile, not installed on the host, or a host repository that could not be determined. Packages left out by `include_dependencies: false` are not checked. With apt, `snapshot` records the archive and component of the first `apt-cache policy` source line (such as `noble/main`). For an installed package that line can be the priority `500` instead, so the comparison is only as precise as that value.
+* `extra_args` is not passed to the restore commands.
+* The output has a `warnings` list (empty when there is nothing to report).
 * `on_platform_mismatch: "fail"` rejects a lockfile whose OS name or architecture differs from the host.
 * `on_missing_package: "fail"` makes the restore fail if any package is `unresolved`.
 
@@ -264,7 +269,7 @@ Representative `snapshot` output (abbreviated; the `lockfile` field holds the fu
 
 ### 4.5 System Information
 
-`info`, `list_installed` and `snapshot` can report installed and candidate versions, architecture, repository, installation reason, OS metadata and the manager version, depending on the manager and the `include_*` keys.
+`info`, `list_installed` and `snapshot` can report installed and candidate versions, architecture, repository, installation reason, OS metadata and the manager version, depending on the manager and the `include_*` keys. `info` with `include_repo: false` and `list_installed` with `include_versions: false` keep the `repository` / `version` key and set it to null. `snapshot` accepts an `inline` key (default `true`) that has no effect: nothing defines what it should do, and the lockfile is always returned in the `lockfile` field.
 
 ---
 
