@@ -27,6 +27,13 @@ impl Status {
         }
     }
 
+    /// A failure with a stable error code, reported on stderr in the
+    /// project-wide format `Error: [<handle>.<code>] <message>` (see
+    /// [`error_line`]). `exit` follows the 0/1/2/124 convention.
+    pub fn coded(exit: i32, code: &str, message: impl AsRef<str>) -> Self {
+        Self::err(exit, format!("[{code}] {}", message.as_ref()))
+    }
+
     pub fn is_success(&self) -> bool {
         self.ok
     }
@@ -41,6 +48,93 @@ impl Status {
         match self.code {
             Some(c) if (1..=255).contains(&c) => c,
             _ => 1,
+        }
+    }
+}
+
+/// Exit codes shared by every handle.
+pub mod exit {
+    /// The operation failed: not found, refused by the system, a backend or
+    /// tool error, or a partial failure.
+    pub const FAILED: i32 = 1;
+    /// Invalid usage or arguments; nothing was done.
+    pub const USAGE: i32 = 2;
+    /// The deadline passed, or the outcome is unknown.
+    pub const TIMEOUT: i32 = 124;
+}
+
+/// The project-wide stderr error line: `Error: [<handle>.<code>] <message>`.
+/// Codes are lowercase snake_case, prefixed with the handle name
+/// (`fs.not_mounted`, `file.not_found`), and documented per handle.
+pub fn error_line(code: &str, message: &str) -> String {
+    format!("Error: [{code}] {message}")
+}
+
+/// The project-wide JSON error object, `{"code": ..., "message": ...}`, for
+/// results that report failures in their JSON output (as `"error"`).
+pub fn error_json(code: &str, message: &str) -> Value {
+    serde_json::json!({ "code": code, "message": message })
+}
+
+/// True if `code` has the required form: `<handle>.<name>`, both parts
+/// lowercase ASCII letters, digits and underscores, starting with a letter.
+pub fn is_valid_error_code(code: &str) -> bool {
+    let part = |s: &str| {
+        s.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && s.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+    match code.split_once('.') {
+        Some((handle, name)) => part(handle) && !name.is_empty() && name.split('.').all(part),
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod error_format_tests {
+    use super::*;
+
+    #[test]
+    fn coded_status_prints_the_standard_line() {
+        let st = Status::coded(exit::USAGE, "fs.invalid_argument", "bad by=x");
+        assert_eq!(st.exit_code(), 2);
+        let mut out = Vec::new();
+        report_failure(&st, false, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "Error: [fs.invalid_argument] bad by=x\n"
+        );
+        assert_eq!(
+            error_line("fs.not_mounted", "nothing at /mnt"),
+            "Error: [fs.not_mounted] nothing at /mnt"
+        );
+        assert_eq!(
+            error_json("file.not_found", "x"),
+            serde_json::json!({"code": "file.not_found", "message": "x"})
+        );
+    }
+
+    #[test]
+    fn error_code_form() {
+        for ok in [
+            "fs.not_mounted",
+            "archive.extract_max_size_exceeded",
+            "dns.zone_update_timeout",
+            "cert.signer_load_failed",
+        ] {
+            assert!(is_valid_error_code(ok), "{ok}");
+        }
+        for bad in [
+            "NOT_FOUND",
+            "fs",
+            "fs.",
+            ".x",
+            "Fs.x",
+            "fs.Not",
+            "fs.not-mounted",
+            "fs.1x",
+        ] {
+            assert!(!is_valid_error_code(bad), "{bad}");
         }
     }
 }
