@@ -156,6 +156,7 @@ pub struct ConfigHandle {
 
 /// Every error code the handle can emit (`Error: [<code>] <message>`); each
 /// is documented in docs/Data_StateManagement/config.md.
+#[cfg(test)]
 pub const ERROR_CODES: &[&str] = &[
     "config.not_found",
     "config.corrupt_value",
