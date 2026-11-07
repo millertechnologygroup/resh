@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (mq, event,
+  `<handle>.invalid_argument`. Handles not yet aligned ( event,
   log, proc, svc, cron, firewall, user, pkg, system, cert, backup,
   plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
@@ -131,6 +131,22 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   0.8.6 with rustls 0.23; fails closed); PostgreSQL binds strings as `text`,
   so placeholders need casts; MySQL shows binary-collation text and binary
   data alike (UTF-8 as text, else base64).
+
+### mq
+
+- Strict arguments (exit 2, `mq.invalid_argument`), exit codes 0/1/2/124 and
+  `[mq.<code>]` errors. Breaking: `get`/`peek` on an empty queue exit 1 with
+  `mq.empty` (was 2). Queue names must be 1-120 letters, digits, '.', '-',
+  '_' (not starting with '.'); other targets such as `mq://team/a` are
+  refused (`mq.invalid_target`) instead of being rewritten to a shared name.
+- Concurrent producers and consumers are safe: messages are written in
+  `.tmp/` and numbered under an flock, so no partial reads, lost or
+  duplicated messages, and FIFO order no longer depends on the clock. `get`
+  puts a message back if it cannot write it to stdout.
+- `put`, `get` and `purge` take `timeout_ms` (wait for the queue lock;
+  default no limit; exit 124); `len`, `peek` and `create` refuse it.
+- Queue files are owner-only (0700/0600); no `/tmp` fallback; symlinks are
+  refused. `len`/`peek`/`get`/`purge` no longer create missing queues.
 
 ### http and https
 
