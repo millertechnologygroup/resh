@@ -1,0 +1,60 @@
+Handle: ssh
+Verb: download
+Definition: Copies a remote file through the system ssh client into a temporary
+  file next to the local dest and renames it into place, or only returns the
+  content when dest_mode=none.
+
+Usage:
+  resh ssh://[user@]host[:port].download source=<remote-path>
+    [dest=<local-path>] [dest_mode=file|none] [return_content=true|false]
+    [return_encoding=utf8|base64] [overwrite=true|false]
+    [mkdir_parents=true|false] [max_size_bytes=<n>]
+    [verify_checksum=true|false] [checksum_algorithm=sha256|sha1|md5]
+    [transfer_timeout_ms=<ms>] [host=<host>] [port=<n>]
+    [username=<name>] [auth_method=auto|key|agent|password]
+    [password=<pw>] [identity_path=<file>] [identity_data=<key>]
+    [identity_passphrase=<pp>] [agent_socket=<path>]
+    [known_hosts_mode=strict|accept-new|insecure] [known_hosts_path=<file>]
+    [connect_timeout_ms=<ms>] [timeout_ms=<ms>] [dry_run=true|false]
+    [format=json|text]
+
+Example:
+  resh ssh://alice@web01.download source=/etc/hosts dest=hosts dry_run=true
+
+Example Output:
+  {
+    "ok": true,
+    "dry_run": true,
+    "connection": {
+      "host": "web01",
+      "port": 22,
+      "username": "alice",
+      "backend": "system"
+    },
+    "source": {
+      "path": "/etc/hosts"
+    },
+    "dest": {
+      "mode": "file",
+      "path": "hosts",
+      "overwrite": false,
+      "mkdir_parents": true
+    },
+    "result": {
+      "downloaded": false,
+      "planned": true,
+      "return_content": true,
+      "return_encoding": "utf8",
+      "verify_checksum": false,
+      "checksum_algorithm": "sha256"
+    },
+    "warnings": [
+      "Dry run: no SSH connection was made and no file was downloaded."
+    ]
+  }
+
+  Printed as indented JSON in field order; --json-pretty sorts the keys.
+  dest is required when dest_mode=file (the default) and refused when
+  dest_mode=none. The local dest is left untouched when the transfer, the size
+  limit, or verify_checksum=true fails, and an existing dest is replaced only
+  with overwrite=true.

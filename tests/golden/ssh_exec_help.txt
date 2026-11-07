@@ -1,0 +1,57 @@
+Handle: ssh
+Verb: exec
+Definition: Runs a command on the remote host through the system ssh client and
+  reports its exit code, stdout, and stderr as JSON.
+
+Usage:
+  resh ssh://[user@]host[:port].exec command=<cmd>
+    [command_args=<a,b,...>] [shell_mode=none|sh|bash|cmd|powershell]
+    [env=<NAME=value,...>] [cwd=<dir>] [allocate_pty=true|false]
+    [command_timeout_ms=<ms>] [max_output_bytes=<n>]
+    [trim_trailing_newlines=true|false] [capture_output=true|false]
+    [output_encoding=utf8|base64] [host=<host>] [port=<n>]
+    [username=<name>] [auth_method=auto|key|agent|password]
+    [password=<pw>] [identity_path=<file>] [identity_data=<key>]
+    [identity_passphrase=<pp>] [agent_socket=<path>]
+    [known_hosts_mode=strict|accept-new|insecure] [known_hosts_path=<file>]
+    [connect_timeout_ms=<ms>] [timeout_ms=<ms>] [dry_run=true|false]
+    [format=json|text]
+
+Example:
+  resh --json-pretty ssh://alice@192.0.2.10.exec command=hostname
+
+Example Output:
+  {
+    "command": {
+      "allocate_pty": false,
+      "cwd": null,
+      "raw": "hostname",
+      "shell_mode": "none"
+    },
+    "connection": {
+      "backend": "system",
+      "host": "192.0.2.10",
+      "port": 22,
+      "username": "alice"
+    },
+    "dry_run": false,
+    "ok": true,
+    "result": {
+      "executed": true,
+      "exit_code": 0,
+      "output_truncated": false,
+      "signal": null,
+      "stderr": null,
+      "stdout": "web01",
+      "timed_out": false
+    },
+    "timing": {
+      "command_ms": 412,
+      "connect_ms": 0
+    }
+  }
+
+  Shown with --json-pretty. A non-zero remote exit code gives ok false,
+  error.code ssh.remote_exit_nonzero and exit status 1 (the remote code is in
+  result.exit_code); command_timeout_ms (default 60000) stops the remote
+  command and exits 124.

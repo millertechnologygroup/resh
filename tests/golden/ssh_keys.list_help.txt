@@ -1,0 +1,69 @@
+Handle: ssh
+Verb: keys.list
+Definition: Reads authorized_keys, host key, or other public key files on the
+  remote host over ssh and reports each key's type, fingerprint, comment, and
+  options.
+
+Usage:
+  resh ssh://user@host[:port].keys.list [scope=authorized|host|custom]
+    [authorized_user=<name>] [authorized_paths=<path,...>]
+    [host_key_paths=<path,...>] [custom_paths=<path,...>]
+    [key_types=<rsa,ecdsa,ed25519,dsa>] [fingerprint_algorithm=sha256|md5]
+    [include_options=true|false] [include_raw_key=true|false]
+    [max_keys=<n>] [max_bytes=<n>] [read_timeout_ms=<ms>]
+    [host=<host>] [port=<n>] [username=<name>]
+    [auth_method=auto|key|agent|password] [password=<pw>]
+    [identity_path=<file>] [identity_data=<key>] [identity_passphrase=<pp>]
+    [agent_socket=<path>] [known_hosts_mode=strict|accept-new|insecure]
+    [known_hosts_path=<file>] [connect_timeout_ms=<ms>] [timeout_ms=<ms>]
+    [dry_run=true|false] [format=json|text]
+
+Example:
+  resh --json-pretty ssh://alice@192.0.2.10.keys.list include_raw_key=false
+
+Example Output:
+  {
+    "connection": {
+      "backend": "system",
+      "host": "192.0.2.10",
+      "port": 22,
+      "username": "alice"
+    },
+    "dry_run": false,
+    "files": [
+      {
+        "exists": true,
+        "keys": [
+          {
+            "bits": 256,
+            "comment": "alice@laptop",
+            "fingerprint": "SHA256:3xDjK+bg/gX0dncBKmABpUGbcOI6xx9mMC3MDjssIBU",
+            "fingerprint_algorithm": "sha256",
+            "index": 0,
+            "source_line": 1,
+            "type": "ed25519",
+            "type_raw": "ssh-ed25519"
+          }
+        ],
+        "path": "/home/alice/.ssh/authorized_keys",
+        "readable": true,
+        "size_bytes": 94
+      },
+      {
+        "exists": false,
+        "path": "/home/alice/.ssh/authorized_keys2",
+        "readable": false
+      }
+    ],
+    "ok": true,
+    "scope": "authorized",
+    "summary": {
+      "matched_keys": 1,
+      "total_keys": 1,
+      "truncated": false
+    }
+  }
+
+  Shown with --json-pretty. A missing file is reported with exists false and
+  is not an error; a file that exists but cannot be read exits 1 with
+  ssh.keys_list_remote_read_failed.

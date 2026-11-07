@@ -1,0 +1,43 @@
+Handle: ssh
+
+Description:
+  The ssh handle runs commands, copies files, lists and adds public keys,
+  forwards ports, and checks connections on remote hosts through the system ssh
+  client (with sshpass for password logins), and reads the local OpenSSH client
+  configuration. The target is written as ssh://[user[:password]@]host[:port]
+  followed by a dot and the verb, such as ssh://alice@192.0.2.10.exec. Every
+  verb validates all of its arguments before connecting, supports dry_run=true,
+  and exits 0 on success, 1 on failure, 2 for invalid arguments, and 124 on a
+  timeout.
+
+Available Verbs:
+  exec         Runs a command on the remote host through the system ssh client
+               and reports its exit code, stdout, and stderr as JSON.
+  upload       Copies a local file or inline data to a remote path by piping it
+               into a remote POSIX shell over ssh, writing a temporary file and
+               renaming it into place when atomic=true.
+  download     Copies a remote file through the system ssh client into a
+               temporary file next to the local dest and renames it into place,
+               or only returns the content when dest_mode=none.
+  test         Checks through the system ssh client that the host is reachable
+               (connect), that the login works (auth), that exec_command exits
+               with 0 (exec), that the SFTP subsystem answers (sftp), and that
+               the host key is known and matches (hostkey).
+  config.get   Parses the local OpenSSH client config files and reports the
+               settings that apply to a host (the URL host or host=), using
+               OpenSSH's first-match rules.
+  keys.list    Reads authorized_keys, host key, or other public key files on the
+               remote host over ssh and reports each key's type, fingerprint,
+               comment, and options.
+  key.add      Adds an OpenSSH public key to a remote authorized_keys (or
+               another) file over ssh, skipping, refusing, or replacing a key
+               that is already present.
+  tunnel       Runs a local, remote, or dynamic (SOCKS) port forward through the
+               system ssh client until a limit, a timeout, or an interrupt ends
+               it, and reports the traffic it carried.
+
+Usage:
+  resh ssh://[user@]host[:port].<verb> [key=value ...]
+
+For help with a specific verb:
+  resh ssh <verb> --help

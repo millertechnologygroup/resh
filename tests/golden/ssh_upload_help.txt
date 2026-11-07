@@ -1,0 +1,60 @@
+Handle: ssh
+Verb: upload
+Definition: Copies a local file or inline data to a remote path by piping it
+  into a remote POSIX shell over ssh, writing a temporary file and renaming it
+  into place when atomic=true.
+
+Usage:
+  resh ssh://[user@]host[:port].upload source=<path|data> dest=<path>
+    [source_mode=file|inline] [source_encoding=utf8|base64]
+    [overwrite=true|false] [atomic=true|false] [mkdir_parents=true|false]
+    [file_mode=<0644>] [preserve_times=true|false] [mtime_epoch_ms=<ms>]
+    [max_size_bytes=<n>] [verify_checksum=true|false]
+    [checksum_algorithm=sha256|sha1|md5] [transfer_timeout_ms=<ms>]
+    [host=<host>] [port=<n>] [username=<name>]
+    [auth_method=auto|key|agent|password] [password=<pw>]
+    [identity_path=<file>] [identity_data=<key>] [identity_passphrase=<pp>]
+    [agent_socket=<path>] [known_hosts_mode=strict|accept-new|insecure]
+    [known_hosts_path=<file>] [connect_timeout_ms=<ms>] [timeout_ms=<ms>]
+    [dry_run=true|false] [format=json|text]
+
+Example:
+  resh ssh://alice@web01.upload source=app.conf dest=/srv/app.conf dry_run=true
+
+Example Output:
+  {
+    "ok": true,
+    "dry_run": true,
+    "connection": {
+      "host": "web01",
+      "port": 22,
+      "username": "alice",
+      "backend": "system"
+    },
+    "source": {
+      "mode": "file",
+      "path": "app.conf",
+      "size_bytes": 512
+    },
+    "dest": {
+      "path": "/srv/app.conf",
+      "overwrite": false,
+      "atomic": true,
+      "mkdir_parents": true,
+      "size_bytes": 512
+    },
+    "result": {
+      "uploaded": false,
+      "planned": true,
+      "verify_checksum": false,
+      "checksum_algorithm": "sha256"
+    },
+    "warnings": [
+      "Dry run: no SSH connection was made and no file was uploaded."
+    ]
+  }
+
+  Printed as indented JSON in field order; --json-pretty sorts the keys.
+  A refused overwrite returns ssh.upload_dest_exists and a missing directory
+  with mkdir_parents=false returns ssh.upload_remote_dir_missing; an
+  interrupted transfer never leaves a partial file at dest when atomic=true.

@@ -905,7 +905,7 @@ fn ssh_exec_refuses_ambiguous_windows_arguments_and_unknown_modes() {
                 a.push("dry_run=true");
             }
             let r = ssh_exec(&f, &a);
-            assert_eq!(r.code, 1, "{extra:?}: {}", r.stdout);
+            assert_eq!(r.code, 2, "{extra:?}: {}", r.stdout);
             assert_eq!(r.json["ok"], false, "{extra:?}");
             assert!(f.calls().is_empty(), "{extra:?}: ssh ran");
         }
@@ -935,9 +935,9 @@ fn ssh_exec_refusals_report_the_requested_mode() {
                 "command=dir",
                 "command_args=resh probe marker",
             ],
-            "COMMAND_ERROR",
+            "ssh.command_refused",
         ),
-        (&["shell_mode=zsh", "command=ls"], "PARSE_ERROR"),
+        (&["shell_mode=zsh", "command=ls"], "ssh.invalid_argument"),
     ];
     for (extra, code) in cases {
         for dry in [true, false] {
@@ -945,7 +945,7 @@ fn ssh_exec_refusals_report_the_requested_mode() {
             let mut a: Vec<&str> = extra.to_vec();
             a.push(if dry { "dry_run=true" } else { "dry_run=false" });
             let r = ssh_exec(&f, &a);
-            assert_eq!(r.code, 1, "{extra:?}: {}", r.stdout);
+            assert_eq!(r.code, 2, "{extra:?}: {}", r.stdout);
             assert_eq!(r.json["ok"], false, "{extra:?}");
             assert_eq!(r.json["dry_run"], dry, "{extra:?}: {}", r.stdout);
             assert_eq!(r.json["result"]["executed"], false, "{extra:?}");
@@ -965,10 +965,10 @@ fn ssh_exec_subprocess_failures_are_reported() {
     let f = Fixture::new();
     std::fs::remove_dir(f.remote()).unwrap();
     let r = ssh_exec(&f, &["command=true"]);
-    assert_eq!(r.code, 255, "{}", r.stdout);
+    assert_eq!(r.code, 1, "{}", r.stdout);
     assert_eq!(r.json["ok"], false);
     assert_eq!(r.json["dry_run"], false);
-    assert_eq!(r.json["error"]["code"], "SSH_FAILED");
+    assert_eq!(r.json["error"]["code"], "ssh.ssh_failed");
     assert_eq!(r.json["result"]["exit_code"], 255);
     assert_eq!(f.calls().len(), 1);
 

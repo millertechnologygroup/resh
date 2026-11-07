@@ -1,0 +1,59 @@
+Handle: ssh
+Verb: key.add
+Definition: Adds an OpenSSH public key to a remote authorized_keys (or another)
+  file over ssh, skipping, refusing, or replacing a key that is already present.
+
+Usage:
+  resh ssh://user@host[:port].key.add public_key=<key-line>
+    [public_key_source=inline|file] [public_key_path=<file>]
+    [scope=authorized|custom] [authorized_user=<name>]
+    [authorized_paths=<path>] [custom_paths=<path>]
+    [on_duplicate=skip|error|replace] [create_if_missing=true|false]
+    [backup_existing=true|false] [backup_suffix=<suffix>]
+    [ensure_permissions=true|false] [file_mode=<0600>] [dir_mode=<0700>]
+    [max_file_bytes=<n>] [read_timeout_ms=<ms>] [write_timeout_ms=<ms>]
+    [host=<host>] [port=<n>] [username=<name>]
+    [auth_method=auto|key|agent|password] [password=<pw>]
+    [identity_path=<file>] [identity_data=<key>] [identity_passphrase=<pp>]
+    [agent_socket=<path>] [known_hosts_mode=strict|accept-new|insecure]
+    [known_hosts_path=<file>] [connect_timeout_ms=<ms>] [timeout_ms=<ms>]
+    [dry_run=true|false] [format=json|text]
+
+Example:
+  resh --json-pretty ssh://bob@web01.key.add public_key_path=id.pub dry_run=true
+
+Example Output:
+  {
+    "connection": {
+      "backend": "system",
+      "host": "web01",
+      "port": 22,
+      "username": "bob"
+    },
+    "dry_run": true,
+    "key": {
+      "comment": "bob@laptop",
+      "fingerprint": "SHA256:3xDjK+bg/gX0dncBKmABpUGbcOI6xx9mMC3MDjssIBU",
+      "fingerprint_algorithm": "sha256",
+      "type": "ed25519",
+      "type_raw": "ssh-ed25519"
+    },
+    "ok": true,
+    "operation": {
+      "backup_created": false,
+      "created_file": false,
+      "duplicates_found": 0,
+      "on_duplicate": "skip",
+      "status": "dry_run"
+    },
+    "scope": "authorized",
+    "target_file": "~bob/.ssh/authorized_keys",
+    "warnings": [
+      "Dry run: no SSH connection was made and no file was changed."
+    ]
+  }
+
+  Shown with --json-pretty. public_key_path is read from the local machine and
+  implies public_key_source=file. Without dry_run the file is replaced
+  atomically (with a .bak backup by default) and status is added,
+  already_present, or replaced.

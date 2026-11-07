@@ -1,0 +1,71 @@
+Handle: ssh
+Verb: tunnel
+Definition: Runs a local, remote, or dynamic (SOCKS) port forward through the
+  system ssh client until a limit, a timeout, or an interrupt ends it, and
+  reports the traffic it carried.
+
+Usage:
+  resh ssh://user@host[:port].tunnel mode=local|remote|dynamic
+    [local_bind_host=<addr>] [local_bind_port=<n>]
+    [remote_bind_host=<addr>] [remote_bind_port=<n>]
+    [remote_dest_host=<host>] [remote_dest_port=<n>]
+    [local_dest_host=<host>] [local_dest_port=<n>]
+    [socks_version=socks5|socks4] [allow_wildcard_binds=true|false]
+    [tunnel_timeout_ms=<ms>] [idle_timeout_ms=<ms>]
+    [max_connections=<n>] [max_bytes_in=<n>] [max_bytes_out=<n>]
+    [host=<host>] [port=<n>] [username=<name>]
+    [auth_method=auto|key|agent|password] [password=<pw>]
+    [identity_path=<file>] [identity_data=<key>] [identity_passphrase=<pp>]
+    [agent_socket=<path>] [known_hosts_mode=strict|accept-new|insecure]
+    [known_hosts_path=<file>] [connect_timeout_ms=<ms>] [timeout_ms=<ms>]
+    [dry_run=true|false] [format=json|text]
+
+Example:
+  resh ssh://alice@bastion.tunnel mode=dynamic local_bind_port=1080 dry_run=true
+
+Example Output:
+  {
+    "ok": true,
+    "dry_run": true,
+    "connection": {
+      "host": "bastion",
+      "port": 22,
+      "username": "alice",
+      "backend": "system"
+    },
+    "tunnel": {
+      "mode": "dynamic",
+      "local_bind_host": "127.0.0.1",
+      "local_bind_port": 1080,
+      "remote_bind_host": null,
+      "remote_bind_port": null,
+      "remote_dest_host": null,
+      "remote_dest_port": null,
+      "local_dest_host": null,
+      "local_dest_port": null,
+      "socks_version": "socks5"
+    },
+    "lifetime": {
+      "connect_timeout_ms": 10000,
+      "tunnel_timeout_ms": null,
+      "idle_timeout_ms": 300000,
+      "max_connections": null,
+      "max_bytes_in": null,
+      "max_bytes_out": null,
+      "closed_reason": null
+    },
+    "stats": {
+      "connections_accepted": 0,
+      "bytes_in": 0,
+      "bytes_out": 0,
+      "uptime_ms": 0
+    },
+    "warnings": [
+      "Dry run: no SSH connection was made and no tunnel was created."
+    ]
+  }
+
+  Printed as indented JSON in field order; --json-pretty sorts the keys.
+  Without dry_run a one-line "ready" event is printed when the forward is up
+  and this report when it closes (closed_reason: tunnel_timeout, idle_timeout,
+  max_connections, max_bytes_in, max_bytes_out, or interrupted).

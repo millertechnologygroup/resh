@@ -1,0 +1,78 @@
+Handle: ssh
+Verb: config.get
+Definition: Parses the local OpenSSH client config files and reports the
+  settings that apply to a host (the URL host or host=), using OpenSSH's
+  first-match rules.
+
+Usage:
+  resh ssh://<host>.config.get [host=<name>] [user_config_path=<path>]
+    [system_config_path=<path>] [extra_config_paths=<path,...>]
+    [follow_includes=true|false] [include_raw_entries=true|false]
+    [include_origin=true|false] [user_home=<dir>]
+    [max_config_bytes=<n>] [max_includes=<n>] [max_hosts=<n>]
+    [dry_run=true|false] [format=json|text]
+
+Example:
+  resh ssh://web01.config.get user_config_path=cfg system_config_path=/dev/null
+
+Example Output:
+  {
+    "ok": true,
+    "dry_run": false,
+    "host": "web01",
+    "sources": {
+      "extra_config_paths": [],
+      "follow_includes": true,
+      "system_config_path": "/dev/null",
+      "user_config_path": "cfg"
+    },
+    "effective": {
+      "HostName": {
+        "value": "192.0.2.10",
+        "origin": {
+          "file": "cfg",
+          "line": 2,
+          "block": "Host web01"
+        }
+      },
+      "User": {
+        "value": "alice",
+        "origin": {
+          "file": "cfg",
+          "line": 3,
+          "block": "Host web01"
+        }
+      }
+    },
+    "raw_entries": [
+      {
+        "file": "cfg",
+        "line": 2,
+        "block_type": "Host",
+        "block_pattern": "web01",
+        "option": "HostName",
+        "value": "192.0.2.10"
+      },
+      {
+        "file": "cfg",
+        "line": 3,
+        "block_type": "Host",
+        "block_pattern": "web01",
+        "option": "User",
+        "value": "alice"
+      }
+    ],
+    "summary": {
+      "total_files": 2,
+      "total_entries": 2,
+      "matched_blocks": [
+        "Host web01 (cfg:1)"
+      ],
+      "truncated": false
+    }
+  }
+
+  Printed as indented JSON in field order for a file cfg holding HostName and
+  User under Host web01 (/dev/null stands in for an empty system config). The
+  first value obtained for an option wins, as in ssh; include_raw_entries=false
+  drops raw_entries.
