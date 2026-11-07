@@ -106,8 +106,14 @@ static FS_HELP: HandleHelp = HandleHelp {
                 options and read-only, pseudo, network, and loop flags, as JSON.",
             detail: Some(VerbDetail {
                 usage: "resh fs://<alias>.list-mounts [paths=<path,...>]\n  \
-                    [include_pseudo=true|false] [include_readonly=true|false]\n  \
-                    [include_types=<type,...>] [exclude_types=<type,...>]",
+                    [include_readonly=true|false] [include_readwrite=true|false]\n  \
+                    [include_pseudo=true|false] [include_loop=true|false]\n  \
+                    [include_network=true|false] [normalize_paths=true|false]\n  \
+                    [resolve_labels=true|false] [resolve_fs_features=true|false]\n  \
+                    [include_mountpoints=<path,...>] [exclude_mountpoints=<path,...>]\n  \
+                    [include_types=<type,...>] [exclude_types=<type,...>]\n  \
+                    [include_sources=<source,...>] [exclude_sources=<source,...>]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty fs://local.list-mounts",
                 example_output: Some(
                     r#"{
@@ -155,9 +161,16 @@ comma-separated values, for example include_types=ext4,xfs."#,
             definition: "Reports size, used, and free space and inode counts for each \
                 mounted filesystem, or an aggregate total, as JSON.",
             detail: Some(VerbDetail {
-                usage: "resh fs://<alias>.usage [mode=mounts|paths|aggregate]\n  \
-                    [paths=<path,...>] [include_inodes=true|false]\n  \
-                    [units=auto|bytes|kilobytes|megabytes|gigabytes|blocks]",
+                usage: "resh fs://<alias>.usage [mode=mounts|paths|aggregate] [paths=<path,...>]\n  \
+                    [units=auto|bytes|kilobytes|megabytes|gigabytes|blocks]\n  \
+                    [human_readable=true|false] [include_inodes=true|false]\n  \
+                    [include_readonly=true|false] [normalize_paths=true|false]\n  \
+                    [threshold_used_percent_min=<0-100>]\n  \
+                    [threshold_used_percent_max=<0-100>]\n  \
+                    [include_mountpoints=<path,...>] [exclude_mountpoints=<path,...>]\n  \
+                    [include_types=<type,...>] [exclude_types=<type,...>]\n  \
+                    [include_sources=<source,...>] [exclude_sources=<source,...>]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty fs://local.usage units=megabytes",
                 example_output: Some(
                     r#"{
@@ -208,7 +221,14 @@ and listed in a warnings array."#,
             definition: "Captures the current mount table, with usage and filesystem \
                 metadata, as a deterministic fs-lock/v1 lockfile string.",
             detail: Some(VerbDetail {
-                usage: "resh fs://<alias>.snapshot [format=json|yaml|text]",
+                usage: "resh fs://<alias>.snapshot [format=json|yaml|text]\n  \
+                    [include_usage=true|false] [include_inodes=true|false]\n  \
+                    [include_fs_metadata=true|false] [include_os_metadata=true|false]\n  \
+                    [normalize_paths=true|false]\n  \
+                    [include_mountpoints=<path,...>] [exclude_mountpoints=<path,...>]\n  \
+                    [include_types=<type,...>] [exclude_types=<type,...>]\n  \
+                    [include_sources=<source,...>] [exclude_sources=<source,...>]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty fs://local.snapshot format=json",
                 example_output: Some(
                     r#"{
@@ -244,7 +264,10 @@ format=yaml currently produces the same JSON text as format=json."#,
                 user, group, or project on the filesystem holding a path, using the quota tool.",
             detail: Some(VerbDetail {
                 usage: "resh fs://<alias>.quota [path=<path>] [subject=<name-or-id>]\n  \
-                    [subject_type=auto|user|group|project] [units=auto|blocks|bytes]",
+                    [subject_type=auto|user|group|project] [all_subjects=true|false]\n  \
+                    [units=auto|blocks|bytes] [include_space=true|false]\n  \
+                    [include_inodes=true|false] [include_grace=true|false]\n  \
+                    [resolve_uid_gid=true|false] [timeout_ms=<ms>]",
                 example: "resh --json-pretty fs://local.quota path=/home subject=alice",
                 example_output: Some(
                     r#"{
@@ -303,7 +326,14 @@ and without subject the current user is queried."#,
                 all mounted filesystems, listing filesystems without quotas separately.",
             detail: Some(VerbDetail {
                 usage: "resh fs://<alias>.quota_summary [subject=<name-or-id>]\n  \
-                    [subject_type=auto|user|group|project] [units=auto|blocks|bytes]",
+                    [subject_type=auto|user|group|project] [all_subjects=true|false]\n  \
+                    [units=auto|blocks|bytes] [include_space=true|false]\n  \
+                    [include_inodes=true|false] [include_grace=true|false]\n  \
+                    [resolve_uid_gid=true|false]\n  \
+                    [include_mountpoints=<path,...>] [exclude_mountpoints=<path,...>]\n  \
+                    [include_types=<type,...>] [exclude_types=<type,...>]\n  \
+                    [include_sources=<source,...>] [exclude_sources=<source,...>]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty fs://local.quota_summary subject=alice",
                 example_output: Some(
                     r#"{
@@ -393,7 +423,7 @@ Shown with --json-pretty, trimmed to one filesystem in each list."#,
                     [bind=true|false] [remount=true|false] [network=true|false]\n  \
                     [create_target=true|false] [make_parents=true|false]\n  \
                     [fail_if_mounted=true|false] [dry_run=true|false] [timeout_ms=<ms>]",
-                example: "resh --json-pretty fs://local.mount target=/mnt/usb source=/dev/sdb1 type=ext4",
+                example: "resh --json-pretty fs://local.mount target=/mnt/data source=/srv/disk.img",
                 example_output: Some(
                     r#"{
   "action": "mounted",
@@ -432,7 +462,7 @@ Shown with --json-pretty. An existing compatible mount returns action
                     [by=target|source|auto] [force=true|false] [lazy=true|false]\n  \
                     [detach_children=true|false] [fail_if_not_mounted=true|false]\n  \
                     [dry_run=true|false] [timeout_ms=<ms>]",
-                example: "resh --json-pretty fs://local.unmount target=/mnt/usb",
+                example: "resh --json-pretty fs://local.unmount target=/mnt/data",
                 example_output: Some(FS_UNMOUNT_EXAMPLE_OUTPUT),
             }),
         },
@@ -444,7 +474,7 @@ Shown with --json-pretty. An existing compatible mount returns action
                     [by=target|source|auto] [force=true|false] [lazy=true|false]\n  \
                     [detach_children=true|false] [fail_if_not_mounted=true|false]\n  \
                     [dry_run=true|false] [timeout_ms=<ms>]",
-                example: "resh --json-pretty fs://local.umount target=/mnt/usb",
+                example: "resh --json-pretty fs://local.umount target=/mnt/data",
                 example_output: Some(FS_UNMOUNT_EXAMPLE_OUTPUT),
             }),
         },
@@ -454,10 +484,15 @@ Shown with --json-pretty. An existing compatible mount returns action
                 absolute size or by a delta using resize2fs, xfs_growfs, or btrfs.",
             detail: Some(VerbDetail {
                 usage: "resh fs://<alias>.resize target=<dir-or-device>\n  \
-                    size=<size>|delta=<+size|-size> [by=auto|mountpoint|device]\n  \
+                    size=<size> | delta=<+size|-size> [by=auto|mountpoint|device]\n  \
+                    [size_units=auto|bytes|kilobytes|megabytes|gigabytes|terabytes]\n  \
                     [mode=grow|shrink|auto] [allow_shrink=true|false]\n  \
-                    [dry_run=true|false]",
-                example: "resh --json-pretty fs://local.resize target=/data size=200G",
+                    [min_free_space_percent=<0-100>]\n  \
+                    [manage_underlying_volume=true|false]\n  \
+                    [volume_resize_only=true|false] [filesystem_resize_only=true|false]\n  \
+                    [require_unmounted_for_shrink=true|false] [force=true|false]\n  \
+                    [dry_run=true|false] [timeout_ms=<ms>]",
+                example: "resh --json-pretty fs://local.resize target=/mnt/data size=2G",
                 example_output: Some(
                     r#"{
   "action": "success",
@@ -513,8 +548,13 @@ for xfs, and needs an unmounted ext3 or ext4 filesystem."#,
                 usage: "resh fs://<alias>.check target=<dir-or-device>\n  \
                     [by=auto|mountpoint|device] [filesystem_type=<fstype>]\n  \
                     [mode=check|repair|auto] [allow_repair=true|false]\n  \
-                    [aggressiveness=safe|normal|aggressive] [dry_run=true|false]",
-                example: "resh --json-pretty fs://local.check target=/dev/sdb1",
+                    [aggressiveness=safe|normal|aggressive] [force=true|false]\n  \
+                    [allow_online_check=true|false]\n  \
+                    [require_unmounted_for_repair=true|false]\n  \
+                    [skip_if_mounted=true|false] [btrfs_use_scrub=true|false]\n  \
+                    [btrfs_allow_offline_check=true|false] [dry_run=true|false]\n  \
+                    [timeout_ms=<ms>]",
+                example: "resh --json-pretty fs://local.check target=/srv/disk.img",
                 example_output: Some(FS_CHECK_EXAMPLE_OUTPUT),
             }),
         },
@@ -525,8 +565,13 @@ for xfs, and needs an unmounted ext3 or ext4 filesystem."#,
                 usage: "resh fs://<alias>.fsck target=<dir-or-device>\n  \
                     [by=auto|mountpoint|device] [filesystem_type=<fstype>]\n  \
                     [mode=check|repair|auto] [allow_repair=true|false]\n  \
-                    [aggressiveness=safe|normal|aggressive] [dry_run=true|false]",
-                example: "resh --json-pretty fs://local.fsck target=/dev/sdb1",
+                    [aggressiveness=safe|normal|aggressive] [force=true|false]\n  \
+                    [allow_online_check=true|false]\n  \
+                    [require_unmounted_for_repair=true|false]\n  \
+                    [skip_if_mounted=true|false] [btrfs_use_scrub=true|false]\n  \
+                    [btrfs_allow_offline_check=true|false] [dry_run=true|false]\n  \
+                    [timeout_ms=<ms>]",
+                example: "resh --json-pretty fs://local.fsck target=/srv/disk.img",
                 example_output: Some(FS_CHECK_EXAMPLE_OUTPUT),
             }),
         },
@@ -5091,18 +5136,20 @@ impl FsHandle {
                 Ok((bsize * blocks, bsize, None))
             }
             "btrfs" => {
-                let at = mountpoint.unwrap_or(source).to_string();
+                // The superblock of the device itself: `btrfs filesystem
+                // show` goes through the blkid cache, which can still name
+                // an earlier filesystem on a reused (loop) device.
                 let text = query(vec![
                     "btrfs".into(),
-                    "filesystem".into(),
-                    "show".into(),
-                    "--raw".into(),
-                    at.clone(),
+                    "inspect-internal".into(),
+                    "dump-super".into(),
+                    "--".into(),
+                    source.to_string(),
                 ])
                 .await?;
-                let (devid, size) =
-                    support::btrfs_device_size(&text, source).ok_or_else(|| unreadable(&at))?;
-                Ok((size, 4096, Some(devid)))
+                let (devid, size, sector) =
+                    support::btrfs_super_geometry(&text).ok_or_else(|| unreadable(source))?;
+                Ok((size, sector, Some(devid)))
             }
             other => Err(FsError::ResizeUnsupportedFilesystem(other.to_string()).into()),
         }
@@ -5129,7 +5176,7 @@ impl FsHandle {
             }
         }
         let mut cmd = tool("blockdev");
-        cmd.args(["--getsize64", "--"]).arg(device);
+        cmd.arg("--getsize64").arg(device);
         let output = run(&mut cmd)
             .await
             .map_err(|e| FsError::ResizeFailed(format!("blockdev: {e}")))?;
@@ -7528,7 +7575,11 @@ mod tests {
         assert!(handle.validate_check_filesystem_support("xfs").is_ok());
         assert!(handle.validate_check_filesystem_support("btrfs").is_ok());
         assert!(handle.validate_check_filesystem_support("vfat").is_ok());
-        assert!(handle.validate_check_filesystem_support("reiserfs").is_err());
+        assert!(
+            handle
+                .validate_check_filesystem_support("reiserfs")
+                .is_err()
+        );
 
         // Test unsupported filesystem
         assert!(handle.validate_check_filesystem_support("zfs").is_err());

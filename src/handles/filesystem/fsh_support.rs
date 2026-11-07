@@ -545,38 +545,25 @@ pub(super) fn xfs_data_geometry(text: &str) -> Option<(u64, u64)> {
     Some((field("bsize")?, field("blocks")?))
 }
 
-/// `(devid, size)` of `device` (or the only device) from
-/// `btrfs filesystem show --raw`.
-pub(super) fn btrfs_device_size(text: &str, device: &str) -> Option<(u64, u64)> {
-    let devs: Vec<(u64, u64, String)> = text
-        .lines()
-        .filter_map(|l| {
-            let w: Vec<&str> = l.split_whitespace().collect();
-            if w.first() != Some(&"devid") {
-                return None;
+/// `(devid, device size, sector size)` from
+/// `btrfs inspect-internal dump-super` output (the `dev_item` fields describe
+/// the device the superblock was read from).
+pub(super) fn btrfs_super_geometry(text: &str) -> Option<(u64, u64, u64)> {
+    let field = |name: &str| -> Option<u64> {
+        text.lines().find_map(|l| {
+            let mut w = l.split_whitespace();
+            if w.next() == Some(name) {
+                w.next()?.parse().ok()
+            } else {
+                None
             }
-            let id = w.get(1)?.parse().ok()?;
-            let size_at = w.iter().position(|x| *x == "size")?;
-            let size = w.get(size_at + 1)?.parse().ok()?;
-            let path = w
-                .iter()
-                .position(|x| *x == "path")
-                .and_then(|i| w.get(i + 1))
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            Some((id, size, path))
         })
-        .collect();
-    if let Some((id, size, _)) = devs
-        .iter()
-        .find(|(_, _, p)| !p.is_empty() && same_source(p, device))
-    {
-        return Some((*id, *size));
-    }
-    match devs.as_slice() {
-        [(id, size, _)] => Some((*id, *size)),
-        _ => None,
-    }
+    };
+    Some((
+        field("dev_item.devid")?,
+        field("dev_item.total_bytes")?,
+        field("sectorsize").unwrap_or(4096),
+    ))
 }
 
 /// One line of `quota -v -w -p` output.
@@ -791,8 +778,8 @@ mod tests {
         );
         let xfs = "meta-data=/dev/loop1 isize=512 agcount=4, agsize=19200 blks\ndata     =                       bsize=4096   blocks=76800, imaxpct=25\nnaming   =version 2              bsize=4096   ascii-ci=0, ftype=1\n";
         assert_eq!(xfs_data_geometry(xfs), Some((4096, 76800)));
-        let btrfs = "Label: none  uuid: x\n\tTotal devices 1 FS bytes used 147456\n\tdevid    1 size 314572800 used 92274688 path /dev/loop2\n";
-        assert_eq!(btrfs_device_size(btrfs, "/dev/zzz"), Some((1, 314572800)));
+        let btrfs = "total_bytes\t\t1610612736\nsectorsize\t\t4096\ndev_item.total_bytes\t1610612736\ndev_item.devid\t\t1\n";
+        assert_eq!(btrfs_super_geometry(btrfs), Some((1, 1610612736, 4096)));
     }
 
     #[test]
