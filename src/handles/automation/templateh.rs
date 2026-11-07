@@ -135,8 +135,9 @@ static TEMPLATE_HELP: HandleHelp = HandleHelp {
             definition: "Renders a template with a JSON context and reports the rendered body, \
                 the context keys, and template details as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh template://<path>.render [context=<json>] [context_file=<path>]\n  \
-                    [format=text|html|json|bytes] [template=<text>]",
+                usage: "resh template://<path>.render [template=<text>] [from=<text>]\n  \
+                    [context=<json>] [context_file=<path>] [format=text|html|json|bytes]\n  \
+                    [timeout_ms=<n>]",
                 example: "resh --json-pretty template://welcome.txt.render \
                     'context={\"name\":\"alice\"}'",
                 example_output: Some(
@@ -175,8 +176,9 @@ text into body.value, and format=bytes returns body.base64 instead."#,
             definition: "Checks a template for syntax errors and, using an optional JSON \
                 context, for render errors such as missing variables.",
             detail: Some(VerbDetail {
-                usage: "resh template://<path>.validate [context=<json>] [strict=true|false]\n  \
-                    [from=<text>] [encoding=utf-8]",
+                usage: "resh template://<path>.validate [template=<text>] [from=<text>]\n  \
+                    [inline=<text>] [context=<json>] [context_file=<path>]\n  \
+                    [strict=true|false] [encoding=utf-8] [timeout_ms=<n>]",
                 example: "resh --json-pretty template://welcome.txt.validate \
                     'context={\"name\":\"alice\"}'",
                 example_output: Some(
@@ -205,9 +207,9 @@ command succeeds."#,
             definition: "Renders a template once per test case and checks each result against \
                 the case's expected, contains, and not_contains values.",
             detail: Some(VerbDetail {
-                usage: "resh template://<path>.test [cases=<json>] [cases_file=<path>]\n  \
-                    [stop_on_first_fail=true|false] [capture_output=none|summary|full]\n  \
-                    [template=<text>]",
+                usage: "resh template://<path>.test [template=<text>] [from=<text>]\n  \
+                    [cases=<json>] [cases_file=<path>] [stop_on_first_fail=true|false]\n  \
+                    [capture_output=none|summary|full] [timeout_ms=<n>]",
                 example: "resh --json-pretty template://welcome.txt.test",
                 example_output: Some(
                     r#"{
@@ -277,8 +279,15 @@ fn normalize_path(p: &PathBuf) -> PathBuf {
     for comp in p.components() {
         match comp {
             Component::CurDir => {}
+            // `a/..` cancels out, but a leading `..` is kept: dropping it
+            // would read a different file than the one named.
             Component::ParentDir => {
-                out.pop();
+                let can_pop = matches!(out.components().next_back(), Some(Component::Normal(_)));
+                if can_pop {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
             }
             other => out.push(other.as_os_str()),
         }
@@ -303,6 +312,341 @@ fn missing_variable_message(e: &tera::Error) -> Option<String> {
         cur = err.source();
     }
     None
+}
+
+/// The arguments each verb accepts. Help usage lists exactly these, and
+/// anything else is refused (exit 2) before the verb reads or renders.
+const RENDER_ARGS: &[&str] = &[
+    "template",
+    "from",
+    "context",
+    "context_file",
+    "format",
+    "timeout_ms",
+];
+const VALIDATE_ARGS: &[&str] = &[
+    "template",
+    "from",
+    "inline",
+    "context",
+    "context_file",
+    "strict",
+    "encoding",
+    "timeout_ms",
+];
+const TEST_ARGS: &[&str] = &[
+    "template",
+    "from",
+    "cases",
+    "cases_file",
+    "stop_on_first_fail",
+    "capture_output",
+    "timeout_ms",
+];
+
+/// Arguments accepted by `verb`, or `None` for an unknown verb.
+fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
+    match verb {
+        "render" => Some(RENDER_ARGS),
+        "validate" => Some(VALIDATE_ARGS),
+        "test" => Some(TEST_ARGS),
+        _ => None,
+    }
+}
+
+/// Exit code for a verb stopped by `timeout_ms` (as for timeout(1)).
+const TIMEOUT_EXIT: i32 = 124;
+
+/// Options parsed and checked before a verb acts.
+struct Options {
+    /// 0 = no limit.
+    timeout_ms: u64,
+    strict: bool,
+    stop_on_first_fail: bool,
+    capture_output: String,
+    format: String,
+}
+
+fn invalid_argument(message: String) -> ValidationError {
+    ValidationError {
+        kind: "invalid_argument".to_string(),
+        message,
+        line: None,
+        column: None,
+    }
+}
+
+fn invalid_format_error(format: &str) -> ValidationError {
+    ValidationError {
+        kind: "invalid_format".to_string(),
+        message: format!(
+            "invalid format '{}'. Allowed values: text, html, json, bytes",
+            format
+        ),
+        line: None,
+        column: None,
+    }
+}
+
+/// Tera's message followed by every cause, so a render error names the
+/// failing variable or filter instead of only "Failed to render ...".
+fn error_chain(e: &tera::Error) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut cur = std::error::Error::source(e);
+    while let Some(err) = cur {
+        let msg = err.to_string();
+        if !parts.contains(&msg) {
+            parts.push(msg);
+        }
+        cur = err.source();
+    }
+    parts.join(": ")
+}
+
+/// Why rendering did not finish.
+#[derive(Debug)]
+enum LimitError {
+    /// `timeout_ms` passed. The render thread is abandoned; it ends with
+    /// the process.
+    TimedOut,
+    /// The render thread could not start or panicked.
+    Failed(String),
+}
+
+impl LimitError {
+    fn error(&self, timeout_ms: u64) -> ValidationError {
+        match self {
+            LimitError::TimedOut => ValidationError {
+                kind: "timeout".to_string(),
+                message: format!("rendering did not finish within timeout_ms={timeout_ms}"),
+                line: None,
+                column: None,
+            },
+            LimitError::Failed(msg) => ValidationError {
+                kind: "render".to_string(),
+                message: msg.clone(),
+                line: None,
+                column: None,
+            },
+        }
+    }
+
+    fn status(&self, timeout_ms: u64) -> Status {
+        match self {
+            LimitError::TimedOut => Status::err(
+                TIMEOUT_EXIT,
+                format!("timeout: rendering did not finish within {timeout_ms} ms"),
+            ),
+            LimitError::Failed(msg) => Status::err(4, msg.clone()),
+        }
+    }
+}
+
+/// Runs `f` on a worker thread and waits at most `timeout_ms` (0 = no
+/// limit) for its result. A panic in `f` is reported, not propagated.
+fn run_limited<T: Send + 'static>(
+    timeout_ms: u64,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, LimitError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("template-render".to_string())
+        .spawn(move || {
+            // The receiver is gone only after a timeout; the result is
+            // then unwanted.
+            let _ = tx.send(f());
+        })
+        .map_err(|e| LimitError::Failed(format!("could not start rendering: {e}")))?;
+    let received = if timeout_ms == 0 {
+        rx.recv().map_err(|_| RecvError::Disconnected)
+    } else {
+        rx.recv_timeout(std::time::Duration::from_millis(timeout_ms))
+            .map_err(|e| match e {
+                std::sync::mpsc::RecvTimeoutError::Timeout => RecvError::Timeout,
+                std::sync::mpsc::RecvTimeoutError::Disconnected => RecvError::Disconnected,
+            })
+    };
+    received.map_err(|e| match e {
+        RecvError::Timeout => LimitError::TimedOut,
+        RecvError::Disconnected => {
+            LimitError::Failed("the template engine panicked while rendering".to_string())
+        }
+    })
+}
+
+enum RecvError {
+    Timeout,
+    Disconnected,
+}
+
+/// Results of a `test` run.
+struct TestRun {
+    cases: Vec<TestCaseResult>,
+    /// Number of cases supplied.
+    planned: usize,
+    /// Set when the run stopped before finishing (timeout or panic).
+    stopped: Option<LimitError>,
+}
+
+/// Runs the cases on a worker thread, collecting each result as it
+/// finishes, so a timeout still reports the cases that ran.
+fn run_test_cases(
+    tera: Tera,
+    cases: Vec<TemplateTestCase>,
+    stop_on_first_fail: bool,
+    capture_output: String,
+    timeout_ms: u64,
+) -> TestRun {
+    let planned = cases.len();
+    let (tx, rx) = std::sync::mpsc::channel::<TestCaseResult>();
+    let worker = std::thread::Builder::new()
+        .name("template-test".to_string())
+        .spawn(move || {
+            for case in &cases {
+                let result = run_single_case(&tera, "test_template", case, &capture_output);
+                let failed = !result.ok;
+                if tx.send(result).is_err() || (stop_on_first_fail && failed) {
+                    break;
+                }
+            }
+        });
+    let worker = match worker {
+        Ok(w) => w,
+        Err(e) => {
+            return TestRun {
+                cases: Vec::new(),
+                planned,
+                stopped: Some(LimitError::Failed(format!("could not start tests: {e}"))),
+            };
+        }
+    };
+
+    let deadline = (timeout_ms > 0)
+        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms));
+    let mut results = Vec::new();
+    let mut stopped = None;
+    loop {
+        let next = match deadline {
+            None => rx.recv().map_err(|_| RecvError::Disconnected),
+            Some(d) => rx
+                .recv_timeout(d.saturating_duration_since(std::time::Instant::now()))
+                .map_err(|e| match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => RecvError::Timeout,
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => RecvError::Disconnected,
+                }),
+        };
+        match next {
+            Ok(result) => results.push(result),
+            Err(RecvError::Timeout) => {
+                stopped = Some(LimitError::TimedOut);
+                break;
+            }
+            Err(RecvError::Disconnected) => {
+                // The worker is done; a panic means cases were skipped.
+                if worker.join().is_err() {
+                    stopped = Some(LimitError::Failed(
+                        "the template engine panicked while rendering".to_string(),
+                    ));
+                }
+                break;
+            }
+        }
+    }
+    TestRun {
+        cases: results,
+        planned,
+        stopped,
+    }
+}
+
+fn run_single_case(
+    tera: &Tera,
+    template_name: &str,
+    test_case: &TemplateTestCase,
+    capture_output: &str,
+) -> TestCaseResult {
+    let failed = |error: String| TestCaseResult {
+        name: test_case.name.clone(),
+        ok: false,
+        error: Some(error),
+        expected: test_case.expected.clone(),
+        contains: test_case.contains.clone(),
+        not_contains: test_case.not_contains.clone(),
+        rendered: None,
+        diff: None,
+    };
+
+    let tera_context = match TeraContext::from_serialize(&test_case.context) {
+        Ok(ctx) => ctx,
+        Err(e) => return failed(format!("failed to convert context: {}", e)),
+    };
+
+    let rendered = match tera.render(template_name, &tera_context) {
+        Ok(output) => output,
+        Err(e) => return failed(format!("template render error: {}", error_chain(&e))),
+    };
+
+    let (ok, error, diff) = check_expectations(test_case, &rendered);
+
+    let rendered_output = match capture_output {
+        "none" => None,
+        "full" => Some(rendered),
+        _ if ok => None,
+        _ => Some(rendered),
+    };
+
+    TestCaseResult {
+        name: test_case.name.clone(),
+        ok,
+        error,
+        expected: test_case.expected.clone(),
+        contains: test_case.contains.clone(),
+        not_contains: test_case.not_contains.clone(),
+        rendered: rendered_output,
+        diff,
+    }
+}
+
+fn check_expectations(
+    test_case: &TemplateTestCase,
+    rendered: &str,
+) -> (bool, Option<String>, Option<String>) {
+    if let Some(expected) = &test_case.expected {
+        if rendered != expected {
+            let diff = format!("Expected: {:?}, Got: {:?}", expected, rendered);
+            return (
+                false,
+                Some("expected output mismatch".to_string()),
+                Some(diff),
+            );
+        }
+    }
+
+    if let Some(contains) = &test_case.contains {
+        if !rendered.contains(contains) {
+            let diff = format!(
+                "Expected output to contain: {:?}, but got: {:?}",
+                contains, rendered
+            );
+            return (false, Some("contains check failed".to_string()), Some(diff));
+        }
+    }
+
+    if let Some(not_contains) = &test_case.not_contains {
+        if rendered.contains(not_contains) {
+            let diff = format!(
+                "Expected output to NOT contain: {:?}, but got: {:?}",
+                not_contains, rendered
+            );
+            return (
+                false,
+                Some("not_contains check failed".to_string()),
+                Some(diff),
+            );
+        }
+    }
+
+    (true, None, None)
 }
 
 impl TemplateHandle {
@@ -380,86 +724,53 @@ impl TemplateHandle {
         })
     }
 
-    fn get_template_content(&self, args: &Args) -> Result<String> {
-        // Check for `from` argument for inline template content
-        if let Some(from_content) = args.get("from") {
-            return Ok(from_content.clone());
-        }
-
-        // Check for backward compatibility with `inline` argument
-        if let Some(inline_content) = args.get("inline") {
-            return Ok(inline_content.clone());
-        }
-
-        // Use template file path
-        if let Some(path) = &self.template_path {
-            let content = std::fs::read_to_string(path)
-                .with_context(|| format!("failed to read template file: {}", path.display()))?;
-            Ok(content)
-        } else {
-            bail!("no template source provided (missing 'from' argument or file path)");
-        }
+    /// Template text from the arguments (`template`, then `from`, then, for
+    /// validate only, the older `inline`), or `None` to use the file.
+    fn inline_source<'a>(args: &'a Args, verb: &str) -> Option<&'a String> {
+        args.get("template")
+            .or_else(|| args.get("from"))
+            .or_else(|| {
+                if verb == "validate" {
+                    args.get("inline")
+                } else {
+                    None
+                }
+            })
     }
 
-    fn parse_context(&self, args: &Args) -> Result<TeraContext, ValidationError> {
-        let encoding = args.get("encoding").map(|s| s.as_str()).unwrap_or("utf-8");
-        if encoding != "utf-8" {
-            return Err(ValidationError {
-                kind: "encoding".to_string(),
-                message: format!(
-                    "unsupported encoding: {}. Only utf-8 is supported",
-                    encoding
-                ),
+    /// Reads the template text: an inline argument or the template file.
+    fn read_template(&self, args: &Args, verb: &str) -> Result<String, ValidationError> {
+        if let Some(text) = Self::inline_source(args, verb) {
+            return Ok(text.clone());
+        }
+        match &self.template_path {
+            Some(path) => std::fs::read_to_string(path).map_err(|e| ValidationError {
+                kind: if e.kind() == std::io::ErrorKind::NotFound {
+                    "template_not_found".to_string()
+                } else {
+                    "io".to_string()
+                },
+                message: format!("failed to read template file '{}': {}", path.display(), e),
                 line: None,
                 column: None,
-            });
+            }),
+            None => Err(ValidationError {
+                kind: "template_not_found".to_string(),
+                message: "no template source provided (missing 'template' argument or file path)"
+                    .to_string(),
+                line: None,
+                column: None,
+            }),
         }
-
-        let mut context = TeraContext::new();
-
-        // Parse context argument if provided
-        if let Some(context_str) = args.get("context") {
-            if !context_str.trim().is_empty() {
-                let context_value: Value = match serde_json::from_str(context_str) {
-                    Ok(value) => value,
-                    Err(e) => {
-                        return Err(ValidationError {
-                            kind: "context_parse".to_string(),
-                            message: format!("failed to parse context JSON: {}", e),
-                            line: None,
-                            column: None,
-                        });
-                    }
-                };
-
-                match TeraContext::from_serialize(&context_value) {
-                    Ok(tera_context) => context = tera_context,
-                    Err(e) => {
-                        return Err(ValidationError {
-                            kind: "context_parse".to_string(),
-                            message: format!("failed to convert context to Tera context: {}", e),
-                            line: None,
-                            column: None,
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok(context)
     }
 
-    fn create_template_info(&self, args: &Args, template_content: Option<&str>) -> TemplateInfo {
-        if args.contains_key("template") {
-            // Inline template from 'template' argument
-            TemplateInfo {
-                source: "inline".to_string(),
-                name: "inline".to_string(),
-                path: None,
-                size: template_content.map(|s| s.len()),
-            }
-        } else if args.contains_key("from") {
-            // Legacy inline template from 'from' argument
+    fn create_template_info(
+        &self,
+        args: &Args,
+        verb: &str,
+        template_content: Option<&str>,
+    ) -> TemplateInfo {
+        if Self::inline_source(args, verb).is_some() {
             TemplateInfo {
                 source: "inline".to_string(),
                 name: "inline".to_string(),
@@ -479,14 +790,16 @@ impl TemplateHandle {
             }
         } else {
             TemplateInfo {
-                source: "named".to_string(),
-                name: "unknown".to_string(),
+                source: "inline".to_string(),
+                name: "inline".to_string(),
                 path: None,
                 size: template_content.map(|s| s.len()),
             }
         }
     }
 
+    /// Builds the context from `context_file` and `context` (`context`
+    /// replaces `context_file` entirely when both are given).
     fn parse_render_context(
         &self,
         args: &Args,
@@ -550,7 +863,7 @@ impl TemplateHandle {
             raw: context_value.clone(),
         };
 
-        // Convert to Tera context
+        // Convert to Tera context (the context must be a JSON object)
         let tera_context = match TeraContext::from_serialize(&context_value) {
             Ok(ctx) => ctx,
             Err(e) => {
@@ -564,46 +877,6 @@ impl TemplateHandle {
         };
 
         Ok((context_info, tera_context))
-    }
-
-    fn get_render_template_content(
-        &self,
-        args: &Args,
-    ) -> Result<(String, String), ValidationError> {
-        // Check for 'template' argument for inline template content (highest priority)
-        if let Some(template_content) = args.get("template") {
-            return Ok((template_content.clone(), "inline".to_string()));
-        }
-
-        // Check for 'from' argument for backward compatibility
-        if let Some(from_content) = args.get("from") {
-            return Ok((from_content.clone(), "inline".to_string()));
-        }
-
-        // Use template file path
-        if let Some(path) = &self.template_path {
-            match std::fs::read_to_string(path) {
-                Ok(content) => Ok((content, path.to_string_lossy().to_string())),
-                Err(e) => Err(ValidationError {
-                    kind: if e.kind() == std::io::ErrorKind::NotFound {
-                        "template_not_found".to_string()
-                    } else {
-                        "io".to_string()
-                    },
-                    message: format!("failed to read template file '{}': {}", path.display(), e),
-                    line: None,
-                    column: None,
-                }),
-            }
-        } else {
-            Err(ValidationError {
-                kind: "template_not_found".to_string(),
-                message: "no template source provided (missing 'template' argument or file path)"
-                    .to_string(),
-                line: None,
-                column: None,
-            })
-        }
     }
 
     fn format_render_output(
@@ -644,458 +917,429 @@ impl TemplateHandle {
                     base64: Some(base64_encoded),
                 })
             }
-            _ => Err(ValidationError {
-                kind: "invalid_format".to_string(),
-                message: format!(
-                    "invalid format '{}'. Allowed values: text, html, json, bytes",
-                    format
-                ),
-                line: None,
-                column: None,
-            }),
+            _ => Err(invalid_format_error(format)),
         }
     }
 
-    // Step 3: Merge data_file if provided
-    fn validate(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let strict = args.get("strict").map(|s| s == "true").unwrap_or(true);
-
-        // Get template content first so we can include size in template info
-        let template_content = match self.get_template_content(args) {
-            Ok(content) => content,
-            Err(e) => {
-                let template_info = self.create_template_info(args, None);
-
-                let result = ValidationResult {
-                    ok: false,
-                    template: template_info,
-                    strict,
-                    errors: vec![ValidationError {
-                        kind: "file_read".to_string(),
-                        message: format!("Failed to read template: {}", e),
-                        line: None,
-                        column: None,
-                    }],
-                    warnings: Vec::new(),
-                };
-
-                let json_output = serde_json::to_string(&result)?;
-                writeln!(io.stdout, "{}", json_output)?;
-                return Ok(Status::err(1, "Failed to read template"));
-            }
-        };
-
-        let template_info = self.create_template_info(args, Some(&template_content));
-
-        let mut result = ValidationResult {
-            ok: true,
-            template: template_info,
-            strict,
-            errors: Vec::new(),
-            warnings: Vec::new(),
-        };
-
-        // Parse context
-        let context = match self.parse_context(args) {
-            Ok(ctx) => ctx,
-            Err(error) => {
-                result.ok = false;
-                result.errors.push(error);
-
-                let json_output = serde_json::to_string(&result)?;
-                writeln!(io.stdout, "{}", json_output)?;
-                return Ok(Status::err(1, "Context parsing failed"));
-            }
-        };
-
-        // Create Tera instance and try to parse template
-        let mut tera = Tera::default();
-        let template_name = "validate_template";
-
-        // Try to add the template to validate syntax
-        if let Err(e) = tera.add_raw_template(template_name, &template_content) {
-            result.ok = false;
-            result.errors.push(ValidationError {
-                kind: "syntax".to_string(),
-                message: format!("Template syntax error: {}", e),
-                line: None, // Tera errors don't always provide line numbers easily
-                column: None,
-            });
-
-            let json_output = serde_json::to_string(&result)?;
-            writeln!(io.stdout, "{}", json_output)?;
-            return Ok(Status::err(1, "Template syntax error"));
+    /// Checks every argument before anything is read or rendered. Returns
+    /// the parsed options, or the error to report (exit 2).
+    fn check_args(verb: &str, args: &Args) -> Result<Options, ValidationError> {
+        let allowed = verb_args(verb).unwrap_or(&[]);
+        let mut keys: Vec<&String> = args.keys().collect();
+        keys.sort();
+        // dry_run=true is refused by the dispatcher for every template verb;
+        // dry_run=false changes nothing.
+        if let Some(bad) = keys
+            .into_iter()
+            .find(|k| k.as_str() != "dry_run" && !allowed.contains(&k.as_str()))
+        {
+            return Err(invalid_argument(format!(
+                "unknown argument for template {verb}: {bad} (accepted: {})",
+                allowed.join(", ")
+            )));
         }
-
-        // Try to render template with context to check for missing variables
-        match tera.render(template_name, &context) {
-            Ok(_) => {
-                // Template rendered successfully
-                result.ok = true;
+        let bool_arg = |key: &str, default: bool| -> Result<bool, ValidationError> {
+            crate::core::lenient::bool_arg(args, key)
+                .map(|v| v.unwrap_or(default))
+                .map_err(|e| invalid_argument(e.to_string()))
+        };
+        let timeout_ms = match args.get("timeout_ms") {
+            None => 0,
+            Some(v) => v.trim().parse::<u64>().map_err(|_| {
+                invalid_argument(format!(
+                    "invalid timeout_ms value: {v:?} (expected a non-negative integer)"
+                ))
+            })?,
+        };
+        let mut opts = Options {
+            timeout_ms,
+            strict: true,
+            stop_on_first_fail: false,
+            capture_output: "summary".to_string(),
+            format: "text".to_string(),
+        };
+        match verb {
+            "render" => {
+                let format = args.get("format").map(String::as_str).unwrap_or("text");
+                if !["text", "html", "json", "bytes"].contains(&format) {
+                    return Err(invalid_format_error(format));
+                }
+                opts.format = format.to_string();
             }
-            Err(e) => {
-                // Check if it's a missing variable error. Tera's top-level
-                // message is generic; the detail is in the source chain.
-                if let Some(detail) = missing_variable_message(&e) {
-                    let validation_error = ValidationError {
-                        kind: "missing_variable".to_string(),
-                        message: format!("Missing variable: {}", detail),
-                        line: None,
-                        column: None,
-                    };
-
-                    if strict {
-                        result.ok = false;
-                        result.errors.push(validation_error);
-                    } else {
-                        result.ok = true;
-                        result.warnings.push(validation_error);
-                    }
-                } else {
-                    // Other render error
-                    result.ok = false;
-                    result.errors.push(ValidationError {
-                        kind: "render".to_string(),
-                        message: format!("Template render error: {}", e),
+            "validate" => {
+                opts.strict = bool_arg("strict", true)?;
+                let encoding = args.get("encoding").map(|s| s.as_str()).unwrap_or("utf-8");
+                if !encoding.eq_ignore_ascii_case("utf-8") {
+                    return Err(ValidationError {
+                        kind: "encoding".to_string(),
+                        message: format!(
+                            "unsupported encoding: {}. Only utf-8 is supported",
+                            encoding
+                        ),
                         line: None,
                         column: None,
                     });
                 }
             }
+            "test" => {
+                opts.stop_on_first_fail = bool_arg("stop_on_first_fail", false)?;
+                let capture = args
+                    .get("capture_output")
+                    .map(String::as_str)
+                    .unwrap_or("summary");
+                if !["none", "summary", "full"].contains(&capture) {
+                    return Err(invalid_argument(format!(
+                        "invalid capture_output value: {capture:?} (expected none, summary or full)"
+                    )));
+                }
+                opts.capture_output = capture.to_string();
+            }
+            _ => {}
         }
-
-        // Output JSON result
-        let json_output = serde_json::to_string(&result)?;
-        writeln!(io.stdout, "{}", json_output)?;
-
-        let exit_code = if result.ok { 0 } else { 1 };
-        Ok(Status {
-            ok: result.ok,
-            code: Some(exit_code),
-            reason: if result.ok {
-                None
-            } else {
-                Some("Template validation failed".to_string())
-            },
-        })
+        Ok(opts)
     }
 
-    fn render_template(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let format = args.get("format").map(|s| s.as_str()).unwrap_or("text");
-
-        // Get template content and source name
-        let (template_content, _source_name) = match self.get_render_template_content(args) {
-            Ok((content, name)) => (content, name),
-            Err(error) => {
-                let result = RenderResult {
-                    ok: false,
-                    engine: "tera".to_string(),
-                    template: self.create_template_info(args, None),
-                    context: ContextInfo {
-                        keys: Vec::new(),
-                        raw: Value::Object(serde_json::Map::new()),
-                    },
-                    body: None,
-                    errors: vec![error],
-                };
-
-                let json_output = serde_json::to_string(&result)?;
-                writeln!(io.stdout, "{}", json_output)?;
-
-                return Ok(Status {
-                    ok: false,
-                    code: Some(2),
-                    reason: Some("template_not_found".to_string()),
-                });
-            }
+    fn validate(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let mut result = ValidationResult {
+            ok: false,
+            template: self.create_template_info(args, "validate", None),
+            strict: true,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let emit = |result: &ValidationResult, io: &mut IoStreams| -> Result<()> {
+            writeln!(io.stdout, "{}", serde_json::to_string(result)?)?;
+            Ok(())
         };
 
-        // Parse context
-        let (context_info, tera_context) = match self.parse_render_context(args) {
-            Ok((ctx_info, tera_ctx)) => (ctx_info, tera_ctx),
+        let opts = match Self::check_args("validate", args) {
+            Ok(opts) => opts,
             Err(error) => {
-                let result = RenderResult {
-                    ok: false,
-                    engine: "tera".to_string(),
-                    template: self.create_template_info(args, Some(&template_content)),
-                    context: ContextInfo {
-                        keys: Vec::new(),
-                        raw: Value::Object(serde_json::Map::new()),
-                    },
-                    body: None,
-                    errors: vec![error],
-                };
-
-                let json_output = serde_json::to_string(&result)?;
-                writeln!(io.stdout, "{}", json_output)?;
-
-                return Ok(Status {
-                    ok: false,
-                    code: Some(3),
-                    reason: Some("context_parse".to_string()),
-                });
+                result.strict = crate::core::lenient::bool_arg(args, "strict")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(true);
+                let kind = error.kind.clone();
+                result.errors.push(error);
+                emit(&result, io)?;
+                return Ok(Status::err(2, kind));
             }
         };
+        let strict = opts.strict;
+        result.strict = strict;
 
-        // Create Tera instance and add template
-        let mut tera = Tera::default();
-        let template_name = "render_template";
-
-        if let Err(e) = tera.add_raw_template(template_name, &template_content) {
-            let error = ValidationError {
-                kind: "render".to_string(),
-                message: format!("template parse error: {}", e),
-                line: None,
-                column: None,
-            };
-
-            let result = RenderResult {
-                ok: false,
-                engine: "tera".to_string(),
-                template: self.create_template_info(args, Some(&template_content)),
-                context: context_info,
-                body: None,
-                errors: vec![error],
-            };
-
-            let json_output = serde_json::to_string(&result)?;
-            writeln!(io.stdout, "{}", json_output)?;
-
-            return Ok(Status {
-                ok: false,
-                code: Some(4),
-                reason: Some("tera_render_failed".to_string()),
-            });
-        }
-
-        // Render template
-        let rendered = match tera.render(template_name, &tera_context) {
-            Ok(result) => result,
+        let template_content = match self.read_template(args, "validate") {
+            Ok(content) => content,
             Err(e) => {
-                let error = ValidationError {
-                    kind: "render".to_string(),
-                    message: format!("template render error: {}", e),
+                result.errors.push(ValidationError {
+                    kind: "file_read".to_string(),
+                    message: format!("Failed to read template: {}", e.message),
+                    line: None,
+                    column: None,
+                });
+                emit(&result, io)?;
+                return Ok(Status::err(1, "Failed to read template"));
+            }
+        };
+        result.template = self.create_template_info(args, "validate", Some(&template_content));
+
+        let context = match self.parse_render_context(args) {
+            Ok((_, ctx)) => ctx,
+            Err(mut error) => {
+                if error.kind == "io" {
+                    error.kind = "file_read".to_string();
+                }
+                result.errors.push(error);
+                emit(&result, io)?;
+                return Ok(Status::err(1, "Context parsing failed"));
+            }
+        };
+
+        // Compile, then render with the context to find missing variables,
+        // within timeout_ms.
+        let outcome = run_limited(opts.timeout_ms, move || {
+            let mut tera = Tera::default();
+            if let Err(e) = tera.add_raw_template("validate_template", &template_content) {
+                return Err((true, error_chain(&e), missing_variable_message(&e)));
+            }
+            tera.render("validate_template", &context)
+                .map(|_| ())
+                .map_err(|e| (false, error_chain(&e), missing_variable_message(&e)))
+        });
+
+        match outcome {
+            Err(limit) => {
+                result.errors.push(limit.error(opts.timeout_ms));
+                emit(&result, io)?;
+                return Ok(limit.status(opts.timeout_ms));
+            }
+            Ok(Ok(())) => result.ok = true,
+            Ok(Err((true, chain, _))) => {
+                result.errors.push(ValidationError {
+                    kind: "syntax".to_string(),
+                    message: format!("Template syntax error: {}", chain),
+                    line: None,
+                    column: None,
+                });
+                emit(&result, io)?;
+                return Ok(Status::err(1, "Template syntax error"));
+            }
+            Ok(Err((false, _, Some(detail)))) => {
+                let validation_error = ValidationError {
+                    kind: "missing_variable".to_string(),
+                    message: format!("Missing variable: {}", detail),
                     line: None,
                     column: None,
                 };
-
-                let result = RenderResult {
-                    ok: false,
-                    engine: "tera".to_string(),
-                    template: self.create_template_info(args, Some(&template_content)),
-                    context: context_info,
-                    body: None,
-                    errors: vec![error],
-                };
-
-                let json_output = serde_json::to_string(&result)?;
-                writeln!(io.stdout, "{}", json_output)?;
-
-                return Ok(Status {
-                    ok: false,
-                    code: Some(4),
-                    reason: Some("tera_render_failed".to_string()),
+                if strict {
+                    result.errors.push(validation_error);
+                } else {
+                    result.ok = true;
+                    result.warnings.push(validation_error);
+                }
+            }
+            Ok(Err((false, chain, None))) => {
+                result.errors.push(ValidationError {
+                    kind: "render".to_string(),
+                    message: format!("Template render error: {}", chain),
+                    line: None,
+                    column: None,
                 });
             }
+        }
+
+        emit(&result, io)?;
+        if result.ok {
+            Ok(Status::ok())
+        } else {
+            Ok(Status::err(1, "Template validation failed"))
+        }
+    }
+
+    fn render_template(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let empty_context = || ContextInfo {
+            keys: Vec::new(),
+            raw: Value::Object(serde_json::Map::new()),
+        };
+        let fail = |template: TemplateInfo,
+                    context: ContextInfo,
+                    error: ValidationError,
+                    status: Status,
+                    io: &mut IoStreams|
+         -> Result<Status> {
+            let result = RenderResult {
+                ok: false,
+                engine: "tera".to_string(),
+                template,
+                context,
+                body: None,
+                errors: vec![error],
+            };
+            writeln!(io.stdout, "{}", serde_json::to_string(&result)?)?;
+            Ok(status)
         };
 
-        // Format output
-        let body = match self.format_render_output(rendered, format) {
-            Ok(body_info) => Some(body_info),
+        let opts = match Self::check_args("render", args) {
+            Ok(opts) => opts,
             Err(error) => {
-                let result = RenderResult {
-                    ok: false,
-                    engine: "tera".to_string(),
-                    template: self.create_template_info(args, Some(&template_content)),
-                    context: context_info,
-                    body: None,
-                    errors: vec![error],
-                };
-
-                let json_output = serde_json::to_string(&result)?;
-                writeln!(io.stdout, "{}", json_output)?;
-
-                return Ok(Status {
-                    ok: false,
-                    code: Some(5),
-                    reason: Some("json_parse_failed".to_string()),
-                });
+                let status = Status::err(2, error.kind.clone());
+                let info = self.create_template_info(args, "render", None);
+                return fail(info, empty_context(), error, status, io);
             }
         };
 
-        // Success result
+        let template_content = match self.read_template(args, "render") {
+            Ok(content) => content,
+            Err(error) => {
+                let status = Status::err(2, error.kind.clone());
+                let info = self.create_template_info(args, "render", None);
+                return fail(info, empty_context(), error, status, io);
+            }
+        };
+        let info = || self.create_template_info(args, "render", Some(&template_content));
+
+        let (context_info, tera_context) = match self.parse_render_context(args) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let status = Status::err(3, error.kind.clone());
+                return fail(info(), empty_context(), error, status, io);
+            }
+        };
+
+        let content = template_content.clone();
+        let outcome = run_limited(opts.timeout_ms, move || {
+            let mut tera = Tera::default();
+            if let Err(e) = tera.add_raw_template("render_template", &content) {
+                return Err(format!("template parse error: {}", error_chain(&e)));
+            }
+            tera.render("render_template", &tera_context)
+                .map_err(|e| format!("template render error: {}", error_chain(&e)))
+        });
+
+        let rendered = match outcome {
+            Err(limit) => {
+                let error = limit.error(opts.timeout_ms);
+                return fail(
+                    info(),
+                    context_info,
+                    error,
+                    limit.status(opts.timeout_ms),
+                    io,
+                );
+            }
+            Ok(Err(message)) => {
+                let error = ValidationError {
+                    kind: "render".to_string(),
+                    message,
+                    line: None,
+                    column: None,
+                };
+                let status = Status::err(4, "tera_render_failed");
+                return fail(info(), context_info, error, status, io);
+            }
+            Ok(Ok(rendered)) => rendered,
+        };
+
+        let body = match self.format_render_output(rendered, &opts.format) {
+            Ok(body_info) => body_info,
+            Err(error) => {
+                let status = Status::err(5, error.kind.clone());
+                return fail(info(), context_info, error, status, io);
+            }
+        };
+
         let result = RenderResult {
             ok: true,
             engine: "tera".to_string(),
-            template: self.create_template_info(args, Some(&template_content)),
+            template: info(),
             context: context_info,
-            body,
+            body: Some(body),
             errors: Vec::new(),
         };
-
-        let json_output = serde_json::to_string(&result)?;
-        writeln!(io.stdout, "{}", json_output)?;
-
+        writeln!(io.stdout, "{}", serde_json::to_string(&result)?)?;
         Ok(Status::ok())
     }
 
     fn test_template(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments
-        let stop_on_first_fail = args
-            .get("stop_on_first_fail")
-            .map(|s| s == "true")
-            .unwrap_or(false);
-
-        let capture_output = args
-            .get("capture_output")
-            .map(|s| s.as_str())
-            .unwrap_or("summary");
-
-        // Get template content and name
-        let (template_content, template_name) = match self.get_render_template_content(args) {
-            Ok((content, name)) => (content, name),
-            Err(error) => {
-                let result = TestResult {
-                    template: self
-                        .template_path
+        let template_label = |content_name: Option<&str>| -> String {
+            content_name.map(str::to_string).unwrap_or_else(|| {
+                if Self::inline_source(args, "test").is_some() {
+                    "inline".to_string()
+                } else {
+                    self.template_path
                         .as_ref()
                         .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "inline".to_string()),
-                    ok: false,
-                    total: 0,
-                    passed: 0,
-                    failed: 0,
-                    stop_on_first_fail,
-                    error: Some(error.message),
-                    cases: Vec::new(),
-                };
+                        .unwrap_or_else(|| "inline".to_string())
+                }
+            })
+        };
+        let fail = |template: String,
+                    stop_on_first_fail: bool,
+                    total: usize,
+                    error: String,
+                    status: Status,
+                    io: &mut IoStreams|
+         -> Result<Status> {
+            let result = TestResult {
+                template,
+                ok: false,
+                total,
+                passed: 0,
+                failed: total,
+                stop_on_first_fail,
+                error: Some(error),
+                cases: Vec::new(),
+            };
+            writeln!(io.stdout, "{}", serde_json::to_string(&result)?)?;
+            Ok(status)
+        };
 
-                let json_output = serde_json::to_string(&result)?;
-                writeln!(io.stdout, "{}", json_output)?;
+        let opts = match Self::check_args("test", args) {
+            Ok(opts) => opts,
+            Err(error) => {
+                let stop = crate::core::lenient::bool_arg(args, "stop_on_first_fail")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false);
+                let status = Status::err(2, error.kind.clone());
+                return fail(template_label(None), stop, 0, error.message, status, io);
+            }
+        };
+        let stop_on_first_fail = opts.stop_on_first_fail;
+        let label = template_label(None);
 
-                return Ok(Status {
-                    ok: false,
-                    code: Some(2),
-                    reason: Some("template_not_found".to_string()),
-                });
+        let template_content = match self.read_template(args, "test") {
+            Ok(content) => content,
+            Err(error) => {
+                let status = Status::err(2, "template_not_found");
+                return fail(label, stop_on_first_fail, 0, error.message, status, io);
             }
         };
 
-        // Load test cases
-        let test_cases = match self.load_test_cases(args, &template_name) {
+        let test_cases = match self.load_test_cases(args) {
             Ok(cases) => cases,
             Err(e) => {
-                let result = TestResult {
-                    template: template_name,
-                    ok: false,
-                    total: 0,
-                    passed: 0,
-                    failed: 0,
-                    stop_on_first_fail,
-                    error: Some(e.to_string()),
-                    cases: Vec::new(),
-                };
-
-                let json_output = serde_json::to_string(&result)?;
-                writeln!(io.stdout, "{}", json_output)?;
-
-                return Ok(Status {
-                    ok: false,
-                    code: Some(2),
-                    reason: Some("no_test_cases".to_string()),
-                });
+                let status = Status::err(2, "no_test_cases");
+                return fail(label, stop_on_first_fail, 0, format!("{:#}", e), status, io);
             }
         };
 
         if test_cases.is_empty() {
-            let result = TestResult {
-                template: template_name,
-                ok: false,
-                total: 0,
-                passed: 0,
-                failed: 0,
-                stop_on_first_fail,
-                error: Some("no test cases supplied".to_string()),
-                cases: Vec::new(),
-            };
-
-            let json_output = serde_json::to_string(&result)?;
-            writeln!(io.stdout, "{}", json_output)?;
-
-            return Ok(Status {
-                ok: false,
-                code: Some(1),
-                reason: Some("no_test_cases".to_string()),
-            });
+            let status = Status::err(1, "no_test_cases");
+            let message = "no test cases supplied".to_string();
+            return fail(label, stop_on_first_fail, 0, message, status, io);
         }
 
-        // Create Tera instance and add template
         let mut tera = Tera::default();
-        let template_name_key = "test_template";
-
-        if let Err(e) = tera.add_raw_template(template_name_key, &template_content) {
-            let result = TestResult {
-                template: template_name,
-                ok: false,
-                total: test_cases.len(),
-                passed: 0,
-                failed: test_cases.len(),
-                stop_on_first_fail,
-                error: Some(format!("template parse error: {}", e)),
-                cases: Vec::new(),
-            };
-
-            let json_output = serde_json::to_string(&result)?;
-            writeln!(io.stdout, "{}", json_output)?;
-
-            return Ok(Status {
-                ok: false,
-                code: Some(3),
-                reason: Some("tera_parse_failed".to_string()),
-            });
+        if let Err(e) = tera.add_raw_template("test_template", &template_content) {
+            let n = test_cases.len();
+            let message = format!("template parse error: {}", error_chain(&e));
+            let status = Status::err(3, "tera_parse_failed");
+            return fail(label, stop_on_first_fail, n, message, status, io);
         }
 
-        // Execute test cases
-        let (case_results, passed, failed, total_executed) = self.execute_test_cases(
-            &tera,
-            template_name_key,
-            &test_cases,
+        let run = run_test_cases(
+            tera,
+            test_cases,
             stop_on_first_fail,
-            capture_output,
+            opts.capture_output.clone(),
+            opts.timeout_ms,
         );
 
-        let ok = failed == 0 && total_executed > 0;
-
+        let passed = run.cases.iter().filter(|c| c.ok).count();
+        let failed = run.cases.len() - passed;
+        let ok = failed == 0 && !run.cases.is_empty() && run.stopped.is_none();
+        let status = match &run.stopped {
+            Some(limit) => limit.status(opts.timeout_ms),
+            None if ok => Status::ok(),
+            None => Status::err(1, "tests_failed"),
+        };
         let result = TestResult {
-            template: template_name,
+            template: label,
             ok,
-            total: total_executed,
+            total: run.cases.len(),
             passed,
             failed,
             stop_on_first_fail,
-            error: None,
-            cases: case_results,
+            error: run.stopped.map(|limit| {
+                format!(
+                    "{} ({} of {} cases ran)",
+                    limit.error(opts.timeout_ms).message,
+                    run.cases.len(),
+                    run.planned
+                )
+            }),
+            cases: run.cases,
         };
-
-        let json_output = serde_json::to_string(&result)?;
-        writeln!(io.stdout, "{}", json_output)?;
-
-        Ok(Status {
-            ok,
-            code: if ok { Some(0) } else { Some(1) },
-            reason: if ok {
-                None
-            } else {
-                Some("tests_failed".to_string())
-            },
-        })
+        writeln!(io.stdout, "{}", serde_json::to_string(&result)?)?;
+        Ok(status)
     }
 
-    fn load_test_cases(&self, args: &Args, _template_name: &str) -> Result<Vec<TemplateTestCase>> {
+    fn load_test_cases(&self, args: &Args) -> Result<Vec<TemplateTestCase>> {
         // Priority: 1. inline cases, 2. cases_file, 3. default test file
         if let Some(cases_json) = args.get("cases") {
             let cases: Vec<TemplateTestCase> = serde_json::from_str(cases_json)
-                .with_context(|| format!("failed to parse inline cases JSON: {}", cases_json))?;
+                .with_context(|| "failed to parse inline cases JSON")?;
             return Ok(cases);
         }
 
@@ -1129,153 +1373,6 @@ impl TemplateHandle {
         }
 
         bail!("no test cases provided and default tests file not found");
-    }
-
-    fn execute_test_cases(
-        &self,
-        tera: &Tera,
-        template_name: &str,
-        test_cases: &[TemplateTestCase],
-        stop_on_first_fail: bool,
-        capture_output: &str,
-    ) -> (Vec<TestCaseResult>, usize, usize, usize) {
-        let mut case_results = Vec::new();
-        let mut passed = 0;
-        let mut failed = 0;
-
-        for (_i, test_case) in test_cases.iter().enumerate() {
-            if stop_on_first_fail && failed > 0 {
-                break;
-            }
-
-            let result =
-                self.execute_single_test_case(tera, template_name, test_case, capture_output);
-
-            if result.ok {
-                passed += 1;
-            } else {
-                failed += 1;
-            }
-
-            case_results.push(result);
-        }
-
-        let total_executed = case_results.len();
-        (case_results, passed, failed, total_executed)
-    }
-
-    fn execute_single_test_case(
-        &self,
-        tera: &Tera,
-        template_name: &str,
-        test_case: &TemplateTestCase,
-        capture_output: &str,
-    ) -> TestCaseResult {
-        // Convert context to Tera context
-        let tera_context = match TeraContext::from_serialize(&test_case.context) {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                return TestCaseResult {
-                    name: test_case.name.clone(),
-                    ok: false,
-                    error: Some(format!("failed to convert context: {}", e)),
-                    expected: test_case.expected.clone(),
-                    contains: test_case.contains.clone(),
-                    not_contains: test_case.not_contains.clone(),
-                    rendered: None,
-                    diff: None,
-                };
-            }
-        };
-
-        // Render template
-        let rendered = match tera.render(template_name, &tera_context) {
-            Ok(output) => output,
-            Err(e) => {
-                return TestCaseResult {
-                    name: test_case.name.clone(),
-                    ok: false,
-                    error: Some(format!("template render error: {}", e)),
-                    expected: test_case.expected.clone(),
-                    contains: test_case.contains.clone(),
-                    not_contains: test_case.not_contains.clone(),
-                    rendered: None,
-                    diff: None,
-                };
-            }
-        };
-
-        // Check expectations
-        let (ok, error, diff) = self.check_expectations(test_case, &rendered);
-
-        let rendered_output = match capture_output {
-            "none" => None,
-            "full" => Some(rendered.clone()),
-            "summary" | _ => {
-                if ok {
-                    None
-                } else {
-                    Some(rendered.clone())
-                }
-            }
-        };
-
-        TestCaseResult {
-            name: test_case.name.clone(),
-            ok,
-            error,
-            expected: test_case.expected.clone(),
-            contains: test_case.contains.clone(),
-            not_contains: test_case.not_contains.clone(),
-            rendered: rendered_output,
-            diff,
-        }
-    }
-
-    fn check_expectations(
-        &self,
-        test_case: &TemplateTestCase,
-        rendered: &str,
-    ) -> (bool, Option<String>, Option<String>) {
-        // Check exact match
-        if let Some(expected) = &test_case.expected {
-            if rendered != expected {
-                let diff = format!("Expected: {:?}, Got: {:?}", expected, rendered);
-                return (
-                    false,
-                    Some("expected output mismatch".to_string()),
-                    Some(diff),
-                );
-            }
-        }
-
-        // Check contains
-        if let Some(contains) = &test_case.contains {
-            if !rendered.contains(contains) {
-                let diff = format!(
-                    "Expected output to contain: {:?}, but got: {:?}",
-                    contains, rendered
-                );
-                return (false, Some("contains check failed".to_string()), Some(diff));
-            }
-        }
-
-        // Check not_contains
-        if let Some(not_contains) = &test_case.not_contains {
-            if rendered.contains(not_contains) {
-                let diff = format!(
-                    "Expected output to NOT contain: {:?}, but got: {:?}",
-                    not_contains, rendered
-                );
-                return (
-                    false,
-                    Some("not_contains check failed".to_string()),
-                    Some(diff),
-                );
-            }
-        }
-
-        (true, None, None)
     }
 
     /// Writes the approved help, for the whole handle or for one verb.
@@ -1791,7 +1888,8 @@ mod tests {
 
         let result = handle.render_template(&args, &mut io).unwrap();
         assert!(!result.ok);
-        assert_eq!(result.code, Some(5));
+        // An invalid format is an argument error, refused before rendering.
+        assert_eq!(result.code, Some(2));
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let parsed: RenderResult = serde_json::from_str(&output).unwrap();
@@ -2617,5 +2715,521 @@ mod tests {
         // (We won't test the full rendering here as that's covered by existing tests)
 
         Ok(())
+    }
+
+    // --- dispatch tests: every verb through Handle::call -------------------
+
+    fn handle_for(url: &str) -> TemplateHandle {
+        TemplateHandle::from_url(Url::parse(url).unwrap()).unwrap()
+    }
+
+    fn call(h: &TemplateHandle, verb: &str, kv: &[(&str, &str)]) -> (Status, serde_json::Value) {
+        let args: Args = kv
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let (mut i, mut o, mut e) = create_test_io();
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        let status = h.call(verb, &args, &mut io).unwrap();
+        let out = String::from_utf8(o.into_inner()).unwrap();
+        let json = serde_json::from_str(&out).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    fn inline() -> TemplateHandle {
+        handle_for("template://inline")
+    }
+
+    /// A template file inside a fresh temp dir, named by its absolute path.
+    fn file_template(dir: &TempDir, name: &str, text: &str) -> TemplateHandle {
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        TemplateHandle {
+            template_path: Some(path),
+            is_help_request: false,
+            help_verb: None,
+        }
+    }
+
+    fn first_error_kind(v: &serde_json::Value) -> String {
+        v["errors"][0]["kind"].as_str().unwrap_or("").to_string()
+    }
+
+    const SLOW: &str = "{% for i in range(end=50000000) %}{{ i }}{% endfor %}";
+
+    #[test]
+    fn render_dispatch_success_and_formats() {
+        let (s, v) = call(
+            &inline(),
+            "render",
+            &[
+                ("template", "Hello {{ name }}"),
+                ("context", r#"{"name":"world"}"#),
+            ],
+        );
+        assert!(s.ok);
+        assert_eq!(v["body"]["value"], "Hello world");
+        assert_eq!(v["template"]["source"], "inline");
+        assert_eq!(v["context"]["keys"][0], "name");
+
+        let (s, v) = call(&inline(), "render", &[("from", "x"), ("format", "html")]);
+        assert!(s.ok);
+        assert_eq!(v["body"]["type"], "html");
+
+        let (s, v) = call(
+            &inline(),
+            "render",
+            &[
+                ("template", r#"{"port": {{ port }}}"#),
+                ("context", r#"{"port":8080}"#),
+                ("format", "json"),
+            ],
+        );
+        assert!(s.ok);
+        assert_eq!(v["body"]["value"]["port"], 8080);
+
+        let (s, v) = call(
+            &inline(),
+            "render",
+            &[("template", "hi"), ("format", "bytes")],
+        );
+        assert!(s.ok);
+        assert_eq!(v["body"]["base64"], "aGk=");
+    }
+
+    #[test]
+    fn render_error_paths() {
+        // No template source.
+        let (s, v) = call(&inline(), "render", &[]);
+        assert_eq!(s.code, Some(2));
+        assert_eq!(first_error_kind(&v), "template_not_found");
+        // Missing file.
+        let (s, v) = call(&handle_for("template://no-such-file.txt"), "render", &[]);
+        assert_eq!(s.code, Some(2));
+        assert_eq!(first_error_kind(&v), "template_not_found");
+        // Bad context JSON, unreadable context_file, non-object context.
+        let (s, v) = call(
+            &inline(),
+            "render",
+            &[("template", "x"), ("context", "{bad")],
+        );
+        assert_eq!(
+            (s.code, first_error_kind(&v).as_str()),
+            (Some(3), "context_parse")
+        );
+        let (s, v) = call(
+            &inline(),
+            "render",
+            &[("template", "x"), ("context_file", "/nonexistent/ctx.json")],
+        );
+        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(3), "io"));
+        let (s, v) = call(
+            &inline(),
+            "render",
+            &[("template", "x"), ("context", "[1]")],
+        );
+        assert_eq!(
+            (s.code, first_error_kind(&v).as_str()),
+            (Some(3), "context_parse")
+        );
+        // Syntax error and missing variable: the message names the cause.
+        let (s, v) = call(&inline(), "render", &[("template", "{% if %}")]);
+        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(4), "render"));
+        let (s, v) = call(&inline(), "render", &[("template", "{{ who }}")]);
+        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(4), "render"));
+        let msg = v["errors"][0]["message"].as_str().unwrap();
+        assert!(msg.contains("Variable `who` not found"), "{msg}");
+        // Rendered text that is not JSON with format=json.
+        let (s, v) = call(
+            &inline(),
+            "render",
+            &[("template", "nope"), ("format", "json")],
+        );
+        assert_eq!(
+            (s.code, first_error_kind(&v).as_str()),
+            (Some(5), "json_parse")
+        );
+        assert!(v.get("body").is_none());
+    }
+
+    #[test]
+    fn invalid_arguments_are_refused_before_reading() {
+        // A missing template file is not reported: the arguments fail first.
+        let h = handle_for("template://no-such-file.txt");
+        let cases: &[(&str, &[(&str, &str)], &str)] = &[
+            ("render", &[("format", "xml")], "invalid_format"),
+            ("render", &[("timeout_ms", "soon")], "invalid_argument"),
+            ("render", &[("strict", "true")], "invalid_argument"),
+            ("validate", &[("strict", "ture")], "invalid_argument"),
+            ("validate", &[("encoding", "latin1")], "encoding"),
+            ("validate", &[("format", "json")], "invalid_argument"),
+            ("validate", &[("timeout_ms", "-1")], "invalid_argument"),
+        ];
+        for (verb, kv, kind) in cases {
+            let (s, v) = call(&h, verb, kv);
+            assert_eq!(s.code, Some(2), "{verb} {kv:?}: {v}");
+            assert_eq!(&first_error_kind(&v), kind, "{verb} {kv:?}: {v}");
+            assert_eq!(v["ok"], false);
+        }
+        for kv in [
+            &[("stop_on_first_fail", "yes please")][..],
+            &[("capture_output", "everything")][..],
+            &[("timeout_ms", "1s")][..],
+            &[("context", "{}")][..],
+        ] {
+            let (s, v) = call(&h, "test", kv);
+            assert_eq!(s.code, Some(2), "{kv:?}: {v}");
+            assert_eq!(s.reason.as_deref(), Some("invalid_argument"));
+            assert_eq!(v["ok"], false);
+        }
+    }
+
+    #[test]
+    fn unknown_verb_fails_with_exit_1() {
+        let (s, _) = call(&inline(), "compile", &[]);
+        assert_eq!(s.code, Some(1));
+        assert!(s.reason.unwrap().contains("unknown verb: compile"));
+    }
+
+    #[test]
+    fn render_timeout_is_enforced() {
+        let started = std::time::Instant::now();
+        let (s, v) = call(
+            &inline(),
+            "render",
+            &[("template", SLOW), ("timeout_ms", "100")],
+        );
+        assert_eq!(s.code, Some(TIMEOUT_EXIT));
+        assert_eq!(first_error_kind(&v), "timeout");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        // A generous limit lets a quick render through; 0 means no limit.
+        for t in ["10000", "0"] {
+            let (s, v) = call(
+                &inline(),
+                "render",
+                &[("template", "ok"), ("timeout_ms", t)],
+            );
+            assert!(s.ok);
+            assert_eq!(v["body"]["value"], "ok");
+        }
+    }
+
+    #[test]
+    fn validate_timeout_is_enforced() {
+        let (s, v) = call(
+            &inline(),
+            "validate",
+            &[("template", SLOW), ("timeout_ms", "100")],
+        );
+        assert_eq!(s.code, Some(TIMEOUT_EXIT));
+        assert_eq!(first_error_kind(&v), "timeout");
+        let (s, _) = call(
+            &inline(),
+            "validate",
+            &[("template", "ok"), ("timeout_ms", "10000")],
+        );
+        assert!(s.ok);
+    }
+
+    #[test]
+    fn test_timeout_reports_cases_that_ran() {
+        let cases = r#"[
+            {"name":"quick","context":{"slow":false},"expected":"done"},
+            {"name":"slow","context":{"slow":true},"expected":"done"}
+        ]"#;
+        let template =
+            "{% if slow %}{% for i in range(end=50000000) %}{{ i }}{% endfor %}{% endif %}done";
+        let (s, v) = call(
+            &inline(),
+            "test",
+            &[
+                ("template", template),
+                ("cases", cases),
+                ("timeout_ms", "300"),
+            ],
+        );
+        assert_eq!(s.code, Some(TIMEOUT_EXIT), "{v}");
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["passed"], 1);
+        assert_eq!(v["cases"][0]["name"], "quick");
+        let error = v["error"].as_str().unwrap();
+        assert!(
+            error.contains("timeout_ms=300") && error.contains("1 of 2 cases ran"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_reads_template_argument_and_context_file() {
+        let dir = TempDir::new().unwrap();
+        let ctx = dir.path().join("ctx.json");
+        std::fs::write(&ctx, r#"{"name":"alice"}"#).unwrap();
+        let ctx = ctx.to_str().unwrap();
+
+        let (s, v) = call(
+            &inline(),
+            "validate",
+            &[("template", "Hi {{ name }}"), ("context_file", ctx)],
+        );
+        assert!(s.ok, "{v}");
+        assert_eq!(v["template"]["source"], "inline");
+        assert_eq!(v["template"]["size"], 13);
+
+        // `context` replaces `context_file` entirely.
+        let (s, v) = call(
+            &inline(),
+            "validate",
+            &[
+                ("template", "Hi {{ name }}"),
+                ("context_file", ctx),
+                ("context", r#"{"other":1}"#),
+            ],
+        );
+        assert_eq!(s.code, Some(1));
+        assert_eq!(first_error_kind(&v), "missing_variable");
+
+        let (s, v) = call(&inline(), "validate", &[("inline", "x")]);
+        assert!(s.ok, "{v}");
+        assert_eq!(v["template"]["source"], "inline");
+
+        let (s, v) = call(
+            &inline(),
+            "validate",
+            &[("template", "x"), ("context_file", "/nonexistent/ctx.json")],
+        );
+        assert_eq!(
+            (s.code, first_error_kind(&v).as_str()),
+            (Some(1), "file_read")
+        );
+    }
+
+    #[test]
+    fn validate_error_paths() {
+        let (s, v) = call(&inline(), "validate", &[]);
+        assert_eq!(
+            (s.code, first_error_kind(&v).as_str()),
+            (Some(1), "file_read")
+        );
+        let (s, v) = call(&handle_for("template://no-such-file.txt"), "validate", &[]);
+        assert_eq!(
+            (s.code, first_error_kind(&v).as_str()),
+            (Some(1), "file_read")
+        );
+        let (s, v) = call(&inline(), "validate", &[("from", "x"), ("context", "{bad")]);
+        assert_eq!(
+            (s.code, first_error_kind(&v).as_str()),
+            (Some(1), "context_parse")
+        );
+        let (s, v) = call(&inline(), "validate", &[("from", "{% for %}")]);
+        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(1), "syntax"));
+        let (s, v) = call(
+            &inline(),
+            "validate",
+            &[
+                ("from", "{{ x | no_such_filter }}"),
+                ("context", r#"{"x":1}"#),
+            ],
+        );
+        assert_eq!(s.code, Some(1));
+        assert!(
+            ["syntax", "render"].contains(&first_error_kind(&v).as_str()),
+            "{v}"
+        );
+        let (s, v) = call(
+            &inline(),
+            "validate",
+            &[("from", "{{ x | round }}"), ("context", r#"{"x":"text"}"#)],
+        );
+        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(1), "render"));
+    }
+
+    #[test]
+    fn validate_strict_spellings() {
+        for (value, ok) in [
+            ("false", true),
+            ("0", true),
+            ("no", true),
+            ("true", false),
+            ("YES", false),
+        ] {
+            let (s, v) = call(
+                &inline(),
+                "validate",
+                &[("from", "{{ x }}"), ("strict", value)],
+            );
+            assert_eq!(s.ok, ok, "strict={value}: {v}");
+            assert_eq!(v["strict"], !ok);
+            let list = if ok { "warnings" } else { "errors" };
+            assert_eq!(v[list][0]["kind"], "missing_variable", "{v}");
+        }
+    }
+
+    #[test]
+    fn test_dispatch_cases_file_default_file_and_options() {
+        let dir = TempDir::new().unwrap();
+        let h = file_template(&dir, "welcome.txt", "Hello, {{ name }}!");
+        std::fs::write(
+            dir.path().join("welcome.tests.json"),
+            r#"[{"name":"alice","context":{"name":"alice"},"expected":"Hello, alice!"}]"#,
+        )
+        .unwrap();
+        let (s, v) = call(&h, "test", &[]);
+        assert!(s.ok, "{v}");
+        assert_eq!(v["total"], 1);
+
+        let cases = dir.path().join("cases.json");
+        std::fs::write(
+            &cases,
+            r#"[{"name":"a","context":{"name":"a"},"contains":"a!"},
+                {"name":"b","context":{"name":"b"},"expected":"nope"},
+                {"name":"c","context":{"name":"c"},"not_contains":"c"}]"#,
+        )
+        .unwrap();
+        let cases = cases.to_str().unwrap();
+        let (s, v) = call(
+            &h,
+            "test",
+            &[("cases_file", cases), ("capture_output", "full")],
+        );
+        assert_eq!(s.code, Some(1));
+        assert_eq!(
+            (v["passed"].as_u64(), v["failed"].as_u64()),
+            (Some(1), Some(2))
+        );
+        assert_eq!(v["cases"][0]["rendered"], "Hello, a!");
+        let (s, v) = call(
+            &h,
+            "test",
+            &[
+                ("cases_file", cases),
+                ("stop_on_first_fail", "true"),
+                ("capture_output", "none"),
+            ],
+        );
+        assert_eq!(s.code, Some(1));
+        assert_eq!(v["total"], 2);
+        assert!(v["cases"][1].get("rendered").is_none());
+    }
+
+    #[test]
+    fn test_error_paths() {
+        let dir = TempDir::new().unwrap();
+        let h = file_template(&dir, "t.txt", "x");
+        let (s, v) = call(&h, "test", &[]);
+        assert_eq!(
+            (s.code, s.reason.as_deref()),
+            (Some(2), Some("no_test_cases"))
+        );
+        assert!(v["error"].as_str().unwrap().contains("no test cases"));
+        let (s, _) = call(
+            &handle_for("template://no-such-file.txt"),
+            "test",
+            &[("cases", "[]")],
+        );
+        assert_eq!(
+            (s.code, s.reason.as_deref()),
+            (Some(2), Some("template_not_found"))
+        );
+        let (s, _) = call(&h, "test", &[("cases", "[")]);
+        assert_eq!(
+            (s.code, s.reason.as_deref()),
+            (Some(2), Some("no_test_cases"))
+        );
+        let (s, _) = call(&h, "test", &[("cases_file", "/nonexistent/cases.json")]);
+        assert_eq!(
+            (s.code, s.reason.as_deref()),
+            (Some(2), Some("no_test_cases"))
+        );
+        let (s, _) = call(&h, "test", &[("cases", "[]")]);
+        assert_eq!(
+            (s.code, s.reason.as_deref()),
+            (Some(1), Some("no_test_cases"))
+        );
+        let (s, _) = call(
+            &inline(),
+            "test",
+            &[
+                ("template", "{% if %}"),
+                ("cases", r#"[{"name":"a","context":{}}]"#),
+            ],
+        );
+        assert_eq!(
+            (s.code, s.reason.as_deref()),
+            (Some(3), Some("tera_parse_failed"))
+        );
+        let (s, v) = call(
+            &inline(),
+            "test",
+            &[
+                ("template", "{{ y }}"),
+                ("cases", r#"[{"name":"a","context":{}}]"#),
+            ],
+        );
+        assert_eq!(s.code, Some(1));
+        assert!(
+            v["cases"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("Variable `y` not found")
+        );
+        let (s, v) = call(
+            &inline(),
+            "test",
+            &[
+                ("template", "x"),
+                ("cases", r#"[{"name":"a","context":[1]}]"#),
+            ],
+        );
+        assert_eq!(s.code, Some(1));
+        assert!(
+            v["cases"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("failed to convert context")
+        );
+    }
+
+    #[test]
+    fn leading_parent_dir_is_kept() {
+        assert_eq!(
+            normalize_path(&PathBuf::from("../x.txt")),
+            PathBuf::from("../x.txt")
+        );
+        assert_eq!(
+            normalize_path(&PathBuf::from("a/../x.txt")),
+            PathBuf::from("x.txt")
+        );
+        assert_eq!(
+            normalize_path(&PathBuf::from("a/../../x.txt")),
+            PathBuf::from("../x.txt")
+        );
+        assert_eq!(
+            normalize_path(&PathBuf::from("./a/./b")),
+            PathBuf::from("a/b")
+        );
+    }
+
+    #[test]
+    fn verb_args_match_help_usage() {
+        for verb in TEMPLATE_HELP.verbs {
+            let usage = verb.detail.as_ref().unwrap().usage;
+            let mut in_usage: Vec<&str> = usage
+                .split(|c: char| c == '[' || c.is_whitespace())
+                .filter_map(|w| w.split_once('=').map(|(k, _)| k))
+                .collect();
+            in_usage.sort();
+            let mut parsed = verb_args(verb.name).unwrap().to_vec();
+            parsed.sort();
+            assert_eq!(
+                in_usage, parsed,
+                "usage of {} disagrees with its arguments",
+                verb.name
+            );
+        }
     }
 }

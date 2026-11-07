@@ -149,27 +149,97 @@ pub struct ConfigHandle {
     base_path: PathBuf,
     prefix: String,
     original_url: Url,
+    /// Why the target cannot be used (a `.` or `..` segment), if it can't.
+    invalid_target: Option<String>,
 }
+
+/// The arguments each verb accepts. Help usage lists exactly these, and
+/// anything else is refused before the verb acts.
+const GET_ARGS: &[&str] = &[];
+const SET_ARGS: &[&str] = &["value", "raw"];
+const LS_ARGS: &[&str] = &["recursive", "pattern", "limit", "offset"];
+const WATCH_ARGS: &[&str] = &["key", "prefix", "timeout_ms", "max_events", "initial"];
+
+/// Arguments accepted by `verb`, or `None` for an unknown verb.
+fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
+    match verb {
+        "get" => Some(GET_ARGS),
+        "set" => Some(SET_ARGS),
+        "ls" => Some(LS_ARGS),
+        "watch" => Some(WATCH_ARGS),
+        _ => None,
+    }
+}
+
+/// Refuses an argument `verb` does not take (exit 2). `dry_run` is checked
+/// by the dispatcher, which refuses `dry_run=true` for every config verb, so
+/// only `dry_run=false` reaches here and it changes nothing.
+fn check_args(verb: &str, allowed: &[&str], args: &Args) -> Option<Status> {
+    let mut keys: Vec<&String> = args.keys().collect();
+    keys.sort();
+    let bad = keys
+        .into_iter()
+        .find(|k| k.as_str() != "dry_run" && !allowed.contains(&k.as_str()))?;
+    if bad == "timeout_ms" {
+        return Some(Status::err(
+            2,
+            format!("config {verb} does not take timeout_ms; only watch has a time limit"),
+        ));
+    }
+    Some(Status::err(
+        2,
+        format!("unknown argument for config {verb}: {bad}"),
+    ))
+}
+
+/// Reads a boolean argument; an unreadable value is an error (exit 2), never
+/// a silent default.
+fn bool_arg(args: &Args, key: &str, default: bool) -> std::result::Result<bool, Status> {
+    crate::core::lenient::bool_arg(args, key)
+        .map(|v| v.unwrap_or(default))
+        .map_err(|e| Status::err(2, e.to_string()))
+}
+
+/// Reads a non-negative integer argument (exit 2 if it is not one).
+fn u64_arg(args: &Args, key: &str) -> std::result::Result<u64, Status> {
+    match args.get(key) {
+        None => Ok(0),
+        Some(v) => v.trim().parse::<u64>().map_err(|_| {
+            Status::err(
+                2,
+                format!("invalid {key} value: {v:?} (expected a non-negative integer)"),
+            )
+        }),
+    }
+}
+
+/// Unique suffix for `set`'s temporary file within this process.
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl ConfigHandle {
     pub fn from_url(u: &Url) -> Result<Self> {
+        // XDG_CONFIG_HOME, else ~/.config.
+        let config_dir = dirs::config_dir().unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config")
+        });
+        Ok(Self::with_config_dir(u, &config_dir))
+    }
+
+    /// Builds the handle for `u` with values stored under
+    /// `<config_dir>/resh/config`.
+    fn with_config_dir(u: &Url, config_dir: &Path) -> Self {
+        let base_path = config_dir.join("resh").join("config");
         // Check for help request first
         if Self::should_show_help(u) {
-            // For help requests, we create a minimal handle just to display help
-            let config_dir = dirs::config_dir().unwrap_or_else(|| {
-                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
-                    .join(".config")
-            });
-            let base_path = config_dir.join("resh").join("config");
-
-            return Ok(Self {
+            return Self {
                 namespace: String::new(),
                 key: String::new(),
                 file_path: base_path.clone(),
                 base_path,
                 prefix: String::new(),
                 original_url: u.clone(),
-            });
+                invalid_target: None,
+            };
         }
         // Extract prefix from URL for hierarchical operations
         let prefix = if let Some(host) = u.host_str() {
@@ -198,10 +268,14 @@ impl ConfigHandle {
             }
         };
 
-        // For individual key operations, reject empty keys
-        if key.is_empty() && !prefix.is_empty() {
-            // This might be a root or namespace-level operation (for ls)
-        }
+        // `.` and `..` would resolve outside the namespace (`config://..`
+        // names the parent of the config directory), so they are refused.
+        let invalid_target = prefix
+            .split('/')
+            .any(|seg| seg == "." || seg == "..")
+            .then(|| {
+                format!("invalid config target {prefix:?}: '.' and '..' segments are not allowed")
+            });
 
         // Sanitize namespace and key to only allow [A-Za-z0-9._-/]
         let sanitized_namespace = Self::sanitize_name(&namespace);
@@ -211,12 +285,6 @@ impl ConfigHandle {
             Self::sanitize_path(&key)
         };
 
-        // Get base config directory using XDG
-        let config_dir = dirs::config_dir().unwrap_or_else(|| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config")
-        });
-
-        let base_path = config_dir.join("resh").join("config");
         let file_path = if sanitized_key.is_empty() {
             // For ls operations on namespaces/directories
             base_path.join(&sanitized_namespace)
@@ -226,14 +294,15 @@ impl ConfigHandle {
                 .join(format!("{}.json", sanitized_key))
         };
 
-        Ok(Self {
+        Self {
             namespace: sanitized_namespace,
             key: sanitized_key,
             file_path,
             base_path,
-            prefix,
+            prefix: Self::sanitize_prefix(&prefix),
             original_url: u.clone(),
-        })
+            invalid_target,
+        }
     }
 
     fn sanitize_name(name: &str) -> String {
@@ -246,6 +315,17 @@ impl ConfigHandle {
                 }
             })
             .collect()
+    }
+
+    /// The `ls` prefix with the same sanitizing as stored keys: the first
+    /// segment as a namespace, the rest as a key path.
+    fn sanitize_prefix(prefix: &str) -> String {
+        match prefix.split_once('/') {
+            None => Self::sanitize_name(prefix),
+            Some((ns, rest)) => {
+                format!("{}/{}", Self::sanitize_name(ns), Self::sanitize_path(rest))
+            }
+        }
     }
 
     fn sanitize_path(path: &str) -> String {
@@ -277,17 +357,12 @@ impl ConfigHandle {
             ));
         }
 
-        // Ensure base config directory exists
-        self.ensure_base_config_dir()?;
-
-        // Check if file exists
-        if !self.file_path.exists() {
-            return Ok(Status::err(1, "not found".to_string()));
-        }
-
-        // Read the file contents
+        // Read-only: nothing is created when the key is missing.
         let content = match fs::read_to_string(&self.file_path) {
             Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Status::err(1, "not found".to_string()));
+            }
             Err(e) => {
                 return Ok(Status::err(3, format!("I/O error: {}", e)));
             }
@@ -322,7 +397,10 @@ impl ConfigHandle {
         };
 
         // Determine if raw mode is enabled
-        let raw_mode = args.get("raw").map(|v| v == "true").unwrap_or(false);
+        let raw_mode = match bool_arg(args, "raw", false) {
+            Ok(v) => v,
+            Err(status) => return Ok(status),
+        };
 
         // Process the value based on raw mode
         let json_value = if raw_mode {
@@ -342,28 +420,30 @@ impl ConfigHandle {
         };
 
         // Ensure parent directory exists
-        self.ensure_base_config_dir()?;
+        if let Err(e) = self.ensure_base_config_dir() {
+            return Ok(Status::err(3, format!("I/O error: {:#}", e)));
+        }
 
-        // Perform atomic write using temporary file
-        let temp_path = self
-            .file_path
-            .with_extension(format!("tmp-{}", std::process::id()));
+        // Perform atomic write using temporary file. The name is not a
+        // `.json` file, so `ls`, `get` and `watch` never see it.
+        let n = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_path =
+            self.file_path
+                .with_extension(format!("json.tmp-{}-{}", std::process::id(), n));
 
-        // Write to temporary file
         let json_string =
             serde_json::to_string(&json_value).with_context(|| "Failed to serialize JSON")?;
 
-        {
-            let mut temp_file = File::create(&temp_path)
-                .with_context(|| format!("Failed to create temp file: {:?}", temp_path))?;
-
-            temp_file
-                .write_all(json_string.as_bytes())
-                .with_context(|| "Failed to write to temp file")?;
-
-            temp_file
-                .sync_all()
-                .with_context(|| "Failed to sync temp file")?;
+        let written = File::create(&temp_path).and_then(|mut temp_file| {
+            temp_file.write_all(json_string.as_bytes())?;
+            temp_file.sync_all()
+        });
+        if let Err(e) = written {
+            let _ = fs::remove_file(&temp_path);
+            return Ok(Status::err(
+                3,
+                format!("I/O error: writing {}: {}", temp_path.display(), e),
+            ));
         }
 
         // Atomically rename temp file to final location
@@ -381,7 +461,10 @@ impl ConfigHandle {
 impl ConfigHandle {
     fn verb_ls(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Parse arguments
-        let recursive = args.get("recursive").map(|v| v == "true").unwrap_or(false);
+        let recursive = match bool_arg(args, "recursive", false) {
+            Ok(v) => v,
+            Err(status) => return Ok(status),
+        };
         let pattern = args.get("pattern").cloned();
         let limit = if let Some(limit_str) = args.get("limit") {
             match limit_str.parse::<usize>() {
@@ -411,7 +494,10 @@ impl ConfigHandle {
         };
 
         // List config entries
-        let entries = self.list_config_entries(recursive, glob_matcher.as_ref())?;
+        let entries = match self.list_config_entries(recursive, glob_matcher.as_ref()) {
+            Ok(entries) => entries,
+            Err(e) => return Ok(Status::err(3, format!("I/O error: {:#}", e))),
+        };
 
         // Sort entries by full_key for deterministic pagination
         let mut sorted_entries = entries;
@@ -456,14 +542,8 @@ impl ConfigHandle {
         let mut entries = Vec::new();
         let search_base = if self.prefix.is_empty() {
             self.base_path.clone()
-        } else if self.prefix.contains('/') {
-            // Multi-part prefix like "app/env"
-            let parts: Vec<&str> = self.prefix.split('/').collect();
-            let namespace = parts[0];
-            let sub_path = parts[1..].join("/");
-            self.base_path.join(namespace).join(sub_path)
         } else {
-            // Single namespace
+            // `prefix` is sanitized and has no `.`/`..` segments.
             self.base_path.join(&self.prefix)
         };
 
@@ -473,7 +553,9 @@ impl ConfigHandle {
 
         // Collect all entries first
         if recursive {
+            // min_depth(1): the prefix directory itself is not an entry.
             for entry in WalkDir::new(&search_base)
+                .min_depth(1)
                 .into_iter()
                 .filter_map(|e| e.ok())
             {
@@ -629,33 +711,17 @@ impl ConfigHandle {
             return Ok(Status::err(1, "key and prefix cannot be used together"));
         }
 
-        // Parse timeout_ms with default 0 (no timeout)
-        let timeout_ms = args
-            .get("timeout_ms")
-            .map(|s| {
-                s.parse::<u64>().unwrap_or_else(|e| {
-                    let _ = writeln!(io.stderr, "Invalid timeout_ms, using 0: {}", e);
-                    0
-                })
-            })
-            .unwrap_or(0);
-
-        // Parse max_events with default 0 (no limit)
-        let max_events = args
-            .get("max_events")
-            .map(|s| {
-                s.parse::<u64>().unwrap_or_else(|e| {
-                    let _ = writeln!(io.stderr, "Invalid max_events, using 0: {}", e);
-                    0
-                })
-            })
-            .unwrap_or(0);
-
-        // Parse initial with default false
-        let initial = args
-            .get("initial")
-            .map(|s| s.to_lowercase() == "true")
-            .unwrap_or(false);
+        // timeout_ms and max_events: 0 (the default) means no limit. A value
+        // that is not a number is refused rather than run without a limit.
+        let parsed = u64_arg(args, "timeout_ms").and_then(|timeout_ms| {
+            let max_events = u64_arg(args, "max_events")?;
+            let initial = bool_arg(args, "initial", false)?;
+            Ok((timeout_ms, max_events, initial))
+        });
+        let (timeout_ms, max_events, initial) = match parsed {
+            Ok(v) => v,
+            Err(status) => return Ok(status),
+        };
 
         self.watch_impl(key, prefix, timeout_ms, max_events, initial, io)
     }
@@ -726,19 +792,23 @@ impl ConfigHandle {
 
         // Set up file watching
         let (tx, rx) = mpsc::channel();
-        let mut watcher = RecommendedWatcher::new(
+        let watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| {
                 if let Ok(event) = res {
+                    // The receiver is gone only once watch has returned.
                     let _ = tx.send(event);
                 }
             },
             NotifyConfig::default(),
         )
-        .map_err(|e| anyhow::anyhow!("Failed to create watcher: {}", e))?;
-
-        watcher
-            .watch(&watch_dir, RecursiveMode::Recursive)
-            .map_err(|e| anyhow::anyhow!("Failed to start watching: {}", e))?;
+        .and_then(|mut w| w.watch(&watch_dir, RecursiveMode::Recursive).map(|()| w));
+        let _watcher = match watcher {
+            Ok(w) => w,
+            Err(e) => {
+                writeln!(io.stderr, "Failed to watch {}: {}", watch_dir.display(), e)?;
+                return Ok(Status::err(2, format!("config watch failed: {}", e)));
+            }
+        };
 
         // Store previous state for change detection
         let mut previous_state = self.load_current_snapshot(&watch_dir)?;
@@ -826,15 +896,18 @@ impl ConfigHandle {
             return Ok(snapshot);
         }
 
-        for entry in WalkDir::new(watch_dir) {
-            let entry = entry?;
+        // Entries that cannot be read (removed mid-walk, no permission) are
+        // skipped like invalid JSON files.
+        for entry in WalkDir::new(watch_dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
 
             if path.is_file() {
                 if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                     if file_name.ends_with(".json") {
                         // Extract key from path relative to watch directory
-                        let relative_path = path.strip_prefix(watch_dir)?;
+                        let Ok(relative_path) = path.strip_prefix(watch_dir) else {
+                            continue;
+                        };
                         let key = self.path_to_key(relative_path);
 
                         // Read and parse the JSON content
@@ -999,6 +1072,16 @@ impl Handle for ConfigHandle {
             return self.display_help(verb_arg.as_deref(), io);
         }
 
+        let Some(allowed) = verb_args(verb) else {
+            bail!("unknown verb for config://: {}", verb);
+        };
+        if let Some(refusal) = check_args(verb, allowed, args) {
+            return Ok(refusal);
+        }
+        if let Some(reason) = &self.invalid_target {
+            return Ok(Status::err(1, reason.clone()));
+        }
+
         match verb {
             "get" => self.verb_get(args, io),
             "set" => self.verb_set(args, io),
@@ -1030,6 +1113,7 @@ mod tests {
             base_path,
             prefix: prefix.to_string(),
             original_url: mock_url,
+            invalid_target: None,
         };
 
         (handle, temp_dir)
@@ -1401,5 +1485,552 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(result.code, Some(2));
         assert_eq!(result.reason, Some("invalid pattern".to_string()));
+    }
+
+    // --- dispatch tests: every verb through Handle::call -------------------
+
+    fn at(dir: &TempDir, url: &str) -> ConfigHandle {
+        ConfigHandle::with_config_dir(&Url::parse(url).unwrap(), dir.path())
+    }
+
+    fn call(h: &ConfigHandle, verb: &str, kv: &[(&str, &str)]) -> (Status, String, String) {
+        let args: Args = kv
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let (mut i, mut o, mut e) = (
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+        );
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        let status = h.call(verb, &args, &mut io).unwrap();
+        (
+            status,
+            String::from_utf8(o.into_inner()).unwrap(),
+            String::from_utf8(e.into_inner()).unwrap(),
+        )
+    }
+
+    fn base(dir: &TempDir) -> PathBuf {
+        dir.path().join("resh").join("config")
+    }
+
+    fn assert_err(status: &Status, code: i32, reason_part: &str) {
+        assert!(!status.ok, "expected failure, got {status:?}");
+        assert_eq!(status.code, Some(code), "{status:?}");
+        let reason = status.reason.clone().unwrap_or_default();
+        assert!(
+            reason.contains(reason_part),
+            "{reason:?} lacks {reason_part:?}"
+        );
+    }
+
+    #[test]
+    fn set_then_get_round_trips_json_and_strings() {
+        let dir = TempDir::new().unwrap();
+        let h = at(&dir, "config://app/db/url");
+        let (s, out, _) = call(&h, "set", &[("value", "postgres://db:5432/app")]);
+        assert!(s.ok, "{s:?}");
+        assert_eq!(out, "", "set prints nothing");
+        assert_eq!(call(&h, "get", &[]).1, r#""postgres://db:5432/app""#);
+        assert!(base(&dir).join("app/db/url.json").is_file());
+
+        let n = at(&dir, "config://app/timeout");
+        assert!(call(&n, "set", &[("value", "30")]).0.ok);
+        assert_eq!(call(&n, "get", &[]).1, "30");
+        assert!(call(&n, "set", &[("value", "\"30\"")]).0.ok);
+        assert_eq!(call(&n, "get", &[]).1, r#""30""#);
+    }
+
+    #[test]
+    fn single_segment_uses_default_namespace() {
+        let dir = TempDir::new().unwrap();
+        let h = at(&dir, "config://theme");
+        assert!(call(&h, "set", &[("value", "dark")]).0.ok);
+        assert!(base(&dir).join("default/theme.json").is_file());
+        assert_eq!(call(&h, "get", &[]).1, r#""dark""#);
+    }
+
+    #[test]
+    fn set_raw_requires_valid_json() {
+        let dir = TempDir::new().unwrap();
+        let h = at(&dir, "config://app/flags");
+        let (s, _, _) = call(&h, "set", &[("value", r#"{"beta":true}"#), ("raw", "true")]);
+        assert!(s.ok);
+        assert_eq!(call(&h, "get", &[]).1, r#"{"beta":true}"#);
+        let (s, _, _) = call(&h, "set", &[("value", "not json"), ("raw", "true")]);
+        assert_err(&s, 2, "invalid json");
+        // The failed set left the old value in place.
+        assert_eq!(call(&h, "get", &[]).1, r#"{"beta":true}"#);
+        // raw=false stores non-JSON text as a string.
+        assert!(
+            call(&h, "set", &[("value", "plain"), ("raw", "false")])
+                .0
+                .ok
+        );
+        assert_eq!(call(&h, "get", &[]).1, r#""plain""#);
+    }
+
+    #[test]
+    fn set_rejects_unreadable_raw_without_writing() {
+        let dir = TempDir::new().unwrap();
+        let h = at(&dir, "config://app/k");
+        let (s, _, _) = call(&h, "set", &[("value", "1"), ("raw", "ture")]);
+        assert_err(&s, 2, "invalid value for raw");
+        assert!(!base(&dir).exists(), "nothing written");
+    }
+
+    #[test]
+    fn set_errors() {
+        let dir = TempDir::new().unwrap();
+        let (s, _, _) = call(&at(&dir, "config://app/k"), "set", &[]);
+        assert_err(&s, 1, "missing arg: value");
+        let (s, _, _) = call(&at(&dir, "config://"), "set", &[("value", "1")]);
+        assert_err(&s, 1, "Empty key");
+        assert!(!base(&dir).exists(), "nothing written");
+    }
+
+    #[test]
+    fn set_io_error_is_exit_3_and_leaves_no_temp_file() {
+        let dir = TempDir::new().unwrap();
+        // `app/blocker` is a file, so `app/blocker/k.json` cannot be created.
+        fs::create_dir_all(base(&dir).join("app")).unwrap();
+        fs::write(base(&dir).join("app/blocker"), "x").unwrap();
+        let (s, _, _) = call(
+            &at(&dir, "config://app/blocker/k"),
+            "set",
+            &[("value", "1")],
+        );
+        assert_err(&s, 3, "I/O error");
+        // The key is a directory: the temp file is written, the rename fails.
+        fs::create_dir_all(base(&dir).join("app/dir.json")).unwrap();
+        let (s, _, _) = call(&at(&dir, "config://app/dir"), "set", &[("value", "1")]);
+        assert_err(&s, 3, "I/O error");
+        let leftovers: Vec<_> = fs::read_dir(base(&dir).join("app"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn get_errors() {
+        let dir = TempDir::new().unwrap();
+        let (s, out, _) = call(&at(&dir, "config://nope/k"), "get", &[]);
+        assert_err(&s, 1, "not found");
+        assert_eq!(out, "");
+        assert!(!base(&dir).exists(), "get must not create directories");
+
+        let (s, _, _) = call(&at(&dir, "config://"), "get", &[]);
+        assert_err(&s, 1, "Empty key");
+
+        fs::create_dir_all(base(&dir).join("app")).unwrap();
+        fs::write(base(&dir).join("app/bad.json"), "{not json").unwrap();
+        let (s, out, _) = call(&at(&dir, "config://app/bad"), "get", &[]);
+        assert_err(&s, 2, "invalid json");
+        assert_eq!(out, "");
+
+        // A directory where the value file should be: a read error.
+        fs::create_dir_all(base(&dir).join("app/isdir.json")).unwrap();
+        let (s, _, _) = call(&at(&dir, "config://app/isdir"), "get", &[]);
+        assert_err(&s, 3, "I/O error");
+    }
+
+    #[test]
+    fn dot_segments_are_refused_without_side_effects() {
+        let dir = TempDir::new().unwrap();
+        for url in ["config://../x", "config://./x", "config://../evil/x"] {
+            let h = at(&dir, url);
+            for (verb, args) in [
+                ("set", vec![("value", "1")]),
+                ("get", vec![]),
+                ("ls", vec![]),
+                ("watch", vec![("timeout_ms", "1")]),
+            ] {
+                let (s, _, _) = call(&h, verb, &args);
+                assert_err(&s, 1, "'.' and '..' segments are not allowed");
+            }
+        }
+        assert!(!dir.path().join("resh").exists(), "nothing created");
+    }
+
+    #[test]
+    fn unknown_arguments_and_timeout_ms_are_refused() {
+        let dir = TempDir::new().unwrap();
+        let h = at(&dir, "config://app/k");
+        for verb in ["get", "set", "ls"] {
+            let (s, _, _) = call(&h, verb, &[("value", "1"), ("timeout_ms", "5")]);
+            assert_err(&s, 2, "does not take timeout_ms");
+        }
+        let (s, _, _) = call(&h, "set", &[("value", "1"), ("vaule", "2")]);
+        assert_err(&s, 2, "unknown argument for config set: vaule");
+        let (s, _, _) = call(&h, "get", &[("raw", "true")]);
+        assert_err(&s, 2, "unknown argument for config get: raw");
+        let (s, _, _) = call(&h, "watch", &[("recursive", "true")]);
+        assert_err(&s, 2, "unknown argument for config watch: recursive");
+        assert!(!base(&dir).exists(), "nothing written");
+        // dry_run=false is a no-op (the dispatcher refuses dry_run=true).
+        assert!(
+            call(&h, "set", &[("value", "1"), ("dry_run", "false")])
+                .0
+                .ok
+        );
+    }
+
+    #[test]
+    fn unknown_verb_is_an_error() {
+        let dir = TempDir::new().unwrap();
+        let args = Args::new();
+        let (mut i, mut o, mut e) = (
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+        );
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        let err = at(&dir, "config://app/k")
+            .call("delete", &args, &mut io)
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown verb for config://: delete")
+        );
+    }
+
+    fn ls_json(h: &ConfigHandle, kv: &[(&str, &str)]) -> serde_json::Value {
+        let (s, out, _) = call(h, "ls", kv);
+        assert!(s.ok, "{s:?}");
+        serde_json::from_str(&out).unwrap()
+    }
+
+    fn full_keys(v: &serde_json::Value) -> Vec<String> {
+        v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["full_key"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn ls_lists_namespaces_children_and_descendants() {
+        let dir = TempDir::new().unwrap();
+        for (url, v) in [
+            ("config://app/theme", "dark"),
+            ("config://app/db/url", "pg"),
+            ("config://app/db/user", "admin"),
+            ("config://other/x", "1"),
+        ] {
+            assert!(call(&at(&dir, url), "set", &[("value", v)]).0.ok);
+        }
+        let root = ls_json(&at(&dir, "config://"), &[]);
+        assert_eq!(full_keys(&root), ["app", "other"]);
+
+        let app = ls_json(&at(&dir, "config://app"), &[]);
+        assert_eq!(full_keys(&app), ["app/db", "app/theme"]);
+        assert_eq!(app["entries"][0]["kind"], "branch");
+        assert_eq!(app["entries"][1]["kind"], "leaf");
+        assert_eq!(app["entries"][1]["meta"]["size"], 6);
+
+        // Recursive: every descendant, and not the prefix directory itself.
+        let rec = ls_json(&at(&dir, "config://app"), &[("recursive", "true")]);
+        assert_eq!(
+            full_keys(&rec),
+            ["app/db", "app/db/url", "app/db/user", "app/theme"]
+        );
+        assert_eq!(rec["recursive"], true);
+
+        let sub = ls_json(&at(&dir, "config://app/db"), &[]);
+        assert_eq!(full_keys(&sub), ["app/db/url", "app/db/user"]);
+
+        let pat = ls_json(
+            &at(&dir, "config://app"),
+            &[("recursive", "true"), ("pattern", "u*")],
+        );
+        assert_eq!(full_keys(&pat), ["app/db/url", "app/db/user"]);
+
+        let page = ls_json(
+            &at(&dir, "config://app"),
+            &[("recursive", "true"), ("limit", "2"), ("offset", "1")],
+        );
+        assert_eq!(full_keys(&page), ["app/db/url", "app/db/user"]);
+        assert_eq!(page["limit"], 2);
+        assert_eq!(page["offset"], 1);
+
+        let none = ls_json(&at(&dir, "config://missing"), &[]);
+        assert_eq!(full_keys(&none), Vec::<String>::new());
+    }
+
+    #[test]
+    fn ls_prefix_is_sanitized_like_stored_keys() {
+        let dir = TempDir::new().unwrap();
+        assert!(
+            call(&at(&dir, "config://app/a b/k"), "set", &[("value", "1")])
+                .0
+                .ok
+        );
+        let v = ls_json(&at(&dir, "config://app/a b"), &[]);
+        assert_eq!(full_keys(&v), ["app/a_20b/k"]);
+    }
+
+    #[test]
+    fn ls_argument_errors() {
+        let dir = TempDir::new().unwrap();
+        let h = at(&dir, "config://app");
+        assert_err(&call(&h, "ls", &[("recursive", "maybe")]).0, 2, "recursive");
+        assert_err(
+            &call(&h, "ls", &[("limit", "-1")]).0,
+            2,
+            "invalid limit value",
+        );
+        assert_err(
+            &call(&h, "ls", &[("offset", "x")]).0,
+            2,
+            "invalid offset value",
+        );
+        assert_err(&call(&h, "ls", &[("pattern", "[")]).0, 2, "invalid pattern");
+    }
+
+    fn watch_lines(out: &str) -> Vec<serde_json::Value> {
+        out.lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn watch_argument_errors() {
+        let dir = TempDir::new().unwrap();
+        let h = at(&dir, "config://app/db");
+        let (s, _, err) = call(&h, "watch", &[("key", "a"), ("prefix", "b")]);
+        assert_err(&s, 1, "key and prefix cannot be used together");
+        assert!(err.contains("key and prefix"));
+        assert_err(
+            &call(&h, "watch", &[("timeout_ms", "abc")]).0,
+            2,
+            "invalid timeout_ms value",
+        );
+        assert_err(
+            &call(&h, "watch", &[("timeout_ms", "-5")]).0,
+            2,
+            "invalid timeout_ms value",
+        );
+        assert_err(
+            &call(&h, "watch", &[("max_events", "1.5")]).0,
+            2,
+            "invalid max_events value",
+        );
+        assert_err(
+            &call(&h, "watch", &[("initial", "sure")]).0,
+            2,
+            "invalid value for initial",
+        );
+        assert!(!base(&dir).exists(), "invalid input has no side effect");
+    }
+
+    #[test]
+    fn watch_cannot_create_its_directory() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("resh")).unwrap();
+        fs::write(base(&dir), "not a directory").unwrap();
+        let (s, _, _) = call(
+            &at(&dir, "config://app/db"),
+            "watch",
+            &[("timeout_ms", "10")],
+        );
+        assert_err(&s, 2, "config watch failed");
+    }
+
+    #[test]
+    fn watch_initial_snapshot_with_filters_and_max_events() {
+        let dir = TempDir::new().unwrap();
+        for (url, v) in [
+            ("config://app/db/url", "pg"),
+            ("config://app/db/user", "admin"),
+            ("config://app/theme", "dark"),
+        ] {
+            assert!(call(&at(&dir, url), "set", &[("value", v)]).0.ok);
+        }
+        let h = at(&dir, "config://app/db");
+        let (s, out, _) = call(
+            &h,
+            "watch",
+            &[("initial", "true"), ("prefix", "db/"), ("timeout_ms", "50")],
+        );
+        assert!(s.ok);
+        let mut lines = watch_lines(&out);
+        lines.sort_by_key(|l| l["key"].as_str().unwrap().to_string());
+        assert_eq!(lines.len(), 2, "{out}");
+        assert_eq!(lines[0]["op"], "snapshot");
+        assert_eq!(lines[0]["key"], "db/url");
+        assert_eq!(lines[0]["value"], "pg");
+        assert_eq!(lines[0]["scope"], "app/db");
+        assert_eq!(lines[0]["source"], "config");
+
+        // max_events stops after that many lines, without waiting.
+        let started = Instant::now();
+        let (s, out, _) = call(
+            &h,
+            "watch",
+            &[("initial", "true"), ("key", "theme"), ("max_events", "1")],
+        );
+        assert!(s.ok);
+        assert_eq!(watch_lines(&out).len(), 1);
+        assert_eq!(watch_lines(&out)[0]["key"], "theme");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn watch_timeout_ends_quietly_without_changes() {
+        let dir = TempDir::new().unwrap();
+        let started = Instant::now();
+        let (s, out, _) = call(
+            &at(&dir, "config://app/x"),
+            "watch",
+            &[("timeout_ms", "200")],
+        );
+        assert!(s.ok);
+        assert_eq!(out, "");
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(200), "{took:?}");
+        assert!(took < Duration::from_secs(5), "{took:?}");
+    }
+
+    /// Runs `watch` on a thread while this thread keeps changing values,
+    /// until watch has printed `max_events` lines (bounded by timeout_ms).
+    fn watch_while(
+        dir: &TempDir,
+        url: &str,
+        kv: &[(&str, &str)],
+        mut change: impl FnMut(u32),
+    ) -> Vec<serde_json::Value> {
+        let h = at(dir, url);
+        let kv: Vec<(String, String)> = kv
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let worker = std::thread::spawn(move || {
+            let kv: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            call(&h, "watch", &kv)
+        });
+        let mut round = 0;
+        while !worker.is_finished() && round < 100 {
+            std::thread::sleep(Duration::from_millis(100));
+            change(round);
+            round += 1;
+        }
+        let (s, out, _) = worker.join().unwrap();
+        assert!(s.ok, "{s:?}");
+        watch_lines(&out)
+    }
+
+    #[test]
+    fn watch_reports_set_events_for_matching_keys() {
+        let dir = TempDir::new().unwrap();
+        let lines = watch_while(
+            &dir,
+            "config://app/db",
+            &[
+                ("key", "db/url"),
+                ("max_events", "2"),
+                ("timeout_ms", "10000"),
+            ],
+            |n| {
+                // An unrelated key is changed every round and never reported.
+                let other = at(&dir, "config://app/theme");
+                call(&other, "set", &[("value", &n.to_string())]);
+                let url = at(&dir, "config://app/db/url");
+                call(&url, "set", &[("value", &format!("pg{n}"))]);
+            },
+        );
+        assert_eq!(lines.len(), 2);
+        for (i, l) in lines.iter().enumerate() {
+            assert_eq!(l["op"], "set");
+            assert_eq!(l["key"], "db/url");
+            assert_eq!(l["version"], i as u64 + 1);
+            assert!(l["value"].as_str().unwrap().starts_with("pg"));
+        }
+    }
+
+    #[test]
+    fn watch_reports_removed_keys() {
+        let dir = TempDir::new().unwrap();
+        let file = base(&dir).join("app/gone.json");
+        let lines = watch_while(
+            &dir,
+            "config://app/x",
+            &[
+                ("prefix", "gone"),
+                ("max_events", "2"),
+                ("timeout_ms", "10000"),
+            ],
+            |_| {
+                if file.exists() {
+                    fs::remove_file(&file).unwrap();
+                } else {
+                    fs::create_dir_all(file.parent().unwrap()).unwrap();
+                    fs::write(&file, "true").unwrap();
+                }
+            },
+        );
+        // The file alternates between present and absent, so the two events
+        // are one set and one rm (in either order).
+        let mut ops: Vec<&str> = lines.iter().map(|l| l["op"].as_str().unwrap()).collect();
+        ops.sort();
+        assert_eq!(ops, ["rm", "set"]);
+        for l in &lines {
+            assert_eq!(l["key"], "gone");
+            assert_eq!(l.get("value").is_some(), l["op"] == "set");
+        }
+    }
+
+    #[test]
+    fn watch_default_namespace_reports_namespaced_keys() {
+        let dir = TempDir::new().unwrap();
+        let lines = watch_while(
+            &dir,
+            "config://app",
+            &[
+                ("prefix", "app/"),
+                ("max_events", "1"),
+                ("timeout_ms", "10000"),
+            ],
+            |n| {
+                call(
+                    &at(&dir, "config://app/k"),
+                    "set",
+                    &[("value", &n.to_string())],
+                );
+            },
+        );
+        assert_eq!(lines[0]["key"], "app/k");
+        assert_eq!(lines[0]["scope"], "app");
+    }
+
+    #[test]
+    fn verb_args_match_help_usage() {
+        for verb in CONFIG_HELP.verbs {
+            let usage = verb.detail.as_ref().unwrap().usage;
+            let mut in_usage: Vec<&str> = usage
+                .split(|c: char| c == '[' || c.is_whitespace())
+                .filter_map(|w| w.split_once('=').map(|(k, _)| k))
+                .collect();
+            in_usage.sort();
+            let mut parsed = verb_args(verb.name).unwrap().to_vec();
+            parsed.sort();
+            assert_eq!(
+                in_usage, parsed,
+                "usage of {} disagrees with its arguments",
+                verb.name
+            );
+        }
     }
 }
