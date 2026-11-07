@@ -4,6 +4,7 @@ pub mod lenient;
 pub mod parse;
 pub mod process;
 pub mod registry;
+pub mod secret_store;
 pub mod secure_fs;
 pub mod status;
 #[cfg(test)]
