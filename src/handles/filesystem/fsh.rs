@@ -12,6 +12,9 @@ use url::Url;
 
 #[path = "fsh_support.rs"]
 mod support;
+#[cfg(test)]
+#[path = "fsh_tests.rs"]
+mod verb_tests;
 use support::{run, tool, tool_available, tool_message};
 
 use crate::core::{
@@ -31,26 +34,31 @@ const FS_UNMOUNT_EXAMPLE_OUTPUT: &str = r#"{
   "force": false,
   "lazy": false,
   "skipped": [],
-  "target": "/mnt/usb",
+  "target": "/mnt/data",
   "unmounted": [
     {
       "options": [
         "rw",
         "relatime"
       ],
-      "source": "/dev/sdb1",
-      "target": "/mnt/usb",
+      "source": "/dev/loop0",
+      "target": "/mnt/data",
       "type": "ext4"
     }
   ],
   "verb": "unmount"
 }
 
-Shown with --json-pretty. The verb field is "unmount" for both spellings."#;
+Shown with --json-pretty. The verb field is "unmount" for both spellings.
+A target that is not mounted gives action "already_unmounted" (an error
+with fail_if_not_mounted=true). If any mount cannot be unmounted, the
+result still lists what was unmounted, skipped and failed, and resh
+exits 1. Defaults: by=target, force, lazy, detach_children and
+fail_if_not_mounted false, timeout_ms=5000."#;
 
 /// Sample output shared by `check` and its alias `fsck`.
 const FS_CHECK_EXAMPLE_OUTPUT: &str = r#"{
-  "action": null,
+  "action": "check",
   "alias": "local",
   "allow_repair": false,
   "analysis": {
@@ -66,7 +74,7 @@ const FS_CHECK_EXAMPLE_OUTPUT: &str = r#"{
     "fstype": "ext4",
     "mounted": false,
     "readonly": false,
-    "source": "/dev/sdb1"
+    "source": "/srv/disk.img"
   },
   "mode": "check",
   "plan": null,
@@ -75,20 +83,27 @@ const FS_CHECK_EXAMPLE_OUTPUT: &str = r#"{
     "skipped_reason": null,
     "status": "success"
   },
-  "target": "/dev/sdb1",
+  "target": "/srv/disk.img",
   "tool": {
-    "command": "fsck.ext4 -n /dev/sdb1",
+    "command": "fsck.ext4 -n /srv/disk.img",
     "exit_code": 0,
     "name": "fsck.ext4",
     "stderr": "e2fsck 1.47.0 (5-Feb-2023)\n",
-    "stdout": "/dev/sdb1: clean, 11/65536 files, 12955/262144 blocks\n"
+    "stdout": "/srv/disk.img: clean, 11/65536 files, 12955/262144 blocks\n"
   },
   "verb": "check"
 }
 
-Shown for an unmounted ext4 device with --json-pretty. The verb field is
-"check" for both spellings. mode=repair with allow_repair=true runs
-fsck -p, xfs_repair, or btrfs check --repair on an unmounted filesystem."#;
+Shown for an unmounted ext4 image file with --json-pretty. The verb field
+is "check" for both spellings. Supported types: ext2, ext3, ext4, vfat,
+xfs, btrfs. mode=repair (needs allow_repair=true) runs fsck -p (-y with
+aggressiveness=aggressive), fsck.vfat -a, xfs_repair or btrfs check
+--repair on an unmounted filesystem; a mounted btrfs is scrubbed. Errors
+found are reported in analysis with exit 0; a tool that fails to run its
+check exits 1. Defaults: by=auto, mode=check, aggressiveness=safe,
+allow_repair=false, allow_online_check=true,
+require_unmounted_for_repair=true, btrfs_use_scrub=true,
+timeout_ms=600000."#;
 
 /// Metadata for `resh fs --help` and `resh fs <verb> --help`.
 static FS_HELP: HandleHelp = HandleHelp {
@@ -152,7 +167,10 @@ static FS_HELP: HandleHelp = HandleHelp {
 }
 
 Shown with --json-pretty and one mount. List options take
-comma-separated values, for example include_types=ext4,xfs."#,
+comma-separated values, for example include_types=ext4,xfs. Mount point
+filters match whole path components (/home matches /home/a, not
+/homex). Defaults: include_pseudo=false, resolve_labels and
+resolve_fs_features false, the other switches true, timeout_ms=3000."#,
                 ),
             }),
         },
@@ -210,9 +228,12 @@ comma-separated values, for example include_types=ext4,xfs."#,
 
 Shown with --json-pretty and one filesystem. With mode=aggregate the
 result also has an aggregate object with the summed size, used, free,
-used_percent, and inodes. mode=paths needs paths and adds a
-path_to_filesystem list. Mounts whose usage cannot be read are skipped
-and listed in a warnings array."#,
+used_percent, and inodes. paths is used only with mode=paths, which adds
+a path_to_filesystem list. Mounts whose usage cannot be read are skipped
+and listed in a warnings array. Filters that select nothing are an
+error; thresholds may leave an empty list. Defaults: mode=mounts,
+units=auto (bytes), include_inodes=true, include_readonly=true,
+timeout_ms=5000."#,
                 ),
             }),
         },
@@ -253,8 +274,10 @@ and listed in a warnings array."#,
 }
 
 Shown with --json-pretty; the lockfile string is abbreviated. It holds
-the generated_at time, alias, host, filters, and one entry per mount.
-format=yaml currently produces the same JSON text as format=json."#,
+the generated_at time, alias, host, filters, and one entry per mount, as
+JSON, YAML or text. Nothing is written to disk. Defaults: format=json,
+include_usage, include_fs_metadata and include_os_metadata true,
+include_inodes=false, timeout_ms=5000."#,
                 ),
             }),
         },
@@ -316,7 +339,11 @@ format=yaml currently produces the same JSON text as format=json."#,
 }
 
 Shown with --json-pretty. Without path the root filesystem is queried,
-and without subject the current user is queried."#,
+and without subject the current user is queried. all_subjects=true
+lists every subject on the filesystem (repquota, needs root). Sizes are
+bytes, or 1 KiB blocks with units=blocks. Defaults: subject_type=auto,
+units=auto, the include switches and resolve_uid_gid true,
+timeout_ms=5000."#,
                 ),
             }),
         },
@@ -409,7 +436,10 @@ and without subject the current user is queried."#,
   "verb": "quota_summary"
 }
 
-Shown with --json-pretty, trimmed to one filesystem in each list."#,
+Shown with --json-pretty, trimmed to one filesystem in each list.
+Pseudo filesystems are not considered. With all_subjects=true the result
+has a subjects list with one total per subject instead of summary.
+Defaults as for quota, timeout_ms=8000."#,
                 ),
             }),
         },
@@ -430,11 +460,11 @@ Shown with --json-pretty, trimmed to one filesystem in each list."#,
   "alias": "local",
   "backend": "fs",
   "bind": false,
-  "created_target": false,
+  "created_target": true,
   "details": {
-    "device": "/dev/sdb1",
+    "device": "/srv/disk.img",
     "from_existing": false,
-    "fs_type": "ext4",
+    "fs_type": null,
     "mount_flags": []
   },
   "dry_run": null,
@@ -442,14 +472,17 @@ Shown with --json-pretty, trimmed to one filesystem in each list."#,
   "plan": null,
   "read_only": false,
   "remount": false,
-  "source": "/dev/sdb1",
-  "target": "/mnt/usb",
-  "type": "ext4",
+  "source": "/srv/disk.img",
+  "target": "/mnt/data",
+  "type": null,
   "verb": "mount"
 }
 
-Shown with --json-pretty. An existing compatible mount returns action
-"already_mounted"; dry_run=true returns action "planned" with a plan."#,
+Shown with --json-pretty; an image file is attached to a loop device by
+mount(8). An existing compatible mount returns action "already_mounted";
+dry_run=true returns action "planned" with a plan. A relative target is
+resolved from the current directory. Defaults: create_target=true,
+make_parents=true, other switches false, timeout_ms=5000."#,
                 ),
             }),
         },
@@ -498,7 +531,7 @@ Shown with --json-pretty. An existing compatible mount returns action
   "action": "success",
   "actions": [
     {
-      "command": "resize2fs /dev/sdb1 209715200K",
+      "command": "resize2fs /dev/loop0 2097152K",
       "status": "success",
       "tool": "resize2fs",
       "type": "filesystem_resize"
@@ -507,35 +540,39 @@ Shown with --json-pretty. An existing compatible mount returns action
   "alias": "local",
   "backend": "fs",
   "by": "auto",
-  "delta_bytes": 107374182400,
+  "delta_bytes": 1073741824,
   "dry_run": false,
   "filesystem": {
-    "current_size_bytes": 107374182400,
-    "delta_bytes": 107374182400,
+    "current_size_bytes": 1073741824,
+    "delta_bytes": 1073741824,
     "fstype": "ext4",
     "mounted": true,
-    "requested_size_bytes": 214748364800,
-    "source": "/dev/sdb1"
+    "requested_size_bytes": 2147483648,
+    "source": "/dev/loop0"
   },
-  "final_size_bytes": 214748364800,
+  "final_size_bytes": 2147483648,
   "mode": "grow",
   "plan": null,
-  "previous_size_bytes": 107374182400,
+  "previous_size_bytes": 1073741824,
   "reason": null,
-  "requested_size_bytes": 214748364800,
+  "requested_size_bytes": 2147483648,
   "summary": {
     "grew": true,
     "shrink": false,
     "status": "success"
   },
-  "target": "/data",
+  "target": "/mnt/data",
   "verb": "resize"
 }
 
-Shown for an ext4 filesystem with --json-pretty. Sizes accept K, M, G,
-and T suffixes (powers of 1024). A size equal to the current size
-returns action "noop". Shrinking needs allow_shrink=true, is refused
-for xfs, and needs an unmounted ext3 or ext4 filesystem."#,
+Shown for an ext4 filesystem with --json-pretty. Sizes accept K, M, G
+and T suffixes (powers of 1024); a bare number counts size_units. A size
+equal to the current size returns action "noop". Shrinking needs
+mode=shrink or auto and allow_shrink=true, is refused for xfs, and needs
+an unmounted ext3/ext4 filesystem; xfs and btrfs are resized while
+mounted. force=true passes -f to resize2fs. Defaults: by=auto,
+mode=grow, size_units=auto (bytes), min_free_space_percent=5,
+require_unmounted_for_shrink=true, timeout_ms=600000."#,
                 ),
             }),
         },
@@ -727,9 +764,9 @@ pub enum FsError {
     InvalidUnmountConfig(String),
     #[error("Profile not found: {0}")]
     ProfileNotFound(String),
-    #[error("Mount operations are not supported on this platform")]
+    #[error("Mount operations are not supported here: the mount tool was not found")]
     MountUnsupported,
-    #[error("Unmount operations are not supported on this platform")]
+    #[error("Unmount operations are not supported here: the umount tool was not found")]
     UnmountUnsupported,
     #[error("Permission denied for mount operation")]
     MountPermissionDenied,
@@ -765,7 +802,9 @@ pub enum FsError {
     SnapshotFailed(String),
     #[error("Invalid quota configuration: {0}")]
     InvalidQuotaConfig(String),
-    #[error("Quota operations are not supported on this platform")]
+    #[error(
+        "Quota operations are not supported here: the quota tools (quota, repquota) or the mount table were not found"
+    )]
     QuotaUnsupported,
     #[error("Quotas are not enabled on the target filesystem: {0}")]
     QuotaNotEnabled(String),
@@ -777,7 +816,9 @@ pub enum FsError {
     QuotaFailed(String),
     #[error("Invalid quota summary configuration: {0}")]
     InvalidQuotaSummaryConfig(String),
-    #[error("Quota summary operations are not supported on this platform")]
+    #[error(
+        "Quota summary operations are not supported here: the quota tools (quota, repquota) or the mount table were not found"
+    )]
     QuotaSummaryUnsupported,
     #[error("No filesystems with quotas enabled found: {0}")]
     QuotaSummaryNoQuotaFilesystems(String),
@@ -2259,7 +2300,9 @@ impl FsHandle {
         // fails so that a failed mount leaves nothing behind.
         let mut created: Option<std::path::PathBuf> = None;
 
-        if !target_path.exists() {
+        if config.remount || is_remount {
+            // A remount changes an existing mount; there is nothing to create.
+        } else if !target_path.exists() {
             if !config.create_target {
                 return Err(FsError::TargetCreationFailed(format!(
                     "{} does not exist and create_target=false",
@@ -2848,8 +2891,8 @@ impl FsHandle {
 
     /// Parse snapshot configuration from arguments
     fn parse_snapshot_config(&self, args: Value) -> Result<SnapshotConfig, anyhow::Error> {
-        let mut config: SnapshotConfig = crate::core::lenient::from_value(args)
-            .map_err(|e| FsError::InvalidSnapshotConfig(e.to_string()))?;
+        let mut config: SnapshotConfig =
+            parse_typed(args).map_err(|e| FsError::InvalidSnapshotConfig(e.to_string()))?;
 
         // 0 selects the default.
         if config.timeout_ms == 0 {
@@ -3253,8 +3296,8 @@ impl FsHandle {
 
     /// Parse quota configuration from arguments
     fn parse_quota_config(&self, args: Value) -> Result<FsQuotaConfig, anyhow::Error> {
-        let mut config: FsQuotaConfig = crate::core::lenient::from_value(args)
-            .map_err(|e| FsError::InvalidQuotaConfig(e.to_string()))?;
+        let mut config: FsQuotaConfig =
+            parse_typed(args).map_err(|e| FsError::InvalidQuotaConfig(e.to_string()))?;
 
         // 0 selects the default.
         if config.timeout_ms == 0 {
@@ -3621,8 +3664,8 @@ impl FsHandle {
         &self,
         args: Value,
     ) -> Result<FsQuotaSummaryConfig, anyhow::Error> {
-        let mut config: FsQuotaSummaryConfig = crate::core::lenient::from_value(args)
-            .map_err(|e| FsError::InvalidQuotaSummaryConfig(e.to_string()))?;
+        let mut config: FsQuotaSummaryConfig =
+            parse_typed(args).map_err(|e| FsError::InvalidQuotaSummaryConfig(e.to_string()))?;
 
         // 0 selects the default.
         if config.timeout_ms == 0 {
@@ -4067,8 +4110,8 @@ impl FsHandle {
 
     /// Parse usage configuration from arguments
     fn parse_usage_config(&self, args: Value) -> Result<FsUsageConfig, anyhow::Error> {
-        let config: FsUsageConfig = crate::core::lenient::from_value(args)
-            .map_err(|e| FsError::InvalidUsageConfig(e.to_string()))?;
+        let config: FsUsageConfig =
+            parse_typed(args).map_err(|e| FsError::InvalidUsageConfig(e.to_string()))?;
 
         Ok(config)
     }
@@ -4552,8 +4595,7 @@ impl FsHandle {
         if args.is_null() {
             return Ok(FsResizeConfig::default());
         }
-        crate::core::lenient::from_value(args)
-            .map_err(|e| FsError::InvalidResizeConfig(e.to_string()).into())
+        parse_typed(args).map_err(|e| FsError::InvalidResizeConfig(e.to_string()).into())
     }
 
     /// Validate resize configuration
@@ -4620,8 +4662,7 @@ impl FsHandle {
     /// policies, volume manager) is done before the first tool that changes
     /// anything runs.
     async fn execute_resize(&self, config: &FsResizeConfig) -> Result<Value, anyhow::Error> {
-        let fs_info = self.discover_filesystem(&config.target, &config.by).await?;
-        self.validate_filesystem_support(&fs_info, config)?;
+        let fs_info = self.discover_filesystem(config).await?;
 
         let current_size = fs_info.current_size_bytes;
         let target_size = self.compute_target_size(config, current_size)?;
@@ -4912,9 +4953,9 @@ impl FsHandle {
     /// Discover filesystem information based on target and method
     async fn discover_filesystem(
         &self,
-        target: &str,
-        by: &ResizeTargetKind,
+        config: &FsResizeConfig,
     ) -> Result<DiscoveredFilesystem, anyhow::Error> {
+        let (target, by) = (config.target.as_str(), &config.by);
         let mounts = self.get_existing_mounts().await?;
         let as_mountpoint = support::absolute(target);
         let mounted_at = mounts.iter().rev().find(|m| m.target == as_mountpoint);
@@ -4963,9 +5004,7 @@ impl FsHandle {
             block_size: 4096,
             btrfs_devid: None,
         };
-        if !matches!(info.fstype.as_str(), "ext3" | "ext4" | "xfs" | "btrfs") {
-            return Err(FsError::ResizeUnsupportedFilesystem(info.fstype.clone()).into());
-        }
+        self.validate_filesystem_support(&info, config)?;
         let (size, block, devid) = self
             .filesystem_geometry(&info.fstype, &info.source, info.mountpoint.as_deref())
             .await?;
@@ -5269,8 +5308,8 @@ impl FsHandle {
 
     /// Parse check configuration from input arguments
     fn parse_check_config(&self, args: Value) -> Result<FsCheckConfig, anyhow::Error> {
-        let config: FsCheckConfig = crate::core::lenient::from_value(args)
-            .map_err(|e| FsError::InvalidCheckConfig(e.to_string()))?;
+        let config: FsCheckConfig =
+            parse_typed(args).map_err(|e| FsError::InvalidCheckConfig(e.to_string()))?;
 
         if config.target.trim().is_empty() {
             return Err(FsError::InvalidCheckConfig("target cannot be empty".to_string()).into());
@@ -5293,7 +5332,11 @@ impl FsHandle {
         }
         if let Some(t) = &config.filesystem_type {
             if !CHECK_FILESYSTEMS.contains(&t.as_str()) {
-                return Err(FsError::CheckUnsupportedFilesystem(t.clone()).into());
+                return Err(FsError::InvalidCheckConfig(format!(
+                    "filesystem_type {t:?} is not supported (supported: {})",
+                    CHECK_FILESYSTEMS.join(", ")
+                ))
+                .into());
             }
         }
         if config.mode == CheckMode::Repair && !config.allow_repair {
@@ -5391,22 +5434,24 @@ impl FsHandle {
                 .into());
             }
             _ => {
-                let meta = fs::metadata(&config.target).map_err(|_| {
-                    FsError::CheckTargetNotFound(format!("device not found: {}", config.target))
-                })?;
-                let ft = meta.file_type();
-                if !(ft.is_block_device() || ft.is_file()) {
-                    return Err(FsError::CheckTargetNotFound(format!(
-                        "{} is neither a mount point nor a device or image file",
-                        config.target
-                    ))
-                    .into());
-                }
                 let mount = mounts
                     .iter()
                     .rev()
                     .find(|m| support::same_source(&m.source, &config.target))
                     .cloned();
+                if mount.is_none() {
+                    let meta = fs::metadata(&config.target).map_err(|_| {
+                        FsError::CheckTargetNotFound(format!("device not found: {}", config.target))
+                    })?;
+                    let ft = meta.file_type();
+                    if !(ft.is_block_device() || ft.is_file()) {
+                        return Err(FsError::CheckTargetNotFound(format!(
+                            "{} is neither a mount point nor a device or image file",
+                            config.target
+                        ))
+                        .into());
+                    }
+                }
                 (config.target.clone(), mount)
             }
         };
@@ -5854,8 +5899,8 @@ impl FsHandle {
 
     /// Parse list-mounts configuration from arguments
     fn parse_list_mounts_config(&self, args: Value) -> Result<ListMountsConfig, anyhow::Error> {
-        let mut config: ListMountsConfig = crate::core::lenient::from_value(args)
-            .map_err(|e| FsError::InvalidListMountsConfig(e.to_string()))?;
+        let mut config: ListMountsConfig =
+            parse_typed(args).map_err(|e| FsError::InvalidListMountsConfig(e.to_string()))?;
 
         // Set default timeout if not provided or zero
         if config.timeout_ms == 0 {
@@ -6427,6 +6472,27 @@ fn fs_exit_code(e: &FsError) -> i32 {
         | UsageTimeout | ResizeTimeout | CheckTimeout | ListMountsTimeout => 124,
         Incomplete { code, .. } => *code,
         _ => 1,
+    }
+}
+
+/// Deserializes a verb's arguments. When a value cannot be read, the
+/// error names the argument: each one is tried on its own to find it.
+fn parse_typed<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, String> {
+    match crate::core::lenient::from_value::<T>(args.clone()) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if let Some(obj) = args.as_object() {
+                let mut keys: Vec<&String> = obj.keys().collect();
+                keys.sort();
+                for key in keys {
+                    let single = json!({ key.as_str(): obj[key].clone() });
+                    if let Err(e) = crate::core::lenient::from_value::<T>(single) {
+                        return Err(format!("invalid value for {key}: {}: {e}", obj[key]));
+                    }
+                }
+            }
+            Err(e.to_string())
+        }
     }
 }
 

@@ -476,7 +476,7 @@ r maxpass fs://local.check target=/srv/disk.img max_pass=2
     assert!(r.err("nofs").contains("no filesystem found"));
     r.expect("dir", 1);
     r.expect("missing", 1);
-    r.expect("badtype", 1);
+    r.expect("badtype", 2);
     r.expect("maxpass", 2);
 }
 
