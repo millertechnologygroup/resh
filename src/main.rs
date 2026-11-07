@@ -224,15 +224,22 @@ fn main() -> Result<()> {
     // Reconstruct mail URLs that were broken by shell parsing
     let (final_stage, final_args) = reconstruct_mail_command(&stage, &cli.args);
 
-    // Capture output so we can optionally pretty-print JSON
+    // Output is streamed to stdout as the stage writes it (so long-running
+    // verbs such as `config watch` show events as they happen). Only
+    // --json-pretty needs the whole output first, to reformat it.
     let mut buf: Vec<u8> = Vec::new();
+    let mut stdout = std::io::stdout();
     let mut stderr = core::status::TrackingWriter::new(std::io::stderr());
     let status = dispatch_stage(
         &mut reg,
         &final_stage,
         &final_args,
         &mut std::io::stdin(),
-        &mut buf,
+        if cli.json_pretty {
+            &mut buf as &mut dyn std::io::Write
+        } else {
+            &mut stdout
+        },
         &mut stderr,
     );
 
@@ -257,7 +264,7 @@ fn main() -> Result<()> {
         }
     } else {
         use std::io::Write;
-        let _ = std::io::stdout().write_all(&buf);
+        let _ = stdout.flush();
     }
 
     // A tool lost to its deadline decides the outcome, whatever the handle
