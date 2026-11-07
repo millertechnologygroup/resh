@@ -16,7 +16,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   `resh.unknown_handle`, `<handle>.invalid_target` and
   `<handle>.invalid_argument`. Handles not yet aligned (cache, db, mq, event,
   log, secret, proc, svc, cron, firewall, user, pkg, system, cert, backup,
-  plugin, git) still print their own formats until they are.
+  plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
@@ -37,6 +37,19 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   in `exec`'s cmd/powershell modes a timed-out remote command cannot be
   stopped (a warning says so); `config.get` skips `Match exec`,
   `localnetwork` and `tagged` blocks with a warning.
+
+### git
+
+- Strict arguments, exit codes 0/1/2/124 and `[git.<code>]` errors on all
+  13 verbs; `timeout_ms` is enforced (network verbs default to 600 s).
+- The known_hosts check follows `insteadOf`/`pushInsteadOf` rewrites (an
+  unexpected SSH connection is refused) and steers the SSH library to the
+  key types the file lists; mismatches name the offered and listed types.
+- `clone` accepts `file://`, `git://` and local paths and `recursive=true`;
+  a failed clone removes what it created. `commit amend` works, `push`
+  reports server rejections, a fast-forward `merge` updates the working
+  tree, `pull` no longer overwrites local changes, `sync` handles a detached
+  HEAD and bare repositories.
 
 ### http and https
 
@@ -367,8 +380,8 @@ This section supersedes the test counts and "Still open" list in the
     Keychain path is not tested.
   - No dry-run mode for svc, proc, file writes (except `file replace`),
     cache/db writes, mq, mail send and backup restore; for
-    these `dry_run=true` is refused before anything runs; git `timeout_ms` is
-    rejected; `file` enforces `timeout_ms` on every verb whose work can be
+    these `dry_run=true` is refused before anything runs; git enforces
+    `timeout_ms` on every verb (exit 124; network verbs default to 600 s); `file` enforces `timeout_ms` on every verb whose work can be
     long (exit 124) and refuses it on instant verbs; pkg timeouts stop
     waiting but do not kill the child process: it either keeps running and
     finishes after the timeout is reported, or is killed by `SIGPIPE`
@@ -485,9 +498,9 @@ These were found during the fixes, or are Medium items that were not fixed:
 
 - **Timeouts:** fixed in Stage 2 (FUNC-08). Backup timeouts now kill the
   backend at the deadline and fail with a `TIMEOUT` error. Stage 3: firewall
-  `timeout_ms` is enforced the same way. Git operations cannot be
-  interrupted (blocking libgit2 calls), so git now rejects `timeout_ms`
-  instead of ignoring it.
+  `timeout_ms` is enforced the same way. (Git rejected `timeout_ms` at that
+  stage; it is now enforced, see Unreleased: a stalled SSH server or a long
+  local libgit2 call is reported as outcome unknown, exit 124.)
 - **Event hooks:** the built-in hook notes now go to stderr, so JSON on
   stdout stays valid (Stage 2). `list-topics` still returns mock catalogs,
   and `hooks.disable` still always reports success.
@@ -692,14 +705,6 @@ typed structs:
 
 - **fs**: fixed; every option is parsed strictly and unknown arguments are
   refused (exit 2).
-- **git** (`src/handles/system/gith.rs`):
-  - `clone :2362`, `pull :2370`, `push :2378`, `status :2602`,
-    `branch :2645`, `commit :2755`, `sync :7235`, `status_summary :7298` and
-    `status_short :8212` fail with "invalid type: string".
-  - `merge` and `rebase` silently ignore bool and number values
-    (`:3206, 3404`).
-  - Consequence: `commit` cannot use `all` or `paths`, so it only commits
-    changes that are already staged.
 - **db query** (`src/handles/data/dbh.rs:4577-4597`, `:319-325`):
   `timeout_ms` and `max_rows` are silently ignored, so the defaults of
   5000 ms and 1000 rows always apply. `exec` converts its options correctly.
@@ -850,11 +855,12 @@ typed structs:
     host-key checking (`git.host_key_verification_failed` on a missing or
     unreadable file, an unlisted host, a changed key or a `@revoked` key);
     it is ignored for https and file remotes. Remaining limits:
-    `@cert-authority` (CA-signed host keys) is not supported, and the SSH
-    library picks the host-key type without consulting the file, so the
-    file should list all of the host's key types. See `git.md` 4.4.
-  - `MERGE_HELP` documents a `branch` argument, but the code reads `source`.
-  - `REBASE_HELP` documents `onto`, but the code reads `upstream`.
+    `@cert-authority` is not supported, and an RSA-only entry cannot be used
+    with current OpenSSH servers (libgit2 asks for legacy ssh-rsa). The check
+    follows insteadOf/pushInsteadOf rewrites and steers the SSH library to
+    the key types the file lists. See `git.md` 4.4.
+  - `clone depth=<n>` is refused: libgit2 1.7's shallow fetch is rejected by
+    current git servers ('expected SHA1 list').
 - **system.** `memory` input must list every option, because
   `SystemMemoryOptions` lacks `#[serde(default)]` (`systemh.rs:1929`).
   Trailing arguments such as `format=text` are ignored, since only
