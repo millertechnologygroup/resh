@@ -1,9 +1,14 @@
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use base64::prelude::*;
 use reqwest::Method;
-use reqwest::blocking::Client;
+use reqwest::StatusCode;
+use reqwest::blocking::{Client, Response};
+use reqwest::header::{
+    ACCEPT, ACCESS_CONTROL_REQUEST_HEADERS, ACCESS_CONTROL_REQUEST_METHOD, CONTENT_TYPE, HeaderMap,
+    HeaderName, HeaderValue, ORIGIN,
+};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::Duration;
 use url::Url;
 
@@ -48,7 +53,8 @@ macro_rules! http_handle_help {
                             "resh ",
                             $scheme,
                             "://<host>/<path>.get [accept=text|json|bytes]\n",
-                            "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]"
+                            "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!(
                             "resh ",
@@ -88,8 +94,9 @@ the response body as is."#,
                         usage: concat!(
                             "resh ",
                             $scheme,
-                            "://<host>/<path>.head [query=<k=v&...>]\n",
-                            "  [headers=<Name:value;...>] [accept=json|text|bytes]"
+                            "://<host>/<path>.head [accept=json|text|bytes]\n",
+                            "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!("resh ", $scheme, "://example.com/index.html.head"),
                         example_output: Some(concat!(
@@ -121,7 +128,7 @@ Shown with --json-pretty."#
                             $scheme,
                             "://<host>/<path>.headers [method=<method>]\n",
                             "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!("resh ", $scheme, "://example.com.headers method=HEAD"),
                         example_output: Some(concat!(
@@ -153,9 +160,9 @@ Shown with --json-pretty."#
                         usage: concat!(
                             "resh ",
                             $scheme,
-                            "://<host>/<path>.options [headers=<Name:value;...>]\n",
-                            "  [timeout_ms=<ms>] [follow_redirects=true|false]\n",
-                            "  [include_body=true|false]"
+                            "://<host>/<path>.options [include_body=true|false]\n",
+                            "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!("resh ", $scheme, "://api.example.com/v1/users.options"),
                         example_output: Some(concat!(
@@ -192,8 +199,9 @@ added as the body field."#
                             "resh ",
                             $scheme,
                             "://<host>/<path>.preflight [origin=<origin>]\n",
-                            "  [method=<method>] [request_headers=<name,...>]\n",
-                            "  [headers=<Name:value;...>] [timeout_ms=<ms>]"
+                            "  [method=<method>] [request_headers=<name,...>] [query=<k=v&...>]\n",
+                            "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!(
                             "resh ",
@@ -244,8 +252,9 @@ Shown with --json-pretty."#
                             "resh ",
                             $scheme,
                             "://<host>/<path>.json [method=<method>] [body=<data>]\n",
-                            "  [content_type=<type>] [accept=json|text|bytes]\n",
-                            "  [headers=<Name:value;...>] [timeout_ms=<ms>]"
+                            "  [content_type=<type>] [accept=json|text|bytes] [query=<k=v&...>]\n",
+                            "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!("resh ", $scheme, "://api.example.com/v1/users/42.json"),
                         example_output: Some(concat!(
@@ -282,9 +291,10 @@ accept=bytes reports type bytes with a base64 field."#
                         usage: concat!(
                             "resh ",
                             $scheme,
-                            "://<host>/<path>.post [body=<data>] [body_file=<path>]\n",
+                            "://<host>/<path>.post [body=<data> | body_file=<path>]\n",
                             "  [content_type=<type>] [query=<k=v&...>]\n",
-                            "  [headers=<Name:value;...>] [timeout_ms=<ms>]"
+                            "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!(
                             "resh ",
@@ -306,10 +316,10 @@ The response body is printed exactly as the server sent it."#,
                         usage: concat!(
                             "resh ",
                             $scheme,
-                            "://<host>/<path>.put [body=<data>] [body_file=<path>]\n",
+                            "://<host>/<path>.put [body=<data> | body_file=<path>]\n",
                             "  [content_type=<type>] [accept=text|json|bytes] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!(
                             "resh ",
@@ -331,9 +341,10 @@ Shown for the default accept=text, which prints the response body."#,
                         usage: concat!(
                             "resh ",
                             $scheme,
-                            "://<host>/<path>.patch [body=<data>] [body_file=<path>]\n",
+                            "://<host>/<path>.patch [body=<data> | body_file=<path>]\n",
                             "  [content_type=<type>] [accept=bytes|text|json] [query=<k=v&...>]\n",
-                            "  [headers=<Name:value;...>]"
+                            "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!(
                             "resh ",
@@ -355,9 +366,10 @@ Shown for the default accept=bytes, which prints the response body."#,
                         usage: concat!(
                             "resh ",
                             $scheme,
-                            "://<host>/<path>.delete [accept=text|json|bytes]\n",
-                            "  [body=<data>] [body_file=<path>] [content_type=<type>]\n",
-                            "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]"
+                            "://<host>/<path>.delete [body=<data> | body_file=<path>]\n",
+                            "  [content_type=<type>] [accept=text|json|bytes] [query=<k=v&...>]\n",
+                            "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
                         ),
                         example: concat!(
                             "resh ",
@@ -385,6 +397,354 @@ static HTTP_HELP: HandleHelp = http_handle_help!("http");
 
 /// Metadata for `resh https --help` and `resh https <verb> --help`.
 static HTTPS_HELP: HandleHelp = http_handle_help!("https");
+
+/// Options every verb accepts.
+const COMMON_ARGS: [&str; 5] = [
+    "query",
+    "headers",
+    "timeout_ms",
+    "follow_redirects",
+    "allow_insecure",
+];
+
+/// The arguments each verb accepts, besides `COMMON_ARGS`. Help usage lists
+/// exactly these plus the common ones, and anything else is refused (exit 2)
+/// before a request is sent.
+const GET_ARGS: &[&str] = &["accept"];
+const HEAD_ARGS: &[&str] = &["accept"];
+const HEADERS_ARGS: &[&str] = &["method"];
+const OPTIONS_ARGS: &[&str] = &["include_body"];
+const PREFLIGHT_ARGS: &[&str] = &["origin", "method", "request_headers"];
+const JSON_ARGS: &[&str] = &["method", "body", "content_type", "accept"];
+const POST_ARGS: &[&str] = &["body", "body_file", "content_type"];
+const BODY_ACCEPT_ARGS: &[&str] = &["body", "body_file", "content_type", "accept"];
+
+/// Verb-specific arguments of `verb`, or `None` for an unknown verb.
+fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
+    Some(match verb {
+        "get" => GET_ARGS,
+        "head" => HEAD_ARGS,
+        "headers" => HEADERS_ARGS,
+        "options" => OPTIONS_ARGS,
+        "preflight" => PREFLIGHT_ARGS,
+        "json" => JSON_ARGS,
+        "post" => POST_ARGS,
+        "put" | "patch" | "delete" => BODY_ACCEPT_ARGS,
+        _ => return None,
+    })
+}
+
+/// Default whole-request timeout of each verb, in milliseconds.
+fn default_timeout_ms(verb: &str) -> u64 {
+    match verb {
+        "preflight" => 5_000,
+        "put" | "patch" | "delete" => 30_000,
+        _ => 10_000,
+    }
+}
+
+/// Request headers resh never forwards from `headers=`: the client sets
+/// them from the URL and body.
+const DROPPED_HEADERS: [&str; 4] = ["host", "content-length", "connection", "transfer-encoding"];
+
+/// Usage error (exit 2): nothing was sent.
+fn usage(msg: impl Into<String>) -> Status {
+    Status::err(2, msg)
+}
+
+/// The accepted argument closest to `bad` (edit distance at most 2, or a
+/// case-only difference), for a "did you mean" hint.
+fn suggest<'a>(bad: &str, allowed: &[&'a str]) -> Option<&'a str> {
+    fn distance(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut cur = vec![i + 1];
+            for (j, cb) in b.iter().enumerate() {
+                let cost = usize::from(ca != *cb);
+                cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+    let lower = bad.to_ascii_lowercase().replace('-', "_");
+    allowed
+        .iter()
+        .map(|a| (distance(&lower, a), *a))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, a)| a)
+}
+
+/// Refuses an argument `verb` does not take (exit 2), naming it and
+/// suggesting the closest accepted one.
+fn check_args(scheme: &str, verb: &str, specific: &[&str], args: &Args) -> Option<Status> {
+    let allowed: Vec<&str> = specific.iter().chain(COMMON_ARGS.iter()).copied().collect();
+    let mut keys: Vec<&String> = args.keys().collect();
+    keys.sort();
+    let bad = keys.into_iter().find(|k| !allowed.contains(&k.as_str()))?;
+    if bad == "dry_run" {
+        return Some(usage(format!(
+            "{scheme} {verb} does not support dry_run; nothing was sent"
+        )));
+    }
+    let hint = suggest(bad, &allowed)
+        .map(|s| format!(" (did you mean `{s}`?)"))
+        .unwrap_or_default();
+    Some(usage(format!(
+        "unknown argument for {scheme} {verb}: {bad}{hint}"
+    )))
+}
+
+/// A boolean argument (`true|false|1|0|yes|no|on|off`); anything else is a
+/// usage error, never a silent default.
+fn bool_opt(args: &Args, key: &str, default: bool) -> std::result::Result<bool, Status> {
+    crate::core::lenient::bool_arg(args, key)
+        .map(|v| v.unwrap_or(default))
+        .map_err(|e| usage(e.to_string()))
+}
+
+/// One of `allowed` for `key`, or `default` when absent.
+fn choice<'a>(
+    args: &'a Args,
+    key: &str,
+    allowed: &[&str],
+    default: &'a str,
+) -> std::result::Result<&'a str, Status> {
+    match args.get(key) {
+        None => Ok(default),
+        Some(v) if allowed.contains(&v.as_str()) => Ok(v.as_str()),
+        Some(v) => Err(usage(format!(
+            "invalid {key}: {v:?} (expected {})",
+            allowed.join(", ")
+        ))),
+    }
+}
+
+/// Methods `json` and `headers` can send.
+const METHODS: [&str; 7] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+
+/// The `method=` argument (case-insensitive) or GET.
+fn method_arg(args: &Args) -> std::result::Result<Method, String> {
+    let raw = args.get("method").map(String::as_str).unwrap_or("GET");
+    let upper = raw.to_ascii_uppercase();
+    if !METHODS.contains(&upper.as_str()) {
+        return Err(format!(
+            "Unsupported method: {raw}. Supported methods: {}",
+            METHODS.join(", ")
+        ));
+    }
+    Method::from_bytes(upper.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Parses `Name:value;Name2:value2`. Every segment needs a `:` and a valid
+/// header name and value; `Host`, `Content-Length`, `Connection` and
+/// `Transfer-Encoding` are dropped. Repeated names are all sent.
+fn parse_headers(headers_str: &str) -> std::result::Result<HeaderMap, String> {
+    let mut map = HeaderMap::new();
+    for pair in headers_str.split(';') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = pair.split_once(':') else {
+            return Err(format!(
+                "invalid header format: '{pair}' (expected Name:value)"
+            ));
+        };
+        let (key, value) = (key.trim(), value.trim());
+        let name = HeaderName::from_bytes(key.as_bytes())
+            .map_err(|_| format!("invalid header name: '{key}'"))?;
+        let value = HeaderValue::from_str(value)
+            .map_err(|_| format!("invalid value for header '{key}'"))?;
+        if !DROPPED_HEADERS.contains(&name.as_str()) {
+            map.append(name, value);
+        }
+    }
+    Ok(map)
+}
+
+/// Comma- or semicolon-separated list, trimmed, empty items dropped.
+fn parse_header_list(value: &str) -> Vec<String> {
+    value
+        .split([',', ';'])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Response headers as `name -> [values]`.
+fn header_arrays(headers: &HeaderMap) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (name, value) in headers {
+        out.entry(name.as_str().to_string())
+            .or_default()
+            .push(String::from_utf8_lossy(value.as_bytes()).into_owned());
+    }
+    out
+}
+
+/// Response headers as `name -> "v1, v2"`.
+fn header_joined(headers: &HeaderMap) -> BTreeMap<String, String> {
+    header_arrays(headers)
+        .into_iter()
+        .map(|(k, v)| (k, v.join(", ")))
+        .collect()
+}
+
+fn reason_of(status: StatusCode) -> &'static str {
+    status.canonical_reason().unwrap_or("")
+}
+
+/// Exit status for an HTTP response: 0 for 2xx, and for 3xx when redirects
+/// are not followed (the redirect is the answer asked for); otherwise 1
+/// with `HTTP <code> <reason>`.
+fn http_outcome(status: StatusCode, follow: bool) -> Status {
+    if status.is_success() || (status.is_redirection() && !follow) {
+        Status::ok()
+    } else {
+        Status::err(
+            1,
+            format!("HTTP {} {}", status.as_u16(), reason_of(status))
+                .trim_end()
+                .to_string(),
+        )
+    }
+}
+
+/// The innermost cause of `e`, which names the real problem (connection
+/// refused, certificate not trusted, ...).
+fn root_cause(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut cur = e;
+    while let Some(next) = cur.source() {
+        cur = next;
+    }
+    cur.to_string()
+}
+
+/// What went wrong while sending or reading, and its exit code: 124 for a
+/// timeout (the server may have acted on the request), 2 for a request
+/// that could not be built (nothing was sent), 1 otherwise.
+struct Failure {
+    code: i32,
+    kind: &'static str,
+    message: String,
+}
+
+impl Failure {
+    fn from_reqwest(e: &reqwest::Error, timeout: Duration) -> Self {
+        if e.is_timeout() {
+            Failure {
+                code: 124,
+                kind: "timeout",
+                message: format!("Request timed out after {} ms", timeout.as_millis()),
+            }
+        } else if e.is_builder() {
+            Failure {
+                code: 2,
+                kind: "invalid_url",
+                message: format!("Invalid URL or request: {}", root_cause(e)),
+            }
+        } else if e.is_redirect() {
+            Failure {
+                code: 1,
+                kind: "redirect",
+                message: format!("Redirect failed: {}", root_cause(e)),
+            }
+        } else if e.is_connect() {
+            Failure {
+                code: 1,
+                kind: "network",
+                message: format!("Connection failed: {}", root_cause(e)),
+            }
+        } else {
+            Failure {
+                code: 1,
+                kind: "other",
+                message: format!("Request failed: {}", root_cause(e)),
+            }
+        }
+    }
+
+    fn status(&self) -> Status {
+        Status::err(self.code, self.message.clone())
+    }
+}
+
+/// Settings shared by every verb, validated before anything is sent.
+struct Prepared {
+    client: Client,
+    url: Url,
+    headers: HeaderMap,
+    timeout: Duration,
+    follow: bool,
+}
+
+impl Prepared {
+    fn request(&self, method: Method) -> reqwest::blocking::RequestBuilder {
+        self.client
+            .request(method, self.url.clone())
+            .headers(self.headers.clone())
+            // Sets the whole-request deadline, which also bounds reading the
+            // body (the client timeout alone restarts for the body).
+            .timeout(self.timeout)
+    }
+
+    fn send(
+        &self,
+        rb: reqwest::blocking::RequestBuilder,
+    ) -> std::result::Result<Response, Failure> {
+        rb.send()
+            .map_err(|e| Failure::from_reqwest(&e, self.timeout))
+    }
+
+    /// The whole body; the request timeout covers reading it.
+    fn body(&self, resp: Response) -> std::result::Result<Vec<u8>, Failure> {
+        resp.bytes()
+            .map(|b| b.to_vec())
+            .map_err(|e| Failure::from_reqwest(&e, self.timeout))
+    }
+}
+
+/// The request body from `body=` or `body_file=` (not both). `None` when
+/// neither is given. An unreadable file fails with exit 1 before sending.
+fn body_source(args: &Args) -> std::result::Result<Option<Vec<u8>>, Status> {
+    match (args.get("body"), args.get("body_file")) {
+        (Some(_), Some(_)) => Err(usage(
+            "body and body_file cannot be used together; give one of them",
+        )),
+        (Some(b), None) => Ok(Some(b.as_bytes().to_vec())),
+        (None, Some(path)) if path.is_empty() => Err(usage("body_file is empty")),
+        (None, Some(path)) => std::fs::read(path)
+            .map(Some)
+            .map_err(|e| Status::err(1, format!("failed to read body_file '{path}': {e}"))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The `content_type=` argument as a header value.
+fn content_type_arg(args: &Args) -> std::result::Result<Option<HeaderValue>, Status> {
+    match args.get("content_type") {
+        None => Ok(None),
+        Some(ct) => HeaderValue::from_str(ct)
+            .map(Some)
+            .map_err(|_| usage(format!("invalid content_type: {ct:?}"))),
+    }
+}
+
+/// `body` as JSON when the response says it is JSON, otherwise as text.
+fn json_or_text(content_type: Option<&HeaderValue>, body: &[u8]) -> serde_json::Value {
+    let is_json = content_type
+        .map(|v| String::from_utf8_lossy(v.as_bytes()).to_ascii_lowercase())
+        .is_some_and(|ct| ct.contains("application/json"));
+    if is_json {
+        if let Ok(v) = serde_json::from_slice(body) {
+            return v;
+        }
+    }
+    json!(String::from_utf8_lossy(body))
+}
 
 pub struct HttpHandle {
     url: Url,
@@ -417,1828 +777,543 @@ impl HttpHandle {
         Ok(Some(Status::ok()))
     }
 
-    fn parse_headers(headers_str: &str) -> Result<HashMap<String, String>, String> {
-        let mut headers = HashMap::new();
-        for pair in headers_str.split(';') {
-            let pair = pair.trim();
-            if pair.is_empty() {
-                continue;
-            }
-            if let Some(idx) = pair.find(':') {
-                let key = pair[..idx].trim();
-                let value = pair[idx + 1..].trim();
-                if !key.is_empty() {
-                    // Filter out hop-by-hop headers
-                    let key_lower = key.to_lowercase();
-                    if !["host", "content-length", "connection", "transfer-encoding"]
-                        .contains(&key_lower.as_str())
-                    {
-                        headers.insert(key.to_string(), value.to_string());
-                    }
-                }
-            } else {
-                // Invalid header format - missing colon
-                return Err(format!("invalid header format: '{}'", pair));
-            }
-        }
-        Ok(headers)
-    }
-
-    fn parse_query_params(query_str: &str) -> Vec<(String, String)> {
-        let mut params = Vec::new();
-        for pair in query_str.split('&') {
-            let pair = pair.trim();
-            if pair.is_empty() {
-                continue;
-            }
-            if let Some(idx) = pair.find('=') {
-                let key = pair[..idx].trim();
-                let value = pair[idx + 1..].trim();
-                if !key.is_empty() {
-                    params.push((key.to_string(), value.to_string()));
-                }
-            } else {
-                // Handle key without value
-                params.push((pair.to_string(), String::new()));
-            }
-        }
-        params
-    }
-
-    fn merge_query_params(mut url: Url, query_str: &str) -> Result<Url> {
-        let new_params = Self::parse_query_params(query_str);
-
-        for (key, value) in new_params {
-            url.query_pairs_mut().append_pair(&key, &value);
-        }
-
-        Ok(url)
-    }
-
-    fn apply_query(mut base_url: Url, raw_query: &str) -> Url {
-        if raw_query.is_empty() {
-            return base_url;
-        }
-
-        // If URL already has a query, append with &, otherwise with ?
-        let current_query = base_url.query().unwrap_or("");
-        if current_query.is_empty() {
-            base_url.set_query(Some(raw_query));
-        } else {
-            let merged = format!("{}&{}", current_query, raw_query);
-            base_url.set_query(Some(&merged));
-        }
-
-        base_url
-    }
-
-    fn build_client(args: &Args, scheme: &str) -> Result<Client> {
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(30_000);
-
-        let mut builder = Client::builder().timeout(Duration::from_millis(timeout_ms));
-
-        // Handle allow_insecure for HTTPS
-        if crate::core::lenient::bool_arg(args, "allow_insecure")?.unwrap_or(false)
-            && scheme == "https"
-        {
-            builder = builder.danger_accept_invalid_certs(true);
-        }
-
-        builder.build().context("Failed to create HTTP client")
-    }
-
-    /// Parse comma or semicolon-separated header list and return normalized comma-separated string
-    fn parse_header_list(value: &str) -> Vec<String> {
-        value
-            .split(&[',', ';'][..])
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    }
-
-    /// Parse boolean header value (case-insensitive "true")
-    fn parse_bool_header(value: &str) -> bool {
-        value.trim().to_lowercase() == "true"
-    }
-
-    /// Parse integer header value, returning None if invalid
-    fn parse_int_header(value: &str) -> Option<i64> {
-        value.trim().parse::<i64>().ok()
-    }
-
-    /// Parse request_headers argument into comma-separated list for Access-Control-Request-Headers
-    fn parse_request_headers_arg(value: &str) -> String {
-        let headers = Self::parse_header_list(value);
-        headers.join(", ")
-    }
-
-    /// Implements the head verb according to spec
-    fn verb_head(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Start with the original URL
-        let mut request_url = self.url.clone();
-
-        // Merge query parameters if provided
-        if let Some(query) = args.get("query") {
-            request_url = Self::merge_query_params(request_url, query)
-                .context("Failed to merge query parameters")?;
-        }
-
-        // Build client with 10 second timeout
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        // Start building the HEAD request
-        let mut request_builder = client.head(request_url.clone());
-
-        // Add headers if provided
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(e) => {
-                    return Ok(Status::err(1, format!("invalid headers: {}", e)));
-                }
+    /// The URL with `query=` appended to its query string as given.
+    fn request_url(&self, args: &Args) -> Url {
+        let mut url = self.url.clone();
+        if let Some(q) = args.get("query").filter(|q| !q.is_empty()) {
+            let merged = match url.query().filter(|c| !c.is_empty()) {
+                Some(current) => format!("{current}&{q}"),
+                None => q.clone(),
             };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
+            url.set_query(Some(&merged));
         }
-
-        // Add Accept header based on accept parameter
-        if let Some(accept) = args.get("accept") {
-            let accept_header = match accept.as_str() {
-                "json" => "application/json",
-                "text" => "text/*",
-                _ => "*/*", // bytes or anything else
-            };
-            request_builder = request_builder.header("Accept", accept_header);
-        }
-
-        // Execute the HEAD request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                let error_msg = if e.is_timeout() {
-                    "Request timed out".to_string()
-                } else if e.is_connect() {
-                    "Connection failed".to_string()
-                } else {
-                    format!("Network error: {}", e)
-                };
-
-                writeln!(io.stderr, "{}", error_msg)?;
-                return Ok(Status::err(1, error_msg));
-            }
-        };
-
-        // Extract response data
-        let final_url = response.url().to_string();
-        let status_code = response.status().as_u16();
-        let is_ok = response.status().is_success();
-        let reason = response
-            .status()
-            .canonical_reason()
-            .unwrap_or("Unknown")
-            .to_string();
-
-        // Extract headers (lowercase keys)
-        let mut response_headers = HashMap::new();
-        for (name, value) in response.headers() {
-            let header_name = name.to_string().to_lowercase();
-            let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-
-            // For multi-valued headers, join with ", "
-            if let Some(existing) = response_headers.get(&header_name) {
-                response_headers.insert(header_name, format!("{}, {}", existing, header_value));
-            } else {
-                response_headers.insert(header_name, header_value);
-            }
-        }
-
-        // Build response JSON according to spec
-        let response_json = json!({
-            "url": final_url,
-            "status": status_code,
-            "ok": is_ok,
-            "reason": reason,
-            "headers": response_headers
-        });
-
-        // Write JSON response to stdout
-        write!(io.stdout, "{}", serde_json::to_string(&response_json)?)?;
-
-        // Always return Status::ok() for successful transport
-        Ok(Status::ok())
+        url
     }
 
-    /// Implements the get verb with specific behavior for accept modes
-    fn verb_get(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse timeout (default 10 seconds)
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(10_000);
-
-        // Parse accept mode (default "text")
-        let accept = args.get("accept").map(|s| s.as_str()).unwrap_or("text");
-        if !["json", "bytes", "text"].contains(&accept) {
-            return Ok(Status::err(
-                1,
-                format!(
-                    "Invalid accept mode: {}. Must be json, bytes, or text",
-                    accept
-                ),
-            ));
-        }
-
-        // Start with the original URL
-        let mut request_url = self.url.clone();
-
-        // Merge query parameters if provided
-        if let Some(query) = args.get("query") {
-            request_url = Self::merge_query_params(request_url, query)
-                .context("Failed to merge query parameters")?;
-        }
-
-        // Build client with timeout
-        let client = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        // Start building the request
-        let mut request_builder = client.get(request_url.clone());
-
-        // Add headers if provided
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(e) => {
-                    return Ok(Status::err(1, format!("invalid headers: {}", e)));
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Execute the request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                let error_msg = if e.is_timeout() {
-                    "Request timed out".to_string()
-                } else if e.is_connect() {
-                    "Connection failed".to_string()
-                } else {
-                    format!("Request failed: {}", e)
-                };
-
-                return Ok(Status::err(1, error_msg));
-            }
-        };
-
-        // Check status
-        let status_code = response.status();
-        let is_success = status_code.is_success();
-
-        // Extract headers before consuming response
-        let mut response_headers = std::collections::HashMap::new();
-        for (name, value) in response.headers() {
-            let header_name = name.to_string();
-            let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-
-            response_headers
-                .entry(header_name)
-                .or_insert_with(Vec::new)
-                .push(header_value);
-        }
-
-        // Get response body
-        let body_bytes = match response.bytes() {
-            Ok(bytes) => bytes.to_vec(),
-            Err(e) => {
-                return Ok(Status::err(
-                    1,
-                    format!("Failed to read response body: {}", e),
-                ));
-            }
-        };
-
-        // Handle response based on accept mode
-        match accept {
-            "json" => {
-                // Create structured JSON response like other HTTP methods
-
-                // Determine if response content is JSON
-                let content_type = response_headers
-                    .get("content-type")
-                    .and_then(|v| v.first())
-                    .map(|s| s.to_lowercase())
-                    .unwrap_or_default();
-
-                let body_value = if content_type.contains("application/json") {
-                    // Try to parse as JSON
-                    match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                        Ok(json_val) => json_val,
-                        Err(_) => {
-                            // Parse failed, treat as string
-                            let text = String::from_utf8_lossy(&body_bytes).to_string();
-                            serde_json::Value::String(text)
-                        }
-                    }
-                } else {
-                    // Not JSON content type, treat as string
-                    let text = String::from_utf8_lossy(&body_bytes).to_string();
-                    serde_json::Value::String(text)
-                };
-
-                let response_json = json!({
-                    "status": status_code.as_u16(),
-                    "ok": is_success,
-                    "method": "GET",
-                    "headers": response_headers,
-                    "body": body_value,
-                    "body_text": String::from_utf8_lossy(&body_bytes).to_string()
-                });
-
-                write!(io.stdout, "{}", serde_json::to_string(&response_json)?)?;
-            }
-            "bytes" => {
-                // Write raw bytes directly to stdout
-                io.stdout.write_all(&body_bytes)?;
-            }
-            "text" => {
-                // Try to decode as UTF-8, fallback to bytes
-                match std::str::from_utf8(&body_bytes) {
-                    Ok(text) => {
-                        write!(io.stdout, "{}", text)?;
-                    }
-                    Err(_) => {
-                        // Fall back to bytes behavior for robustness
-                        io.stdout.write_all(&body_bytes)?;
-                    }
-                }
-            }
-            _ => unreachable!(), // Already validated above
-        }
-
-        // Return status based on HTTP response code
-        if is_success {
-            Ok(Status::ok())
-        } else {
-            Ok(Status::err(
-                status_code.as_u16() as i32,
-                format!("HTTP {}", status_code),
-            ))
-        }
-    }
-
-    /// Implements the post verb according to spec
-    fn verb_post(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse timeout (default 10 seconds)
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(10_000);
-
-        // Start with the original URL
-        let mut request_url = self.url.clone();
-
-        // Merge query parameters if provided
-        if let Some(query) = args.get("query") {
-            request_url = Self::merge_query_params(request_url, query)
-                .context("Failed to merge query parameters")?;
-        }
-
-        // Build client with timeout
-        let client = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        // Start building the POST request
-        let mut request_builder = client.post(request_url.clone());
-
-        // Add headers if provided
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(e) => {
-                    return Ok(Status::err(1, format!("invalid headers: {}", e)));
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Add content type if provided
-        if let Some(content_type) = args.get("content_type") {
-            request_builder = request_builder.header("Content-Type", content_type);
-        }
-
-        // Determine request body
-        let request_body: Vec<u8> = if let Some(body_file) = args.get("body_file") {
-            // Read body from file (body_file wins over body)
-            match std::fs::read(body_file) {
-                Ok(contents) => contents,
-                Err(e) => {
-                    writeln!(io.stderr, "Failed to read body_file '{}': {}", body_file, e)?;
-                    return Ok(Status::err(1, format!("Failed to read body_file: {}", e)));
-                }
-            }
-        } else if let Some(body) = args.get("body") {
-            // Use inline body string as UTF-8 bytes
-            body.as_bytes().to_vec()
-        } else {
-            // Empty body
-            Vec::new()
-        };
-
-        // Attach the body to the request
-        request_builder = request_builder.body(request_body);
-
-        // Execute the POST request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                let error_msg = if e.is_timeout() {
-                    "Request timed out".to_string()
-                } else if e.is_connect() {
-                    "Connection failed".to_string()
-                } else {
-                    format!("Request failed: {}", e)
-                };
-
-                writeln!(io.stderr, "{}", error_msg)?;
-                return Ok(Status::err(1, error_msg));
-            }
-        };
-
-        // Check status
-        let status_code = response.status();
-        let is_success = status_code.is_success();
-
-        // Get response body and write directly to stdout
-        let body_bytes = match response.bytes() {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                let error_msg = format!("Failed to read response body: {}", e);
-                writeln!(io.stderr, "{}", error_msg)?;
-                return Ok(Status::err(1, error_msg));
-            }
-        };
-
-        // Write raw response body bytes to stdout
-        io.stdout.write_all(&body_bytes)?;
-
-        // Return status based on HTTP response code
-        if is_success {
-            Ok(Status::ok())
-        } else {
-            Ok(Status::err(
-                status_code.as_u16() as i32,
-                format!("HTTP {}", status_code.as_u16()),
-            ))
-        }
-    }
-
-    // Requirements for put verb:
-    // Implement the put verb for the http handle so that the shell can perform real HTTP PUT requests
-    // against arbitrary HTTP/HTTPS URLs, with proper headers, body handling, and structured output.
-    // This must be production-ready, use strong error handling, and include tests that pass and compile.
-
-    /// Implements the put verb according to spec
-    fn verb_put(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Start with the original URL and apply query if provided
-        let mut request_url = self.url.clone();
-        if let Some(query) = args.get("query") {
-            if !query.is_empty() {
-                request_url = Self::apply_query(request_url, query);
-            }
-        }
-
-        // Build client with timeout and TLS settings
-        let client = Self::build_client(args, self.url.scheme())?;
-
-        // Start building the PUT request
-        let mut request_builder = client.put(request_url.clone());
-
-        // Apply headers from headers parameter
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(e) => {
-                    return Ok(Status::err(1, format!("invalid headers: {}", e)));
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Handle request body with body_file taking precedence over body
-        let request_body: Vec<u8> = if let Some(body_file) = args.get("body_file") {
-            if !body_file.is_empty() {
-                match std::fs::read(body_file) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        writeln!(io.stderr, "failed to read body_file '{}': {}", body_file, e)?;
-                        return Ok(Status::err(1, format!("failed to read body_file: {}", e)));
-                    }
-                }
-            } else {
-                Vec::new()
-            }
-        } else if let Some(body) = args.get("body") {
-            body.as_bytes().to_vec()
-        } else {
-            Vec::new()
-        };
-
-        // Set Content-Type header
-        if let Some(content_type) = args.get("content_type") {
-            if !content_type.is_empty() {
-                request_builder = request_builder.header("Content-Type", content_type);
-            }
-        } else {
-            // Apply default Content-Type based on body source
-            if args.get("body_file").is_some() {
-                // For body_file, do not guess content type; leave unset
-            } else if args.get("body").is_some() {
-                // For body, default to text/plain
-                request_builder =
-                    request_builder.header("Content-Type", "text/plain; charset=utf-8");
-            }
-        }
-
-        // Attach the body to the request
-        request_builder = request_builder.body(request_body);
-
-        // Execute the PUT request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                let error_message = if e.is_timeout() {
-                    "Request timed out".to_string()
-                } else if e.is_connect() {
-                    "Connection failed".to_string()
-                } else {
-                    format!("{}", e)
-                };
-
-                writeln!(io.stderr, "{}", error_message)?;
-                return Ok(Status::err(1, error_message));
-            }
-        };
-
-        // Extract response data
-        let status_code = response.status().as_u16();
-        let is_ok = response.status().is_success();
-
-        // Extract headers as Map<String, Vec<String>>
-        let mut response_headers = std::collections::HashMap::new();
-        for (name, value) in response.headers() {
-            let header_name = name.to_string();
-            let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-
-            response_headers
-                .entry(header_name)
-                .or_insert_with(Vec::new)
-                .push(header_value);
-        }
-
-        // Get response body
-        let body_bytes = match response.bytes() {
-            Ok(bytes) => bytes.to_vec(),
-            Err(e) => {
-                let error_msg = format!("Failed to read response body: {}", e);
-                writeln!(io.stderr, "{}", error_msg)?;
-                return Ok(Status::err(1, error_msg));
-            }
-        };
-
-        // Parse accept mode (default "text")
-        let accept = args.get("accept").map(|s| s.as_str()).unwrap_or("text");
-
-        match accept {
-            "bytes" => {
-                // Stream raw response body bytes directly to stdout
-                io.stdout.write_all(&body_bytes)?;
-            }
-            "text" => {
-                // Decode as UTF-8, fallback to lossy decoding
-                let text = match std::str::from_utf8(&body_bytes) {
-                    Ok(s) => s.to_string(),
-                    Err(_) => String::from_utf8_lossy(&body_bytes).to_string(),
-                };
-                write!(io.stdout, "{}", text)?;
-            }
-            "json" => {
-                // Determine if response is JSON based on Content-Type
-                let content_type = response_headers
-                    .get("content-type")
-                    .and_then(|v| v.first())
-                    .map(|s| s.to_lowercase())
-                    .unwrap_or_default();
-
-                let body_value = if content_type.contains("application/json") {
-                    // Try to parse as JSON
-                    match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                        Ok(json_val) => json_val,
-                        Err(_) => {
-                            // Parse failed, treat as string
-                            let text = String::from_utf8_lossy(&body_bytes).to_string();
-                            serde_json::Value::String(text)
-                        }
-                    }
-                } else {
-                    // Not JSON content type, treat as string
-                    let text = String::from_utf8_lossy(&body_bytes).to_string();
-                    serde_json::Value::String(text)
-                };
-
-                let response_json = json!({
-                    "status": status_code,
-                    "ok": is_ok,
-                    "headers": response_headers,
-                    "body": body_value
-                });
-
-                write!(io.stdout, "{}", serde_json::to_string(&response_json)?)?;
-            }
-            _ => {
-                // Default to "text" behavior for unknown accept modes
-                let text = match std::str::from_utf8(&body_bytes) {
-                    Ok(s) => s.to_string(),
-                    Err(_) => String::from_utf8_lossy(&body_bytes).to_string(),
-                };
-                write!(io.stdout, "{}", text)?;
-            }
-        }
-
-        // Return status: if HTTP succeeded but status is not 2xx, return error status
-        if is_ok {
-            Ok(Status::ok())
-        } else {
-            Ok(Status::err(status_code as i32, "http error".to_string()))
-        }
-    }
-
-    /// Implements the patch verb according to spec
-    fn verb_patch(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Validate accept parameter early
-        let accept = args.get("accept").map(|s| s.as_str()).unwrap_or("bytes");
-        if !matches!(accept, "json" | "text" | "bytes") {
-            return Ok(Status::err(1, "unsupported accept value".to_string()));
-        }
-
-        // Start with the original URL
-        let mut request_url = self.url.clone();
-
-        // Merge query parameters if provided
-        if let Some(query) = args.get("query") {
-            request_url = Self::merge_query_params(request_url, query)
-                .context("Failed to merge query parameters")?;
-        }
-
-        // Build client with timeout
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        // Start building the PATCH request
-        let mut request_builder = client.patch(request_url.clone());
-
-        // Parse and add headers if provided
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(e) => {
-                    return Ok(Status::err(1, format!("invalid headers: {}", e)));
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Add content type if provided (this will override any content-type from headers)
-        if let Some(content_type) = args.get("content_type") {
-            request_builder = request_builder.header("Content-Type", content_type);
-        }
-
-        // Determine request body with body taking precedence over body_file
-        let request_body: Vec<u8> = if let Some(body) = args.get("body") {
-            body.as_bytes().to_vec()
-        } else if let Some(body_file) = args.get("body_file") {
-            match std::fs::read(body_file) {
-                Ok(contents) => contents,
-                Err(e) => {
-                    return Ok(Status::err(1, format!("failed to read body_file: {}", e)));
-                }
-            }
-        } else {
-            Vec::new()
-        };
-
-        // Attach the body to the request
-        request_builder = request_builder.body(request_body);
-
-        // Execute the PATCH request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                let error_msg = if e.is_timeout() {
-                    "Request timed out".to_string()
-                } else if e.is_connect() {
-                    "Connection failed".to_string()
-                } else {
-                    format!("network error: {}", e)
-                };
-
-                return Ok(Status::err(1, error_msg));
-            }
-        };
-
-        // Extract response data
-        let status_code = response.status();
-        let is_success = status_code.is_success();
-
-        // Get response body
-        let body_bytes = match response.bytes() {
-            Ok(bytes) => bytes.to_vec(),
-            Err(e) => {
-                return Ok(Status::err(
-                    1,
-                    format!("Failed to read response body: {}", e),
-                ));
-            }
-        };
-
-        // Handle response based on accept mode
-        match accept {
-            "json" => {
-                // Parse response as JSON
-                match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                    Ok(json_value) => {
-                        write!(io.stdout, "{}", serde_json::to_string(&json_value)?)?;
-                    }
-                    Err(_) => {
-                        return Ok(Status::err(1, "invalid json response".to_string()));
-                    }
-                }
-            }
-            "text" => {
-                // Interpret as UTF-8 text (lossy)
-                let text = String::from_utf8_lossy(&body_bytes);
-                write!(io.stdout, "{}", text)?;
-            }
-            "bytes" => {
-                // Stream raw bytes directly to stdout
-                io.stdout.write_all(&body_bytes)?;
-            }
-            _ => unreachable!(), // Already validated above
-        }
-
-        // Return status based on HTTP response code
-        if is_success {
-            Ok(Status::ok())
-        } else {
-            Ok(Status::err(
-                status_code.as_u16() as i32,
-                format!("HTTP {}", status_code.as_u16()),
-            ))
-        }
-    }
-
-    /// Implements the delete verb according to spec  
-    fn verb_delete(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse accept mode (default "text")
-        let accept = args.get("accept").map(|s| s.as_str()).unwrap_or("text");
-        if !["json", "text", "bytes"].contains(&accept) {
-            writeln!(
-                io.stderr,
-                "unsupported accept value: {}, defaulting to text",
-                accept
-            )?;
-            // Fall back to text instead of erroring out
-        }
-
-        // Parse timeout (default 30 seconds)
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(30_000);
-
-        // Start with the original URL and apply query if provided
-        let mut request_url = self.url.clone();
-        if let Some(query) = args.get("query") {
-            if !query.is_empty() {
-                request_url = Self::apply_query(request_url, query);
-            }
-        }
-
-        // Build client with timeout
-        let client = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        // Start building the DELETE request
-        let mut request_builder = client.delete(request_url.clone());
-
-        // Apply headers from headers parameter
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(_e) => {
-                    // Instead of erroring, ignore malformed segments per requirements
-                    HashMap::new()
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Handle request body with body taking precedence over body_file per requirements
-        let request_body: Vec<u8> = if let Some(body) = args.get("body") {
-            // body parameter wins over body_file
-            body.as_bytes().to_vec()
-        } else if let Some(body_file) = args.get("body_file") {
-            if !body_file.is_empty() {
-                match std::fs::read(body_file) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        writeln!(io.stderr, "failed to read body_file '{}': {}", body_file, e)?;
-                        return Ok(Status::err(1, format!("failed to read body_file: {}", e)));
-                    }
-                }
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
-
-        // Set Content-Type header if body is present and content_type is specified
-        // content_type argument should override any Content-Type from headers
-        if !request_body.is_empty() {
-            if let Some(content_type) = args.get("content_type") {
-                if !content_type.is_empty() {
-                    request_builder = request_builder.header("Content-Type", content_type);
-                }
-            } else {
-                // Default Content-Type if body is present and content_type is missing
-                request_builder =
-                    request_builder.header("Content-Type", "application/octet-stream");
-            }
-        }
-
-        // Attach the body to the request
-        if !request_body.is_empty() {
-            request_builder = request_builder.body(request_body);
-        }
-
-        // Execute the DELETE request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                let error_message = if e.is_timeout() {
-                    "http delete error: connection timed out".to_string()
-                } else if e.is_connect() {
-                    "http delete error: connection refused".to_string()
-                } else {
-                    format!("http delete error: {}", e)
-                };
-
-                writeln!(io.stderr, "{}", error_message)?;
-                return Ok(Status::err(2, error_message));
-            }
-        };
-
-        // Extract response data
-        let status_code = response.status().as_u16();
-        let is_ok = response.status().is_success();
-        let status_reason = response.status().canonical_reason().unwrap_or("Unknown");
-
-        // Get response body
-        let body_bytes = match response.bytes() {
-            Ok(bytes) => bytes.to_vec(),
-            Err(e) => {
-                let error_msg = format!("Failed to read response body: {}", e);
-                writeln!(io.stderr, "{}", error_msg)?;
-                return Ok(Status::err(1, error_msg));
-            }
-        };
-
-        // Handle response based on accept mode
-        let final_accept = if ["json", "text", "bytes"].contains(&accept) {
-            accept
-        } else {
-            "text" // fallback for unsupported accept values
-        };
-
-        match final_accept {
-            "json" => {
-                // Try to parse response body as JSON
-                match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                    Ok(json_value) => {
-                        // Pretty-print the JSON
-                        let pretty_json = serde_json::to_string_pretty(&json_value)?;
-                        write!(io.stdout, "{}", pretty_json)?;
-                    }
-                    Err(_) => {
-                        // Wrap in envelope as specified in requirements
-                        let envelope = json!({
-                            "status": { "code": status_code, "ok": is_ok },
-                            "body": String::from_utf8_lossy(&body_bytes).to_string()
-                        });
-                        write!(io.stdout, "{}", serde_json::to_string_pretty(&envelope)?)?;
-                    }
-                }
-            }
-            "text" => {
-                // Interpret body as UTF-8 (lossy if needed) and write directly to stdout
-                let text = String::from_utf8_lossy(&body_bytes);
-                write!(io.stdout, "{}", text)?;
-            }
-            "bytes" => {
-                // Write raw body bytes to stdout with no transformation
-                io.stdout.write_all(&body_bytes)?;
-            }
-            _ => unreachable!(),
-        }
-
-        // Return status based on HTTP response code
-        if is_ok {
-            Ok(Status::ok())
-        } else {
-            let reason = format!("HTTP {} {}", status_code, status_reason);
-            Ok(Status::err(status_code as i32, reason))
-        }
-    }
-
-    #[allow(dead_code)]
-    fn verb_to_method(verb: &str) -> Result<Method> {
-        match verb {
-            "get" => Ok(Method::GET),
-            "head" => Ok(Method::HEAD),
-            "post" => Ok(Method::POST),
-            "put" => Ok(Method::PUT),
-            "patch" => Ok(Method::PATCH),
-            "delete" => Ok(Method::DELETE),
-            _ => bail!("Unsupported HTTP verb: {}", verb),
-        }
-    }
-
-    #[allow(dead_code)]
-    fn execute_request(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let method = Self::verb_to_method(verb)?;
-
-        // Parse timeout
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(30_000);
-
-        // Start with the original URL
-        let mut request_url = self.url.clone();
-
-        // Merge query parameters if provided
-        if let Some(query) = args.get("query") {
-            request_url = Self::merge_query_params(request_url, query)
-                .context("Failed to merge query parameters")?;
-        }
-
-        // Build client with timeout
-        let client = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        // Start building the request
-        let mut request_builder = client.request(method.clone(), request_url.clone());
-
-        // Add headers if provided
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(e) => {
-                    return Ok(Status::err(1, format!("invalid headers: {}", e)));
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Handle body content for non-GET/HEAD requests
-        if method != Method::GET && method != Method::HEAD {
-            if let Some(json_body) = args.get("json") {
-                // JSON takes precedence over body
-                request_builder = request_builder
-                    .header("Content-Type", "application/json")
-                    .body(json_body.clone());
-            } else if let Some(body) = args.get("body") {
-                request_builder = request_builder.body(body.clone());
-            }
-        }
-
-        // Execute the request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                // Handle network errors (timeouts, connection failures, etc.)
-                let error_json = json!({
-                    "url": request_url.to_string(),
-                    "method": method.to_string(),
-                    "error": format!("Request failed: {}", e)
-                });
-
-                write!(io.stdout, "{}", error_json)?;
-
-                let code = if e.is_timeout() { 124 } else { 1 };
-                return Ok(Status::err(code, format!("Request failed: {}", e)));
-            }
-        };
-
-        // Extract response data
-        let status_code = response.status().as_u16();
-        let is_ok = response.status().is_success();
-
-        // Extract headers
-        let mut response_headers = HashMap::new();
-        for (name, value) in response.headers() {
-            let header_name = name.to_string();
-            let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-
-            response_headers
-                .entry(header_name)
-                .or_insert_with(Vec::new)
-                .push(header_value);
-        }
-
-        // Get response body
-        let body_bytes = match response.bytes() {
-            Ok(bytes) => bytes.to_vec(),
-            Err(e) => {
-                let error_json = json!({
-                    "url": request_url.to_string(),
-                    "method": method.to_string(),
-                    "error": format!("Failed to read response body: {}", e)
-                });
-
-                write!(io.stdout, "{}", error_json)?;
-                return Ok(Status::err(
-                    1,
-                    format!("Failed to read response body: {}", e),
-                ));
-            }
-        };
-
-        // Determine body_text and body_base64
-        let (body_text, body_base64) = if body_bytes.is_empty() {
-            (json!(null), json!(null))
-        } else {
-            let body_text_value = match std::str::from_utf8(&body_bytes) {
-                Ok(text) => json!(text),
-                Err(_) => json!(null),
-            };
-
-            let body_base64_value = json!(BASE64_STANDARD.encode(&body_bytes));
-
-            (body_text_value, body_base64_value)
-        };
-
-        // Build response JSON
-        let response_json = json!({
-            "url": request_url.to_string(),
-            "method": method.to_string(),
-            "status": status_code,
-            "ok": is_ok,
-            "headers": response_headers,
-            "body_text": body_text,
-            "body_base64": body_base64
-        });
-
-        // Write JSON response to stdout
-        write!(io.stdout, "{}", response_json)?;
-
-        // Always return ok for successful requests, even with 4xx/5xx status codes
-        Ok(Status::ok())
-    }
-
-    /// Implements the options verb according to spec
-    fn verb_options(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse timeout_ms (default 10 seconds)
+    /// Validates the options every verb shares and builds the client.
+    fn prepare(&self, verb: &str, args: &Args) -> std::result::Result<Prepared, Status> {
         let timeout_ms = match args.get("timeout_ms") {
-            Some(timeout_str) => match timeout_str.parse::<u64>() {
-                Ok(ms) => ms,
-                Err(_) => {
-                    return Ok(Status::err(
-                        1,
-                        format!("invalid timeout_ms: {}", timeout_str),
-                    ));
+            None => default_timeout_ms(verb),
+            Some(v) => match v.trim().parse::<u64>() {
+                Ok(ms) if ms > 0 => ms,
+                _ => {
+                    return Err(usage(format!(
+                        "invalid timeout_ms: {v:?} (expected a positive number of milliseconds)"
+                    )));
                 }
             },
-            None => 10_000,
         };
-
-        // Parse follow_redirects (default true)
-        let follow_redirects = match args.get("follow_redirects") {
-            Some(redirect_str) => !redirect_str.to_lowercase().eq("false"),
-            None => true,
+        let timeout = Duration::from_millis(timeout_ms);
+        let follow = bool_opt(args, "follow_redirects", true)?;
+        let insecure = bool_opt(args, "allow_insecure", false)?;
+        let headers = match args.get("headers") {
+            None => HeaderMap::new(),
+            Some(h) => parse_headers(h).map_err(|e| usage(format!("invalid headers: {e}")))?,
         };
-
-        // Parse include_body (default false)
-        let include_body = match args.get("include_body") {
-            Some(body_str) => body_str.to_lowercase().eq("true"),
-            None => false,
-        };
-
-        // Build client with timeout and redirect policy
-        let mut client_builder = Client::builder().timeout(Duration::from_millis(timeout_ms));
-
-        if !follow_redirects {
-            client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
-        }
-
-        let client = client_builder
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        // Start building the OPTIONS request with the full URL (including query)
-        let mut request_builder = client.request(Method::OPTIONS, self.url.clone());
-
-        // Parse and apply headers if provided
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(_) => {
-                    // Ignore malformed headers but continue (as per requirements)
-                    HashMap::new()
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Execute the OPTIONS request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                let error_msg = if e.is_timeout() {
-                    "request timed out".to_string()
-                } else if e.is_connect() {
-                    "connection failed".to_string()
-                } else {
-                    format!("network error: {}", e)
-                };
-                return Ok(Status::err(1, error_msg));
-            }
-        };
-
-        // Extract response data
-        let final_url = response.url().to_string();
-        let status_code = response.status().as_u16();
-        let reason = response
-            .status()
-            .canonical_reason()
-            .unwrap_or("")
-            .to_string();
-
-        // Extract headers (lowercase keys)
-        let mut response_headers = HashMap::new();
-        for (name, value) in response.headers() {
-            let header_name = name.to_string().to_lowercase();
-            let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-
-            // For multi-valued headers, join with ", "
-            if let Some(existing) = response_headers.get(&header_name) {
-                response_headers.insert(header_name, format!("{}, {}", existing, header_value));
-            } else {
-                response_headers.insert(header_name, header_value);
-            }
-        }
-
-        // Parse allowed methods from Allow header
-        let allowed_methods: Vec<String> = response_headers
-            .get("allow")
-            .map(|allow_header| {
-                allow_header
-                    .split(',')
-                    .map(|method| method.trim().to_string())
-                    .collect()
-            })
-            .unwrap_or_else(Vec::new);
-
-        // Read response body
-        let body_bytes = response.bytes().unwrap_or_default();
-        let has_body = !body_bytes.is_empty();
-
-        // Build JSON response
-        let mut response_json = json!({
-            "url": final_url,
-            "status": status_code,
-            "reason": reason,
-            "backend": "reqwest",
-            "headers": response_headers,
-            "allowed_methods": allowed_methods,
-            "has_body": has_body
-        });
-
-        // Include body if requested and present
-        if include_body && has_body {
-            let body_text = String::from_utf8_lossy(&body_bytes).to_string();
-            if let Some(obj) = response_json.as_object_mut() {
-                obj.insert("body".to_string(), json!(body_text));
-            }
-        }
-
-        // Write JSON to stdout
-        write!(io.stdout, "{}", serde_json::to_string(&response_json)?)?;
-
-        // Return status based on HTTP response code
-        if (200..=399).contains(&status_code) {
-            Ok(Status::ok())
-        } else {
-            Ok(Status::err(
-                status_code as i32,
-                format!("HTTP {}", status_code),
-            ))
-        }
+        let client = Self::build_client(timeout, follow, insecure)
+            .map_err(|e| Status::err(1, format!("Failed to create HTTP client: {e}")))?;
+        Ok(Prepared {
+            client,
+            url: self.request_url(args),
+            headers,
+            timeout,
+            follow,
+        })
     }
 
-    /// Implements the preflight verb for CORS preflight requests
-    fn verb_preflight(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse timeout (default 5000ms)
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(5_000);
-
-        // Build client with timeout
-        let client = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        // Start building the OPTIONS request
-        let mut request_builder = client.request(Method::OPTIONS, self.url.clone());
-
-        // Add CORS preflight headers if provided
-        if let Some(origin) = args.get("origin") {
-            request_builder = request_builder.header("Origin", origin);
-        }
-
-        if let Some(method) = args.get("method") {
-            request_builder = request_builder.header("Access-Control-Request-Method", method);
-        }
-
-        if let Some(request_headers) = args.get("request_headers") {
-            let normalized_headers = Self::parse_request_headers_arg(request_headers);
-            if !normalized_headers.is_empty() {
-                request_builder =
-                    request_builder.header("Access-Control-Request-Headers", &normalized_headers);
-            }
-        }
-
-        // Add additional headers if provided
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(_) => {
-                    // Ignore malformed headers but continue
-                    HashMap::new()
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Execute the request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                // Build error response JSON
-                let error_json = json!({
-                    "url": self.url.to_string(),
-                    "method": "OPTIONS",
-                    "ok": false,
-                    "error": if e.is_timeout() {
-                        "timeout"
-                    } else if e.is_connect() {
-                        "connection refused"
-                    } else {
-                        "network error"
-                    },
-                    "status": null,
-                    "cors": null,
-                    "raw_headers": {}
-                });
-
-                write!(io.stdout, "{}", serde_json::to_string(&error_json)?)?;
-                return Ok(Status::err(1, format!("Request failed: {}", e)));
-            }
-        };
-
-        // Extract response data
-        let final_url = response.url().to_string();
-        let status_code = response.status().as_u16();
-        let is_ok = status_code >= 200 && status_code < 300;
-
-        // Extract headers (case-insensitive lookup for CORS headers)
-        let mut raw_headers = HashMap::new();
-        let mut cors_headers = HashMap::new();
-
-        for (name, value) in response.headers() {
-            let header_name = name.to_string().to_lowercase();
-            let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-
-            // Store in raw_headers with lowercase key
-            if let Some(existing) = raw_headers.get(&header_name) {
-                raw_headers.insert(
-                    header_name.clone(),
-                    format!("{}, {}", existing, header_value),
-                );
-            } else {
-                raw_headers.insert(header_name.clone(), header_value.clone());
-            }
-
-            // Extract CORS-specific headers
-            match header_name.as_str() {
-                "access-control-allow-origin" => {
-                    cors_headers.insert("allowed_origins", header_value);
-                }
-                "access-control-allow-methods" => {
-                    cors_headers.insert("allowed_methods", header_value);
-                }
-                "access-control-allow-headers" => {
-                    cors_headers.insert("allowed_headers", header_value);
-                }
-                "access-control-expose-headers" => {
-                    cors_headers.insert("exposed_headers", header_value);
-                }
-                "access-control-allow-credentials" => {
-                    cors_headers.insert("allow_credentials", header_value);
-                }
-                "access-control-max-age" => {
-                    cors_headers.insert("max_age", header_value);
-                }
-                _ => {}
-            }
-        }
-
-        // Parse CORS data
-        let cors_data = json!({
-            "allowed_origins": cors_headers.get("allowed_origins")
-                .map(|v| if v == "*" { vec!["*".to_string()] } else { Self::parse_header_list(v) })
-                .unwrap_or_default(),
-            "allowed_methods": cors_headers.get("allowed_methods")
-                .map(|v| Self::parse_header_list(v))
-                .unwrap_or_default(),
-            "allowed_headers": cors_headers.get("allowed_headers")
-                .map(|v| Self::parse_header_list(v))
-                .unwrap_or_default(),
-            "exposed_headers": cors_headers.get("exposed_headers")
-                .map(|v| Self::parse_header_list(v))
-                .unwrap_or_default(),
-            "allow_credentials": cors_headers.get("allow_credentials")
-                .map(|v| Self::parse_bool_header(v))
-                .unwrap_or(false),
-            "max_age_seconds": cors_headers.get("max_age")
-                .and_then(|v| Self::parse_int_header(v))
-        });
-
-        // Build success response JSON
-        let response_json = json!({
-            "url": final_url,
-            "method": "OPTIONS",
-            "status": status_code,
-            "ok": is_ok,
-            "cors": cors_data,
-            "raw_headers": raw_headers
-        });
-
-        // Write JSON to stdout
-        write!(io.stdout, "{}", serde_json::to_string(&response_json)?)?;
-
-        // Return appropriate status
-        if is_ok {
-            Ok(Status::ok())
-        } else {
-            Ok(Status::err(
-                status_code as i32,
-                format!("HTTP {}", status_code),
-            ))
-        }
-    }
-
-    /*
-    ### Copilot Requirements: `http://…json` verb
-
-    **Context**
-
-    * This project is an OS/2-inspired shell implemented in Rust.
-    * Handles are registered in a central `Registry` and must implement the shared `Handle` trait from `core::registry`.
-    * We already have (or will have) an `HttpHandle` in `src/handles/httph.rs` that is registered for both `http` and `https` schemes.
-    * The global CLI in `main.rs` already supports `--json-pretty` which will pretty-print *any* valid JSON output emitted by a verb; this verb should output valid JSON so the flag can work.
-
-    **Goal**
-
-    Implement a `json` verb on the `http://` / `https://` handle that:
-
-    * Sends an HTTP request with a specified method and optional body/headers.
-    * Assumes JSON semantics:
-
-      * Automatically sets `Accept: application/json` unless overridden.
-      * For methods with a body (POST/PUT/PATCH/DELETE), sets `Content-Type: application/json` by default when `body` is non-empty, unless overridden.
-    * Parses the HTTP response body as JSON when possible and re-emits it as canonical JSON to `stdout` so that:
-
-      * It integrates cleanly with the shell's typed pipeline model.
-      * `--json-pretty` can pretty-print the result.
-    * Returns a `Status` that reflects success or failure based on the HTTP status code and JSON parsing.
-    */
-
-    /// Implements the json verb according to the specification
-    /// Returns a structured JSON envelope with url, status, status_text, headers, and body
-    fn verb_json(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse method argument (default to "GET")
-        let method_str = args.get("method").map(|s| s.as_str()).unwrap_or("GET");
-        let method_upper = method_str.to_uppercase();
-
-        // Validate method
-        let method = match method_upper.as_str() {
-            "GET" => reqwest::Method::GET,
-            "POST" => reqwest::Method::POST,
-            "PUT" => reqwest::Method::PUT,
-            "PATCH" => reqwest::Method::PATCH,
-            "DELETE" => reqwest::Method::DELETE,
-            "HEAD" => reqwest::Method::HEAD,
-            "OPTIONS" => reqwest::Method::OPTIONS,
-            _ => {
-                return Ok(Status::err(
-                    1,
-                    format!("Unsupported method: {}", method_str),
-                ));
-            }
-        };
-
-        // Parse timeout (default 10 seconds)
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(10_000);
-
-        // Parse accept mode (default "json")
-        let accept_mode = args.get("accept").map(|s| s.as_str()).unwrap_or("json");
-        if !["json", "text", "bytes"].contains(&accept_mode) {
-            return Ok(Status::err(
-                1,
-                format!(
-                    "Invalid accept mode: {}. Must be json, text, or bytes",
-                    accept_mode
-                ),
-            ));
-        }
-
-        // Parse body and content_type
-        let body = args.get("body").unwrap_or(&String::new()).clone();
-        let content_type = if let Some(ct) = args.get("content_type") {
-            Some(ct.clone())
-        } else if !body.is_empty() {
-            Some("application/json".to_string())
-        } else {
-            None
-        };
-
-        // Build client with timeout
-        let client = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        // Start building the request
-        let mut request_builder = client.request(method.clone(), self.url.clone());
-
-        // Parse and apply headers from headers parameter
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(e) => {
-                    return Ok(Status::err(1, format!("invalid headers: {}", e)));
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Set Content-Type header if specified
-        if let Some(ct) = content_type {
-            request_builder = request_builder.header("Content-Type", &ct);
-        }
-
-        // Add body if provided and method supports it
-        if !body.is_empty()
-            && matches!(
-                method,
-                reqwest::Method::POST
-                    | reqwest::Method::PUT
-                    | reqwest::Method::PATCH
-                    | reqwest::Method::DELETE
-            )
-        {
-            request_builder = request_builder.body(body);
-        }
-
-        // Execute the request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                // Create error envelope
-                let error_msg = if e.is_timeout() {
-                    "Request timed out"
-                } else if e.is_connect() {
-                    "Connection failed"
-                } else {
-                    "Network error"
-                };
-
-                let error_envelope = json!({
-                    "url": self.url.to_string(),
-                    "status": 0,
-                    "status_text": "",
-                    "headers": {},
-                    "body": {
-                        "type": "text",
-                        "value": ""
-                    },
-                    "error": error_msg
-                });
-
-                write!(io.stdout, "{}", serde_json::to_string(&error_envelope)?)?;
-                return Ok(Status::err(1, error_msg.to_string()));
-            }
-        };
-
-        // Extract response details
-        let final_url = response.url().to_string();
-        let status_code = response.status().as_u16();
-        let status_text = response
-            .status()
-            .canonical_reason()
-            .unwrap_or("")
-            .to_string();
-
-        // Extract headers - convert to lowercase keys with arrays of values
-        let mut headers = std::collections::HashMap::<String, Vec<String>>::new();
-        for (name, value) in response.headers() {
-            let header_name = name.to_string().to_lowercase();
-            let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-
-            headers
-                .entry(header_name)
-                .or_insert_with(Vec::new)
-                .push(header_value);
-        }
-
-        // Read response body bytes
-        let body_bytes = match response.bytes() {
-            Ok(bytes) => bytes.to_vec(),
-            Err(e) => {
-                let error_envelope = json!({
-                    "url": final_url,
-                    "status": status_code,
-                    "status_text": status_text,
-                    "headers": headers,
-                    "body": {
-                        "type": "text",
-                        "value": ""
-                    },
-                    "error": format!("Failed to read response body: {}", e)
-                });
-
-                write!(io.stdout, "{}", serde_json::to_string(&error_envelope)?)?;
-                return Ok(Status::err(
-                    1,
-                    format!("Failed to read response body: {}", e),
-                ));
-            }
-        };
-
-        // Process body according to accept mode
-        let body_field = match accept_mode {
-            "json" => {
-                // Try to parse as JSON first
-                match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                    Ok(json_value) => json!({
-                        "type": "json",
-                        "value": json_value
-                    }),
-                    Err(_) => {
-                        // Fallback to text for invalid JSON
-                        let text_value = String::from_utf8_lossy(&body_bytes).to_string();
-                        json!({
-                            "type": "text",
-                            "value": text_value
-                        })
-                    }
-                }
-            }
-            "text" => {
-                let text_value = String::from_utf8_lossy(&body_bytes).to_string();
-                json!({
-                    "type": "text",
-                    "value": text_value
-                })
-            }
-            "bytes" => {
-                let base64_value = BASE64_STANDARD.encode(&body_bytes);
-                json!({
-                    "type": "bytes",
-                    "base64": base64_value
-                })
-            }
-            _ => unreachable!(), // Already validated above
-        };
-
-        // Create the response envelope
-        let response_envelope = json!({
-            "url": final_url,
-            "status": status_code,
-            "status_text": status_text,
-            "headers": headers,
-            "body": body_field
-        });
-
-        // Write JSON envelope to stdout
-        write!(io.stdout, "{}", serde_json::to_string(&response_envelope)?)?;
-
-        // Always return Status::ok() since we successfully created the envelope
-        // The HTTP status is captured in the JSON response
-        Ok(Status::ok())
-    }
-
-    /// Implements the headers verb according to spec
-    fn verb_headers(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse method argument (default to "GET")
-        let method_str = args.get("method").map(|s| s.as_str()).unwrap_or("GET");
-        let method_upper = method_str.to_uppercase();
-
-        // Validate method
-        let method = match method_upper.as_str() {
-            "GET" => Method::GET,
-            "HEAD" => Method::HEAD,
-            "POST" => Method::POST,
-            "PUT" => Method::PUT,
-            "PATCH" => Method::PATCH,
-            "DELETE" => Method::DELETE,
-            "OPTIONS" => Method::OPTIONS,
-            _ => {
-                let error_json = json!({
-                    "url": self.url.to_string(),
-                    "error": {
-                        "kind": "invalid_argument",
-                        "message": format!("Unsupported method: {}. Supported methods: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS", method_str)
-                    }
-                });
-                write!(io.stdout, "{}", serde_json::to_string(&error_json)?)?;
-                return Ok(Status::err(
-                    2,
-                    format!("Unsupported method: {}", method_str),
-                ));
-            }
-        };
-
-        // Parse timeout (default 10 seconds)
-        let timeout_ms = args
-            .get("timeout_ms")
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(10_000);
-
-        // Parse follow_redirects (default true)
-        let follow_redirects = args
-            .get("follow_redirects")
-            .map(|s| s.to_lowercase() != "false")
-            .unwrap_or(true);
-
-        // Start with the original URL
-        let mut request_url = self.url.clone();
-
-        // Merge query parameters if provided
-        if let Some(query) = args.get("query") {
-            request_url = Self::apply_query(request_url, query);
-        }
-
-        // Build client with timeout and redirect policy
-        let client = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .redirect(if follow_redirects {
+    /// A client with a whole-request `timeout` (connect, send and reading
+    /// the body), redirects followed (up to 10) unless `follow` is false, and
+    /// certificate checks disabled only when `insecure` is set.
+    fn build_client(timeout: Duration, follow: bool, insecure: bool) -> reqwest::Result<Client> {
+        Client::builder()
+            .timeout(timeout)
+            .connect_timeout(timeout)
+            .redirect(if follow {
                 reqwest::redirect::Policy::limited(10)
             } else {
                 reqwest::redirect::Policy::none()
             })
+            .danger_accept_invalid_certs(insecure)
             .build()
-            .context("Failed to create HTTP client")?;
+    }
 
-        // Start building the request
-        let mut request_builder = client.request(method, request_url.clone());
-
-        // Parse and apply headers from headers parameter
-        if let Some(headers_str) = args.get("headers") {
-            let headers = match Self::parse_headers(headers_str) {
-                Ok(h) => h,
-                Err(e) => {
-                    let error_json = json!({
-                        "url": self.url.to_string(),
-                        "error": {
-                            "kind": "invalid_argument",
-                            "message": format!("invalid headers: {}", e)
-                        }
-                    });
-                    write!(io.stdout, "{}", serde_json::to_string(&error_json)?)?;
-                    return Ok(Status::err(2, format!("invalid headers: {}", e)));
-                }
-            };
-            for (key, value) in headers {
-                request_builder = request_builder.header(&key, &value);
-            }
-        }
-
-        // Execute the request
-        let response = match request_builder.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                // Determine error kind based on the error type
-                let (kind, message) = if e.is_timeout() {
-                    ("timeout", "Request timed out".to_string())
-                } else if e.is_connect() {
-                    ("network", "Connection failed".to_string())
-                } else if e.is_request() {
-                    ("invalid_url", "Invalid URL or request".to_string())
-                } else {
-                    ("other", format!("Request failed: {}", e))
-                };
-
-                let error_json = json!({
-                    "url": self.url.to_string(),
-                    "error": {
-                        "kind": kind,
-                        "message": message
-                    }
+    fn verb_get(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let accept = match choice(args, "accept", &["text", "bytes", "json"], "text") {
+            Ok(a) => a,
+            Err(s) => return Ok(s),
+        };
+        let p = match self.prepare("get", args) {
+            Ok(p) => p,
+            Err(s) => return Ok(s),
+        };
+        let resp = match p.send(p.request(Method::GET)) {
+            Ok(r) => r,
+            Err(f) => return Ok(f.status()),
+        };
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = match p.body(resp) {
+            Ok(b) => b,
+            Err(f) => return Ok(f.status()),
+        };
+        match accept {
+            "json" => {
+                let envelope = json!({
+                    "status": status.as_u16(),
+                    "ok": status.is_success(),
+                    "method": "GET",
+                    "headers": header_arrays(&headers),
+                    "body": json_or_text(headers.get(CONTENT_TYPE), &body),
+                    "body_text": String::from_utf8_lossy(&body),
                 });
+                write!(io.stdout, "{}", serde_json::to_string(&envelope)?)?;
+            }
+            // text prints the body as received; bytes the same raw bytes.
+            _ => io.stdout.write_all(&body)?,
+        }
+        Ok(http_outcome(status, p.follow))
+    }
 
-                write!(io.stdout, "{}", serde_json::to_string(&error_json)?)?;
-                return Ok(Status::err(1, message));
+    fn verb_head(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let accept = match args.get("accept") {
+            None => None,
+            Some(_) => match choice(args, "accept", &["json", "text", "bytes"], "bytes") {
+                Ok(a) => Some(a),
+                Err(s) => return Ok(s),
+            },
+        };
+        let mut p = match self.prepare("head", args) {
+            Ok(p) => p,
+            Err(s) => return Ok(s),
+        };
+        if let Some(accept) = accept {
+            let value = match accept {
+                "json" => "application/json",
+                "text" => "text/*",
+                _ => "*/*",
+            };
+            p.headers.insert(ACCEPT, HeaderValue::from_static(value));
+        }
+        let resp = match p.send(p.request(Method::HEAD)) {
+            Ok(r) => r,
+            Err(f) => return Ok(f.status()),
+        };
+        let status = resp.status();
+        let out = json!({
+            "url": resp.url().as_str(),
+            "status": status.as_u16(),
+            "ok": status.is_success(),
+            "reason": status.canonical_reason().unwrap_or("Unknown"),
+            "headers": header_joined(resp.headers()),
+        });
+        write!(io.stdout, "{}", serde_json::to_string(&out)?)?;
+        Ok(http_outcome(status, p.follow))
+    }
+
+    /// `headers` reports its own argument and network errors as JSON.
+    fn verb_headers(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let error_json = |kind: &str, message: &str| {
+            json!({
+                "url": self.url.as_str(),
+                "error": { "kind": kind, "message": message },
+            })
+        };
+        let method = match method_arg(args) {
+            Ok(m) => m,
+            Err(msg) => {
+                write!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string(&error_json("invalid_argument", &msg))?
+                )?;
+                return Ok(usage(msg));
             }
         };
-
-        // Extract response details
-        let final_url = response.url().to_string();
-        let status_code = response.status().as_u16();
-        let status_text = response
-            .status()
-            .canonical_reason()
-            .unwrap_or("")
-            .to_string();
-
-        // Extract headers - convert to lowercase keys with arrays of values
-        let mut headers = std::collections::HashMap::<String, Vec<String>>::new();
-        for (name, value) in response.headers() {
-            let header_name = name.to_string().to_lowercase();
-            let header_value = value.to_str().unwrap_or("<invalid-utf8>").to_string();
-
-            headers
-                .entry(header_name)
-                .or_insert_with(Vec::new)
-                .push(header_value);
-        }
-
-        // Create the response JSON
-        let response_json = json!({
-            "url": final_url,
-            "status": status_code,
-            "status_text": status_text,
-            "headers": headers
+        let p = match self.prepare("headers", args) {
+            Ok(p) => p,
+            Err(s) => {
+                let msg = s.reason.clone().unwrap_or_default();
+                if msg.starts_with("invalid headers") {
+                    write!(
+                        io.stdout,
+                        "{}",
+                        serde_json::to_string(&error_json("invalid_argument", &msg))?
+                    )?;
+                }
+                return Ok(s);
+            }
+        };
+        let resp = match p.send(p.request(method)) {
+            Ok(r) => r,
+            Err(f) => {
+                write!(
+                    io.stdout,
+                    "{}",
+                    serde_json::to_string(&error_json(f.kind, &f.message))?
+                )?;
+                return Ok(f.status());
+            }
+        };
+        let status = resp.status();
+        let out = json!({
+            "url": resp.url().as_str(),
+            "status": status.as_u16(),
+            "status_text": reason_of(status),
+            "headers": header_arrays(resp.headers()),
         });
+        write!(io.stdout, "{}", serde_json::to_string(&out)?)?;
+        Ok(http_outcome(status, p.follow))
+    }
 
-        // Write JSON response to stdout
-        write!(io.stdout, "{}", serde_json::to_string(&response_json)?)?;
+    fn verb_options(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let include_body = match bool_opt(args, "include_body", false) {
+            Ok(b) => b,
+            Err(s) => return Ok(s),
+        };
+        let p = match self.prepare("options", args) {
+            Ok(p) => p,
+            Err(s) => return Ok(s),
+        };
+        let resp = match p.send(p.request(Method::OPTIONS)) {
+            Ok(r) => r,
+            Err(f) => return Ok(f.status()),
+        };
+        let status = resp.status();
+        let url = resp.url().to_string();
+        let headers = header_joined(resp.headers());
+        let body = match p.body(resp) {
+            Ok(b) => b,
+            Err(f) => return Ok(f.status()),
+        };
+        let allowed_methods: Vec<String> = headers
+            .get("allow")
+            .map(|a| {
+                a.split(',')
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut out = json!({
+            "url": url,
+            "status": status.as_u16(),
+            "reason": reason_of(status),
+            "backend": "reqwest",
+            "headers": headers,
+            "allowed_methods": allowed_methods,
+            "has_body": !body.is_empty(),
+        });
+        if include_body && !body.is_empty() {
+            out["body"] = json!(String::from_utf8_lossy(&body));
+        }
+        write!(io.stdout, "{}", serde_json::to_string(&out)?)?;
+        Ok(http_outcome(status, p.follow))
+    }
 
-        // Always return Status::ok() for successful HTTP transport
-        // The HTTP status code is captured in the JSON response
-        Ok(Status::ok())
+    fn verb_preflight(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let mut extra = HeaderMap::new();
+        if let Some(origin) = args.get("origin") {
+            match HeaderValue::from_str(origin) {
+                Ok(v) => extra.insert(ORIGIN, v),
+                Err(_) => return Ok(usage(format!("invalid origin: {origin:?}"))),
+            };
+        }
+        if let Some(method) = args.get("method") {
+            let valid = !method.is_empty() && Method::from_bytes(method.as_bytes()).is_ok();
+            match HeaderValue::from_str(method) {
+                Ok(v) if valid => extra.insert(ACCESS_CONTROL_REQUEST_METHOD, v),
+                _ => return Ok(usage(format!("invalid method: {method:?}"))),
+            };
+        }
+        if let Some(list) = args.get("request_headers") {
+            let names = parse_header_list(list);
+            if let Some(bad) = names
+                .iter()
+                .find(|n| HeaderName::from_bytes(n.as_bytes()).is_err())
+            {
+                return Ok(usage(format!(
+                    "invalid header name in request_headers: {bad:?}"
+                )));
+            }
+            if !names.is_empty() {
+                if let Ok(v) = HeaderValue::from_str(&names.join(", ")) {
+                    extra.insert(ACCESS_CONTROL_REQUEST_HEADERS, v);
+                }
+            }
+        }
+        let mut p = match self.prepare("preflight", args) {
+            Ok(p) => p,
+            Err(s) => return Ok(s),
+        };
+        // The preflight arguments win over the same names in headers=.
+        for (name, value) in &extra {
+            p.headers.insert(name.clone(), value.clone());
+        }
+        let resp = match p.send(p.request(Method::OPTIONS)) {
+            Ok(r) => r,
+            Err(f) => {
+                let out = json!({
+                    "url": p.url.as_str(),
+                    "method": "OPTIONS",
+                    "ok": false,
+                    "error": f.message,
+                    "status": null,
+                    "cors": null,
+                    "raw_headers": {},
+                });
+                write!(io.stdout, "{}", serde_json::to_string(&out)?)?;
+                return Ok(f.status());
+            }
+        };
+        let status = resp.status();
+        let h = resp.headers();
+        let get = |name: &str| {
+            h.get_all(name)
+                .iter()
+                .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let list = |name: &str| parse_header_list(&get(name));
+        let origins = get("access-control-allow-origin");
+        let cors = json!({
+            "allowed_origins": if origins.trim() == "*" { vec!["*".to_string()] } else { parse_header_list(&origins) },
+            "allowed_methods": list("access-control-allow-methods"),
+            "allowed_headers": list("access-control-allow-headers"),
+            "exposed_headers": list("access-control-expose-headers"),
+            "allow_credentials": get("access-control-allow-credentials").trim().eq_ignore_ascii_case("true"),
+            "max_age_seconds": get("access-control-max-age").trim().parse::<i64>().ok(),
+        });
+        let out = json!({
+            "url": resp.url().as_str(),
+            "method": "OPTIONS",
+            "status": status.as_u16(),
+            "ok": status.is_success(),
+            "cors": cors,
+            "raw_headers": header_joined(h),
+        });
+        write!(io.stdout, "{}", serde_json::to_string(&out)?)?;
+        Ok(http_outcome(status, p.follow))
+    }
+
+    fn verb_json(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let method = match method_arg(args) {
+            Ok(m) => m,
+            Err(msg) => return Ok(usage(msg)),
+        };
+        let accept = match choice(args, "accept", &["json", "text", "bytes"], "json") {
+            Ok(a) => a,
+            Err(s) => return Ok(s),
+        };
+        let body = args.get("body").filter(|b| !b.is_empty());
+        let sends_body = matches!(
+            method,
+            Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+        );
+        if body.is_some() && !sends_body {
+            return Ok(usage(format!(
+                "body is sent only with POST, PUT, PATCH or DELETE, not {method}"
+            )));
+        }
+        let content_type = match content_type_arg(args) {
+            Ok(ct) => ct,
+            Err(s) => return Ok(s),
+        };
+        let mut p = match self.prepare("json", args) {
+            Ok(p) => p,
+            Err(s) => return Ok(s),
+        };
+        match (content_type, body) {
+            (Some(ct), _) => {
+                p.headers.insert(CONTENT_TYPE, ct);
+            }
+            (None, Some(_)) => {
+                p.headers
+                    .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            }
+            (None, None) => {}
+        }
+        let mut rb = p.request(method);
+        if let Some(b) = body {
+            rb = rb.body(b.clone());
+        }
+        let envelope_error = |f: &Failure| {
+            json!({
+                "url": p.url.as_str(),
+                "status": 0,
+                "status_text": "",
+                "headers": {},
+                "body": { "type": "text", "value": "" },
+                "error": f.message,
+            })
+        };
+        let resp = match p.send(rb) {
+            Ok(r) => r,
+            Err(f) => {
+                write!(io.stdout, "{}", serde_json::to_string(&envelope_error(&f))?)?;
+                return Ok(f.status());
+            }
+        };
+        let status = resp.status();
+        let url = resp.url().to_string();
+        let headers = header_arrays(resp.headers());
+        let bytes = match p.body(resp) {
+            Ok(b) => b,
+            Err(f) => {
+                let mut out = envelope_error(&f);
+                out["url"] = json!(url);
+                out["status"] = json!(status.as_u16());
+                out["status_text"] = json!(reason_of(status));
+                out["headers"] = json!(headers);
+                write!(io.stdout, "{}", serde_json::to_string(&out)?)?;
+                return Ok(f.status());
+            }
+        };
+        let body_field = match accept {
+            "bytes" => json!({ "type": "bytes", "base64": BASE64_STANDARD.encode(&bytes) }),
+            "json" => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(v) => json!({ "type": "json", "value": v }),
+                Err(_) => json!({ "type": "text", "value": String::from_utf8_lossy(&bytes) }),
+            },
+            _ => json!({ "type": "text", "value": String::from_utf8_lossy(&bytes) }),
+        };
+        let out = json!({
+            "url": url,
+            "status": status.as_u16(),
+            "status_text": reason_of(status),
+            "headers": headers,
+            "body": body_field,
+        });
+        write!(io.stdout, "{}", serde_json::to_string(&out)?)?;
+        Ok(http_outcome(status, p.follow))
+    }
+
+    /// Shared request half of post, put, patch and delete: validates the
+    /// body options, sends the request and reads the whole response.
+    fn send_with_body(
+        &self,
+        verb: &str,
+        method: Method,
+        args: &Args,
+    ) -> std::result::Result<(Prepared, StatusCode, HeaderMap, Vec<u8>), Status> {
+        let content_type = content_type_arg(args)?;
+        let mut p = self.prepare(verb, args)?;
+        let body = body_source(args)?;
+        match content_type {
+            Some(ct) => {
+                p.headers.insert(CONTENT_TYPE, ct);
+            }
+            None => {
+                // put labels an inline body as text; delete labels any body
+                // as octet-stream; post and patch send none.
+                let default = match (verb, args.contains_key("body"), &body) {
+                    ("put", true, _) => Some("text/plain; charset=utf-8"),
+                    ("delete", _, Some(b)) if !b.is_empty() => Some("application/octet-stream"),
+                    _ => None,
+                };
+                if let Some(d) = default {
+                    if !p.headers.contains_key(CONTENT_TYPE) {
+                        p.headers.insert(CONTENT_TYPE, HeaderValue::from_static(d));
+                    }
+                }
+            }
+        }
+        let mut rb = p.request(method);
+        if let Some(b) = body {
+            rb = rb.body(b);
+        }
+        let resp = p.send(rb).map_err(|f| f.status())?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = p.body(resp).map_err(|f| f.status())?;
+        Ok((p, status, headers, bytes))
+    }
+
+    fn verb_post(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let (p, status, _, body) = match self.send_with_body("post", Method::POST, args) {
+            Ok(r) => r,
+            Err(s) => return Ok(s),
+        };
+        io.stdout.write_all(&body)?;
+        Ok(http_outcome(status, p.follow))
+    }
+
+    fn verb_put(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let accept = match choice(args, "accept", &["text", "bytes", "json"], "text") {
+            Ok(a) => a,
+            Err(s) => return Ok(s),
+        };
+        let (p, status, headers, body) = match self.send_with_body("put", Method::PUT, args) {
+            Ok(r) => r,
+            Err(s) => return Ok(s),
+        };
+        match accept {
+            "bytes" => io.stdout.write_all(&body)?,
+            "json" => {
+                let out = json!({
+                    "status": status.as_u16(),
+                    "ok": status.is_success(),
+                    "headers": header_arrays(&headers),
+                    "body": json_or_text(headers.get(CONTENT_TYPE), &body),
+                });
+                write!(io.stdout, "{}", serde_json::to_string(&out)?)?;
+            }
+            _ => write!(io.stdout, "{}", String::from_utf8_lossy(&body))?,
+        }
+        Ok(http_outcome(status, p.follow))
+    }
+
+    fn verb_patch(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let accept = match choice(args, "accept", &["bytes", "text", "json"], "bytes") {
+            Ok(a) => a,
+            Err(s) => return Ok(s),
+        };
+        let (p, status, _, body) = match self.send_with_body("patch", Method::PATCH, args) {
+            Ok(r) => r,
+            Err(s) => return Ok(s),
+        };
+        let outcome = http_outcome(status, p.follow);
+        match accept {
+            "json" => match serde_json::from_slice::<serde_json::Value>(&body) {
+                Ok(v) => write!(io.stdout, "{}", serde_json::to_string(&v)?)?,
+                // A failed status is the more useful error; show its body.
+                Err(_) if !outcome.ok => io.stdout.write_all(&body)?,
+                Err(_) => {
+                    return Ok(Status::err(
+                        1,
+                        "response body is not valid JSON (accept=json)",
+                    ));
+                }
+            },
+            "text" => write!(io.stdout, "{}", String::from_utf8_lossy(&body))?,
+            _ => io.stdout.write_all(&body)?,
+        }
+        Ok(outcome)
+    }
+
+    fn verb_delete(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let accept = match choice(args, "accept", &["text", "bytes", "json"], "text") {
+            Ok(a) => a,
+            Err(s) => return Ok(s),
+        };
+        let (p, status, _, body) = match self.send_with_body("delete", Method::DELETE, args) {
+            Ok(r) => r,
+            Err(s) => return Ok(s),
+        };
+        match accept {
+            "json" => {
+                let out = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_else(|_| {
+                    json!({
+                        "status": { "code": status.as_u16(), "ok": status.is_success() },
+                        "body": String::from_utf8_lossy(&body),
+                    })
+                });
+                write!(io.stdout, "{}", serde_json::to_string_pretty(&out)?)?;
+            }
+            "bytes" => io.stdout.write_all(&body)?,
+            _ => write!(io.stdout, "{}", String::from_utf8_lossy(&body))?,
+        }
+        Ok(http_outcome(status, p.follow))
     }
 }
 
@@ -2269,91 +1344,34 @@ impl Handle for HttpHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Check for help requests first
         if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
-
+        let scheme = self.url.scheme();
+        let Some(specific) = verb_args(verb) else {
+            return Ok(usage(format!(
+                "unknown verb for {scheme}://: {verb} (verbs: get, head, headers, options, \
+                 preflight, json, post, put, patch, delete)"
+            )));
+        };
+        if let Some(refusal) = check_args(scheme, verb, specific, args) {
+            return Ok(refusal);
+        }
         match verb {
             "get" => self.verb_get(args, io),
             "head" => self.verb_head(args, io),
-            "post" => self.verb_post(args, io),
-            "put" => self.verb_put(args, io),
-            "patch" => self.verb_patch(args, io),
-            "delete" => self.verb_delete(args, io),
+            "headers" => self.verb_headers(args, io),
             "options" => self.verb_options(args, io),
             "preflight" => self.verb_preflight(args, io),
             "json" => self.verb_json(args, io),
-            "headers" => self.verb_headers(args, io),
-            _ => bail!("unknown verb for http://: {}", verb),
+            "post" => self.verb_post(args, io),
+            "put" => self.verb_put(args, io),
+            "patch" => self.verb_patch(args, io),
+            _ => self.verb_delete(args, io),
         }
     }
 }
+
 #[cfg(test)]
-mod help_tests {
-    use super::*;
-
-    fn help_output(url: &str, verb: &str, args: &[(&str, &str)]) -> Option<String> {
-        let h = HttpHandle::from_url(&Url::parse(url).unwrap()).unwrap();
-        let args: Args = args
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-        let mut io = IoStreams::new(&mut i, &mut o, &mut e);
-        let shown = h
-            .check_and_display_help(verb, &args, &mut io)
-            .unwrap()
-            .is_some();
-        shown.then(|| String::from_utf8(o).unwrap())
-    }
-
-    #[test]
-    fn in_url_help_renders_approved_help() {
-        let out = help_output("http://--help", "help", &[]).unwrap();
-        assert!(out.starts_with("Handle: http\n"), "{out}");
-        let out = help_output("https://--help", "--help", &[]).unwrap();
-        assert!(out.starts_with("Handle: https\n"), "{out}");
-        let all = help_output("http://--help", "help", &[]).unwrap();
-        let get = help_output("http://--help", "help", &[("verb", "get")]).unwrap();
-        assert_ne!(all, get);
-        assert_eq!(help_output("http://x", "--help=get", &[]).unwrap(), get);
-    }
-
-    #[test]
-    fn non_help_verbs_are_not_help() {
-        assert!(help_output("http://my-httpd/", "get", &[]).is_none());
-        assert!(help_output("http://x/pre-hotfix", "headers", &[]).is_none());
-    }
-}
-
-/// Stage 3 (SEC-08): `allow_insecure` disables TLS certificate checks, so
-/// it is read by the shared boolean parser: a malformed value is an error,
-/// never a silent default.
-#[cfg(test)]
-mod allow_insecure_tests {
-    use super::*;
-
-    fn args(pairs: &[(&str, &str)]) -> Args {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn allow_insecure_parses_strictly() {
-        for v in ["true", "yes", "1", "on", "false", "no", "0", "off"] {
-            assert!(
-                HttpHandle::build_client(&args(&[("allow_insecure", v)]), "https").is_ok(),
-                "{v}"
-            );
-        }
-        assert!(HttpHandle::build_client(&args(&[]), "https").is_ok());
-        for bad in ["maybe", "", "2", "insecure"] {
-            let err =
-                HttpHandle::build_client(&args(&[("allow_insecure", bad)]), "https").unwrap_err();
-            assert!(err.to_string().contains("allow_insecure"), "{err}");
-        }
-    }
-}
+#[path = "httph_tests.rs"]
+mod tests;

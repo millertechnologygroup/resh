@@ -1,0 +1,22 @@
+Handle: http
+Verb: delete
+Definition: Sends a DELETE request, optionally with a body, and prints the
+  response body as text, raw bytes, or pretty JSON.
+
+Usage:
+  resh http://<host>/<path>.delete [body=<data> | body_file=<path>]
+    [content_type=<type>] [accept=text|json|bytes] [query=<k=v&...>]
+    [headers=<Name:value;...>] [timeout_ms=<ms>]
+    [follow_redirects=true|false] [allow_insecure=true|false]
+
+Example:
+  resh http://api.example.com/v1/users/42.delete accept=json
+
+Example Output:
+  {
+    "deleted": true,
+    "id": 42
+  }
+
+  Shown for a JSON response body, which the verb pretty-prints. A body that
+  is not JSON is wrapped in an object with body and status fields.

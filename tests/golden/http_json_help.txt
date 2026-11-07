@@ -1,0 +1,35 @@
+Handle: http
+Verb: json
+Definition: Sends a request with any method and prints a JSON envelope with the
+  status, headers, and the body parsed as JSON when possible.
+
+Usage:
+  resh http://<host>/<path>.json [method=<method>] [body=<data>]
+    [content_type=<type>] [accept=json|text|bytes] [query=<k=v&...>]
+    [headers=<Name:value;...>] [timeout_ms=<ms>]
+    [follow_redirects=true|false] [allow_insecure=true|false]
+
+Example:
+  resh http://api.example.com/v1/users/42.json
+
+Example Output:
+  {
+    "body": {
+      "type": "json",
+      "value": {
+        "id": 42,
+        "name": "alice"
+      }
+    },
+    "headers": {
+      "content-type": [
+        "application/json"
+      ]
+    },
+    "status": 200,
+    "status_text": "OK",
+    "url": "http://api.example.com/v1/users/42"
+  }
+
+  Shown with --json-pretty. A body that is not JSON has type text, and
+  accept=bytes reports type bytes with a base64 field.

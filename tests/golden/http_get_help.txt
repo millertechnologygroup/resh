@@ -1,0 +1,35 @@
+Handle: http
+Verb: get
+Definition: Sends a GET request and prints the response body as text, raw bytes,
+  or a JSON envelope with status and headers.
+
+Usage:
+  resh http://<host>/<path>.get [accept=text|json|bytes]
+    [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]
+    [follow_redirects=true|false] [allow_insecure=true|false]
+
+Example:
+  resh http://api.example.com/v1/users/42.get accept=json
+
+Example Output:
+  {
+    "body": {
+      "id": 42,
+      "name": "alice"
+    },
+    "body_text": "{\"id\":42,\"name\":\"alice\"}",
+    "headers": {
+      "content-length": [
+        "24"
+      ],
+      "content-type": [
+        "application/json"
+      ]
+    },
+    "method": "GET",
+    "ok": true,
+    "status": 200
+  }
+
+  Shown for accept=json with --json-pretty. The default accept=text prints
+  the response body as is.

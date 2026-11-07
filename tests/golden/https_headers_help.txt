@@ -1,0 +1,29 @@
+Handle: https
+Verb: headers
+Definition: Sends a request, GET by default, and reports the status and response
+  headers as JSON without the body.
+
+Usage:
+  resh https://<host>/<path>.headers [method=<method>]
+    [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]
+    [follow_redirects=true|false] [allow_insecure=true|false]
+
+Example:
+  resh https://example.com.headers method=HEAD
+
+Example Output:
+  {
+    "headers": {
+      "content-type": [
+        "text/html"
+      ],
+      "server": [
+        "nginx"
+      ]
+    },
+    "status": 200,
+    "status_text": "OK",
+    "url": "https://example.com/"
+  }
+
+  Shown with --json-pretty.

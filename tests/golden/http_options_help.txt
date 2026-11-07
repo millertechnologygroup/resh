@@ -1,0 +1,33 @@
+Handle: http
+Verb: options
+Definition: Sends an OPTIONS request and reports the allowed methods, status,
+  and response headers as JSON.
+
+Usage:
+  resh http://<host>/<path>.options [include_body=true|false]
+    [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]
+    [follow_redirects=true|false] [allow_insecure=true|false]
+
+Example:
+  resh http://api.example.com/v1/users.options
+
+Example Output:
+  {
+    "allowed_methods": [
+      "GET",
+      "POST",
+      "OPTIONS"
+    ],
+    "backend": "reqwest",
+    "has_body": false,
+    "headers": {
+      "allow": "GET, POST, OPTIONS",
+      "content-length": "0"
+    },
+    "reason": "No Content",
+    "status": 204,
+    "url": "http://api.example.com/v1/users"
+  }
+
+  Shown with --json-pretty. With include_body=true a non-empty body is
+  added as the body field.

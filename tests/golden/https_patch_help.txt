@@ -1,0 +1,18 @@
+Handle: https
+Verb: patch
+Definition: Sends a PATCH request with an inline or file body and prints the
+  response body as raw bytes, text, or compact JSON.
+
+Usage:
+  resh https://<host>/<path>.patch [body=<data> | body_file=<path>]
+    [content_type=<type>] [accept=bytes|text|json] [query=<k=v&...>]
+    [headers=<Name:value;...>] [timeout_ms=<ms>]
+    [follow_redirects=true|false] [allow_insecure=true|false]
+
+Example:
+  resh https://api.example.com/v1/users/42.patch body='{"name":"bob"}'
+
+Example Output:
+  {"id":42,"name":"bob"}
+
+  Shown for the default accept=bytes, which prints the response body.

@@ -1,0 +1,44 @@
+Handle: https
+Verb: preflight
+Definition: Sends a CORS preflight OPTIONS request and reports the parsed
+  Access-Control response headers as JSON.
+
+Usage:
+  resh https://<host>/<path>.preflight [origin=<origin>]
+    [method=<method>] [request_headers=<name,...>] [query=<k=v&...>]
+    [headers=<Name:value;...>] [timeout_ms=<ms>]
+    [follow_redirects=true|false] [allow_insecure=true|false]
+
+Example:
+  resh https://api.example.com/users.preflight origin=https://example.org
+
+Example Output:
+  {
+    "cors": {
+      "allow_credentials": false,
+      "allowed_headers": [
+        "Content-Type"
+      ],
+      "allowed_methods": [
+        "GET",
+        "POST"
+      ],
+      "allowed_origins": [
+        "https://example.org"
+      ],
+      "exposed_headers": [],
+      "max_age_seconds": 600
+    },
+    "method": "OPTIONS",
+    "ok": true,
+    "raw_headers": {
+      "access-control-allow-headers": "Content-Type",
+      "access-control-allow-methods": "GET, POST",
+      "access-control-allow-origin": "https://example.org",
+      "access-control-max-age": "600"
+    },
+    "status": 204,
+    "url": "https://api.example.com/users"
+  }
+
+  Shown with --json-pretty.

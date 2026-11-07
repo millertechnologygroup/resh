@@ -39,47 +39,73 @@ parameters with `query=` (see below) rather than inside the URL.
 
 ## 3. Verbs
 
-| Verb        | Method        | Prints                                              | Non-2xx exits |
-| ----------- | ------------- | --------------------------------------------------- | ------------- |
-| `get`       | GET           | Body as text (default), raw bytes, or a JSON envelope | 1 |
-| `head`      | HEAD          | JSON: url, status, ok, reason, headers              | **0** (check `ok`) |
-| `headers`   | any (default GET) | JSON: url, status, status_text, headers (no body) | **0** (check `status`) |
-| `options`   | OPTIONS       | JSON: allowed methods, status, headers              | 1 outside 200-399 |
-| `preflight` | OPTIONS (CORS) | JSON: parsed Access-Control-* headers              | 1 |
-| `json`      | any (default GET) | JSON envelope with the body parsed as JSON when possible | **0** (check `status`) |
-| `post`      | POST          | Raw response body                                   | 1 |
-| `put`       | PUT           | Body as text (default), raw bytes, or a JSON envelope | 1 |
-| `patch`     | PATCH         | Raw bytes (default), text, or compact JSON          | 1 |
-| `delete`    | DELETE        | Body as text (default), raw bytes, or pretty JSON   | 1 |
+| Verb        | Method        | Prints                                              |
+| ----------- | ------------- | --------------------------------------------------- |
+| `get`       | GET           | Body as text (default), raw bytes, or a JSON envelope |
+| `head`      | HEAD          | JSON: url, status, ok, reason, headers              |
+| `headers`   | any (default GET) | JSON: url, status, status_text, headers (no body) |
+| `options`   | OPTIONS       | JSON: allowed methods, status, headers              |
+| `preflight` | OPTIONS (CORS) | JSON: parsed Access-Control-* headers              |
+| `json`      | any (default GET) | JSON envelope with the body parsed as JSON when possible |
+| `post`      | POST          | Raw response body                                   |
+| `put`       | PUT           | Body as text (default), raw bytes, or a JSON envelope |
+| `patch`     | PATCH         | Raw bytes (default), text, or compact JSON          |
+| `delete`    | DELETE        | Body as text (default), raw bytes, or pretty JSON   |
 
-"Non-2xx exits 1" means: the response body (or JSON) is still printed to
-stdout, the process exits 1, and a reason such as `Error: HTTP 404 Not Found`
-goes to stderr. The status code is not used as the exit code. `head`,
-`headers` and `json` treat any HTTP response as success, so a script must read
-the status from the JSON.
+Every verb treats the HTTP status the same way: a 2xx response exits 0. A 3xx
+response exits 0 only with `follow_redirects=false` (the redirect is then the
+answer asked for). Any other status exits 1: the body or JSON is still printed
+to stdout, and `Error: HTTP <code> <reason>` (for example
+`Error: HTTP 404 Not Found`) goes to stderr. The JSON verbs also report the
+status in their output.
 
 ## 4. Common arguments
 
-| Argument       | Verbs | Notes |
-| -------------- | ----- | ----- |
-| `headers`      | all   | `Name:value;Name2:value2`. `Host`, `Content-Length`, `Connection` and `Transfer-Encoding` are dropped. A segment without `:` is an error for most verbs, but is silently ignored by `delete`, `options` and `preflight`. |
-| `query`        | get, head, headers, post, put, patch, delete | `k=v&k2=v2`, appended to the URL's query. Not read by `json`, `options` or `preflight`. |
-| `timeout_ms`   | see section 6 | Whole-request timeout in milliseconds. |
-| `body`         | post, put, patch, delete, json | Inline request body. |
-| `body_file`    | post, put, patch, delete | Local file sent as the body. |
-| `content_type` | post, put, patch, delete, json | Sets `Content-Type`. |
-| `accept`       | get, put, patch, delete, json, head | Output mode (`text`, `bytes`, `json`); see each verb. For `head` it only sets the request `Accept` header. |
+Every verb accepts these:
 
-Body precedence differs by verb: `post` and `put` use `body_file` when both are
-given; `patch` and `delete` use `body`.
+| Argument           | Notes |
+| ------------------ | ----- |
+| `query`            | `k=v&k2=v2`, appended as given to the URL's query string (keep any percent-encoding you need). |
+| `headers`          | `Name:value;Name2:value2`. Every segment needs a `:`, a valid header name and a valid value, or the stage is refused (exit 2). A repeated name sends every value. `Host`, `Content-Length`, `Connection` and `Transfer-Encoding` are dropped. Use it for authentication, for example `headers='Authorization:Bearer <token>'`. |
+| `timeout_ms`       | Whole-request deadline in milliseconds (connect, send and reading the whole response body). A positive integer; anything else is refused (exit 2). Defaults: 5000 for `preflight`; 30000 for `put`, `patch` and `delete`; 10000 for the others. |
+| `follow_redirects` | `true` (default) follows up to 10 redirects; `false` returns the redirect response itself. |
+| `allow_insecure`   | `true` **disables TLS certificate and host name verification** for an `https://` URL. Default `false`. No effect on `http://`. Use it only against hosts you control. |
 
-Default `Content-Type`: `put` sends `text/plain; charset=utf-8` for an inline
+Booleans accept `true|false|1|0|yes|no|on|off`; anything else is refused
+(exit 2).
+
+Verb-specific arguments:
+
+| Argument          | Verbs | Notes |
+| ----------------- | ----- | ----- |
+| `accept`          | get, head, json, put, patch, delete | Output mode (`text`, `bytes`, `json`); see each verb. For `head` it only sets the request `Accept` header. Any other value is refused (exit 2). |
+| `body`            | json, post, put, patch, delete | Inline request body. |
+| `body_file`       | post, put, patch, delete | Local file sent as the body. `body_file=/dev/stdin` sends standard input. |
+| `content_type`    | json, post, put, patch, delete | Sets `Content-Type` (wins over a `Content-Type` in `headers=`). |
+| `method`          | headers, json, preflight | See each verb. |
+| `include_body`    | options | |
+| `origin`, `request_headers` | preflight | |
+
+`body` and `body_file` cannot be given together (exit 2). An unreadable
+`body_file` fails with exit 1 before anything is sent.
+
+Default `Content-Type` (when neither `content_type` nor a `Content-Type` in
+`headers=` is given): `put` sends `text/plain; charset=utf-8` for an inline
 `body` (none for `body_file`); `delete` sends `application/octet-stream` when
-a body is present; `json` sends `application/json` when `body` is non-empty;
-`post` and `patch` send none unless `content_type` is given.
+the body is not empty; `json` sends `application/json` when `body` is not
+empty; `post` and `patch` send none.
 
-Redirects are followed (reqwest default, up to 10) by every verb.
-`follow_redirects=false` is honored only by `headers` and `options`.
+Any other argument, including `dry_run`, is refused with exit 2 and a
+"did you mean" hint for a likely typo, before anything is sent. No verb has a
+dry-run mode.
+
+### Proxies
+
+The standard proxy environment variables are honored: `http_proxy` /
+`HTTP_PROXY` for `http://` URLs, `https_proxy` / `HTTPS_PROXY` for
+`https://` URLs (sent through `CONNECT`), `all_proxy` / `ALL_PROXY`, and
+`no_proxy` / `NO_PROXY` to bypass the proxy for listed hosts. There is no
+proxy argument.
 
 ## 5. Verb reference
 
@@ -91,16 +117,16 @@ resh http://api.example.com/v1/users.get accept=json query='page=2&per_page=50'
 resh https://example.com/logo.png.get accept=bytes > logo.png
 ```
 
-`accept=text` (default) prints the body as received (raw bytes if it is not
-UTF-8). `accept=bytes` prints raw bytes. `accept=json` prints an envelope:
+`accept=text` (default) and `accept=bytes` print the body exactly as
+received. `accept=json` prints an envelope:
 
 ```json
 {"status":200,"ok":true,"method":"GET","headers":{"content-type":["application/json"]},"body":{"id":42,"name":"alice"},"body_text":"{\"id\":42,\"name\":\"alice\"}"}
 ```
 
 `body` is parsed JSON only when the response `Content-Type` contains
-`application/json`; otherwise it is the body as a string. Header values are
-arrays. Any other `accept` value is an error.
+`application/json` and the body parses; otherwise it is the body as a string.
+Header values are arrays.
 
 ### head
 
@@ -109,8 +135,9 @@ resh https://example.com/index.html.head
 ```
 
 Output: `{"url", "status", "ok", "reason", "headers"}` with lowercase header
-names and repeated headers joined with `, `. Exits 0 for every HTTP status.
-The timeout is fixed at 10 seconds.
+names and repeated headers joined with `, `. `accept` sets the request
+`Accept` header: `json` gives `application/json`, `text` gives `text/*`,
+`bytes` gives `*/*` (it wins over an `Accept` in `headers=`).
 
 ### headers
 
@@ -119,11 +146,14 @@ resh https://example.com.headers
 resh https://example.com.headers method=HEAD follow_redirects=false
 ```
 
-`method` may be GET, HEAD, POST, PUT, PATCH, DELETE or OPTIONS (default GET);
-no body is sent. Output: `{"url", "status", "status_text", "headers"}` with
-header values as arrays. Exits 0 for every HTTP status. An unsupported method
-or malformed `headers` prints `{"url", "error": {"kind", "message"}}` and
-exits 2; a network failure prints the same shape and exits 1.
+`method` may be GET, HEAD, POST, PUT, PATCH, DELETE or OPTIONS
+(case-insensitive, default GET); no body is sent. Output:
+`{"url", "status", "status_text", "headers"}` with header values as arrays.
+An unsupported method or malformed `headers` prints
+`{"url", "error": {"kind": "invalid_argument", "message"}}` and exits 2. A
+request failure prints the same shape with `kind` `network`, `timeout`
+(exit 124), `redirect`, `invalid_url` (exit 2) or `other`, and exits 1
+unless noted.
 
 ### options
 
@@ -133,8 +163,7 @@ resh http://api.example.com/v1/users.options include_body=true
 
 Output: `url`, `status`, `reason`, `backend` (`"reqwest"`), `headers`,
 `allowed_methods` (parsed from `Allow`), `has_body`, and `body` when
-`include_body=true` and the body is non-empty. Exits 0 for statuses 200-399.
-A non-numeric `timeout_ms` is an error.
+`include_body=true` and the body is not empty.
 
 ### preflight
 
@@ -143,12 +172,14 @@ resh http://api.example.com/users.preflight origin=https://example.org method=PO
 ```
 
 Sends `OPTIONS` with `Origin`, `Access-Control-Request-Method` and
-`Access-Control-Request-Headers` from `origin`, `method` and
-`request_headers` (comma or semicolon separated). Output: `url`, `method`,
+`Access-Control-Request-Headers` from `origin`, `method` (an HTTP method
+token) and `request_headers` (comma or semicolon separated header names).
+These win over the same headers in `headers=`. Output: `url`, `method`,
 `status`, `ok`, `cors` (`allowed_origins`, `allowed_methods`,
 `allowed_headers`, `exposed_headers`, `allow_credentials`,
-`max_age_seconds`) and `raw_headers`. On a network failure it prints the same
-shape with `ok: false`, `status: null` and an `error` string, and exits 1.
+`max_age_seconds`) and `raw_headers`. On a request failure it prints the
+same shape with `ok: false`, `status: null`, `cors: null` and an `error`
+message, and exits 1 (124 for a timeout).
 
 ### json
 
@@ -157,9 +188,9 @@ resh http://api.example.com/v1/users/42.json
 resh http://api.example.com/v1/users.json method=POST body='{"name":"alice"}'
 ```
 
-`method`: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS (default GET). The body
-is sent only for POST, PUT, PATCH and DELETE. No `Accept` header is added.
-Output:
+`method`: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS (case-insensitive,
+default GET). `body` can be given only with POST, PUT, PATCH or DELETE; with
+another method it is refused (exit 2). No `Accept` header is added. Output:
 
 ```json
 {"url":"http://api.example.com/v1/users/42","status":200,"status_text":"OK","headers":{"content-type":["application/json"]},"body":{"type":"json","value":{"id":42,"name":"alice"}}}
@@ -167,14 +198,15 @@ Output:
 
 `accept=json` (default) gives `type: "json"` when the body parses, otherwise
 `type: "text"`. `accept=text` always gives text; `accept=bytes` gives
-`{"type": "bytes", "base64": "..."}`. A network failure prints an envelope
-with `status: 0` and an `error` string, and exits 1. Any HTTP status exits 0.
+`{"type": "bytes", "base64": "..."}`. A request failure prints an envelope
+with `status: 0` and an `error` message, and exits 1 (124 for a timeout).
 
 ### post
 
 ```bash
 resh http://api.example.com/v1/users.post body='{"name":"alice"}' content_type=application/json
 resh http://api.example.com/upload.post body_file=./payload.bin content_type=application/octet-stream
+generate-report | resh http://api.example.com/reports.post body_file=/dev/stdin
 ```
 
 Prints the raw response body. No `accept` modes.
@@ -186,14 +218,9 @@ resh http://api.example.com/v1/users/42.put body='{"name":"alice"}' content_type
 resh https://staging.internal/v1/config.put body_file=./config.json accept=json allow_insecure=true
 ```
 
-`accept`: `text` (default), `bytes`, or `json` (envelope
-`{"status", "ok", "headers", "body"}`); an unknown value falls back to text.
-
-`allow_insecure=true` **disables TLS certificate and host name verification**
-for an `https://` URL. It is parsed strictly (true/false/1/0/yes/no/on/off;
-anything else is an error) and is honored **only by `put`**. Every other verb
-ignores it and always verifies certificates. Use it only against hosts you
-control.
+`accept`: `text` (default, invalid UTF-8 replaced), `bytes`, or `json`
+(envelope `{"status", "ok", "headers", "body"}`; `body` is parsed JSON when
+the response says `application/json` and parses, otherwise a string).
 
 ### patch
 
@@ -201,9 +228,9 @@ control.
 resh http://api.example.com/v1/users/42.patch body='{"name":"bob"}' content_type=application/json
 ```
 
-`accept`: `bytes` (default), `text`, or `json` (the body re-printed as compact
-JSON; a body that is not JSON is an error). The timeout is fixed at 30
-seconds.
+`accept`: `bytes` (default), `text`, or `json` (the body re-printed as
+compact JSON). With `accept=json`, a 2xx body that is not JSON prints nothing
+and exits 1; for a failed status the body is printed as is.
 
 ### delete
 
@@ -214,52 +241,39 @@ resh http://api.example.com/v1/users/42.delete accept=json
 
 `accept`: `text` (default), `bytes`, or `json` (pretty-printed JSON; a body
 that is not JSON is wrapped as `{"status": {"code", "ok"}, "body": "..."}`).
-An unknown `accept` value prints a warning on stderr and falls back to text.
-A network failure exits 2.
 
-## 6. Timeouts
+## 6. Errors and exit codes
 
-| Verb        | `timeout_ms` |
-| ----------- | ------------ |
-| `get`, `post`, `json`, `headers` | Enforced, default 10000. A non-numeric value is silently replaced by the default. |
-| `options`   | Enforced, default 10000. A non-numeric value is an error. |
-| `preflight` | Enforced, default 5000. Non-numeric falls back to the default. |
-| `put`, `delete` | Enforced, default 30000. Non-numeric falls back to the default. |
-| `head`      | **Ignored.** Fixed 10-second timeout. |
-| `patch`     | **Ignored.** Fixed 30-second timeout. |
+* 0: the response status is a success (2xx, or 3xx with
+  `follow_redirects=false`).
+* 1: any other HTTP status; a connection, TLS, proxy or redirect failure
+  (including a redirect loop); a response that ends early; an unreadable
+  `body_file`; `patch accept=json` with a body that is not JSON.
+* 2: invalid usage, nothing was sent: an unknown argument or verb, `dry_run`,
+  a malformed `headers`, `timeout_ms` or boolean, an unknown `accept` or
+  `method`, `body` with `body_file`, `body` with a `json` method that sends no
+  body, an invalid `origin`, `request_headers` or `content_type`.
+* 124: the request did not finish within `timeout_ms`. The server may have
+  received and acted on it.
 
-A timeout is reported as `Request timed out` (or `http delete error:
-connection timed out`) and exits 1 (2 for `delete`).
+The reason is printed on stderr as `Error: <reason>`, for example
+`Error: HTTP 404 Not Found`, `Error: Connection failed: Connection refused
+(os error 111)`, `Error: Request timed out after 300 ms`.
 
-## 7. Errors and exit codes
+## 7. Security notes
 
-* 0: the request completed and the verb considers the status a success
-  (always, for `head`, `headers` and `json`).
-* 1: a non-2xx status (non-200-399 for `options`), a network or TLS failure, a
-  timeout, an unreadable `body_file`, or an invalid argument.
-* 2: `delete` network failures; `headers` with an unsupported method or
-  malformed `headers`.
-
-The failure reason is printed on stderr. When the handle itself has not
-written to stderr, resh prints `Error: <reason>` (for example
-`Error: HTTP 404 Not Found`, `Error: Connection failed`). `head`, `post`,
-`put` and `delete` print their network-error message to stderr themselves,
-without the `Error:` prefix.
-
-## 8. Security notes
-
-* TLS verification is on by default for every verb. Only `put` can turn it
-  off, through `allow_insecure`.
+* TLS verification is on by default for every verb. `allow_insecure=true`
+  turns it off for that stage.
+* There is no option to add a CA bundle or client certificate: a server whose
+  certificate does not chain to a public root (webpki roots) can only be
+  reached with `allow_insecure=true`.
 * Request headers given with `headers=` (for example `Authorization:Bearer
   ...`) appear in the process list and shell history. Prefer a short-lived
   token.
-* There is no client certificate, proxy, or cookie-jar option.
+* There is no cookie jar: each stage is a separate request.
 
-## 9. Limitations
+## 8. Limitations
 
-* `head`, `headers` and `json` exit 0 for 4xx/5xx responses.
-* `head` and `patch` ignore `timeout_ms`.
-* `allow_insecure` works only with `put`.
-* `follow_redirects` works only with `headers` and `options`.
-* `json`, `options` and `preflight` do not read `query`.
+* The whole response body is held in memory before it is printed.
+* `headers=` values cannot contain `;`.
 * Linux only.

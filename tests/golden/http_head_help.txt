@@ -1,0 +1,27 @@
+Handle: http
+Verb: head
+Definition: Sends a HEAD request and reports the status and response headers as
+  JSON.
+
+Usage:
+  resh http://<host>/<path>.head [accept=json|text|bytes]
+    [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]
+    [follow_redirects=true|false] [allow_insecure=true|false]
+
+Example:
+  resh http://example.com/index.html.head
+
+Example Output:
+  {
+    "headers": {
+      "content-length": "1256",
+      "content-type": "text/html; charset=UTF-8",
+      "last-modified": "Mon, 13 Jan 2025 20:11:20 GMT"
+    },
+    "ok": true,
+    "reason": "OK",
+    "status": 200,
+    "url": "http://example.com/index.html"
+  }
+
+  Shown with --json-pretty.

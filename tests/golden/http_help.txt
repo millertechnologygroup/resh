@@ -1,0 +1,35 @@
+Handle: http
+
+Description:
+  The http handle sends HTTP requests to web servers and APIs using the reqwest
+  client. Verbs map to request methods, plus helpers for CORS preflight checks,
+  JSON response envelopes, and header inspection. The stage URL is the request
+  URL itself, such as http://api.example.com/v1/users, followed by the verb.
+
+Available Verbs:
+  get         Sends a GET request and prints the response body as text, raw
+              bytes, or a JSON envelope with status and headers.
+  head        Sends a HEAD request and reports the status and response headers
+              as JSON.
+  headers     Sends a request, GET by default, and reports the status and
+              response headers as JSON without the body.
+  options     Sends an OPTIONS request and reports the allowed methods, status,
+              and response headers as JSON.
+  preflight   Sends a CORS preflight OPTIONS request and reports the parsed
+              Access-Control response headers as JSON.
+  json        Sends a request with any method and prints a JSON envelope with
+              the status, headers, and the body parsed as JSON when possible.
+  post        Sends a POST request with an inline or file body and prints the
+              raw response body.
+  put         Sends a PUT request with an inline or file body and prints the
+              response body as text, raw bytes, or a JSON envelope.
+  patch       Sends a PATCH request with an inline or file body and prints the
+              response body as raw bytes, text, or compact JSON.
+  delete      Sends a DELETE request, optionally with a body, and prints the
+              response body as text, raw bytes, or pretty JSON.
+
+Usage:
+  resh http://<host>[:<port>]/<path>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh http <verb> --help

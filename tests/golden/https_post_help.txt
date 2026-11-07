@@ -1,0 +1,18 @@
+Handle: https
+Verb: post
+Definition: Sends a POST request with an inline or file body and prints the raw
+  response body.
+
+Usage:
+  resh https://<host>/<path>.post [body=<data> | body_file=<path>]
+    [content_type=<type>] [query=<k=v&...>]
+    [headers=<Name:value;...>] [timeout_ms=<ms>]
+    [follow_redirects=true|false] [allow_insecure=true|false]
+
+Example:
+  resh https://api.example.com/v1/users.post body='{"name":"alice"}'
+
+Example Output:
+  {"id":43,"name":"alice"}
+
+  The response body is printed exactly as the server sent it.
