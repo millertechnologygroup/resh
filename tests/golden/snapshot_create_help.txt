@@ -26,7 +26,9 @@ Example Output:
   }
 
   Shown with --json-pretty. Names use letters, digits, '.', '-' and '_' and
-  do not start with '.' or '-'. Without ttl, expires_at is null; ttl is only
-  recorded. With if_exists=skip and an existing snapshot, skipped is true.
+  do not start with '.' or '-'. Without ttl, expires_at is null. After
+  expires_at the snapshot is hidden from ls, diff and restore, and the next
+  create or ls of the target deletes it. With if_exists=skip and an existing
+  snapshot, skipped is true.
   Exit 2 on an invalid argument, 1 when the snapshot exists or the copy
   fails, 124 on timeout (no snapshot is left behind in either case).

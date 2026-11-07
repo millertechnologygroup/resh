@@ -552,3 +552,48 @@ fn help_examples_run() {
     assert_eq!(r["status"], "ok");
     assert_eq!(fs::read_to_string(app.join("README")).unwrap(), "readme");
 }
+
+// --- ttl ------------------------------------------------------------------
+
+/// `ttl=0` expires at creation time, so every later invocation sees the
+/// snapshot as expired: deterministic without a clock seam.
+#[test]
+fn expired_snapshots_are_hidden_refused_and_deleted() {
+    let env = Env::new();
+    let app = env.app();
+    env.run(&[&url(&app, "create"), "name=kept", "ttl=86400"])
+        .ok();
+    let g = env.run(&[&url(&app, "create"), "name=gone", "ttl=0"]).ok();
+    let dir = PathBuf::from(g.json()["path"].as_str().unwrap());
+    assert!(dir.join("meta.json").exists());
+
+    let d = env
+        .run(&[&url(&app, "diff"), "from=gone"])
+        .fails(1, "snapshot_not_found");
+    assert!(d.err.contains("expired at"), "{}", d.err);
+    let r = env
+        .run(&["snapshot://gone.restore", "target=out", "dry_run=true"])
+        .fails(1, "snapshot_not_found");
+    assert!(r.err.contains("expired"), "{}", r.err);
+    assert!(!env.path("out").exists());
+    assert!(dir.exists(), "diff and restore do not delete");
+
+    let l = env.run(&[&url(&app, "ls")]).ok();
+    let lj = l.json();
+    let names: Vec<&str> = lj
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["kept"]);
+    assert!(l.json()[0]["expires_at"].is_string());
+    assert!(l.err.contains("snapshot gone expired at"), "{}", l.err);
+    assert!(!dir.exists(), "ls deletes expired snapshots");
+
+    // create also purges, and an expired name can be reused.
+    env.run(&[&url(&app, "create"), "name=again", "ttl=0"]).ok();
+    let c = env.run(&[&url(&app, "create"), "name=again"]).ok();
+    assert_eq!(c.json()["skipped"], false);
+    assert!(c.err.contains("snapshot again expired at"), "{}", c.err);
+}

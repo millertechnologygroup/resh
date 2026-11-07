@@ -151,7 +151,7 @@ resh snapshot:///srv/app.create name=nightly-1 tags=nightly,auto timeout_ms=6000
 | -------- | ------- | ----- |
 | `name` | required | Snapshot name, case-sensitive (see section 2) |
 | `description` | none | Stored in metadata, shown by `ls` |
-| `ttl` | none | Seconds; sets `expires_at` in the metadata only |
+| `ttl` | none | Seconds until the snapshot expires (`expires_at`); `0` expires it at once. See "Expiry" below |
 | `tags` | none | Comma-separated list, stored in metadata, matched by `ls tag=` |
 | `if_exists` | `error` | `error` (exit 1, `snapshot_exists`), `skip` (`"skipped": true`), `overwrite` |
 | `backend` | `local` | Only `local` exists |
@@ -170,8 +170,32 @@ The snapshot store is never copied into a snapshot (snapshotting `$HOME`
 skips `~/.local/state/resh/snapshots`), and a target inside the store is
 refused.
 
-`ttl` is not enforced: nothing deletes or hides a snapshot after
-`expires_at`. Remove old snapshot directories yourself.
+#### Expiry (`ttl`)
+
+`ttl` is enforced when snapshots are accessed; there is no background job.
+A snapshot is expired once the current time is at or after its
+`expires_at` (a missing or unreadable `expires_at` never expires).
+
+* `ls`, `diff` and `restore` never use an expired snapshot. `diff` and
+  `restore` that name one (by name or ID) fail with `snapshot_not_found`
+  (exit 1) and a message saying when it expired; `restore`'s error object
+  also has `"expired": true`. This applies to `restore dry_run` too.
+* Every `create` and `ls` of a target deletes that target's expired
+  snapshots first, and notes each on stderr
+  (`snapshot ls: warning: snapshot old expired at ...; deleted`).
+  Deletion is best effort: a failure is reported as a warning (the
+  snapshot stays hidden) and never fails the verb. `diff` and `restore`
+  only hide expired snapshots; they do not delete them.
+* Only a real directory directly inside the target's group directory of
+  the store, whose own `meta.json` names that target and has an
+  `expires_at` in the past, is deleted. Symbolic links (as snapshots or as
+  the group directory) are never followed, and snapshots of other targets
+  that share the group are left alone.
+* `create` with the name of an expired snapshot replaces it, whatever
+  `if_exists` says; `if_exists=skip` never returns an expired snapshot.
+* When `restore` finds a live snapshot by name, expired snapshots with the
+  same name (of other targets) are ignored with a warning instead of
+  making the name ambiguous.
 
 Output:
 
@@ -202,7 +226,7 @@ resh snapshot:///srv/app.diff from=backup-v1 to=live path=conf
 
 | Argument | Default | Notes |
 | -------- | ------- | ----- |
-| `from`, `to` | `live` | A snapshot name or ID, or `live` for the current filesystem. At least one side must be a snapshot; the same snapshot on both sides is rejected |
+| `from`, `to` | `live` | A snapshot name or ID, or `live` for the current filesystem. An omitted `from` or `to` means `live` (so `from=backup-v1` alone compares the snapshot with the live tree, and `to=backup-v1` alone compares live with the snapshot). At least one side must be a snapshot; the same snapshot on both sides is rejected; an expired snapshot is not found |
 | `path` | `/` | Restrict the comparison to a subpath of a directory target; `..` is rejected |
 | `format` | `json` | `json` or `summary` (text) |
 | `timeout_ms` | none | See section 2 |
@@ -251,10 +275,11 @@ resh snapshot:///srv/app.ls tag=nightly state=complete
 | `timeout_ms` | See section 2 |
 
 Prints a JSON array, newest first, with `id`, `name`, `created_at`,
-`backend`, `target`, `state`, `size_bytes`, `tags` (when not empty) and
-`description` (when set). An unknown target prints `[]`. A snapshot
-directory whose `meta.json` is missing or unreadable is skipped with a
-warning on stderr.
+`backend`, `target`, `state`, `expires_at` (when set), `size_bytes`,
+`tags` (when not empty) and `description` (when set). Expired snapshots
+are never listed; `ls` deletes them first (see "Expiry" in 3.1). An
+unknown target prints `[]`. A snapshot directory whose `meta.json` is
+missing or unreadable is skipped with a warning on stderr.
 
 ### 3.4 restore
 
@@ -311,7 +336,8 @@ Dry run output (always indented):
 
 ## 4. Limitations
 
-* `ttl` is recorded but never enforced.
+* `ttl` is enforced only when snapshots are accessed (by `create` and
+  `ls` of the same target); nothing runs in the background.
 * Symbolic links are copied as the files they point to; sockets, FIFOs and
   device files are skipped with a warning.
 * Ownership is kept only when resh runs as root; otherwise copies belong

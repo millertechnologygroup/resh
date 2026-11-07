@@ -23,8 +23,9 @@ Example Output:
   modified: 2
   unchanged: 14
 
-  A snapshot is named by name or ID. An omitted from or to means live; at
-  least one must name a snapshot. The default format=json prints name, from,
-  to, from_kind, to_kind, root, path, a summary object, and an entries array
-  with per-file from and to details. Exit 2 on an invalid argument, 1 when
-  a snapshot or the target is not found or cannot be read, 124 on timeout.
+  A snapshot is named by name or ID; an expired one is not found. An
+  omitted from or to means live; at least one must name a snapshot. The
+  default format=json prints name, from, to, from_kind, to_kind, root, path,
+  a summary object, and an entries array with per-file from and to details.
+  Exit 2 on an invalid argument, 1 when a snapshot or the target is not
+  found or cannot be read, 124 on timeout.

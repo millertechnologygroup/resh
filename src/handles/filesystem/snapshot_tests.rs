@@ -1538,3 +1538,248 @@ fn restore_timeout_leaves_target_unchanged() {
         assert!(!n.starts_with(".resh-"), "leftover {n}");
     }
 }
+
+// --- ttl enforcement --------------------------------------------------------
+
+fn t0() -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc)
+}
+
+fn at(secs: i64) {
+    test_store::set_now(t0() + chrono::Duration::seconds(secs));
+}
+
+fn names_of(v: &Value) -> Vec<String> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn ttl_snapshot_is_listed_until_it_expires_then_ls_deletes_it() {
+    let env = Env::new();
+    let app = env.app();
+    at(0);
+    let v = env.on(&app, "create", &[("name", "short"), ("ttl", "100")]);
+    v.ok();
+    assert_eq!(v.json()["expires_at"], "2030-01-01T00:01:40+00:00");
+    at(1);
+    env.create(&app, "keep");
+    let dir = group_dir(&env.store(), &app).join("short");
+
+    at(99);
+    let o = env.on(&app, "ls", &[]);
+    o.ok();
+    assert_eq!(names_of(&o.json()), ["keep", "short"]);
+    assert_eq!(o.json()[1]["expires_at"], "2030-01-01T00:01:40+00:00");
+    assert!(dir.exists());
+
+    at(100);
+    let o = env.on(&app, "ls", &[]);
+    o.ok();
+    assert_eq!(names_of(&o.json()), ["keep"]);
+    assert!(
+        o.err
+            .contains("snapshot short expired at 2030-01-01T00:01:40+00:00; deleted"),
+        "{}",
+        o.err
+    );
+    assert!(!dir.exists());
+    assert!(env.leftovers().is_empty(), "{:?}", env.leftovers());
+}
+
+#[test]
+fn create_deletes_expired_snapshots_and_reuses_the_name() {
+    let env = Env::new();
+    let app = env.app();
+    at(0);
+    env.on(&app, "create", &[("name", "v1"), ("ttl", "10")])
+        .ok();
+    env.on(&app, "create", &[("name", "old"), ("ttl", "5")])
+        .ok();
+    env.on(&app, "create", &[("name", "lasting"), ("ttl", "1000")])
+        .ok();
+    at(20);
+    // if_exists=error does not object to an expired snapshot.
+    let o = env.on(&app, "create", &[("name", "v1")]);
+    o.ok();
+    assert_eq!(o.json()["skipped"], false);
+    assert!(o.err.contains("snapshot old expired at"), "{}", o.err);
+    assert!(o.err.contains("snapshot v1 expired at"), "{}", o.err);
+    assert_eq!(env.snapshot_names(), ["lasting", "v1"]);
+    // if_exists=skip never returns an expired snapshot.
+    at(0);
+    env.on(&app, "create", &[("name", "s"), ("ttl", "1")]).ok();
+    at(5);
+    let o = env.on(&app, "create", &[("name", "s"), ("if_exists", "skip")]);
+    o.ok();
+    assert_eq!(o.json()["skipped"], false);
+}
+
+#[test]
+fn diff_and_restore_refuse_expired_snapshots() {
+    let env = Env::new();
+    let app = env.app();
+    at(0);
+    let id = env
+        .on(&app, "create", &[("name", "v1"), ("ttl", "60")])
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let dir = group_dir(&env.store(), &app).join("v1");
+    at(60);
+    for which in ["v1", id.as_str()] {
+        let o = env.on(&app, "diff", &[("from", which)]);
+        o.fails(1, "snapshot_not_found");
+        assert!(o.err.contains("expired at"), "{}", o.err);
+    }
+    let dest = env.path("dest");
+    for which in ["v1", id.as_str()] {
+        for extra in [("force", "false"), ("dry_run", "true")] {
+            let o = env.call(
+                which,
+                "restore",
+                &[("target", dest.to_str().unwrap()), extra],
+            );
+            o.fails(1, "snapshot_not_found");
+            assert!(o.err.contains("expired"), "{}", o.err);
+            assert_eq!(o.json()["expired"], true);
+        }
+    }
+    assert!(!dest.exists());
+    // diff and restore only hide it; deletion is left to create and ls.
+    assert!(dir.exists());
+}
+
+#[test]
+fn restore_ignores_an_expired_namesake_of_another_target() {
+    let env = Env::new();
+    let a = env.path("a");
+    let b = env.path("b");
+    fs::create_dir(&a).unwrap();
+    fs::create_dir(&b).unwrap();
+    fs::write(b.join("f"), "B").unwrap();
+    at(0);
+    env.on(&a, "create", &[("name", "same"), ("ttl", "1")]).ok();
+    env.create(&b, "same");
+    at(10);
+    let dest = env.path("out");
+    let o = env.call("same", "restore", &[("target", dest.to_str().unwrap())]);
+    o.ok();
+    assert!(
+        o.err.contains("ignoring snapshot same expired at"),
+        "{}",
+        o.err
+    );
+    assert_eq!(fs::read_to_string(dest.join("f")).unwrap(), "B");
+}
+
+#[test]
+fn unparseable_or_missing_expiry_never_expires() {
+    let env = Env::new();
+    let app = env.app();
+    let g = group_dir(&env.store(), &app);
+    let t = app.to_string_lossy().to_string();
+    write_meta(
+        &g.join("weird"),
+        json!({"id":"w","name":"weird","target":t,"expires_at":"soon"}),
+    );
+    write_meta(
+        &g.join("plain"),
+        json!({"id":"p","name":"plain","target":t}),
+    );
+    at(1_000_000);
+    let o = env.on(&app, "ls", &[]);
+    o.ok();
+    assert_eq!(o.json().as_array().unwrap().len(), 2);
+    assert!(g.join("weird").exists() && g.join("plain").exists());
+}
+
+#[test]
+fn purge_never_follows_symlinks_or_touches_other_targets() {
+    let env = Env::new();
+    let app = env.app();
+    let g = group_dir(&env.store(), &app);
+    let t = app.to_string_lossy().to_string();
+    let past = "2000-01-01T00:00:00Z";
+    at(0);
+    env.create(&app, "keep");
+
+    // A symlink in the group that looks like an expired snapshot.
+    let outside = env.path("outside");
+    write_meta(
+        &outside,
+        json!({"id":"o","name":"link","target":t,"expires_at":past}),
+    );
+    fs::write(outside.join("precious"), "x").unwrap();
+    std::os::unix::fs::symlink(&outside, g.join("link")).unwrap();
+
+    // An expired snapshot of another target sharing the group.
+    let other = env.path("app_other");
+    write_meta(
+        &g.join("foreign"),
+        json!({"id":"f","name":"foreign","target":other.to_string_lossy(),"expires_at":past}),
+    );
+
+    let o = env.on(&app, "ls", &[]);
+    o.ok();
+    assert_eq!(names_of(&o.json()), ["keep"]);
+    assert!(outside.join("precious").exists());
+    assert!(
+        fs::symlink_metadata(g.join("link"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(g.join("foreign/meta.json").exists());
+}
+
+#[test]
+fn purge_skips_a_symlinked_group_directory() {
+    let env = Env::new();
+    let app = env.app();
+    let t = app.to_string_lossy().to_string();
+    let real = env.path("elsewhere");
+    write_meta(
+        &real.join("old"),
+        json!({"id":"x","name":"old","target":t,"expires_at":"2000-01-01T00:00:00Z"}),
+    );
+    fs::create_dir_all(env.store()).unwrap();
+    std::os::unix::fs::symlink(&real, group_dir(&env.store(), &app)).unwrap();
+    at(0);
+    let o = env.on(&app, "ls", &[]);
+    o.ok();
+    assert_eq!(o.out, "[]\n");
+    assert!(real.join("old/meta.json").exists());
+}
+
+#[test]
+fn purge_failure_is_a_warning_and_the_snapshot_stays_hidden() {
+    if root() {
+        return;
+    }
+    let env = Env::new();
+    let app = env.app();
+    at(0);
+    env.on(&app, "create", &[("name", "old"), ("ttl", "1")])
+        .ok();
+    env.create(&app, "keep");
+    let g = group_dir(&env.store(), &app);
+    fs::set_permissions(&g, fs::Permissions::from_mode(0o555)).unwrap();
+    at(5);
+    let o = env.on(&app, "ls", &[]);
+    fs::set_permissions(&g, fs::Permissions::from_mode(0o700)).unwrap();
+    o.ok();
+    assert_eq!(names_of(&o.json()), ["keep"]);
+    assert!(
+        o.err.contains("hidden, but could not delete it"),
+        "{}",
+        o.err
+    );
+    assert!(g.join("old").exists());
+}

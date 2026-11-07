@@ -20,7 +20,8 @@ Example Output:
   }
 
   Shown with --json-pretty. With dry_run=true the result has dry_run,
-  force, and an actions list instead of status. Exit 2 on an invalid or
-  ambiguous argument, 1 when the snapshot is not found, the target exists
-  without force, or the copy fails, 124 on timeout (the target is left
-  unchanged).
+  force, and an actions list instead of status. An expired snapshot is not
+  restored (not found, with a message saying it expired). Exit 2 on an
+  invalid or ambiguous argument, 1 when the snapshot is not found, the
+  target exists without force, or the copy fails, 124 on timeout (the
+  target is left unchanged).

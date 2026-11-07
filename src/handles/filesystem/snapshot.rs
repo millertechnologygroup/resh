@@ -110,6 +110,7 @@ static SNAPSHOT_HELP: HandleHelp = HandleHelp {
     "backend": "local",
     "created_at": "2026-10-16T09:12:44.512309876+00:00",
     "description": "nightly",
+    "expires_at": "2026-10-23T09:12:44.512309876+00:00",
     "id": "73265a09-2b27-49d7-a5ab-49315543eacb",
     "name": "backup-v1",
     "size_bytes": 5120,
@@ -122,8 +123,10 @@ static SNAPSHOT_HELP: HandleHelp = HandleHelp {
 ]
 
 Shown with --json-pretty. Snapshots made by create have state complete.
-A relative target is resolved against the working directory. An unknown
-target prints an empty array. Exit 2 on an invalid argument, 1 when the
+Expired snapshots (expires_at in the past) are never listed; ls deletes
+this target's expired snapshots and notes each on stderr. A relative
+target is resolved against the working directory. An unknown target prints
+an empty array. Exit 2 on an invalid argument, 1 when the
 store cannot be read, 124 on timeout."#,
                 ),
             }),
@@ -149,11 +152,12 @@ removed: 0
 modified: 2
 unchanged: 14
 
-A snapshot is named by name or ID. An omitted from or to means live; at
-least one must name a snapshot. The default format=json prints name, from,
-to, from_kind, to_kind, root, path, a summary object, and an entries array
-with per-file from and to details. Exit 2 on an invalid argument, 1 when
-a snapshot or the target is not found or cannot be read, 124 on timeout."#,
+A snapshot is named by name or ID; an expired one is not found. An
+omitted from or to means live; at least one must name a snapshot. The
+default format=json prints name, from, to, from_kind, to_kind, root, path,
+a summary object, and an entries array with per-file from and to details.
+Exit 2 on an invalid argument, 1 when a snapshot or the target is not
+found or cannot be read, 124 on timeout."#,
                 ),
             }),
         },
@@ -180,8 +184,10 @@ a snapshot or the target is not found or cannot be read, 124 on timeout."#,
 }
 
 Shown with --json-pretty. Names use letters, digits, '.', '-' and '_' and
-do not start with '.' or '-'. Without ttl, expires_at is null; ttl is only
-recorded. With if_exists=skip and an existing snapshot, skipped is true.
+do not start with '.' or '-'. Without ttl, expires_at is null. After
+expires_at the snapshot is hidden from ls, diff and restore, and the next
+create or ls of the target deletes it. With if_exists=skip and an existing
+snapshot, skipped is true.
 Exit 2 on an invalid argument, 1 when the snapshot exists or the copy
 fails, 124 on timeout (no snapshot is left behind in either case)."#,
                 ),
@@ -205,10 +211,11 @@ fails, 124 on timeout (no snapshot is left behind in either case)."#,
 }
 
 Shown with --json-pretty. With dry_run=true the result has dry_run,
-force, and an actions list instead of status. Exit 2 on an invalid or
-ambiguous argument, 1 when the snapshot is not found, the target exists
-without force, or the copy fails, 124 on timeout (the target is left
-unchanged)."#,
+force, and an actions list instead of status. An expired snapshot is not
+restored (not found, with a message saying it expired). Exit 2 on an
+invalid or ambiguous argument, 1 when the snapshot is not found, the
+target exists without force, or the copy fails, 124 on timeout (the
+target is left unchanged)."#,
                 ),
             }),
         },
@@ -499,6 +506,27 @@ impl StoredMeta {
             .map(|d| d.with_timezone(&Utc))
     }
 
+    fn expires(&self) -> Option<DateTime<Utc>> {
+        self.expires_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc))
+    }
+
+    /// True when `expires_at` is set, valid and not after `now`. A missing
+    /// or unparseable `expires_at` never expires.
+    fn is_expired(&self, now: DateTime<Utc>) -> bool {
+        self.expires().is_some_and(|e| e <= now)
+    }
+
+    fn expired_note(&self) -> String {
+        format!(
+            "snapshot {} expired at {}",
+            self.name.as_deref().unwrap_or(&self.id),
+            self.expires_at.as_deref().unwrap_or("?")
+        )
+    }
+
     /// True when the metadata belongs to `target` (or records no target).
     fn is_for(&self, target: &Path) -> bool {
         self.target
@@ -620,6 +648,75 @@ fn snapshots_in_group(
         }
     }
     Ok(out)
+}
+
+/// The current time; tests can pin it (see `test_store::set_now`).
+fn now() -> DateTime<Utc> {
+    #[cfg(test)]
+    if let Some(t) = test_store::now() {
+        return t;
+    }
+    Utc::now()
+}
+
+/// Splits snapshots into (live, expired) at `now`.
+fn split_expired(all: Vec<Found>, now: DateTime<Utc>) -> (Vec<Found>, Vec<Found>) {
+    all.into_iter().partition(|f| !f.meta.is_expired(now))
+}
+
+/// Deletes the expired snapshots of `target` in its group (ttl enforced
+/// on access). Best effort: every problem becomes a warning. Only a real
+/// directory (not a symbolic link) directly inside a real group directory
+/// of the store, whose own `meta.json` has an `expires_at` in the past and
+/// names `target`, is deleted; the metadata is read again right before
+/// deleting. Returns the notes to report.
+fn purge_expired(base: &Path, target: &Path, now: DateTime<Utc>, warnings: &mut Vec<String>) {
+    let group = group_dir(base, target);
+    let real_dir = |p: &Path| fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    if !real_dir(base) || !real_dir(&group) {
+        return;
+    }
+    let mut ignored = Vec::new();
+    let all = match snapshots_in_group(&group, Some(target), Deadline(None), &mut ignored) {
+        Ok(a) => a,
+        Err(f) => {
+            warnings.push(format!(
+                "could not check for expired snapshots: {}",
+                f.message
+            ));
+            return;
+        }
+    };
+    for f in all.into_iter().filter(|f| f.meta.is_expired(now)) {
+        let note = f.meta.expired_note();
+        if f.dir.parent() != Some(group.as_path()) || !real_dir(&f.dir) {
+            warnings.push(format!(
+                "{note}; not deleted: unexpected location {}",
+                f.dir.display()
+            ));
+            continue;
+        }
+        // Re-check the metadata in place: never delete on stale data.
+        match read_meta(&f.dir) {
+            Ok(m) if m.is_expired(now) && m.is_for(target) && m.id == f.meta.id => {}
+            _ => continue,
+        }
+        // Move it out of the way first so a partial delete never leaves a
+        // half-removed snapshot visible under its name.
+        let doomed = group.join(format!(".expired-{}", Uuid::new_v4()));
+        if let Err(e) = fs::rename(&f.dir, &doomed) {
+            warnings.push(format!("{note}; hidden, but could not delete it: {e}"));
+            continue;
+        }
+        // remove_dir_all does not follow symbolic links.
+        match fs::remove_dir_all(&doomed) {
+            Ok(()) => warnings.push(format!("{note}; deleted")),
+            Err(e) => warnings.push(format!(
+                "{note}; moved to {} but could not delete it: {e}",
+                doomed.display()
+            )),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,7 +1245,7 @@ impl SnapshotHandle {
             }
         };
 
-        let created_at = Utc::now();
+        let created_at = now();
         let expires_at = match args.get("ttl") {
             None => None,
             Some(v) => {
@@ -1232,6 +1329,8 @@ impl SnapshotHandle {
             ));
         }
 
+        // ttl is enforced on access: drop this target's expired snapshots.
+        purge_expired(&base, &target, created_at, warnings);
         let group = group_dir(&base, &target);
         let final_dir = group.join(name);
         let mut replace_existing = false;
@@ -1247,6 +1346,8 @@ impl SnapshotHandle {
                         ),
                     ));
                 }
+                // An expired snapshot that could not be purged is replaced.
+                Ok(meta) if meta.is_expired(created_at) => replace_existing = true,
                 Ok(meta) => match if_exists {
                     "skip" => {
                         return Ok(json!({
@@ -1458,26 +1559,37 @@ impl SnapshotHandle {
 
         let group = group_dir(&store_base(), target);
         let all = snapshots_in_group(&group, Some(target), deadline, warnings)?;
-        let found = all
-            .iter()
-            .find(|f| f.meta.id == which)
-            .or_else(|| {
-                all.iter().find(|f| {
-                    f.dir.file_name().is_some_and(|n| n == which)
-                        || f.meta.name.as_deref() == Some(which)
+        let (live, expired) = split_expired(all, now());
+        let pick = |list: &[Found]| -> Option<Found> {
+            list.iter()
+                .find(|f| f.meta.id == which)
+                .or_else(|| {
+                    list.iter().find(|f| {
+                        f.dir.file_name().is_some_and(|n| n == which)
+                            || f.meta.name.as_deref() == Some(which)
+                    })
                 })
-            })
-            .cloned()
-            .ok_or_else(|| {
-                Failure::new(
-                    "snapshot_not_found",
-                    format!(
+                .cloned()
+        };
+        let found = match pick(&live) {
+            Some(f) => f,
+            None => {
+                // An expired snapshot is hidden; say so instead of a bare
+                // "not found".
+                let msg = match pick(&expired) {
+                    Some(e) => format!(
+                        "{}; expired snapshots are not used (target {})",
+                        e.meta.expired_note(),
+                        target.display()
+                    ),
+                    None => format!(
                         "snapshot '{which}' not found by id or name for target {}",
                         target.display()
                     ),
-                )
-                .with("snapshot", which)
-            })?;
+                };
+                return Err(Failure::new("snapshot_not_found", msg).with("snapshot", which));
+            }
+        };
         let source = match found.content()? {
             Content::File(path) => TreeSource::File {
                 path,
@@ -1632,7 +1744,14 @@ impl SnapshotHandle {
 
         let target = self.absolute_target()?;
         let group = group_dir(&store_base(), &target);
-        let mut list = snapshots_in_group(&group, Some(&target), deadline, warnings)?;
+        // ttl is enforced on access: delete this target's expired
+        // snapshots (best effort), and never list an expired one.
+        let at = now();
+        purge_expired(&store_base(), &target, at, warnings);
+        let (mut list, _) = split_expired(
+            snapshots_in_group(&group, Some(&target), deadline, warnings)?,
+            at,
+        );
 
         list.retain(|f| {
             let m = &f.meta;
@@ -1676,6 +1795,7 @@ impl SnapshotHandle {
                 opt(&mut o, "backend", &m.backend);
                 opt(&mut o, "target", &m.target);
                 opt(&mut o, "state", &m.state);
+                opt(&mut o, "expires_at", &m.expires_at);
                 if let Some(s) = m.size_bytes {
                     o.insert("size_bytes".into(), json!(s));
                 }
@@ -1698,7 +1818,12 @@ impl SnapshotHandle {
     // -- restore ------------------------------------------------------------
 
     /// Finds the snapshot named (or with the id) `name` across all targets.
-    fn find_for_restore(&self, name: &str, deadline: Deadline) -> VResult<Found> {
+    fn find_for_restore(
+        &self,
+        name: &str,
+        deadline: Deadline,
+        warnings: &mut Vec<String>,
+    ) -> VResult<Found> {
         let base = store_base();
         let not_found = || {
             Failure::new("snapshot_not_found", format!("snapshot not found: {name}"))
@@ -1750,7 +1875,27 @@ impl SnapshotHandle {
                 }
             }
         }
+        let at = now();
+        let (by_name, expired_name) = split_expired(by_name, at);
+        let (by_id, expired_id) = split_expired(by_id, at);
         let matches = if by_name.is_empty() { by_id } else { by_name };
+        if !matches.is_empty() {
+            for e in expired_name.iter().chain(expired_id.iter()) {
+                warnings.push(format!("ignoring {}", e.meta.expired_note()));
+            }
+        } else {
+            if let Some(e) = expired_name.first().or(expired_id.first()) {
+                return Err(Failure::new(
+                    "snapshot_not_found",
+                    format!(
+                        "snapshot not found: {name} ({}; expired snapshots cannot be restored)",
+                        e.meta.expired_note()
+                    ),
+                )
+                .with("snapshot", name)
+                .with("expired", true));
+            }
+        }
         match matches.len() {
             0 => Err(broken
                 .map(|f| f.with("snapshot", name))
@@ -1812,7 +1957,7 @@ impl SnapshotHandle {
             }
         };
 
-        let found = self.find_for_restore(&snapshot_name, deadline)?;
+        let found = self.find_for_restore(&snapshot_name, deadline, warnings)?;
         let content = found.content()?;
 
         // Refuse a target that is, or contains, the snapshot itself.
@@ -2051,16 +2196,24 @@ impl Handle for SnapshotHandle {
                 verb
             ),
         };
-        for w in &warnings {
-            writeln!(io.stderr, "snapshot {verb}: warning: {w}")?;
-        }
-        match result {
+        // On failure the Error line comes first, then any warnings.
+        let status = match result {
             Ok(text) => {
+                for w in &warnings {
+                    writeln!(io.stderr, "snapshot {verb}: warning: {w}")?;
+                }
                 io.stdout.write_all(text.as_bytes())?;
-                Ok(Status::ok())
+                Status::ok()
             }
-            Err(f) => emit_failure(io, f),
-        }
+            Err(f) => {
+                let status = emit_failure(io, f)?;
+                for w in &warnings {
+                    writeln!(io.stderr, "snapshot {verb}: warning: {w}")?;
+                }
+                status
+            }
+        };
+        Ok(status)
     }
 }
 
@@ -2089,7 +2242,22 @@ pub(crate) mod test_store {
     impl Drop for Guard {
         fn drop(&mut self) {
             BASE.with(|b| *b.borrow_mut() = None);
+            NOW.with(|n| *n.borrow_mut() = None);
         }
+    }
+
+    thread_local! {
+        static NOW: RefCell<Option<chrono::DateTime<chrono::Utc>>> = const { RefCell::new(None) };
+    }
+
+    /// The pinned test clock, if any.
+    pub fn now() -> Option<chrono::DateTime<chrono::Utc>> {
+        NOW.with(|n| *n.borrow())
+    }
+
+    /// Pins the clock for this thread (until the store guard drops).
+    pub fn set_now(t: chrono::DateTime<chrono::Utc>) {
+        NOW.with(|n| *n.borrow_mut() = Some(t));
     }
 }
 
