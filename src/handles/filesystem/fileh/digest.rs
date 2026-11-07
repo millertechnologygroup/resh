@@ -1,7 +1,7 @@
 //! Hashing verbs: md5, sha1, sha256, sha512, hash, verify.
 
 use super::FileHandle;
-use super::common::{Code, Fail, Opts, emit, fail, invalid};
+use super::common::{Code, Deadline, Fail, Opts, emit, fail, invalid};
 use crate::core::{IoStreams, Status};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -17,7 +17,7 @@ pub(crate) const ALGOS: &[&str] = &["sha256", "sha512", "sha1", "md5", "blake3"]
 
 /// Streams a regular file through the algorithm. Returns the lowercase hex
 /// digest and the number of bytes hashed.
-pub(crate) fn hash_file(path: &Path, algo: &str) -> Result<(String, u64)> {
+pub(crate) fn hash_file(path: &Path, algo: &str, deadline: Deadline) -> Result<(String, u64)> {
     let meta = fs::metadata(path).with_context(|| format!("hash {}", path.display()))?;
     if meta.is_dir() {
         return Err(fail(
@@ -45,8 +45,15 @@ pub(crate) fn hash_file(path: &Path, algo: &str) -> Result<(String, u64)> {
     let ctx = || format!("read {}", path.display());
     let mut total = 0u64;
     let mut buf = vec![0u8; 64 * 1024];
+    let size = meta.len();
     let mut feed = |update: &mut dyn FnMut(&[u8])| -> Result<()> {
         loop {
+            deadline.check(|| {
+                format!(
+                    "{total} of {size} bytes of {} were hashed; no digest was produced",
+                    path.display()
+                )
+            })?;
             let n = file.read(&mut buf).with_context(ctx)?;
             if n == 0 {
                 return Ok(());
@@ -121,7 +128,7 @@ impl FileHandle {
     /// md5, sha1, sha256, sha512: `{"path","algorithm","hash","size"}`.
     pub(super) fn verb_fixed_hash(&self, o: &Opts, io: &mut IoStreams) -> Result<Status> {
         let algo = o.verb();
-        let (hash, size) = hash_file(&self.path, algo)?;
+        let (hash, size) = hash_file(&self.path, algo, o.deadline()?)?;
         emit(
             io,
             &json!({
@@ -136,7 +143,8 @@ impl FileHandle {
 
     pub(super) fn verb_hash(&self, o: &Opts, io: &mut IoStreams) -> Result<Status> {
         let algo = o.choice("algo", ALGOS)?.unwrap_or("sha256");
-        let (hash, size) = hash_file(&self.path, algo)?;
+        let deadline = o.deadline()?;
+        let (hash, size) = hash_file(&self.path, algo, deadline)?;
         emit(
             io,
             &json!({
@@ -170,6 +178,7 @@ impl FileHandle {
             }
         };
         let expected_size = o.number::<u64>("size", 0)?;
+        let deadline = o.deadline()?;
 
         let report = |digest: Option<&str>,
                       size: Option<u64>,
@@ -190,7 +199,7 @@ impl FileHandle {
             })
         };
 
-        let (digest, size) = match hash_file(&self.path, algo) {
+        let (digest, size) = match hash_file(&self.path, algo, deadline) {
             Ok(r) => r,
             Err(e) => {
                 let st = super::common::status_of(&e);

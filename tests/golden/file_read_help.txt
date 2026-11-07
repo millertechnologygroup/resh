@@ -3,7 +3,7 @@ Verb: read
 Definition: Prints the entire contents of a file to standard output.
 
 Usage:
-  resh file://<path>.read
+  resh file://<path>.read [timeout_ms=<ms>]
 
 Example:
   resh file:///etc/hostname.read

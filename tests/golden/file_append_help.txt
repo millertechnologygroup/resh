@@ -5,6 +5,7 @@ Definition: Appends the data argument or standard input to the end of a file and
 
 Usage:
   resh file://<path>.append [data=<text>] [create=true|false]
+    [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///var/tmp/jobs.log.append data='job finished'

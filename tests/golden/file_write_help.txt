@@ -5,6 +5,7 @@ Definition: Atomically replaces a file's contents with the data argument or
 
 Usage:
   resh file://<path>.write [data=<text>] [create=true|false] [mode=<octal>]
+    [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///tmp/greeting.txt.write data='hello world'

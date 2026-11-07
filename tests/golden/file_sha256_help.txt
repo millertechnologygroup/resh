@@ -4,7 +4,7 @@ Definition: Computes the SHA-256 digest of a file and reports it with the file
   size as a JSON object.
 
 Usage:
-  resh file://<path>.sha256
+  resh file://<path>.sha256 [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///srv/data/users.csv.sha256

@@ -6,7 +6,7 @@ Definition: Reads the first bytes and lines of a file and reports them as a JSON
 Usage:
   resh file://<path>.preview [max_bytes=<n>] [max_lines=<n>]
     [mode=auto|text|binary] [encoding=base64|hex]
-    [include_metadata=true|false]
+    [include_metadata=true|false] [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///etc/hosts.preview max_lines=2

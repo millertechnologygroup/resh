@@ -5,7 +5,7 @@ Definition: Changes a path's owner and group by name or numeric ID on Unix,
 
 Usage:
   resh file://<path>.chown [user=<name>] [uid=<n>] [group=<name>]
-    [gid=<n>] [recursive=true|false]
+    [gid=<n>] [recursive=true|false] [timeout_ms=<ms>]
 
 Example:
   resh file:///srv/www.chown user=alice group=www recursive=true

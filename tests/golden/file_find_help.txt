@@ -6,7 +6,7 @@ Definition: Walks a directory tree and lists matching entries with their type,
 Usage:
   resh file://<dir>.find [name=<glob>] [type=file|dir|symlink]
     [max_depth=<n>] [limit=<n>] [include_hidden=true|false]
-    [follow_symlinks=true|false]
+    [follow_symlinks=true|false] [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///srv/www.find name='*.html' type=file

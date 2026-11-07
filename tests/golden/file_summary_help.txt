@@ -4,7 +4,7 @@ Definition: Summarizes a file's size, modification time, content type, and line
   statistics, or a directory's entry count, as a JSON object.
 
 Usage:
-  resh file://<path>.summary [max_bytes=<n>]
+  resh file://<path>.summary [max_bytes=<n>] [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///srv/data/users.csv.summary

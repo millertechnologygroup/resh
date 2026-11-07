@@ -2,7 +2,7 @@
 //! analyze, schema.
 
 use super::FileHandle;
-use super::common::{Code, Opts, emit, fail};
+use super::common::{Code, Deadline, DeadlineReader, Opts, emit, fail};
 use crate::core::{IoStreams, Status};
 use anyhow::{Context, Result};
 use base64::prelude::*;
@@ -38,24 +38,90 @@ pub(crate) fn open_for_read(path: &Path, verb: &str) -> Result<(File, fs::Metada
             format!("{} is not a regular file", path.display()),
         ));
     }
-    let f = File::open(path).with_context(|| format!("{verb} {}", path.display()))?;
+    let f = if meta.is_file() {
+        File::open(path)
+    } else {
+        // A FIFO would block in open(2) until a writer appears; open it
+        // non-blocking, then make reads blocking again (DeadlineReader polls
+        // before each read).
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .inspect(|f| {
+                use std::os::fd::AsRawFd;
+                let fd = f.as_raw_fd();
+                // SAFETY: fcntl on a descriptor we own.
+                unsafe {
+                    let flags = libc::fcntl(fd, libc::F_GETFL);
+                    libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+                }
+            })
+    }
+    .with_context(|| format!("{verb} {}", path.display()))?;
     Ok((f, meta))
 }
 
-/// Reads at most `max` bytes from the start of `f`.
-pub(crate) fn read_sample(f: File, max: u64, path: &Path) -> Result<Vec<u8>> {
+/// Reads at most `max` bytes from the start of `f`, failing with TIMEOUT
+/// at the deadline.
+pub(crate) fn read_sample<R: Read>(
+    f: R,
+    max: u64,
+    path: &Path,
+    deadline: Deadline,
+) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    f.take(max)
-        .read_to_end(&mut buf)
-        .with_context(|| format!("read {}", path.display()))?;
-    Ok(buf)
+    let mut r = DeadlineReader::new(f, deadline).take(max);
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let n = match r.read(&mut chunk) {
+            Ok(0) => return Ok(buf),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return Err(deadline.timeout(format!(
+                    "{} bytes of {} were read; nothing was printed",
+                    buf.len(),
+                    path.display()
+                )));
+            }
+            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+        };
+        buf.extend_from_slice(&chunk[..n]);
+    }
 }
 
 impl FileHandle {
-    pub(super) fn verb_read(&self, _o: &Opts, io: &mut IoStreams) -> Result<Status> {
-        let (mut f, _) = open_for_read(&self.path, "read")?;
-        std::io::copy(&mut f, &mut io.stdout)
-            .with_context(|| format!("read {}", self.path.display()))?;
+    pub(super) fn verb_read(&self, o: &Opts, io: &mut IoStreams) -> Result<Status> {
+        let deadline = o.deadline()?;
+        let (f, meta) = open_for_read(&self.path, "read")?;
+        let mut r = if meta.is_file() {
+            DeadlineReader::new(f, deadline)
+        } else {
+            use std::os::fd::AsRawFd;
+            let fd = f.as_raw_fd();
+            DeadlineReader::polling(f, deadline, fd)
+        };
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut total = 0u64;
+        loop {
+            let n = match r.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    io.stdout.flush()?;
+                    return Err(deadline.timeout(format!(
+                        "the first {total} bytes of {} were printed",
+                        self.path.display()
+                    )));
+                }
+                Err(e) => return Err(e).with_context(|| format!("read {}", self.path.display())),
+            };
+            io.stdout.write_all(&buf[..n])?;
+            io.stdout.flush()?;
+            total += n as u64;
+        }
         Ok(Status::ok())
     }
 
@@ -146,8 +212,9 @@ impl FileHandle {
             .unwrap_or("base64");
         let include_metadata = o.flag("include_metadata", true)?;
 
+        let deadline = o.deadline()?;
         let (f, meta) = open_for_read(&self.path, "preview")?;
-        let buffer = read_sample(f, max_bytes, &self.path)?;
+        let buffer = read_sample(f, max_bytes, &self.path, deadline)?;
         let preview_len = buffer.len() as u64;
 
         let binary = match mode {
@@ -196,13 +263,19 @@ impl FileHandle {
             .number::<u64>("max_bytes", 1)?
             .unwrap_or(65536)
             .min(SUMMARY_MAX_SAMPLE);
+        let deadline = o.deadline()?;
         let meta =
             fs::metadata(&self.path).with_context(|| format!("summary {}", self.path.display()))?;
 
         if meta.is_dir() {
-            let entry_count = fs::read_dir(&self.path)
+            let mut entry_count = 0usize;
+            for _ in fs::read_dir(&self.path)
                 .with_context(|| format!("summary {}", self.path.display()))?
-                .count();
+            {
+                deadline
+                    .check(|| format!("{entry_count} entries were counted; nothing was printed"))?;
+                entry_count += 1;
+            }
             emit(
                 io,
                 &json!({
@@ -216,7 +289,7 @@ impl FileHandle {
         }
 
         let (f, _) = open_for_read(&self.path, "summary")?;
-        let buffer = read_sample(f, max_bytes, &self.path)?;
+        let buffer = read_sample(f, max_bytes, &self.path, deadline)?;
         let content_type = classify_summary(&buffer);
         let sample_end = buffer.len().min(512);
         let mut summary = json!({
@@ -248,8 +321,9 @@ impl FileHandle {
 
     pub(super) fn verb_analyze(&self, o: &Opts, io: &mut IoStreams) -> Result<Status> {
         let max_bytes = o.number::<u64>("max_bytes", 1)?.unwrap_or(65536);
+        let deadline = o.deadline()?;
         let (f, meta) = open_for_read(&self.path, "analyze")?;
-        let buffer = read_sample(f, max_bytes, &self.path)?;
+        let buffer = read_sample(f, max_bytes, &self.path, deadline)?;
         let sample_bytes = buffer.len();
 
         let line_count = buffer.iter().filter(|&&b| b == b'\n').count();
@@ -287,8 +361,9 @@ impl FileHandle {
         let max_rows = o.number::<usize>("max_rows", 1)?.unwrap_or(100);
         let format_override = o.choice("format", &["json", "ndjson", "csv", "tsv", "text"])?;
 
+        let deadline = o.deadline()?;
         let (f, _) = open_for_read(&self.path, "schema")?;
-        let buffer = read_sample(f, max_bytes, &self.path)?;
+        let buffer = read_sample(f, max_bytes, &self.path, deadline)?;
         let bytes_read = buffer.len();
         let content = String::from_utf8_lossy(&buffer);
         let format = format_override.unwrap_or_else(|| detect_format(&content));
@@ -681,6 +756,34 @@ mod unit {
         assert!(!is_datetime_like("2026-1-5"));
         assert!(!is_datetime_like("hello-world"));
         assert!(!is_datetime_like("ééééé-ééé"));
+    }
+
+    /// Yields one byte every 20 ms, forever.
+    struct Slow;
+    impl Read for Slow {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            buf[0] = b'x';
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn read_sample_stops_at_the_deadline() {
+        let err = read_sample(Slow, 1 << 20, Path::new("f"), Deadline::after_ms(150)).unwrap_err();
+        let st = super::super::common::status_of(&err);
+        assert_eq!(st.exit_code(), 124);
+        let reason = st.reason.unwrap();
+        assert!(
+            reason.starts_with("TIMEOUT: timed out after timeout_ms=150; "),
+            "{reason}"
+        );
+        assert!(reason.contains("bytes of f were read"), "{reason}");
+        // Without a deadline the sample is bounded by max.
+        assert_eq!(
+            read_sample(Slow, 3, Path::new("f"), Deadline::after_ms(0)).unwrap(),
+            b"xxx"
+        );
     }
 
     #[test]

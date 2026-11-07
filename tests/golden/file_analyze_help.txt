@@ -4,7 +4,7 @@ Definition: Samples a file and reports its ASCII ratio, byte entropy, line
   count, and a json, csv, log, text, or binary classification as a JSON object.
 
 Usage:
-  resh file://<path>.analyze [max_bytes=<n>]
+  resh file://<path>.analyze [max_bytes=<n>] [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///var/log/app.log.analyze

@@ -145,7 +145,16 @@ fn tail() {
     );
     assert_eq!(r.ok().out, "error two\n");
     resh_in(t.path(), &["file://app.log.tail", "lines=1", "bytes=1"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://app.log.tail", "timeout_ms=10"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://app.log.tail", "timeout_ms=soon"]).fails(2, "INVALID_ARG");
+    assert_eq!(
+        resh_in(
+            t.path(),
+            &["file://app.log.tail", "lines=1", "timeout_ms=60000"]
+        )
+        .ok()
+        .out,
+        "error two\n"
+    );
     resh_in(t.path(), &["file://nope.tail"]).fails(1, "NOT_FOUND");
 }
 
@@ -475,4 +484,187 @@ fn extended_attributes_and_tags() {
 fn unknown_verb() {
     let t = setup();
     resh_in(t.path(), &["file://app.log.frobnicate"]).fails(2, "INVALID_ARG");
+}
+
+// --- timeouts and streaming ----------------------------------------------------
+
+fn sparse(dir: &Path, name: &str) {
+    std::fs::File::create(dir.join(name))
+        .unwrap()
+        .set_len(1 << 30)
+        .unwrap();
+}
+
+#[test]
+fn long_verbs_exit_124_at_the_deadline() {
+    let t = setup();
+    sparse(t.path(), "big");
+    for args in [
+        vec!["file://big.sha256", "timeout_ms=1"],
+        vec!["file://big.hash", "algo=blake3", "timeout_ms=1"],
+        vec!["file://big.verify", "timeout_ms=1"],
+        vec!["file://big.grep", "pattern=x", "timeout_ms=1"],
+        vec!["file://big.analyze", "max_bytes=2000000000", "timeout_ms=1"],
+        vec!["file://big.copy", "to=copy", "timeout_ms=1"],
+        vec![
+            "file://big.replace",
+            "pattern=a",
+            "replacement=b",
+            "timeout_ms=1",
+        ],
+    ] {
+        let r = resh_in(t.path(), &args);
+        r.fails(124, "TIMEOUT");
+        assert!(r.err.contains("timed out after timeout_ms=1"), "{}", r.err);
+    }
+    assert!(!t.path().join("copy").exists());
+    let leftovers = std::fs::read_dir(t.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".resh_"))
+        .count();
+    assert_eq!(leftovers, 0);
+    resh_in(t.path(), &["file://app.log.stat", "timeout_ms=100"]).fails(2, "INVALID_ARG");
+}
+
+#[test]
+fn write_from_slow_stdin_times_out_and_changes_nothing() {
+    use std::io::Write;
+    let t = setup();
+    std::fs::write(t.path().join("out"), "keep").unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_resh"))
+        .current_dir(t.path())
+        .args(["file://out.write", "timeout_ms=400"])
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let feeder = std::thread::spawn(move || {
+        for _ in 0..40 {
+            if stdin.write_all(b"x").is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let out = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
+    assert_eq!(out.status.code(), Some(124));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Error: TIMEOUT: "));
+    assert_eq!(
+        std::fs::read_to_string(t.path().join("out")).unwrap(),
+        "keep"
+    );
+}
+
+/// Reads one line from the child's stdout, failing after `secs`.
+fn line_within(rx: &std::sync::mpsc::Receiver<String>, secs: u64) -> String {
+    rx.recv_timeout(Duration::from_secs(secs))
+        .expect("no output while the command was running")
+}
+
+fn spawn_lines(
+    dir: &Path,
+    args: &[&str],
+) -> (std::process::Child, std::sync::mpsc::Receiver<String>) {
+    use std::io::BufRead;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_resh"))
+        .current_dir(dir)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+    });
+    (child, rx)
+}
+
+#[test]
+fn tail_follow_streams_while_running() {
+    use std::io::Write;
+    let t = setup();
+    let (mut child, rx) = spawn_lines(t.path(), &["file://app.log.tail", "lines=1", "follow=true"]);
+    assert_eq!(line_within(&rx, 20), "error two");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(t.path().join("app.log"))
+        .unwrap();
+    f.write_all(b"appended\n").unwrap();
+    assert_eq!(line_within(&rx, 20), "appended");
+    assert!(child.try_wait().unwrap().is_none(), "still following");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
+fn watch_streams_each_event_while_running() {
+    let t = setup();
+    let (mut child, rx) = spawn_lines(
+        t.path(),
+        &[
+            "file://dir.watch",
+            "events=create",
+            "max_events=2",
+            "timeout_ms=60000",
+        ],
+    );
+    // Give the watcher time to start, then create files until one is seen.
+    let mut first = None;
+    for i in 0..40 {
+        std::fs::write(t.path().join(format!("dir/a{i}")), "").unwrap();
+        if let Ok(l) = rx.recv_timeout(Duration::from_millis(250)) {
+            first = Some(l);
+            break;
+        }
+    }
+    let first: Value = serde_json::from_str(&first.expect("no event streamed")).unwrap();
+    assert_eq!(first["event"], "create");
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "still watching for event 2"
+    );
+    std::fs::write(t.path().join("dir/second"), "").unwrap();
+    let _ = line_within(&rx, 20);
+    let status = child.wait().unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn read_streams_a_fifo_and_stops_at_the_deadline() {
+    let t = setup();
+    let fifo = t.path().join("fifo");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+    let f2 = fifo.clone();
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+        let mut w = std::fs::OpenOptions::new().write(true).open(&f2).unwrap();
+        for i in 0..100 {
+            if writeln!(w, "line{i}").is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let (mut child, rx) = spawn_lines(t.path(), &["file://fifo.read", "timeout_ms=1500"]);
+    assert_eq!(line_within(&rx, 20), "line0");
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "output arrived before the end"
+    );
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(124));
+    writer.join().unwrap();
 }

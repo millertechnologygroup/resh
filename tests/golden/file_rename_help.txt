@@ -5,7 +5,7 @@ Definition: Renames a file or directory to the path given by to, copying across
 
 Usage:
   resh file://<path>.rename to=<path> [overwrite=true|false]
-    [create_parents=true|false] [atomic=true|false]
+    [create_parents=true|false] [atomic=true|false] [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///srv/data/old.csv.rename to=/srv/data/new.csv

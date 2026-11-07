@@ -6,6 +6,7 @@ Definition: Computes a file's digest and checks it against expected values and
 Usage:
   resh file://<path>.verify [algo=sha256|sha512|sha1|md5|blake3]
     [expected=<hex>] [expected_any=<hex>;<hex>...] [size=<bytes>]
+    [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///srv/data/users.csv.verify algo=md5 size=51

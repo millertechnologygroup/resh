@@ -2,7 +2,7 @@
 //! ea.get, ea.set, tag.add, tag.rm.
 
 use super::FileHandle;
-use super::common::{Code, Opts, emit, fail, invalid, io_code, io_fail};
+use super::common::{Code, Deadline, Opts, emit, fail, invalid, io_code, io_fail};
 use crate::core::{IoStreams, Status};
 use anyhow::Result;
 use base64::prelude::*;
@@ -49,6 +49,7 @@ pub(crate) fn chown_tree(
     uid: Option<u32>,
     gid: Option<u32>,
     recursive: bool,
+    deadline: Deadline,
     op: &mut ChownOp,
 ) -> Result<usize> {
     op(root, uid, gid, true).map_err(|e| io_fail(format!("chown {}", root.display()), &e))?;
@@ -72,6 +73,14 @@ pub(crate) fn chown_tree(
                     ),
                 )
             };
+            deadline.check(|| {
+                format!(
+                    "{done} {} under {} {} changed; the rest was not",
+                    if done == 1 { "entry" } else { "entries" },
+                    root.display(),
+                    if done == 1 { "was" } else { "were" }
+                )
+            })?;
             let entry = entry.map_err(|e| {
                 let code = e.io_error().map(io_code).unwrap_or(Code::IoError);
                 partial(code, format!("chown {}: {e}", root.display()))
@@ -265,6 +274,7 @@ impl FileHandle {
     /// calls without privileges.
     pub(crate) fn chown_with(&self, o: &Opts, op: &mut ChownOp) -> Result<Status> {
         let recursive = o.flag("recursive", false)?;
+        let deadline = o.deadline()?;
         if !["user", "uid", "group", "gid"].iter().any(|k| o.has(k)) {
             return Err(invalid(
                 "chown needs at least one of user=, uid=, group=, gid=",
@@ -274,7 +284,7 @@ impl FileHandle {
         let gid = owner_arg(o, "group", "gid", lookup_group)?;
         fs::metadata(&self.path)
             .map_err(|e| io_fail(format!("chown {}", self.path.display()), &e))?;
-        chown_tree(&self.path, uid, gid, recursive, op)?;
+        chown_tree(&self.path, uid, gid, recursive, deadline, op)?;
         Ok(Status::ok())
     }
 

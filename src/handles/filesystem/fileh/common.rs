@@ -48,6 +48,9 @@ pub(crate) enum Code {
     Partial,
     /// Any other I/O failure.
     IoError,
+    /// `timeout_ms` passed before the work was done; the message says what
+    /// was done, and partial output files were removed.
+    Timeout,
 }
 
 impl Code {
@@ -69,6 +72,7 @@ impl Code {
         Code::Refused,
         Code::Partial,
         Code::IoError,
+        Code::Timeout,
     ];
 
     pub(crate) fn name(self) -> &'static str {
@@ -89,14 +93,16 @@ impl Code {
             Code::Refused => "REFUSED",
             Code::Partial => "PARTIAL",
             Code::IoError => "IO_ERROR",
+            Code::Timeout => "TIMEOUT",
         }
     }
 
     /// Exit code, as for every handle: 2 for invalid usage (nothing was
-    /// done), 1 for every operation failure.
+    /// done), 124 for a timeout, 1 for every other operation failure.
     pub(crate) fn exit(self) -> i32 {
         match self {
             Code::InvalidArg => 2,
+            Code::Timeout => 124,
             _ => 1,
         }
     }
@@ -144,6 +150,7 @@ pub(crate) fn io_code(e: &std::io::Error) -> Code {
         K::AlreadyExists => Code::AlreadyExists,
         K::IsADirectory => Code::IsADirectory,
         K::Unsupported => Code::Unsupported,
+        K::TimedOut => Code::Timeout,
         _ => Code::IoError,
     }
 }
@@ -343,6 +350,13 @@ impl<'a> Opts<'a> {
             })
     }
 
+    /// The deadline from `timeout_ms` (milliseconds; 0 or absent means no
+    /// limit).
+    pub(crate) fn deadline(&self) -> anyhow::Result<Deadline> {
+        let ms = self.number::<u64>("timeout_ms", 0)?.unwrap_or(0);
+        Ok(Deadline::after_ms(ms))
+    }
+
     /// An octal permission mode (`644`, `0755`, at most `7777`).
     pub(crate) fn octal_mode(&self, key: &str) -> anyhow::Result<Option<u32>> {
         let Some(v) = self.get(key) else {
@@ -501,4 +515,132 @@ pub(crate) fn emit(
 ) -> anyhow::Result<()> {
     writeln!(io.stdout, "{value}")?;
     Ok(())
+}
+
+/// The end of a verb's time budget (`timeout_ms`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Deadline {
+    at: Option<std::time::Instant>,
+    ms: u64,
+}
+
+impl Deadline {
+    pub(crate) fn after_ms(ms: u64) -> Self {
+        Deadline {
+            at: (ms > 0).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms)),
+            ms,
+        }
+    }
+
+    pub(crate) fn expired(&self) -> bool {
+        self.at.is_some_and(|d| std::time::Instant::now() >= d)
+    }
+
+    /// Time left, or `None` without a deadline.
+    pub(crate) fn remaining(&self) -> Option<std::time::Duration> {
+        self.at
+            .map(|d| d.saturating_duration_since(std::time::Instant::now()))
+    }
+
+    /// A TIMEOUT failure when the deadline has passed; `done` says what was
+    /// already done.
+    pub(crate) fn check(&self, done: impl FnOnce() -> String) -> anyhow::Result<()> {
+        if self.expired() {
+            return Err(self.timeout(done()));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn timeout(&self, done: String) -> anyhow::Error {
+        fail(
+            Code::Timeout,
+            format!("timed out after timeout_ms={}; {done}", self.ms),
+        )
+    }
+
+    pub(crate) fn io_error(&self) -> std::io::Error {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("timed out after timeout_ms={}", self.ms),
+        )
+    }
+}
+
+/// A reader that fails with `TimedOut` once the deadline passes. With `fd`
+/// set (a FIFO or other file that can block), each read first waits for
+/// data no longer than the time left.
+pub(crate) struct DeadlineReader<R> {
+    inner: R,
+    deadline: Deadline,
+    fd: Option<std::os::fd::RawFd>,
+}
+
+impl<R: std::io::Read> DeadlineReader<R> {
+    pub(crate) fn new(inner: R, deadline: Deadline) -> Self {
+        DeadlineReader {
+            inner,
+            deadline,
+            fd: None,
+        }
+    }
+
+    pub(crate) fn polling(inner: R, deadline: Deadline, fd: std::os::fd::RawFd) -> Self {
+        DeadlineReader {
+            inner,
+            deadline,
+            fd: Some(fd),
+        }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for DeadlineReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.deadline.expired() {
+            return Err(self.deadline.io_error());
+        }
+        if let (Some(fd), Some(left)) = (self.fd, self.deadline.remaining()) {
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
+            // SAFETY: one valid pollfd for the duration of the call.
+            let n = unsafe { libc::poll(&mut pfd, 1, ms) };
+            if n == 0 {
+                return Err(self.deadline.io_error());
+            }
+            if n < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// Copies `src` to `dst` in 1 MiB chunks, checking the deadline between
+/// chunks. Returns the number of bytes copied.
+pub(crate) fn copy_with_deadline(
+    src: &mut dyn std::io::Read,
+    dst: &mut dyn std::io::Write,
+    deadline: Deadline,
+) -> std::io::Result<u64> {
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut total = 0u64;
+    loop {
+        if deadline.expired() {
+            return Err(deadline.io_error());
+        }
+        let n = match src.read(&mut buf) {
+            Ok(0) => return Ok(total),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        dst.write_all(&buf[..n])?;
+        total += n as u64;
+    }
 }

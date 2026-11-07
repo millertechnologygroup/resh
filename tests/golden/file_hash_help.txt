@@ -5,6 +5,7 @@ Definition: Computes a SHA-256, SHA-512, SHA-1, MD5, or BLAKE3 digest of a
 
 Usage:
   resh file://<path>.hash [algo=sha256|sha512|sha1|md5|blake3]
+    [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///srv/data/users.csv.hash algo=blake3

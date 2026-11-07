@@ -6,7 +6,7 @@ Definition: Replaces literal text or regular expression matches in a file,
 Usage:
   resh file://<path>.replace pattern=<text> replacement=<text>
     [regex=true|false] [count=<n>] [dry_run=true|false]
-    [backup=<suffix>]
+    [backup=<suffix>] [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///etc/app.conf.replace pattern=8080 replacement=9090

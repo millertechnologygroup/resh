@@ -162,7 +162,11 @@ fn every_failure_is_a_status_with_a_documented_code() {
     let docs = include_str!("../../../../docs/Filesystem_Storage/file.md");
     for c in Code::ALL {
         assert!(docs.contains(c.name()), "{} is not documented", c.name());
-        let expected = if *c == Code::InvalidArg { 2 } else { 1 };
+        let expected = match c {
+            Code::InvalidArg => 2,
+            Code::Timeout => 124,
+            _ => 1,
+        };
         assert_eq!(c.exit(), expected, "{c:?}");
     }
 }
@@ -221,7 +225,6 @@ fn every_listed_option_is_accepted_by_its_verb() {
 #[test]
 fn option_lists_come_from_the_help_usage() {
     let expect: &[(&str, &[&str])] = &[
-        ("read", &[]),
         ("stat", &["nofollow"]),
         (
             "preview",
@@ -231,6 +234,7 @@ fn option_lists_come_from_the_help_usage() {
                 "mode",
                 "encoding",
                 "include_metadata",
+                "timeout_ms",
             ],
         ),
         ("tail", &["lines", "bytes", "follow", "timeout_ms"]),
@@ -246,6 +250,7 @@ fn option_lists_come_from_the_help_usage() {
                 "after",
                 "format",
                 "line_numbers",
+                "timeout_ms",
             ],
         ),
         (
@@ -257,11 +262,15 @@ fn option_lists_come_from_the_help_usage() {
                 "limit",
                 "include_hidden",
                 "follow_symlinks",
+                "timeout_ms",
             ],
         ),
         ("watch", &["timeout_ms", "max_events", "events"]),
-        ("verify", &["algo", "expected", "expected_any", "size"]),
-        ("write", &["data", "create", "mode"]),
+        (
+            "verify",
+            &["algo", "expected", "expected_any", "size", "timeout_ms"],
+        ),
+        ("write", &["data", "create", "mode", "timeout_ms"]),
         (
             "replace",
             &[
@@ -271,14 +280,31 @@ fn option_lists_come_from_the_help_usage() {
                 "count",
                 "dry_run",
                 "backup",
+                "timeout_ms",
             ],
         ),
         (
             "copy",
-            &["to", "overwrite", "preserve_mode", "preserve_times"],
+            &[
+                "to",
+                "overwrite",
+                "preserve_mode",
+                "preserve_times",
+                "timeout_ms",
+            ],
         ),
-        ("rename", &["to", "overwrite", "create_parents", "atomic"]),
-        ("chown", &["user", "uid", "group", "gid", "recursive"]),
+        (
+            "rename",
+            &["to", "overwrite", "create_parents", "atomic", "timeout_ms"],
+        ),
+        (
+            "chown",
+            &["user", "uid", "group", "gid", "recursive", "timeout_ms"],
+        ),
+        ("read", &["timeout_ms"]),
+        ("exists", &[]),
+        ("chmod", &["mode"]),
+        ("ea.get", &["name", "allow_missing"]),
         ("ea.set", &["name", "value", "mode"]),
         ("tag.rm", &["name"]),
     ];
@@ -293,7 +319,17 @@ fn dry_run_and_timeout_are_refused_where_unsupported() {
     let p = file(&d, "f", "x");
     call(&p, "read", &[("dry_run", "false")]).fails(Code::InvalidArg);
     call(&p, "delete", &[("dry_run", "false")]).fails(Code::InvalidArg);
-    call(&p, "sha256", &[("timeout_ms", "100")]).fails(Code::InvalidArg);
+    for verb in [
+        "exists", "stat", "chmod", "ea.get", "ea.set", "tag.add", "tag.rm",
+    ] {
+        let o = call(&p, verb, &[("timeout_ms", "100")]);
+        o.fails(Code::InvalidArg);
+        assert!(
+            o.reason().contains("unknown argument \"timeout_ms\""),
+            "{verb}"
+        );
+    }
+    call(&p, "sha256", &[("timeout_ms", "soon")]).fails(Code::InvalidArg);
     assert!(p.exists());
 }
 
@@ -336,6 +372,7 @@ fn boolean_options_are_strict() {
         ("replace", "regex"),
         ("copy", "preserve_mode"),
         ("rename", "atomic"),
+        ("read", "timeout_ms"),
         ("delete", "missing_ok"),
         ("chown", "recursive"),
         ("ea.get", "allow_missing"),
@@ -810,7 +847,7 @@ fn tail_errors() {
     call(&p, "tail", &[("lines", "0")]).fails(Code::InvalidArg);
     call(&p, "tail", &[("bytes", "0")]).fails(Code::InvalidArg);
     call(&p, "tail", &[("lines", "ten")]).fails(Code::InvalidArg);
-    call(&p, "tail", &[("timeout_ms", "100")]).fails(Code::InvalidArg);
+    call(&p, "tail", &[("timeout_ms", "-1")]).fails(Code::InvalidArg);
     call(&p, "tail", &[("follow", "true"), ("timeout_ms", "x")]).fails(Code::InvalidArg);
     call(&d.path().join("missing"), "tail", &[]).fails(Code::NotFound);
     call(d.path(), "tail", &[]).fails(Code::IsADirectory);
@@ -2332,4 +2369,326 @@ fn tag_errors() {
             vec![0xff]
         );
     }
+}
+
+// --- timeouts --------------------------------------------------------------
+
+/// A 1 GiB file that is all hole: reading it takes far longer than 1 ms.
+fn sparse(d: &TempDir, name: &str) -> PathBuf {
+    let p = d.path().join(name);
+    fs::File::create(&p).unwrap().set_len(1 << 30).unwrap();
+    p
+}
+
+#[track_caller]
+fn times_out<'a>(o: &'a Out, says: &str) -> &'a Out {
+    o.fails(Code::Timeout);
+    assert_eq!(o.st.exit_code(), 124);
+    assert!(
+        o.reason().contains("timed out after timeout_ms="),
+        "{}",
+        o.reason()
+    );
+    assert!(o.reason().contains(says), "{}", o.reason());
+    o
+}
+
+fn no_temp_files(dir: &Path) {
+    let left: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".resh_"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn reading_verbs_stop_at_the_deadline() {
+    let d = tmp();
+    let big = sparse(&d, "big");
+    let t = ("timeout_ms", "1");
+    let huge = ("max_bytes", "2147483648");
+    times_out(&call(&big, "preview", &[huge, t]), "nothing was printed");
+    times_out(&call(&big, "analyze", &[huge, t]), "nothing was printed");
+    times_out(&call(&big, "schema", &[huge, t]), "nothing was printed");
+    times_out(
+        &call(&big, "tail", &[("bytes", "1073741824"), t]),
+        "nothing was printed",
+    );
+    times_out(
+        &call(&big, "tail", &[("lines", "5"), t]),
+        "nothing was printed",
+    );
+    let o = call(&big, "grep", &[("pattern", "x"), t]);
+    times_out(&o, "lines of");
+    assert!(o.out.is_empty());
+    for verb in ["md5", "sha1", "sha256", "sha512", "hash"] {
+        let o = call(&big, verb, &[t]);
+        times_out(&o, "bytes of");
+        assert!(o.out.is_empty(), "{verb}");
+    }
+    let o = call(&big, "verify", &[t]);
+    times_out(&o, "no digest was produced");
+    assert_eq!(o.json()["verified"], false);
+    assert!(o.json()["error"].as_str().unwrap().starts_with("TIMEOUT"));
+    // A generous deadline changes nothing.
+    let small = file(&d, "small", "abc\n");
+    call(&small, "sha256", &[("timeout_ms", "60000")]).ok();
+    call(&small, "grep", &[("pattern", "b"), ("timeout_ms", "60000")]).ok();
+    call(&small, "read", &[("timeout_ms", "0")]).ok();
+}
+
+#[test]
+fn read_of_a_slow_fifo_prints_what_arrived_then_times_out() {
+    let d = tmp();
+    let fifo = d.path().join("fifo");
+    mkfifo(&fifo);
+    let f2 = fifo.clone();
+    let writer = std::thread::spawn(move || {
+        let mut w = fs::OpenOptions::new().write(true).open(&f2).unwrap();
+        for _ in 0..40 {
+            if std::io::Write::write_all(&mut w, b"tick\n").is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let o = call(&fifo, "read", &[("timeout_ms", "400")]);
+    times_out(&o, "bytes of");
+    assert!(o.out.starts_with("tick\n"), "{:?}", o.out);
+    assert!(o.out.len() < 40 * 5);
+    writer.join().unwrap();
+}
+
+#[test]
+fn read_of_a_fifo_without_writer_times_out() {
+    let d = tmp();
+    let fifo = d.path().join("fifo");
+    mkfifo(&fifo);
+    let start = std::time::Instant::now();
+    let o = call(&fifo, "read", &[("timeout_ms", "300")]);
+    times_out(&o, "the first 0 bytes");
+    assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+/// Standard input that yields one byte every 50 ms and never ends.
+struct SlowStdin;
+impl std::io::Read for SlowStdin {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::thread::sleep(Duration::from_millis(50));
+        buf[0] = b'x';
+        Ok(1)
+    }
+}
+
+fn call_slow_stdin(path: &Path, verb: &str, pairs: &[(&str, &str)]) -> Out {
+    let h = handle(&url_of(path));
+    let mut input = SlowStdin;
+    let (mut o, mut e) = (Vec::new(), Vec::new());
+    let st = {
+        let mut io = IoStreams::new(&mut input, &mut o, &mut e);
+        h.call(verb, &args(pairs), &mut io).unwrap()
+    };
+    Out {
+        st,
+        out: String::from_utf8_lossy(&o).into_owned(),
+        err: String::from_utf8_lossy(&e).into_owned(),
+    }
+}
+
+#[test]
+fn write_and_append_from_slow_stdin_time_out_without_writing() {
+    let d = tmp();
+    let p = file(&d, "f", "keep");
+    for verb in ["write", "append"] {
+        times_out(
+            &call_slow_stdin(&p, verb, &[("timeout_ms", "300")]),
+            "standard input was still being read",
+        );
+        assert_eq!(fs::read_to_string(&p).unwrap(), "keep");
+    }
+    no_temp_files(d.path());
+}
+
+#[test]
+fn replace_and_copy_time_out_without_changes() {
+    let d = tmp();
+    let big = sparse(&d, "big");
+    times_out(
+        &call(
+            &big,
+            "replace",
+            &[("pattern", "a"), ("replacement", "b"), ("timeout_ms", "1")],
+        ),
+        "nothing was changed",
+    );
+    let dst = d.path().join("copy");
+    times_out(
+        &call(
+            &big,
+            "copy",
+            &[("to", &dst.to_string_lossy()), ("timeout_ms", "1")],
+        ),
+        "partial copy was removed",
+    );
+    assert!(!dst.exists());
+    no_temp_files(d.path());
+}
+
+#[test]
+fn cross_filesystem_moves_time_out_cleanly() {
+    let d = tmp();
+    let Some(other) = other_fs_dir(d.path()) else {
+        eprintln!("skipped: no second filesystem available");
+        return;
+    };
+    let big = sparse(&d, "big");
+    for (verb, atomic) in [("rename", "true"), ("rename", "false"), ("move", "")] {
+        let dest = other.path().join(format!("{verb}{atomic}"));
+        let to = dest.to_string_lossy().into_owned();
+        let mut a = vec![("to", to.as_str()), ("timeout_ms", "1")];
+        if !atomic.is_empty() {
+            a.push(("atomic", atomic));
+        }
+        times_out(&call(&big, verb, &a), "is unchanged");
+        assert!(big.exists(), "{verb}: source kept");
+        assert!(!dest.exists(), "{verb}: no partial destination");
+        no_temp_files(other.path());
+    }
+}
+
+#[test]
+fn find_lists_what_it_found_before_the_deadline() {
+    let d = tmp();
+    for i in 0..40 {
+        for j in 0..50 {
+            file(&d, &format!("d{i}/f{j}"), "");
+        }
+    }
+    let o = call(d.path(), "find", &[("timeout_ms", "1")]);
+    times_out(&o, "entries found so far");
+    let n = o.json().as_array().unwrap().len();
+    assert!(n < 2041, "{n}");
+}
+
+#[test]
+fn recursive_delete_stops_at_the_deadline_and_says_how_far_it_got() {
+    let d = tmp();
+    for i in 0..30 {
+        for j in 0..100 {
+            file(&d, &format!("t/d{i}/f{j}"), "");
+        }
+    }
+    let t = d.path().join("t");
+    let o = call(&t, "delete", &[("recursive", "true"), ("timeout_ms", "1")]);
+    times_out(&o, "entries were deleted; the rest of");
+    assert!(t.exists());
+    // Without a deadline the rest goes.
+    call(&t, "delete", &[("recursive", "true"), ("timeout_ms", "0")]).ok();
+    assert!(!t.exists());
+}
+
+#[test]
+fn recursive_chown_stops_at_the_deadline() {
+    let d = tmp();
+    for i in 0..10 {
+        file(&d, &format!("www/f{i}"), "x");
+    }
+    let www = d.path().join("www");
+    let h = handle(&url_of(&www));
+    let a = args(&[("uid", "0"), ("recursive", "true"), ("timeout_ms", "100")]);
+    let o = super::common::Opts::new("chown", &a).unwrap();
+    let mut calls = 0;
+    let mut op = |_: &Path, _: Option<u32>, _: Option<u32>, _: bool| {
+        calls += 1;
+        std::thread::sleep(Duration::from_millis(30));
+        Ok(())
+    };
+    let err = h.chown_with(&o, &mut op).unwrap_err();
+    let st = super::common::status_of(&err);
+    assert_eq!(st.exit_code(), 124);
+    let reason = st.reason.unwrap();
+    assert!(reason.contains("entries under"), "{reason}");
+    assert!(calls < 11, "{calls}");
+}
+
+#[test]
+fn summary_of_a_large_directory_honors_the_deadline() {
+    let d = tmp();
+    for i in 0..20000 {
+        fs::write(d.path().join(format!("{i}")), "").unwrap();
+    }
+    let o = call(d.path(), "summary", &[("timeout_ms", "1")]);
+    // Counting 20000 entries usually outlasts 1 ms; either way the result
+    // is a clean success or a TIMEOUT that says how far it got.
+    if !o.st.ok {
+        times_out(&o, "entries were counted");
+    }
+    call(d.path(), "summary", &[("timeout_ms", "60000")]).ok();
+}
+
+// --- globs -----------------------------------------------------------------
+
+#[test]
+fn find_globs_are_shell_style() {
+    let d = tmp();
+    file(&d, "a.html", "");
+    file(&d, "sub/b.html", "");
+    file(&d, "sub/deep/c.html", "");
+    let names_for = |pattern: &str| {
+        let v = call(d.path(), "find", &[("name", pattern), ("type", "file")]).json();
+        let mut n = names(&v);
+        n.sort();
+        n
+    };
+    // Without '/', the pattern matches the entry's name at any depth.
+    assert_eq!(names_for("*.html"), vec!["a.html", "b.html", "c.html"]);
+    // With '/', it matches the path below the root: '*' stays in one
+    // component, '**' crosses directories.
+    assert_eq!(names_for("sub/*.html"), vec!["b.html"]);
+    assert_eq!(names_for("*/*.html"), vec!["b.html"]);
+    assert_eq!(names_for("sub/**/*.html"), vec!["b.html", "c.html"]);
+    assert_eq!(names_for("**/*.html"), vec!["a.html", "b.html", "c.html"]);
+    assert_eq!(names_for("s?b/*.html"), vec!["b.html"]);
+    assert!(names_for("s?b*.html").is_empty());
+}
+
+// --- symlinks at write targets ---------------------------------------------
+
+#[test]
+fn writes_never_go_through_a_planted_symlink() {
+    let d = tmp();
+    let victim = file(&d, "victim", "secret");
+    let link = d.path().join("link");
+    symlink(&victim, &link).unwrap();
+    // write and copy replace the link itself.
+    call(&link, "write", &[("data", "new")]).ok();
+    assert!(
+        !fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "secret");
+    fs::remove_file(&link).unwrap();
+    symlink(&victim, &link).unwrap();
+    let src = file(&d, "src", "copied");
+    call(
+        &src,
+        "copy",
+        &[("to", &link.to_string_lossy()), ("overwrite", "true")],
+    )
+    .ok();
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "secret");
+    assert_eq!(fs::read_to_string(&link).unwrap(), "copied");
+    // append refuses.
+    fs::remove_file(&link).unwrap();
+    symlink(&victim, &link).unwrap();
+    call(&link, "append", &[("data", "x")]).fails(Code::Refused);
+    let dangling = d.path().join("dangling");
+    symlink(d.path().join("nowhere"), &dangling).unwrap();
+    call(&dangling, "append", &[("data", "x")]).fails(Code::Refused);
+    assert!(!d.path().join("nowhere").exists());
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "secret");
 }

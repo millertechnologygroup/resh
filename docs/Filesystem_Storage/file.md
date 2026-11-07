@@ -45,8 +45,9 @@ Every verb accepts exactly the arguments shown in its usage
 (`resh file <verb> --help` and the tables below). Anything else is refused
 before anything is done, with exit code 2, `INVALID_ARG` and a
 "did you mean" hint for a likely typo. This includes `dry_run` (only
-`replace` has a dry-run mode) and `timeout_ms` (only `watch` and
-`tail follow=true` use it). Invalid values (a negative or non-numeric count,
+`replace` has a dry-run mode) and `timeout_ms` on the instant verbs that do
+not take it (`exists`, `stat`, `chmod`, `ea.get`, `ea.set`, `tag.add`,
+`tag.rm`). Invalid values (a negative or non-numeric count,
 an unknown enum value, a malformed octal mode or digest) are refused the
 same way.
 
@@ -56,7 +57,9 @@ minimum applies it is given below.
 
 ### Errors and exit status
 
-0 on success. Every failure prints `Error: <CODE>: <message>` on stderr:
+0 on success, 1 when the operation failed, 2 for invalid usage (nothing
+was done), 124 when `timeout_ms` passed. Every failure prints
+`Error: <CODE>: <message>` on stderr:
 
 | Code | Exit | Meaning |
 | ---- | ---- | ------- |
@@ -73,17 +76,31 @@ minimum applies it is given below.
 | `NOT_UTF8` | 1 | `replace` on a file that is not UTF-8 text. |
 | `PARSE_ERROR` | 1 | `schema` with a forced `format=` that the sample does not parse as. |
 | `UNSUPPORTED` | 1 | The filesystem does not support the operation (for example extended attributes, or an attribute namespace). |
-| `REFUSED` | 1 | Refused for safety: deleting `/`, `.` or `..`; moving a directory into itself. |
+| `REFUSED` | 1 | Refused for safety: deleting `/`, `.` or `..`; moving a directory into itself; appending through a symbolic link. |
 | `PARTIAL` | 1 | Part of the work was done; the message says what (for example `find` could not read some directories). |
 | `IO_ERROR` | 1 | Any other I/O failure. |
+| `TIMEOUT` | 124 | `timeout_ms` passed. The message says what was done; partial output files were removed. |
 
 ### timeout_ms
 
-`watch` stops after `timeout_ms` (default 30000; `0` means no limit, so it
-waits for `max_events`) and exits 0. `tail follow=true` follows the file
-until `timeout_ms` (default: no limit, so until interrupted) and exits 0;
-`timeout_ms` without `follow=true` is `INVALID_ARG`. No other verb accepts
-`timeout_ms`.
+Every verb whose work can take long accepts `timeout_ms` (milliseconds).
+The default is no limit (`0` also means no limit), except for `watch`.
+
+| Verbs | At the deadline |
+| ----- | --------------- |
+| `read` | Stops with `TIMEOUT` (exit 124); what was read so far was already printed. A FIFO or device is waited on no longer than the time left. |
+| `preview`, `summary`, `analyze`, `schema`, `tail` (without `follow`), `md5`, `sha1`, `sha256`, `sha512`, `hash` | `TIMEOUT`, nothing printed. |
+| `verify` | `TIMEOUT`; the JSON report has `verified:false` and the error. |
+| `grep` | `TIMEOUT`; matches found so far were printed (text format), the message gives the lines searched. |
+| `find` | `TIMEOUT`; the entries found so far are printed as the JSON array. |
+| `write`, `append` | `TIMEOUT` while reading standard input (checked between chunks); the file is not changed. With `data=` there is nothing to wait for. |
+| `replace` | `TIMEOUT` while reading the file; nothing is changed. |
+| `copy` | `TIMEOUT`; the partial copy is removed and the destination is unchanged. |
+| `rename`, `move`, `mv` | A same-filesystem rename is instant. Across filesystems, `TIMEOUT` removes the partial copy and leaves the source as it was (with `atomic=false` an existing destination was already removed, and the message says so). |
+| `delete`, `remove` | `TIMEOUT` during a recursive delete; the message says how many entries were deleted and the rest remains. |
+| `chown` | `TIMEOUT` during a recursive change; the message says how many entries were changed. |
+| `watch` | Default 30000. Reaching it is the normal end: exit 0. |
+| `tail follow=true` | How long to follow (default: until interrupted). Reaching it is the normal end: exit 0. |
 
 `watch` and `tail follow=true` write and flush each event or each piece of
 new data as it happens.
@@ -92,11 +109,14 @@ new data as it happens.
 
 ## 3. Verbs
 
+The argument tables below leave out `timeout_ms`; the verbs listed in the
+`timeout_ms` table above accept it as well.
+
 ### 3.1 Reading and inspection
 
 | Verb      | Arguments | Output |
 | --------- | --------- | ------ |
-| `read`    | – | Raw file contents |
+| `read`    | `timeout_ms` | Raw file contents |
 | `exists`  | – | `{"exists":true,"kind":"file","path":...}` |
 | `stat`    | `nofollow` (default false) | JSON: `file_type`, `size`, `mode`, `uid`, `gid`, `readonly`, `accessed`, `modified`, `created` |
 | `preview` | `max_bytes` (default 4096, min 1), `max_lines` (default 40, min 1), `mode=auto\|text\|binary`, `encoding=base64\|hex`, `include_metadata` (default true) | JSON sample |
@@ -133,7 +153,7 @@ resh --json-pretty file:///srv/data/users.csv.schema
 | Verb   | Arguments |
 | ------ | --------- |
 | `grep` | `pattern` (required), `regex` (default true), `ignore_case`, `invert`, `max` (stop after n matches, min 1), `before`, `after`, `format=text\|json`, `line_numbers` (default true) |
-| `find` | `name=<glob>`, `type=file\|dir\|symlink`, `max_depth`, `limit`, `include_hidden`, `follow_symlinks` |
+| `find` | `name=<glob>`, `type=file\|dir\|symlink`, `max_depth`, `limit`, `include_hidden`, `follow_symlinks`, `timeout_ms` |
 
 ```bash
 resh file:///var/log/app.log.grep pattern=error ignore_case=true max=20
@@ -157,6 +177,12 @@ resh --json-pretty file:///srv/www.find name='*.html' type=file max_depth=3
   be read are reported as `Warning:` lines on stderr; the listing is still
   printed and the command exits 1 with `PARTIAL`. A symlink loop (with
   `follow_symlinks=true`) is only a warning.
+* `find name=` globs are shell-style: `*` and `?` never match `/`, `**`
+  matches across directories, `[abc]` and `{a,b}` work. A pattern without
+  `/` is matched against each entry's name (`name='*.html'` finds HTML
+  files at any depth); a pattern with `/` is matched against the path below
+  the root (`name='sub/*.html'` only directly in `sub`,
+  `name='sub/**/*.html'` anywhere below it).
 
 ### 3.3 Watching
 
@@ -230,7 +256,9 @@ created. It prints `{"bytes":...,"path":...,"written":true}`.
 
 `append` appends with `O_APPEND`, syncs, and prints
 `{"appended":true,"bytes":...,"path":...}`. No newline is added. Missing
-parent directories are created when `create=true`.
+parent directories are created when `create=true`. Writes never go through
+a symbolic link at the path: `write`, `copy` and `replace` replace the link
+itself, and `append` refuses it with `REFUSED`.
 
 `create=false` makes a missing file `NOT_FOUND` (nothing is created). A
 directory is `IS_A_DIRECTORY`, a FIFO or device `NOT_A_FILE`.

@@ -1,12 +1,12 @@
 //! Search and follow verbs: tail, grep, find, watch.
 
 use super::FileHandle;
-use super::common::{Code, Opts, emit, fail, invalid};
+use super::common::{Code, Deadline, DeadlineReader, Opts, emit, fail, invalid};
 use super::inspect::open_for_read;
 use crate::core::{IoStreams, Status};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use globset::Glob;
+use globset::GlobBuilder;
 use notify::{EventKind, RecursiveMode, Watcher};
 use regex::RegexBuilder;
 use serde_json::json;
@@ -36,22 +36,32 @@ impl FileHandle {
         let lines = o.number::<usize>("lines", 1)?;
         let bytes = o.number::<u64>("bytes", 1)?;
         let follow = o.flag("follow", false)?;
-        let timeout_ms = o.number::<u64>("timeout_ms", 0)?;
-        if timeout_ms.is_some() && !follow {
-            return Err(invalid("timeout_ms= applies only with follow=true"));
-        }
+        let timeout_ms = o.number::<u64>("timeout_ms", 0)?.unwrap_or(0);
+        let deadline = Deadline::after_ms(timeout_ms);
 
         let (mut file, meta) = open_for_read(&self.path, "tail")?;
         let size = meta.len();
         let out = match bytes {
-            Some(n) => tail_bytes(&mut file, size, n),
-            None => tail_lines(&mut file, size, lines.unwrap_or(10)),
-        }
-        .with_context(|| format!("tail {}", self.path.display()))?;
+            Some(n) => tail_bytes(&mut file, size, n, deadline),
+            None => tail_lines(&mut file, size, lines.unwrap_or(10), deadline),
+        };
+        let out = match out {
+            Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return Err(deadline.timeout(format!(
+                    "the end of {} was still being read; nothing was printed",
+                    self.path.display()
+                )));
+            }
+            Err(e) => return Err(e).with_context(|| format!("tail {}", self.path.display())),
+        };
         io.stdout.write_all(&out)?;
+        io.stdout.flush()?;
 
         if follow {
-            self.follow(size, deadline_after(timeout_ms.unwrap_or(0)), io)?;
+            // With follow=true, timeout_ms is how long to follow: reaching
+            // it is the normal end.
+            self.follow(size, deadline_after(timeout_ms), io)?;
         }
         Ok(Status::ok())
     }
@@ -119,8 +129,9 @@ impl FileHandle {
             Box::new(move |l: &str| l.contains(&p))
         };
 
+        let deadline = o.deadline()?;
         let (file, _) = open_for_read(&self.path, "grep")?;
-        let mut reader = BufReader::new(file);
+        let mut reader = BufReader::new(DeadlineReader::new(file, deadline));
         let path_str = self.path.to_string_lossy().to_string();
         let mut raw = Vec::new();
         let mut lineno = 0usize;
@@ -141,9 +152,21 @@ impl FileHandle {
 
         loop {
             raw.clear();
-            let n = reader
-                .read_until(b'\n', &mut raw)
-                .with_context(|| format!("grep {}", self.path.display()))?;
+            let n = match reader.read_until(b'\n', &mut raw) {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    return Err(deadline.timeout(format!(
+                        "{lineno} lines of {} were searched and {matches} matches found{}",
+                        self.path.display(),
+                        if json_out {
+                            "; nothing was printed"
+                        } else {
+                            " (printed above)"
+                        }
+                    )));
+                }
+                Err(e) => return Err(e).with_context(|| format!("grep {}", self.path.display())),
+            };
             if n == 0 {
                 break;
             }
@@ -199,19 +222,26 @@ impl FileHandle {
     }
 
     pub(super) fn verb_find(&self, o: &Opts, io: &mut IoStreams) -> Result<Status> {
-        let glob = o
-            .get("name")
+        // Shell-style: `*` and `?` stay within one path component, `**`
+        // crosses directories. A pattern with `/` is matched against the
+        // path below the root, otherwise against the entry's name.
+        let name = o.get("name");
+        let glob = name
             .map(|p| {
-                Glob::new(p)
+                GlobBuilder::new(p)
+                    .literal_separator(true)
+                    .build()
                     .map(|g| g.compile_matcher())
                     .map_err(|e| invalid(format!("invalid name pattern: {e}")))
             })
             .transpose()?;
+        let match_path = name.is_some_and(|p| p.contains('/'));
         let entry_type = o.choice("type", &["file", "dir", "symlink"])?;
         let max_depth = o.number::<usize>("max_depth", 0)?;
         let limit = o.number::<usize>("limit", 0)?;
         let include_hidden = o.flag("include_hidden", false)?;
         let follow_symlinks = o.flag("follow_symlinks", false)?;
+        let deadline = o.deadline()?;
 
         let root = self.path.as_path();
         fs::symlink_metadata(root).with_context(|| format!("find {}", root.display()))?;
@@ -234,6 +264,14 @@ impl FileHandle {
             if limit.is_some_and(|l| results.len() >= l) {
                 break;
             }
+            if deadline.expired() {
+                emit(io, &json!(results))?;
+                return Err(deadline.timeout(format!(
+                    "the {} entries found so far under {} are listed above",
+                    results.len(),
+                    root.display()
+                )));
+            }
             let entry = match entry {
                 Ok(e) => e,
                 Err(err) => {
@@ -252,8 +290,16 @@ impl FileHandle {
                 Some("symlink") => ft.is_symlink(),
                 _ => true,
             };
-            let name = entry.file_name().to_string_lossy();
-            let name_ok = glob.as_ref().is_none_or(|g| g.is_match(name.as_ref()));
+            let name_ok = glob.as_ref().is_none_or(|g| {
+                if match_path {
+                    entry
+                        .path()
+                        .strip_prefix(root)
+                        .is_ok_and(|rel| g.is_match(rel))
+                } else {
+                    g.is_match(entry.file_name())
+                }
+            });
             if type_ok && name_ok {
                 results.push(find_entry(entry.path(), entry.depth(), follow_symlinks));
             }
@@ -448,21 +494,31 @@ fn find_entry(path: &Path, depth: usize, follow: bool) -> serde_json::Value {
 }
 
 /// The last `n` bytes of the file.
-fn tail_bytes(file: &mut File, size: u64, n: u64) -> std::io::Result<Vec<u8>> {
+fn tail_bytes(file: &mut File, size: u64, n: u64, deadline: Deadline) -> std::io::Result<Vec<u8>> {
     let start = size.saturating_sub(n);
     file.seek(SeekFrom::Start(start))?;
     let mut buf = Vec::new();
-    file.take(size - start).read_to_end(&mut buf)?;
+    DeadlineReader::new(file, deadline)
+        .take(size - start)
+        .read_to_end(&mut buf)?;
     Ok(buf)
 }
 
 /// The last `n` lines of the file. A final line without a newline counts as
 /// a line; the newline that ends the file does not start another one.
-fn tail_lines(file: &mut File, size: u64, n: usize) -> std::io::Result<Vec<u8>> {
+fn tail_lines(
+    file: &mut File,
+    size: u64,
+    n: usize,
+    deadline: Deadline,
+) -> std::io::Result<Vec<u8>> {
     const CHUNK: u64 = 8192;
     let mut buf: Vec<u8> = Vec::new();
     let mut pos = size;
     loop {
+        if deadline.expired() {
+            return Err(deadline.io_error());
+        }
         let start = pos.saturating_sub(CHUNK);
         if start < pos {
             file.seek(SeekFrom::Start(start))?;
@@ -501,7 +557,10 @@ mod unit {
         let p = dir.path().join("f");
         std::fs::write(&p, content).unwrap();
         let mut f = File::open(&p).unwrap();
-        String::from_utf8(tail_lines(&mut f, content.len() as u64, n).unwrap()).unwrap()
+        String::from_utf8(
+            tail_lines(&mut f, content.len() as u64, n, Deadline::after_ms(0)).unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]

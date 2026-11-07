@@ -56,7 +56,7 @@ static FILE_HELP: HandleHelp = HandleHelp {
             name: "read",
             definition: "Prints the entire contents of a file to standard output.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.read",
+                usage: "resh file://<path>.read [timeout_ms=<ms>]",
                 example: "resh file:///etc/hostname.read",
                 example_output: Some("web01"),
             }),
@@ -113,7 +113,7 @@ and gid are null, and created is null where the filesystem lacks it."#,
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.preview [max_bytes=<n>] [max_lines=<n>]\n  \
                     [mode=auto|text|binary] [encoding=base64|hex]\n  \
-                    [include_metadata=true|false]",
+                    [include_metadata=true|false] [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///etc/hosts.preview max_lines=2",
                 example_output: Some(
                     r#"{
@@ -144,7 +144,7 @@ binary, line_count null, and encoding base64 or hex."#,
             definition: "Summarizes a file's size, modification time, content type, and line \
                 statistics, or a directory's entry count, as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.summary [max_bytes=<n>]",
+                usage: "resh file://<path>.summary [max_bytes=<n>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/data/users.csv.summary",
                 example_output: Some(
                     r#"{
@@ -169,7 +169,7 @@ exists, is_dir, and entry_count."#,
             definition: "Samples a file and reports its ASCII ratio, byte entropy, line count, \
                 and a json, csv, log, text, or binary classification as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.analyze [max_bytes=<n>]",
+                usage: "resh file://<path>.analyze [max_bytes=<n>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///var/log/app.log.analyze",
                 example_output: Some(
                     r#"{
@@ -198,7 +198,7 @@ Shown with --json-pretty."#,
                 reports its inferred structure as a JSON object.",
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.schema [format=json|ndjson|csv|tsv|text]\n  \
-                    [max_bytes=<n>] [max_rows=<n>]",
+                    [max_bytes=<n>] [max_rows=<n>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/data/users.csv.schema",
                 example_output: Some(
                     r#"{
@@ -254,7 +254,7 @@ detected object has different fields for JSON, NDJSON, and text input."#,
                 usage: "resh file://<path>.grep pattern=<pattern> [regex=true|false]\n  \
                     [ignore_case=true|false] [invert=true|false] [max=<n>]\n  \
                     [before=<n>] [after=<n>] [format=text|json]\n  \
-                    [line_numbers=true|false]",
+                    [line_numbers=true|false] [timeout_ms=<ms>]",
                 example: "resh file:///var/log/app.log.grep pattern=error ignore_case=true",
                 example_output: Some(
                     "2:ERROR disk full\n\
@@ -273,7 +273,7 @@ detected object has different fields for JSON, NDJSON, and text input."#,
             detail: Some(VerbDetail {
                 usage: "resh file://<dir>.find [name=<glob>] [type=file|dir|symlink]\n  \
                     [max_depth=<n>] [limit=<n>] [include_hidden=true|false]\n  \
-                    [follow_symlinks=true|false]",
+                    [follow_symlinks=true|false] [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/www.find name='*.html' type=file",
                 example_output: Some(
                     r#"[
@@ -309,7 +309,7 @@ Shown with --json-pretty."#,
             definition: "Computes the MD5 digest of a file and reports it with the file size \
                 as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.md5",
+                usage: "resh file://<path>.md5 [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/data/users.csv.md5",
                 example_output: Some(
                     r#"{
@@ -328,7 +328,7 @@ Shown with --json-pretty."#,
             definition: "Computes the SHA-1 digest of a file and reports it with the file \
                 size as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.sha1",
+                usage: "resh file://<path>.sha1 [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/data/users.csv.sha1",
                 example_output: Some(
                     r#"{
@@ -347,7 +347,7 @@ Shown with --json-pretty."#,
             definition: "Computes the SHA-256 digest of a file and reports it with the file \
                 size as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.sha256",
+                usage: "resh file://<path>.sha256 [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/data/users.csv.sha256",
                 example_output: Some(
                     r#"{
@@ -366,7 +366,7 @@ Shown with --json-pretty."#,
             definition: "Computes the SHA-512 digest of a file and reports it with the file \
                 size as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.sha512",
+                usage: "resh file://<path>.sha512 [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/data/users.csv.sha512",
                 example_output: Some(
                     r#"{
@@ -385,7 +385,8 @@ The 128-digit hash is shortened here to fit. Shown with --json-pretty."#,
             definition: "Computes a SHA-256, SHA-512, SHA-1, MD5, or BLAKE3 digest of a \
                 regular file, defaulting to SHA-256, and reports it as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.hash [algo=sha256|sha512|sha1|md5|blake3]",
+                usage: "resh file://<path>.hash [algo=sha256|sha512|sha1|md5|blake3]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/data/users.csv.hash algo=blake3",
                 example_output: Some(
                     r#"{
@@ -405,7 +406,8 @@ The 64-digit hash is shortened here to fit. Shown with --json-pretty."#,
                 optional size, reporting the result as JSON and failing on a mismatch.",
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.verify [algo=sha256|sha512|sha1|md5|blake3]\n  \
-                    [expected=<hex>] [expected_any=<hex>;<hex>...] [size=<bytes>]",
+                    [expected=<hex>] [expected_any=<hex>;<hex>...] [size=<bytes>]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/data/users.csv.verify algo=md5 \
                     size=51",
                 example_output: Some(
@@ -433,7 +435,7 @@ to false and exits with status 1."#,
                 standard input and reports the bytes written as a JSON object.",
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.write [data=<text>] [create=true|false] \
-                    [mode=<octal>]",
+                    [mode=<octal>]\n  [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///tmp/greeting.txt.write \
                     data='hello world'",
                 example_output: Some(
@@ -452,7 +454,8 @@ Shown with --json-pretty. Without data, the content is read from stdin."#,
             definition: "Appends the data argument or standard input to the end of a file and \
                 reports the bytes appended as a JSON object.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.append [data=<text>] [create=true|false]",
+                usage: "resh file://<path>.append [data=<text>] [create=true|false]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///var/tmp/jobs.log.append \
                     data='job finished'",
                 example_output: Some(
@@ -473,7 +476,7 @@ Shown with --json-pretty. No newline is added after the data."#,
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.replace pattern=<text> replacement=<text>\n  \
                     [regex=true|false] [count=<n>] [dry_run=true|false]\n  \
-                    [backup=<suffix>]",
+                    [backup=<suffix>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///etc/app.conf.replace pattern=8080 \
                     replacement=9090",
                 example_output: Some(
@@ -499,7 +502,8 @@ Shown with --json-pretty."#,
                 file and prints nothing on success.",
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.copy to=<path> [overwrite=true|false]\n  \
-                    [preserve_mode=true|false] [preserve_times=true|false]",
+                    [preserve_mode=true|false] [preserve_times=true|false]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh file:///etc/nginx/nginx.conf.copy \
                     to=/etc/nginx/nginx.conf.bak",
                 example_output: None,
@@ -511,7 +515,7 @@ Shown with --json-pretty."#,
                 filesystems when needed, and reports the result as a JSON object.",
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.rename to=<path> [overwrite=true|false]\n  \
-                    [create_parents=true|false] [atomic=true|false]",
+                    [create_parents=true|false] [atomic=true|false] [timeout_ms=<ms>]",
                 example: "resh --json-pretty file:///srv/data/old.csv.rename \
                     to=/srv/data/new.csv",
                 example_output: Some(
@@ -531,7 +535,8 @@ filesystems also reports cross_filesystem as true."#,
             definition: "Moves a file or directory to the path given by to, or into it when to \
                 is an existing directory, and prints nothing on success.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.move to=<path> [overwrite=true|false]",
+                usage: "resh file://<path>.move to=<path> [overwrite=true|false]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh file:///tmp/report.pdf.move to=/srv/reports",
                 example_output: None,
             }),
@@ -540,7 +545,8 @@ filesystems also reports cross_filesystem as true."#,
             name: "mv",
             definition: "Alias for move.",
             detail: Some(VerbDetail {
-                usage: "resh file://<path>.mv to=<path> [overwrite=true|false]",
+                usage: "resh file://<path>.mv to=<path> [overwrite=true|false]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh file:///tmp/report.pdf.mv to=/srv/reports/q3.pdf",
                 example_output: None,
             }),
@@ -551,7 +557,7 @@ filesystems also reports cross_filesystem as true."#,
                 nothing on success.",
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.delete [recursive=true|false] \
-                    [force=true|false]\n  [missing_ok=true|false]",
+                    [force=true|false]\n  [missing_ok=true|false] [timeout_ms=<ms>]",
                 example: "resh file:///tmp/build.cache.delete recursive=true",
                 example_output: None,
             }),
@@ -561,7 +567,7 @@ filesystems also reports cross_filesystem as true."#,
             definition: "Alias for delete.",
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.remove [recursive=true|false] \
-                    [force=true|false]\n  [missing_ok=true|false]",
+                    [force=true|false]\n  [missing_ok=true|false] [timeout_ms=<ms>]",
                 example: "resh file:///tmp/old.log.remove missing_ok=true",
                 example_output: None,
             }),
@@ -582,7 +588,7 @@ filesystems also reports cross_filesystem as true."#,
                 optionally recursively, and prints nothing on success.",
             detail: Some(VerbDetail {
                 usage: "resh file://<path>.chown [user=<name>] [uid=<n>] [group=<name>]\n  \
-                    [gid=<n>] [recursive=true|false]",
+                    [gid=<n>] [recursive=true|false] [timeout_ms=<ms>]",
                 example: "resh file:///srv/www.chown user=alice group=www recursive=true",
                 example_output: None,
             }),

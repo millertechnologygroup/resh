@@ -3,8 +3,9 @@
 
 use super::FileHandle;
 use super::common::{
-    Code, Opts, TempGuard, create_new_file, dest_from_arg, dest_parent, emit, fail, invalid,
-    io_fail, normalize_path, sync_dir, temp_name_in,
+    Code, Deadline, DeadlineReader, Opts, TempGuard, copy_with_deadline, create_new_file,
+    dest_from_arg, dest_parent, emit, fail, invalid, io_fail, normalize_path, sync_dir,
+    temp_name_in,
 };
 use super::inspect::open_for_read;
 use crate::core::{IoStreams, Status};
@@ -167,6 +168,35 @@ fn remove_entry(p: &Path) -> std::io::Result<()> {
     }
 }
 
+/// True when the error is (or was caused by) the deadline passing.
+fn is_timeout(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == ErrorKind::TimedOut)
+            || c.downcast_ref::<super::common::Fail>()
+                .is_some_and(|f| f.code == Code::Timeout)
+    })
+}
+
+/// Deletes a tree entry by entry, checking the deadline before each one.
+/// `done` counts what was deleted.
+fn remove_tree(p: &Path, deadline: Deadline, done: &mut u64) -> std::io::Result<()> {
+    if deadline.expired() {
+        return Err(deadline.io_error());
+    }
+    let meta = fs::symlink_metadata(p)?;
+    if meta.is_dir() {
+        for entry in fs::read_dir(p)? {
+            remove_tree(&entry?.path(), deadline, done)?;
+        }
+        fs::remove_dir(p)?;
+    } else {
+        fs::remove_file(p)?;
+    }
+    *done += 1;
+    Ok(())
+}
+
 fn is_exdev(e: &anyhow::Error) -> bool {
     e.chain()
         .filter_map(|c| c.downcast_ref::<std::io::Error>())
@@ -219,7 +249,10 @@ fn rename_replacing(
 /// Copies a file, symlink or directory tree to `dst` (which must not
 /// exist), keeping permission bits and modification times, and ownership
 /// when the process may set it. Special files cannot be copied.
-fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+fn copy_tree(src: &Path, dst: &Path, deadline: Deadline) -> Result<()> {
+    if deadline.expired() {
+        return Err(deadline.io_error().into());
+    }
     let meta = fs::symlink_metadata(src).with_context(|| format!("copy {}", src.display()))?;
     let ft = meta.file_type();
     if ft.is_symlink() {
@@ -236,7 +269,7 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
             fs::read_dir(src).with_context(|| format!("read directory {}", src.display()))?
         {
             let entry = entry.with_context(|| format!("read directory {}", src.display()))?;
-            copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
+            copy_tree(&entry.path(), &dst.join(entry.file_name()), deadline)?;
         }
         // Best effort, as in restore_owner.
         let _ = std::os::unix::fs::lchown(dst, Some(meta.uid()), Some(meta.gid()));
@@ -244,7 +277,7 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
         let mut input = File::open(src).with_context(|| format!("open {}", src.display()))?;
         let mut out =
             create_new_file(dst, 0o600).with_context(|| format!("create {}", dst.display()))?;
-        std::io::copy(&mut input, &mut out)
+        copy_with_deadline(&mut input, &mut out, deadline)
             .with_context(|| format!("copy {} to {}", src.display(), dst.display()))?;
         restore_owner(&out, meta.uid(), meta.gid());
         out.sync_all()
@@ -277,6 +310,7 @@ struct Relocate<'a> {
     overwrite: bool,
     create_parents: bool,
     atomic: bool,
+    deadline: Deadline,
 }
 
 /// Moves `src` to `dest`. Returns whether the data had to be copied across
@@ -359,13 +393,29 @@ fn relocate(src: &Path, dest: &Path, r: &Relocate) -> Result<bool> {
         }
     }
 
-    // Across filesystems: copy, then remove the source.
+    // Across filesystems: copy, then remove the source. A timeout during
+    // the copy removes the partial copy and leaves the source as it was.
+    let timed_out = |e: anyhow::Error, old_dest_removed: bool| {
+        if is_timeout(&e) {
+            r.deadline.timeout(format!(
+                "the copy across filesystems was not finished and was removed; {} is unchanged{}",
+                src.display(),
+                if old_dest_removed {
+                    format!(" (the previous {} was already removed)", dest.display())
+                } else {
+                    String::new()
+                }
+            ))
+        } else {
+            e
+        }
+    };
     if r.atomic {
         // Copy to a temporary name next to the destination, then rename it
         // into place, so the destination appears complete or not at all.
         let tmp = temp_name_in(parent, "tmp");
         let mut guard = TempGuard::new(&tmp);
-        copy_tree(src, &tmp)?;
+        copy_tree(src, &tmp, r.deadline).map_err(|e| timed_out(e, false))?;
         rename_replacing(&tmp, dest, src_meta.is_dir(), dest_meta.as_ref())?;
         guard.disarm();
     } else {
@@ -374,7 +424,7 @@ fn relocate(src: &Path, dest: &Path, r: &Relocate) -> Result<bool> {
                 .with_context(|| format!("remove the existing {}", dest.display()))?;
         }
         let mut guard = TempGuard::new(dest);
-        copy_tree(src, dest)?;
+        copy_tree(src, dest, r.deadline).map_err(|e| timed_out(e, dest_meta.is_some()))?;
         guard.disarm();
     }
     sync_dir(parent);
@@ -403,7 +453,7 @@ impl FileHandle {
                 format!("{} does not exist and create=false", path.display()),
             ));
         }
-        let data = self.data_arg(o, io)?;
+        let data = self.data_arg(o, io, o.deadline()?)?;
         let parent = dest_parent(path);
         if !parent.exists() {
             fs::create_dir_all(parent)
@@ -422,6 +472,17 @@ impl FileHandle {
     pub(super) fn verb_append(&self, o: &Opts, io: &mut IoStreams) -> Result<Status> {
         let create = o.flag("create", true)?;
         let path = &self.path;
+        // Appending cannot replace the file, so a symlink at the path is
+        // refused rather than written through.
+        if entry_meta(path, "append")?.is_some_and(|m| m.file_type().is_symlink()) {
+            return Err(fail(
+                Code::Refused,
+                format!(
+                    "{} is a symbolic link; append does not write through links",
+                    path.display()
+                ),
+            ));
+        }
         let existing = target_meta(path, "append")?;
         if existing.is_none() && !create {
             return Err(fail(
@@ -429,17 +490,21 @@ impl FileHandle {
                 format!("{} does not exist and create=false", path.display()),
             ));
         }
-        let data = self.data_arg(o, io)?;
+        let data = self.data_arg(o, io, o.deadline()?)?;
         let parent = dest_parent(path);
         if !parent.exists() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create parent directories {}", parent.display()))?;
         }
-        let mut f = OpenOptions::new()
-            .append(true)
-            .create(create)
-            .open(path)
-            .with_context(|| format!("append {}", path.display()))?;
+        let mut f = {
+            use std::os::unix::fs::OpenOptionsExt;
+            OpenOptions::new()
+                .append(true)
+                .create(create)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(path)
+        }
+        .with_context(|| format!("append {}", path.display()))?;
         f.write_all(&data)
             .with_context(|| format!("append {}", path.display()))?;
         f.sync_data()
@@ -451,16 +516,29 @@ impl FileHandle {
         Ok(Status::ok())
     }
 
-    /// `data=` or, without it, standard input until EOF.
-    fn data_arg(&self, o: &Opts, io: &mut IoStreams) -> Result<Vec<u8>> {
-        match o.get("data") {
-            Some(d) => Ok(d.as_bytes().to_vec()),
-            None => {
-                let mut buf = Vec::new();
-                io.stdin
-                    .read_to_end(&mut buf)
-                    .context("read data from standard input")?;
-                Ok(buf)
+    /// `data=` or, without it, standard input until EOF. The deadline is
+    /// checked between chunks of standard input; nothing is written when it
+    /// passes.
+    fn data_arg(&self, o: &Opts, io: &mut IoStreams, deadline: Deadline) -> Result<Vec<u8>> {
+        if let Some(d) = o.get("data") {
+            return Ok(d.as_bytes().to_vec());
+        }
+        let mut buf = Vec::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        let mut input = DeadlineReader::new(&mut io.stdin, deadline);
+        loop {
+            match input.read(&mut chunk) {
+                Ok(0) => return Ok(buf),
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == ErrorKind::TimedOut => {
+                    return Err(deadline.timeout(format!(
+                        "standard input was still being read after {} bytes; {} was not changed",
+                        buf.len(),
+                        self.path.display()
+                    )));
+                }
+                Err(e) => return Err(e).context("read data from standard input"),
             }
         }
     }
@@ -490,10 +568,18 @@ impl FileHandle {
         };
 
         let path = &self.path;
-        let (mut f, meta) = open_for_read(path, "replace")?;
+        let deadline = o.deadline()?;
+        let (f, meta) = open_for_read(path, "replace")?;
         let mut bytes = Vec::new();
-        f.read_to_end(&mut bytes)
-            .with_context(|| format!("read {}", path.display()))?;
+        if let Err(e) = DeadlineReader::new(f, deadline).read_to_end(&mut bytes) {
+            if e.kind() == ErrorKind::TimedOut {
+                return Err(deadline.timeout(format!(
+                    "{} was still being read; nothing was changed",
+                    path.display()
+                )));
+            }
+            return Err(e).with_context(|| format!("read {}", path.display()));
+        }
         let content = String::from_utf8(bytes).map_err(|_| {
             fail(
                 Code::NotUtf8,
@@ -548,6 +634,7 @@ impl FileHandle {
         let overwrite = o.flag("overwrite", false)?;
         let preserve_mode = o.flag("preserve_mode", true)?;
         let preserve_times = o.flag("preserve_times", false)?;
+        let deadline = o.deadline()?;
 
         let (mut src, meta) = open_for_read(&self.path, "copy")?;
         let dest = dest_from_arg(to);
@@ -580,8 +667,16 @@ impl FileHandle {
         let mut guard = TempGuard::new(&tmp);
         let mut out = create_new_file(&tmp, 0o666)
             .with_context(|| format!("create a temporary file in {}", parent.display()))?;
-        std::io::copy(&mut src, &mut out)
-            .with_context(|| format!("copy {} to {}", self.path.display(), dest.display()))?;
+        if let Err(e) = copy_with_deadline(&mut src, &mut out, deadline) {
+            if e.kind() == ErrorKind::TimedOut {
+                return Err(deadline.timeout(format!(
+                    "the partial copy was removed; {} is unchanged",
+                    dest.display()
+                )));
+            }
+            return Err(e)
+                .with_context(|| format!("copy {} to {}", self.path.display(), dest.display()));
+        }
         if preserve_mode {
             out.set_permissions(fs::Permissions::from_mode(meta.mode() & 0o7777))
                 .with_context(|| format!("preserve mode on {}", dest.display()))?;
@@ -609,6 +704,7 @@ impl FileHandle {
             overwrite: o.flag("overwrite", false)?,
             create_parents: o.flag("create_parents", false)?,
             atomic: o.flag("atomic", true)?,
+            deadline: o.deadline()?,
         };
         let dest = dest_from_arg(to);
         let cross = relocate(&self.path, &dest, &r)?;
@@ -631,6 +727,7 @@ impl FileHandle {
             overwrite: o.flag("overwrite", false)?,
             create_parents: false,
             atomic: true,
+            deadline: o.deadline()?,
         };
         fs::symlink_metadata(&self.path)
             .with_context(|| format!("{} {}", r.verb, self.path.display()))?;
@@ -652,6 +749,7 @@ impl FileHandle {
         let recursive = o.flag("recursive", false)?;
         let force = o.flag("force", false)?;
         let missing_ok = o.flag("missing_ok", false)?;
+        let deadline = o.deadline()?;
         let path = &self.path;
 
         let refused = path.as_os_str().is_empty()
@@ -681,14 +779,22 @@ impl FileHandle {
                     format!("{} is a directory; use recursive=true", path.display()),
                 ));
             }
-            fs::remove_dir_all(path).map_err(|e| {
-                io_fail(
-                    format!(
-                        "delete {} (part of the tree may already be deleted)",
+            let mut done = 0u64;
+            remove_tree(path, deadline, &mut done).map_err(|e| {
+                if e.kind() == ErrorKind::TimedOut {
+                    deadline.timeout(format!(
+                        "{done} entries were deleted; the rest of {} remains",
                         path.display()
-                    ),
-                    &e,
-                )
+                    ))
+                } else {
+                    io_fail(
+                        format!(
+                            "delete {} ({done} entries were deleted before this; part of the tree may already be deleted)",
+                            path.display()
+                        ),
+                        &e,
+                    )
+                }
             })?;
         } else {
             fs::remove_file(path).map_err(|e| io_fail(format!("delete {}", path.display()), &e))?;

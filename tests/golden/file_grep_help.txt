@@ -7,7 +7,7 @@ Usage:
   resh file://<path>.grep pattern=<pattern> [regex=true|false]
     [ignore_case=true|false] [invert=true|false] [max=<n>]
     [before=<n>] [after=<n>] [format=text|json]
-    [line_numbers=true|false]
+    [line_numbers=true|false] [timeout_ms=<ms>]
 
 Example:
   resh file:///var/log/app.log.grep pattern=error ignore_case=true

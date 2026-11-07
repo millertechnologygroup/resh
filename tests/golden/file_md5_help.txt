@@ -4,7 +4,7 @@ Definition: Computes the MD5 digest of a file and reports it with the file size
   as a JSON object.
 
 Usage:
-  resh file://<path>.md5
+  resh file://<path>.md5 [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///srv/data/users.csv.md5

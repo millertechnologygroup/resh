@@ -5,7 +5,7 @@ Definition: Detects whether a file is JSON, NDJSON, CSV, TSV, or plain text and
 
 Usage:
   resh file://<path>.schema [format=json|ndjson|csv|tsv|text]
-    [max_bytes=<n>] [max_rows=<n>]
+    [max_bytes=<n>] [max_rows=<n>] [timeout_ms=<ms>]
 
 Example:
   resh --json-pretty file:///srv/data/users.csv.schema
