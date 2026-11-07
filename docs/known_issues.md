@@ -114,11 +114,19 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   statement is cancelled on the server (PostgreSQL `pg_cancel_backend`,
   MySQL/MariaDB `KILL QUERY`, SQLite interrupt), exit 124. A timed-out
   transaction commits nothing.
-- `ca_file=<pem>` trusts a private CA (implies `verify_full`). `prefer` (the
-  default), `allow` and `require` do not check certificates and are
-  documented as insecure. `log_queries=true` writes each statement to stderr.
+- `ca_file=<pem>` trusts a private CA (implies `verify_full`). `prefer`,
+  `allow` and `require` do not check certificates and are documented as
+  insecure. `log_queries=true` writes each statement to stderr.
+- Breaking: without `tls_mode=` (or an SSL mode in the DSN, or
+  `PGSSLMODE`), remote hosts now use `verify_full`; `prefer` is the default
+  only for `localhost`, 127.0.0.0/8, `::1` and Unix sockets (names are not
+  resolved). A remote server with a self-signed certificate needs
+  `ca_file=` or an explicit `tls_mode`.
+- A SQLite database (or its `-journal`, `-wal` or `-shm` file) that is a
+  symbolic link is refused (`db.invalid_argument`).
 - Breaking: each verb uses one connection; pool options, `tx_id` and
-  `transaction action=begin|commit|rollback` are refused; `connect` reports
+  `transaction action=begin|commit|rollback` are refused; `return_last_insert_id`
+  is refused on PostgreSQL; `connect` reports
   server version, database, user and `tls`; `db.connection_not_found` is now
   `db.dsn_missing`; `sql=` must be one statement.
 - `query` streams rows; NUMERIC/DECIMAL are exact strings; unsupported types
