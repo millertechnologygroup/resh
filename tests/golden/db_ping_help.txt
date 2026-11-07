@@ -1,0 +1,27 @@
+Handle: db
+Verb: ping
+Definition: Connects and runs SELECT 1, retrying with a new connection on
+  failure, and reports the latency and number of attempts.
+
+Usage:
+  resh db://<driver>/<alias>.ping [retries=<0-10>] [backoff_ms=<ms>]
+    [detailed=true|false]
+    [dsn=<dsn>] [tls_mode=<mode>] [ca_file=<pem>] [timeout_ms=<ms>]
+    [log_queries=true|false]
+
+Example:
+  resh --json-pretty db://sqlite/app.ping dsn=sqlite:app.db retries=2
+
+Example Output:
+  {
+    "alias": "app",
+    "attempts": 1,
+    "driver": "sqlite",
+    "latency_ms": 3,
+    "status": "ok"
+  }
+
+  timeout_ms (default 1000) limits each attempt. When every attempt fails,
+  status is "error", the error object gives the reason (with last_error when
+  detailed=true) and the exit code is 1, or 124 if the last attempt timed
+  out.

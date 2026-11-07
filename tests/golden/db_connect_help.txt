@@ -1,0 +1,32 @@
+Handle: db
+Verb: connect
+Definition: Connects, reports the server version, database, user and whether the
+  session is encrypted, and disconnects.
+
+Usage:
+  resh db://<driver>/<alias>.connect
+    [dsn=<dsn>] [tls_mode=<mode>] [ca_file=<pem>] [timeout_ms=<ms>]
+    [log_queries=true|false]
+
+Example:
+  resh --json-pretty db://postgres/app.connect tls_mode=verify_full
+
+Example Output:
+  {
+    "alias": "app",
+    "database": "app",
+    "driver": "postgres",
+    "latency_ms": 14,
+    "server_version": "17.2",
+    "tls": true,
+    "user": "app"
+  }
+
+  Shown with DB_APP_DSN set. driver is postgres, mysql (also MariaDB) or
+  sqlite. tls_mode: disable, allow (postgres), prefer (the default),
+  require, verify_ca or verify_full. Only verify_ca and verify_full check
+  the server certificate; the others do not stop an impostor server.
+  ca_file=<pem> adds a private CA (verification stays on) and implies
+  verify_full. timeout_ms (default 5000) covers connecting and the work; at
+  the deadline a running statement is cancelled and the exit code is 124.
+  log_queries=true writes each SQL statement sent to stderr.

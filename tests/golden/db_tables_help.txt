@@ -1,0 +1,31 @@
+Handle: db
+Verb: tables
+Definition: Lists the tables (and views) in the database, or describes one
+  table's columns when table= is given.
+
+Usage:
+  resh db://<driver>/<alias>.tables [table=<name>] [schema=<name>]
+    [include_views=true|false] [include_system=true|false]
+    [max_tables=<n>]
+    [dsn=<dsn>] [tls_mode=<mode>] [ca_file=<pem>] [timeout_ms=<ms>]
+    [log_queries=true|false]
+
+Example:
+  resh --json-pretty db://postgres/app.tables include_views=true
+
+Example Output:
+  {
+    "meta": {
+      "count": 2,
+      "truncated": false
+    },
+    "tables": [
+      { "name": "active_users", "schema": "public", "type": "VIEW" },
+      { "name": "orders", "schema": "public", "type": "BASE TABLE" }
+    ]
+  }
+
+  Shown with DB_APP_DSN set. Without schema=, PostgreSQL lists every
+  non-system schema, MySQL the DSN's database and SQLite every attached
+  database. max_tables defaults to 1000. With table= the output is a table
+  object and a columns array, as in schema.

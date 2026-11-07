@@ -1,0 +1,23 @@
+Handle: db
+Verb: exec
+Definition: Runs one data-changing statement, such as INSERT, UPDATE or DELETE,
+  with bound parameters and reports the number of rows affected.
+
+Usage:
+  resh db://<driver>/<alias>.exec sql=<sql> [params=<json-array>]
+    [return_last_insert_id=true|false]
+    [dsn=<dsn>] [tls_mode=<mode>] [ca_file=<pem>] [timeout_ms=<ms>]
+    [log_queries=true|false]
+
+Example:
+  resh db://sqlite/app.exec 'sql=DELETE FROM sessions WHERE uid=?' params=[7]
+
+Example Output:
+  {
+    "rows_affected": 3
+  }
+
+  Shown with --json-pretty and DB_APP_DSN=sqlite:app.db set.
+  return_last_insert_id=true adds last_insert_id on MySQL and SQLite; on
+  PostgreSQL use INSERT ... RETURNING id with query. There is no dry run:
+  the change is made at once. timeout_ms defaults to 5000.

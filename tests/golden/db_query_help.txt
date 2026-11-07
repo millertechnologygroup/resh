@@ -1,0 +1,37 @@
+Handle: db
+Verb: query
+Definition: Runs one SQL statement with bound parameters and returns its rows
+  with column metadata, one scalar value, or the affected row count.
+
+Usage:
+  resh db://<driver>/<alias>.query sql=<sql> [params=<json-array>]
+    [mode=rows|scalar|exec] [max_rows=<n>]
+    [dsn=<dsn>] [tls_mode=<mode>] [ca_file=<pem>] [timeout_ms=<ms>]
+    [log_queries=true|false]
+
+Example:
+  resh db://sqlite/app.query 'sql=SELECT * FROM users WHERE id<?' params=[3]
+
+Example Output:
+  {
+    "meta": {
+      "columns": [
+        { "name": "id", "type": "INTEGER" },
+        { "name": "name", "type": "TEXT" }
+      ],
+      "row_count": 2,
+      "truncated": false
+    },
+    "rows": [
+      { "id": 1, "name": "alice" },
+      { "id": 2, "name": "bob" }
+    ]
+  }
+
+  Shown with --json-pretty and DB_APP_DSN=sqlite:app.db set.
+  Placeholders are ? (SQLite, MySQL) or $1, $2 (PostgreSQL); params items
+  are strings, numbers, booleans or null. Rows are streamed; max_rows
+  (default 1000) stops reading and sets truncated. mode=scalar returns value
+  (first column of the first row) and meta; mode=exec returns rows_affected.
+  NUMERIC/DECIMAL values are exact strings, binary values "base64:...",
+  timestamps ISO 8601. timeout_ms defaults to 5000.

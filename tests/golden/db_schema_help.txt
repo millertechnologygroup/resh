@@ -1,0 +1,39 @@
+Handle: db
+Verb: schema
+Definition: Describes a table's columns and primary key, plus the indexes,
+  foreign keys, unique constraints, checks and triggers selected by the include
+  flags.
+
+Usage:
+  resh db://<driver>/<alias>.schema table=<name> [schema=<name>]
+    [include_indexes=true|false] [include_foreign_keys=true|false]
+    [include_unique_constraints=true|false]
+    [include_checks=true|false] [include_triggers=true|false]
+    [dsn=<dsn>] [tls_mode=<mode>] [ca_file=<pem>] [timeout_ms=<ms>]
+    [log_queries=true|false]
+
+Example:
+  resh --json-pretty db://sqlite/app.schema table=users dsn=sqlite:app.db
+
+Example Output:
+  {
+    "columns": [
+      { "data_type": "INTEGER", "default": null, "is_nullable": false,
+        "is_primary_key": true, "name": "id", "ordinal_position": 1 },
+      { "data_type": "TEXT", "default": null, "is_nullable": false,
+        "is_primary_key": false, "name": "email", "ordinal_position": 2 }
+    ],
+    "foreign_keys": [],
+    "indexes": [
+      { "columns": ["email"], "is_primary": false, "is_unique": true,
+        "name": "idx_users_email" }
+    ],
+    "primary_key": { "columns": ["id"], "name": null },
+    "table": { "name": "users", "schema": "main", "type": "BASE TABLE" },
+    "unique_constraints": []
+  }
+
+  Indexes, foreign keys and unique constraints are included by default;
+  checks and triggers with include_checks=true and include_triggers=true.
+  Without schema=, PostgreSQL uses the search_path and MySQL the DSN's
+  database. SQLite names neither primary keys nor foreign keys (null).

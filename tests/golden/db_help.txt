@@ -1,0 +1,33 @@
+Handle: db
+
+Description:
+  The db handle runs SQL on PostgreSQL, MySQL/MariaDB and SQLite and prints the
+  results as JSON. The target names a driver and an alias, such as
+  db://postgres/app, and the DSN comes from dsn= or the DB_<ALIAS>_DSN
+  environment variable. Each verb opens one connection for its work, binds
+  params= values instead of splicing them into the SQL, and stops at timeout_ms.
+
+Available Verbs:
+  connect       Connects, reports the server version, database, user and whether
+                the session is encrypted, and disconnects.
+  ping          Connects and runs SELECT 1, retrying with a new connection on
+                failure, and reports the latency and number of attempts.
+  query         Runs one SQL statement with bound parameters and returns its
+                rows with column metadata, one scalar value, or the affected row
+                count.
+  exec          Runs one data-changing statement, such as INSERT, UPDATE or
+                DELETE, with bound parameters and reports the number of rows
+                affected.
+  tables        Lists the tables (and views) in the database, or describes one
+                table's columns when table= is given.
+  schema        Describes a table's columns and primary key, plus the indexes,
+                foreign keys, unique constraints, checks and triggers selected
+                by the include flags.
+  transaction   Runs a list of statements in one transaction, committing only if
+                every statement succeeds and rolling back otherwise.
+
+Usage:
+  resh db://<driver>/<alias>.<verb> [key=value ...]
+
+For help with a specific verb:
+  resh db <verb> --help
