@@ -37,10 +37,14 @@ impl Out {
         assert!(!self.status.ok, "expected failure, got: {}", self.out);
         assert_eq!(self.status.exit_code(), exit, "stderr: {}", self.err);
         let v = self.json();
-        assert_eq!(v["error"], code, "{}", self.out);
+        let code = format!("snapshot.{code}");
+        assert_eq!(v["error"]["code"], code, "{}", self.out);
         assert_eq!(v["ok"], false);
-        assert!(v["message"].as_str().is_some_and(|m| !m.is_empty()));
-        assert!(self.err.starts_with("Error: "), "stderr: {}", self.err);
+        let message = v["error"]["message"].as_str().unwrap_or_default();
+        assert!(!message.is_empty(), "{}", self.out);
+        assert!(v.get("message").is_none(), "{}", self.out);
+        let line = format!("Error: [{code}] {message}\n");
+        assert!(self.err.starts_with(&line), "stderr: {}", self.err);
         self
     }
 }
@@ -254,8 +258,15 @@ fn unknown_verb_is_an_error() {
         stdout: &mut o,
         stderr: &mut e,
     };
-    let err = h.call("frobnicate", &Args::new(), &mut io).unwrap_err();
-    assert!(err.to_string().contains("unknown verb"));
+    let s = h.call("frobnicate", &Args::new(), &mut io).unwrap();
+    assert_eq!(s.exit_code(), 2);
+    let err = String::from_utf8(e).unwrap();
+    assert!(
+        err.starts_with("Error: [snapshot.unknown_verb] unknown verb"),
+        "{err}"
+    );
+    let v: Value = serde_json::from_slice(&o).unwrap();
+    assert_eq!(v["error"]["code"], "snapshot.unknown_verb");
     drop(env);
 }
 
@@ -556,7 +567,7 @@ fn create_store_unwritable_is_write_failed() {
     let s = h.call("create", &args, &mut io).unwrap();
     assert_eq!(s.exit_code(), 1);
     let v: Value = serde_json::from_slice(&o).unwrap();
-    assert_eq!(v["error"], "write_failed");
+    assert_eq!(v["error"]["code"], "snapshot.write_failed");
 }
 
 #[test]
@@ -595,7 +606,12 @@ fn create_unreadable_file_is_copy_failed_and_leaves_nothing() {
     let o = env.on(&app, "create", &[("name", "v1")]);
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
     o.fails(1, "copy_failed");
-    assert!(o.json()["message"].as_str().unwrap().contains("secret"));
+    assert!(
+        o.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("secret")
+    );
     assert!(
         env.snapshot_names().is_empty(),
         "{:?}",
@@ -626,7 +642,12 @@ fn create_follows_symlinks_and_rejects_broken_ones() {
     std::os::unix::fs::symlink(env.path("nowhere"), app.join("dangling")).unwrap();
     let o = env.on(&app, "create", &[("name", "v2")]);
     o.fails(1, "copy_failed");
-    assert!(o.json()["message"].as_str().unwrap().contains("dangling"));
+    assert!(
+        o.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("dangling")
+    );
     assert_eq!(env.snapshot_names(), vec!["v1".to_string()]);
 }
 
@@ -1782,4 +1803,44 @@ fn purge_failure_is_a_warning_and_the_snapshot_stays_hidden() {
         o.err
     );
     assert!(g.join("old").exists());
+}
+
+#[test]
+fn every_error_code_is_valid_listed_and_documented() {
+    let docs = include_str!("../../../docs/Filesystem_Storage/snapshot.md");
+    for code in ERROR_CODES {
+        assert!(crate::core::status::is_valid_error_code(code), "{code}");
+        assert!(docs.contains(&format!("`{code}`")), "{code} not documented");
+    }
+    // Every code a Failure is built with is listed.
+    let src = include_str!("snapshot.rs");
+    let literal_after = |marker: &str| -> Vec<String> {
+        src.split(marker)
+            .skip(1)
+            .filter_map(|part| {
+                let part = part.trim_start();
+                let rest = part.strip_prefix('"')?;
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                    .collect();
+                rest[name.len()..].starts_with('"').then_some(name)
+            })
+            .collect()
+    };
+    let mut names = literal_after("Failure::new(");
+    for part in src.split("into_failure(").skip(1) {
+        let args = part.split(')').next().unwrap_or_default();
+        // Calls pass a string literal; the definition's parameters are skipped.
+        if let Some(name) = args.split(',').nth(1).map(str::trim) {
+            if name.starts_with('"') {
+                names.push(name.trim_matches('"').to_string());
+            }
+        }
+    }
+    assert!(names.len() > 20, "{names:?}");
+    for name in names {
+        let code = format!("snapshot.{name}");
+        assert!(ERROR_CODES.contains(&code.as_str()), "{code} not listed");
+    }
 }

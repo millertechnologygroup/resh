@@ -35,8 +35,11 @@ impl Run {
             self.out, self.err
         );
         let v = self.json();
-        assert_eq!(v["error"], code, "{}", self.out);
-        assert!(self.err.starts_with("Error: "), "{}", self.err);
+        let code = format!("snapshot.{code}");
+        assert_eq!(v["error"]["code"], code, "{}", self.out);
+        let message = v["error"]["message"].as_str().unwrap();
+        let line = format!("Error: [{code}] {message}\n");
+        assert!(self.err.starts_with(&line), "{}", self.err);
         self
     }
 }

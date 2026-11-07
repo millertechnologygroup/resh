@@ -38,7 +38,7 @@ in-URL forms `snapshot://--help`, `snapshot://--help=<verb>` and
 
 A name uses only letters, digits, `.`, `-` and `_`, is at most 120
 characters long, and does not start with `.` or `-`. Anything else is
-rejected with `invalid_argument`.
+rejected with `snapshot.invalid_argument`.
 
 ### Storage location
 
@@ -68,7 +68,7 @@ Two different targets can map to the same group directory (for example
 `/srv/a b` and `/srv/a_b`, or long paths that share their first 120
 characters). Every verb checks the target recorded in `meta.json`, so their
 snapshots are never mixed up; reusing a snapshot name already taken by the
-other target is refused with `name_conflict`.
+other target is refused with `snapshot.name_conflict`.
 
 Snapshots written by earlier versions (no `kind` in `meta.json`; a
 directory snapshot stored beside `meta.json`) are still listed, compared
@@ -76,20 +76,21 @@ and restored.
 
 ### Errors and exit status
 
-Every failure prints `Error: <message>` on stderr and a JSON object on
-stdout:
+Every failure prints `Error: [<code>] <message>` on stderr and a JSON object
+on stdout:
 
 ```json
-{"ok":false,"error":"snapshot_not_found","message":"snapshot not found: v9","snapshot":"v9"}
+{"ok":false,"error":{"code":"snapshot.snapshot_not_found","message":"snapshot not found: v9"},"snapshot":"v9"}
 ```
 
-`error` is one of the codes below; some errors add fields such as
-`argument`, `snapshot`, `target` or `matches`.
+`error.code` is one of the codes below and `error.message` repeats the
+stderr message; some errors add fields such as `argument`, `snapshot`,
+`target` or `matches`.
 
 Arguments are strict: each verb accepts exactly the options listed in its
 section (and in `resh snapshot <verb> --help`). An unknown argument, including
 `dry_run` on `create`, `diff` and `ls`, is refused with exit 2 and
-`invalid_argument` before anything is done; `argument` names the key, and the
+`snapshot.invalid_argument` before anything is done; `argument` names the key, and the
 message suggests the closest accepted option for a likely typo (`nmae` ->
 `did you mean "name"?`).
 
@@ -104,34 +105,43 @@ Error codes:
 
 | Code | Verbs | Exit | Meaning |
 | ---- | ----- | ---- | ------- |
-| `missing_argument` | create, restore | 2 | `name` / `target` missing or empty |
-| `invalid_argument` | all | 2 | Unknown argument, or a malformed value (name, `ttl`, `tags`, `if_exists`, `limit`, `since`, `until`, boolean, `timeout_ms`, `format`, `path`); also `diff` with both sides `live` or both sides the same snapshot |
-| `unsupported_backend` | create | 2 | `backend` other than `local` |
-| `unsupported_mode` | restore | 2 | `mode` other than `overwrite` |
-| `invalid_target` | create, restore | 2 | Not a regular file or directory; inside the snapshot store; restore target `/` or overlapping the snapshot |
-| `ambiguous_snapshot` | restore | 2 | The name exists for several targets; `matches` lists their IDs; restore by ID |
-| `target_not_found` | create, diff | 1 | The target (or the live side of a diff) does not exist |
-| `snapshot_exists` | create | 1 | Name already used for this target and `if_exists=error` |
-| `name_conflict` | create | 1 | Name already used by another target in the same group directory |
-| `snapshot_not_found` | diff, restore | 1 | No snapshot with that name or ID |
-| `metadata_not_found` | restore | 1 | The snapshot directory has no `meta.json` |
-| `metadata_invalid` | diff, restore | 1 | `meta.json` cannot be parsed, or records an unknown `kind` |
-| `content_not_found` | diff, restore | 1 | `meta.json` is present but the content is missing |
-| `target_exists`, `target_not_empty` | restore | 1 | The target (file, symbolic link, or non-empty directory) exists and `force` is not true |
-| `copy_failed` | create, restore | 1 | Reading the source or writing the copy failed (for example permission denied, a broken symbolic link) |
-| `write_failed` | create | 1 | The store or the metadata could not be written |
-| `backup_failed`, `restore_failed` | restore | 1 | Moving the old target aside, or the copy into place, failed; the old target is put back |
-| `read_failed` | all | 1 | A directory or the target could not be read or inspected |
-| `timeout` | all | 124 | `timeout_ms` passed; see below |
+| `snapshot.missing_argument` | create, restore | 2 | `name` / `target` missing or empty |
+| `snapshot.invalid_argument` | all | 2 | Unknown argument, or a malformed value (name, `ttl`, `tags`, `if_exists`, `limit`, `since`, `until`, boolean, `timeout_ms`, `format`, `path`); also `diff` with both sides `live` or both sides the same snapshot |
+| `snapshot.unsupported_backend` | create | 2 | `backend` other than `local` |
+| `snapshot.unsupported_mode` | restore | 2 | `mode` other than `overwrite` |
+| `snapshot.invalid_target` | create, restore | 2 | Not a regular file or directory; inside the snapshot store; restore target `/` or overlapping the snapshot |
+| `snapshot.ambiguous_snapshot` | restore | 2 | The name exists for several targets; `matches` lists their IDs; restore by ID |
+| `snapshot.target_not_found` | create, diff | 1 | The target (or the live side of a diff) does not exist |
+| `snapshot.snapshot_exists` | create | 1 | Name already used for this target and `if_exists=error` |
+| `snapshot.name_conflict` | create | 1 | Name already used by another target in the same group directory |
+| `snapshot.snapshot_not_found` | diff, restore | 1 | No snapshot with that name or ID |
+| `snapshot.metadata_not_found` | restore | 1 | The snapshot directory has no `meta.json` |
+| `snapshot.metadata_invalid` | diff, restore | 1 | `meta.json` cannot be parsed, or records an unknown `kind` |
+| `snapshot.content_not_found` | diff, restore | 1 | `meta.json` is present but the content is missing |
+| `snapshot.target_exists`, `snapshot.target_not_empty` | restore | 1 | The target (file, symbolic link, or non-empty directory) exists and `force` is not true |
+| `snapshot.copy_failed` | create, restore | 1 | Reading the source or writing the copy failed (for example permission denied, a broken symbolic link) |
+| `snapshot.write_failed` | create | 1 | The store or the metadata could not be written |
+| `snapshot.backup_failed`, `snapshot.restore_failed` | restore | 1 | Moving the old target aside, or the copy into place, failed; the old target is put back |
+| `snapshot.read_failed` | all | 1 | A directory or the target could not be read or inspected |
+| `snapshot.unknown_verb` | - | 2 | The verb is not `create`, `diff`, `restore` or `ls` |
+| `snapshot.timeout` | all | 124 | `timeout_ms` passed; see below |
+
+**Change note (breaking):** earlier versions printed `Error: <message>`
+and reported `"error": "<code>"` (without the `snapshot.` prefix) next to a
+top-level `"message"`. Failures now print `Error: [snapshot.<code>]
+<message>`, and `error` is an object `{"code": "snapshot.<code>",
+"message": "..."}` (the top-level `message` field is gone; the other fields
+are unchanged). An unknown verb is now `snapshot.unknown_verb` with exit 2
+(was a plain error with exit 1). Exit codes are otherwise unchanged.
 
 ### timeout_ms
 
 Every verb accepts `timeout_ms` (milliseconds; absent or `0` means no
-limit; anything other than a non-negative integer is `invalid_argument`,
+limit; anything other than a non-negative integer is `snapshot.invalid_argument`,
 exit 2).
 The deadline is checked between files and between 1 MiB chunks of a file.
 When it passes, the verb stops, removes everything it had written and exits
-124 with error `timeout`: `create` leaves no snapshot (an existing snapshot
+124 with error `snapshot.timeout`: `create` leaves no snapshot (an existing snapshot
 replaced by `if_exists=overwrite` is kept), and `restore` leaves the target
 unchanged. The final swap of `restore` and `create` is not interrupted.
 
@@ -153,7 +163,7 @@ resh snapshot:///srv/app.create name=nightly-1 tags=nightly,auto timeout_ms=6000
 | `description` | none | Stored in metadata, shown by `ls` |
 | `ttl` | none | Seconds until the snapshot expires (`expires_at`); `0` expires it at once. See "Expiry" below |
 | `tags` | none | Comma-separated list, stored in metadata, matched by `ls tag=` |
-| `if_exists` | `error` | `error` (exit 1, `snapshot_exists`), `skip` (`"skipped": true`), `overwrite` |
+| `if_exists` | `error` | `error` (exit 1, `snapshot.snapshot_exists`), `skip` (`"skipped": true`), `overwrite` |
 | `backend` | `local` | Only `local` exists |
 | `timeout_ms` | none | See section 2 |
 
@@ -164,7 +174,7 @@ after the new one is in place. File and directory modes and modification
 times are kept; when resh runs as root, file ownership is kept as well.
 Symbolic links are followed: the snapshot (and a later restore) contains a
 copy of what the link points to, not the link; a broken link fails the
-create (`copy_failed`). Sockets, FIFOs and device files are not copied; each
+create (`snapshot.copy_failed`). Sockets, FIFOs and device files are not copied; each
 one is reported on stderr as `snapshot create: warning: skipped <path>: ...`.
 The snapshot store is never copied into a snapshot (snapshotting `$HOME`
 skips `~/.local/state/resh/snapshots`), and a target inside the store is
@@ -177,7 +187,7 @@ A snapshot is expired once the current time is at or after its
 `expires_at` (a missing or unreadable `expires_at` never expires).
 
 * `ls`, `diff` and `restore` never use an expired snapshot. `diff` and
-  `restore` that name one (by name or ID) fail with `snapshot_not_found`
+  `restore` that name one (by name or ID) fail with `snapshot.snapshot_not_found`
   (exit 1) and a message saying when it expired; `restore`'s error object
   also has `"expired": true`. This applies to `restore dry_run` too.
 * Every `create` and `ls` of a target deletes that target's expired
@@ -300,7 +310,7 @@ resh snapshot://73265a09-2b27-49d7-a5ab-49315543eacb.restore target=/srv/app for
 
 The URL names the snapshot by name, searched across all targets, or by ID.
 If the same name was used for snapshots of different targets the restore
-is refused with `ambiguous_snapshot` (exit 2); the error's `matches` field
+is refused with `snapshot.ambiguous_snapshot` (exit 2); the error's `matches` field
 lists the IDs and targets, and `snapshot://<id>.restore` picks one.
 
 The snapshot is copied to a temporary location next to the target

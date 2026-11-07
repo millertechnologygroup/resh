@@ -35,7 +35,7 @@ use walkdir::WalkDir;
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{Status, error_json, error_line},
 };
 
 /// Placeholder target used for an in-URL help request.
@@ -226,8 +226,36 @@ target is left unchanged)."#,
 // Failures
 // ---------------------------------------------------------------------------
 
-/// A verb failure: exit code, stable error code and message, plus optional
-/// extra fields for the JSON error object.
+/// Every error code the handle can emit, as reported (`snapshot.<code>`);
+/// each is documented in docs/Filesystem_Storage/snapshot.md. A `Failure`
+/// holds the name after the `snapshot.` prefix.
+pub const ERROR_CODES: &[&str] = &[
+    "snapshot.missing_argument",
+    "snapshot.invalid_argument",
+    "snapshot.unsupported_backend",
+    "snapshot.unsupported_mode",
+    "snapshot.invalid_target",
+    "snapshot.ambiguous_snapshot",
+    "snapshot.unknown_verb",
+    "snapshot.target_not_found",
+    "snapshot.snapshot_exists",
+    "snapshot.name_conflict",
+    "snapshot.snapshot_not_found",
+    "snapshot.metadata_not_found",
+    "snapshot.metadata_invalid",
+    "snapshot.content_not_found",
+    "snapshot.target_exists",
+    "snapshot.target_not_empty",
+    "snapshot.copy_failed",
+    "snapshot.write_failed",
+    "snapshot.backup_failed",
+    "snapshot.restore_failed",
+    "snapshot.read_failed",
+    "snapshot.timeout",
+];
+
+/// A verb failure: exit code, stable error code (without the `snapshot.`
+/// prefix) and message, plus optional extra fields for the JSON result.
 #[derive(Debug)]
 struct Failure {
     exit: i32,
@@ -272,6 +300,7 @@ fn exit_for(code: &str) -> i32 {
         | "unsupported_backend"
         | "unsupported_mode"
         | "ambiguous_snapshot"
+        | "unknown_verb"
         | "invalid_target" => EXIT_USAGE,
         "timeout" => EXIT_TIMEOUT,
         _ => 1,
@@ -303,19 +332,21 @@ impl OpError {
     }
 }
 
-/// Writes the failure (stderr line plus JSON object on stdout) and returns
-/// its status.
+/// Writes the failure (the standard `Error: [snapshot.<code>] <message>`
+/// line on stderr, and a JSON result with `"error": {"code", "message"}` on
+/// stdout) and returns its status.
 fn emit_failure(io: &mut IoStreams, f: Failure) -> Result<Status> {
-    writeln!(io.stderr, "Error: {}", f.message)?;
+    let code = format!("snapshot.{}", f.code);
+    debug_assert!(ERROR_CODES.contains(&code.as_str()), "{code} not listed");
+    writeln!(io.stderr, "{}", error_line(&code, &f.message))?;
     let mut obj = Map::new();
     obj.insert("ok".into(), Value::Bool(false));
-    obj.insert("error".into(), Value::String(f.code.to_string()));
-    obj.insert("message".into(), Value::String(f.message.clone()));
+    obj.insert("error".into(), error_json(&code, &f.message));
     for (k, v) in f.extra {
         obj.insert(k, v);
     }
     writeln!(io.stdout, "{}", Value::Object(obj))?;
-    Ok(Status::err(f.exit, f.message))
+    Ok(Status::coded(f.exit, &code, &f.message))
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,7 +1217,9 @@ impl SnapshotHandle {
 
         let decoded = match percent_decode_str(&path_str).decode_utf8() {
             Ok(d) => d.into_owned(),
-            Err(e) => bail!("invalid UTF-8 in snapshot URL path {path_str:?}: {e}"),
+            Err(e) => bail!(
+                "[snapshot.invalid_target] invalid UTF-8 in snapshot URL path {path_str:?}: {e}"
+            ),
         };
 
         // In-URL help (snapshot://--help, snapshot://-h). Exact match only,
@@ -2191,10 +2224,12 @@ impl Handle for SnapshotHandle {
             "diff" => self.diff(args, &mut warnings),
             "restore" => self.restore(args, &mut warnings),
             "ls" => self.ls(args, &mut warnings),
-            _ => bail!(
-                "unknown verb for snapshot://: {} (available: create, diff, restore, ls)",
-                verb
-            ),
+            _ => Err(Failure::new(
+                "unknown_verb",
+                format!(
+                    "unknown verb for snapshot://: {verb} (available: create, diff, restore, ls)"
+                ),
+            )),
         };
         // On failure the Error line comes first, then any warnings.
         let status = match result {
