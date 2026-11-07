@@ -5,7 +5,8 @@ Description:
   archive files in tar, tar.gz, tar.xz, tar.zst, zip, and gzip formats using
   built-in libraries, detecting the format from the file extension. The URL
   target is left empty, as in archive://.list, and every file path is passed as
-  a key=value argument, with path lists given as JSON arrays.
+  a key=value argument, with path lists given as JSON arrays. Glob patterns are
+  shell-style: * and ? stay within one directory and ** crosses directories.
 
 Available Verbs:
   list      Lists the entries of an archive with their sizes, modes, owners, and

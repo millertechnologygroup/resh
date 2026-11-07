@@ -47,7 +47,8 @@ static ARCHIVE_HELP: HandleHelp = HandleHelp {
         local archive files in tar, tar.gz, tar.xz, tar.zst, zip, and gzip formats using \
         built-in libraries, detecting the format from the file extension. The URL target \
         is left empty, as in archive://.list, and every file path is passed as a \
-        key=value argument, with path lists given as JSON arrays.",
+        key=value argument, with path lists given as JSON arrays. Glob patterns are \
+        shell-style: * and ? stay within one directory and ** crosses directories.",
     usage: "resh archive://.<verb>[(key=value,...)]",
     verbs: &[
         VerbHelp {
@@ -1212,10 +1213,18 @@ fn resolve_read_format(p: &Parser, path: &str) -> Result<(ArchiveFormat, Compres
     Ok((format, compression))
 }
 
+/// A shell-style glob: `*` and `?` do not match `/`, `**` matches across
+/// directories.
+fn shell_glob(pattern: &str) -> std::result::Result<Glob, globset::Error> {
+    globset::GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .build()
+}
+
 /// Compiles glob patterns, failing with `kind` on the first invalid one.
 fn check_globs(patterns: &[String], kind: &'static str, what: &str) -> Result<()> {
     for pattern in patterns {
-        Glob::new(pattern)
+        shell_glob(pattern)
             .map_err(|e| fail(kind, format!("Invalid {what} pattern {pattern:?}: {e}")))?;
     }
     Ok(())
@@ -1502,7 +1511,7 @@ impl ArchiveAddOptions {
         }
         for input in &inputs {
             if let Some(pattern) = input.strip_prefix("glob:") {
-                Glob::new(pattern).map_err(|e| {
+                shell_glob(pattern).map_err(|e| {
                     fail(
                         "invalid_input",
                         format!("Invalid glob input {pattern:?}: {e}"),
@@ -2578,15 +2587,10 @@ pub fn error_code(verb: &str, kind: &str) -> String {
 }
 
 /// The kind of a failure that happened while a verb ran. The tar header
-/// data limit keeps the codes it has reported since v1.0.5-beta
-/// (`tests/stage7b_security.rs`).
-fn runtime_kind(verb: &str, err: &anyhow::Error, default: &'static str) -> &'static str {
+/// data limit is a read error of the archive.
+fn runtime_kind(err: &anyhow::Error, default: &'static str) -> &'static str {
     if is_tar_header_limit(err) {
-        return match verb {
-            "list" => "internal_error",
-            "add" => "archive_write_error",
-            _ => "archive_read_error",
-        };
+        return "archive_read_error";
     }
     if let Some(kind) = kind_of(err) {
         return kind;
@@ -2660,7 +2664,7 @@ fn run_verb<O, R: Report>(
     let report = match exec(opts, &mut *io.stderr) {
         Ok(report) => report,
         Err(e) => {
-            let code = error_code(verb, runtime_kind(verb, &e, "internal_error"));
+            let code = error_code(verb, runtime_kind(&e, "internal_error"));
             let msg = format!("[{}] {}", code, e);
             writeln!(io.stderr, "{}", msg)?;
             return Ok(Status::err(exit_for(&code), msg));
@@ -3004,7 +3008,7 @@ pub fn collect_source_files(opts: &ArchiveCreateOptions) -> Result<Vec<FileEntry
         };
 
         if source.contains('*') || source.contains('?') || source.contains('[') {
-            let glob = Glob::new(source).map_err(|e| {
+            let glob = shell_glob(source).map_err(|e| {
                 fail(
                     "invalid_sources",
                     format!("Invalid source pattern {source:?}: {e}"),
@@ -3757,28 +3761,13 @@ fn list_zip_archive(
     Ok((manifest, entries_total, bytes_total))
 }
 
-/// Kinds a read verb reports in its JSON report rather than as a read
-/// failure.
-const REPORTED_KINDS: &[&str] = &[
-    "missing_archive",
-    "invalid_archive_path",
-    "invalid_format",
-    "invalid_format_infer",
-    "7z_unsupported",
-    "max_entries_exceeded",
-    "max_size_exceeded",
-    "max_file_size_exceeded",
-    "timeout",
-    "io_error",
-];
-
 // Test functionality
 pub fn test_archive(opts: ArchiveTestOptions) -> Result<ArchiveTestResponse> {
     let mut response = ArchiveTestResponse::new(&opts);
     if let Err(e) = test_inner(&opts, &mut response) {
         response.ok = false;
         response.error = Some((
-            error_code("test", runtime_kind("test", &e, "archive_read_error")),
+            error_code("test", runtime_kind(&e, "archive_read_error")),
             e.to_string(),
         ));
     }
@@ -4191,16 +4180,10 @@ pub fn list_archive(opts: ArchiveListOptions) -> Result<ArchiveListResponse> {
     match list_inner(&opts, &mut response) {
         Ok(()) => Ok(response),
         Err(e) => {
-            let kind = runtime_kind("list", &e, "archive_read_error");
-            if REPORTED_KINDS.contains(&kind) {
-                response.ok = false;
-                response.error = Some((error_code("list", kind), e.to_string()));
-                Ok(response)
-            } else {
-                // Read failures are reported on stderr only, as in
-                // v1.0.5-beta.
-                Err(fail(kind, e.to_string()))
-            }
+            let kind = runtime_kind(&e, "archive_read_error");
+            response.ok = false;
+            response.error = Some((error_code("list", kind), e.to_string()));
+            Ok(response)
         }
     }
 }
@@ -4268,7 +4251,7 @@ pub fn info_archive(opts: ArchiveInfoOptions) -> Result<ArchiveInfoResponse> {
         response.summary = None;
         response.details = None;
         response.error = Some((
-            error_code("info", runtime_kind("info", &e, "archive_read_error")),
+            error_code("info", runtime_kind(&e, "archive_read_error")),
             e.to_string(),
         ));
     }
@@ -4536,9 +4519,10 @@ pub fn extract_archive(opts: ArchiveExtractOptions) -> Result<ArchiveExtractResp
     Ok(response)
 }
 
-/// Error kind for a failed extraction. Size limits and unreadable data are
-/// `archive_read_error` (v1.0.5-beta); failures to write into the
-/// destination are `io_error`.
+/// Error kind for a failed extraction: unreadable data is
+/// `archive_read_error`, size limits `max_size_exceeded` /
+/// `max_file_size_exceeded`, failures to write into the destination
+/// `io_error`.
 fn extract_kind(e: &anyhow::Error) -> &'static str {
     if is_tar_header_limit(e) {
         return "archive_read_error";
@@ -4633,7 +4617,7 @@ pub fn add_archive(opts: ArchiveAddOptions) -> Result<ArchiveAddResponse> {
         response.summary = None;
         response.details = None;
         response.error = Some((
-            error_code("add", runtime_kind("add", &e, "archive_write_error")),
+            error_code("add", runtime_kind(&e, "archive_write_error")),
             e.to_string(),
         ));
     }
@@ -4862,7 +4846,7 @@ fn expand_glob_pattern(
     exclude_set: &Option<globset::GlobSet>,
     entries: &mut Vec<NewArchiveEntry>,
 ) -> Result<()> {
-    let glob = Glob::new(pattern).map_err(|e| {
+    let glob = shell_glob(pattern).map_err(|e| {
         fail(
             "invalid_input",
             format!("Invalid glob pattern {pattern:?}: {e}"),
@@ -5509,8 +5493,8 @@ fn build_glob_set(patterns: &[String], pattern_type: &str) -> Result<Option<glob
     }
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        let glob =
-            Glob::new(pattern).context(format!("Invalid {} pattern: {}", pattern_type, pattern))?;
+        let glob = shell_glob(pattern)
+            .context(format!("Invalid {} pattern: {}", pattern_type, pattern))?;
         builder.add(glob);
     }
     Ok(Some(builder.build()?))
@@ -5523,7 +5507,7 @@ pub fn remove_archive(opts: ArchiveRemoveOptions) -> Result<ArchiveRemoveRespons
         response.summary = None;
         response.details = None;
         response.error = Some((
-            error_code("remove", runtime_kind("remove", &e, "archive_read_error")),
+            error_code("remove", runtime_kind(&e, "archive_read_error")),
             e.to_string(),
         ));
     }
@@ -5581,7 +5565,7 @@ fn remove_inner(opts: &ArchiveRemoveOptions, response: &mut ArchiveRemoveRespons
         }
     }
     for pattern in &opts.patterns {
-        let matched = Glob::new(pattern)
+        let matched = shell_glob(pattern)
             .map(|g| g.compile_matcher())
             .map(|m| entries_before.iter().any(|e| m.is_match(&e.path)))
             .unwrap_or(false);
@@ -6194,16 +6178,20 @@ fn extract_raw_compressed_file(
             .open(tmp)?;
         match copy_limited(&mut decoder, &mut output_file, budget)? {
             Some(n) => Ok(n),
-            None if opts.max_total_bytes == Some(budget) => bail!(
-                "Extracted size (more than {}) exceeds maximum total size ({})",
-                budget,
-                budget
-            ),
-            None => bail!(
-                "Extracted file size (more than {}) exceeds maximum file size ({})",
-                budget,
-                budget
-            ),
+            None if opts.max_total_bytes == Some(budget) => Err(fail(
+                "max_size_exceeded",
+                format!(
+                    "Extracted size (more than {}) exceeds maximum total size ({})",
+                    budget, budget
+                ),
+            )),
+            None => Err(fail(
+                "max_file_size_exceeded",
+                format!(
+                    "Extracted file size (more than {}) exceeds maximum file size ({})",
+                    budget, budget
+                ),
+            )),
         }
     })?;
 
@@ -6517,17 +6505,21 @@ fn check_entry_size(
 ) -> Result<()> {
     if let Some(max_size) = opts.max_file_bytes {
         if size > max_size {
-            bail!(
-                "File '{}' size ({}) exceeds maximum file size ({})",
-                path_str,
-                size,
-                max_size
-            );
+            return Err(fail(
+                "max_file_size_exceeded",
+                format!(
+                    "File '{}' size ({}) exceeds maximum file size ({})",
+                    path_str, size, max_size
+                ),
+            ));
         }
     }
     if let Some(max_total) = opts.max_total_bytes {
         if written.checked_add(size).is_none_or(|t| t > max_total) {
-            bail!("Total extraction size would exceed maximum ({})", max_total);
+            return Err(fail(
+                "max_size_exceeded",
+                format!("Total extraction size would exceed maximum ({})", max_total),
+            ));
         }
     }
     Ok(())
@@ -6538,14 +6530,16 @@ fn check_entry_size(
 fn entry_limit_error(opts: &ArchiveExtractOptions, path_str: &str, written: u64) -> anyhow::Error {
     let file = opts.max_file_bytes.unwrap_or(u64::MAX);
     match opts.max_total_bytes {
-        Some(max_total) if max_total.saturating_sub(written) < file => {
-            anyhow::anyhow!("Total extraction size would exceed maximum ({})", max_total)
-        }
-        _ => anyhow::anyhow!(
-            "File '{}' size (more than {}) exceeds maximum file size ({})",
-            path_str,
-            file,
-            file
+        Some(max_total) if max_total.saturating_sub(written) < file => fail(
+            "max_size_exceeded",
+            format!("Total extraction size would exceed maximum ({})", max_total),
+        ),
+        _ => fail(
+            "max_file_size_exceeded",
+            format!(
+                "File '{}' size (more than {}) exceeds maximum file size ({})",
+                path_str, file, file
+            ),
         ),
     }
 }
@@ -8157,7 +8151,12 @@ mod extract_limit_tests {
     fn assert_limit_refused(r: &ArchiveExtractResponse, what: &str) {
         assert!(!r.ok, "over-limit archive reported ok: {:?}", r.summary);
         let (code, msg) = r.error.clone().unwrap();
-        assert_eq!(code, ARCHIVE_EXTRACT_ARCHIVE_READ_ERROR, "{msg}");
+        let want = if msg.contains("maximum file size") {
+            ARCHIVE_EXTRACT_MAX_FILE_SIZE_EXCEEDED
+        } else {
+            ARCHIVE_EXTRACT_MAX_SIZE_EXCEEDED
+        };
+        assert_eq!(code, want, "{msg}");
         assert!(msg.contains(what), "{msg}");
         assert!(r.summary.is_none() && r.manifest.is_none());
     }

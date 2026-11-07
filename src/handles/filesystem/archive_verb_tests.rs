@@ -382,24 +382,44 @@ fn create_filters_and_hidden_files() {
             ("output", &a),
             ("sources", r#"["data"]"#),
             ("base_dir", &base),
-            ("include_patterns", r#"["*.txt"]"#),
+            ("include_patterns", r#"["**/*.txt"]"#),
         ],
     )
     .ok();
     assert_eq!(sorted(fx.list(&a)), ["data/a.txt", "data/sub/b.txt"]);
-
-    // Glob sources are matched under base_dir; `*` also matches '/'.
-    let a = fx.p("h.tar");
+    // Shell-style: `*` does not cross '/'.
+    let a = fx.p("g2.tar");
     call(
         "create",
         &[
             ("output", &a),
-            ("sources", r#"["data/*.txt"]"#),
+            ("sources", r#"["data"]"#),
             ("base_dir", &base),
+            ("include_patterns", r#"["*.txt"]"#),
         ],
     )
     .ok();
-    assert_eq!(sorted(fx.list(&a)), ["data/a.txt", "data/sub/b.txt"]);
+    assert!(fx.list(&a).is_empty());
+
+    // Glob sources are matched under base_dir; `**` crosses directories.
+    for (glob, want) in [
+        ("data/*.txt", vec!["data/a.txt"]),
+        ("data/**/*.txt", vec!["data/a.txt", "data/sub/b.txt"]),
+        ("data/?.txt", vec!["data/a.txt"]),
+    ] {
+        let a = fx.p("h.tar");
+        call(
+            "create",
+            &[
+                ("output", &a),
+                ("sources", &format!("[\"{glob}\"]")),
+                ("base_dir", &base),
+                ("overwrite", "true"),
+            ],
+        )
+        .ok();
+        assert_eq!(sorted(fx.list(&a)), want, "{glob}");
+    }
 
     for (k, v) in [
         ("include_patterns", r#"["[x"]"#),
@@ -920,7 +940,7 @@ fn extract_options() {
         &[
             ("archive", &a),
             ("destination", &dest),
-            ("includes", r#"["*.txt"]"#),
+            ("includes", r#"["**/*.txt"]"#),
             ("excludes", r#"["*/sub/*"]"#),
         ],
     )
@@ -1257,7 +1277,7 @@ fn list_every_format_and_options() {
                 ("archive", &a),
                 ("include_metadata", "false"),
                 ("include_compressed_size", "false"),
-                ("includes", r#"["*.txt"]"#),
+                ("includes", r#"["**/*.txt"]"#),
                 ("excludes", r#"["*/sub/*"]"#),
             ],
         );
@@ -1318,11 +1338,15 @@ fn list_errors() {
     assert_eq!(r.json["manifest"], json!([]));
     fs::write(fx.p("x.7z"), "7z").unwrap();
     call("list", &[("archive", &fx.p("x.7z"))]).fails("archive.list_7z_unsupported", 2);
-    // Unreadable data: stderr only, as in v1.0.5-beta.
+    // Unreadable data: a JSON report like every other failure.
     fs::write(fx.p("bad.zip"), "not a zip").unwrap();
     let r = call("list", &[("archive", &fx.p("bad.zip"))]);
     r.fails("archive.list_archive_read_error", 1);
-    assert!(r.stdout.is_empty());
+    assert_eq!(r.json["ok"], false);
+    assert!(
+        r.stderr
+            .starts_with("Error: [archive.list_archive_read_error] ")
+    );
     call("list", &[("archive", &fx.p("data")), ("format", "tar")])
         .fails("archive.list_invalid_archive_path", 2);
     let usage: &[(&[(&str, &str)], &str)] = &[
@@ -1925,7 +1949,7 @@ fn add_backup_tmp_dir_globs_and_filters() {
             ("archive", &a),
             ("inputs", &format!("[\"glob:{}/work/*\"]", base)),
             ("base_dir", &base),
-            ("excludes", r#"["*.txt"]"#),
+            ("excludes", r#"["**/*.txt"]"#),
             ("backup_suffix", ".orig"),
             ("tmp_dir", &fx.p("work")),
         ],
@@ -1951,7 +1975,7 @@ fn add_backup_tmp_dir_globs_and_filters() {
             ("archive", &a),
             ("inputs", &format!("[\"{}\"]", fx.p("work/y.txt"))),
             ("base_dir", &base),
-            ("includes", r#"["*.log"]"#),
+            ("includes", r#"["**/*.log"]"#),
         ],
     )
     .ok();

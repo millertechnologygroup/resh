@@ -140,9 +140,12 @@ fn assert_list_refused(dir: &Path, archive: &str) {
     assert_eq!(r.code, 1, "{archive}: {}", r.stderr);
     assert_eq!(
         r.stderr.trim(),
-        format!("[archive.list_internal_error] {LIMIT_MESSAGE}"),
+        format!("Error: [archive.list_archive_read_error] {LIMIT_MESSAGE}"),
         "{archive}"
     );
+    assert_eq!(r.json["ok"], false, "{archive}");
+    assert_eq!(r.json["error"][1], LIMIT_MESSAGE, "{archive}");
+    assert!(r.json["manifest"].is_null(), "{archive}");
 }
 
 fn assert_json_refused(r: &Run, code: &str) {
@@ -210,7 +213,7 @@ fn oversized_header_data_is_refused_by_every_tar_verb() {
             r#"inputs=["new.txt"]"#,
         ],
     );
-    assert_json_refused(&r, "archive.add_archive_write_error");
+    assert_json_refused(&r, "archive.add_archive_read_error");
     let r = resh(
         dir,
         &[

@@ -111,10 +111,13 @@ That includes `dry_run` on any verb but `remove`.
   18446744073709551615 is refused with the code named for that argument
   (for example `archive.list_invalid_max_size` for `max_total_bytes`).
 * Lists are JSON arrays of strings. Glob patterns are checked before
-  anything runs. In all glob arguments of this handle (`sources`,
+  anything runs. All glob arguments of this handle (`sources`,
   `includes`, `excludes`, `include_patterns`, `exclude_patterns`,
-  `patterns`, `glob:` inputs) `*` also matches `/`, so `data/*.txt`
-  matches `data/sub/b.txt` too.
+  `patterns`, `glob:` inputs) are shell-style: `*` and `?` do not match
+  `/`, and `**` matches across directories. `data/*.txt` matches
+  `data/a.txt` but not `data/sub/b.txt`; `**/*.txt` matches both. Names are
+  matched as stored in the archive, so `*.txt` matches only top-level
+  files. (Before this release `*` also matched `/`.)
 * `format_output` is `json` (default) or `text`.
 
 ### timeout_ms
@@ -153,11 +156,6 @@ Error codes have the form `archive.<verb>_<kind>`.
 Error: [archive.create_output_exists] Output file exists and overwrite=false
 ```
 
-* Exception: when `list` cannot read the archive data (a corrupt or
-  truncated archive), it prints only `[<error code>] <message>` on stderr,
-  as in v1.0.5-beta. The code is `archive.list_archive_read_error`, and
-  `archive.list_internal_error` when a tar member exceeds the 1 MiB header
-  data limit (3.2).
 
 Codes every verb can return: `invalid_argument` (2), `timeout` (124),
 `internal_error` (1). The verb-specific codes are listed in each section of
@@ -186,7 +184,7 @@ Argument names below are the ones the code reads. Run
 resh --json-pretty archive://.create output=logs.tar.gz 'sources=["app.log"]'
 resh archive://.create output=site.zip 'sources=["public"]' compression_level=9
 resh archive://.create output=app.log.gz format=gzip 'sources=["app.log"]'
-resh archive://.create output=src.tar 'sources=["."]' 'include_patterns=["*.rs"]' 'exclude_patterns=["target/*"]'
+resh archive://.create output=src.tar 'sources=["."]' 'include_patterns=["**/*.rs"]' 'exclude_patterns=["target/**"]'
 ```
 
 | Argument | Default | Notes |
@@ -277,9 +275,10 @@ Error codes (`archive.extract_...`): `invalid_archive_path` (2),
 `7z_unsupported` (2), `missing_archive` (1), `destination_missing` (1),
 `destination_create_failed` (1), `path_traversal_detected`,
 `absolute_path_rejected`, `symlink_rejected`, `unsupported_entry_type` (1,
-see below), `max_entries_exceeded` (1), `archive_read_error` (1; corrupt
-data and the size limits), `io_error` (1; writing into the destination
-failed), `timeout` (124).
+see below), `max_entries_exceeded` (1), `max_size_exceeded` (1;
+`max_total_bytes`), `max_file_size_exceeded` (1; `max_file_bytes`),
+`archive_read_error` (1; corrupt or truncated data), `io_error` (1;
+writing into the destination failed), `timeout` (124).
 
 #### Extraction safety
 
@@ -311,8 +310,10 @@ failed), `timeout` (124).
   produces when it is decompressed, for zip, tar and raw streams, not only
   to the size the archive records. An entry whose size is known in advance
   and too large is refused before anything is written; otherwise writing
-  stops at the limit. Either way extraction fails with
-  `archive.extract_archive_read_error`, exit code 1.
+  stops at the limit. Either way extraction fails with exit code 1 and
+  `archive.extract_max_file_size_exceeded` (`max_file_bytes`) or
+  `archive.extract_max_size_exceeded` (`max_total_bytes`); v1.0.5-beta
+  reported both as `archive.extract_archive_read_error`.
 * Since v1.0.5-beta `max_total_bytes` and `max_file_bytes` must be a whole
   number of bytes written with the digits 0-9 only (`0` allows only empty
   files). Any other value, such as `1e6`, `1.5`, `-1`, `+1`, `10MB`, an
@@ -330,11 +331,10 @@ failed), `timeout` (124).
   versions read that header data into memory, up to the size the header
   declared, before any size limit applied. File contents do not count
   toward this limit. The verb fails with exit code 1 and a message naming
-  the limit; the codes are `archive.extract_archive_read_error`,
-  `archive.info_archive_read_error`, `archive.remove_archive_read_error`,
-  `archive.add_archive_write_error` and `archive.list_internal_error` (the
-  codes v1.0.5-beta reported), and `test` reports it as
-  `archive.test_entry_header_error` on the entry.
+  the limit, with `archive.<verb>_archive_read_error` (v1.0.5-beta reported
+  `archive.add_archive_write_error` for `add` and
+  `archive.list_internal_error`, on stderr only, for `list`); `test`
+  reports it as `archive.test_entry_header_error` on the entry.
 * Every regular file is written to a temporary file next to its final name
   and renamed into place only when complete. If an entry fails (a size
   limit, corrupt data, a truncated archive), its temporary file and any
@@ -371,8 +371,8 @@ Error codes (`archive.list_...`): `invalid_archive_path`, `invalid_format`,
 `invalid_format_compression`, `invalid_include_pattern`,
 `invalid_exclude_pattern`, `invalid_max_entries`, `invalid_max_size`,
 `7z_unsupported` (all 2), `missing_archive`, `io_error`,
-`max_entries_exceeded`, `max_size_exceeded`, `archive_read_error`,
-`internal_error` (1), `timeout` (124).
+`max_entries_exceeded`, `max_size_exceeded`, `archive_read_error` (1),
+`timeout` (124).
 
 ### 3.4 test
 

@@ -165,27 +165,32 @@ fn extract(f: &Fixture, archive: &str, extra: &[&str]) -> Run {
     run(&mut cmd)
 }
 
-fn assert_extract_refused(r: &Run) {
+/// A size limit refused the extraction: `max_file_bytes` reports
+/// `archive.extract_max_file_size_exceeded`, `max_total_bytes`
+/// `archive.extract_max_size_exceeded` (both exit 1).
+fn assert_extract_refused(r: &Run, code: &str) {
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert_eq!(r.json["ok"], false, "{}", r.json);
-    assert_eq!(
-        r.json["error"][0], "archive.extract_archive_read_error",
-        "{}",
-        r.json
-    );
+    assert_eq!(r.json["error"][0], code, "{}", r.json);
     assert!(r.json["summary"].is_null(), "{}", r.json);
-    assert!(r.stderr.contains("archive.extract_archive_read_error"));
+    assert!(r.stderr.contains(code));
 }
+
+const FILE_LIMIT: &str = "archive.extract_max_file_size_exceeded";
+const TOTAL_LIMIT: &str = "archive.extract_max_size_exceeded";
 
 #[test]
 fn archive_extract_limits_count_the_bytes_written() {
-    for limit in ["max_file_bytes=100", "max_total_bytes=100"] {
+    for (limit, code) in [
+        ("max_file_bytes=100", FILE_LIMIT),
+        ("max_total_bytes=100", TOTAL_LIMIT),
+    ] {
         let f = Fixture::new();
         let mut zip = zip_bytes(&[("big.bin", &vec![0u8; 64 * 1024])]);
         set_recorded_size(&mut zip, 0, 10);
         std::fs::write(f.path().join("t.zip"), &zip).unwrap();
         let r = extract(&f, "t.zip", &[limit]);
-        assert_extract_refused(&r);
+        assert_extract_refused(&r, code);
         assert_eq!(
             f.tree(&f.path().join("out")),
             Vec::<String>::new(),
@@ -222,7 +227,7 @@ fn archive_extract_failure_keeps_existing_files() {
     set_recorded_size(&mut zip, 0, 10);
     std::fs::write(f.path().join("t.zip"), &zip).unwrap();
     let r = extract(&f, "t.zip", &["max_file_bytes=100", "overwrite=true"]);
-    assert_extract_refused(&r);
+    assert_extract_refused(&r, FILE_LIMIT);
     assert_eq!(f.tree(&f.path().join("out")), vec!["big.bin"]);
     assert_eq!(
         std::fs::read(f.path().join("out/big.bin")).unwrap(),
@@ -241,7 +246,7 @@ fn raw_extract_over_a_limit_writes_nothing() {
         "data.gz",
         &["format=raw", "compression=gzip", "max_file_bytes=100"],
     );
-    assert_extract_refused(&r);
+    assert_extract_refused(&r, FILE_LIMIT);
     assert_eq!(f.tree(&f.path().join("out")), Vec::<String>::new());
 }
 
@@ -285,7 +290,7 @@ fn archive_extract_refuses_unreadable_limits() {
     let f = Fixture::new();
     std::fs::write(f.path().join("t.zip"), zip_bytes(&[("a.txt", b"hello")])).unwrap();
     let r = extract(&f, "t.zip", &["max_file_bytes=0"]);
-    assert_extract_refused(&r);
+    assert_extract_refused(&r, FILE_LIMIT);
     let r = extract(&f, "t.zip", &["max_file_bytes=18446744073709551615"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(r.json["summary"]["bytes_written"], 5);
