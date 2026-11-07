@@ -1,7 +1,8 @@
 //! End-to-end tests for the git handle's remote verbs against real servers
 //! in a throwaway container: OpenSSH (key authentication, strict
 //! `known_hosts_path` checking, including the insteadOf and key-type cases)
-//! and `git daemon` (git:// clone, push, pull and sync). The host's
+//! and `git daemon` (git:// clone, shallow clone, push, pull, sync, and
+//! merging or rebasing diverged history). The host's
 //! `resh` binary talks to the container's ports published on 127.0.0.1;
 //! HOME points into a temporary directory, so the real ~/.gitconfig and
 //! ~/.ssh are never read or written.
@@ -361,9 +362,47 @@ fn file_listing_only_some_key_types_is_accepted() {
 }
 
 #[test]
-fn rsa_only_file_names_the_offered_and_listed_key_types() {
+fn rsa_only_file_is_accepted() {
     let s = Server::start();
     let kh = s.known_hosts(&["rsa"]);
+    let dest = s.p("c");
+    let v = s.ok(
+        "clone",
+        &[
+            &format!("url={}", s.ssh_url()),
+            &path_arg(&dest),
+            &s.key(),
+            &kh_arg(&kh),
+        ],
+    );
+    assert_eq!(v["status"], "cloned");
+}
+
+/// The file lists only a key type the server does not have: the refusal
+/// names the types the server offers and the type the file lists.
+#[test]
+fn key_type_the_server_lacks_names_offered_and_listed_types() {
+    let s = Server::start();
+    let key = s.p("p384");
+    let st = Proc::new("ssh-keygen")
+        .args(["-q", "-t", "ecdsa", "-b", "384", "-N", "", "-f"])
+        .arg(&key)
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let public = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+    let mut f = public.split_whitespace();
+    let kh = s.p("kh-p384");
+    std::fs::write(
+        &kh,
+        format!(
+            "[127.0.0.1]:{} {} {}\n",
+            s.ssh_port,
+            f.next().unwrap(),
+            f.next().unwrap()
+        ),
+    )
+    .unwrap();
     let dest = s.p("c");
     let err = s.refused(
         "clone",
@@ -374,7 +413,7 @@ fn rsa_only_file_names_the_offered_and_listed_key_types() {
             &kh_arg(&kh),
         ],
     );
-    assert!(err.contains("ssh-rsa"), "{err}");
+    assert!(err.contains("ecdsa-sha2-nistp384"), "{err}");
     assert!(err.contains("ssh-ed25519"), "{err}");
     assert!(!dest.exists());
 }
@@ -503,9 +542,9 @@ fn git_daemon_clone_push_pull_and_sync() {
     let mine = commit(&a, "a.txt");
     s.ok("push", &[&path_arg(&a)]);
     assert_eq!(s.server_main(), mine);
-    // Shallow clones are refused before anything is created (libgit2 1.7).
+    // A shallow clone over git:// has only the newest commit.
     let shallow = s.p("shallow");
-    let (code, _, err) = s.run(
+    let v = s.ok(
         "clone",
         &[
             &format!("url={}", s.git_url()),
@@ -513,9 +552,12 @@ fn git_daemon_clone_push_pull_and_sync() {
             "depth=1",
         ],
     );
-    assert_eq!(code, 2, "{err}");
-    assert!(err.contains("depth is not supported"), "{err}");
-    assert!(!shallow.exists());
+    assert_eq!(v["depth"], 1);
+    assert!(shallow.join(".git/shallow").exists());
+    let r = git2::Repository::open(&shallow).unwrap();
+    let mut walk = r.revwalk().unwrap();
+    walk.push_head().unwrap();
+    assert_eq!(walk.count(), 1, "depth=1 keeps one commit");
     let b = s.p("b");
     s.ok("clone", &[&format!("url={}", s.git_url()), &path_arg(&b)]);
     let theirs = commit(&b, "b.txt");
@@ -523,4 +565,108 @@ fn git_daemon_clone_push_pull_and_sync() {
     assert_eq!(s.server_main(), theirs);
     let v = s.ok("pull", &[&path_arg(&a), "prune=true"]);
     assert_eq!(v["status"], "updated");
+}
+
+#[test]
+fn shallow_clone_over_ssh() {
+    let s = Server::start();
+    let kh = s.known_hosts(&["ed25519", "ecdsa", "rsa"]);
+    let a = s.p("a");
+    s.ok(
+        "clone",
+        &[
+            &format!("url={}", s.ssh_url()),
+            &path_arg(&a),
+            &s.key(),
+            &kh_arg(&kh),
+        ],
+    );
+    commit(&a, "two.txt");
+    s.ok("push", &[&path_arg(&a), &s.key(), &kh_arg(&kh)]);
+    let shallow = s.p("shallow");
+    s.ok(
+        "clone",
+        &[
+            &format!("url={}", s.ssh_url()),
+            &path_arg(&shallow),
+            &s.key(),
+            &kh_arg(&kh),
+            "depth=1",
+        ],
+    );
+    assert!(shallow.join(".git/shallow").exists());
+    assert!(shallow.join("two.txt").exists());
+}
+
+/// pull and sync merge or rebase diverged history against a real server,
+/// and a conflict leaves the clone exactly as it was.
+#[test]
+fn diverged_history_over_git_daemon() {
+    let s = Server::start();
+    let a = s.p("a");
+    let b = s.p("b");
+    s.ok("clone", &[&format!("url={}", s.git_url()), &path_arg(&a)]);
+    s.ok("clone", &[&format!("url={}", s.git_url()), &path_arg(&b)]);
+    for (dir, name) in [(&a, "A"), (&b, "B")] {
+        let r = git2::Repository::open(dir).unwrap();
+        let mut c = r.config().unwrap();
+        c.set_str("user.name", name).unwrap();
+        c.set_str("user.email", "e2e@example.invalid").unwrap();
+    }
+    commit(&a, "from-a.txt");
+    s.ok("push", &[&path_arg(&a)]);
+    commit(&b, "from-b.txt");
+    let v = s.ok("pull", &[&path_arg(&b)]);
+    assert_eq!(v["status"], "merged", "{v}");
+    s.ok("push", &[&path_arg(&b)]);
+    commit(&a, "again-a.txt");
+    let v = s.ok("sync", &[&path_arg(&a), "pull_strategy=rebase"]);
+    assert_eq!(v["integration"]["status"], "rebased", "{v}");
+    let pushed = s.server_main();
+    assert_eq!(
+        git2::Repository::open(&a)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap()
+            .to_string(),
+        pushed
+    );
+
+    // A conflicting edit: the clone is restored and nothing is pushed.
+    std::fs::write(b.join("seed.txt"), "b side\n").unwrap();
+    let rb = git2::Repository::open(&b).unwrap();
+    let mut idx = rb.index().unwrap();
+    idx.add_path(Path::new("seed.txt")).unwrap();
+    idx.write().unwrap();
+    let tree = rb.find_tree(idx.write_tree().unwrap()).unwrap();
+    let sig = git2::Signature::now("B", "e2e@example.invalid").unwrap();
+    let parent = rb.head().unwrap().peel_to_commit().unwrap();
+    let local = rb
+        .commit(Some("HEAD"), &sig, &sig, "b edit", &tree, &[&parent])
+        .unwrap();
+    std::fs::write(a.join("seed.txt"), "a side\n").unwrap();
+    let ra = git2::Repository::open(&a).unwrap();
+    let mut idx = ra.index().unwrap();
+    idx.add_path(Path::new("seed.txt")).unwrap();
+    idx.write().unwrap();
+    let tree = ra.find_tree(idx.write_tree().unwrap()).unwrap();
+    let parent = ra.head().unwrap().peel_to_commit().unwrap();
+    ra.commit(Some("HEAD"), &sig, &sig, "a edit", &tree, &[&parent])
+        .unwrap();
+    s.ok("push", &[&path_arg(&a)]);
+    let before_server = s.server_main();
+    let (code, _, err) = s.run("sync", &[&path_arg(&b)]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.starts_with("Error: [git.sync_conflict] "), "{err}");
+    assert!(err.contains("seed.txt"), "{err}");
+    let rb = git2::Repository::open(&b).unwrap();
+    assert_eq!(rb.head().unwrap().target(), Some(local));
+    assert_eq!(rb.state(), git2::RepositoryState::Clean);
+    assert_eq!(
+        std::fs::read_to_string(b.join("seed.txt")).unwrap(),
+        "b side\n"
+    );
+    assert_eq!(s.server_main(), before_server);
 }

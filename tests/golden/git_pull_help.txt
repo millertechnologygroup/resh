@@ -1,11 +1,14 @@
 Handle: git
 Verb: pull
-Definition: Fetches from a remote and fast-forwards the local branch, returning
-  an error when a merge or rebase would be needed, which is not implemented.
+Definition: Fetches from a remote and fast-forwards the local branch, or
+  integrates diverged history with a merge commit (or a rebase with
+  rebase=true), restoring the repository on conflicts.
 
 Usage:
   resh git://<alias>.pull path=<repo-dir> [remote=<name>]
-    [branch=<name>] [ff_only=true|false] [prune=true|false]
+    [branch=<name>] [ff_only=true|false] [rebase=true|false]
+    [abort_on_conflict=true|false] [author_name=<name>]
+    [author_email=<email>] [prune=true|false]
     [ssh_key=<file>] [known_hosts_path=<file>] [username=<user>]
     [password=<pass>] [token=<token>] [timeout_ms=<ms>]
 
@@ -28,4 +31,5 @@ Example Output:
   }
 
   Shown for a fast-forward pull with --json-pretty. An up-to-date branch
-  reports status up_to_date.
+  reports status up_to_date; diverged history reports merged or rebased
+  and the new commit.

@@ -34,15 +34,15 @@ Available Verbs:
                    aborts a rebase in progress.
   clone            Clones a remote repository into a new or empty local
                    directory.
-  pull             Fetches from a remote and fast-forwards the local branch,
-                   returning an error when a merge or rebase would be needed,
-                   which is not implemented.
+  pull             Fetches from a remote and fast-forwards the local branch, or
+                   integrates diverged history with a merge commit (or a rebase
+                   with rebase=true), restoring the repository on conflicts.
   push             Pushes the named branch, or the current branch by default, to
                    a remote and reports each branch's ahead and behind counts.
-  sync             Fetches from a remote, fast-forwards the current branch when
-                   it is behind, and then pushes it, failing without pushing
-                   when the histories have diverged (sync never rebases or
-                   merges).
+  sync             Fetches from a remote, brings the current branch up to date
+                   by fast-forward or, when the histories have diverged, by the
+                   pull_strategy (rebase, merge, or ff_only), and then pushes
+                   it, pushing nothing when that fails.
 
 Usage:
   resh git://<alias>.<verb> path=<repo-dir> [key=value ...]

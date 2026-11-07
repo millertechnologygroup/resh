@@ -1,8 +1,9 @@
 Handle: git
 Verb: sync
-Definition: Fetches from a remote, fast-forwards the current branch when it is
-  behind, and then pushes it, failing without pushing when the histories have
-  diverged (sync never rebases or merges).
+Definition: Fetches from a remote, brings the current branch up to date by
+  fast-forward or, when the histories have diverged, by the pull_strategy
+  (rebase, merge, or ff_only), and then pushes it, pushing nothing when that
+  fails.
 
 Usage:
   resh git://<alias>.sync path=<repo-dir> [remote=<name>]
@@ -10,7 +11,8 @@ Usage:
     [pull_strategy=rebase|merge|ff_only] [push=true|false]
     [push_tags=true|false] [force_push=true|false]
     [allow_uncommitted=true|false] [stash_uncommitted=true|false]
-    [abort_on_conflict=true|false] [dry_run=true|false]
+    [abort_on_conflict=true|false] [author_name=<name>]
+    [author_email=<email>] [dry_run=true|false]
     [known_hosts_path=<file>] [timeout_ms=<ms>]
 
 Example:

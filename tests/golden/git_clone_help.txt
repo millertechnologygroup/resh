@@ -4,7 +4,7 @@ Definition: Clones a remote repository into a new or empty local directory.
 
 Usage:
   resh git://<alias>.clone url=<repo-url> path=<dir> [branch=<name>]
-    [recursive=true|false] [ssh_key=<file>]
+    [depth=<n>] [recursive=true|false] [ssh_key=<file>]
     [known_hosts_path=<file>] [username=<user>] [password=<pass>]
     [token=<token>] [timeout_ms=<ms>]
 

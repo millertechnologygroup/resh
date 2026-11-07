@@ -16,7 +16,7 @@ The Git handle provides:
 * Commits (`commit`) and diffs (`diff`)
 * Status reporting (`status`, `status_summary`, `status_short`)
 * Explicit merges (`merge`) and rebases (`rebase`), run only when you call those verbs
-* Remote operations: `pull` (fast-forward only), `push`, and `sync` (fast-forward plus push)
+* Remote operations: `pull` (fast-forward, or merge / rebase diverged history), `push`, and `sync` (pull plus push)
 
 Every verb prints a JSON object on success.
 
@@ -53,9 +53,9 @@ resh git://default.clone url=https://github.com/user/repo.git path=/tmp/repo
 | `merge` | Merge `source` into the current branch: fast-forward when possible, otherwise a merge commit (or `squash=true`) |
 | `rebase` | `operation=start` (default), `continue`, `abort` |
 | `clone` | Clone `url` into a new or empty directory `path` |
-| `pull` | Fetch and fast-forward the local branch. Merging or rebasing during pull is not implemented |
+| `pull` | Fetch and fast-forward the local branch, or merge (`rebase=true`: rebase) diverged history |
 | `push` | Push the current branch (or `branch=` / `branches=`), optionally tags |
-| `sync` | Fetch, fast-forward if behind, then push. Never merges or rebases |
+| `sync` | Fetch, fast-forward or integrate diverged history by `pull_strategy`, then push |
 
 Built-in help lists every argument and an example output for each verb:
 
@@ -79,10 +79,10 @@ Every verb refuses an argument it does not accept (exit status 2, with a "did yo
 | `commit` | `path`, `message`, `all`, `paths`, `allow_empty`, `amend`, `no_edit`, `signoff`, `author_name`, `author_email`, `committer_name`, `committer_email`, `timestamp`, `timeout_ms` |
 | `merge` | `path`, `source`, `target`, `commit_message`, `author_name`, `author_email`, `committer_name`, `committer_email`, `ff_only`, `no_ff`, `squash`, `allow_uncommitted`, `abort_on_conflict` (true), `timeout_ms` |
 | `rebase` | `path`, `upstream`, `operation`, `branch`, `author_name`, `author_email`, `committer_name`, `committer_email`, `ff_only`, `preserve_merges` (only `false`), `autosquash` (only `false`), `allow_uncommitted`, `abort_on_conflict` (true), `timeout_ms` |
-| `clone` | `url`, `path`, `branch`, `recursive`, `ssh_key`, `known_hosts_path`, `username`, `password`, `token`, `timeout_ms` |
-| `pull` | `path`, `remote` (origin), `branch` (current), `ff_only`, `prune`, `ssh_key`, `known_hosts_path`, `username`, `password`, `token`, `timeout_ms` |
+| `clone` | `url`, `path`, `branch`, `depth`, `recursive`, `ssh_key`, `known_hosts_path`, `username`, `password`, `token`, `timeout_ms` |
+| `pull` | `path`, `remote` (origin), `branch` (current), `ff_only`, `rebase`, `abort_on_conflict` (true), `author_name`, `author_email`, `prune`, `ssh_key`, `known_hosts_path`, `username`, `password`, `token`, `timeout_ms` |
 | `push` | `path`, `remote` (origin), `branch`, `branches`, `tags`, `force`, `ff_only`, `set_upstream`, `ssh_key`, `known_hosts_path`, `username`, `password`, `token`, `timeout_ms` |
-| `sync` | `path`, `remote` (origin), `branch`, `remote_branch`, `pull_strategy` (`rebase`; also `merge`, `ff_only`), `push` (true), `push_tags`, `force_push`, `allow_uncommitted`, `stash_uncommitted`, `abort_on_conflict`, `dry_run`, `known_hosts_path`, `timeout_ms` |
+| `sync` | `path`, `remote` (origin), `branch`, `remote_branch`, `pull_strategy` (`rebase`; also `merge`, `ff_only`), `push` (true), `push_tags`, `force_push`, `allow_uncommitted`, `stash_uncommitted`, `abort_on_conflict` (true), `author_name`, `author_email`, `dry_run`, `known_hosts_path`, `timeout_ms` |
 
 Per-action rules:
 
@@ -111,29 +111,39 @@ resh git://default.sync path=/tmp/repo pull_strategy=ff_only push=true
 
 ### 3.2 Remote Synchronization Semantics
 
+#### Integrating diverged history (`pull` and `sync`)
+
+When the local branch and its remote branch both have new commits:
+
+* `pull` merges by default (a merge commit with the local tip and the remote tip as parents, message `Merge remote-tracking branch '<remote>/<branch>' into <branch>`); with `rebase=true` it replays the local commits onto the remote branch. `ff_only=true` refuses with `git.pull_non_fast_forward`.
+* `sync` does the same according to `pull_strategy`: `rebase` (the default), `merge`, or `ff_only` (refuses with `git.sync_non_fast_forward`).
+* The branch must be checked out and its tracked files unchanged: local changes are never put at risk. Otherwise `pull` fails with `git.pull_failed` (not checked out) or `git.pull_dirty_worktree`, and `sync` with `git.sync_dirty_worktree` (with `stash_uncommitted=true`, `sync` stashes the changes first and restores them afterwards). Untracked files are kept; if the integration would overwrite one, nothing changes and the dirty-worktree code is returned.
+* The new commits use `author_name` / `author_email`, then `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL`, then `user.name` / `user.email` from the configuration (as committer for rebased commits; their original authors are kept).
+* On conflicts with `abort_on_conflict=true` (the default), the repository is left exactly as it was (HEAD, index and working tree) and the verb fails with `git.pull_conflict` / `git.sync_conflict` (exit 1). The message and the error details (`paths`, `in_progress: false`) list the conflicted paths. `sync` pushes nothing.
+* With `abort_on_conflict=false` the merge (or rebase) is left in progress with the conflicts in the index and conflict markers in the files, and the verb fails with the same code and `in_progress: true`. Resolve and commit a merge yourself, or finish a rebase with `resh git://<alias>.rebase operation=continue` (or `operation=abort`).
+* The result reports `status: "merged"` or `"rebased"` (`pull`) / `integration.status` (`sync`) and the new `commit`.
+
 #### `sync`
 
-`sync` supports **fast-forward synchronization only**, on the checked-out branch:
+`sync` works on the checked-out branch:
 
 * If the local branch is **behind** its remote branch, it is fast-forwarded.
 * If it is **only ahead**, nothing is integrated and the branch is pushed (when `push=true`, the default).
-* If both sides have new commits (**diverged history**), `sync` fails **before pushing anything**: with `pull_strategy=ff_only` the error code is `git.sync_non_fast_forward`; with `pull_strategy=rebase` (the default) or `pull_strategy=merge` it is `git.sync_failed`, with a message asking you to rebase or merge manually and run `sync` again.
-
-`sync` never merges or rebases. The `pull_strategy` value is accepted and echoed in the output (`pull_strategy`, `mode`, `integration.mode`), but `rebase` and `merge` do **not** perform a rebase or merge. `abort_on_conflict` is accepted and checked but changes nothing, because a fast-forward cannot conflict.
+* If both sides have new commits (**diverged history**), it is integrated as described above before pushing; when that fails nothing is pushed.
 
 Other rules:
 
 * `branch`, if given, must be the checked-out branch (`git.sync_failed` otherwise; `git.sync_branch_not_found` when it does not exist). A detached HEAD fails with `git.sync_detached_head`.
 * `remote_branch`, if given, must equal the local branch name; a different name is rejected (exit 2).
 * A missing remote fails with `git.sync_remote_not_found` before anything changes.
-* With uncommitted changes, `sync` fails with `git.sync_dirty_worktree` unless `allow_uncommitted=true` or `stash_uncommitted=true`. With `stash_uncommitted=true` the changes (untracked files included) are stashed first and popped back afterwards, including when the sync fails; `stash.conflicts_on_apply` reports a stash that could not be re-applied (it is then kept).
+* With uncommitted changes, `sync` fails with `git.sync_dirty_worktree` unless `allow_uncommitted=true` or `stash_uncommitted=true`. `allow_uncommitted=true` only allows a fast-forward or a push over local changes, never a merge or rebase. With `stash_uncommitted=true` the changes (untracked files included) are stashed first and popped back afterwards, including when the sync fails; `stash.conflicts_on_apply` reports a stash that could not be re-applied (it is then kept), and any other failure to restore it is `git.sync_stash_apply_conflict`.
 * `dry_run=true` reports the planned actions (`status: "dry_run"`, `actions: [...]`) without stashing, fetching or pushing.
 * `sync` takes no credential arguments (`ssh_key`, `username`, `password`, `token` are refused). Use `pull` and `push` for remotes that need credentials. It does accept `known_hosts_path=<file>` (see 4.4), which applies to both its fetch and its push.
-* The result's `integration.status` is `fast_forward` or `up_to_date`.
+* The result's `integration.status` is `fast_forward`, `merged`, `rebased` or `up_to_date`.
 
 #### `pull`
 
-`pull` fetches the remote (with its configured refspecs; `prune=true` also deletes remote-tracking branches that no longer exist on the remote) and fast-forwards the local branch when it is behind. When the branch is the checked-out one, the working tree is updated with a safe checkout: a local change that the update would overwrite fails with `git.pull_dirty_worktree` and nothing moves; other local changes are kept. When the branches have diverged, `ff_only=true` fails with `git.pull_non_fast_forward`; otherwise it fails with `git.pull_failed` (`merge operation not yet implemented`). Merging or rebasing during `pull` is not implemented.
+`pull` fetches the remote (with its configured refspecs; `prune=true` also deletes remote-tracking branches that no longer exist on the remote) and fast-forwards the local branch when it is behind. When the branch is the checked-out one, the working tree is updated with a safe checkout: a local change that the update would overwrite fails with `git.pull_dirty_worktree` and nothing moves; other local changes are kept. Diverged history is merged or rebased as described above.
 
 #### `push`
 
@@ -232,7 +242,7 @@ Error codes:
 | `git.repository_not_found` | 1 | `path` is not a repository |
 | `git.remote_not_found` | 1 | `pull` / `push`: no such remote |
 | `git.host_key_verification_failed` | 1 | SSH host key refused (see 4.4) |
-| `git.status_failed`, `git.status_summary_failed`, `git.status_short_failed`, `git.diff_failed`, `git.branch_failed`, `git.tag_failed`, `git.commit_failed`, `git.merge_failed`, `git.rebase_failed`, `git.clone_failed`, `git.pull_failed`, `git.push_failed`, `git.sync_failed` | 1 | other failure of the verb (libgit2 error, diverged `pull`, branch not checked out for `sync`) |
+| `git.status_failed`, `git.status_summary_failed`, `git.status_short_failed`, `git.diff_failed`, `git.branch_failed`, `git.tag_failed`, `git.commit_failed`, `git.merge_failed`, `git.rebase_failed`, `git.clone_failed`, `git.pull_failed`, `git.push_failed`, `git.sync_failed` | 1 | other failure of the verb (libgit2 error; `pull` / `sync` of a branch that is not checked out) |
 | `git.status_summary_branch_not_found`, `git.status_short_branch_not_found` | 1 | `branch=` does not exist |
 | `git.diff_ref_not_found`, `git.diff_head_not_found` | 1 | a revision does not resolve; the repository has no commits |
 | `git.branch_not_found`, `git.branch_already_exists`, `git.branch_startpoint_not_found` | 1 | branch lookups |
@@ -251,6 +261,7 @@ Error codes:
 | `git.clone_target_not_empty`, `git.clone_auth_failed` | 1 | clone refused; credentials rejected |
 | `git.pull_detached_head`, `git.pull_remote_branch_not_found`, `git.pull_fetch_failed`, `git.pull_auth_failed` | 1 | pull |
 | `git.pull_dirty_worktree`, `git.pull_non_fast_forward` | 1 | pull refused |
+| `git.pull_conflict`, `git.sync_conflict` | 1 | merging or rebasing diverged history conflicted (details: `paths`, `in_progress`) |
 | `git.push_detached_head`, `git.push_local_branch_not_found`, `git.push_non_fast_forward`, `git.push_rejected`, `git.push_auth_failed` | 1 | push |
 | `git.sync_detached_head`, `git.sync_branch_not_found`, `git.sync_remote_not_found`, `git.sync_dirty_worktree`, `git.sync_non_fast_forward` | 1 | sync refused |
 | `git.sync_pull_failed`, `git.sync_push_failed`, `git.sync_push_rejected`, `git.sync_stash_apply_conflict` | 1 | sync fetch or push failed; the stash could not be restored |
@@ -293,7 +304,7 @@ resh git://default.diff path=/repo mode=index_vs_head
 
 **Operations**: `clone`, `pull`, `push`, `sync`.
 
-**Clone URLs.** `clone` accepts `https://`, `http://`, `ssh://`, `git+ssh://`, `ssh+git://`, `git://` and `file://` URLs, the scp-like `[user@]host:path` SSH form, and the path of an existing local repository directory. Anything else (another scheme, a value starting with `-`, a path that does not exist) is refused with exit status 2 before anything is created. `depth=<n>` is refused with exit status 2 (`git.invalid_clone_config`): the linked libgit2 1.7 cannot make shallow clones that current git servers accept, so a full clone is the only kind. `recursive=true` also clones every submodule, recursively, with the same credentials and host-key checking. `path` must be missing or an empty directory (`git.clone_target_not_empty`); missing parent directories are created and removed again if the clone fails.
+**Clone URLs.** `clone` accepts `https://`, `http://`, `ssh://`, `git+ssh://`, `ssh+git://`, `git://` and `file://` URLs, the scp-like `[user@]host:path` SSH form, and the path of an existing local repository directory. Anything else (another scheme, a value starting with `-`, a path that does not exist) is refused with exit status 2 before anything is created. `depth=<n>` makes a shallow clone with the last `n` commits, over `https://`, `http://`, `ssh://` and `git://`; libgit2's local transport cannot make shallow clones, so with a `file://` URL or a local path `depth` is refused with exit status 2 (`git.invalid_clone_config`). `recursive=true` also clones every submodule, recursively, with the same credentials and host-key checking. `path` must be missing or an empty directory (`git.clone_target_not_empty`); missing parent directories are created and removed again if the clone fails.
 
 **Authentication**, for `clone`, `pull` and `push`, uses the arguments you pass (at most one method):
 
@@ -319,7 +330,7 @@ resh git://default.pull path=/repo ssh_key=/home/user/.ssh/id_ed25519
 
 Every refusal fails with the error code `git.host_key_verification_failed`; the message names the host (as `host`, or `[host]:port` for ports other than 22) and the reason, and the error details carry `host` and `known_hosts_path`. Nothing is fetched, pushed or cloned. When the server offers none of the listed key types, the message names the host key types the server offers and the types the file lists, and suggests the `ssh-keyscan -t <type>` command for the missing key. When the server presents a key type the file does not list, the message names both as well.
 
-The SSH library can only be steered to `ssh-ed25519`, `ecdsa-sha2-nistp256/384/521` and `ssh-rsa`. An `ssh-rsa` entry makes it ask for the legacy `ssh-rsa` (SHA-1) signature, which current OpenSSH servers no longer offer; list the host's ed25519 or ECDSA key instead (the error message says so).
+The SSH library can be steered to `ssh-ed25519`, `ecdsa-sha2-nistp256/384/521` and RSA keys (an `ssh-rsa` entry is negotiated as `rsa-sha2-512`, `rsa-sha2-256` or `ssh-rsa`). Keys of other types in the file (for example `sk-` security-key types) are still accepted when the server presents them, but cannot steer the negotiation.
 
 Supported file syntax: plain host names and IP addresses, comma-separated lists, `[host]:port` for ports other than 22, hashed entries (`|1|salt|hash`, as written by `ssh-keygen -H` or `HashKnownHosts yes`), `*` and `?` wildcards, `!` negation (a matching negated pattern excludes the host), and `#` comments. Host names are compared case-insensitively. Malformed lines and unknown `@` markers are skipped, not treated as errors. The port comes from the remote URL.
 
@@ -371,10 +382,10 @@ resh git://default.pull path=/repo ssh_key=/home/user/.ssh/id_ed25519 known_host
 
 ## 6. Limitations
 
-* `pull` and `sync` only fast-forward; they never merge or rebase. `sync` has no credential arguments; its `pull_strategy=rebase|merge` and `abort_on_conflict` are accepted but change nothing (see 3.2).
+* `sync` has no credential arguments.
 * `rebase preserve_merges=true` and `autosquash=true` are refused (libgit2 supports neither).
-* `clone depth=<n>` (shallow clone) is refused: libgit2 1.7's shallow fetch fails against current git servers.
-* `known_hosts_path` does not support `@cert-authority` (CA-signed host keys); the host's own keys must be listed. An RSA-only entry does not work with current OpenSSH servers (see 4.4).
+* `clone depth=<n>` needs a network remote; it is refused for `file://` URLs and local paths.
+* `known_hosts_path` does not support `@cert-authority` (CA-signed host keys); the host's own keys must be listed.
 * A timeout cannot interrupt an SSH server that stalls inside the SSH library, or a long local libgit2 call; the verb then reports exit 124 with outcome unknown (see 3.3).
 * Each `resh` invocation is a separate process; nothing is kept between invocations.
 
@@ -387,7 +398,7 @@ resh git://default.pull path=/repo ssh_key=/home/user/.ssh/id_ed25519 known_host
 * Use `status_summary` before destructive operations.
 * Verify a clean working tree before rebase or merge.
 * Use the JSON output for CI decision logic; check ahead/behind counts before push.
-* Treat a `sync` failure on diverged history as a signal to rebase or merge explicitly (with the `rebase` or `merge` verb), then run `sync` again.
+* After `git.sync_conflict` / `git.pull_conflict`, resolve the conflict explicitly (for example with `abort_on_conflict=false`, or with the `merge` or `rebase` verb), then run `sync` again.
 * Set `timeout_ms` for network operations in automation.
 
 Typical pipeline:
