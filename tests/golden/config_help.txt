@@ -1,0 +1,27 @@
+Handle: config
+
+Description:
+  The config handle stores JSON configuration values as one file per key under
+  the user's config directory, normally ~/.config/resh/config. A target such as
+  config://app/db/url names the namespace app and the key db/url, while a single
+  segment such as config://theme uses the default namespace. Values can be read,
+  written, listed by prefix, and watched for changes.
+
+Available Verbs:
+  get     Prints the JSON value stored for a key exactly as saved, failing if
+          the key does not exist or its file holds invalid JSON.
+  ls      Lists the keys and sub-namespaces under a prefix as a JSON object,
+          with optional recursion, glob filtering on key names, and pagination.
+  watch   Watches the configuration files of the target namespace (all
+          namespaces for a single-segment target) and prints one JSON line per
+          change (op set or rm, or snapshot for initial values) until a timeout
+          or event limit is reached, or forever if neither is given.
+  set     Stores a value for a key with an atomic file write, parsing it as JSON
+          when possible and otherwise saving it as a JSON string, and prints
+          nothing on success.
+
+Usage:
+  resh config://[<namespace>/]<key>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh config <verb> --help

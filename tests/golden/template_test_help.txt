@@ -1,0 +1,34 @@
+Handle: template
+Verb: test
+Definition: Renders a template once per test case and checks each result against
+  the case's expected, contains, and not_contains values.
+
+Usage:
+  resh template://<path>.test [template=<text>] [from=<text>]
+    [cases=<json>] [cases_file=<path>] [stop_on_first_fail=true|false]
+    [capture_output=none|summary|full] [timeout_ms=<n>]
+
+Example:
+  resh --json-pretty template://welcome.txt.test
+
+Example Output:
+  {
+    "cases": [
+      {
+        "expected": "Hello, alice!",
+        "name": "alice",
+        "ok": true
+      }
+    ],
+    "failed": 0,
+    "ok": true,
+    "passed": 1,
+    "stop_on_first_fail": false,
+    "template": "welcome.txt",
+    "total": 1
+  }
+
+  Shown with --json-pretty. Without cases or cases_file, the cases are read
+  from the file next to the template with the extension .tests.json, here
+  welcome.tests.json. When timeout_ms passes, the cases that ran are reported
+  and the command exits 124.

@@ -1,0 +1,43 @@
+Handle: template
+Verb: render
+Definition: Renders a template with a JSON context and reports the rendered
+  body, the context keys, and template details as a JSON object.
+
+Usage:
+  resh template://<path>.render [template=<text>] [from=<text>]
+    [context=<json>] [context_file=<path>] [format=text|html|json|bytes]
+    [timeout_ms=<n>]
+
+Example:
+  resh --json-pretty template://welcome.txt.render 'context={"name":"alice"}'
+
+Example Output:
+  {
+    "body": {
+      "type": "text",
+      "value": "Hello, alice!"
+    },
+    "context": {
+      "keys": [
+        "name"
+      ],
+      "raw": {
+        "name": "alice"
+      }
+    },
+    "engine": "tera",
+    "errors": [],
+    "ok": true,
+    "template": {
+      "name": "welcome.txt",
+      "path": "welcome.txt",
+      "size": 18,
+      "source": "file"
+    }
+  }
+
+  Shown for a file containing "Hello, {{ name }}!" with --json-pretty. The
+  context argument overrides context_file, format=json parses the rendered
+  text into body.value, and format=bytes returns body.base64 instead.
+  timeout_ms stops rendering after that many milliseconds (exit 124); 0, the
+  default, means no limit.

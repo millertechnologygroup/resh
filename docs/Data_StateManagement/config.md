@@ -29,7 +29,8 @@ resh config://[<namespace>/]<key>.<verb> [key=value ...]
 * `get` prints the stored JSON text exactly as saved, with no envelope.
 * `set` prints nothing on success.
 * On failure resh prints `Error: <reason>` to stderr (for example `Error: not found`).
-* There is no dry-run mode.
+* There is no dry-run mode: `dry_run=true` is refused (exit 2) and nothing is done.
+* Every argument is checked before anything is read or written. An argument the verb does not take (including `timeout_ms` on `get`, `set` and `ls`), a boolean that is not one of `true/false`, `1/0`, `yes/no`, `on/off`, or a number that does not parse is refused with exit code 2 and no side effect.
 
 ---
 
@@ -128,11 +129,11 @@ These codes are set by the handle (verified in the source):
 | Code | Meaning                                                                      |
 | ---- | ---------------------------------------------------------------------------- |
 | 0    | Success                                                                      |
-| 1    | Key not found; empty key; `set` without `value`; `watch` with both `key` and `prefix` |
-| 2    | Stored file is not valid JSON; `set raw=true` with invalid JSON; invalid `limit`, `offset` or `pattern` for `ls`; `watch` cannot create its directory |
-| 3    | File I/O error while reading or renaming                                     |
+| 1    | Key not found; empty key; `set` without `value`; `watch` with both `key` and `prefix`; a target with a `.` or `..` segment; unknown verb |
+| 2    | Stored file is not valid JSON; `set raw=true` with invalid JSON; an invalid argument (unknown argument, `timeout_ms` on `get`/`set`/`ls`, unreadable boolean, invalid `limit`, `offset`, `pattern`, `timeout_ms` or `max_events`); `dry_run=true`; `watch` cannot create or watch its directory |
+| 3    | File I/O error: reading a value, creating the key's directory, writing or renaming the value file, or walking the directory for `ls` |
 
-Other failures (for example a directory that cannot be created) exit 1.
+The reason is printed on stderr as `Error: <reason>`.
 
 ---
 
@@ -151,7 +152,8 @@ resh config://app/db/url.get
 Stores `value=` for the key.
 
 * Without `raw`, the value is parsed as JSON when possible (so `value=30` stores the number 30 and `value=true` the boolean), and otherwise stored as a JSON string (`value=dark` stores `"dark"`).
-* With `raw=true`, the value must be valid JSON or the command fails with exit code 2.
+* With `raw=true`, the value must be valid JSON or the command fails with exit code 2 and the stored value is unchanged.
+* If the write fails, the temporary file is removed and the command exits 3.
 
 ```bash
 resh config://app/timeout.set value=30
@@ -175,7 +177,7 @@ Lists the keys (`kind: "leaf"`) and sub-directories (`kind: "branch"`) under the
 resh config://app.ls recursive=true 'pattern=*' limit=50
 ```
 
-`recursive` is honoured only when it is exactly `true`.
+With `recursive=true` every descendant is listed (the prefix directory itself is not an entry). Any `recursive` value other than a boolean spelling is refused (exit 2).
 
 ### 4.4 watch
 
@@ -200,20 +202,22 @@ What is watched depends on the URL:
 resh config://app.watch prefix=app/db timeout_ms=10000 max_events=5
 ```
 
-A `timeout_ms` or `max_events` value that is not a number is replaced by 0 (no limit), with a note on stderr.
+A `timeout_ms` or `max_events` value that is not a non-negative integer, or an `initial` value that is not a boolean, is refused with exit code 2 before anything is watched.
+
+Output is collected and printed when `watch` ends (resh prints a stage's output when the stage finishes), so give it `timeout_ms` or `max_events`; a watch with neither runs until interrupted and prints nothing.
 
 ### 4.5 timeout_ms
 
-Only `watch` reads `timeout_ms`, and it enforces it as a run time limit. `get`, `set` and `ls` ignore it.
+Only `watch` takes `timeout_ms`, and it enforces it as a run time limit (0 = no limit). `get`, `set` and `ls` are local file operations with no time limit; given `timeout_ms` they refuse it with exit code 2 instead of ignoring it.
 
 ---
 
 ## 5. Path Rules and Limitations
 
 * In the namespace, any character other than letters, digits, `.`, `_` and `-` is replaced with `_`. In the key, `/` is also kept.
-* **The config directory is not a strict boundary.** `..` is not rejected. A namespace of `..` resolves to the parent of the config directory, so `config://../x.set value=1` writes `$XDG_CONFIG_HOME/resh/x.json`, one level outside `resh/config`. `..` segments inside the key path are collapsed by URL parsing before resh sees them, so they cannot climb further. Do not build config URLs from untrusted input.
+* A target with a `.` or `..` segment (for example `config://../x`) is refused with exit code 1 before anything is read or written, so values always stay inside the config directory. `..` segments inside the key path are collapsed by URL parsing before resh sees them (`config://app/a/../b` is `app/b`).
 * Files are created with the default umask, so values are usually readable by other users. Do not store secrets here; use the `secret` handle instead.
-* `get` and `watch` create the namespace directory if it is missing, even though they do not write values.
+* `get` and `ls` never create directories. `watch` creates the directory it watches if it is missing.
 * The watcher uses filesystem notifications and also re-reads the directory every 500 ms when no timeout is set. Files that do not hold valid JSON are skipped.
 
 ---

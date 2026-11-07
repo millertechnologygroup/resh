@@ -1,0 +1,11 @@
+Handle: config
+Verb: set
+Definition: Stores a value for a key with an atomic file write, parsing it as
+  JSON when possible and otherwise saving it as a JSON string, and prints
+  nothing on success.
+
+Usage:
+  resh config://[<namespace>/]<key>.set value=<value> [raw=true|false]
+
+Example:
+  resh config://app/db/url.set value=postgres://db.example.com:5432/app

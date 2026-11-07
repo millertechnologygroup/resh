@@ -1,0 +1,23 @@
+Handle: template
+
+Description:
+  The template handle renders, validates, and tests text templates with the Tera
+  engine and reports every result as a JSON object. The stage URL names a
+  template file relative to the current directory, such as
+  template://welcome.txt, or uses template://inline with the template text
+  passed as an argument. Template variables come from a JSON context argument or
+  a JSON context file.
+
+Available Verbs:
+  render     Renders a template with a JSON context and reports the rendered
+             body, the context keys, and template details as a JSON object.
+  validate   Checks a template for syntax errors and, using an optional JSON
+             context, for render errors such as missing variables.
+  test       Renders a template once per test case and checks each result
+             against the case's expected, contains, and not_contains values.
+
+Usage:
+  resh template://<path>|inline.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh template <verb> --help

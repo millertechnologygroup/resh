@@ -167,7 +167,9 @@ static TEMPLATE_HELP: HandleHelp = HandleHelp {
 
 Shown for a file containing "Hello, {{ name }}!" with --json-pretty. The
 context argument overrides context_file, format=json parses the rendered
-text into body.value, and format=bytes returns body.base64 instead."#,
+text into body.value, and format=bytes returns body.base64 instead.
+timeout_ms stops rendering after that many milliseconds (exit 124); 0, the
+default, means no limit."#,
                 ),
             }),
         },
@@ -196,9 +198,9 @@ text into body.value, and format=bytes returns body.base64 instead."#,
 }
 
 Shown with --json-pretty. Problems are reported in errors as objects with
-kind and message fields, and the command exits with status 1. With
-strict=false, missing variables are reported in warnings instead and the
-command succeeds."#,
+kind and message fields, and the command exits with status 1 (2 for an
+invalid argument, 124 when timeout_ms passes). With strict=false, missing
+variables are reported in warnings instead and the command succeeds."#,
                 ),
             }),
         },
@@ -230,7 +232,8 @@ command succeeds."#,
 
 Shown with --json-pretty. Without cases or cases_file, the cases are read
 from the file next to the template with the extension .tests.json, here
-welcome.tests.json."#,
+welcome.tests.json. When timeout_ms passes, the cases that ran are reported
+and the command exits 124."#,
                 ),
             }),
         },

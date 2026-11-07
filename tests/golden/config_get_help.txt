@@ -1,0 +1,13 @@
+Handle: config
+Verb: get
+Definition: Prints the JSON value stored for a key exactly as saved, failing if
+  the key does not exist or its file holds invalid JSON.
+
+Usage:
+  resh config://[<namespace>/]<key>.get
+
+Example:
+  resh config://app/db/url.get
+
+Example Output:
+  "postgres://db.example.com:5432/app"

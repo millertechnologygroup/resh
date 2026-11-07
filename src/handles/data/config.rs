@@ -125,7 +125,7 @@ Shown with --json-pretty."#,
             detail: Some(VerbDetail {
                 usage: "resh config://[<prefix>].watch [key=<key>] [prefix=<prefix>]\n  \
                     [timeout_ms=<n>] [max_events=<n>] [initial=true|false]",
-                example: "resh config://app.watch prefix=app/db timeout_ms=10000 initial=true",
+                example: "resh config://app.watch prefix=app/db timeout_ms=10000 max_events=5",
                 example_output: None,
             }),
         },

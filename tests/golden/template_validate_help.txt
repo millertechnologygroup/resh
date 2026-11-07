@@ -1,0 +1,31 @@
+Handle: template
+Verb: validate
+Definition: Checks a template for syntax errors and, using an optional JSON
+  context, for render errors such as missing variables.
+
+Usage:
+  resh template://<path>.validate [template=<text>] [from=<text>]
+    [inline=<text>] [context=<json>] [context_file=<path>]
+    [strict=true|false] [encoding=utf-8] [timeout_ms=<n>]
+
+Example:
+  resh --json-pretty template://welcome.txt.validate 'context={"name":"alice"}'
+
+Example Output:
+  {
+    "errors": [],
+    "ok": true,
+    "strict": true,
+    "template": {
+      "name": "welcome.txt",
+      "path": "welcome.txt",
+      "size": 18,
+      "source": "file"
+    },
+    "warnings": []
+  }
+
+  Shown with --json-pretty. Problems are reported in errors as objects with
+  kind and message fields, and the command exits with status 1 (2 for an
+  invalid argument, 124 when timeout_ms passes). With strict=false, missing
+  variables are reported in warnings instead and the command succeeds.

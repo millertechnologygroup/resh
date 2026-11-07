@@ -1,0 +1,41 @@
+Handle: config
+Verb: ls
+Definition: Lists the keys and sub-namespaces under a prefix as a JSON object,
+  with optional recursion, glob filtering on key names, and pagination.
+
+Usage:
+  resh config://[<prefix>].ls [recursive=true|false] [pattern=<glob>]
+    [limit=<n>] [offset=<n>]
+
+Example:
+  resh --json-pretty config://app.ls
+
+Example Output:
+  {
+    "entries": [
+      {
+        "full_key": "app/db",
+        "has_value": true,
+        "key": "db",
+        "kind": "branch",
+        "meta": {}
+      },
+      {
+        "full_key": "app/theme",
+        "has_value": true,
+        "key": "theme",
+        "kind": "leaf",
+        "meta": {
+          "size": 6,
+          "updated_at": "2026-10-16T09:12:44.512309817+00:00"
+        }
+      }
+    ],
+    "limit": null,
+    "offset": 0,
+    "pattern": null,
+    "prefix": "app",
+    "recursive": false
+  }
+
+  Shown with --json-pretty.

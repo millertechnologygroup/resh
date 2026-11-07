@@ -21,7 +21,10 @@ resh template://inline.<verb> key=value ...     template text passed as an argum
 
 * Each template is compiled on its own. `{% extends %}`, `{% include %}` and `{% import %}` of other template files are not supported, because no other templates are loaded.
 * Tera's built-in functions are available, including `get_env`, which reads environment variables of the `resh` process (`{{ get_env(name="HOME") }}`). Do not render untrusted templates.
-* None of the verbs read `timeout_ms`, which is ignored. None has a dry-run mode, so `dry_run=true` is refused (exit 2). Rendering never writes files.
+* Every verb takes `timeout_ms` (milliseconds; 0, the default, means no limit). Rendering runs on a worker thread; if it has not finished in time the verb reports an error of kind `timeout` and exits 124. The abandoned render ends with the process.
+* Every argument is checked before the template or context is read. An argument the verb does not take, a boolean that is not one of `true/false`, `1/0`, `yes/no`, `on/off`, an unknown `format`, `capture_output` or `encoding`, or a `timeout_ms` that is not a non-negative integer is reported (kind `invalid_argument`, or `invalid_format` / `encoding`) with exit code 2.
+* None has a dry-run mode, so `dry_run=true` is refused (exit 2). Rendering never writes files.
+* A template path is relative to the current directory. A leading `..` is kept (`template://../x.txt` reads `../x.txt`); `a/..` inside the path cancels out.
 * Context values come only from the `context` / `context_file` arguments (and, for `test`, each case's `context`). There are no other data sources.
 
 ---
@@ -45,9 +48,10 @@ resh template://inline.render 'template={"port": {{ port }}}' 'context={"port":8
 | -------------- | ------- |
 | `template`     | Template text (takes precedence over the file) |
 | `from`         | Template text, older spelling; used when `template` is absent |
-| `context`      | JSON context. If both are given, `context` replaces `context_file` entirely (they are not merged) |
+| `context`      | JSON object. If both are given, `context` replaces `context_file` entirely (they are not merged) |
 | `context_file` | Path of a JSON context file |
-| `format`       | `text` (default), `html`, `json` (parse the rendered text as JSON into `body.value`) or `bytes` (base64 in `body.base64`). Other values give an `invalid_format` error |
+| `format`       | `text` (default), `html`, `json` (parse the rendered text as JSON into `body.value`) or `bytes` (base64 in `body.base64`). Other values give an `invalid_format` error (exit 2) before anything is rendered |
+| `timeout_ms`   | Stop after this many milliseconds (0 = no limit, the default) |
 
 Output for a file containing `Hello, {{ name }}!`:
 
@@ -62,7 +66,15 @@ Output for a file containing `Hello, {{ name }}!`:
 }
 ```
 
-On failure `ok` is `false`, `body` is absent and `errors` holds objects with `kind` and `message`. Error kinds: `template_not_found`, `io`, `context_parse`, `render` (template parse or render error, including a missing variable; the message is Tera's top-level message, such as `Failed to render 'render_template'`, so use `validate` to see which variable is missing), `json_parse`, `invalid_format`. The process exits non-zero.
+On failure `ok` is `false`, `body` is absent and `errors` holds objects with `kind` and `message`:
+
+| Exit | Error kinds |
+| ---- | ----------- |
+| 2    | `invalid_argument`, `invalid_format`, `template_not_found` (no template or missing file), `io` (template file unreadable) |
+| 3    | `context_parse` (invalid JSON or not an object), `io` (`context_file` unreadable) |
+| 4    | `render`: a template parse or render error. The message includes Tera's causes, for example ``Variable `name` not found in context`` |
+| 5    | `json_parse` (`format=json` and the rendered text is not JSON) |
+| 124  | `timeout` |
 
 ### 3.2 validate
 
@@ -76,10 +88,12 @@ resh template://inline.validate 'from=Hello {{ name }}'
 
 | Argument   | Meaning |
 | ---------- | ------- |
-| `from`     | Template text (`inline=` is also accepted). **`template=` is not read by `validate`**: with only `template=`, validate reports `Failed to read template` |
-| `context`  | JSON context (`context_file` is not read by `validate`) |
-| `strict`   | Default `true`. When given, only the exact value `true` keeps strict mode; any other value (`false`, `no`, `0`, or a typo such as `ture`) turns it off. With strict off, missing variables are reported in `warnings` and the command succeeds |
+| `template` / `from` / `inline` | Template text instead of the file, in that order of precedence |
+| `context`  | JSON context. If both are given, `context` replaces `context_file` |
+| `context_file` | Path of a JSON context file |
+| `strict`   | Default `true`. `false` (or `0`, `no`, `off`) reports missing variables in `warnings` and the command succeeds. A value that is not a boolean (such as `ture`) is refused with exit 2 |
 | `encoding` | Only `utf-8` is accepted |
+| `timeout_ms` | Stop after this many milliseconds (0 = no limit, the default) |
 
 Output:
 
@@ -95,7 +109,7 @@ Output:
 }
 ```
 
-Error kinds: `file_read`, `encoding`, `context_parse`, `syntax`, `missing_variable`, `render`. On any error the command exits with status 1.
+Error kinds: `file_read` (template or `context_file` unreadable), `context_parse`, `syntax`, `missing_variable`, `render` exit with status 1; `invalid_argument` and `encoding` exit 2; `timeout` exits 124.
 
 ### 3.3 test
 
@@ -112,8 +126,9 @@ resh template://inline.test 'template=Hi {{ n }}' 'cases=[{"name":"one","context
 | `template` / `from`  | Template text instead of the file |
 | `cases`              | JSON array of test cases |
 | `cases_file`         | File holding the JSON array |
-| `stop_on_first_fail` | Exact value `true` stops after the first failing case |
-| `capture_output`     | `summary` (default: include `rendered` only for failing cases), `full` (always), `none` (never) |
+| `stop_on_first_fail` | `true` stops after the first failing case (default `false`) |
+| `capture_output`     | `summary` (default: include `rendered` only for failing cases), `full` (always), `none` (never). Other values are refused (exit 2) |
+| `timeout_ms`         | Stop after this many milliseconds for the whole run (0 = no limit, the default) |
 
 Without `cases` or `cases_file`, the cases are read from the file next to the template with the extension `.tests.json` (for `welcome.txt`, `welcome.tests.json`).
 
@@ -133,9 +148,13 @@ Output:
 }
 ```
 
-A missing template or missing cases sets `ok: false`, an `error` message and exit status 2.
+Exit status: 0 when every case passes; 1 when a case fails or the case list is empty; 2 for an invalid argument, a missing template, or missing or unreadable cases; 3 when the template does not compile; 124 when `timeout_ms` passes. On a timeout, `cases` holds the cases that finished and `error` says how many of the supplied cases ran. Setup errors set `ok: false` and an `error` message.
 
 ---
+
+### 3.4 Limitations
+
+* A template whose macros call themselves without end overflows the stack, and the process aborts (exit 134) before `timeout_ms` can stop it. Tera has no recursion limit.
 
 ## 4. Platform Support
 

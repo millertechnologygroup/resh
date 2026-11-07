@@ -1,0 +1,13 @@
+Handle: config
+Verb: watch
+Definition: Watches the configuration files of the target namespace (all
+  namespaces for a single-segment target) and prints one JSON line per change
+  (op set or rm, or snapshot for initial values) until a timeout or event limit
+  is reached, or forever if neither is given.
+
+Usage:
+  resh config://[<prefix>].watch [key=<key>] [prefix=<prefix>]
+    [timeout_ms=<n>] [max_events=<n>] [initial=true|false]
+
+Example:
+  resh config://app.watch prefix=app/db timeout_ms=10000 max_events=5
