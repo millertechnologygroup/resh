@@ -54,10 +54,12 @@ trust-dns-resolver = "0.23"
 trust-dns-client = "0.23"
 trust-dns-proto = "0.23"
 tokio = { version = "1", features = ["rt", "net", "time", "io-util"] }
-reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
+# default-features off so reqwest does not also pull in native-tls/OpenSSL
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "charset", "http2"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "mysql", "sqlite", "chrono"] }
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
-memcache = "0.17"
+# default "tls" feature links OpenSSL; memcache TLS is not used
+memcache = { version = "0.17", default-features = false }
 dashmap = "6"
 log = "0.4"
 git2 = { version = "0.18", features = ["ssh"] }
@@ -96,7 +98,8 @@ xz2 = "0.1"
 zstd = "0.13"
 
 # Mail handling
-lettre = "0.11"
+# rustls instead of the default native-tls (OpenSSL)
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "pool", "smtp-transport", "rustls-tls"] }
 email-address-parser = "2.0"
 
 [dev-dependencies]
@@ -111,6 +114,8 @@ which = "6"
 
 [features]
 dns-e2e = []
+redis-integration-tests = []
+memcached-integration-tests = []
 pkg-dnf-integration = []
 pkg-yum-integration = []
 pkg-pacman-integration = []

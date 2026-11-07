@@ -1,0 +1,3 @@
+[toolchain]
+# rustix 0.37 (via zbus 3 -> async-io 1) fails to compile on current nightly.
+channel = "stable"
