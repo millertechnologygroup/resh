@@ -1297,3 +1297,13 @@ fn port_list_parsing() {
     assert!(parse_ports("1-4097").is_err());
     assert!(parse_ports("1-65535").is_err());
 }
+
+#[test]
+fn error_codes_are_valid_and_documented() {
+    let doc = include_str!("../../../docs/Network_RemoteOperations/net.md");
+    for code in ERROR_CODES {
+        let full = format!("net.{code}");
+        assert!(crate::core::status::is_valid_error_code(&full), "{full}");
+        assert!(doc.contains(&format!("`{full}`")), "{full} not documented");
+    }
+}

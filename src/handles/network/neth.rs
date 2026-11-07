@@ -312,13 +312,13 @@ const ERROR_CODES: &[&str] = &[
 /// `{"code": "net.<code>", "message": ...}`, the `error` of a JSON failure.
 fn error_obj(code: &str, message: &str) -> Value {
     debug_assert!(ERROR_CODES.contains(&code), "undocumented code {code}");
-    json!({"code": format!("net.{code}"), "message": message})
+    crate::core::status::error_json(&format!("net.{code}"), message)
 }
 
 /// A failure status whose message is `[net.<code>] <message>`.
 fn coded(exit: i32, code: &str, message: &str) -> Status {
     debug_assert!(ERROR_CODES.contains(&code), "undocumented code {code}");
-    Status::err(exit, format!("[net.{code}] {message}"))
+    Status::coded(exit, &format!("net.{code}"), message)
 }
 
 /// Prints `fail` as `{"verb", ...extra, "error": {"code", "message"}}` on
