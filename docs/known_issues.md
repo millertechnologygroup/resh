@@ -14,8 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (event,
-  log, proc, svc, cron, firewall, user, pkg, system, cert, backup,
+  `<handle>.invalid_argument`. Handles not yet aligned (log, proc, svc, cron, firewall, user, pkg, system, cert, backup,
   plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
@@ -147,6 +146,25 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   default no limit; exit 124); `len`, `peek` and `create` refuse it.
 - Queue files are owner-only (0700/0600); no `/tmp` fallback; symlinks are
   refused. `len`/`peek`/`get`/`purge` no longer create missing queues.
+
+### event
+
+- Strict arguments on all six verbs (exit 2, `event.invalid_argument`), exit
+  codes 0/1/2/124 and `[event.<code>]` errors; the old `event.emit_*`,
+  `event.subscribe_*` and `event.list_topics_*` codes are replaced (see
+  `event.md` 3.5). `tags`/`match_tags` must be JSON arrays.
+- The store is safe for concurrent resh processes: `emit` numbers and appends
+  events under a store lock, readers use a shared lock, events are ordered by
+  store sequence number, and a consumer group's read and commit are atomic,
+  so consumers of one group never get the same event.
+- `subscribe follow=true` streams one JSON line per event (`max_events`,
+  `timeout_ms`); `timeout_ms` is enforced on `emit`, `subscribe` and
+  `list-topics` (exit 124). `manual_commit_offset` works, `include_raw`
+  returns the stored record, and `ttl_ms` hides expired events.
+- `list-topics` lists the real store; `sources` other than `event` are
+  refused. `hooks.enable`/`hooks.disable` persist in `_hooks.json` and refuse
+  unknown hooks. No state directory is an error (`event.store_unavailable`)
+  instead of a silent per-process in-memory bus.
 
 ### http and https
 
@@ -603,9 +621,10 @@ These were found during the fixes, or are Medium items that were not fixed:
   `timeout_ms` is enforced the same way. (Git rejected `timeout_ms` at that
   stage; it is now enforced, see Unreleased: a stalled SSH server or a long
   local libgit2 call is reported as outcome unknown, exit 124.)
-- **Event hooks:** the built-in hook notes now go to stderr, so JSON on
-  stdout stays valid (Stage 2). `list-topics` still returns mock catalogs,
-  and `hooks.disable` still always reports success.
+- **Event hooks:** the built-in hook notes go to stderr, so JSON on stdout
+  stays valid (Stage 2). `list-topics` lists the real store and
+  `hooks.enable`/`hooks.disable` persist and refuse unknown names
+  (Unreleased). The hooks are still simulations that only print notes.
 - **cert:**
   - `chain.info` is simplified.
   - Encrypted private keys are not supported. CMS signatures (`sign
@@ -858,9 +877,9 @@ typed structs:
     invocation.
   - A `tx_id` can never carry over to a later commit or rollback.
   - Only `query` and `exec` work, by connecting on demand with `dsn=`.
-- **event:** each handle object gets a new in-memory event store
-  (`src/handles/data/eventh.rs:1884-1888`), so `subscribe` returns no events
-  even within the same process.
+- **event:** fixed. Events are files under the state directory, shared by all
+  resh processes of the user (store lock, sequence numbers, atomic
+  consumer-group commits); hook state persists too.
 
 ---
 
@@ -921,10 +940,8 @@ typed structs:
 
 ### Data and system
 
-- **event.**
-  - `list-topics` returns mock catalogs (`eventh.rs:1006+`).
-  - `include_backends` and `summarize` are unused.
-  - `hooks.disable` always reports success (`:3424-3437`).
+- **event.** The built-in hooks (`fs`, `log`, `mq`, `proc`) are simulations
+  that only print notes on stderr.
 - **cert.**
   - `info` always reports a public key algorithm of "Unknown", empty
     extensions, and `is_ca: false`.
@@ -964,7 +981,6 @@ disagree with the code in many places, including wrong argument names,
 wrong defaults and non-working URL forms. Examples:
 
 - **user:** the examples use the `user://alice` host form.
-- **event:** the examples use `event://VERB(...)` with no dot.
 - **cron:** `rm` documents `user=`; the code reads `users=`.
 - **proc:** USR1 and USR2 are documented as 30 and 31.
 - **pkg:** the examples omit `manager`.

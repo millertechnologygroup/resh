@@ -125,7 +125,7 @@ Verbs: `connect`, `ping`, `query`, `tables`, `schema`, `exec`, `transaction`. Pa
 
 ### 4.4 Events (`event`)
 
-Verbs: `emit`, `subscribe`, `list-topics`, `hooks.list`, `hooks.enable`, `hooks.disable`. Events persist as JSON Lines files in the state directory. `list-topics` returns sample data, and the built-in hooks only print notes to stderr. See [event.md](event.md).
+Verbs: `emit`, `subscribe`, `list-topics`, `hooks.list`, `hooks.enable`, `hooks.disable`. Events persist as JSON Lines files in the state directory. `list-topics` lists the real store; hook enable/disable state persists; the built-in hooks only print notes to stderr. See [event.md](event.md).
 
 ### 4.5 Logs (`log`)
 
@@ -148,7 +148,7 @@ Linux is the only supported and tested platform. The state and config directorie
 * Pass connection details (`url=`, `dsn=`) on every `cache` and `db` command. Prefer `DB_<ALIAS>_DSN` for database passwords, because command-line arguments are visible in the process list.
 * Check exit codes, and for JSON output check the handle's own success fields (`hit`, `stored`, `ok`, `status`).
 * Do not store secrets with `config`, `event` or `mq`; their files are plain text (`mq` files are owner-only, 0600). Use the `secret` handle.
-* Use `config watch`, `event subscribe wait=true` and `log tail` with limits (`timeout_ms`, `wait_timeout_ms`, `lines`) so scripts always end.
+* Use `config watch`, `event subscribe wait=true` or `follow=true`, and `log tail` with limits (`timeout_ms`, `wait_timeout_ms`, `max_events`, `lines`) so scripts always end.
 
 ---
 
@@ -157,9 +157,9 @@ Linux is the only supported and tested platform. The state and config directorie
 | Handle   | Enforces `timeout_ms`                                    | Ignores `timeout_ms`                 |
 | -------- | -------------------------------------------------------- | ------------------------------------ |
 | `cache`  | `get`, `set`, `del`, `incr`, `exists`, `keys`, `ttl` (default 1000, 1-86400000; exit 124); every verb also takes `connect_timeout_ms` (default 5000) | `connect` (uses `connect_timeout_ms` only) |
-| `db`     | `ping` (per attempt, default 1000), `query`, `exec`, `tables`, `schema`, `transaction` (default 5000; `0` and non-numbers rejected) | `connect` (uses `connect_timeout_ms`) |
+| `db`     | every verb: covers connecting and the work; at the deadline the statement is cancelled on the server (exit 124) | none (`connect_timeout_ms` and pool options are refused) |
 | `config` | `watch` (run time limit; default none)                   | `get`, `set`, `ls`                   |
-| `event`  | none (`subscribe wait=true` uses `wait_timeout_ms`)      | all verbs                            |
+| `event`  | `emit`, `subscribe`, `list-topics` (default 30000; `follow=true` has no default and ends normally at the limit) | `hooks.list`, `hooks.enable`, `hooks.disable` |
 | `log`    | none                                                     | `tail`                               |
 | `mq`     | `put`, `get`, `purge` (wait for the queue lock, and `purge`'s deletion; default no limit; exit 124) | none (`len`, `peek`, `create` refuse it) |
 
