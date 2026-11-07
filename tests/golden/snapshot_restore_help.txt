@@ -1,0 +1,26 @@
+Handle: snapshot
+Verb: restore
+Definition: Copies a named snapshot back to a target path, replacing existing
+  content only when force is true, or lists the planned actions on a dry run.
+
+Usage:
+  resh snapshot://<snapshot-name-or-id>.restore target=<path>
+    [force=true|false] [dry_run=true|false] [mode=overwrite]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty snapshot://backup-v1.restore target=/srv/app force=true
+
+Example Output:
+  {
+    "mode": "overwrite",
+    "snapshot": "backup-v1",
+    "status": "ok",
+    "target": "/srv/app"
+  }
+
+  Shown with --json-pretty. With dry_run=true the result has dry_run,
+  force, and an actions list instead of status. Exit 2 on an invalid or
+  ambiguous argument, 1 when the snapshot is not found, the target exists
+  without force, or the copy fails, 124 on timeout (the target is left
+  unchanged).

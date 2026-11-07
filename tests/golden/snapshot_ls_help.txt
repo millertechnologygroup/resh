@@ -1,0 +1,34 @@
+Handle: snapshot
+Verb: ls
+Definition: Lists the snapshots taken of a target path, newest first, with their
+  IDs, names, creation times, states, tags, and descriptions, as JSON.
+
+Usage:
+  resh snapshot://<target-path>.ls [limit=<n>] [name_prefix=<prefix>]
+    [since=<rfc3339>] [until=<rfc3339>] [state=<state>] [tag=<tag>]
+    [json_pretty=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty snapshot:///srv/app.ls limit=5
+
+Example Output:
+  [
+    {
+      "backend": "local",
+      "created_at": "2026-10-16T09:12:44.512309876+00:00",
+      "description": "nightly",
+      "id": "73265a09-2b27-49d7-a5ab-49315543eacb",
+      "name": "backup-v1",
+      "size_bytes": 5120,
+      "state": "complete",
+      "tags": [
+        "nightly"
+      ],
+      "target": "/srv/app"
+    }
+  ]
+
+  Shown with --json-pretty. Snapshots made by create have state complete.
+  A relative target is resolved against the working directory. An unknown
+  target prints an empty array. Exit 2 on an invalid argument, 1 when the
+  store cannot be read, 124 on timeout.

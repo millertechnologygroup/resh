@@ -1,0 +1,29 @@
+Handle: snapshot
+
+Description:
+  The snapshot handle saves full local copies of a file or directory, compares
+  them with each other or with the live filesystem, lists them, and restores
+  them. Snapshots are stored under the user state directory, for example
+  ~/.local/state/resh/snapshots, grouped by the absolute path of their target.
+  The URL names the target path for create, diff, and ls, as in
+  snapshot:///srv/app, and the snapshot name or ID for restore, as in
+  snapshot://backup-v1.
+
+Available Verbs:
+  ls        Lists the snapshots taken of a target path, newest first, with their
+            IDs, names, creation times, states, tags, and descriptions, as JSON.
+  diff      Compares two snapshots of a target, or a snapshot and the live
+            filesystem, and reports added, removed, modified, and unchanged
+            files.
+  create    Copies a file or directory into a new named snapshot with an
+            optional description, tags, and expiry time, and reports its ID and
+            storage path.
+  restore   Copies a named snapshot back to a target path, replacing existing
+            content only when force is true, or lists the planned actions on a
+            dry run.
+
+Usage:
+  resh snapshot://<target-path-or-snapshot-name>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh snapshot <verb> --help

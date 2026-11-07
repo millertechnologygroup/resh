@@ -1,0 +1,32 @@
+Handle: snapshot
+Verb: create
+Definition: Copies a file or directory into a new named snapshot with an
+  optional description, tags, and expiry time, and reports its ID and storage
+  path.
+
+Usage:
+  resh snapshot://<target-path>.create name=<name>
+    [description=<text>] [ttl=<seconds>] [tags=<tag>,...]
+    [if_exists=error|skip|overwrite] [backend=local] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty snapshot:///srv/app.create name=backup-v1 ttl=86400
+
+Example Output:
+  {
+    "backend": "local",
+    "created_at": "2026-10-16T09:12:44.512309876+00:00",
+    "expires_at": "2026-10-17T09:12:44.512309876+00:00",
+    "id": "73265a09-2b27-49d7-a5ab-49315543eacb",
+    "name": "backup-v1",
+    "ok": true,
+    "path": "/home/alice/.local/state/resh/snapshots/_srv_app/backup-v1",
+    "skipped": false,
+    "target": "/srv/app"
+  }
+
+  Shown with --json-pretty. Names use letters, digits, '.', '-' and '_' and
+  do not start with '.' or '-'. Without ttl, expires_at is null; ttl is only
+  recorded. With if_exists=skip and an existing snapshot, skipped is true.
+  Exit 2 on an invalid argument, 1 when the snapshot exists or the copy
+  fails, 124 on timeout (no snapshot is left behind in either case).

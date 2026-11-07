@@ -1,0 +1,30 @@
+Handle: snapshot
+Verb: diff
+Definition: Compares two snapshots of a target, or a snapshot and the live
+  filesystem, and reports added, removed, modified, and unchanged files.
+
+Usage:
+  resh snapshot://<target-path>.diff [from=<snapshot>|live]
+    [to=<snapshot>|live] [path=<subpath>] [format=json|summary]
+    [timeout_ms=<ms>]
+
+Example:
+  resh snapshot:///srv/app.diff from=backup-v1 to=live format=summary
+
+Example Output:
+  snapshot: /srv/app
+  from: backup-v1 (snapshot)
+  to:   live (live)
+  root: /srv/app
+  path: /
+
+  added: 1
+  removed: 0
+  modified: 2
+  unchanged: 14
+
+  A snapshot is named by name or ID. An omitted from or to means live; at
+  least one must name a snapshot. The default format=json prints name, from,
+  to, from_kind, to_kind, root, path, a summary object, and an entries array
+  with per-file from and to details. Exit 2 on an invalid argument, 1 when
+  a snapshot or the target is not found or cannot be read, 124 on timeout.
