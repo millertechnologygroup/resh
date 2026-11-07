@@ -133,7 +133,7 @@ Verb: `tail`. Reads files (absolute or `./` relative) or `log://svc/<service>` j
 
 ### 4.6 Message queues (`mq`)
 
-Verbs: `create`, `put`, `get`, `peek`, `len`, `purge`. A local, single-host FIFO queue with one owner-only file per message. Concurrent producers and consumers are safe: each message is taken by exactly one `get`, in the order the puts finished. It is not a distributed queue and has no acknowledgement or retry. See [mq.md](mq.md).
+Verbs: `create`, `put`, `get`, `peek`, `len`, `purge`. A local, single-host FIFO queue with one owner-only file per message. Concurrent producers and consumers are safe: messages come out in the order the puts finished, no two running `get` commands take the same message, and `get wait=true` waits for one. Delivery is at-least-once: a message whose consumer was killed is delivered again. It is not a distributed queue and has no acknowledgement step. See [mq.md](mq.md).
 
 ---
 
@@ -161,7 +161,7 @@ Linux is the only supported and tested platform. The state and config directorie
 | `config` | `watch` (run time limit; default none)                   | `get`, `set`, `ls`                   |
 | `event`  | `emit`, `subscribe`, `list-topics` (default 30000; `follow=true` has no default and ends normally at the limit) | `hooks.list`, `hooks.enable`, `hooks.disable` |
 | `log`    | `tail` (default 600000; `follow=true` has no default; exit 124 at the limit) | none |
-| `mq`     | `put`, `get`, `purge` (wait for the queue lock, and `purge`'s deletion; default no limit; exit 124) | none (`len`, `peek`, `create` refuse it) |
+| `mq`     | `put`, `get`, `purge` (wait for the queue lock, `get wait=true`'s wait for a message, and `purge`'s deletion; default no limit, 30000 for `get wait=true`; exit 124) | none (`len`, `peek`, `create` refuse it) |
 
 ---
 

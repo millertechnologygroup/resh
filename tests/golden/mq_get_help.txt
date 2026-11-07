@@ -1,10 +1,11 @@
 Handle: mq
 Verb: get
-Definition: Removes the oldest message from the queue and prints it, failing
-  with exit status 1 and the code mq.empty if the queue is empty.
+Definition: Removes the oldest message from the queue and prints it; on an empty
+  queue it fails with exit status 1 and the code mq.empty, or with wait=true
+  waits for a message.
 
 Usage:
-  resh mq://<queue>.get [timeout_ms=<ms>]
+  resh mq://<queue>.get [wait=true|false] [timeout_ms=<ms>]
 
 Example:
   resh mq://jobs.get
@@ -13,7 +14,8 @@ Example Output:
   backup-db
 
   The message is printed exactly as stored, with no newline added; if it
-  cannot be written out it is put back at the head of the queue. get does not
-  wait for a message. timeout_ms limits the wait for the queue lock (0 or
-  absent: no limit); past it the command exits 124 with mq.timeout and nothing
-  is taken.
+  cannot be written out it is put back at the head of the queue. With
+  wait=true (default false) get waits for a message to arrive. timeout_ms
+  limits the whole wait, for the queue lock and, with wait=true, for a message
+  (default: no limit, or 30000 with wait=true; 0: no limit); past it the
+  command exits 124 with mq.timeout and nothing is taken.

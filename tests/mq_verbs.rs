@@ -18,7 +18,8 @@ fn options_for(verb: &str) -> Vec<&'static str> {
     match verb {
         "len" | "peek" | "create" => vec![],
         "put" => vec!["data", "timeout_ms"],
-        "get" | "purge" => vec!["timeout_ms"],
+        "get" => vec!["timeout_ms", "wait"],
+        "purge" => vec!["timeout_ms"],
         _ => unreachable!(),
     }
 }
@@ -501,4 +502,128 @@ fn help_examples_run_and_print_their_example_output() {
         }
     }
     assert_eq!(s.run(&["mq://jobs.len"]).text(), "0");
+}
+
+/// Waits until `cond` holds, failing after 10 s.
+fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+    let t = std::time::Instant::now();
+    while !cond() {
+        assert!(t.elapsed().as_secs() < 10, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// A consumer killed with SIGKILL after claiming a message: the message is
+/// delivered again, exactly once, to the next get.
+#[test]
+fn a_killed_consumer_s_message_is_redelivered_exactly_once() {
+    let s = State::new();
+    // Large enough that get blocks writing to a pipe nobody reads, after
+    // the claim and before the delete.
+    let big: Vec<u8> = (0..=255u8).cycle().take(4 * 1024 * 1024).collect();
+    assert_ok(&s.run_in(&["mq://k.put"], &big));
+    assert_ok(&s.run(&["mq://k.put", "data=second"]));
+    let mut victim = s
+        .cmd(&["mq://k.get"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let inflight = s.queue_dir("k").join("_inflight");
+    let claim_of = |pid: u32| {
+        std::fs::read_dir(&inflight).unwrap().flatten().any(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.ends_with(".claim") && n.split('.').nth(1) == Some(&pid.to_string())
+        })
+    };
+    let pid = victim.id();
+    wait_until("the claim", || claim_of(pid));
+    // While the claimer runs, its message is not handed out again.
+    assert_eq!(s.run(&["mq://k.len"]).text(), "1");
+    victim.kill().unwrap();
+    victim.wait().unwrap();
+    // len returns it to the head of the queue.
+    assert_eq!(s.run(&["mq://k.len"]).text(), "2");
+    let r = s.run(&["mq://k.get"]);
+    assert_ok(&r);
+    assert_eq!(r.stdout, big, "redelivered whole");
+    assert_eq!(s.run(&["mq://k.get"]).text(), "second");
+    assert_fail(&s.run(&["mq://k.get"]), 1, "mq.empty");
+    assert_eq!(std::fs::read_dir(&inflight).unwrap().count(), 0);
+}
+
+/// Without len: the next get itself returns the stale message first.
+#[test]
+fn the_next_get_redelivers_a_killed_consumer_s_message() {
+    let s = State::new();
+    let big = vec![b'z'; 4 * 1024 * 1024];
+    assert_ok(&s.run_in(&["mq://k2.put"], &big));
+    let mut victim = s
+        .cmd(&["mq://k2.get"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let inflight = s.queue_dir("k2").join("_inflight");
+    wait_until("the claim", || {
+        std::fs::read_dir(&inflight).unwrap().count() == 1
+    });
+    // SAFETY: signals our own child.
+    unsafe { libc::kill(victim.id() as libc::pid_t, libc::SIGKILL) };
+    victim.wait().unwrap();
+    assert_eq!(s.run(&["mq://k2.get"]).stdout.len(), big.len());
+    assert_fail(&s.run(&["mq://k2.get"]), 1, "mq.empty");
+}
+
+/// Waiting consumer processes and a producer: each message goes to exactly
+/// one consumer, and each consumer wakes without polling for long.
+#[test]
+fn waiting_consumer_processes_share_a_producer_s_messages() {
+    let s = State::new();
+    assert_ok(&s.run(&["mq://w.create"]));
+    let consumers: Vec<_> = (0..3)
+        .map(|_| {
+            s.cmd(&["mq://w.get", "wait=true", "timeout_ms=20000"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let t = std::time::Instant::now();
+    for m in ["data=a", "data=b", "data=c"] {
+        assert_ok(&s.run(&["mq://w.put", m]));
+    }
+    let mut got: Vec<String> = consumers
+        .into_iter()
+        .map(|c| {
+            let out = c.wait_with_output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap()
+        })
+        .collect();
+    assert!(t.elapsed().as_secs() < 10);
+    got.sort();
+    assert_eq!(got, ["a", "b", "c"]);
+    assert_fail(&s.run(&["mq://w.get"]), 1, "mq.empty");
+}
+
+#[test]
+fn get_wait_times_out_with_124() {
+    let s = State::new();
+    let t = std::time::Instant::now();
+    let r = s.run(&["mq://none.get", "wait=true", "timeout_ms=300"]);
+    assert_fail(&r, 124, "mq.timeout");
+    assert!(r.stderr.contains("no message arrived"), "{}", r.stderr);
+    assert!(t.elapsed() >= std::time::Duration::from_millis(300));
+    let r = s.run(&["mq://none.get", "wait=sometimes"]);
+    assert_fail(&r, 2, "mq.invalid_argument");
 }

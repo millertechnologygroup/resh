@@ -6,7 +6,7 @@
 //! <queue>/                     0700
 //!   .seq                       0600  queue lock (flock) and the next message number
 //!   .tmp/<pid>-<uuid>          0600  messages being written by put
-//!   _inflight/<n>.msg          0600  messages being taken by get
+//!   _inflight/<n>.<pid>.<start>.claim  0600  messages being taken by get
 //!   <n>.msg                    0600  queued messages, <n> = 20-digit number
 //! ```
 //!
@@ -14,9 +14,12 @@
 //! the queue lock, takes the next number from `.seq` and renames the file
 //! into place, so numbers follow the order in which puts finished and never
 //! repeat. `get` and `purge` hold the lock while they choose and move or
-//! delete messages, so two consumers never take the same message. `len` and
-//! `peek` only read and take no lock. The lock is an `flock` on `.seq`,
-//! released by the kernel if a process dies.
+//! delete messages, so two consumers never take the same message. A claim
+//! names the claiming process (PID and start time); a claim whose process
+//! is gone is moved back to the queue under its old number by the next get
+//! (or by len/peek when the lock is free), so delivery is at-least-once.
+//! `len` and `peek` never wait for the lock. The lock is an `flock` on
+//! `.seq`, released by the kernel if a process dies.
 
 use anyhow::Result;
 use std::fs::{self, File, OpenOptions};
@@ -56,7 +59,8 @@ static MQ_HELP: HandleHelp = HandleHelp {
         message as an owner-only file under the user's state directory, normally \
         ~/.local/state/resh/mq/<queue>. The queue is named by the URL, such as mq://jobs, \
         using letters, digits, '.', '-' and '_'. Producers and consumers may run at the same \
-        time: each message is taken by exactly one get, in the order the puts finished.",
+        time: messages come out in the order the puts finished, and a message whose get was \
+        killed before printing it is delivered again.",
     usage: "resh mq://<queue>.<verb>[(key=value,...)]",
     verbs: &[
         VerbHelp {
@@ -109,19 +113,21 @@ nothing is queued."#,
         },
         VerbHelp {
             name: "get",
-            definition: "Removes the oldest message from the queue and prints it, failing with \
-                exit status 1 and the code mq.empty if the queue is empty.",
+            definition: "Removes the oldest message from the queue and prints it; on an \
+                empty queue it fails with exit status 1 and the code mq.empty, or with \
+                wait=true waits for a message.",
             detail: Some(VerbDetail {
-                usage: "resh mq://<queue>.get [timeout_ms=<ms>]",
+                usage: "resh mq://<queue>.get [wait=true|false] [timeout_ms=<ms>]",
                 example: "resh mq://jobs.get",
                 example_output: Some(
                     r#"backup-db
 
 The message is printed exactly as stored, with no newline added; if it
-cannot be written out it is put back at the head of the queue. get does not
-wait for a message. timeout_ms limits the wait for the queue lock (0 or
-absent: no limit); past it the command exits 124 with mq.timeout and nothing
-is taken."#,
+cannot be written out it is put back at the head of the queue. With
+wait=true (default false) get waits for a message to arrive. timeout_ms
+limits the whole wait, for the queue lock and, with wait=true, for a message
+(default: no limit, or 30000 with wait=true; 0: no limit); past it the
+command exits 124 with mq.timeout and nothing is taken."#,
                 ),
             }),
         },
@@ -146,7 +152,8 @@ fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
     Some(match verb {
         "len" | "peek" | "create" => &[],
         "put" => &["data", "timeout_ms"],
-        "get" | "purge" => &["timeout_ms"],
+        "get" => &["wait", "timeout_ms"],
+        "purge" => &["timeout_ms"],
         _ => return None,
     })
 }
@@ -258,10 +265,14 @@ fn suggest<'a>(bad: &str, allowed: &[&'a str]) -> Option<&'a str> {
         .map(|(_, a)| a)
 }
 
-/// `timeout_ms`: a whole number of milliseconds; 0 or absent means no limit.
-fn deadline_arg(args: &Args) -> R<Option<Instant>> {
+/// How long `get wait=true` waits when timeout_ms is not given.
+const DEFAULT_WAIT_MS: u64 = 30_000;
+
+/// `timeout_ms`: a whole number of milliseconds; 0 means no limit. Absent
+/// means no limit, except for `get wait=true` (DEFAULT_WAIT_MS).
+fn deadline_arg(args: &Args, wait: bool) -> R<Option<Instant>> {
     let Some(raw) = args.get("timeout_ms") else {
-        return Ok(None);
+        return Ok(wait.then(|| Instant::now() + Duration::from_millis(DEFAULT_WAIT_MS)));
     };
     let ms: u64 = raw.parse().map_err(|_| {
         Failure::usage(format!(
@@ -510,9 +521,25 @@ impl MQHandle {
         Ok(true)
     }
 
-    /// Takes the queue lock, waiting until `deadline` (no limit if None).
-    fn lock(&self, p: &Paths, deadline: Option<Instant>, verb: &str) -> R<QueueLock> {
-        let file = OpenOptions::new()
+    /// Takes the queue lock only if it is free now.
+    fn try_lock(&self, p: &Paths) -> R<Option<QueueLock>> {
+        let file = Self::open_lock(p)?;
+        loop {
+            // SAFETY: a valid open descriptor owned by `file`.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Some(QueueLock { file }));
+            }
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(libc::EINTR) => continue,
+                Some(libc::EWOULDBLOCK) => return Ok(None),
+                _ => return Err(Failure::io("cannot lock the queue", e)),
+            }
+        }
+    }
+
+    fn open_lock(p: &Paths) -> R<File> {
+        OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -528,7 +555,12 @@ impl MQHandle {
                         e,
                     )
                 }
-            })?;
+            })
+    }
+
+    /// Takes the queue lock, waiting until `deadline` (no limit if None).
+    fn lock(&self, p: &Paths, deadline: Option<Instant>, verb: &str) -> R<QueueLock> {
+        let file = Self::open_lock(p)?;
         let fd = file.as_raw_fd();
         let started = Instant::now();
         let mut pause = Duration::from_millis(1);
@@ -605,10 +637,11 @@ impl MQHandle {
     /// older resh, whose numbers are put times in nanoseconds).
     fn recompute_next(p: &Paths) -> R<u64> {
         let mut max = 0;
-        for dir in [&p.queue, &p.inflight] {
-            if let Some((n, _)) = Self::list_messages(dir)?.last() {
-                max = max.max(*n);
-            }
+        if let Some((n, _)) = Self::list_messages(&p.queue)?.last() {
+            max = *n;
+        }
+        for c in list_claims(&p.inflight)? {
+            max = max.max(c.number);
         }
         max.checked_add(1).ok_or_else(|| {
             Failure::new(exit::FAILED, "mq.io_error", "message numbers are exhausted")
@@ -622,10 +655,63 @@ impl MQHandle {
         self.ensure(&p)
     }
 
+    /// Moves messages whose claiming `get` no longer runs back into the
+    /// queue under their original numbers, so they are next in line.
+    /// Must be called with the queue lock held. Returns how many moved.
+    fn recover_stale(p: &Paths, _lock: &QueueLock) -> R<usize> {
+        let mut moved = 0;
+        for c in list_claims(&p.inflight)? {
+            if c.claimer_alive() {
+                continue;
+            }
+            let dest = p.queue.join(message_file_name(c.number));
+            if fs::symlink_metadata(&dest).is_ok() {
+                continue; // never overwrite a queued message
+            }
+            fs::rename(p.inflight.join(&c.name), &dest).map_err(|e| {
+                Failure::io(
+                    format!(
+                        "cannot return the in-flight message {} to the queue",
+                        c.name
+                    ),
+                    e,
+                )
+            })?;
+            moved += 1;
+        }
+        if moved > 0 {
+            sync_dir(&p.queue).map_err(|e| Failure::io("cannot sync the queue directory", e))?;
+        }
+        Ok(moved)
+    }
+
+    /// For the verbs that never wait (len, peek): returns stale in-flight
+    /// messages to the queue if the lock is free now. Returns the stale
+    /// claims that could not be returned because the lock was busy.
+    fn recover_if_free(&self, p: &Paths) -> R<Vec<Claim>> {
+        let stale: Vec<Claim> = list_claims(&p.inflight)?
+            .into_iter()
+            .filter(|c| !c.claimer_alive())
+            .collect();
+        if stale.is_empty() {
+            return Ok(stale);
+        }
+        match self.try_lock(p)? {
+            Some(lock) => {
+                Self::recover_stale(p, &lock)?;
+                Ok(Vec::new())
+            }
+            None => Ok(stale),
+        }
+    }
+
     fn len(&self, io: &mut IoStreams) -> R<()> {
         let p = self.paths()?;
         let n = if self.queue_exists(&p)? {
-            Self::list_messages(&p.queue)?.len()
+            // Messages of dead consumers count as waiting: they are
+            // delivered again.
+            let busy = self.recover_if_free(&p)?;
+            Self::list_messages(&p.queue)?.len() + busy.len()
         } else {
             0
         };
@@ -645,8 +731,10 @@ impl MQHandle {
         if !self.queue_exists(&p)? {
             return Err(self.empty("peek"));
         }
-        // No lock: a message taken by a get between listing and opening is
-        // skipped and the listing repeated.
+        // Only a quick, non-waiting lock to return stale in-flight
+        // messages; otherwise no lock: a message taken by a get between
+        // listing and opening is skipped and the listing repeated.
+        self.recover_if_free(&p)?;
         loop {
             let Some((_, name)) = Self::list_messages(&p.queue)?.into_iter().next() else {
                 return Err(self.empty("peek"));
@@ -735,32 +823,62 @@ impl MQHandle {
         result
     }
 
-    fn get(&self, deadline: Option<Instant>, io: &mut IoStreams) -> R<()> {
+    fn get(&self, wait: bool, deadline: Option<Instant>, io: &mut IoStreams) -> R<()> {
         let p = self.paths()?;
         if !self.queue_exists(&p)? {
-            return Err(self.empty("get"));
+            if !wait {
+                return Err(self.empty("get"));
+            }
+            // Waiting needs a directory to watch.
+            self.ensure(&p)?;
         }
         private_dir(&p.inflight)?;
+        let started = Instant::now();
+        // Set up before the first look, so a put between the look and the
+        // wait still wakes us.
+        let mut waker = if wait {
+            Some(Waker::new(&p.queue))
+        } else {
+            None
+        };
 
-        // Claim the oldest message: move it to _inflight and open it while
-        // holding the lock, so no other get can take it.
-        let lock = self.lock(&p, deadline, "get")?;
-        let Some((_, name)) = Self::list_messages(&p.queue)?.into_iter().next() else {
-            return Err(self.empty("get"));
-        };
-        let queued = p.queue.join(&name);
-        let claimed = p.inflight.join(&name);
-        fs::rename(&queued, &claimed)
-            .map_err(|e| Failure::io(format!("cannot claim {}", queued.display()), e))?;
-        let opened = open_nofollow(&claimed);
-        let mut f = match opened {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = fs::rename(&claimed, &queued);
-                return Err(Failure::io(format!("cannot read {}", claimed.display()), e));
+        // Claim the oldest message: move it to _inflight under a name that
+        // records this process, and open it, while holding the lock, so no
+        // other get can take it.
+        let (queued, claimed, mut f) = loop {
+            let lock = self.lock(&p, deadline, "get")?;
+            Self::recover_stale(&p, &lock)?;
+            if let Some((n, name)) = Self::list_messages(&p.queue)?.into_iter().next() {
+                let queued = p.queue.join(&name);
+                let claimed = p.inflight.join(claim_file_name(n));
+                fs::rename(&queued, &claimed)
+                    .map_err(|e| Failure::io(format!("cannot claim {}", queued.display()), e))?;
+                match open_nofollow(&claimed) {
+                    Ok(f) => break (queued, claimed, f),
+                    Err(e) => {
+                        let _ = fs::rename(&claimed, &queued);
+                        return Err(Failure::io(format!("cannot read {}", claimed.display()), e));
+                    }
+                }
             }
+            drop(lock);
+            let Some(w) = waker.as_mut() else {
+                return Err(self.empty("get"));
+            };
+            if timed_out(deadline) {
+                return Err(Failure::new(
+                    exit::TIMEOUT,
+                    "mq.timeout",
+                    format!(
+                        "mq get: no message arrived in queue {:?} within {} ms; nothing was \
+                         taken",
+                        self.name,
+                        started.elapsed().as_millis()
+                    ),
+                ));
+            }
+            w.wait(deadline);
         };
-        drop(lock);
 
         if let Err(e) = copy_out(&mut f, io.stdout, &claimed) {
             // Not delivered: put it back at the head of the queue.
@@ -827,9 +945,11 @@ impl MQHandle {
                     entry.map_err(|e| Failure::io(format!("cannot read {}", dir.display()), e))?;
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                // Messages, and the partial `tmp-<ns>.msg` files older resh
-                // versions could leave behind.
-                if !name.ends_with(".msg") || entry.file_type().is_ok_and(|t| t.is_dir()) {
+                // Messages, claimed messages, and the partial `tmp-<ns>.msg`
+                // files older resh versions could leave behind.
+                if !(name.ends_with(".msg") || name.ends_with(".claim"))
+                    || entry.file_type().is_ok_and(|t| t.is_dir())
+                {
                     continue;
                 }
                 if timed_out(deadline) {
@@ -904,13 +1024,20 @@ impl MQHandle {
             )));
         };
         check_args(verb, allowed, args)?;
-        let deadline = deadline_arg(args)?;
+        let wait = if verb == "get" {
+            crate::core::lenient::bool_arg(args, "wait")
+                .map_err(|e| Failure::usage(format!("{e}; nothing was done")))?
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let deadline = deadline_arg(args, wait)?;
         match verb {
             "len" => self.len(io),
             "peek" => self.peek(io),
             "create" => self.create(),
             "put" => self.put(args, deadline, io),
-            "get" => self.get(deadline, io),
+            "get" => self.get(wait, deadline, io),
             "purge" => self.purge(deadline),
             _ => unreachable!("verb_args lists every verb"),
         }
@@ -970,6 +1097,185 @@ fn remove_abandoned_temps(tmp: &Path) {
             && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
         if gone {
             let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The name of a claimed message in `_inflight`:
+/// `<number>.<pid>.<start time>.claim`, recording the claiming process so a
+/// later get can tell whether it still runs (the start time defeats PID
+/// reuse).
+fn claim_file_name(n: u64) -> String {
+    let (pid, start) = self_identity();
+    format!("{n:020}.{pid}.{start}.claim")
+}
+
+/// This process: PID and start time (clock ticks since boot, 0 if unknown).
+fn self_identity() -> (u32, u64) {
+    static ID: std::sync::OnceLock<(u32, u64)> = std::sync::OnceLock::new();
+    *ID.get_or_init(|| {
+        let pid = std::process::id();
+        let start = match proc_stat(pid) {
+            ProcState::Running(start) => start,
+            _ => 0,
+        };
+        (pid, start)
+    })
+}
+
+enum ProcState {
+    /// Running (or stopped) with this start time.
+    Running(u64),
+    /// No such process, or a zombie that has already exited.
+    Gone,
+    /// /proc cannot be read: assume it runs.
+    Unknown,
+}
+
+/// Reads state and start time (fields 3 and 22) from /proc/<pid>/stat.
+fn proc_stat(pid: u32) -> ProcState {
+    let text = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return ProcState::Gone,
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => return ProcState::Gone,
+        Err(_) => return ProcState::Unknown,
+    };
+    // The command name (field 2) is in parentheses and may contain spaces.
+    let Some(rest) = text.rfind(')').map(|i| &text[i + 1..]) else {
+        return ProcState::Unknown;
+    };
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // fields[0] is field 3 (state); field 22 is fields[19].
+    match (fields.first(), fields.get(19).and_then(|s| s.parse().ok())) {
+        (Some(&"Z") | Some(&"X") | Some(&"x"), _) => ProcState::Gone,
+        (Some(_), Some(start)) => ProcState::Running(start),
+        _ => ProcState::Unknown,
+    }
+}
+
+/// A message in `_inflight`.
+struct Claim {
+    number: u64,
+    name: String,
+    /// The claiming process; None for a file an older resh left (`<n>.msg`),
+    /// whose claimer is unknown.
+    claimer: Option<(u32, u64)>,
+}
+
+impl Claim {
+    fn claimer_alive(&self) -> bool {
+        let Some((pid, start)) = self.claimer else {
+            return false;
+        };
+        match proc_stat(pid) {
+            ProcState::Gone => false,
+            ProcState::Unknown => true,
+            // A start time of 0 means the claimer could not read its own.
+            ProcState::Running(now) => start == 0 || now == start,
+        }
+    }
+}
+
+fn parse_claim(name: &str) -> Option<Claim> {
+    if let Some(n) = message_number(name) {
+        return Some(Claim {
+            number: n,
+            name: name.to_string(),
+            claimer: None,
+        });
+    }
+    let stem = name.strip_suffix(".claim")?;
+    let mut parts = stem.split('.');
+    let (num, pid, start) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || num.len() != 20 || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(Claim {
+        number: num.parse().ok()?,
+        name: name.to_string(),
+        claimer: Some((pid.parse().ok()?, start.parse().ok()?)),
+    })
+}
+
+/// Claimed messages in `_inflight` (regular files only), oldest first.
+fn list_claims(dir: &Path) -> R<Vec<Claim>> {
+    let mut out = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(Failure::io(format!("cannot read {}", dir.display()), e)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| Failure::io(format!("cannot read {}", dir.display()), e))?;
+        let name = entry.file_name();
+        let Some(c) = name.to_str().and_then(parse_claim) else {
+            continue;
+        };
+        if entry.file_type().is_ok_and(|t| t.is_file()) {
+            out.push(c);
+        }
+    }
+    out.sort_unstable_by_key(|c| c.number);
+    Ok(out)
+}
+
+/// Wakes a waiting get when the queue directory changes (inotify through
+/// the notify crate), and in any case every POLL, which also catches
+/// in-flight messages whose consumer died. Without a watcher it polls.
+struct Waker {
+    rx: Option<std::sync::mpsc::Receiver<()>>,
+    _watcher: Option<notify::RecommendedWatcher>,
+}
+
+impl Waker {
+    const POLL: Duration = Duration::from_millis(500);
+    const POLL_WITHOUT_WATCHER: Duration = Duration::from_millis(50);
+
+    fn new(dir: &Path) -> Self {
+        use notify::Watcher;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let watcher = notify::RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if res.is_ok() {
+                    let _ = tx.send(());
+                }
+            },
+            notify::Config::default(),
+        )
+        .and_then(|mut w| {
+            w.watch(dir, notify::RecursiveMode::NonRecursive)
+                .map(|()| w)
+        });
+        match watcher {
+            Ok(w) => Self {
+                rx: Some(rx),
+                _watcher: Some(w),
+            },
+            Err(_) => Self {
+                rx: None,
+                _watcher: None,
+            },
+        }
+    }
+
+    /// Waits for a change, the poll interval, or the deadline.
+    fn wait(&mut self, deadline: Option<Instant>) {
+        let poll = if self.rx.is_some() {
+            Self::POLL
+        } else {
+            Self::POLL_WITHOUT_WATCHER
+        };
+        let left = deadline
+            .map(|d| d.saturating_duration_since(Instant::now()))
+            .unwrap_or(poll)
+            .min(poll);
+        match &self.rx {
+            Some(rx) => {
+                if rx.recv_timeout(left).is_ok() {
+                    while rx.try_recv().is_ok() {}
+                }
+            }
+            None => std::thread::sleep(left),
         }
     }
 }

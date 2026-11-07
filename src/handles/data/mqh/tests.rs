@@ -672,3 +672,187 @@ fn permission_errors_are_io_errors() {
     call(&e.q("jobs"), "create", &[]).fails(1, "mq.io_error");
     fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
 }
+
+// --- in-flight recovery -----------------------------------------------------
+
+/// A PID that belonged to a process that has exited and been reaped.
+fn dead_pid() -> u32 {
+    let mut c = std::process::Command::new("true").spawn().unwrap();
+    let pid = c.id();
+    c.wait().unwrap();
+    pid
+}
+
+fn plant_claim(h: &MQHandle, n: u64, claimer: Option<(u32, u64)>, body: &str) -> PathBuf {
+    call(h, "create", &[]).ok();
+    let name = match claimer {
+        Some((pid, start)) => format!("{n:020}.{pid}.{start}.claim"),
+        None => format!("{n:020}.msg"),
+    };
+    let path = h.paths().unwrap().inflight.join(name);
+    fs::write(&path, body).unwrap();
+    path
+}
+
+#[test]
+fn claims_of_dead_or_reused_pids_are_redelivered_first_in_order() {
+    let e = env();
+    let h = e.q("r");
+    call(&h, "put", &[("data", "queued")]).ok(); // number 1
+    let (me, my_start) = self_identity();
+    assert!(my_start > 0, "start time from /proc");
+    // Move the queued message to number 50 so the claims (taken earlier,
+    // lower numbers) come first.
+    fs::rename(
+        e.qdir("r").join(message_file_name(1)),
+        e.qdir("r").join(message_file_name(50)),
+    )
+    .unwrap();
+    fs::write(e.qdir("r").join(".seq"), "00000000000000000100\n").unwrap();
+    let dead = plant_claim(&h, 5, Some((dead_pid(), 12345)), "dead");
+    let reused = plant_claim(&h, 10, Some((me, my_start + 1)), "reused");
+    let legacy = plant_claim(&h, 20, None, "legacy");
+    let live = plant_claim(&h, 30, Some((me, my_start)), "live");
+    assert_eq!(call(&h, "len", &[]).text(), "4");
+    assert!(!dead.exists() && !reused.exists() && !legacy.exists());
+    assert!(live.exists(), "a running claimer keeps its message");
+    let got: Vec<String> = (0..4).map(|_| get_text(&h)).collect();
+    assert_eq!(got, ["dead", "reused", "legacy", "queued"]);
+    call(&h, "get", &[]).fails(1, "mq.empty");
+    assert!(live.exists());
+}
+
+#[test]
+fn claims_are_named_after_this_process() {
+    let (pid, start) = self_identity();
+    assert_eq!(pid, std::process::id());
+    let name = claim_file_name(7);
+    let c = parse_claim(&name).unwrap();
+    assert_eq!((c.number, c.claimer), (7, Some((pid, start))));
+    assert!(c.claimer_alive());
+    for bad in ["x.claim", "1.2.3.claim", "00000000000000000001.a.3.claim"] {
+        assert!(parse_claim(bad).is_none(), "{bad}");
+    }
+    assert!(matches!(proc_stat(dead_pid()), ProcState::Gone));
+}
+
+#[test]
+fn peek_and_len_see_stale_messages_even_when_the_lock_is_busy() {
+    let e = env();
+    let h = e.q("busy");
+    plant_claim(&h, 1, Some((dead_pid(), 1)), "stale");
+    let held = hold_lock(&h);
+    assert_eq!(call(&h, "len", &[]).text(), "1");
+    drop(held);
+    assert_eq!(call(&h, "peek", &[]).text(), "stale");
+    assert_eq!(get_text(&h), "stale");
+}
+
+// --- get wait=true ----------------------------------------------------------
+
+#[test]
+fn wait_must_be_a_boolean_and_only_get_takes_it() {
+    let e = env();
+    call(&e.q("w"), "get", &[("wait", "maybe")])
+        .fails(2, "mq.invalid_argument")
+        .says("wait");
+    call(&e.q("w"), "peek", &[("wait", "true")]).fails(2, "mq.invalid_argument");
+    assert!(!e.root.exists());
+}
+
+#[test]
+fn wait_defaults_to_30_seconds_and_timeout_ms_overrides_it() {
+    let args = |kv: &[(&str, &str)]| -> Args {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    let d = deadline_arg(&args(&[]), true).unwrap().unwrap();
+    let left = d.saturating_duration_since(Instant::now());
+    assert!(left > Duration::from_secs(29) && left <= Duration::from_secs(30));
+    assert!(deadline_arg(&args(&[]), false).unwrap().is_none());
+    assert!(
+        deadline_arg(&args(&[("timeout_ms", "0")]), true)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn get_wait_returns_a_message_put_later() {
+    let e = env();
+    let h = e.q("w");
+    let producer = {
+        let h = e.q("w");
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(call(&h, "put", &[("data", "late")]).status.ok);
+        })
+    };
+    let t = Instant::now();
+    let r = call(&h, "get", &[("wait", "true"), ("timeout_ms", "10000")]);
+    r.ok();
+    assert_eq!(r.text(), "late");
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    producer.join().unwrap();
+}
+
+#[test]
+fn get_wait_times_out_with_124_and_creates_the_queue() {
+    let e = env();
+    let h = e.q("none");
+    let t = Instant::now();
+    call(&h, "get", &[("wait", "true"), ("timeout_ms", "150")])
+        .fails(124, "mq.timeout")
+        .says("no message arrived");
+    assert!(t.elapsed() >= Duration::from_millis(150));
+    assert!(e.qdir("none").is_dir());
+    // wait=false keeps the old behaviour.
+    call(&h, "get", &[("wait", "false")]).fails(1, "mq.empty");
+}
+
+#[test]
+fn waiting_consumers_never_share_a_message() {
+    let e = env();
+    call(&e.q("ws"), "create", &[]).ok();
+    let consumers: Vec<_> = (0..3)
+        .map(|_| {
+            let h = e.q("ws");
+            std::thread::spawn(move || {
+                let r = call(&h, "get", &[("wait", "true"), ("timeout_ms", "10000")]);
+                assert!(r.status.ok, "{}", r.reason());
+                r.text()
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(100));
+    let h = e.q("ws");
+    for m in ["a", "b", "c"] {
+        call(&h, "put", &[("data", m)]).ok();
+    }
+    let mut got: Vec<String> = consumers.into_iter().map(|c| c.join().unwrap()).collect();
+    got.sort();
+    assert_eq!(got, ["a", "b", "c"]);
+    call(&h, "get", &[]).fails(1, "mq.empty");
+}
+
+#[test]
+fn the_waker_uses_inotify_and_wakes_on_a_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut w = Waker::new(dir.path());
+    assert!(w.rx.is_some(), "inotify watcher");
+    let path = dir.path().join("x");
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        fs::write(path, "x").unwrap();
+    });
+    let t = Instant::now();
+    // Far deadline: only the change (or the 500 ms poll) can end the wait.
+    w.wait(Some(Instant::now() + Duration::from_secs(60)));
+    assert!(t.elapsed() < Waker::POLL, "{:?}", t.elapsed());
+    writer.join().unwrap();
+    // The deadline bounds a wait with no change.
+    let t = Instant::now();
+    w.wait(Some(Instant::now() + Duration::from_millis(30)));
+    assert!(t.elapsed() < Duration::from_millis(400));
+}

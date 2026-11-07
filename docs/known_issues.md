@@ -148,13 +148,22 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   '_' (not starting with '.'); other targets such as `mq://team/a` are
   refused (`mq.invalid_target`) instead of being rewritten to a shared name.
 - Concurrent producers and consumers are safe: messages are written in
-  `.tmp/` and numbered under an flock, so no partial reads, lost or
-  duplicated messages, and FIFO order no longer depends on the clock. `get`
-  puts a message back if it cannot write it to stdout.
+  `.tmp/` and numbered under an flock, so no partial reads or lost
+  messages, and no two running consumers take the same message; FIFO order
+  no longer depends on the clock. `get` puts a message back if it cannot
+  write it to stdout.
 - `put`, `get` and `purge` take `timeout_ms` (wait for the queue lock;
   default no limit; exit 124); `len`, `peek` and `create` refuse it.
 - Queue files are owner-only (0700/0600); no `/tmp` fallback; symlinks are
   refused. `len`/`peek`/`get`/`purge` no longer create missing queues.
+- `get wait=true` waits for a message (inotify, with a 500 ms check),
+  bounded by `timeout_ms` (default 30000 when waiting; exit 124
+  `mq.timeout`). Without `wait`, an empty queue is exit 1 `mq.empty`.
+- Delivery is at-least-once: a message claimed by a `get` whose process has
+  since exited (checked by PID and start time) is moved back to the head of
+  the queue by the next `get` (and by `len`/`peek` when the lock is free). A
+  consumer killed after printing a message but before deleting its in-flight
+  copy gets that message delivered again.
 
 ### event
 
