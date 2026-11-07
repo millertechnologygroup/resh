@@ -7,6 +7,49 @@ one was then checked against the code by a separate read-only review.
 
 Fixes and behavior changes since v1.0.6-beta, grouped by handle.
 
+### All handles and the CLI
+
+- Errors use one format: `Error: [<handle>.<code>] <message>` on stderr and
+  `"error": {"code", "message"}` in JSON results. Exit codes are 0 success,
+  1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
+  Errors raised before a handle runs use `resh.invalid_stage`,
+  `resh.unknown_handle`, `<handle>.invalid_target` and
+  `<handle>.invalid_argument`. Handles not yet aligned (cache, db, mq, event,
+  log, secret, proc, svc, cron, firewall, user, pkg, system, cert, backup,
+  plugin, ssh, git) still print their own formats until they are.
+- Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
+  an unknown handle or verb is an error (exit 2) with a suggestion.
+- Stage output is streamed as it is written (`--json-pretty` still buffers).
+- `key=value` command-line values are passed exactly, without trimming.
+
+### http and https
+
+- 4xx/5xx statuses exit 1 (`http.status_error`) on every verb; `timeout_ms`
+  is a whole-request deadline on every verb (exit 124); `allow_insecure`
+  works on every verb; strict arguments.
+
+### dns
+
+- lookup/resolve/trace use resh's own DNS client: authority, additional and
+  `raw` are filled, `trace` follows referrals, `servers=` is honored.
+  `zone.fetch` signs AXFR/IXFR with TSIG and verifies every reply message;
+  IXFR is real. Strict arguments; JSON errors are objects for every verb.
+
+### net
+
+- `ping` exits 1 when the host is unreachable; `tcp_check` honors `port=` and
+  `expect_tls` performs a verified TLS handshake; `list` reports real
+  interface flags, MAC and MTU (`up` means the interface is up);
+  `route.list` honors `table=`; DNS TTLs are real.
+
+### mail
+
+- `test` opens a real SMTP session (TLS, AUTH, NOOP); `send`,
+  `send_template` and `test` use the active stored profile when no host is
+  given; `tls_accept_invalid_certs=true` disables certificate verification
+  and STARTTLS never falls back to plain text; `header_<Name>` headers are
+  sent; `mail://` arguments are no longer rewritten into `send`.
+
 ### archive
 
 - archive: every verb refuses unknown arguments and malformed values (exit 2,
@@ -296,8 +339,7 @@ This section supersedes the test counts and "Still open" list in the
   - Unsupported by design in this release: encrypted ZIP creation, git sync
     merge/rebase (fast-forward only), secret encryption at rest and
     `rotate`, ssh `tunnel`/`keys.list`/`key.add`, backup `schedule`
-    installation, pkg restore version pinning/rollback, dns `zone.fetch`
-    TSIG, cert encrypted keys, `proc limits.set` on other processes. (dns
+    installation, pkg restore version pinning/rollback, cert encrypted keys, `proc limits.set` on other processes. (dns
     `zone.update` and cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are base64-encoded, not encrypted. Since Stage 4
     the profile file is written owner-only (0600).
@@ -310,8 +352,6 @@ This section supersedes the test counts and "Still open" list in the
     finishes after the timeout is reported, or is killed by `SIGPIPE`
     part-way through when it next writes output. Check package-manager state
     after a timeout.
-  - `net ping` exits 0 even when the host is unreachable; `http head`,
-    `headers` and `json` exit 0 for 4xx/5xx statuses.
   - Option-injection hardening (`--` separators) for backup argv, cron job
     fields and ssh `command_args` is in v1.0.4-beta (see the section
     above); in v1.0.3-beta and earlier, never pass untrusted input in
@@ -376,7 +416,6 @@ Stages 1 and 3; see the release-candidate status above).
 | C4 | ssh `download` and `upload`: real transfers over the system `ssh`. Writes go to a temp file that is renamed into place. Checksums are reported only when actually compared. |
 | C5 | cert `verify`: real chain signature checks (ring), trust anchors, hostname, purpose and keypair checks. A check that was not performed is reported as `not_checked` or `unsupported`, never as a pass. |
 | C6 | secret: the store file is created with 0600 and its directory with 0700. Writes are atomic (temp file then rename). There is no `/tmp` fallback, and the help says the store is unencrypted. |
-| C7 | main.rs: `mail://test` and `mail://config` are never rewritten, and the rewrite into `send` matches whole argument keys only. |
 | H1 | plugin `install` and `update` really install, and `dry_run` returns the plan. Nothing panics. |
 | H2 | In-URL help detection is exact everywhere (`help::is_help_flag`, `parse.rs` `is_help_request`). |
 | H3 | cron: `extract_job_id` uses the right offset. `match_comment`, `/etc/cron.d` paths, path reporting and `list` arguments are also fixed. |
@@ -536,21 +575,6 @@ These were found during the fixes, or are Medium items that were not fixed:
   - Create the file with 0600 from the start (`OpenOptions` plus `mode`).
   - Never fall back to `/tmp`.
   - Encrypt the store, or stop calling it encrypted.
-
-### C7. Some `mail://test` and `mail://config` commands run `send` instead
-
-- **Where:** `src/main.rs:89-107` (`reconstruct_mail_command`).
-  - If no `to=`, `subject=`, `from=`, `cc=`, `bcc=`, `text_body=` or
-    `html_body=` argument is present, but the joined text contains `=` and
-    any of `@`, `to` or `subject` (plain substring matches), the stage is
-    rewritten to `mail://send(...)`.
-- **Impact:**
-  - `mail://test smtp_username=alice@example.com` parses as verb `send`, with
-    a mangled argument key `"test smtp_username"` (confirmed through
-    `parse_stage`).
-  - Any argument value containing the letters "to" also triggers the rewrite.
-- **Fix:** only rewrite when the stage has no explicit verb, and match whole
-  keys, not substrings.
 
 ---
 
@@ -721,41 +745,15 @@ typed structs:
 
 ### Network
 
-- **dns `zone.update` limits.**
-  - Sends a real RFC 2136 UPDATE (TSIG-signed when a key is given), but it is
-    verified only against local fake servers, BIND's `nsupdate` request
-    encoding and dnspython's TSIG, not against a live BIND or Knot server.
-  - `zone_serial_at_least` is a separate SOA query before the update, not
-    atomic with it.
-  - No EDNS: UDP messages over 512 bytes are sent over TCP instead.
-- **dns resolver and options.**
-  - With no `servers=`, lookups use `ResolverConfig::default()` (fixed public
-    resolvers) instead of the system resolver (`:2715`).
-  - Lookup `authority` and `additional` are always empty (`:2754-2755`).
-  - The resolve `raw` field is always null (`:1021`).
-  - `zone.fetch` falls back from IXFR to AXFR (`:4744-4748`) and ignores
-    `use_tcp`, `retries`, `dnssec` and the TSIG options.
-- **net `tcp_check` ignores `port=`.**
-  - It connects to the URL port (`src/handles/network/neth.rs:2427`) but
-    reports the `port=` value (`:2362-2368`).
-  - `port=` alone fails address resolution.
-  - `expect_tls` is unused, and `tls_checked` is always false
-    (`:2335, 2462, 2493`).
-- **net other.**
-  - `list` ignores the URL host (`:1786`).
-  - The `up` filter really means "not loopback" (`:3423`).
-  - A, AAAA, MX, TXT and PTR records always report a TTL of 300.
-  - `net dns` reports server `"system"` while using `ResolverConfig::default()`
-    (`:1363, 1896`).
-- **http.**
-  - `head` and `patch` ignore `timeout_ms` (fixed at 10 s and 30 s,
-    `src/handles/network/httph.rs:1895, 2445`).
-  - `allow_insecure` is honored only by `put` (`:2258`), although the help
-    advertises it for every verb.
-  - `post` and `put` prefer `body_file` over `body`, while `patch` and
-    `delete` prefer `body`.
-  - The doc comment on `json` (`:3181`) claims it sets
-    `Accept: application/json`; it doesn't.
+- **dns limits.**
+  - `dnssec_validated`/`ad_bit` repeat the server's AD flag; resh does not
+    validate DNSSEC signatures itself.
+  - `zone.update`'s `zone_serial_at_least` is a separate SOA query before the
+    update, not atomic with it. No EDNS for updates: UDP messages over 512
+    bytes go over TCP.
+  - Server discovery for `zone.fetch`/`zone.update` (no `servers=`) always
+    asks the /etc/resolv.conf name servers on port 53.
+- **net list** ignores the URL host (`net://if` is the convention).
 - **ssh simulated or stubbed verbs** (`src/handles/network/sshh.rs`).
   Updated 2026-10-23: `upload` and `download` perform real transfers
   (fixed, C4). Still stubs: `tunnel`, `keys.list` and `key.add` fail with
@@ -767,10 +765,6 @@ typed structs:
   - With password auth, `cwd` is dropped (`:6346`).
 - **ssh `config.get`.** A later matching entry overrides an earlier one
   (`:8452, 8496`); OpenSSH uses the first match.
-- **mail `test`.**
-  - It never opens an SMTP session: `tls_established` and `auth_succeeded`
-    are set from configuration (`src/handles/network/mailh.rs:3841-3858`).
-  - `send` and `test` never read the stored profiles.
 
 ### Filesystem
 
