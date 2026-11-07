@@ -1,0 +1,30 @@
+Handle: mail
+
+Description:
+  The mail handle sends email over SMTP with the lettre library, renders
+  built-in message templates, checks SMTP settings with a real session, and
+  keeps named SMTP profiles in ~/.config/resh/mail/smtp_profiles.json. The verb
+  is the first path segment of the URL, such as mail://send, and its arguments
+  follow as key=value words. SMTP settings come from arguments, then from the
+  MAIL_SMTP_HOST, MAIL_SMTP_PORT, MAIL_SMTP_USERNAME, MAIL_SMTP_PASSWORD, and
+  MAIL_FROM environment variables when MAIL_SMTP_HOST is set, and otherwise from
+  the active stored profile. Exit codes: 0 success, 1 failure, 2 invalid
+  arguments (nothing done), 124 timeout.
+
+Available Verbs:
+  test            Checks SMTP settings by opening a real session (TLS and AUTH
+                  as configured) and closing it, and also sends a test message
+                  when send_test_email=true.
+  config          Manages named SMTP profiles in a local JSON file, with action
+                  choosing list, get, set, delete, activate, or get_active.
+  send            Sends an email over SMTP and reports the server, attempt
+                  count, and message ID as JSON.
+  send_template   Renders a built-in template (welcome or password_reset) with
+                  vars and sends it the same way as send, or only previews it
+                  when dry_run=true.
+
+Usage:
+  resh mail://<verb> [key=value ...]
+
+For help with a specific verb:
+  resh mail <verb> --help

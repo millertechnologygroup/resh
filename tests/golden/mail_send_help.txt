@@ -1,0 +1,47 @@
+Handle: mail
+Verb: send
+Definition: Sends an email over SMTP and reports the server, attempt count, and
+  message ID as JSON.
+
+Usage:
+  resh mail://send to=<addr,...> subject=<text> text_body=<text>
+    [html_body=<html>] [cc=<addr,...>] [bcc=<addr,...>] [from=<addr>]
+    [reply_to=<addr>] [attachments=<json-array>]
+    [header_<Name>=<value> ...] [smtp_host=<host>] [smtp_port=<n>]
+    [use_tls=none|starttls|tls] [smtp_username=<user>] [smtp_password=<pass>]
+    [tls_accept_invalid_certs=true|false] [timeout_ms=<ms>]
+    [max_retry=<n>] [retry_backoff_ms=<ms>] [format_output=json|text]
+
+Example:
+  resh mail://send to=alice@example.com subject=Backup 'text_body=Backup done'
+
+Example Output:
+  {
+    "error": null,
+    "ok": true,
+    "query": {
+      "bcc": [],
+      "cc": [],
+      "from": null,
+      "max_retry": 0,
+      "subject": "Backup",
+      "timeout_ms": 10000,
+      "to": [
+        "alice@example.com"
+      ],
+      "use_tls": "starttls"
+    },
+    "result": {
+      "attempts": 1,
+      "last_response": "Response { code: Code { .. }, message: [\"Ok\"] }",
+      "message_id": "<0f9c2c1e-6a1d-4f55-9a43-2b1e7a5f3c11@buildhost>",
+      "smtp_host": "smtp.example.com",
+      "smtp_port": 587
+    },
+    "timestamp_unix_ms": 1792141964512,
+    "warnings": []
+  }
+
+  Shown with MAIL_SMTP_HOST and MAIL_FROM set in the environment, which
+  query.from does not reflect. last_response is the SMTP reply in Rust debug
+  form, shortened here. mail prints sorted, indented JSON itself.

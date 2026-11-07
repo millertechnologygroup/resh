@@ -1,0 +1,44 @@
+Handle: mail
+Verb: config
+Definition: Manages named SMTP profiles in a local JSON file, with action
+  choosing list, get, set, delete, activate, or get_active.
+
+Usage:
+  resh mail://config action=list|get|set|delete|activate|get_active
+    [profile=<name>] [smtp_host=<host>] [smtp_port=<n>]
+    [use_tls=none|starttls|tls] [smtp_username=<user>] [smtp_password=<pass>]
+    [from=<addr>] [reply_to=<addr>] [description=<text>]
+    [is_default=true|false] [tls_accept_invalid_certs=true|false]
+    [format_output=json|text]
+
+Example:
+  resh mail://config action=list
+
+Example Output:
+  {
+    "active_profile": "work",
+    "error": null,
+    "ok": true,
+    "profiles": [
+      {
+        "description": "Office relay",
+        "from": "alice@example.com",
+        "has_password": true,
+        "is_active": true,
+        "name": "work",
+        "reply_to": null,
+        "smtp_host": "smtp.example.com",
+        "smtp_port": 587,
+        "tls_accept_invalid_certs": false,
+        "use_tls": "starttls"
+      }
+    ],
+    "query": {
+      "action": "list"
+    },
+    "timestamp_unix_ms": 1792141964512,
+    "warnings": []
+  }
+
+  profile is required for get, set, delete, and activate. mail prints sorted,
+  indented JSON without --json-pretty.

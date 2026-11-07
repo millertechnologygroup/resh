@@ -1,0 +1,55 @@
+Handle: mail
+Verb: test
+Definition: Checks SMTP settings by opening a real session (TLS and AUTH as
+  configured) and closing it, and also sends a test message when
+  send_test_email=true.
+
+Usage:
+  resh mail://test [smtp_host=<host>] [smtp_port=<n>]
+    [use_tls=none|starttls|tls] [smtp_username=<user>] [smtp_password=<pass>]
+    [tls_accept_invalid_certs=true|false] [connection_only=true|false]
+    [send_test_email=true|false] [to=<addr,...>] [from=<addr>]
+    [subject=<text>] [text_body=<text>] [html_body=<html>]
+    [timeout_ms=<ms>] [max_retry=<n>] [retry_backoff_ms=<ms>]
+    [format_output=json|text]
+
+Example:
+  resh mail://test connection_only=true
+
+Example Output:
+  {
+    "connection": {
+      "attempts": 1,
+      "auth_attempted": true,
+      "auth_succeeded": true,
+      "last_response": "Connection test completed",
+      "resolved_ip": "192.0.2.25",
+      "smtp_host": "smtp.example.com",
+      "smtp_port": 587,
+      "tls_established": true,
+      "use_tls": "starttls"
+    },
+    "error": null,
+    "ok": true,
+    "query": {
+      "connection_only": true,
+      "from": null,
+      "max_retry": 0,
+      "send_test_email": false,
+      "smtp_host": null,
+      "smtp_port": null,
+      "subject": "SMTP test",
+      "timeout_ms": 10000,
+      "to": [],
+      "use_tls": "starttls"
+    },
+    "send_test_email": null,
+    "timestamp_unix_ms": 1792141964512,
+    "warnings": [
+      "Using stored SMTP profile 'work'."
+    ]
+  }
+
+  Shown with an active stored profile 'work'. The session connects, upgrades
+  with STARTTLS and logs in, then closes. mail prints sorted, indented JSON
+  without --json-pretty.
