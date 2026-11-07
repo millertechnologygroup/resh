@@ -20,7 +20,7 @@ use support::{run, tool, tool_available, tool_message};
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{Status, error_json, exit},
 };
 
 /// Sample output shared by `unmount` and its alias `umount`.
@@ -96,7 +96,8 @@ const FS_CHECK_EXAMPLE_OUTPUT: &str = r#"{
 
 Shown for an unmounted ext4 image file with --json-pretty. The verb field
 is "check" for both spellings. Supported types: ext2, ext3, ext4, vfat,
-xfs, btrfs. mode=repair (needs allow_repair=true) runs fsck -p (-y with
+xfs, btrfs; others (such as reiserfs) are refused with exit 1.
+mode=repair (needs allow_repair=true) runs fsck -p (-y with
 aggressiveness=aggressive), fsck.vfat -a, xfs_repair or btrfs check
 --repair on an unmounted filesystem; a mounted btrfs is scrubbed. Errors
 found are reported in analysis with exit 0; a tool that fails to run its
@@ -483,8 +484,9 @@ Defaults as for quota, timeout_ms=8000."#,
 Shown with --json-pretty; an image file is attached to a loop device by
 mount(8). An existing compatible mount returns action "already_mounted";
 dry_run=true returns action "planned" with a plan. A relative target is
-resolved from the current directory. Defaults: create_target=true,
-make_parents=true, other switches false, timeout_ms=5000."#,
+resolved from the current directory. network=true adds the _netdev option.
+Defaults: create_target=true, make_parents=true, other switches false,
+timeout_ms=5000."#,
                 ),
             }),
         },
@@ -746,8 +748,8 @@ pub struct MountInfo {
 #[derive(Debug, Serialize)]
 pub struct UnmountError {
     pub target: String,
-    pub code: String,
-    pub message: String,
+    /// `{"code": "fs.<code>", "message": ...}`
+    pub error: Value,
 }
 
 /// Plan for dry-run unmount operations
@@ -764,8 +766,6 @@ pub enum FsError {
     InvalidMountConfig(String),
     #[error("Invalid unmount configuration: {0}")]
     InvalidUnmountConfig(String),
-    #[error("Profile not found: {0}")]
-    ProfileNotFound(String),
     #[error("Mount operations are not supported here: the mount tool was not found")]
     MountUnsupported,
     #[error("Unmount operations are not supported here: the umount tool was not found")]
@@ -792,8 +792,6 @@ pub enum FsError {
     NotMounted(String),
     #[error("Target is busy and cannot be unmounted: {0}")]
     UnmountBusy(String),
-    #[error("Unmount option not supported on this platform: {0}")]
-    UnmountOptionUnsupported(String),
     #[error("Invalid snapshot configuration: {0}")]
     InvalidSnapshotConfig(String),
     #[error("Snapshot operations are not supported on this platform")]
@@ -896,6 +894,8 @@ pub enum FsError {
     Incomplete {
         output: Value,
         code: i32,
+        /// The `fs.<code>` of the first failure.
+        error_code: String,
         message: String,
     },
 }
@@ -2063,6 +2063,11 @@ impl FsHandle {
         if config.read_only && !config.options.contains(&"ro".to_string()) {
             config.options.push("ro".to_string());
         }
+        // A network share must wait for the network at boot and be
+        // unmounted before it goes down: `_netdev` tells the system so.
+        if config.network && !config.options.iter().any(|o| o == "_netdev") {
+            config.options.push("_netdev".to_string());
+        }
 
         Ok(config)
     }
@@ -2725,6 +2730,7 @@ impl FsHandle {
         let mut skipped = Vec::new();
         let mut errors = Vec::new();
         let mut first_code: Option<i32> = None;
+        let mut first_error_code: Option<String> = None;
 
         let info = |mount: &ExistingMount| MountInfo {
             source: mount.source.clone(),
@@ -2748,10 +2754,12 @@ impl FsHandle {
                         first_code =
                             Some(e.downcast_ref::<FsError>().map(fs_exit_code).unwrap_or(1));
                     }
+                    if first_error_code.is_none() {
+                        first_error_code = Some(self.map_error_to_code(&e));
+                    }
                     errors.push(UnmountError {
                         target: mount.target.clone(),
-                        code: self.map_error_to_code(&e),
-                        message: e.to_string(),
+                        error: error_json(&self.map_error_to_code(&e), &e.to_string()),
                     });
                 }
             }
@@ -2792,11 +2800,14 @@ impl FsHandle {
                 } else {
                     "some mounts were not unmounted"
                 },
-                first["message"].as_str().unwrap_or("unmount failed")
+                first["error"]["message"]
+                    .as_str()
+                    .unwrap_or("unmount failed")
             );
             return Err(FsError::Incomplete {
                 output: result,
                 code,
+                error_code: first_error_code.unwrap_or_else(|| "fs.unmount_failure".to_string()),
                 message,
             }
             .into());
@@ -2837,85 +2848,9 @@ impl FsHandle {
         Ok(())
     }
 
-    /// Map errors to error codes for JSON responses
+    /// The `fs.<code>` of an error, for JSON results.
     fn map_error_to_code(&self, error: &anyhow::Error) -> String {
-        if let Some(fs_err) = error.downcast_ref::<FsError>() {
-            match fs_err {
-                FsError::InvalidMountConfig(_) => "fs.invalid_mount_config",
-                FsError::InvalidUnmountConfig(_) => "fs.invalid_unmount_config",
-                FsError::InvalidSnapshotConfig(_) => "fs.invalid_snapshot_config",
-                FsError::InvalidQuotaConfig(_) => "fs.invalid_quota_config",
-                FsError::ProfileNotFound(_) => "fs.profile_not_found",
-                FsError::MountUnsupported => "fs.mount_unsupported",
-                FsError::UnmountUnsupported => "fs.unmount_unsupported",
-                FsError::SnapshotUnsupported => "fs.snapshot_unsupported",
-                FsError::QuotaUnsupported => "fs.quota_unsupported",
-                FsError::MountPermissionDenied => "fs.mount_permission_denied",
-                FsError::UnmountPermissionDenied => "fs.unmount_permission_denied",
-                FsError::AlreadyMounted(_) => "fs.already_mounted",
-                FsError::ConflictingMount(_) => "fs.conflicting_mount",
-                FsError::NotMounted(_) => "fs.not_mounted",
-                FsError::QuotaNotEnabled(_) => "fs.quota_not_enabled",
-                FsError::QuotaSubjectNotFound(_) => "fs.quota_subject_not_found",
-                FsError::MountFailure(_) => "fs.mount_failure",
-                FsError::UnmountFailure(_) => "fs.unmount_failure",
-                FsError::SnapshotFailed(_) => "fs.snapshot_failed",
-                FsError::QuotaFailed(_) => "fs.quota_failed",
-                FsError::MountTimeout => "fs.mount_timeout",
-                FsError::UnmountTimeout => "fs.unmount_timeout",
-                FsError::SnapshotTimeout => "fs.snapshot_timeout",
-                FsError::QuotaTimeout => "fs.quota_timeout",
-                FsError::TargetCreationFailed(_) => "fs.target_creation_failed",
-                FsError::UnmountBusy(_) => "fs.unmount_busy",
-                FsError::UnmountOptionUnsupported(_) => "fs.unmount_option_unsupported",
-                FsError::InvalidQuotaSummaryConfig(_) => "fs.invalid_quota_summary_config",
-                FsError::QuotaSummaryUnsupported => "fs.quota_summary_unsupported",
-                FsError::QuotaSummaryNoQuotaFilesystems(_) => {
-                    "fs.quota_summary_no_quota_filesystems"
-                }
-                FsError::Incomplete { .. } => "fs.incomplete",
-                FsError::QuotaSummaryTimeout => "fs.quota_summary_timeout",
-                FsError::QuotaSummaryFailed(_) => "fs.quota_summary_failed",
-                FsError::InvalidUsageConfig(_) => "fs.invalid_usage_config",
-                FsError::UsageUnsupported => "fs.usage_unsupported",
-                FsError::UsageTimeout => "fs.usage_timeout",
-                FsError::UsageFailed(_) => "fs.usage_failed",
-                FsError::PathNotFound(_) => "fs.path_not_found",
-                FsError::UsageNothingSelected => "fs.usage_nothing_selected",
-                FsError::InvalidResizeConfig(_) => "fs.invalid_resize_config",
-                FsError::ResizeTargetNotFound(_) => "fs.resize_target_not_found",
-                FsError::ResizeUnsupportedFilesystem(_) => "fs.resize_unsupported_filesystem",
-                FsError::ResizeShrinkNotAllowed => "fs.resize_shrink_not_allowed",
-                FsError::ResizeShrinkNotSupportedForFilesystem(_) => {
-                    "fs.resize_shrink_not_supported_for_filesystem"
-                }
-                FsError::ResizeShrinkRequiresUnmount(_) => "fs.resize_shrink_requires_unmount",
-                FsError::ResizeWouldViolateMinFree => "fs.resize_would_violate_min_free",
-                FsError::ResizeTargetExceedsDevice => "fs.resize_target_exceeds_device",
-                FsError::ResizeInvalidTargetSize(_) => "fs.resize_invalid_target_size",
-                FsError::ResizeVolumeManagementUnsupported => {
-                    "fs.resize_volume_management_unsupported"
-                }
-                FsError::ResizeTimeout => "fs.resize_timeout",
-                FsError::ResizeFailed(_) => "fs.resize_failed",
-                FsError::InvalidCheckConfig(_) => "fs.invalid_check_config",
-                FsError::CheckTargetNotFound(_) => "fs.check_target_not_found",
-                FsError::CheckUnsupportedFilesystem(_) => "fs.check_unsupported_filesystem",
-                FsError::CheckRepairNotAllowed => "fs.check_repair_not_allowed",
-                FsError::CheckRequiresUnmountForRepair(_) => "fs.check_requires_unmount_for_repair",
-                FsError::CheckMustBeOffline(_) => "fs.check_must_be_offline",
-                FsError::CheckToolNotAvailable(_) => "fs.check_tool_not_available",
-                FsError::CheckTimeout => "fs.check_timeout",
-                FsError::CheckFailed(_) => "fs.check_failed",
-                FsError::InvalidListMountsConfig(_) => "fs.invalid_list_mounts_config",
-                FsError::ListMountsUnsupported => "fs.list_mounts_unsupported",
-                FsError::ListMountsTimeout => "fs.list_mounts_timeout",
-                FsError::ListMountsFailed(_) => "fs.list_mounts_failed",
-            }
-        } else {
-            "fs.unknown_error"
-        }
-        .to_string()
+        error_code(error).to_string()
     }
 
     /// Main snapshot operation implementation
@@ -5371,6 +5306,9 @@ impl FsHandle {
             return Err(invalid("timeout_ms must be greater than 0"));
         }
         if let Some(t) = &config.filesystem_type {
+            if CHECK_REFUSED_FILESYSTEMS.contains(&t.as_str()) {
+                return Err(FsError::CheckUnsupportedFilesystem(unsupported_check_type(t)).into());
+            }
             if !CHECK_FILESYSTEMS.contains(&t.as_str()) {
                 return Err(FsError::InvalidCheckConfig(format!(
                     "filesystem_type {t:?} is not supported (supported: {})",
@@ -5573,7 +5511,7 @@ impl FsHandle {
         if CHECK_FILESYSTEMS.contains(&fstype) {
             Ok(())
         } else {
-            Err(FsError::CheckUnsupportedFilesystem(fstype.to_string()).into())
+            Err(FsError::CheckUnsupportedFilesystem(unsupported_check_type(fstype)).into())
         }
     }
 
@@ -6433,13 +6371,18 @@ impl Handle for FsHandle {
         }
 
         let Some(allowed) = support::options_for(verb) else {
-            return Ok(Status::err(2, format!("unknown verb: {verb}")));
+            return Ok(Status::coded(
+                exit::USAGE,
+                "fs.unknown_verb",
+                format!("unknown verb: {verb}"),
+            ));
         };
         // An option the verb does not know would otherwise be ignored, so a
         // misspelled `read_only` would mount read-write.
         if let Some(bad) = support::unknown_option(args.keys(), allowed) {
-            return Ok(Status::err(
-                2,
+            return Ok(Status::coded(
+                exit::USAGE,
+                "fs.invalid_argument",
                 support::unknown_option_message(verb, bad, allowed),
             ));
         }
@@ -6469,14 +6412,28 @@ impl Handle for FsHandle {
         // A tool stopped at the deadline means the outcome is unknown, even
         // if the verb carried on (a skipped mount in `usage`).
         if support::take_timed_out() {
-            let reason = match &result {
+            let (code, reason) = match &result {
                 Ok(value) => {
                     writeln!(io.stdout, "{}", serde_json::to_string(value)?)?;
-                    "timeout_ms passed and a tool was stopped; the result is incomplete".to_string()
+                    (
+                        "fs.timeout",
+                        "timeout_ms passed and a tool was stopped; the result is incomplete"
+                            .to_string(),
+                    )
                 }
-                Err(e) => format!("timeout_ms passed: {e:#}"),
+                Err(e) => {
+                    // A verb's own timeout code (fs.mount_timeout, ...) is
+                    // kept; any other error is the effect of the stop.
+                    let code = match e.downcast_ref::<FsError>() {
+                        Some(fs_err) if fs_exit_code(fs_err) == exit::TIMEOUT => {
+                            fs_error_code(fs_err)
+                        }
+                        _ => "fs.timeout",
+                    };
+                    (code, format!("timeout_ms passed: {e:#}"))
+                }
             };
-            return Ok(Status::err(124, reason));
+            return Ok(Status::coded(exit::TIMEOUT, code, reason));
         }
 
         match result {
@@ -6489,20 +6446,179 @@ impl Handle for FsHandle {
                 Some(FsError::Incomplete {
                     output,
                     code,
+                    error_code,
                     message,
                 }) => {
                     // Report what was and was not done before failing.
-                    writeln!(io.stdout, "{}", serde_json::to_string(output)?)?;
-                    Ok(Status::err(*code, message))
+                    let mut output = output.clone();
+                    if let Some(obj) = output.as_object_mut() {
+                        obj.insert("error".to_string(), error_json(error_code, message));
+                    }
+                    writeln!(io.stdout, "{}", serde_json::to_string(&output)?)?;
+                    Ok(Status::coded(*code, error_code, message))
                 }
-                Some(fs_err) => Ok(Status::err(fs_exit_code(fs_err), e.to_string())),
+                Some(fs_err) => Ok(Status::coded(
+                    fs_exit_code(fs_err),
+                    fs_error_code(fs_err),
+                    e.to_string(),
+                )),
                 // Not a validation error: reading the system or running a
                 // tool failed.
-                None => Ok(Status::err(1, format!("{e:#}"))),
+                None => Ok(Status::coded(exit::FAILED, "fs.failed", format!("{e:#}"))),
             },
         }
     }
 }
+
+/// The `fs.<code>` of an error: the code of an [`FsError`], `fs.failed` for
+/// any other failure (reading the system or running a tool).
+fn error_code(error: &anyhow::Error) -> &str {
+    match error.downcast_ref::<FsError>() {
+        Some(fs_err) => fs_error_code(fs_err),
+        None => "fs.failed",
+    }
+}
+
+/// The `fs.<code>` of an [`FsError`]. Every code is listed in [`FS_ERROR_CODES`].
+fn fs_error_code(fs_err: &FsError) -> &str {
+    match fs_err {
+        FsError::InvalidMountConfig(_) => "fs.invalid_mount_config",
+        FsError::InvalidUnmountConfig(_) => "fs.invalid_unmount_config",
+        FsError::InvalidSnapshotConfig(_) => "fs.invalid_snapshot_config",
+        FsError::InvalidQuotaConfig(_) => "fs.invalid_quota_config",
+        FsError::MountUnsupported => "fs.mount_unsupported",
+        FsError::UnmountUnsupported => "fs.unmount_unsupported",
+        FsError::SnapshotUnsupported => "fs.snapshot_unsupported",
+        FsError::QuotaUnsupported => "fs.quota_unsupported",
+        FsError::MountPermissionDenied => "fs.mount_permission_denied",
+        FsError::UnmountPermissionDenied => "fs.unmount_permission_denied",
+        FsError::AlreadyMounted(_) => "fs.already_mounted",
+        FsError::ConflictingMount(_) => "fs.conflicting_mount",
+        FsError::NotMounted(_) => "fs.not_mounted",
+        FsError::QuotaNotEnabled(_) => "fs.quota_not_enabled",
+        FsError::QuotaSubjectNotFound(_) => "fs.quota_subject_not_found",
+        FsError::MountFailure(_) => "fs.mount_failure",
+        FsError::UnmountFailure(_) => "fs.unmount_failure",
+        FsError::SnapshotFailed(_) => "fs.snapshot_failed",
+        FsError::QuotaFailed(_) => "fs.quota_failed",
+        FsError::MountTimeout => "fs.mount_timeout",
+        FsError::UnmountTimeout => "fs.unmount_timeout",
+        FsError::SnapshotTimeout => "fs.snapshot_timeout",
+        FsError::QuotaTimeout => "fs.quota_timeout",
+        FsError::TargetCreationFailed(_) => "fs.target_creation_failed",
+        FsError::UnmountBusy(_) => "fs.unmount_busy",
+        FsError::InvalidQuotaSummaryConfig(_) => "fs.invalid_quota_summary_config",
+        FsError::QuotaSummaryUnsupported => "fs.quota_summary_unsupported",
+        FsError::QuotaSummaryNoQuotaFilesystems(_) => "fs.quota_summary_no_quota_filesystems",
+        FsError::Incomplete { error_code, .. } => error_code,
+        FsError::QuotaSummaryTimeout => "fs.quota_summary_timeout",
+        FsError::QuotaSummaryFailed(_) => "fs.quota_summary_failed",
+        FsError::InvalidUsageConfig(_) => "fs.invalid_usage_config",
+        FsError::UsageUnsupported => "fs.usage_unsupported",
+        FsError::UsageTimeout => "fs.usage_timeout",
+        FsError::UsageFailed(_) => "fs.usage_failed",
+        FsError::PathNotFound(_) => "fs.path_not_found",
+        FsError::UsageNothingSelected => "fs.usage_nothing_selected",
+        FsError::InvalidResizeConfig(_) => "fs.invalid_resize_config",
+        FsError::ResizeTargetNotFound(_) => "fs.resize_target_not_found",
+        FsError::ResizeUnsupportedFilesystem(_) => "fs.resize_unsupported_filesystem",
+        FsError::ResizeShrinkNotAllowed => "fs.resize_shrink_not_allowed",
+        FsError::ResizeShrinkNotSupportedForFilesystem(_) => {
+            "fs.resize_shrink_not_supported_for_filesystem"
+        }
+        FsError::ResizeShrinkRequiresUnmount(_) => "fs.resize_shrink_requires_unmount",
+        FsError::ResizeWouldViolateMinFree => "fs.resize_would_violate_min_free",
+        FsError::ResizeTargetExceedsDevice => "fs.resize_target_exceeds_device",
+        FsError::ResizeInvalidTargetSize(_) => "fs.resize_invalid_target_size",
+        FsError::ResizeVolumeManagementUnsupported => "fs.resize_volume_management_unsupported",
+        FsError::ResizeTimeout => "fs.resize_timeout",
+        FsError::ResizeFailed(_) => "fs.resize_failed",
+        FsError::InvalidCheckConfig(_) => "fs.invalid_check_config",
+        FsError::CheckTargetNotFound(_) => "fs.check_target_not_found",
+        FsError::CheckUnsupportedFilesystem(_) => "fs.check_unsupported_filesystem",
+        FsError::CheckRepairNotAllowed => "fs.check_repair_not_allowed",
+        FsError::CheckRequiresUnmountForRepair(_) => "fs.check_requires_unmount_for_repair",
+        FsError::CheckMustBeOffline(_) => "fs.check_must_be_offline",
+        FsError::CheckToolNotAvailable(_) => "fs.check_tool_not_available",
+        FsError::CheckTimeout => "fs.check_timeout",
+        FsError::CheckFailed(_) => "fs.check_failed",
+        FsError::InvalidListMountsConfig(_) => "fs.invalid_list_mounts_config",
+        FsError::ListMountsUnsupported => "fs.list_mounts_unsupported",
+        FsError::ListMountsTimeout => "fs.list_mounts_timeout",
+        FsError::ListMountsFailed(_) => "fs.list_mounts_failed",
+    }
+}
+
+/// Every error code the fs handle can emit (`Error: [<code>] ...` on stderr,
+/// `"error": {"code": ...}` in JSON). Each is documented in
+/// docs/Filesystem_Storage/fs.md.
+pub const FS_ERROR_CODES: &[&str] = &[
+    "fs.invalid_argument",
+    "fs.unknown_verb",
+    "fs.timeout",
+    "fs.failed",
+    "fs.invalid_mount_config",
+    "fs.invalid_unmount_config",
+    "fs.invalid_snapshot_config",
+    "fs.invalid_quota_config",
+    "fs.mount_unsupported",
+    "fs.unmount_unsupported",
+    "fs.snapshot_unsupported",
+    "fs.quota_unsupported",
+    "fs.mount_permission_denied",
+    "fs.unmount_permission_denied",
+    "fs.already_mounted",
+    "fs.conflicting_mount",
+    "fs.not_mounted",
+    "fs.quota_not_enabled",
+    "fs.quota_subject_not_found",
+    "fs.mount_failure",
+    "fs.unmount_failure",
+    "fs.snapshot_failed",
+    "fs.quota_failed",
+    "fs.mount_timeout",
+    "fs.unmount_timeout",
+    "fs.snapshot_timeout",
+    "fs.quota_timeout",
+    "fs.target_creation_failed",
+    "fs.unmount_busy",
+    "fs.invalid_quota_summary_config",
+    "fs.quota_summary_unsupported",
+    "fs.quota_summary_no_quota_filesystems",
+    "fs.quota_summary_timeout",
+    "fs.quota_summary_failed",
+    "fs.invalid_usage_config",
+    "fs.usage_unsupported",
+    "fs.usage_timeout",
+    "fs.usage_failed",
+    "fs.path_not_found",
+    "fs.usage_nothing_selected",
+    "fs.invalid_resize_config",
+    "fs.resize_target_not_found",
+    "fs.resize_unsupported_filesystem",
+    "fs.resize_shrink_not_allowed",
+    "fs.resize_shrink_not_supported_for_filesystem",
+    "fs.resize_shrink_requires_unmount",
+    "fs.resize_would_violate_min_free",
+    "fs.resize_target_exceeds_device",
+    "fs.resize_invalid_target_size",
+    "fs.resize_volume_management_unsupported",
+    "fs.resize_timeout",
+    "fs.resize_failed",
+    "fs.invalid_check_config",
+    "fs.check_target_not_found",
+    "fs.check_unsupported_filesystem",
+    "fs.check_repair_not_allowed",
+    "fs.check_requires_unmount_for_repair",
+    "fs.check_must_be_offline",
+    "fs.check_tool_not_available",
+    "fs.check_timeout",
+    "fs.check_failed",
+    "fs.invalid_list_mounts_config",
+    "fs.list_mounts_unsupported",
+    "fs.list_mounts_timeout",
+    "fs.list_mounts_failed",
+];
 
 /// The exit status for an fs error, following the project convention:
 /// 2 invalid usage (nothing was done), 124 timeout, 1 any other failure.
@@ -6587,6 +6703,15 @@ struct CheckTarget {
 
 /// Filesystem types `check` supports.
 const CHECK_FILESYSTEMS: &[&str] = &["ext2", "ext3", "ext4", "vfat", "xfs", "btrfs"];
+
+/// Filesystem types `check` knows but refuses (exit 1,
+/// `fs.check_unsupported_filesystem`), also when named by `filesystem_type`.
+const CHECK_REFUSED_FILESYSTEMS: &[&str] = &["reiserfs"];
+
+/// The detail of `fs.check_unsupported_filesystem` for a filesystem type.
+fn unsupported_check_type(fstype: &str) -> String {
+    format!("{fstype} (check supports {})", CHECK_FILESYSTEMS.join(", "))
+}
 
 /// The include/exclude filters shared by several verbs.
 struct MountFilters<'a> {

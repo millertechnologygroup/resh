@@ -77,6 +77,18 @@ impl Out {
             "stdout {:?} reason {:?}",
             self.stdout, self.reason
         );
+        // Every failure carries an `[fs.<code>]` from FS_ERROR_CODES.
+        let tag = self
+            .reason
+            .strip_prefix('[')
+            .and_then(|r| r.split_once(']'))
+            .map(|(c, _)| c)
+            .unwrap_or_default();
+        assert!(
+            FS_ERROR_CODES.contains(&tag),
+            "reason {:?} has no fs error code",
+            self.reason
+        );
         assert!(
             self.reason.contains(needle),
             "reason {:?} lacks {needle:?}",
@@ -468,6 +480,88 @@ fn mount_network_share_is_accepted() {
     )
     .ok();
     assert_eq!(v["action"], "mounted");
+    // network=true adds _netdev.
+    assert_eq!(
+        env.log().trim(),
+        format!("mount -t nfs4 -o _netdev -- server:/export {t}")
+    );
+}
+
+#[test]
+fn mount_network_keeps_a_given_netdev_once() {
+    let env = Env::new();
+    env.tool("mount", "exit 0");
+    let t = env.path("nfs");
+    call(
+        "mount",
+        &[
+            ("target", &t),
+            ("source", "server:/export"),
+            ("options", "_netdev,noatime"),
+            ("network", "true"),
+        ],
+    )
+    .ok();
+    assert_eq!(
+        env.log().trim(),
+        format!("mount -o _netdev,noatime -- server:/export {t}")
+    );
+    // Without network=true nothing is added.
+    std::fs::remove_file(env.path("log")).unwrap();
+    call("mount", &[("target", &t), ("source", "/dev/sdz1")]).ok();
+    assert_eq!(env.log().trim(), format!("mount -- /dev/sdz1 {t}"));
+}
+
+#[test]
+fn check_refuses_reiserfs() {
+    let env = Env::new();
+    env.tool("blkid", "echo reiserfs");
+    env.tool("fsck.ext4", "exit 0");
+    let img = env.path("disk.img");
+    std::fs::write(&img, b"").unwrap();
+    // Named by filesystem_type: refused before anything runs.
+    let out = call(
+        "check",
+        &[("target", &img), ("filesystem_type", "reiserfs")],
+    );
+    out.fails(1, "[fs.check_unsupported_filesystem]");
+    assert!(out.reason.contains("reiserfs"), "{}", out.reason);
+    assert_eq!(env.log(), "");
+    // Detected on the target.
+    let out = call("check", &[("target", &img)]);
+    out.fails(1, "[fs.check_unsupported_filesystem]");
+    assert!(out.reason.contains("reiserfs"), "{}", out.reason);
+    assert!(!env.log().contains("fsck"), "{}", env.log());
+}
+
+#[test]
+fn every_error_code_is_valid_and_documented() {
+    let doc = include_str!("../../../docs/Filesystem_Storage/fs.md");
+    let mut seen = std::collections::HashSet::new();
+    for code in FS_ERROR_CODES {
+        assert!(seen.insert(code), "duplicate {code}");
+        assert!(
+            crate::core::status::is_valid_error_code(code),
+            "invalid code {code}"
+        );
+        assert!(doc.contains(&format!("`{code}`")), "{code} not in fs.md");
+    }
+    // Every code literal in the handle's source is in the list.
+    let src = include_str!("fsh.rs");
+    let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+    for (i, _) in src.match_indices("\"fs.") {
+        let lit = &src[i + 1..];
+        let lit = &lit[..lit.find('"').unwrap()];
+        if lit
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c == '_' || c == '.')
+        {
+            assert!(
+                FS_ERROR_CODES.contains(&lit),
+                "{lit} missing from FS_ERROR_CODES"
+            );
+        }
+    }
 }
 
 #[test]
@@ -632,7 +726,7 @@ fn unmount_failures_are_reported_with_what_was_done() {
     let v = out.json();
     assert_eq!(v["action"], "partially_unmounted");
     assert_eq!(v["unmounted"][0]["target"], "/mnt/data/child/deep");
-    assert_eq!(v["errors"][0]["code"], "fs.unmount_busy");
+    assert_eq!(v["errors"][0]["error"]["code"], "fs.unmount_busy");
     assert_eq!(v["skipped"][0]["target"], "/mnt/data");
 
     env.tool(
@@ -642,7 +736,7 @@ fn unmount_failures_are_reported_with_what_was_done() {
     let out = call("unmount", &[("target", "/mnt/datax")]);
     out.fails(1, "nothing was unmounted");
     assert_eq!(
-        out.json()["errors"][0]["code"],
+        out.json()["errors"][0]["error"]["code"],
         "fs.unmount_permission_denied"
     );
 

@@ -56,7 +56,8 @@ Example Output:
 
   Shown for an unmounted ext4 image file with --json-pretty. The verb field
   is "check" for both spellings. Supported types: ext2, ext3, ext4, vfat,
-  xfs, btrfs. mode=repair (needs allow_repair=true) runs fsck -p (-y with
+  xfs, btrfs; others (such as reiserfs) are refused with exit 1.
+  mode=repair (needs allow_repair=true) runs fsck -p (-y with
   aggressiveness=aggressive), fsck.vfat -a, xfs_repair or btrfs check
   --repair on an unmounted filesystem; a mounted btrfs is scrubbed. Errors
   found are reported in analysis with exit 0; a tool that fails to run its

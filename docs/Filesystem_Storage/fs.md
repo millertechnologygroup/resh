@@ -76,8 +76,96 @@ This is stricter than v1.0.6-beta, where unknown arguments were ignored and
 | 2 | Invalid usage or arguments; nothing was done. |
 | 124 | Timeout: `timeout_ms` passed. If an external tool was running, resh stopped it and every process it started and prints `Error: outcome unknown: <tool> was stopped; it may already have made changes, so check before retrying`. |
 
-The reason is printed on stderr as `Error: <reason>`. The conditions per
-verb are listed in each verb's section.
+### Error codes
+
+A failure is printed on stderr as one line, `Error: [<code>] <message>`,
+for example `Error: [fs.not_mounted] Target is not mounted: /mnt/data`.
+A JSON result that reports a failure (the `unmount` result printed on a
+partial failure) carries `"error": {"code": "<code>", "message": "..."}`,
+and so does each entry of `unmount` `errors` and of `quota_summary`
+`partial_failures`. The conditions per verb are listed in each verb's
+section.
+
+Two checks made by resh itself, outside the handle, print `Error: <message>`
+without an fs code: a `dry_run` value that is not a boolean or `dry_run=true`
+on a verb without a dry run (exit 2), and the `outcome unknown` line above
+when a tool was stopped at the deadline (exit 124).
+
+| Code | Exit | Meaning |
+| ---- | ---- | ------- |
+| `fs.invalid_argument` | 2 | An argument the verb does not accept (the message suggests the closest name) |
+| `fs.unknown_verb` | 2 | The verb is not an fs verb |
+| `fs.timeout` | 124 | `timeout_ms` passed and a tool was stopped; the outcome is unknown |
+| `fs.failed` | 1 | Reading the system or running a tool failed for another reason |
+| `fs.invalid_mount_config` | 2 | Invalid argument for `mount` |
+| `fs.invalid_unmount_config` | 2 | Invalid argument for `unmount` |
+| `fs.invalid_snapshot_config` | 2 | Invalid argument for `snapshot` |
+| `fs.invalid_quota_config` | 2 | Invalid argument for `quota` |
+| `fs.mount_unsupported` | 1 | The `mount` tool was not found |
+| `fs.unmount_unsupported` | 1 | The `umount` tool was not found |
+| `fs.snapshot_unsupported` | 1 | The mount table cannot be found (platform not supported) |
+| `fs.quota_unsupported` | 1 | The quota tools or the mount table were not found |
+| `fs.mount_permission_denied` | 1 | `mount` refused: not root |
+| `fs.unmount_permission_denied` | 1 | `umount` refused: not root |
+| `fs.already_mounted` | 1 | `fail_if_mounted=true` and the target is mounted |
+| `fs.conflicting_mount` | 1 | A different mount is at the target |
+| `fs.not_mounted` | 1 | Nothing mounted (`remount`, `fail_if_not_mounted=true`) |
+| `fs.quota_not_enabled` | 1 | Quotas are not enabled on the filesystem |
+| `fs.quota_subject_not_found` | 1 | The user, group or project does not exist |
+| `fs.mount_failure` | 1 | `mount` failed, or the target is a symbolic link (the message says which) |
+| `fs.unmount_failure` | 1 | `umount` failed |
+| `fs.snapshot_failed` | 1 | The mount table cannot be read |
+| `fs.quota_failed` | 1 | `quota`/`repquota` failed (also per filesystem in `quota_summary` `partial_failures`) |
+| `fs.mount_timeout` | 124 | `timeout_ms` passed during `mount` |
+| `fs.unmount_timeout` | 124 | `timeout_ms` passed during `unmount` |
+| `fs.snapshot_timeout` | 124 | `timeout_ms` passed during `snapshot` |
+| `fs.quota_timeout` | 124 | `timeout_ms` passed during `quota` |
+| `fs.target_creation_failed` | 1 | The target directory cannot be created (`create_target=false`, `make_parents=false`, or an I/O error) |
+| `fs.unmount_busy` | 1 | The target is busy |
+| `fs.invalid_quota_summary_config` | 2 | Invalid argument for `quota_summary` |
+| `fs.quota_summary_unsupported` | 1 | The quota tools or the mount table were not found |
+| `fs.quota_summary_no_quota_filesystems` | 1 | No selected filesystem has quotas enabled |
+| `fs.quota_summary_timeout` | 124 | `timeout_ms` passed during `quota_summary` |
+| `fs.quota_summary_failed` | 1 | Every `repquota` run failed |
+| `fs.invalid_usage_config` | 2 | Invalid argument for `usage` |
+| `fs.usage_unsupported` | 1 | The mount table cannot be found (platform not supported) |
+| `fs.usage_timeout` | 124 | `timeout_ms` passed during `usage` |
+| `fs.usage_failed` | 1 | Reading the filesystems failed |
+| `fs.path_not_found` | 1 | A path does not exist |
+| `fs.usage_nothing_selected` | 1 | No filesystem matched the filters |
+| `fs.invalid_resize_config` | 2 | Invalid argument for `resize` |
+| `fs.resize_target_not_found` | 1 | The target is not found |
+| `fs.resize_unsupported_filesystem` | 1 | The filesystem type cannot be resized (or xfs/btrfs not mounted) |
+| `fs.resize_shrink_not_allowed` | 2 | A shrink without `allow_shrink=true`, or against `mode` |
+| `fs.resize_shrink_not_supported_for_filesystem` | 1 | xfs cannot shrink |
+| `fs.resize_shrink_requires_unmount` | 1 | An ext3/ext4 shrink while mounted |
+| `fs.resize_would_violate_min_free` | 1 | The shrink would leave less than `min_free_space_percent` free |
+| `fs.resize_target_exceeds_device` | 1 | The size is larger than the device (without volume management) |
+| `fs.resize_invalid_target_size` | 2 | `size` or the resulting size is 0 or less |
+| `fs.resize_volume_management_unsupported` | 1 | `manage_underlying_volume` on a device that is not an LVM volume |
+| `fs.resize_timeout` | 124 | `timeout_ms` passed during `resize` |
+| `fs.resize_failed` | 1 | A resize tool is missing or failed (the message lists the commands already done) |
+| `fs.invalid_check_config` | 2 | Invalid argument for `check` |
+| `fs.check_target_not_found` | 1 | The target is not found (or a directory that is not a mount point) |
+| `fs.check_unsupported_filesystem` | 1 | No filesystem, or one `check` does not support (for example reiserfs) |
+| `fs.check_repair_not_allowed` | 2 | `mode=repair` without `allow_repair=true` |
+| `fs.check_requires_unmount_for_repair` | 1 | A repair of a mounted filesystem |
+| `fs.check_must_be_offline` | 1 | A mounted filesystem that this check cannot handle online (`allow_online_check=false`, xfs/vfat, btrfs without scrub) |
+| `fs.check_tool_not_available` | 1 | The check tool (or `blkid`) is missing |
+| `fs.check_timeout` | 124 | `timeout_ms` passed during `check` |
+| `fs.check_failed` | 1 | The tool failed to run its check (its status and output are included) |
+| `fs.invalid_list_mounts_config` | 2 | Invalid argument for `list-mounts` |
+| `fs.list_mounts_unsupported` | 1 | The mount table cannot be found (platform not supported) |
+| `fs.list_mounts_timeout` | 124 | `timeout_ms` passed during `list-mounts` |
+| `fs.list_mounts_failed` | 1 | The mount table cannot be read |
+
+**Breaking change (since v1.0.6-beta):** errors used to be printed as
+`Error: <message>` without a code, and `unmount` `errors` entries had
+separate `code`/`message` fields (now `error: {code, message}`); the
+codes `fs.unknown_error`, `fs.profile_not_found` and
+`fs.unmount_option_unsupported` are gone (`fs.failed` replaces the first;
+the other two were never emitted). Scripts that match on the old text
+must be updated.
 
 ### timeout_ms
 
@@ -252,7 +340,7 @@ resh fs://local.unmount target=/dev/sdb1 by=source detach_children=true
 | `read_only` | `false` | Adds `ro` |
 | `bind` | `false` | Needs `source` |
 | `remount` | `false` | Changes the options of an existing mount; not with `fail_if_mounted` |
-| `network` | `false` | Declares a network share: `source` must be `host:/path` or `//host/share`, and a given `type` must be a network type |
+| `network` | `false` | Declares a network share: `source` must be `host:/path` or `//host/share`, and a given `type` must be a network type. Adds the `_netdev` mount option (unless `options` already has it), so the system mounts the share only once the network is up and unmounts it before the network goes down |
 | `create_target` | `true` | Create a missing target directory |
 | `make_parents` | `true` | Also create missing parents |
 | `fail_if_mounted` | `false` | Fail when something is mounted at the target |
@@ -283,9 +371,10 @@ that is not mounted gives action `already_unmounted` (exit 0).
 `fail_if_not_mounted=true`, a missing `umount` tool, or any mount that
 could not be unmounted (busy, permission denied, ...). In that last case
 the result object is still printed on stdout, with `unmounted`, `skipped`
-(a parent whose child could not be unmounted) and `errors` (each with a
-code such as `fs.unmount_busy`), and `action` `failed` or
-`partially_unmounted`.
+(a parent whose child could not be unmounted), `errors` (each with
+`target` and `error: {code, message}`, the code such as `fs.unmount_busy`),
+`action` `failed` or `partially_unmounted`, and `error` (the first
+failure, whose code is also the one on stderr).
 
 ### 3.7 resize
 
@@ -342,7 +431,7 @@ resh fs://local.check target=/mnt/data skip_if_mounted=true
 | -------- | ------- | ----- |
 | `target` | required | Mount point, block device or image file |
 | `by` | `auto` | `auto`, `mountpoint`, `device` |
-| `filesystem_type` | detected | One of ext2, ext3, ext4, vfat, xfs, btrfs |
+| `filesystem_type` | detected | One of ext2, ext3, ext4, vfat, xfs, btrfs; `reiserfs` is refused with exit 1 (`fs.check_unsupported_filesystem`) |
 | `mode` | `check` | `check` (read-only), `repair` (needs `allow_repair=true`), `auto` (repair when allowed and possible, else check) |
 | `allow_repair` | `false` | |
 | `aggressiveness` | `safe` | ext only. check: `-n`, plus `-f` (full check) for `normal`/`aggressive`. repair: `-p` (preen), or `-y` for `aggressive`, plus `-f` for `normal`/`aggressive` |
@@ -365,7 +454,8 @@ Errors: 2 for invalid arguments (including `mode=repair` without
 `allow_repair`, an unsupported `filesystem_type`, `aggressiveness` other
 than `safe` for non-ext filesystems, `force` for xfs/vfat). 1 for a target
 that is not found (or a directory that is not a mount point), no
-filesystem or an unsupported one on the target, a repair of a mounted
+filesystem or an unsupported one on the target (for example reiserfs,
+also when named by `filesystem_type`: `fs.check_unsupported_filesystem`), a repair of a mounted
 filesystem, a mounted filesystem with `allow_online_check=false` (and a
 mounted xfs/vfat, or a mounted btrfs with neither scrub nor
 `btrfs_allow_offline_check`), a missing tool ("Check tool not available"),

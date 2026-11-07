@@ -40,5 +40,6 @@ Example Output:
   Shown with --json-pretty; an image file is attached to a loop device by
   mount(8). An existing compatible mount returns action "already_mounted";
   dry_run=true returns action "planned" with a plan. A relative target is
-  resolved from the current directory. Defaults: create_target=true,
-  make_parents=true, other switches false, timeout_ms=5000.
+  resolved from the current directory. network=true adds the _netdev option.
+  Defaults: create_target=true, make_parents=true, other switches false,
+  timeout_ms=5000.

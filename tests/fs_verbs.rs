@@ -22,11 +22,32 @@ impl Out {
         assert_eq!(self.code, 0, "stderr: {}", self.stderr);
         serde_json::from_str(&self.stdout).unwrap_or_else(|e| panic!("{e}: {}", self.stdout))
     }
+    /// A failure reported by resh's core before or after the handle runs
+    /// (dry_run refused, a tool lost to its deadline): `Error: <message>`,
+    /// without an fs code.
+    fn fails_in_core(&self, code: i32, needle: &str) {
+        assert_eq!(
+            self.code, code,
+            "stdout {} stderr {}",
+            self.stdout, self.stderr
+        );
+        assert!(
+            self.stderr.starts_with("Error: ") && self.stderr.contains(needle),
+            "stderr {:?} lacks {needle:?}",
+            self.stderr
+        );
+    }
     fn fails(&self, code: i32, needle: &str) {
         assert_eq!(
             self.code, code,
             "stdout {} stderr {}",
             self.stdout, self.stderr
+        );
+        // The project-wide error line: `Error: [fs.<code>] <message>`.
+        assert!(
+            self.stderr.starts_with("Error: [fs."),
+            "stderr {:?} is not `Error: [fs.<code>] ...`",
+            self.stderr
         );
         assert!(
             self.stderr.contains(needle),
@@ -172,7 +193,7 @@ fn usage_paths_and_aggregate() {
     run(&["fs://local.usage", "paths=/"]).fails(2, "mode=paths");
     run(&["fs://local.usage", "include_types=nosuchfs"]).fails(1, "No filesystems selected");
     run(&["fs://local.usage", "timeout_ms=0"]).fails(2, "timeout_ms");
-    run(&["fs://local.usage", "dry_run=true"]).fails(2, "dry_run");
+    run(&["fs://local.usage", "dry_run=true"]).fails_in_core(2, "dry_run");
 }
 
 // --- snapshot ------------------------------------------------------------
@@ -266,7 +287,11 @@ fn quota_without_the_quota_tool_is_unsupported() {
         cmd.output().unwrap()
     };
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not supported"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).starts_with("Error: [fs.quota_unsupported] "),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 // --- mount / unmount -----------------------------------------------------
@@ -334,7 +359,7 @@ fn mount_dry_run_and_errors() {
         "source=/x",
         "dry_run=ture",
     ])
-    .fails(2, "dry_run");
+    .fails_in_core(2, "dry_run");
 }
 
 #[test]
@@ -350,7 +375,7 @@ fn mount_timeout_stops_the_tool() {
         "timeout_ms=300",
     ]);
     assert!(start.elapsed().as_secs() < 10);
-    out.fails(124, "outcome unknown");
+    out.fails_in_core(124, "outcome unknown");
 }
 
 #[test]

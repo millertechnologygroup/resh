@@ -154,6 +154,8 @@ r badsrc fs://local.mount target=/mnt/bad/deep source=/srv/nonexistent.img
 save badsrc_exists test -e /mnt/bad
 r badtype fs://local.mount target=/mnt/bt source=/srv/other.img type=xfs
 r net_invalid fs://local.mount target=/mnt/n source=/srv/other.img network=true
+r net_dry fs://local.mount target=/mnt/nfs source=server:/export type=nfs network=true dry_run=true
+r net_dry_given fs://local.mount target=/mnt/nfs source=server:/export type=nfs network=true options=_netdev,ro dry_run=true
 r unknown_arg fs://local.mount target=/mnt/x source=/srv/other.img read_onyl=true
 r bad_bool fs://local.mount target=/mnt/x source=/srv/other.img read_only=maybe
 save badbool_exists test -e /mnt/x
@@ -190,8 +192,18 @@ r bad_by fs://local.unmount target=/mnt/bind by=label
     assert_eq!(r.ok("mount_again")["action"], "already_mounted");
     r.expect("mount_fail_if", 1);
     assert!(r.err("mount_fail_if").contains("already mounted"));
+    assert!(
+        r.err("mount_fail_if")
+            .starts_with("Error: [fs.already_mounted] "),
+        "{}",
+        r.err("mount_fail_if")
+    );
     r.expect("mount_conflict", 1);
     assert!(r.err("mount_conflict").contains("Conflicting mount"));
+    assert!(
+        r.err("mount_conflict")
+            .starts_with("Error: [fs.conflicting_mount] ")
+    );
     r.expect("mount_wrongtype", 1);
 
     assert_eq!(r.ok("remount_ro")["action"], "remounted");
@@ -219,6 +231,19 @@ r bad_by fs://local.unmount target=/mnt/bind by=label
     assert_ne!(r.rc("badsrc_exists"), 0, "failed mount left its directory");
     r.expect("badtype", 1);
     r.expect("net_invalid", 2);
+    assert!(
+        r.err("net_invalid")
+            .starts_with("Error: [fs.invalid_mount_config] ")
+    );
+    // network=true adds _netdev, once.
+    assert_eq!(
+        r.ok("net_dry")["plan"]["mount_commands"][0],
+        "mount -t nfs -o _netdev -- server:/export /mnt/nfs"
+    );
+    assert_eq!(
+        r.ok("net_dry_given")["plan"]["mount_commands"][0],
+        "mount -t nfs -o _netdev,ro -- server:/export /mnt/nfs"
+    );
     r.expect("unknown_arg", 2);
     assert!(r.err("unknown_arg").contains("did you mean \"read_only\""));
     r.expect("bad_bool", 2);
@@ -242,7 +267,9 @@ r bad_by fs://local.unmount target=/mnt/bind by=label
     r.expect("busy", 1);
     let busy = r.json("busy");
     assert_eq!(busy["action"], "failed");
-    assert_eq!(busy["errors"][0]["code"], "fs.unmount_busy");
+    assert_eq!(busy["errors"][0]["error"]["code"], "fs.unmount_busy");
+    assert_eq!(busy["error"]["code"], "fs.unmount_busy");
+    assert!(r.err("busy").starts_with("Error: [fs.unmount_busy] "));
 
     assert_eq!(r.ok("unmount_example")["action"], "unmounted");
     assert_eq!(r.ok("unmount_again")["action"], "already_unmounted");
