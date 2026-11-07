@@ -482,7 +482,26 @@ pub(super) fn tool(name: &str) -> AsyncCommand {
 /// deadline the tool and everything it started are stopped, and the stage
 /// ends with exit status 124.
 pub(super) async fn run(cmd: &mut AsyncCommand) -> io::Result<Output> {
-    cmd.bounded_output().await
+    let result = cmd.bounded_output().await;
+    if result
+        .as_ref()
+        .is_err_and(|e| e.kind() == io::ErrorKind::TimedOut)
+    {
+        TIMED_OUT.with(|t| t.set(true));
+    }
+    result
+}
+
+thread_local! {
+    /// Set when a tool run by this thread was stopped at the deadline. The
+    /// verb runs on the calling thread (a current-thread runtime).
+    static TIMED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a tool was stopped at the deadline since the last call; clears
+/// the flag.
+pub(super) fn take_timed_out() -> bool {
+    TIMED_OUT.with(|t| t.replace(false))
 }
 
 /// True when external tool `name` can be found.

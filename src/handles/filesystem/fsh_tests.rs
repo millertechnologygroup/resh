@@ -213,11 +213,37 @@ fn a_tool_that_outlives_timeout_ms_is_stopped() {
         ],
     );
     assert!(start.elapsed() < Duration::from_secs(10));
-    assert_ne!(out.code, 0);
-    let lost = crate::core::process::take_lost().expect("the tool was recorded as stopped");
-    assert!(lost.tool.ends_with("mount"));
+    out.fails(124, "timed out");
     // The directory created for the mount is kept: whether the mount
     // happened is unknown.
+    assert!(Path::new(&target).is_dir());
+}
+
+#[test]
+fn a_tool_stopped_at_the_deadline_makes_the_result_incomplete() {
+    let env = Env::new();
+    env.mounts("/dev/sda1 / ext4 rw 0 0\n");
+    env.tool("df", "exec sleep 30");
+    let out = call("usage", &[("timeout_ms", "300")]);
+    out.fails(124, "incomplete");
+    assert!(
+        out.json()["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("skipped /")
+    );
+}
+
+#[test]
+fn mount_refuses_a_symlink_at_the_target() {
+    let env = Env::new();
+    env.tool("mount", "exit 0");
+    let real = env.path("real");
+    std::fs::create_dir(&real).unwrap();
+    let link = env.path("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    call("mount", &[("target", &link), ("source", "/dev/sdz1")]).fails(1, "symbolic link");
+    assert_eq!(env.log(), "");
 }
 
 #[test]

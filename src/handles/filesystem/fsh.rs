@@ -1942,6 +1942,16 @@ impl FsHandle {
     }
 
     async fn mount_inner(&self, config: &MountConfig) -> Result<Value, anyhow::Error> {
+        // mount(8) follows a symlink at the target: one planted there would
+        // put the filesystem somewhere else.
+        if fs::symlink_metadata(&config.target).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(FsError::MountFailure(format!(
+                "target {} is a symbolic link; refusing to mount through it",
+                config.target
+            ))
+            .into());
+        }
+
         let existing_mounts = self
             .get_existing_mounts()
             .await
@@ -2338,9 +2348,28 @@ impl FsHandle {
             .into());
         }
 
-        let undo = |created: &Option<std::path::PathBuf>| {
-            if let Some(dir) = created {
-                let _ = std::fs::remove_dir_all(dir);
+        // Removes the directories this call created, innermost first, with
+        // `remove_dir` so that nothing another process put there is deleted.
+        // Returns a note for the error message when one cannot be removed.
+        let undo = |created: &Option<std::path::PathBuf>| -> String {
+            let Some(top) = created else {
+                return String::new();
+            };
+            let mut dir = target_path.to_path_buf();
+            loop {
+                if let Err(e) = std::fs::remove_dir(&dir) {
+                    return format!(
+                        " (the directory {} it created was left: {e})",
+                        dir.display()
+                    );
+                }
+                if dir == *top {
+                    return String::new();
+                }
+                match dir.parent() {
+                    Some(p) => dir = p.to_path_buf(),
+                    None => return String::new(),
+                }
             }
         };
 
@@ -2349,24 +2378,33 @@ impl FsHandle {
         let output = match run(&mut cmd).await {
             Ok(o) => o,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                undo(&created);
-                return Err(FsError::MountUnsupported.into());
+                let note = undo(&created);
+                if note.is_empty() {
+                    return Err(FsError::MountUnsupported.into());
+                }
+                return Err(
+                    FsError::MountFailure(format!("{}{note}", FsError::MountUnsupported)).into(),
+                );
             }
             Err(e) => {
-                if e.kind() != std::io::ErrorKind::TimedOut {
-                    undo(&created);
-                }
-                return Err(FsError::MountFailure(e.to_string()).into());
+                // After a timeout the mount may have happened: keep the
+                // directory.
+                let note = if e.kind() != std::io::ErrorKind::TimedOut {
+                    undo(&created)
+                } else {
+                    String::new()
+                };
+                return Err(FsError::MountFailure(format!("{e}{note}")).into());
             }
         };
 
         if !output.status.success() {
-            undo(&created);
+            let note = undo(&created);
             let msg = tool_message(&output);
-            if support::is_permission_message(&msg) {
+            if support::is_permission_message(&msg) && note.is_empty() {
                 return Err(FsError::MountPermissionDenied.into());
             }
-            return Err(FsError::MountFailure(msg).into());
+            return Err(FsError::MountFailure(format!("{msg}{note}")).into());
         }
 
         let action = if config.remount || is_remount {
@@ -6412,6 +6450,7 @@ impl Handle for FsHandle {
             .build()
             .context("Failed to create async runtime")?;
 
+        support::take_timed_out();
         let result = rt.block_on(async {
             match verb {
                 "mount" => self.mount(args_value).await,
@@ -6426,6 +6465,19 @@ impl Handle for FsHandle {
                 _ => Err(anyhow::anyhow!("unknown verb: {verb}")),
             }
         });
+
+        // A tool stopped at the deadline means the outcome is unknown, even
+        // if the verb carried on (a skipped mount in `usage`).
+        if support::take_timed_out() {
+            let reason = match &result {
+                Ok(value) => {
+                    writeln!(io.stdout, "{}", serde_json::to_string(value)?)?;
+                    "timeout_ms passed and a tool was stopped; the result is incomplete".to_string()
+                }
+                Err(e) => format!("timeout_ms passed: {e:#}"),
+            };
+            return Ok(Status::err(124, reason));
+        }
 
         match result {
             Ok(value) => {

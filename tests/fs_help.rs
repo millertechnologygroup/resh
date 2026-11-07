@@ -294,3 +294,43 @@ fn every_accepted_option_is_recognised_and_others_are_refused() {
         );
     }
 }
+
+/// Every example in docs/Filesystem_Storage/fs.md uses only arguments its
+/// verb accepts.
+#[test]
+fn doc_page_examples_use_accepted_arguments() {
+    let page = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/Filesystem_Storage/fs.md"),
+    )
+    .unwrap();
+    let mut checked = 0;
+    for line in page.lines().filter(|l| l.starts_with("resh ")) {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let Some(i) = words
+            .iter()
+            .position(|w| w.trim_matches('\'').starts_with("fs://"))
+        else {
+            continue;
+        };
+        if words[i].contains('<') {
+            continue; // the syntax template
+        }
+        let parsed = parse_stage(words[i].trim_matches('\'')).unwrap();
+        let verb = parsed.verb.as_str();
+        let mut keys: Vec<String> = parsed.args.keys().cloned().collect();
+        for w in &words[i + 1..] {
+            keys.push(match w.split_once('=') {
+                Some((k, _)) => k.to_string(),
+                None => w.to_string(), // a bare `dry_run`
+            });
+        }
+        for key in keys {
+            assert!(
+                options(verb).contains(&key.as_str()),
+                "fs.md example {line:?} uses {key}, which {verb} does not accept"
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked >= 20, "only {checked} examples found");
+}
