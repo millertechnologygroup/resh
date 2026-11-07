@@ -781,6 +781,15 @@ typed structs:
 - **git.**
   - `pull` with diverged branches fails: merge and rebase are not
     implemented (`gith.rs:4217-4231`).
+  - `known_hosts_path` used to be stored in the connection profile but
+    never read, and could not be set from the command line. It is now an
+    argument of `clone`, `pull`, `push` and `sync` and enforces strict SSH
+    host-key checking (`git.host_key_verification_failed` on a missing or
+    unreadable file, an unlisted host, a changed key or a `@revoked` key);
+    it is ignored for https and file remotes. Remaining limits:
+    `@cert-authority` (CA-signed host keys) is not supported, and the SSH
+    library picks the host-key type without consulting the file, so the
+    file should list all of the host's key types. See `git.md` 4.4.
   - `MERGE_HELP` documents a `branch` argument, but the code reads `source`.
   - `REBASE_HELP` documents `onto`, but the code reads `upstream`.
 - **system.** `memory` input must list every option, because

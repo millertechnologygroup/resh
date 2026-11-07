@@ -3958,6 +3958,7 @@ dependencies = [
  "globset",
  "handlebars",
  "hex",
+ "hmac",
  "httpmock",
  "httptest",
  "if-addrs",

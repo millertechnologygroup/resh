@@ -11,6 +11,8 @@ use std::time::Duration;
 use thiserror::Error;
 use url::Url;
 
+mod known_hosts;
+
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
@@ -424,7 +426,8 @@ operation=continue or operation=abort."#,
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.clone url=<repo-url> path=<dir> [branch=<name>]\n  \
                     [depth=<n>] [recursive=true|false] [ssh_key=<file>]\n  \
-                    [username=<user>] [password=<pass>] [token=<token>]",
+                    [known_hosts_path=<file>] [username=<user>] [password=<pass>]\n  \
+                    [token=<token>]",
                 example: "resh git://main.clone url=https://example.com/app.git path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -447,8 +450,8 @@ operation=continue or operation=abort."#,
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.pull path=<repo-dir> [remote=<name>]\n  \
                     [branch=<name>] [ff_only=true|false] [prune=true|false]\n  \
-                    [ssh_key=<file>] [username=<user>] [password=<pass>]\n  \
-                    [token=<token>]",
+                    [ssh_key=<file>] [known_hosts_path=<file>] [username=<user>]\n  \
+                    [password=<pass>] [token=<token>]",
                 example: "resh --json-pretty git://main.pull path=/srv/app remote=origin",
                 example_output: Some(
                     r#"{
@@ -478,8 +481,9 @@ reports status up_to_date."#,
                 usage: "resh git://<alias>.push path=<repo-dir> [remote=<name>]\n  \
                     [branch=<name>] [branches=<b1,b2,...>] [tags=true|false]\n  \
                     [force=true|false] [ff_only=true|false]\n  \
-                    [set_upstream=true|false] [ssh_key=<file>] [username=<user>]\n  \
-                    [password=<pass>] [token=<token>]",
+                    [set_upstream=true|false] [ssh_key=<file>]\n  \
+                    [known_hosts_path=<file>] [username=<user>] [password=<pass>]\n  \
+                    [token=<token>]",
                 example: "resh --json-pretty git://main.push path=/srv/app branch=main",
                 example_output: Some(
                     r#"{
@@ -513,7 +517,8 @@ Shown with --json-pretty."#,
                     [pull_strategy=rebase|merge|ff_only] [push=true|false]\n  \
                     [push_tags=true|false] [force_push=true|false]\n  \
                     [allow_uncommitted=true|false] [stash_uncommitted=true|false]\n  \
-                    [abort_on_conflict=true|false] [dry_run=true|false]",
+                    [abort_on_conflict=true|false] [dry_run=true|false]\n  \
+                    [known_hosts_path=<file>]",
                 example: "resh --json-pretty git://main.sync path=/srv/app pull_strategy=rebase",
                 example_output: None,
             }),
@@ -538,11 +543,117 @@ pub struct GitHandle {
 #[derive(Debug, Clone)]
 pub struct GitConnectionProfile {
     pub ssh_key_path: Option<PathBuf>,
-    #[allow(dead_code)]
+    /// OpenSSH known_hosts file that SSH remotes must match (strict
+    /// host-key checking); ignored for non-SSH remotes.
     pub known_hosts_path: Option<PathBuf>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
+}
+
+/// Strict SSH host-key enforcement for one remote operation, installed by
+/// [`install_host_key_check`] when `known_hosts_path` is set and the remote
+/// uses SSH.
+struct HostKeyGuard {
+    host: String,
+    known_hosts_path: String,
+    /// The reason the certificate callback refused the server, if it did.
+    failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl HostKeyGuard {
+    /// The host-key refusal recorded by the callback, if any. Checked when a
+    /// remote operation fails, so the refusal is reported as
+    /// `git.host_key_verification_failed` instead of a generic failure.
+    fn failure(&self) -> Option<GitError> {
+        let reason = self.failure.lock().ok()?.clone()?;
+        Some(GitError::HostKeyVerificationFailed {
+            host: self.host.clone(),
+            known_hosts_path: self.known_hosts_path.clone(),
+            reason,
+        })
+    }
+}
+
+/// Makes the connection to `url` verify the server's SSH host key against
+/// `known_hosts_path`.
+///
+/// Returns `Ok(None)` (nothing installed, behavior unchanged) when no file is
+/// given or the URL does not use SSH: https, http, git and file remotes
+/// ignore the option. For an SSH URL the file is read and the host must have
+/// a plain key entry before any connection is attempted; then a
+/// `certificate_check` callback accepts the server only if its host key
+/// matches one of those entries and is not `@revoked`.
+fn install_host_key_check(
+    callbacks: &mut RemoteCallbacks<'_>,
+    known_hosts_path: Option<&str>,
+    url: &str,
+) -> Result<Option<HostKeyGuard>, GitError> {
+    let Some(path) = known_hosts_path else {
+        return Ok(None);
+    };
+    let Some((host, port)) = known_hosts::ssh_endpoint(url) else {
+        log::debug!("known_hosts_path ignored: '{}' is not an SSH remote", url);
+        return Ok(None);
+    };
+    let refuse = |reason: String| GitError::HostKeyVerificationFailed {
+        host: known_hosts::lookup_name(&host, port),
+        known_hosts_path: path.to_string(),
+        reason,
+    };
+    let file = known_hosts::KnownHosts::load(Path::new(path)).map_err(refuse)?;
+    if file.skipped() > 0 {
+        log::warn!(
+            "known_hosts file '{}': skipped {} malformed or unsupported line(s)",
+            path,
+            file.skipped()
+        );
+    }
+    file.preflight(&host, port).map_err(refuse)?;
+
+    let failure = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = failure.clone();
+    let url_host = host.clone();
+    callbacks.certificate_check(move |cert, hostname| {
+        // Only SSH host keys are checked; a TLS certificate keeps libgit2's
+        // own validation.
+        let Some(hostkey) = cert.as_hostkey() else {
+            return Ok(git2::CertificateCheckStatus::CertificatePassthrough);
+        };
+        let key_type = match hostkey.hostkey_type() {
+            Some(git2::cert::SshHostKeyType::Unknown) | None => None,
+            Some(t) => Some(t.name().to_string()),
+        };
+        let presented = known_hosts::PresentedKey {
+            key_type,
+            blob: hostkey.hostkey().map(<[u8]>::to_vec),
+            sha256: hostkey.hash_sha256().copied(),
+        };
+        let checked_host = if hostname.is_empty() {
+            url_host.as_str()
+        } else {
+            hostname
+        };
+        match file.verify(checked_host, port, &presented) {
+            Ok(()) => Ok(git2::CertificateCheckStatus::CertificateOk),
+            Err(reason) => {
+                let message = format!("SSH host key verification failed: {}", reason);
+                if let Ok(mut s) = slot.lock() {
+                    *s = Some(reason);
+                }
+                Err(git2::Error::new(
+                    git2::ErrorCode::Certificate,
+                    git2::ErrorClass::Ssh,
+                    message,
+                ))
+            }
+        }
+    });
+    Ok(Some(HostKeyGuard {
+        host: known_hosts::lookup_name(&host, port),
+        known_hosts_path: path.to_string(),
+        failure,
+    }))
 }
 
 /// Clone configuration structure
@@ -554,6 +665,7 @@ pub struct CloneConfig {
     pub depth: Option<u32>,
     pub recursive: Option<bool>,
     pub ssh_key: Option<String>,
+    pub known_hosts_path: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
@@ -571,6 +683,7 @@ pub struct PullConfig {
     pub depth: Option<u32>,
     pub prune: Option<bool>,
     pub ssh_key: Option<String>,
+    pub known_hosts_path: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
@@ -589,6 +702,7 @@ pub struct PushConfig {
     pub ff_only: Option<bool>,
     pub set_upstream: Option<bool>,
     pub ssh_key: Option<String>,
+    pub known_hosts_path: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
@@ -1208,6 +1322,7 @@ pub struct SyncConfig {
     pub force_push: Option<bool>,
     pub set_upstream: Option<bool>,
     pub dry_run: Option<bool>,
+    pub known_hosts_path: Option<String>,
     pub timeout_ms: Option<u64>,
 }
 
@@ -1230,6 +1345,16 @@ pub struct StatusSummaryConfig {
 pub enum GitError {
     #[error("connection not found: alias '{alias}' is not configured")]
     ConnectionNotFound { alias: String },
+
+    /// The SSH server's host key could not be verified against the
+    /// `known_hosts_path` file (unknown host, changed or revoked key,
+    /// unreadable file); the connection was refused.
+    #[error("SSH host key verification failed for {host}: {reason}")]
+    HostKeyVerificationFailed {
+        host: String,
+        known_hosts_path: String,
+        reason: String,
+    },
 
     #[error("invalid clone config: {message}")]
     InvalidCloneConfig { message: String },
@@ -1583,6 +1708,13 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::ConnectionNotFound { alias } => {
                 json!({ "alias": alias })
             }
+            GitError::HostKeyVerificationFailed {
+                host,
+                known_hosts_path,
+                ..
+            } => {
+                json!({ "host": host, "known_hosts_path": known_hosts_path })
+            }
             GitError::InvalidCloneConfig { .. } => json!({}),
             GitError::CloneFailed { .. } => json!({}),
             GitError::CloneAuthFailed { .. } => json!({}),
@@ -1776,6 +1908,7 @@ impl From<GitError> for crate::core::status::ShellError {
 
         let code = match err {
             GitError::ConnectionNotFound { .. } => "git.connection_not_found",
+            GitError::HostKeyVerificationFailed { .. } => "git.host_key_verification_failed",
             GitError::InvalidCloneConfig { .. } => "git.invalid_clone_config",
             GitError::CloneFailed { .. } => "git.clone_failed",
             GitError::CloneAuthFailed { .. } => "git.clone_auth_failed",
@@ -2269,6 +2402,14 @@ impl GitHandle {
             });
         }
 
+        // known_hosts_path is only read when the remote uses SSH, but an
+        // empty value is never meaningful.
+        if config.known_hosts_path.as_deref() == Some("") {
+            return Err(GitError::InvalidCloneConfig {
+                message: "known_hosts_path cannot be empty".to_string(),
+            });
+        }
+
         // Check for multiple auth methods
         let auth_methods = [
             config.ssh_key.is_some(),
@@ -2328,6 +2469,14 @@ impl GitHandle {
                     message: "branch cannot be empty string".to_string(),
                 });
             }
+        }
+
+        // known_hosts_path is only read when the remote uses SSH, but an
+        // empty value is never meaningful.
+        if config.known_hosts_path.as_deref() == Some("") {
+            return Err(GitError::InvalidPullConfig {
+                message: "known_hosts_path cannot be empty".to_string(),
+            });
         }
 
         // Check for multiple auth methods
@@ -2409,6 +2558,14 @@ impl GitHandle {
                     message: "remote cannot be empty string".to_string(),
                 });
             }
+        }
+
+        // known_hosts_path is only read when the remote uses SSH, but an
+        // empty value is never meaningful.
+        if config.known_hosts_path.as_deref() == Some("") {
+            return Err(GitError::InvalidPushConfig {
+                message: "known_hosts_path cannot be empty".to_string(),
+            });
         }
 
         // Check for multiple auth methods
@@ -3956,6 +4113,14 @@ impl GitHandle {
         let mut callbacks = RemoteCallbacks::new();
 
         self.setup_authentication_callbacks(&mut callbacks, config, profile)?;
+        let known_hosts_path = config.known_hosts_path.clone().or_else(|| {
+            profile
+                .known_hosts_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+        });
+        let host_key_guard =
+            install_host_key_check(&mut callbacks, known_hosts_path.as_deref(), &config.url)?;
         fetch_options.remote_callbacks(callbacks);
 
         // Configure clone options
@@ -3977,6 +4142,9 @@ impl GitHandle {
 
         // Execute the clone
         let repo = builder.clone(&config.url, path).map_err(|e| {
+            if let Some(err) = host_key_guard.as_ref().and_then(HostKeyGuard::failure) {
+                return err;
+            }
             let message = format!("git clone failed: {}", e);
             if e.to_string().contains("authentication") {
                 GitError::CloneAuthFailed { message }
@@ -4061,6 +4229,15 @@ impl GitHandle {
         let mut callbacks = RemoteCallbacks::new();
 
         self.setup_pull_authentication_callbacks(&mut callbacks, config, profile)?;
+        let known_hosts_path = config.known_hosts_path.clone().or_else(|| {
+            profile
+                .known_hosts_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+        });
+        let remote_url = remote.url().unwrap_or_default().to_string();
+        let host_key_guard =
+            install_host_key_check(&mut callbacks, known_hosts_path.as_deref(), &remote_url)?;
         fetch_options.remote_callbacks(callbacks);
 
         // Configure fetch options
@@ -4088,6 +4265,9 @@ impl GitHandle {
         remote
             .fetch(&refspecs_vec, Some(&mut fetch_options), None)
             .map_err(|e| {
+                if let Some(err) = host_key_guard.as_ref().and_then(HostKeyGuard::failure) {
+                    return err;
+                }
                 let message = format!("fetch failed: {}", e);
                 if e.to_string().contains("authentication") {
                     GitError::PullAuthFailed { message }
@@ -4459,6 +4639,19 @@ impl GitHandle {
         // Setup authentication callbacks for push
         let mut callbacks = RemoteCallbacks::new();
         self.setup_push_authentication_callbacks(&mut callbacks, config, profile)?;
+        let known_hosts_path = config.known_hosts_path.clone().or_else(|| {
+            profile
+                .known_hosts_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+        });
+        let remote_url = remote
+            .pushurl()
+            .or_else(|| remote.url())
+            .unwrap_or_default()
+            .to_string();
+        let host_key_guard =
+            install_host_key_check(&mut callbacks, known_hosts_path.as_deref(), &remote_url)?;
 
         // Build refspecs for branches
         let mut refspecs = Vec::new();
@@ -4504,6 +4697,9 @@ impl GitHandle {
         remote
             .push(&refspec_strs, Some(&mut push_options))
             .map_err(|e| {
+                if let Some(err) = host_key_guard.as_ref().and_then(HostKeyGuard::failure) {
+                    return err;
+                }
                 let message = format!("push failed: {}", e);
                 if e.to_string().contains("authentication") {
                     GitError::PushAuthFailed { message }
@@ -7554,6 +7750,12 @@ impl GitHandle {
             }
         }
 
+        if config.known_hosts_path.as_deref() == Some("") {
+            return Err(GitError::InvalidSyncConfig {
+                message: "known_hosts_path cannot be empty".to_string(),
+            });
+        }
+
         // Check contradictory safety options
         if config.force_push.unwrap_or(false) && config.ff_only.unwrap_or(false) {
             return Err(GitError::InvalidSyncConfig {
@@ -7631,6 +7833,13 @@ impl GitHandle {
         profile: &GitConnectionProfile,
     ) -> Result<Value, GitError> {
         log::info!("Starting sync operation for path: {}", config.path);
+
+        // known_hosts_path given to sync applies to both its fetch and push.
+        let mut effective_profile = profile.clone();
+        if let Some(ref kh) = config.known_hosts_path {
+            effective_profile.known_hosts_path = Some(PathBuf::from(kh));
+        }
+        let profile = &effective_profile;
 
         // Open repository
         let mut repo =
@@ -7963,6 +8172,7 @@ impl GitHandle {
             "rebase": false,
             "ff_only": true,
             "ssh_key": profile.ssh_key_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "known_hosts_path": profile.known_hosts_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "username": profile.username,
             "password": profile.password,
             "token": profile.token,
@@ -7981,6 +8191,7 @@ impl GitHandle {
                     ),
                 },
             },
+            e @ GitError::HostKeyVerificationFailed { .. } => e,
             other => GitError::SyncPullFailed { message: format!("fetch failed: {}", other) },
         })
     }
@@ -8005,6 +8216,7 @@ impl GitHandle {
             "tags": push_tags,
             "force": force_push,
             "ssh_key": profile.ssh_key_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "known_hosts_path": profile.known_hosts_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "username": profile.username,
             "password": profile.password,
             "token": profile.token,
@@ -8013,6 +8225,7 @@ impl GitHandle {
 
         self.push(push_value).await.map_err(|e| match e {
             GitError::PushRejected { message } => GitError::SyncPushRejected { message },
+            e @ GitError::HostKeyVerificationFailed { .. } => e,
             _ => GitError::SyncPushFailed {
                 message: format!("push failed: {}", e),
             },
@@ -9304,6 +9517,7 @@ mod tests {
             depth: None,
             recursive: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9327,6 +9541,7 @@ mod tests {
             depth: None,
             recursive: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9345,6 +9560,7 @@ mod tests {
             depth: Some(0),
             recursive: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9363,6 +9579,7 @@ mod tests {
             depth: None,
             recursive: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9381,6 +9598,7 @@ mod tests {
             depth: None,
             recursive: None,
             ssh_key: Some("key".to_string()),
+            known_hosts_path: None,
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
             token: None,
@@ -9399,6 +9617,7 @@ mod tests {
             depth: None,
             recursive: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9483,6 +9702,7 @@ mod tests {
             depth: None,
             recursive: None,
             ssh_key: Some("/path/to/key".to_string()),
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9498,6 +9718,7 @@ mod tests {
             depth: None,
             recursive: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
             token: None,
@@ -9513,6 +9734,7 @@ mod tests {
             depth: None,
             recursive: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: Some("token123".to_string()),
@@ -9540,6 +9762,7 @@ mod tests {
             depth: None,
             recursive: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9591,6 +9814,7 @@ mod tests {
             depth: None,
             recursive: Some(false),
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9652,6 +9876,7 @@ mod tests {
             depth: None,
             prune: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9679,6 +9904,7 @@ mod tests {
             depth: None,
             prune: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9699,6 +9925,7 @@ mod tests {
             depth: Some(0),
             prune: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9719,6 +9946,7 @@ mod tests {
             depth: None,
             prune: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9739,6 +9967,7 @@ mod tests {
             depth: None,
             prune: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9759,6 +9988,7 @@ mod tests {
             depth: None,
             prune: None,
             ssh_key: Some("key".to_string()),
+            known_hosts_path: None,
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
             token: None,
@@ -9814,6 +10044,7 @@ mod tests {
             depth: None,
             prune: None,
             ssh_key: Some("/path/to/key".to_string()),
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9833,6 +10064,7 @@ mod tests {
             depth: None,
             prune: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
             token: None,
@@ -9851,6 +10083,7 @@ mod tests {
             depth: None,
             prune: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: Some("token123".to_string()),
@@ -9885,6 +10118,7 @@ mod tests {
             depth: None,
             prune: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9957,6 +10191,7 @@ mod tests {
             depth: None,
             recursive: Some(false),
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -9980,6 +10215,7 @@ mod tests {
             depth: None,
             prune: Some(false),
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10021,6 +10257,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10049,6 +10286,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10070,6 +10308,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10091,6 +10330,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10112,6 +10352,7 @@ mod tests {
             ff_only: Some(true),
             set_upstream: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10133,6 +10374,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10154,6 +10396,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: Some("key".to_string()),
+            known_hosts_path: None,
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
             token: None,
@@ -10211,6 +10454,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: Some("/path/to/key".to_string()),
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10231,6 +10475,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
             token: None,
@@ -10250,6 +10495,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: Some("token123".to_string()),
@@ -10285,6 +10531,7 @@ mod tests {
             ff_only: None,
             set_upstream: None,
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10357,6 +10604,7 @@ mod tests {
             depth: None,
             recursive: Some(false),
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -10381,6 +10629,7 @@ mod tests {
             ff_only: Some(false),
             set_upstream: Some(false),
             ssh_key: None,
+            known_hosts_path: None,
             username: None,
             password: None,
             token: None,
@@ -11613,6 +11862,7 @@ mod tests {
             force_push: Some(false),
             set_upstream: Some(true),
             dry_run: Some(false),
+            known_hosts_path: None,
             timeout_ms: Some(60000),
         };
         assert!(handle.validate_sync_config(&config).is_ok());
@@ -11641,6 +11891,7 @@ mod tests {
             force_push: Some(false),
             set_upstream: Some(true),
             dry_run: Some(false),
+            known_hosts_path: None,
             timeout_ms: Some(0),
         };
         assert!(matches!(
@@ -11664,6 +11915,7 @@ mod tests {
             force_push: Some(false),
             set_upstream: Some(true),
             dry_run: Some(false),
+            known_hosts_path: None,
             timeout_ms: Some(60000),
         };
         assert!(matches!(
@@ -11687,6 +11939,7 @@ mod tests {
             force_push: Some(false),
             set_upstream: Some(true),
             dry_run: Some(false),
+            known_hosts_path: None,
             timeout_ms: Some(60000),
         };
         assert!(matches!(
@@ -11710,6 +11963,7 @@ mod tests {
             force_push: Some(true),
             set_upstream: Some(true),
             dry_run: Some(false),
+            known_hosts_path: None,
             timeout_ms: Some(60000),
         };
         assert!(matches!(
@@ -12913,5 +13167,319 @@ mod timeout_rejection_tests {
         // Without timeout_ms the verb still runs normally.
         let (status, _, err) = run("status", &[("path", &path)]);
         assert!(status.ok, "{err}");
+    }
+}
+
+/// `known_hosts_path` through the verb dispatch, as a user invokes it:
+/// argument validation, strict refusal for SSH remotes (missing, unreadable
+/// or non-matching file, checked before any connection is made) and that the
+/// option is ignored for file and https remotes. No SSH server is needed:
+/// SSH remotes point at 127.0.0.1 port 1, where nothing listens.
+#[cfg(test)]
+mod known_hosts_dispatch_tests {
+    use super::*;
+    use git2::RepositoryInitOptions;
+    use tempfile::TempDir;
+
+    const UNREACHABLE_SSH: &str = "ssh://git@127.0.0.1:1/repo.git";
+    const ED25519_BLOB: &str =
+        "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+
+    /// Runs `verb` through `Handle::call`. On failure returns the error code
+    /// and message the CLI would print.
+    fn call(alias: &str, verb: &str, pairs: &[(&str, &str)]) -> Result<Status, (String, String)> {
+        let h = GitHandle {
+            alias: alias.to_string(),
+        };
+        let args: Args = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        h.call(verb, &args, &mut io).map_err(|err| {
+            let shell = err
+                .downcast_ref::<crate::core::status::ShellError>()
+                .unwrap_or_else(|| panic!("{verb}: not a ShellError: {err:#}"));
+            (shell.code.clone(), shell.message.clone())
+        })
+    }
+
+    fn commit(repo: &Repository, file: &str) {
+        let workdir = repo.workdir().unwrap();
+        std::fs::write(workdir.join(file), file).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(file)).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Resh Test", "test@example.invalid").unwrap();
+        let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, file, &tree, &parents)
+            .unwrap();
+    }
+
+    struct Fixture {
+        dir: TempDir,
+        work: PathBuf,
+    }
+
+    impl Fixture {
+        fn work_str(&self) -> String {
+            self.work.to_string_lossy().to_string()
+        }
+        fn path(&self, name: &str) -> String {
+            self.dir.path().join(name).to_string_lossy().to_string()
+        }
+    }
+
+    /// A working repository on `main` with one commit whose `origin` is
+    /// `origin_url`, or, when None, a local bare repository reached through a
+    /// file:// URL (already holding `main`).
+    fn fixture(origin_url: Option<&str>) -> Fixture {
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        let repo = Repository::init_opts(&work, RepositoryInitOptions::new().initial_head("main"))
+            .unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Resh Test").unwrap();
+        cfg.set_str("user.email", "test@example.invalid").unwrap();
+        commit(&repo, "base.txt");
+        match origin_url {
+            Some(url) => {
+                repo.remote("origin", url).unwrap();
+            }
+            None => {
+                let bare = dir.path().join("remote.git");
+                Repository::init_opts(
+                    &bare,
+                    RepositoryInitOptions::new().bare(true).initial_head("main"),
+                )
+                .unwrap();
+                let url = format!("file://{}", bare.display());
+                let mut remote = repo.remote("origin", &url).unwrap();
+                remote
+                    .push(&["refs/heads/main:refs/heads/main"], None)
+                    .unwrap();
+            }
+        }
+        Fixture { dir, work }
+    }
+
+    /// Every verb that reaches a remote, with the arguments to reach the
+    /// fixture's origin (clone gets `clone_url`).
+    fn remote_verbs<'a>(
+        f: &Fixture,
+        clone_url: &'a str,
+    ) -> Vec<(&'static str, Vec<(&'a str, String)>)> {
+        vec![
+            (
+                "clone",
+                vec![("url", clone_url.to_string()), ("path", f.path("clone"))],
+            ),
+            ("pull", vec![("path", f.work_str())]),
+            (
+                "push",
+                vec![("path", f.work_str()), ("branch", "main".into())],
+            ),
+            ("sync", vec![("path", f.work_str())]),
+        ]
+    }
+
+    fn run_with(
+        alias: &str,
+        verb: &str,
+        base: &[(&str, String)],
+        known_hosts: Option<&str>,
+    ) -> Result<Status, (String, String)> {
+        let mut pairs: Vec<(&str, &str)> = base.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        if let Some(kh) = known_hosts {
+            pairs.push(("known_hosts_path", kh));
+        }
+        call(alias, verb, &pairs)
+    }
+
+    #[test]
+    fn empty_known_hosts_path_is_an_invalid_argument() {
+        let f = fixture(Some(UNREACHABLE_SSH));
+        let expected = [
+            ("clone", "git.invalid_clone_config"),
+            ("pull", "git.invalid_pull_config"),
+            ("push", "git.invalid_push_config"),
+            ("sync", "git.sync_invalid_config"),
+        ];
+        for ((verb, base), (_, code)) in remote_verbs(&f, UNREACHABLE_SSH).iter().zip(expected) {
+            let (got, msg) = run_with("kh-empty", verb, base, Some("")).unwrap_err();
+            assert_eq!(got, code, "{verb}: {msg}");
+            assert!(
+                msg.contains("known_hosts_path cannot be empty"),
+                "{verb}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_file_refuses_every_ssh_verb() {
+        let f = fixture(Some(UNREACHABLE_SSH));
+        let missing = f.path("no-such-known_hosts");
+        for (verb, base) in remote_verbs(&f, UNREACHABLE_SSH) {
+            let (code, msg) = run_with("kh-missing", verb, &base, Some(&missing)).unwrap_err();
+            assert_eq!(code, "git.host_key_verification_failed", "{verb}: {msg}");
+            assert!(
+                msg.contains("cannot read known_hosts file"),
+                "{verb}: {msg}"
+            );
+            assert!(msg.contains("[127.0.0.1]:1"), "{verb}: {msg}");
+        }
+        assert!(
+            !Path::new(&f.path("clone")).exists(),
+            "clone created its target"
+        );
+    }
+
+    #[test]
+    fn unreadable_file_refuses_every_ssh_verb() {
+        let f = fixture(Some(UNREACHABLE_SSH));
+        // A directory cannot be read as a file, even by root.
+        let unreadable = f.path("kh-dir");
+        std::fs::create_dir(&unreadable).unwrap();
+        for (verb, base) in remote_verbs(&f, UNREACHABLE_SSH) {
+            let (code, msg) =
+                run_with("kh-unreadable", verb, &base, Some(&unreadable)).unwrap_err();
+            assert_eq!(code, "git.host_key_verification_failed", "{verb}: {msg}");
+            assert!(
+                msg.contains("cannot read known_hosts file"),
+                "{verb}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_host_is_refused_before_connecting() {
+        let f = fixture(Some(UNREACHABLE_SSH));
+        let kh = f.path("known_hosts");
+        // Port 22 entry and a CA line only: neither covers [127.0.0.1]:1.
+        std::fs::write(
+            &kh,
+            format!(
+                "127.0.0.1 ssh-ed25519 {ED25519_BLOB}\n@cert-authority * ssh-ed25519 {ED25519_BLOB}\n"
+            ),
+        )
+        .unwrap();
+        for (verb, base) in remote_verbs(&f, UNREACHABLE_SSH) {
+            let (code, msg) = run_with("kh-unknown", verb, &base, Some(&kh)).unwrap_err();
+            assert_eq!(code, "git.host_key_verification_failed", "{verb}: {msg}");
+            assert!(
+                msg.contains("CA-signed host keys are not supported"),
+                "{verb}: {msg}"
+            );
+        }
+        std::fs::write(&kh, format!("other.example ssh-ed25519 {ED25519_BLOB}\n")).unwrap();
+        for (verb, base) in remote_verbs(&f, UNREACHABLE_SSH) {
+            let (code, msg) = run_with("kh-unknown", verb, &base, Some(&kh)).unwrap_err();
+            assert_eq!(code, "git.host_key_verification_failed", "{verb}: {msg}");
+            assert!(msg.contains("is not listed"), "{verb}: {msg}");
+        }
+    }
+
+    #[test]
+    fn listed_host_proceeds_to_connect() {
+        let f = fixture(Some(UNREACHABLE_SSH));
+        let kh = f.path("known_hosts");
+        std::fs::write(&kh, format!("[127.0.0.1]:1 ssh-ed25519 {ED25519_BLOB}\n")).unwrap();
+        let expected = [
+            ("clone", "git.clone_failed"),
+            ("pull", "git.pull_fetch_failed"),
+            ("push", "git.push_failed"),
+            ("sync", "git.sync_pull_failed"),
+        ];
+        for ((verb, base), (_, want)) in remote_verbs(&f, UNREACHABLE_SSH).iter().zip(expected) {
+            // Nothing listens on port 1, so the connection itself fails; the
+            // known_hosts check did not refuse it.
+            let (code, msg) = run_with("kh-listed", verb, base, Some(&kh)).unwrap_err();
+            assert_eq!(code, want, "{verb}: {msg}");
+            assert!(!msg.contains("host key"), "{verb}: {msg}");
+        }
+    }
+
+    #[test]
+    fn option_is_ignored_for_file_remotes() {
+        let f = fixture(None);
+        let missing = f.path("no-such-known_hosts");
+        let work = Repository::open(&f.work).unwrap();
+        for known_hosts in [None, Some(missing.as_str())] {
+            commit(
+                &work,
+                if known_hosts.is_some() {
+                    "with.txt"
+                } else {
+                    "without.txt"
+                },
+            );
+            let base = [("path", f.work_str()), ("branch", "main".to_string())];
+            for verb in ["push", "pull", "sync"] {
+                let status = run_with("kh-file", verb, &base, known_hosts)
+                    .unwrap_or_else(|e| panic!("{verb} with {known_hosts:?}: {e:?}"));
+                assert!(status.ok, "{verb} with {known_hosts:?}");
+            }
+        }
+        // Both commits reached the file:// remote.
+        let bare = Repository::open_bare(f.dir.path().join("remote.git")).unwrap();
+        assert_eq!(
+            bare.refname_to_id("refs/heads/main").unwrap(),
+            work.head().unwrap().target().unwrap()
+        );
+    }
+
+    #[test]
+    fn option_is_ignored_for_https_clone() {
+        let f = fixture(Some(UNREACHABLE_SSH));
+        let missing = f.path("no-such-known_hosts");
+        // Nothing listens on port 1: the failure is the connection, not the
+        // (missing) known_hosts file, which https never reads.
+        let (code, msg) = call(
+            "kh-https",
+            "clone",
+            &[
+                ("url", "https://127.0.0.1:1/repo.git"),
+                ("path", &f.path("clone")),
+                ("known_hosts_path", &missing),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(code, "git.clone_failed", "{msg}");
+        assert!(!msg.contains("known_hosts"), "{msg}");
+    }
+
+    #[test]
+    fn registered_profile_known_hosts_path_is_enforced() {
+        let f = fixture(Some(UNREACHABLE_SSH));
+        GitHandle::register_connection(
+            "kh-profile".to_string(),
+            GitConnectionProfile {
+                ssh_key_path: None,
+                known_hosts_path: Some(PathBuf::from(f.path("no-such-known_hosts"))),
+                username: None,
+                password: None,
+                token: None,
+            },
+        );
+        let (code, msg) = call("kh-profile", "pull", &[("path", &f.work_str())]).unwrap_err();
+        assert_eq!(code, "git.host_key_verification_failed", "{msg}");
+        // An argument overrides the profile.
+        let kh = f.path("known_hosts");
+        std::fs::write(&kh, format!("[127.0.0.1]:1 ssh-ed25519 {ED25519_BLOB}\n")).unwrap();
+        let (code, msg) = call(
+            "kh-profile",
+            "pull",
+            &[("path", &f.work_str()), ("known_hosts_path", &kh)],
+        )
+        .unwrap_err();
+        assert_eq!(code, "git.pull_fetch_failed", "{msg}");
     }
 }

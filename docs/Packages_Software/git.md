@@ -127,7 +127,7 @@ Other rules:
 * `remote_branch`, if given, must equal the local branch name; a different name is rejected.
 * With uncommitted changes, `sync` fails unless `allow_uncommitted=true` or `stash_uncommitted=true`. With `stash_uncommitted=true` the changes are stashed first and popped back afterwards, including when the sync fails.
 * `dry_run=true` reports the planned actions (`status: "dry_run"`, `actions: [...]`) without fetching or pushing.
-* `sync` takes no credential arguments (`ssh_key`, `username`, `password`, `token` are not read by `sync`). Use `pull` and `push` for remotes that need credentials.
+* `sync` takes no credential arguments (`ssh_key`, `username`, `password`, `token` are not read by `sync`). Use `pull` and `push` for remotes that need credentials. It does accept `known_hosts_path=<file>` (see 4.4), which applies to both its fetch and its push.
 * The result's `integration.status` is `fast_forward` or `up_to_date`.
 
 #### `pull`
@@ -277,6 +277,33 @@ Example:
 resh git://default.pull path=/repo ssh_key=/home/user/.ssh/id_ed25519
 ```
 
+#### SSH host-key checking (`known_hosts_path`)
+
+`clone`, `pull`, `push` and `sync` accept `known_hosts_path=<file>`, an OpenSSH `known_hosts` file. When it is given and the remote uses SSH (`ssh://`, `git+ssh://`, `ssh+git://` or the scp-like `user@host:path` form), the check is **strict**:
+
+* Before connecting, the file is read and the host must have at least one plain key entry. A missing or unreadable file, or a host that is not listed, is refused without connecting.
+* During the SSH handshake the server's host key (key type and key data) must equal one of the keys listed for that host. Any other key is refused; nothing is ever added to the file.
+* A key listed for the host under `@revoked` is refused, even when it is also listed as a plain entry.
+* `@cert-authority` lines are not supported and are never used to accept a key. A host covered only by `@cert-authority` lines is refused with a message saying that CA-signed host keys are not supported.
+
+Every refusal fails with the error code `git.host_key_verification_failed`; the message names the host (as `host`, or `[host]:port` for ports other than 22) and the reason, and the error details carry `host` and `known_hosts_path`. Nothing is fetched, pushed or cloned.
+
+Supported file syntax: plain host names and IP addresses, comma-separated lists, `[host]:port` for ports other than 22, hashed entries (`|1|salt|hash`, as written by `ssh-keygen -H` or `HashKnownHosts yes`), `*` and `?` wildcards, `!` negation (a matching negated pattern excludes the host), and `#` comments. Host names are compared case-insensitively. Malformed lines and unknown `@` markers are skipped, not treated as errors. The port comes from the remote URL.
+
+For remotes that do not use SSH (`https://`, `http://`, `file://`, local paths) the option has no meaning and is ignored, whether or not the file exists. For `pull` and `push` the remote's configured URL (for `push`, its push URL when set) decides.
+
+Without `known_hosts_path`, host keys are handled exactly as before, by libgit2's own default (on Linux, `~/.ssh/known_hosts`).
+
+To build the file, record the host's keys over a trusted network path and compare their fingerprints with the ones the hosting provider publishes:
+
+```bash
+ssh-keyscan -p 22 git.example.com > /etc/resh/git_known_hosts
+ssh-keygen -lf /etc/resh/git_known_hosts
+resh git://default.pull path=/repo ssh_key=/home/user/.ssh/id_ed25519 known_hosts_path=/etc/resh/git_known_hosts
+```
+
+List every key type the server has (the full `ssh-keyscan` output): the SSH library negotiates which host-key type the server presents and does not take the file into account, so a host listed with only one of its key types can be refused as a mismatch.
+
 ---
 
 ### 4.5 Packages & Software
@@ -293,6 +320,7 @@ The Git handle can be used for:
 ### 4.6 Security & Secrets
 
 * Prefer SSH key or token authentication over passwords.
+* For SSH remotes, pass `known_hosts_path=<file>` to pin the server's host keys (see 4.4).
 * Arguments such as `password=` and `token=` appear in the process list and shell history; avoid putting long-lived secrets on the command line.
 * Use least-privilege, expiring tokens.
 
@@ -325,6 +353,8 @@ Structured metadata includes:
 * `clone recursive=true`: submodule cloning is **not implemented**; a warning is logged and submodules are not cloned. The output still echoes `"recursive": true`.
 * `pull` cannot merge or rebase diverged branches.
 * `sync` only fast-forwards and pushes; it never merges or rebases, and has no credential arguments.
+* `known_hosts_path` does not support `@cert-authority` (CA-signed host keys); the host's own keys must be listed. The host-key type the server presents is negotiated by the SSH library, so list all of the host's key types.
+* `clone` accepts only `http://`, `https://`, `git@` and `ssh://` URLs; `file://` URLs and local paths are refused.
 * `rebase preserve_merges=true` and `autosquash=true` have no effect.
 * `--json-pretty` has no effect; output is always pretty-printed.
 * Each `resh` invocation is a separate process; nothing is kept between invocations.
