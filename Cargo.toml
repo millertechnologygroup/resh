@@ -63,6 +63,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "mysql", "sqlite", "chrono"] }
 # tokio-rustls-comp: rediss:// over the rustls 0.23 (ring) already in the tree
 redis = { version = "1.8", default-features = false, features = ["tokio-rustls-comp", "connection-manager", "script"] }
+# db: read result rows as a stream (already in Cargo.lock through sqlx)
+futures-util = { version = "0.3", default-features = false }
 dashmap = "6"
 log = "0.4"
 git2 = { version = "0.21", features = ["ssh", "https"] }

@@ -4011,6 +4011,7 @@ dependencies = [
  "email-address-parser",
  "filetime",
  "flate2",
+ "futures-util",
  "git2",
  "glob",
  "globset",
