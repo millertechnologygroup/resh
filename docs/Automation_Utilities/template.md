@@ -13,7 +13,7 @@ resh template://inline.<verb> key=value ...     template text passed as an argum
 
 * `<path>` is a template file such as `welcome.txt` or `templates/nginx.conf`. The verb is the part after the last dot, so `template://nginx.conf.render` renders the file `nginx.conf`.
 * `inline` (or an empty target) means there is no file; the template text comes from an argument.
-* `<verb>` is `render`, `validate` or `test`. Any other verb fails with `Error: unknown verb: <verb>` and exit status 2.
+* `<verb>` is `render`, `validate` or `test`. Any other verb fails with `Error: [template.unknown_verb] unknown verb: <verb>` and exit status 2.
 
 ---
 
@@ -23,7 +23,8 @@ resh template://inline.<verb> key=value ...     template text passed as an argum
 * Tera's built-in functions are available, including `get_env`, which reads environment variables of the `resh` process (`{{ get_env(name="HOME") }}`). Do not render untrusted templates.
 * Every verb takes `timeout_ms` (milliseconds; 0, the default, means no limit). Rendering runs on a worker thread; if it has not finished in time the verb reports an error of kind `timeout` and exits 124. The abandoned render ends with the process.
 * Every argument is checked before the template or context is read. An argument the verb does not take, a boolean that is not one of `true/false`, `1/0`, `yes/no`, `on/off`, an unknown `format`, `capture_output` or `encoding`, or a `timeout_ms` that is not a non-negative integer is reported (kind `invalid_argument`, or `invalid_format` / `encoding`) with exit code 2. A misspelled argument name gets a hint such as ``(did you mean `context`?)``.
-* Exit codes follow the resh convention: 0 success, 1 the operation failed, 2 invalid usage (nothing was done), 124 timeout. The error `kind` tells failures with the same exit code apart.
+* Exit codes follow the resh convention: 0 success, 1 the operation failed, 2 invalid usage (nothing was done), 124 timeout. The error code tells failures with the same exit code apart.
+* Every failure is reported on stderr as `Error: [<code>] <message>` and, in the JSON result, as `"error": {"code": "<code>", "message": "..."}`. For `render` and `validate` the code is `template.<kind>` for the first error's `kind`. All codes are listed in [3.4 Error codes](#34-error-codes).
 * None has a dry-run mode, so `dry_run=true` is refused (exit 2). Rendering never writes files.
 * A template path is relative to the current directory. A leading `..` is kept (`template://../x.txt` reads `../x.txt`); `a/..` inside the path cancels out.
 * Context values come only from the `context` / `context_file` arguments (and, for `test`, each case's `context`). There are no other data sources.
@@ -67,7 +68,7 @@ Output for a file containing `Hello, {{ name }}!`:
 }
 ```
 
-On failure `ok` is `false`, `body` is absent and `errors` holds objects with `kind` and `message`:
+On failure `ok` is `false`, `body` is absent, `errors` holds objects with `kind` and `message`, and `error` holds the code and message of the failure (`{"code": "template.<kind>", "message": "..."}`):
 
 | Exit | Error kinds |
 | ---- | ----------- |
@@ -104,7 +105,8 @@ Output:
   "errors": [
     { "kind": "missing_variable", "message": "Missing variable: Variable `name` not found in context while rendering 'validate_template'" }
   ],
-  "warnings": []
+  "warnings": [],
+  "error": { "code": "template.missing_variable", "message": "Missing variable: Variable `name` not found in context while rendering 'validate_template'" }
 }
 ```
 
@@ -147,11 +149,35 @@ Output:
 }
 ```
 
-Exit status: 0 when every case passes; 1 when a case fails, the case list is empty, the template file is missing, `cases_file` or the default `.tests.json` file cannot be read or parsed, or the template does not compile (`tera_parse_failed`); 2 for an invalid argument, no template given, no cases given, or `cases=` that is not a JSON case list; 124 when `timeout_ms` passes. On a timeout, `cases` holds the cases that finished and `error` says how many of the supplied cases ran. Setup errors set `ok: false` and an `error` message.
+Exit status: 0 when every case passes; 1 when a case fails, the case list is empty, the template file is missing, `cases_file` or the default `.tests.json` file cannot be read or parsed, or the template does not compile (`tera_parse_failed`); 2 for an invalid argument, no template given, no cases given, or `cases=` that is not a JSON case list; 124 when `timeout_ms` passes. On failure `error` is `{"code", "message"}`: `template.tests_failed` when a case fails (message `<n> of <total> test cases failed`), `template.timeout` on a timeout (the message says how many of the supplied cases ran, and `cases` holds the cases that finished), and the setup error otherwise (`template.template_not_found`, `template.no_test_cases`, `template.invalid_cases`, `template.tera_parse_failed`, `template.invalid_argument`) with `ok: false`. A failing case's own `error` field is a plain message.
 
 ---
 
-### 3.4 Limitations
+### 3.4 Error codes
+
+| Code                          | Exit | Verbs | Meaning |
+| ----------------------------- | ---- | ----- | ------- |
+| `template.invalid_argument`   | 2    | all   | An argument the verb does not take (with a "did you mean" hint), a bad boolean, `capture_output` or `timeout_ms` |
+| `template.invalid_format`     | 2    | render | `format` is not `text`, `html`, `json` or `bytes` |
+| `template.encoding`           | 2    | validate | `encoding` is not supported |
+| `template.template_not_found` | 1 (2 for `template://inline` with no `template`/`from`) | render, test | The template file is missing, or no template was given |
+| `template.io`                 | 1    | render | The template or `context_file` cannot be read |
+| `template.file_read`          | 1 (2 with no template given) | validate | The template or `context_file` cannot be read, or no template was given |
+| `template.context_parse`      | 1    | render, validate | The context is not valid JSON or not an object |
+| `template.syntax`             | 1    | validate | The template does not compile |
+| `template.missing_variable`   | 1    | validate | Rendering needs a variable the context lacks (`strict=true`) |
+| `template.render`             | 1    | render, validate | A template parse or render error (the message includes Tera's causes) |
+| `template.json_parse`         | 1    | render | `format=json` and the rendered text is not JSON |
+| `template.timeout`            | 124  | all   | `timeout_ms` passed |
+| `template.no_test_cases`      | 2 (1 for an empty case list) | test | No cases were given and there is no `.tests.json` file, or the case list is empty |
+| `template.invalid_cases`      | 2 (`cases=`) / 1 (files) | test | `cases=` is not a JSON case list, or `cases_file` / the `.tests.json` file cannot be read or parsed |
+| `template.tera_parse_failed`  | 1    | test  | The template does not compile |
+| `template.tests_failed`       | 1    | test  | At least one case failed |
+| `template.unknown_verb`       | 2    | -     | The verb is not `render`, `validate` or `test` (also for help on an unknown verb) |
+
+**Change note (breaking):** earlier versions printed a bare kind or phrase on stderr (for example `Error: render`, `Error: Template syntax error`, `Error: no_test_cases`), and `test` reported `error` as a plain string. Failures now print `Error: [template.<code>] <message>`, every failed result carries `"error": {"code", "message"}`, a bad `cases=` list or unreadable cases file is `template.invalid_cases` instead of `no_test_cases`, and help for an unknown verb exits 2 instead of 1. The `errors` array and its `kind` values are unchanged.
+
+### 3.5 Limitations
 
 * Macro calls may nest at most 200 levels deep. Tera itself has no recursion limit, so a macro that called itself without end used to overflow the stack and abort resh; resh now gives every macro a hidden depth argument, and a call past the limit fails the render with ``macro calls nested deeper than 200 levels`` (kind `render`, exit 1). Bounded recursion within the limit works as before.
 

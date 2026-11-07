@@ -28,6 +28,17 @@ fn json(out: &str) -> serde_json::Value {
     serde_json::from_str(out).unwrap_or_else(|e| panic!("not JSON ({e}): {out}"))
 }
 
+/// A failure is reported the same way on stderr (`Error: [<code>] <msg>`)
+/// and in the JSON result (`"error": {"code", "message"}`); returns the code.
+fn failure_code(out: &str, err: &str) -> String {
+    let v = json(out);
+    assert_eq!(v["ok"], false, "{v}");
+    let code = v["error"]["code"].as_str().unwrap_or_else(|| panic!("{v}"));
+    let message = v["error"]["message"].as_str().unwrap();
+    assert_eq!(err, format!("Error: [{code}] {message}\n"), "{v}");
+    code.to_string()
+}
+
 /// The help examples' fixture: welcome.txt and its default test cases.
 fn welcome() -> TempDir {
     let tmp = TempDir::new().unwrap();
@@ -116,6 +127,7 @@ fn render_errors() {
         let v = json(&out);
         assert_eq!(v["ok"], false);
         assert_eq!(v["errors"][0]["kind"], kind, "{args:?}");
+        assert_eq!(failure_code(&out, &err), format!("template.{kind}"));
     }
     let (c, _, err) = run(
         tmp.path(),
@@ -226,6 +238,7 @@ fn validate_errors() {
         let (c, out, err) = run(tmp.path(), args);
         assert_eq!(c, code, "{args:?}: {out} {err}");
         assert_eq!(json(&out)["errors"][0]["kind"], kind, "{args:?}");
+        assert_eq!(failure_code(&out, &err), format!("template.{kind}"));
     }
 }
 
@@ -276,11 +289,12 @@ fn test_errors() {
     ] {
         let (c, out, err) = run(tmp.path(), args);
         assert_eq!(c, code, "{args:?}: {out} {err}");
-        let v = json(&out);
-        assert_eq!(v["ok"], false);
-        assert!(v["error"].is_string(), "{args:?}: {v}");
+        assert!(
+            failure_code(&out, &err).starts_with("template."),
+            "{args:?}: {out}"
+        );
     }
-    let (c, out, _) = run(
+    let (c, out, err) = run(
         tmp.path(),
         &[
             "template://inline.test",
@@ -290,8 +304,9 @@ fn test_errors() {
         ],
     );
     assert_eq!(c, 124);
+    assert_eq!(failure_code(&out, &err), "template.timeout");
     assert!(
-        json(&out)["error"]
+        json(&out)["error"]["message"]
             .as_str()
             .unwrap()
             .contains("timeout_ms=200")

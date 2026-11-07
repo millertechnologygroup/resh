@@ -9,7 +9,7 @@ use url::Url;
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{Status, error_json, exit},
 };
 
 /// JSON schema for validation results
@@ -40,6 +40,10 @@ struct ValidationResult {
     strict: bool,
     errors: Vec<ValidationError>,
     warnings: Vec<ValidationError>,
+    /// The failure (`{"code","message"}`, from the first error); absent on
+    /// success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Value>,
 }
 
 /// JSON schema for render results
@@ -68,6 +72,9 @@ struct RenderResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     body: Option<BodyInfo>,
     errors: Vec<ValidationError>,
+    /// The failure (`{"code","message"}`); absent on success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Value>,
 }
 
 /// JSON schema for test cases and results
@@ -109,8 +116,9 @@ struct TestResult {
     passed: usize,
     failed: usize,
     stop_on_first_fail: bool,
+    /// The failure (`{"code","message"}`); absent on success.
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    error: Option<Value>,
     cases: Vec<TestCaseResult>,
 }
 
@@ -402,7 +410,50 @@ impl std::fmt::Display for NoCases {
 impl std::error::Error for NoCases {}
 
 /// Exit code for a verb stopped by `timeout_ms` (as for timeout(1)).
-const TIMEOUT_EXIT: i32 = 124;
+const TIMEOUT_EXIT: i32 = exit::TIMEOUT;
+
+/// Every error code the handle can emit (`Error: [<code>] <message>` and
+/// `"error": {"code", ...}`); each is documented in
+/// docs/Automation_Utilities/template.md. The codes of render and validate
+/// errors are `template.<kind>` for the error kinds below.
+pub const ERROR_CODES: &[&str] = &[
+    "template.invalid_argument",
+    "template.invalid_format",
+    "template.encoding",
+    "template.template_not_found",
+    "template.io",
+    "template.file_read",
+    "template.context_parse",
+    "template.syntax",
+    "template.missing_variable",
+    "template.render",
+    "template.json_parse",
+    "template.timeout",
+    "template.no_test_cases",
+    "template.invalid_cases",
+    "template.tera_parse_failed",
+    "template.tests_failed",
+    "template.unknown_verb",
+];
+
+/// The error code for an error of `kind`.
+fn error_code(kind: &str) -> String {
+    let code = format!("template.{kind}");
+    debug_assert!(ERROR_CODES.contains(&code.as_str()), "{code} not listed");
+    code
+}
+
+impl ValidationError {
+    /// The `{"code","message"}` object for this error.
+    fn json(&self) -> Value {
+        error_json(&error_code(&self.kind), &self.message)
+    }
+
+    /// A failure status reporting this error with exit status `exit`.
+    fn status(&self, exit: i32) -> Status {
+        Status::coded(exit, &error_code(&self.kind), &self.message)
+    }
+}
 
 /// Options parsed and checked before a verb acts.
 struct Options {
@@ -480,11 +531,8 @@ impl LimitError {
 
     fn status(&self, timeout_ms: u64) -> Status {
         match self {
-            LimitError::TimedOut => Status::err(
-                TIMEOUT_EXIT,
-                format!("timeout: rendering did not finish within {timeout_ms} ms"),
-            ),
-            LimitError::Failed(msg) => Status::err(1, msg.clone()),
+            LimitError::TimedOut => self.error(timeout_ms).status(TIMEOUT_EXIT),
+            LimitError::Failed(_) => self.error(timeout_ms).status(exit::FAILED),
         }
     }
 }
@@ -1216,11 +1264,22 @@ impl TemplateHandle {
             strict: true,
             errors: Vec::new(),
             warnings: Vec::new(),
+            error: None,
         };
-        let emit = |result: &ValidationResult, io: &mut IoStreams| -> Result<()> {
-            writeln!(io.stdout, "{}", serde_json::to_string(result)?)?;
-            Ok(())
-        };
+        // Prints the result; a failure carries its first error as `error`
+        // and reports it with exit status `exit`.
+        let emit =
+            |result: &mut ValidationResult, exit: i32, io: &mut IoStreams| -> Result<Status> {
+                let status = match result.errors.first() {
+                    Some(first) if !result.ok => {
+                        result.error = Some(first.json());
+                        first.status(exit)
+                    }
+                    _ => Status::ok(),
+                };
+                writeln!(io.stdout, "{}", serde_json::to_string(result)?)?;
+                Ok(status)
+            };
 
         let opts = match Self::check_args("validate", args) {
             Ok(opts) => opts,
@@ -1229,10 +1288,8 @@ impl TemplateHandle {
                     .ok()
                     .flatten()
                     .unwrap_or(true);
-                let kind = error.kind.clone();
                 result.errors.push(error);
-                emit(&result, io)?;
-                return Ok(Status::err(2, kind));
+                return emit(&mut result, exit::USAGE, io);
             }
         };
         let strict = opts.strict;
@@ -1247,11 +1304,7 @@ impl TemplateHandle {
                     line: None,
                     column: None,
                 });
-                emit(&result, io)?;
-                return Ok(Status::err(
-                    self.source_error_code(),
-                    "Failed to read template",
-                ));
+                return emit(&mut result, self.source_error_code(), io);
             }
         };
         result.template = self.create_template_info(args, "validate", Some(&template_content));
@@ -1263,8 +1316,7 @@ impl TemplateHandle {
                     error.kind = "file_read".to_string();
                 }
                 result.errors.push(error);
-                emit(&result, io)?;
-                return Ok(Status::err(1, "Context parsing failed"));
+                return emit(&mut result, exit::FAILED, io);
             }
         };
 
@@ -1283,8 +1335,8 @@ impl TemplateHandle {
         match outcome {
             Err(limit) => {
                 result.errors.push(limit.error(opts.timeout_ms));
-                emit(&result, io)?;
-                return Ok(limit.status(opts.timeout_ms));
+                let exit = limit.status(opts.timeout_ms).exit_code();
+                return emit(&mut result, exit, io);
             }
             Ok(Ok(())) => result.ok = true,
             Ok(Err((true, chain, _))) => {
@@ -1294,8 +1346,7 @@ impl TemplateHandle {
                     line: None,
                     column: None,
                 });
-                emit(&result, io)?;
-                return Ok(Status::err(1, "Template syntax error"));
+                return emit(&mut result, exit::FAILED, io);
             }
             Ok(Err((false, _, Some(detail)))) => {
                 let validation_error = ValidationError {
@@ -1321,12 +1372,7 @@ impl TemplateHandle {
             }
         }
 
-        emit(&result, io)?;
-        if result.ok {
-            Ok(Status::ok())
-        } else {
-            Ok(Status::err(1, "Template validation failed"))
-        }
+        emit(&mut result, exit::FAILED, io)
     }
 
     fn render_template(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
@@ -1346,6 +1392,7 @@ impl TemplateHandle {
                 template,
                 context,
                 body: None,
+                error: Some(error.json()),
                 errors: vec![error],
             };
             writeln!(io.stdout, "{}", serde_json::to_string(&result)?)?;
@@ -1355,7 +1402,7 @@ impl TemplateHandle {
         let opts = match Self::check_args("render", args) {
             Ok(opts) => opts,
             Err(error) => {
-                let status = Status::err(2, error.kind.clone());
+                let status = error.status(exit::USAGE);
                 let info = self.create_template_info(args, "render", None);
                 return fail(info, empty_context(), error, status, io);
             }
@@ -1364,7 +1411,7 @@ impl TemplateHandle {
         let template_content = match self.read_template(args, "render") {
             Ok(content) => content,
             Err(error) => {
-                let status = Status::err(self.source_error_code(), error.kind.clone());
+                let status = error.status(self.source_error_code());
                 let info = self.create_template_info(args, "render", None);
                 return fail(info, empty_context(), error, status, io);
             }
@@ -1374,7 +1421,7 @@ impl TemplateHandle {
         let (context_info, tera_context) = match self.parse_render_context(args) {
             Ok(parsed) => parsed,
             Err(error) => {
-                let status = Status::err(1, error.kind.clone());
+                let status = error.status(exit::FAILED);
                 return fail(info(), empty_context(), error, status, io);
             }
         };
@@ -1407,7 +1454,7 @@ impl TemplateHandle {
                     line: None,
                     column: None,
                 };
-                let status = Status::err(1, "tera_render_failed");
+                let status = error.status(exit::FAILED);
                 return fail(info(), context_info, error, status, io);
             }
             Ok(Ok(rendered)) => rendered,
@@ -1416,7 +1463,7 @@ impl TemplateHandle {
         let body = match self.format_render_output(rendered, &opts.format) {
             Ok(body_info) => body_info,
             Err(error) => {
-                let status = Status::err(1, error.kind.clone());
+                let status = error.status(exit::FAILED);
                 return fail(info(), context_info, error, status, io);
             }
         };
@@ -1428,6 +1475,7 @@ impl TemplateHandle {
             context: context_info,
             body: Some(body),
             errors: Vec::new(),
+            error: None,
         };
         writeln!(io.stdout, "{}", serde_json::to_string(&result)?)?;
         Ok(Status::ok())
@@ -1449,10 +1497,13 @@ impl TemplateHandle {
         let fail = |template: String,
                     stop_on_first_fail: bool,
                     total: usize,
-                    error: String,
-                    status: Status,
+                    exit: i32,
+                    code: &str,
+                    message: String,
                     io: &mut IoStreams|
          -> Result<Status> {
+            let status = Status::coded(exit, code, &message);
+            let error = error_json(code, &message);
             let result = TestResult {
                 template,
                 ok: false,
@@ -1474,8 +1525,9 @@ impl TemplateHandle {
                     .ok()
                     .flatten()
                     .unwrap_or(false);
-                let status = Status::err(2, error.kind.clone());
-                return fail(template_label(None), stop, 0, error.message, status, io);
+                let code = error_code(&error.kind);
+                let label = template_label(None);
+                return fail(label, stop, 0, exit::USAGE, &code, error.message, io);
             }
         };
         let stop_on_first_fail = opts.stop_on_first_fail;
@@ -1484,23 +1536,37 @@ impl TemplateHandle {
         let template_content = match self.read_template(args, "test") {
             Ok(content) => content,
             Err(error) => {
-                let status = Status::err(self.source_error_code(), "template_not_found");
-                return fail(label, stop_on_first_fail, 0, error.message, status, io);
+                let exit = self.source_error_code();
+                let code = "template.template_not_found";
+                return fail(label, stop_on_first_fail, 0, exit, code, error.message, io);
             }
         };
 
         let test_cases = match self.load_test_cases(args) {
             Ok(cases) => cases,
-            Err((code, e)) => {
-                let status = Status::err(code, "no_test_cases");
-                return fail(label, stop_on_first_fail, 0, format!("{:#}", e), status, io);
+            Err((exit, e)) => {
+                let code = if e.is::<NoCases>() {
+                    "template.no_test_cases"
+                } else {
+                    "template.invalid_cases"
+                };
+                let message = format!("{:#}", e);
+                return fail(label, stop_on_first_fail, 0, exit, code, message, io);
             }
         };
 
         if test_cases.is_empty() {
-            let status = Status::err(1, "no_test_cases");
             let message = "no test cases supplied".to_string();
-            return fail(label, stop_on_first_fail, 0, message, status, io);
+            let code = "template.no_test_cases";
+            return fail(
+                label,
+                stop_on_first_fail,
+                0,
+                exit::FAILED,
+                code,
+                message,
+                io,
+            );
         }
 
         let tera = match compile("test_template", &template_content) {
@@ -1508,8 +1574,16 @@ impl TemplateHandle {
             Err(e) => {
                 let n = test_cases.len();
                 let message = format!("template parse error: {}", error_chain(&e));
-                let status = Status::err(1, "tera_parse_failed");
-                return fail(label, stop_on_first_fail, n, message, status, io);
+                let code = "template.tera_parse_failed";
+                return fail(
+                    label,
+                    stop_on_first_fail,
+                    n,
+                    exit::FAILED,
+                    code,
+                    message,
+                    io,
+                );
             }
         };
 
@@ -1524,10 +1598,31 @@ impl TemplateHandle {
         let passed = run.cases.iter().filter(|c| c.ok).count();
         let failed = run.cases.len() - passed;
         let ok = failed == 0 && !run.cases.is_empty() && run.stopped.is_none();
-        let status = match &run.stopped {
-            Some(limit) => limit.status(opts.timeout_ms),
-            None if ok => Status::ok(),
-            None => Status::err(1, "tests_failed"),
+        let total = run.cases.len();
+        let (status, error) = match &run.stopped {
+            Some(limit) => {
+                let e = limit.error(opts.timeout_ms);
+                let message = format!("{} ({} of {} cases ran)", e.message, total, run.planned);
+                let exit = limit.status(opts.timeout_ms).exit_code();
+                let code = error_code(&e.kind);
+                (
+                    Status::coded(exit, &code, &message),
+                    Some(error_json(&code, &message)),
+                )
+            }
+            None if ok => (Status::ok(), None),
+            None => {
+                let code = "template.tests_failed";
+                let message = if total == 0 {
+                    "no test cases ran".to_string()
+                } else {
+                    format!("{failed} of {total} test cases failed")
+                };
+                (
+                    Status::coded(exit::FAILED, code, &message),
+                    Some(error_json(code, &message)),
+                )
+            }
         };
         let result = TestResult {
             template: label,
@@ -1536,14 +1631,7 @@ impl TemplateHandle {
             passed,
             failed,
             stop_on_first_fail,
-            error: run.stopped.map(|limit| {
-                format!(
-                    "{} ({} of {} cases ran)",
-                    limit.error(opts.timeout_ms).message,
-                    run.cases.len(),
-                    run.planned
-                )
-            }),
+            error,
             cases: run.cases,
         };
         writeln!(io.stdout, "{}", serde_json::to_string(&result)?)?;
@@ -1612,12 +1700,11 @@ impl TemplateHandle {
     fn display_help(&self, verb: Option<&str>, io: &mut IoStreams) -> Result<Status> {
         if let Some(v) = verb {
             if !self.verbs().contains(&v) {
-                writeln!(io.stderr, "Unknown verb: {}. Use --help for full list.", v)?;
-                return Ok(Status {
-                    ok: false,
-                    code: Some(1),
-                    reason: Some("unknown_verb".to_string()),
-                });
+                return Ok(Status::coded(
+                    exit::USAGE,
+                    "template.unknown_verb",
+                    format!("unknown verb: {v}. Use --help for full list."),
+                ));
             }
         }
         write!(
@@ -1653,7 +1740,11 @@ impl Handle for TemplateHandle {
             "render" => self.render_template(args, io),
             "validate" => self.validate(args, io),
             "test" => self.test_template(args, io),
-            _ => Ok(Status::err(2, format!("unknown verb: {}", verb))),
+            _ => Ok(Status::coded(
+                exit::USAGE,
+                "template.unknown_verb",
+                format!("unknown verb: {}", verb),
+            )),
         }
     }
 }
@@ -2489,7 +2580,12 @@ mod tests {
         let parsed: TestResult = serde_json::from_str(&output).unwrap();
         assert!(!parsed.ok);
         assert!(parsed.error.is_some());
-        assert!(parsed.error.as_ref().unwrap().contains("parse"));
+        assert!(
+            parsed.error.as_ref().unwrap()["message"]
+                .as_str()
+                .unwrap()
+                .contains("parse")
+        );
     }
 
     #[test]
@@ -2835,10 +2931,10 @@ mod tests {
 
         let result = handle.call("dummy_verb", &args, &mut io)?;
         assert!(!result.ok);
-        assert_eq!(result.code, Some(1));
+        assert_eq!(result.code, Some(2));
 
-        let output = String::from_utf8(stderr.into_inner()).unwrap();
-        assert!(output.contains("Unknown verb: unknown"));
+        assert_eq!(code_of(&result), Some("template.unknown_verb"));
+        assert!(result.reason.unwrap().contains("unknown verb: unknown"));
 
         Ok(())
     }
@@ -2988,8 +3084,46 @@ mod tests {
         }
     }
 
+    /// The kind of the first error. A failure's `error` object carries the
+    /// matching code and message.
     fn first_error_kind(v: &serde_json::Value) -> String {
-        v["errors"][0]["kind"].as_str().unwrap_or("").to_string()
+        let kind = v["errors"][0]["kind"].as_str().unwrap_or("").to_string();
+        if v["ok"] == false && !kind.is_empty() {
+            assert_eq!(v["error"]["code"], format!("template.{kind}"), "{v}");
+            assert_eq!(v["error"]["message"], v["errors"][0]["message"], "{v}");
+        }
+        kind
+    }
+
+    /// The error code of a failed status (`[template.x] message`).
+    fn code_of(s: &Status) -> Option<&str> {
+        let reason = s.reason.as_deref()?;
+        reason.strip_prefix('[')?.split_once("] ").map(|(c, _)| c)
+    }
+
+    #[test]
+    fn every_error_code_is_valid_and_documented() {
+        let docs = include_str!("../../../docs/Automation_Utilities/template.md");
+        for code in ERROR_CODES {
+            assert!(crate::core::status::is_valid_error_code(code), "{code}");
+            assert!(docs.contains(&format!("`{code}`")), "{code} not documented");
+        }
+        // Every literal code and error kind in this file is listed.
+        let src = include_str!("templateh.rs");
+        for (marker, prefix) in [("\"template.", "template."), ("kind: \"", "template.")] {
+            for part in src.split(marker).skip(1) {
+                let name: String = part
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                    .collect();
+                // `"template.md"` and the like are file names, not codes.
+                let file_name = matches!(name.as_str(), "rs" | "md" | "json" | "txt");
+                if !name.is_empty() && !file_name && part[name.len()..].starts_with('"') {
+                    let code = format!("{prefix}{name}");
+                    assert!(ERROR_CODES.contains(&code.as_str()), "{code} not listed");
+                }
+            }
+        }
     }
 
     const SLOW: &str = "{% for i in range(end=50000000) %}{{ i }}{% endfor %}";
@@ -3116,7 +3250,7 @@ mod tests {
         ] {
             let (s, v) = call(&h, "test", kv);
             assert_eq!(s.code, Some(2), "{kv:?}: {v}");
-            assert_eq!(s.reason.as_deref(), Some("invalid_argument"));
+            assert_eq!(code_of(&s), Some("template.invalid_argument"));
             assert_eq!(v["ok"], false);
         }
     }
@@ -3190,7 +3324,9 @@ mod tests {
         assert_eq!(v["total"], 1);
         assert_eq!(v["passed"], 1);
         assert_eq!(v["cases"][0]["name"], "quick");
-        let error = v["error"].as_str().unwrap();
+        assert_eq!(v["error"]["code"], "template.timeout");
+        assert_eq!(code_of(&s), Some("template.timeout"));
+        let error = v["error"]["message"].as_str().unwrap();
         assert!(
             error.contains("timeout_ms=300") && error.contains("1 of 2 cases ran"),
             "{error}"
@@ -3346,6 +3482,11 @@ mod tests {
         );
         assert_eq!(s.code, Some(1));
         assert_eq!(v["total"], 2);
+        assert_eq!(code_of(&s), Some("template.tests_failed"));
+        assert_eq!(
+            v["error"],
+            serde_json::json!({"code": "template.tests_failed", "message": "1 of 2 test cases failed"})
+        );
         assert!(v["cases"][1].get("rendered").is_none());
     }
 
@@ -3355,33 +3496,38 @@ mod tests {
         let h = file_template(&dir, "t.txt", "x");
         let (s, v) = call(&h, "test", &[]);
         assert_eq!(
-            (s.code, s.reason.as_deref()),
-            (Some(2), Some("no_test_cases"))
+            (s.code, code_of(&s)),
+            (Some(2), Some("template.no_test_cases"))
         );
-        assert!(v["error"].as_str().unwrap().contains("no test cases"));
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no test cases")
+        );
         let (s, _) = call(
             &handle_for("template://no-such-file.txt"),
             "test",
             &[("cases", "[]")],
         );
         assert_eq!(
-            (s.code, s.reason.as_deref()),
-            (Some(1), Some("template_not_found"))
+            (s.code, code_of(&s)),
+            (Some(1), Some("template.template_not_found"))
         );
         let (s, _) = call(&h, "test", &[("cases", "[")]);
         assert_eq!(
-            (s.code, s.reason.as_deref()),
-            (Some(2), Some("no_test_cases"))
+            (s.code, code_of(&s)),
+            (Some(2), Some("template.invalid_cases"))
         );
         let (s, _) = call(&h, "test", &[("cases_file", "/nonexistent/cases.json")]);
         assert_eq!(
-            (s.code, s.reason.as_deref()),
-            (Some(1), Some("no_test_cases"))
+            (s.code, code_of(&s)),
+            (Some(1), Some("template.invalid_cases"))
         );
         let (s, _) = call(&h, "test", &[("cases", "[]")]);
         assert_eq!(
-            (s.code, s.reason.as_deref()),
-            (Some(1), Some("no_test_cases"))
+            (s.code, code_of(&s)),
+            (Some(1), Some("template.no_test_cases"))
         );
         let (s, _) = call(
             &inline(),
@@ -3392,8 +3538,8 @@ mod tests {
             ],
         );
         assert_eq!(
-            (s.code, s.reason.as_deref()),
-            (Some(1), Some("tera_parse_failed"))
+            (s.code, code_of(&s)),
+            (Some(1), Some("template.tera_parse_failed"))
         );
         let (s, v) = call(
             &inline(),
@@ -3435,7 +3581,7 @@ mod tests {
         assert!(msg.contains("did you mean `context`?"), "{msg}");
         let (_, v) = call(&inline(), "test", &[("Timeout-MS", "5")]);
         assert!(
-            v["error"]
+            v["error"]["message"]
                 .as_str()
                 .unwrap()
                 .contains("did you mean `timeout_ms`?")
