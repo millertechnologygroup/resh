@@ -1,12 +1,13 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use globset::{Glob, GlobMatcher};
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -188,8 +189,43 @@ fn check_args(verb: &str, allowed: &[&str], args: &Args) -> Option<Status> {
     }
     Some(Status::err(
         2,
-        format!("unknown argument for config {verb}: {bad}"),
+        format!(
+            "unknown argument for config {verb}: {bad}{}",
+            did_you_mean(bad, allowed)
+        ),
     ))
+}
+
+/// The accepted argument closest to `bad` (edit distance at most 2, or a
+/// case-only difference), for a "did you mean" hint.
+fn suggest<'a>(bad: &str, allowed: &[&'a str]) -> Option<&'a str> {
+    fn distance(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut cur = vec![i + 1];
+            for (j, cb) in b.iter().enumerate() {
+                let cost = usize::from(ca != *cb);
+                cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+    let lower = bad.to_ascii_lowercase().replace('-', "_");
+    allowed
+        .iter()
+        .map(|a| (distance(&lower, a), *a))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, a)| a)
+}
+
+/// " (did you mean `x`?)" when `bad` looks like a typo of an accepted name.
+fn did_you_mean(bad: &str, allowed: &[&str]) -> String {
+    suggest(bad, allowed)
+        .map(|s| format!(" (did you mean `{s}`?)"))
+        .unwrap_or_default()
 }
 
 /// Reads a boolean argument; an unreadable value is an error (exit 2), never
@@ -211,6 +247,16 @@ fn u64_arg(args: &Args, key: &str) -> std::result::Result<u64, Status> {
             )
         }),
     }
+}
+
+/// Creates `dir` and any missing parents as owner-only (0700) directories.
+/// Existing directories keep their mode.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
 }
 
 /// Unique suffix for `set`'s temporary file within this process.
@@ -342,7 +388,7 @@ impl ConfigHandle {
 
     fn ensure_base_config_dir(&self) -> Result<()> {
         if let Some(parent) = self.file_path.parent() {
-            fs::create_dir_all(parent)
+            create_private_dir(parent)
                 .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
         }
         Ok(())
@@ -352,7 +398,7 @@ impl ConfigHandle {
         // Reject get on empty keys
         if self.key.is_empty() {
             return Ok(Status::err(
-                1,
+                2,
                 "Empty key not allowed for get operation".to_string(),
             ));
         }
@@ -364,7 +410,7 @@ impl ConfigHandle {
                 return Ok(Status::err(1, "not found".to_string()));
             }
             Err(e) => {
-                return Ok(Status::err(3, format!("I/O error: {}", e)));
+                return Ok(Status::err(1, format!("I/O error: {}", e)));
             }
         };
 
@@ -375,7 +421,8 @@ impl ConfigHandle {
                 write!(io.stdout, "{}", content).with_context(|| "Failed to write to stdout")?;
                 Ok(Status::ok())
             }
-            Err(_) => Ok(Status::err(2, "invalid json".to_string())),
+            // The stored value is damaged: the operation failed.
+            Err(_) => Ok(Status::err(1, "invalid json".to_string())),
         }
     }
 
@@ -383,7 +430,7 @@ impl ConfigHandle {
         // Reject set on empty keys
         if self.key.is_empty() {
             return Ok(Status::err(
-                1,
+                2,
                 "Empty key not allowed for set operation".to_string(),
             ));
         }
@@ -392,7 +439,7 @@ impl ConfigHandle {
         let value = match args.get("value") {
             Some(v) => v,
             None => {
-                return Ok(Status::err(1, "missing arg: value".to_string()));
+                return Ok(Status::err(2, "missing arg: value".to_string()));
             }
         };
 
@@ -421,7 +468,7 @@ impl ConfigHandle {
 
         // Ensure parent directory exists
         if let Err(e) = self.ensure_base_config_dir() {
-            return Ok(Status::err(3, format!("I/O error: {:#}", e)));
+            return Ok(Status::err(1, format!("I/O error: {:#}", e)));
         }
 
         // Perform atomic write using temporary file. The name is not a
@@ -434,14 +481,21 @@ impl ConfigHandle {
         let json_string =
             serde_json::to_string(&json_value).with_context(|| "Failed to serialize JSON")?;
 
-        let written = File::create(&temp_path).and_then(|mut temp_file| {
-            temp_file.write_all(json_string.as_bytes())?;
-            temp_file.sync_all()
-        });
+        // Owner-only (0600): config values may be sensitive. The new file
+        // replaces the old one, so rewriting a value also tightens it.
+        let written = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp_path)
+            .and_then(|mut temp_file| {
+                temp_file.write_all(json_string.as_bytes())?;
+                temp_file.sync_all()
+            });
         if let Err(e) = written {
             let _ = fs::remove_file(&temp_path);
             return Ok(Status::err(
-                3,
+                1,
                 format!("I/O error: writing {}: {}", temp_path.display(), e),
             ));
         }
@@ -452,7 +506,7 @@ impl ConfigHandle {
             Err(e) => {
                 // Clean up temp file on error
                 let _ = fs::remove_file(&temp_path);
-                Ok(Status::err(3, format!("I/O error: {}", e)))
+                Ok(Status::err(1, format!("I/O error: {}", e)))
             }
         }
     }
@@ -496,7 +550,7 @@ impl ConfigHandle {
         // List config entries
         let entries = match self.list_config_entries(recursive, glob_matcher.as_ref()) {
             Ok(entries) => entries,
-            Err(e) => return Ok(Status::err(3, format!("I/O error: {:#}", e))),
+            Err(e) => return Ok(Status::err(1, format!("I/O error: {:#}", e))),
         };
 
         // Sort entries by full_key for deterministic pagination
@@ -529,7 +583,7 @@ impl ConfigHandle {
             Err(e) => {
                 write!(io.stderr, "Failed to serialize JSON: {}", e)
                     .with_context(|| "Failed to write error to stderr")?;
-                Ok(Status::err(3, "JSON serialization failed".to_string()))
+                Ok(Status::err(1, "JSON serialization failed".to_string()))
             }
         }
     }
@@ -708,7 +762,7 @@ impl ConfigHandle {
         // Mutual exclusion check
         if key.is_some() && prefix.is_some() {
             writeln!(io.stderr, "key and prefix cannot be used together")?;
-            return Ok(Status::err(1, "key and prefix cannot be used together"));
+            return Ok(Status::err(2, "key and prefix cannot be used together"));
         }
 
         // timeout_ms and max_events: 0 (the default) means no limit. A value
@@ -755,9 +809,9 @@ impl ConfigHandle {
 
         // Ensure watch directory exists
         if !watch_dir.exists() {
-            if let Err(e) = fs::create_dir_all(&watch_dir) {
+            if let Err(e) = create_private_dir(&watch_dir) {
                 writeln!(io.stderr, "Failed to create watch directory: {}", e)?;
-                return Ok(Status::err(2, format!("config watch failed: {}", e)));
+                return Ok(Status::err(1, format!("config watch failed: {}", e)));
             }
         }
 
@@ -779,6 +833,7 @@ impl ConfigHandle {
                     let event_json = serde_json::to_string(&event)
                         .with_context(|| "Failed to serialize watch event")?;
                     writeln!(io.stdout, "{}", event_json)?;
+                    io.stdout.flush()?;
 
                     events_emitted += 1;
                     version_counter += 1;
@@ -806,7 +861,7 @@ impl ConfigHandle {
             Ok(w) => w,
             Err(e) => {
                 writeln!(io.stderr, "Failed to watch {}: {}", watch_dir.display(), e)?;
-                return Ok(Status::err(2, format!("config watch failed: {}", e)));
+                return Ok(Status::err(1, format!("config watch failed: {}", e)));
             }
         };
 
@@ -864,6 +919,8 @@ impl ConfigHandle {
                         match serde_json::to_string(&event) {
                             Ok(event_json) => {
                                 writeln!(io.stdout, "{}", event_json)?;
+                                // Each event is printed as it happens.
+                                io.stdout.flush()?;
                                 events_emitted += 1;
                                 version_counter += 1;
 
@@ -1073,13 +1130,16 @@ impl Handle for ConfigHandle {
         }
 
         let Some(allowed) = verb_args(verb) else {
-            bail!("unknown verb for config://: {}", verb);
+            return Ok(Status::err(
+                2,
+                format!("unknown verb for config://: {verb} (verbs: get, set, ls, watch)"),
+            ));
         };
         if let Some(refusal) = check_args(verb, allowed, args) {
             return Ok(refusal);
         }
         if let Some(reason) = &self.invalid_target {
-            return Ok(Status::err(1, reason.clone()));
+            return Ok(Status::err(2, reason.clone()));
         }
 
         match verb {
@@ -1087,7 +1147,10 @@ impl Handle for ConfigHandle {
             "set" => self.verb_set(args, io),
             "ls" => self.verb_ls(args, io),
             "watch" => self.verb_watch(args, io),
-            _ => bail!("unknown verb for config://: {}", verb),
+            _ => Ok(Status::err(
+                2,
+                format!("unknown verb for config://: {verb}"),
+            )),
         }
     }
 }
@@ -1589,14 +1652,14 @@ mod tests {
     fn set_errors() {
         let dir = TempDir::new().unwrap();
         let (s, _, _) = call(&at(&dir, "config://app/k"), "set", &[]);
-        assert_err(&s, 1, "missing arg: value");
+        assert_err(&s, 2, "missing arg: value");
         let (s, _, _) = call(&at(&dir, "config://"), "set", &[("value", "1")]);
-        assert_err(&s, 1, "Empty key");
+        assert_err(&s, 2, "Empty key");
         assert!(!base(&dir).exists(), "nothing written");
     }
 
     #[test]
-    fn set_io_error_is_exit_3_and_leaves_no_temp_file() {
+    fn set_io_error_is_exit_1_and_leaves_no_temp_file() {
         let dir = TempDir::new().unwrap();
         // `app/blocker` is a file, so `app/blocker/k.json` cannot be created.
         fs::create_dir_all(base(&dir).join("app")).unwrap();
@@ -1606,11 +1669,11 @@ mod tests {
             "set",
             &[("value", "1")],
         );
-        assert_err(&s, 3, "I/O error");
+        assert_err(&s, 1, "I/O error");
         // The key is a directory: the temp file is written, the rename fails.
         fs::create_dir_all(base(&dir).join("app/dir.json")).unwrap();
         let (s, _, _) = call(&at(&dir, "config://app/dir"), "set", &[("value", "1")]);
-        assert_err(&s, 3, "I/O error");
+        assert_err(&s, 1, "I/O error");
         let leftovers: Vec<_> = fs::read_dir(base(&dir).join("app"))
             .unwrap()
             .filter_map(|e| e.ok())
@@ -1628,18 +1691,18 @@ mod tests {
         assert!(!base(&dir).exists(), "get must not create directories");
 
         let (s, _, _) = call(&at(&dir, "config://"), "get", &[]);
-        assert_err(&s, 1, "Empty key");
+        assert_err(&s, 2, "Empty key");
 
         fs::create_dir_all(base(&dir).join("app")).unwrap();
         fs::write(base(&dir).join("app/bad.json"), "{not json").unwrap();
         let (s, out, _) = call(&at(&dir, "config://app/bad"), "get", &[]);
-        assert_err(&s, 2, "invalid json");
+        assert_err(&s, 1, "invalid json");
         assert_eq!(out, "");
 
         // A directory where the value file should be: a read error.
         fs::create_dir_all(base(&dir).join("app/isdir.json")).unwrap();
         let (s, _, _) = call(&at(&dir, "config://app/isdir"), "get", &[]);
-        assert_err(&s, 3, "I/O error");
+        assert_err(&s, 1, "I/O error");
     }
 
     #[test]
@@ -1654,7 +1717,7 @@ mod tests {
                 ("watch", vec![("timeout_ms", "1")]),
             ] {
                 let (s, _, _) = call(&h, verb, &args);
-                assert_err(&s, 1, "'.' and '..' segments are not allowed");
+                assert_err(&s, 2, "'.' and '..' segments are not allowed");
             }
         }
         assert!(!dir.path().join("resh").exists(), "nothing created");
@@ -1669,7 +1732,11 @@ mod tests {
             assert_err(&s, 2, "does not take timeout_ms");
         }
         let (s, _, _) = call(&h, "set", &[("value", "1"), ("vaule", "2")]);
-        assert_err(&s, 2, "unknown argument for config set: vaule");
+        assert_err(
+            &s,
+            2,
+            "unknown argument for config set: vaule (did you mean `value`?)",
+        );
         let (s, _, _) = call(&h, "get", &[("raw", "true")]);
         assert_err(&s, 2, "unknown argument for config get: raw");
         let (s, _, _) = call(&h, "watch", &[("recursive", "true")]);
@@ -1697,13 +1764,10 @@ mod tests {
             stdout: &mut o,
             stderr: &mut e,
         };
-        let err = at(&dir, "config://app/k")
+        let status = at(&dir, "config://app/k")
             .call("delete", &args, &mut io)
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("unknown verb for config://: delete")
-        );
+            .unwrap();
+        assert_err(&status, 2, "unknown verb for config://: delete");
     }
 
     fn ls_json(h: &ConfigHandle, kv: &[(&str, &str)]) -> serde_json::Value {
@@ -1811,7 +1875,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let h = at(&dir, "config://app/db");
         let (s, _, err) = call(&h, "watch", &[("key", "a"), ("prefix", "b")]);
-        assert_err(&s, 1, "key and prefix cannot be used together");
+        assert_err(&s, 2, "key and prefix cannot be used together");
         assert!(err.contains("key and prefix"));
         assert_err(
             &call(&h, "watch", &[("timeout_ms", "abc")]).0,
@@ -1846,7 +1910,7 @@ mod tests {
             "watch",
             &[("timeout_ms", "10")],
         );
-        assert_err(&s, 2, "config watch failed");
+        assert_err(&s, 1, "config watch failed");
     }
 
     #[test]
@@ -2013,6 +2077,33 @@ mod tests {
         );
         assert_eq!(lines[0]["key"], "app/k");
         assert_eq!(lines[0]["scope"], "app");
+    }
+
+    #[test]
+    fn set_writes_owner_only_files_and_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert!(
+            call(&at(&dir, "config://app/db/url"), "set", &[("value", "pg")])
+                .0
+                .ok
+        );
+        assert_eq!(mode(&base(&dir).join("app/db/url.json")), 0o600);
+        assert_eq!(mode(&base(&dir).join("app/db")), 0o700);
+        assert_eq!(mode(&base(&dir).join("app")), 0o700);
+        assert_eq!(mode(&base(&dir)), 0o700);
+
+        // An existing world-readable value is tightened when rewritten.
+        let file = base(&dir).join("app/db/url.json");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            call(&at(&dir, "config://app/db/url"), "set", &[("value", "pg2")])
+                .0
+                .ok
+        );
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(fs::read_to_string(&file).unwrap(), r#""pg2""#);
     }
 
     #[test]

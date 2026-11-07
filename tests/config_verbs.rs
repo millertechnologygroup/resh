@@ -67,7 +67,7 @@ fn get_errors() {
     std::fs::create_dir_all(store(tmp.path()).join("app")).unwrap();
     std::fs::write(store(tmp.path()).join("app/bad.json"), "{").unwrap();
     let (code, _, err) = run(tmp.path(), &["config://app/bad.get"]);
-    assert_eq!(code, 2);
+    assert_eq!(code, 1);
     assert!(err.contains("invalid json"), "{err}");
 
     let (code, _, err) = run(tmp.path(), &["config://app/bad.get", "timeout_ms=5"]);
@@ -101,7 +101,7 @@ fn set_stores_json_and_strings() {
 fn set_errors_have_no_side_effects() {
     let tmp = TempDir::new().unwrap();
     for (args, code, msg) in [
-        (&["config://app/k.set"][..], 1, "missing arg: value"),
+        (&["config://app/k.set"][..], 2, "missing arg: value"),
         (
             &["config://app/k.set", "value=x", "raw=true"][..],
             2,
@@ -124,7 +124,7 @@ fn set_errors_have_no_side_effects() {
         ),
         (
             &["config://../escape.set", "value=1"][..],
-            1,
+            2,
             "'..' segments are not allowed",
         ),
     ] {
@@ -278,7 +278,7 @@ fn watch_errors() {
     for (args, code, msg) in [
         (
             &["config://app.watch", "key=a", "prefix=b"][..],
-            1,
+            2,
             "key and prefix",
         ),
         (
@@ -309,6 +309,77 @@ fn watch_errors() {
     assert!(
         !tmp.path().join("xdg").exists(),
         "invalid input has no side effect"
+    );
+}
+
+#[test]
+fn set_files_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    set(tmp.path(), "app/db/url", "pg");
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&store(tmp.path()).join("app/db/url.json")), 0o600);
+    assert_eq!(mode(&store(tmp.path()).join("app/db")), 0o700);
+    assert_eq!(mode(&store(tmp.path()).join("app")), 0o700);
+}
+
+#[test]
+fn io_errors_and_unknown_verbs_use_the_shared_exit_codes() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir_all(store(tmp.path()).join("app/dir.json")).unwrap();
+    let (code, _, err) = run(tmp.path(), &["config://app/dir.get"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("I/O error"), "{err}");
+    let (code, _, err) = run(tmp.path(), &["config://app/dir.set", "value=1"]);
+    assert_eq!(code, 1, "{err}");
+    let (code, _, err) = run(tmp.path(), &["config://app/k.delete"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("unknown verb for config://: delete"), "{err}");
+    let (code, _, err) = run(tmp.path(), &["config://app/k.set", "valeu=1"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("did you mean `value`?"), "{err}");
+}
+
+/// Each event is written as it happens (the stage output is streamed), so
+/// a reader sees it before watch ends.
+#[test]
+fn watch_events_are_streamed_while_it_runs() {
+    use std::io::{BufRead, BufReader};
+    let tmp = TempDir::new().unwrap();
+    let mut child = spawn_watch(
+        tmp.path(),
+        &["config://app.watch", "prefix=app/", "timeout_ms=20000"],
+    );
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let started = Instant::now();
+    let line = loop {
+        set(
+            tmp.path(),
+            "app/k",
+            &started.elapsed().as_millis().to_string(),
+        );
+        if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
+            break line;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "no event streamed"
+        );
+    };
+    // The event arrived while watch was still running.
+    assert!(child.try_wait().unwrap().is_none());
+    let _ = child.kill();
+    let _ = child.wait();
+    let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(
+        (v["op"].as_str(), v["key"].as_str()),
+        (Some("set"), Some("app/k"))
     );
 }
 

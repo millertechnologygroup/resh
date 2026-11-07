@@ -75,18 +75,24 @@ fn render_errors() {
     for (args, code, kind) in [
         (
             &["template://missing.txt.render"][..],
-            2,
+            1,
             "template_not_found",
+        ),
+        (&["template://inline.render"][..], 2, "template_not_found"),
+        (
+            &["template://welcome.txt.render", "contxt={}"][..],
+            2,
+            "invalid_argument",
         ),
         (
             &["template://welcome.txt.render", "context={"][..],
-            3,
+            1,
             "context_parse",
         ),
-        (&["template://welcome.txt.render"][..], 4, "render"),
+        (&["template://welcome.txt.render"][..], 1, "render"),
         (
             &["template://inline.render", "template=x", "format=json"][..],
-            5,
+            1,
             "json_parse",
         ),
         (
@@ -117,6 +123,32 @@ fn render_errors() {
     );
     assert_eq!(c, 2);
     assert!(err.contains("does not support dry_run"), "{err}");
+    let (c, out, _) = run(tmp.path(), &["template://welcome.txt.render", "contxt={}"]);
+    assert_eq!(c, 2);
+    assert!(out.contains("did you mean `context`?"), "{out}");
+}
+
+/// A macro that calls itself without end is stopped with an error; before,
+/// it overflowed the stack and aborted resh (exit 134).
+#[test]
+fn unbounded_macro_recursion_fails_cleanly() {
+    let tmp = TempDir::new().unwrap();
+    let (code, out, err) = run(
+        tmp.path(),
+        &[
+            "template://inline.render",
+            "template={% macro m(n) %}{{ self::m(n=n+1) }}{% endmacro m %}{{ self::m(n=1) }}",
+        ],
+    );
+    assert_eq!(code, 1, "{err}");
+    let v = json(&out);
+    assert_eq!(v["errors"][0]["kind"], "render");
+    assert!(
+        v["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("nested deeper than 200 levels")
+    );
 }
 
 #[test]
@@ -226,7 +258,9 @@ fn test_errors() {
     let tmp = welcome();
     std::fs::write(tmp.path().join("bare.txt"), "x").unwrap();
     for (args, code) in [
-        (&["template://missing.txt.test"][..], 2),
+        (&["template://missing.txt.test"][..], 1),
+        (&["template://inline.test", "cases=[]"][..], 2),
+        (&["template://bare.txt.test", "cases_file=nope.json"][..], 1),
         (&["template://bare.txt.test"][..], 2),
         (&["template://bare.txt.test", "cases=nope"][..], 2),
         (&["template://bare.txt.test", "cases=[]"][..], 1),

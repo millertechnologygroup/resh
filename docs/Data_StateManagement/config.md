@@ -129,9 +129,8 @@ These codes are set by the handle (verified in the source):
 | Code | Meaning                                                                      |
 | ---- | ---------------------------------------------------------------------------- |
 | 0    | Success                                                                      |
-| 1    | Key not found; empty key; `set` without `value`; `watch` with both `key` and `prefix`; a target with a `.` or `..` segment; unknown verb |
-| 2    | Stored file is not valid JSON; `set raw=true` with invalid JSON; an invalid argument (unknown argument, `timeout_ms` on `get`/`set`/`ls`, unreadable boolean, invalid `limit`, `offset`, `pattern`, `timeout_ms` or `max_events`); `dry_run=true`; `watch` cannot create or watch its directory |
-| 3    | File I/O error: reading a value, creating the key's directory, writing or renaming the value file, or walking the directory for `ls` |
+| 1    | The operation failed: key not found; the stored file is not valid JSON; a file I/O error (reading a value, creating the key's directory, writing or renaming the value file, walking the directory for `ls`); `watch` cannot create or watch its directory |
+| 2    | Invalid usage, nothing was done: empty key; `set` without `value`; `set raw=true` with invalid JSON; an unknown argument (with a "did you mean" hint for a likely typo); `timeout_ms` on `get`/`set`/`ls`; an unreadable boolean; an invalid `limit`, `offset`, `pattern`, `timeout_ms` or `max_events`; `watch` with both `key` and `prefix`; a target with a `.` or `..` segment; `dry_run=true`; an unknown verb |
 
 The reason is printed on stderr as `Error: <reason>`.
 
@@ -153,7 +152,8 @@ Stores `value=` for the key.
 
 * Without `raw`, the value is parsed as JSON when possible (so `value=30` stores the number 30 and `value=true` the boolean), and otherwise stored as a JSON string (`value=dark` stores `"dark"`).
 * With `raw=true`, the value must be valid JSON or the command fails with exit code 2 and the stored value is unchanged.
-* If the write fails, the temporary file is removed and the command exits 3.
+* Value files are written owner-only (mode 0600) and directories `set` creates are owner-only (0700). Rewriting an existing value replaces its file, so an older, more open file is tightened to 0600.
+* If the write fails, the temporary file is removed and the command exits 1.
 
 ```bash
 resh config://app/timeout.set value=30
@@ -204,7 +204,7 @@ resh config://app.watch prefix=app/db timeout_ms=10000 max_events=5
 
 A `timeout_ms` or `max_events` value that is not a non-negative integer, or an `initial` value that is not a boolean, is refused with exit code 2 before anything is watched.
 
-Output is collected and printed when `watch` ends (resh prints a stage's output when the stage finishes), so give it `timeout_ms` or `max_events`; a watch with neither runs until interrupted and prints nothing.
+Each line is written as the change is seen, so a reader of resh's output gets events while `watch` runs.
 
 ### 4.5 timeout_ms
 
@@ -215,8 +215,8 @@ Only `watch` takes `timeout_ms`, and it enforces it as a run time limit (0 = no 
 ## 5. Path Rules and Limitations
 
 * In the namespace, any character other than letters, digits, `.`, `_` and `-` is replaced with `_`. In the key, `/` is also kept.
-* A target with a `.` or `..` segment (for example `config://../x`) is refused with exit code 1 before anything is read or written, so values always stay inside the config directory. `..` segments inside the key path are collapsed by URL parsing before resh sees them (`config://app/a/../b` is `app/b`).
-* Files are created with the default umask, so values are usually readable by other users. Do not store secrets here; use the `secret` handle instead.
+* A target with a `.` or `..` segment (for example `config://../x`) is refused with exit code 2 before anything is read or written, so values always stay inside the config directory. `..` segments inside the key path are collapsed by URL parsing before resh sees them (`config://app/a/../b` is `app/b`).
+* Value files are owner-only (0600) and the directories `set` and `watch` create are owner-only (0700). Directories that already exist keep their mode. For secrets, use the `secret` handle instead.
 * `get` and `ls` never create directories. `watch` creates the directory it watches if it is missing.
 * The watcher uses filesystem notifications and also re-reads the directory every 500 ms when no timeout is set. Files that do not hold valid JSON are skipped.
 

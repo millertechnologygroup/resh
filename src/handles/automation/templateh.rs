@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -357,6 +357,50 @@ fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// The accepted argument closest to `bad` (edit distance at most 2, or a
+/// case-only difference), for a "did you mean" hint.
+fn suggest<'a>(bad: &str, allowed: &[&'a str]) -> Option<&'a str> {
+    fn distance(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut cur = vec![i + 1];
+            for (j, cb) in b.iter().enumerate() {
+                let cost = usize::from(ca != *cb);
+                cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+    let lower = bad.to_ascii_lowercase().replace('-', "_");
+    allowed
+        .iter()
+        .map(|a| (distance(&lower, a), *a))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, a)| a)
+}
+
+/// " (did you mean `x`?)" when `bad` looks like a typo of an accepted name.
+fn did_you_mean(bad: &str, allowed: &[&str]) -> String {
+    suggest(bad, allowed)
+        .map(|s| format!(" (did you mean `{s}`?)"))
+        .unwrap_or_default()
+}
+
+/// No cases were given and the template has no default `.tests.json` file.
+#[derive(Debug)]
+struct NoCases;
+
+impl std::fmt::Display for NoCases {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no test cases provided and default tests file not found")
+    }
+}
+
+impl std::error::Error for NoCases {}
+
 /// Exit code for a verb stopped by `timeout_ms` (as for timeout(1)).
 const TIMEOUT_EXIT: i32 = 124;
 
@@ -440,7 +484,7 @@ impl LimitError {
                 TIMEOUT_EXIT,
                 format!("timeout: rendering did not finish within {timeout_ms} ms"),
             ),
-            LimitError::Failed(msg) => Status::err(4, msg.clone()),
+            LimitError::Failed(msg) => Status::err(1, msg.clone()),
         }
     }
 }
@@ -454,6 +498,7 @@ fn run_limited<T: Send + 'static>(
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("template-render".to_string())
+        .stack_size(RENDER_STACK_BYTES)
         .spawn(move || {
             // The receiver is gone only after a timeout; the result is
             // then unwanted.
@@ -504,6 +549,7 @@ fn run_test_cases(
     let (tx, rx) = std::sync::mpsc::channel::<TestCaseResult>();
     let worker = std::thread::Builder::new()
         .name("template-test".to_string())
+        .stack_size(RENDER_STACK_BYTES)
         .spawn(move || {
             for case in &cases {
                 let result = run_single_case(&tera, "test_template", case, &capture_output);
@@ -650,6 +696,166 @@ fn check_expectations(
     }
 
     (true, None, None)
+}
+
+/// Deepest macro call nesting a template may reach. Deeper calls fail with
+/// a render error instead of overflowing the stack and aborting resh.
+const MAX_MACRO_DEPTH: i64 = 200;
+
+/// Stack for render threads, sized so `MAX_MACRO_DEPTH` nested macro calls
+/// fit with a wide margin (only the pages used are committed).
+const RENDER_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+/// Hidden macro argument that carries the current nesting depth.
+const DEPTH_ARG: &str = "__resh_macro_depth";
+
+/// Function the depth guard calls; it always fails with the limit message.
+const DEPTH_FN: &str = "__resh_macro_depth_exceeded";
+
+/// Compiles `content` as template `name`, with every macro guarded against
+/// unbounded recursion (see `guard_macro_depth`).
+fn compile(name: &str, content: &str) -> Result<Tera, tera::Error> {
+    let mut tera = Tera::default();
+    tera.add_raw_template(name, content)?;
+    tera.register_function(DEPTH_FN, |_: &std::collections::HashMap<String, Value>| {
+        Err(tera::Error::msg(format!(
+            "macro calls nested deeper than {MAX_MACRO_DEPTH} levels \
+             (a macro that calls itself without end?)"
+        )))
+    });
+    if let Some(template) = tera.templates.get_mut(name) {
+        for def in template.macros.values_mut() {
+            guard_macro_depth(def);
+        }
+    }
+    Ok(tera)
+}
+
+/// Tera has no recursion limit: a macro that calls itself without end
+/// overflows the stack, which aborts the process. Each macro gets a hidden
+/// depth argument (default 0); every `self::` call made inside a macro body
+/// passes depth + 1, and a macro entered past `MAX_MACRO_DEPTH` calls a
+/// function that fails the render.
+fn guard_macro_depth(def: &mut tera::ast::MacroDefinition) {
+    use tera::ast::{Expr, ExprVal, FunctionCall, If, LogicExpr, LogicOperator, Node, WS};
+    for node in &mut def.body {
+        add_depth_to_node(node);
+    }
+    def.args
+        .insert(DEPTH_ARG.to_string(), Some(Expr::new(ExprVal::Int(0))));
+    let too_deep = Expr::new(ExprVal::Logic(LogicExpr {
+        lhs: Box::new(Expr::new(ExprVal::Ident(DEPTH_ARG.to_string()))),
+        rhs: Box::new(Expr::new(ExprVal::Int(MAX_MACRO_DEPTH))),
+        operator: LogicOperator::Gte,
+    }));
+    let fail = Node::VariableBlock(
+        WS::default(),
+        Expr::new(ExprVal::FunctionCall(FunctionCall {
+            name: DEPTH_FN.to_string(),
+            args: Default::default(),
+        })),
+    );
+    let guard = Node::If(
+        If {
+            conditions: vec![(WS::default(), too_deep, vec![fail])],
+            otherwise: None,
+        },
+        WS::default(),
+    );
+    def.body.insert(0, guard);
+}
+
+fn add_depth_to_nodes(nodes: &mut [tera::ast::Node]) {
+    for node in nodes {
+        add_depth_to_node(node);
+    }
+}
+
+fn add_depth_to_node(node: &mut tera::ast::Node) {
+    use tera::ast::Node;
+    match node {
+        Node::VariableBlock(_, e) => add_depth_to_expr(e),
+        Node::Set(_, set) => add_depth_to_expr(&mut set.value),
+        Node::FilterSection(_, section, _) => {
+            add_depth_to_call_args(&mut section.filter);
+            add_depth_to_nodes(&mut section.body);
+        }
+        Node::Block(_, block, _) => add_depth_to_nodes(&mut block.body),
+        Node::Forloop(_, forloop, _) => {
+            add_depth_to_expr(&mut forloop.container);
+            add_depth_to_nodes(&mut forloop.body);
+            if let Some(empty) = &mut forloop.empty_body {
+                add_depth_to_nodes(empty);
+            }
+        }
+        Node::If(cond, _) => {
+            for (_, e, body) in &mut cond.conditions {
+                add_depth_to_expr(e);
+                add_depth_to_nodes(body);
+            }
+            if let Some((_, body)) = &mut cond.otherwise {
+                add_depth_to_nodes(body);
+            }
+        }
+        // Macro definitions are guarded separately; the rest hold no
+        // expressions.
+        _ => {}
+    }
+}
+
+fn add_depth_to_call_args(call: &mut tera::ast::FunctionCall) {
+    for e in call.args.values_mut() {
+        add_depth_to_expr(e);
+    }
+}
+
+fn add_depth_to_expr(expr: &mut tera::ast::Expr) {
+    for filter in &mut expr.filters {
+        add_depth_to_call_args(filter);
+    }
+    add_depth_to_val(&mut expr.val);
+}
+
+fn add_depth_to_val(val: &mut tera::ast::ExprVal) {
+    use tera::ast::{Expr, ExprVal, MathExpr, MathOperator};
+    match val {
+        ExprVal::Math(m) => {
+            add_depth_to_expr(&mut m.lhs);
+            add_depth_to_expr(&mut m.rhs);
+        }
+        ExprVal::Logic(l) => {
+            add_depth_to_expr(&mut l.lhs);
+            add_depth_to_expr(&mut l.rhs);
+        }
+        ExprVal::In(i) => {
+            add_depth_to_expr(&mut i.lhs);
+            add_depth_to_expr(&mut i.rhs);
+        }
+        ExprVal::Test(t) => t.args.iter_mut().for_each(add_depth_to_expr),
+        ExprVal::FunctionCall(f) => add_depth_to_call_args(f),
+        ExprVal::Array(items) => items.iter_mut().for_each(add_depth_to_expr),
+        ExprVal::StringConcat(s) => s.values.iter_mut().for_each(add_depth_to_val),
+        ExprVal::MacroCall(call) => {
+            for e in call.args.values_mut() {
+                add_depth_to_expr(e);
+            }
+            if call.namespace == "self" {
+                call.args.insert(
+                    DEPTH_ARG.to_string(),
+                    Expr::new(ExprVal::Math(MathExpr {
+                        lhs: Box::new(Expr::new(ExprVal::Ident(DEPTH_ARG.to_string()))),
+                        rhs: Box::new(Expr::new(ExprVal::Int(1))),
+                        operator: MathOperator::Add,
+                    })),
+                );
+            }
+        }
+        ExprVal::String(_)
+        | ExprVal::Int(_)
+        | ExprVal::Float(_)
+        | ExprVal::Bool(_)
+        | ExprVal::Ident(_) => {}
+    }
 }
 
 impl TemplateHandle {
@@ -937,7 +1143,8 @@ impl TemplateHandle {
             .find(|k| k.as_str() != "dry_run" && !allowed.contains(&k.as_str()))
         {
             return Err(invalid_argument(format!(
-                "unknown argument for template {verb}: {bad} (accepted: {})",
+                "unknown argument for template {verb}: {bad}{} (accepted: {})",
+                did_you_mean(bad, allowed),
                 allowed.join(", ")
             )));
         }
@@ -1041,7 +1248,10 @@ impl TemplateHandle {
                     column: None,
                 });
                 emit(&result, io)?;
-                return Ok(Status::err(1, "Failed to read template"));
+                return Ok(Status::err(
+                    self.source_error_code(),
+                    "Failed to read template",
+                ));
             }
         };
         result.template = self.create_template_info(args, "validate", Some(&template_content));
@@ -1061,10 +1271,10 @@ impl TemplateHandle {
         // Compile, then render with the context to find missing variables,
         // within timeout_ms.
         let outcome = run_limited(opts.timeout_ms, move || {
-            let mut tera = Tera::default();
-            if let Err(e) = tera.add_raw_template("validate_template", &template_content) {
-                return Err((true, error_chain(&e), missing_variable_message(&e)));
-            }
+            let tera = match compile("validate_template", &template_content) {
+                Ok(tera) => tera,
+                Err(e) => return Err((true, error_chain(&e), missing_variable_message(&e))),
+            };
             tera.render("validate_template", &context)
                 .map(|_| ())
                 .map_err(|e| (false, error_chain(&e), missing_variable_message(&e)))
@@ -1154,7 +1364,7 @@ impl TemplateHandle {
         let template_content = match self.read_template(args, "render") {
             Ok(content) => content,
             Err(error) => {
-                let status = Status::err(2, error.kind.clone());
+                let status = Status::err(self.source_error_code(), error.kind.clone());
                 let info = self.create_template_info(args, "render", None);
                 return fail(info, empty_context(), error, status, io);
             }
@@ -1164,17 +1374,17 @@ impl TemplateHandle {
         let (context_info, tera_context) = match self.parse_render_context(args) {
             Ok(parsed) => parsed,
             Err(error) => {
-                let status = Status::err(3, error.kind.clone());
+                let status = Status::err(1, error.kind.clone());
                 return fail(info(), empty_context(), error, status, io);
             }
         };
 
         let content = template_content.clone();
         let outcome = run_limited(opts.timeout_ms, move || {
-            let mut tera = Tera::default();
-            if let Err(e) = tera.add_raw_template("render_template", &content) {
-                return Err(format!("template parse error: {}", error_chain(&e)));
-            }
+            let tera = match compile("render_template", &content) {
+                Ok(tera) => tera,
+                Err(e) => return Err(format!("template parse error: {}", error_chain(&e))),
+            };
             tera.render("render_template", &tera_context)
                 .map_err(|e| format!("template render error: {}", error_chain(&e)))
         });
@@ -1197,7 +1407,7 @@ impl TemplateHandle {
                     line: None,
                     column: None,
                 };
-                let status = Status::err(4, "tera_render_failed");
+                let status = Status::err(1, "tera_render_failed");
                 return fail(info(), context_info, error, status, io);
             }
             Ok(Ok(rendered)) => rendered,
@@ -1206,7 +1416,7 @@ impl TemplateHandle {
         let body = match self.format_render_output(rendered, &opts.format) {
             Ok(body_info) => body_info,
             Err(error) => {
-                let status = Status::err(5, error.kind.clone());
+                let status = Status::err(1, error.kind.clone());
                 return fail(info(), context_info, error, status, io);
             }
         };
@@ -1274,15 +1484,15 @@ impl TemplateHandle {
         let template_content = match self.read_template(args, "test") {
             Ok(content) => content,
             Err(error) => {
-                let status = Status::err(2, "template_not_found");
+                let status = Status::err(self.source_error_code(), "template_not_found");
                 return fail(label, stop_on_first_fail, 0, error.message, status, io);
             }
         };
 
         let test_cases = match self.load_test_cases(args) {
             Ok(cases) => cases,
-            Err(e) => {
-                let status = Status::err(2, "no_test_cases");
+            Err((code, e)) => {
+                let status = Status::err(code, "no_test_cases");
                 return fail(label, stop_on_first_fail, 0, format!("{:#}", e), status, io);
             }
         };
@@ -1293,13 +1503,15 @@ impl TemplateHandle {
             return fail(label, stop_on_first_fail, 0, message, status, io);
         }
 
-        let mut tera = Tera::default();
-        if let Err(e) = tera.add_raw_template("test_template", &template_content) {
-            let n = test_cases.len();
-            let message = format!("template parse error: {}", error_chain(&e));
-            let status = Status::err(3, "tera_parse_failed");
-            return fail(label, stop_on_first_fail, n, message, status, io);
-        }
+        let tera = match compile("test_template", &template_content) {
+            Ok(tera) => tera,
+            Err(e) => {
+                let n = test_cases.len();
+                let message = format!("template parse error: {}", error_chain(&e));
+                let status = Status::err(1, "tera_parse_failed");
+                return fail(label, stop_on_first_fail, n, message, status, io);
+            }
+        };
 
         let run = run_test_cases(
             tera,
@@ -1338,14 +1550,32 @@ impl TemplateHandle {
         Ok(status)
     }
 
-    fn load_test_cases(&self, args: &Args) -> Result<Vec<TemplateTestCase>> {
+    /// Exit code when the template cannot be read: 2 when no template was
+    /// given at all (usage), 1 when the named file is missing or unreadable.
+    fn source_error_code(&self) -> i32 {
+        if self.template_path.is_some() { 1 } else { 2 }
+    }
+
+    /// The test cases, or the exit code and error: 2 for invalid usage (no
+    /// cases given, `cases=` not a JSON case list), 1 when a cases file
+    /// cannot be read or parsed.
+    fn load_test_cases(
+        &self,
+        args: &Args,
+    ) -> std::result::Result<Vec<TemplateTestCase>, (i32, anyhow::Error)> {
         // Priority: 1. inline cases, 2. cases_file, 3. default test file
         if let Some(cases_json) = args.get("cases") {
-            let cases: Vec<TemplateTestCase> = serde_json::from_str(cases_json)
-                .with_context(|| "failed to parse inline cases JSON")?;
-            return Ok(cases);
+            return serde_json::from_str(cases_json)
+                .with_context(|| "failed to parse inline cases JSON")
+                .map_err(|e| (2, e));
         }
+        self.load_case_files(args).map_err(|e| {
+            let code = if e.is::<NoCases>() { 2 } else { 1 };
+            (code, e)
+        })
+    }
 
+    fn load_case_files(&self, args: &Args) -> Result<Vec<TemplateTestCase>> {
         if let Some(cases_file) = args.get("cases_file") {
             let content = std::fs::read_to_string(cases_file)
                 .with_context(|| format!("failed to read cases file: {}", cases_file))?;
@@ -1375,7 +1605,7 @@ impl TemplateHandle {
             }
         }
 
-        bail!("no test cases provided and default tests file not found");
+        Err(NoCases.into())
     }
 
     /// Writes the approved help, for the whole handle or for one verb.
@@ -1423,7 +1653,7 @@ impl Handle for TemplateHandle {
             "render" => self.render_template(args, io),
             "validate" => self.validate(args, io),
             "test" => self.test_template(args, io),
-            _ => Ok(Status::err(1, format!("unknown verb: {}", verb))),
+            _ => Ok(Status::err(2, format!("unknown verb: {}", verb))),
         }
     }
 }
@@ -1808,7 +2038,7 @@ mod tests {
 
         let result = handle.render_template(&args, &mut io).unwrap();
         assert!(!result.ok);
-        assert_eq!(result.code, Some(4));
+        assert_eq!(result.code, Some(1));
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let parsed: RenderResult = serde_json::from_str(&output).unwrap();
@@ -1863,7 +2093,7 @@ mod tests {
 
         let result = handle.render_template(&args, &mut io).unwrap();
         assert!(!result.ok);
-        assert_eq!(result.code, Some(3));
+        assert_eq!(result.code, Some(1));
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let parsed: RenderResult = serde_json::from_str(&output).unwrap();
@@ -1920,7 +2150,7 @@ mod tests {
 
         let result = handle.render_template(&args, &mut io).unwrap();
         assert!(!result.ok);
-        assert_eq!(result.code, Some(5));
+        assert_eq!(result.code, Some(1));
 
         let output = String::from_utf8(stdout.into_inner()).unwrap();
         let parsed: RenderResult = serde_json::from_str(&output).unwrap();
@@ -2812,7 +3042,7 @@ mod tests {
         assert_eq!(first_error_kind(&v), "template_not_found");
         // Missing file.
         let (s, v) = call(&handle_for("template://no-such-file.txt"), "render", &[]);
-        assert_eq!(s.code, Some(2));
+        assert_eq!(s.code, Some(1));
         assert_eq!(first_error_kind(&v), "template_not_found");
         // Bad context JSON, unreadable context_file, non-object context.
         let (s, v) = call(
@@ -2822,14 +3052,14 @@ mod tests {
         );
         assert_eq!(
             (s.code, first_error_kind(&v).as_str()),
-            (Some(3), "context_parse")
+            (Some(1), "context_parse")
         );
         let (s, v) = call(
             &inline(),
             "render",
             &[("template", "x"), ("context_file", "/nonexistent/ctx.json")],
         );
-        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(3), "io"));
+        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(1), "io"));
         let (s, v) = call(
             &inline(),
             "render",
@@ -2837,13 +3067,13 @@ mod tests {
         );
         assert_eq!(
             (s.code, first_error_kind(&v).as_str()),
-            (Some(3), "context_parse")
+            (Some(1), "context_parse")
         );
         // Syntax error and missing variable: the message names the cause.
         let (s, v) = call(&inline(), "render", &[("template", "{% if %}")]);
-        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(4), "render"));
+        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(1), "render"));
         let (s, v) = call(&inline(), "render", &[("template", "{{ who }}")]);
-        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(4), "render"));
+        assert_eq!((s.code, first_error_kind(&v).as_str()), (Some(1), "render"));
         let msg = v["errors"][0]["message"].as_str().unwrap();
         assert!(msg.contains("Variable `who` not found"), "{msg}");
         // Rendered text that is not JSON with format=json.
@@ -2854,7 +3084,7 @@ mod tests {
         );
         assert_eq!(
             (s.code, first_error_kind(&v).as_str()),
-            (Some(5), "json_parse")
+            (Some(1), "json_parse")
         );
         assert!(v.get("body").is_none());
     }
@@ -2892,9 +3122,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_verb_fails_with_exit_1() {
+    fn unknown_verb_fails_with_exit_2() {
         let (s, _) = call(&inline(), "compile", &[]);
-        assert_eq!(s.code, Some(1));
+        assert_eq!(s.code, Some(2));
         assert!(s.reason.unwrap().contains("unknown verb: compile"));
     }
 
@@ -3016,7 +3246,7 @@ mod tests {
         let (s, v) = call(&inline(), "validate", &[]);
         assert_eq!(
             (s.code, first_error_kind(&v).as_str()),
-            (Some(1), "file_read")
+            (Some(2), "file_read")
         );
         let (s, v) = call(&handle_for("template://no-such-file.txt"), "validate", &[]);
         assert_eq!(
@@ -3136,7 +3366,7 @@ mod tests {
         );
         assert_eq!(
             (s.code, s.reason.as_deref()),
-            (Some(2), Some("template_not_found"))
+            (Some(1), Some("template_not_found"))
         );
         let (s, _) = call(&h, "test", &[("cases", "[")]);
         assert_eq!(
@@ -3146,7 +3376,7 @@ mod tests {
         let (s, _) = call(&h, "test", &[("cases_file", "/nonexistent/cases.json")]);
         assert_eq!(
             (s.code, s.reason.as_deref()),
-            (Some(2), Some("no_test_cases"))
+            (Some(1), Some("no_test_cases"))
         );
         let (s, _) = call(&h, "test", &[("cases", "[]")]);
         assert_eq!(
@@ -3163,7 +3393,7 @@ mod tests {
         );
         assert_eq!(
             (s.code, s.reason.as_deref()),
-            (Some(3), Some("tera_parse_failed"))
+            (Some(1), Some("tera_parse_failed"))
         );
         let (s, v) = call(
             &inline(),
@@ -3195,6 +3425,81 @@ mod tests {
                 .unwrap()
                 .contains("failed to convert context")
         );
+    }
+
+    #[test]
+    fn unknown_argument_suggests_the_closest_name() {
+        let (s, v) = call(&inline(), "render", &[("template", "x"), ("contxt", "{}")]);
+        assert_eq!(s.code, Some(2));
+        let msg = v["errors"][0]["message"].as_str().unwrap();
+        assert!(msg.contains("did you mean `context`?"), "{msg}");
+        let (_, v) = call(&inline(), "test", &[("Timeout-MS", "5")]);
+        assert!(
+            v["error"]
+                .as_str()
+                .unwrap()
+                .contains("did you mean `timeout_ms`?")
+        );
+        let (_, v) = call(&inline(), "render", &[("zzzzzz", "1")]);
+        assert!(
+            !v["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("did you mean")
+        );
+        assert_eq!(suggest("stirct", VALIDATE_ARGS), Some("strict"));
+    }
+
+    const RECURSE_FOREVER: &str =
+        "{% macro m(n) %}{{ self::m(n=n+1) }}{% endmacro m %}{{ self::m(n=1) }}";
+
+    #[test]
+    fn unbounded_macro_recursion_is_a_render_error_not_an_abort() {
+        for verb in ["render", "validate"] {
+            let (s, v) = call(&inline(), verb, &[("template", RECURSE_FOREVER)]);
+            assert_eq!(s.code, Some(1), "{verb}: {v}");
+            let msg = v["errors"][0]["message"].as_str().unwrap();
+            assert!(msg.contains("nested deeper than 200 levels"), "{msg}");
+        }
+        // Mutual recursion, and recursion through set, for and filter args.
+        let mutual = "{% macro a(n) %}{{ self::b(n=n) }}{% endmacro a %}\
+            {% macro b(n) %}{% for i in [1] %}{% set x = self::a(n=n) %}{{ x }}{% endfor %}{% endmacro b %}\
+            {{ self::a(n=1) }}";
+        let (s, v) = call(&inline(), "render", &[("template", mutual)]);
+        assert_eq!(s.code, Some(1), "{v}");
+        let (s, v) = call(
+            &inline(),
+            "test",
+            &[
+                ("template", RECURSE_FOREVER),
+                ("cases", r#"[{"name":"a","context":{}}]"#),
+            ],
+        );
+        assert_eq!(s.code, Some(1));
+        assert!(
+            v["cases"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("nested deeper")
+        );
+    }
+
+    #[test]
+    fn bounded_macro_recursion_still_works() {
+        let countdown = "{% macro c(n) %}{% if n > 0 %}{{ n }} {{ self::c(n=n-1) }}{% endif %}\
+            {% endmacro c %}{{ self::c(n=3) }}|{{ self::c(n=199) | length > 0 }}";
+        let (s, v) = call(&inline(), "render", &[("template", countdown)]);
+        assert!(s.ok, "{v}");
+        assert!(
+            v["body"]["value"].as_str().unwrap().starts_with("3 2 1 "),
+            "{v}"
+        );
+        // Macro defaults and explicit arguments are untouched.
+        let defaults = "{% macro g(who=\"you\") %}hi {{ who }}{% endmacro g %}\
+            {{ self::g() }}/{{ self::g(who=\"me\") }}";
+        let (s, v) = call(&inline(), "render", &[("template", defaults)]);
+        assert!(s.ok, "{v}");
+        assert_eq!(v["body"]["value"], "hi you/hi me");
     }
 
     #[test]
