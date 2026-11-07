@@ -184,7 +184,7 @@ static DB_HELP: HandleHelp = HandleHelp {
                 the session is encrypted, and disconnects.",
             detail: Some(VerbDetail {
                 usage: usage!("connect", ""),
-                example: "resh --json-pretty db://postgres/app.connect tls_mode=verify_full",
+                example: "resh --json-pretty db://postgres/app.connect ca_file=ca.pem",
                 example_output: Some(
                     r#"{
   "alias": "app",
@@ -197,12 +197,14 @@ static DB_HELP: HandleHelp = HandleHelp {
 }
 
 Shown with DB_APP_DSN set. driver is postgres, mysql (also MariaDB) or
-sqlite. tls_mode: disable, allow (postgres), prefer (the default),
-require, verify_ca or verify_full. Only verify_ca and verify_full check
-the server certificate; the others do not stop an impostor server.
-ca_file=<pem> adds a private CA (verification stays on) and implies
-verify_full. timeout_ms (default 5000) covers connecting and the work; at
-the deadline a running statement is cancelled and the exit code is 124.
+sqlite. tls_mode: disable, allow (postgres), prefer, require, verify_ca or
+verify_full. Only verify_ca and verify_full check the server certificate;
+the others do not stop an impostor server. Without tls_mode (or an SSL
+mode in the DSN), remote hosts use verify_full and localhost, loopback
+addresses and Unix sockets use prefer. ca_file=<pem> adds a private CA
+(verification stays on) and implies verify_full. timeout_ms (default
+5000) covers connecting and the work; at the deadline a running statement
+is cancelled and the exit code is 124.
 log_queries=true writes each SQL statement sent to stderr."#,
                 ),
             }),

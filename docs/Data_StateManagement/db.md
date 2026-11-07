@@ -40,7 +40,7 @@ Each verb opens **one connection**, does its work and closes the connection. Not
 | `postgres` | `postgresql://user@db.example.com:5432/app` (`postgres://` also works) |
 | `mysql`    | `mysql://user@db.example.com:3306/app` (`mariadb://` also works) |
 
-A SQLite file must already exist; add `?mode=rwc` (for example `'dsn=sqlite:new.db?mode=rwc'`) to create it. Special characters in a user name or password must be percent-encoded (`$` as `%24`, `@` as `%40`, `#` as `%23`, `%` as `%25`), and the DSN should be quoted in single quotes.
+A SQLite file must already exist; add `?mode=rwc` (for example `'dsn=sqlite:new.db?mode=rwc'`) to create it. A SQLite file (or its `-journal`, `-wal` or `-shm` file) that is a symbolic link is refused (`db.invalid_argument`); resh never writes through a link. Special characters in a user name or password must be percent-encoded (`$` as `%24`, `@` as `%40`, `#` as `%23`, `%` as `%25`), and the DSN should be quoted in single quotes.
 
 **Security note:** a password in `dsn=` is visible to other local users in the process list while resh runs, and may be kept in shell history. Prefer `DB_<ALIAS>_DSN` in the environment. resh does not store DSNs or passwords.
 
@@ -54,7 +54,16 @@ A SQLite file must already exist; add `?mode=rwc` (for example `'dsn=sqlite:new.
 | `timeout_ms=<ms>` | Deadline for connecting and the work, 1 to 86400000. Default 5000 (ping: 1000 per attempt). |
 | `log_queries=true` | Writes each SQL statement resh sends to stderr as `db: sql: <statement>` (the text only, never parameter values). |
 
-**TLS.** Only `verify_ca` (the certificate chains to a trusted CA) and `verify_full` (also checks that the certificate names the host) authenticate the server. In this version `verify_ca` also checks the host name, like `verify_full` (a limitation of sqlx 0.8.6 with the rustls in use; it fails closed): a certificate that does not name the host given in the DSN is refused. `prefer` (the PostgreSQL and MySQL default when neither `tls_mode` nor the DSN sets a mode), `require` and `allow` encrypt without checking the certificate: they protect against eavesdropping but **not** against an impostor server, and are insecure on untrusted networks. Use `tls_mode=verify_full`, with `ca_file=` for a private CA.
+**TLS.** Only `verify_ca` (the certificate chains to a trusted CA) and `verify_full` (also checks that the certificate names the host) authenticate the server. In this version `verify_ca` also checks the host name, like `verify_full` (a limitation of sqlx 0.8.6 with the rustls in use; it fails closed): a certificate that does not name the host given in the DSN is refused. `prefer`, `require` and `allow` encrypt without checking the certificate: they protect against eavesdropping but **not** against an impostor server, and are insecure on untrusted networks.
+
+**Default TLS mode.** An explicit `tls_mode=` always wins, and an SSL mode in the DSN (`sslmode=`, `ssl-mode=`) or PostgreSQL's `PGSSLMODE` is used as given. Otherwise resh picks by host:
+
+| Host in the DSN | Default |
+| --------------- | ------- |
+| `localhost`, 127.0.0.0/8, `::1`, a Unix socket (PostgreSQL `host=/dir`, MySQL `socket=`), or no host | `prefer` |
+| any other name or address | `verify_full` |
+
+So a remote server must present a certificate that a trusted CA signed and that names the host. A remote server with a self-signed certificate (MySQL and MariaDB generate one by default) needs `ca_file=` with its CA, or an explicit `tls_mode`. `ca_file=` without `tls_mode` always means `verify_full`. Names are not resolved: a host alias that points at 127.0.0.1 is treated as remote.
 
 ### 3.3 Example commands
 
@@ -113,7 +122,7 @@ Exit codes: 0 success; 1 the operation failed (connection, login, TLS, SQL error
 Connects, reports the server and the session, and disconnects. Use it to check a DSN and TLS settings.
 
 ```bash
-resh --json-pretty db://postgres/app.connect tls_mode=verify_full
+resh --json-pretty db://postgres/app.connect ca_file=ca.pem
 ```
 
 ```json

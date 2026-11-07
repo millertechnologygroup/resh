@@ -1140,3 +1140,131 @@ fn begin_statements_per_driver() {
         ["PRAGMA query_only = ON", "BEGIN"]
     );
 }
+
+// --- default TLS mode ------------------------------------------------------------------------
+
+#[test]
+fn default_tls_mode_is_prefer_only_for_this_machine() {
+    use conn::{TlsMode, default_tls_mode_with};
+    let none = |_: &str| None;
+    let pg = |dsn: &str| default_tls_mode_with(Driver::Postgres, dsn, none);
+    let my = |dsn: &str| default_tls_mode_with(Driver::Mysql, dsn, none);
+    let prefer = Some(TlsMode::Prefer);
+    let full = Some(TlsMode::VerifyFull);
+    for dsn in [
+        "postgresql://u@localhost/db",
+        "postgresql://u@LOCALHOST:5432/db",
+        "postgresql://u@127.0.0.1/db",
+        "postgresql://u@127.10.20.30:5432/db",
+        "postgresql://u@[::1]:5432/db",
+        "postgresql://u@[::ffff:127.0.0.1]/db",
+        "postgresql:///db",
+        "postgresql:///db?host=/var/run/postgresql",
+        "postgresql://u@db.example.com/db?host=/tmp",
+    ] {
+        assert_eq!(pg(dsn), prefer, "{dsn}");
+    }
+    for dsn in [
+        "postgresql://u@db.example.com/db",
+        "postgresql://u@10.0.0.5:5432/db",
+        "postgresql://u@[2001:db8::1]/db",
+        "postgresql://u@localhost.example.com/db",
+        "postgresql://u@128.0.0.1/db",
+        "postgresql://u@localhost/db?host=db.example.com",
+    ] {
+        assert_eq!(pg(dsn), full, "{dsn}");
+    }
+    assert_eq!(my("mysql://u@127.0.0.1:3306/db"), prefer);
+    assert_eq!(
+        my("mysql://u@localhost/db?socket=/run/mysqld/mysqld.sock"),
+        prefer
+    );
+    assert_eq!(my("mysql://u@db.example.com/db"), full);
+    assert_eq!(my("mariadb://u@192.168.1.9/db"), full);
+    // An SSL mode in the DSN, or PGSSLMODE, is used as given.
+    assert_eq!(pg("postgresql://u@db.example.com/db?sslmode=disable"), None);
+    assert_eq!(my("mysql://u@db.example.com/db?ssl-mode=DISABLED"), None);
+    assert_eq!(
+        default_tls_mode_with(Driver::Postgres, "postgresql://u@db.example.com/db", |k| {
+            (k == "PGSSLMODE").then(|| "require".to_string())
+        }),
+        None
+    );
+    // PGHOST names the host when the DSN has none.
+    assert_eq!(
+        default_tls_mode_with(Driver::Postgres, "postgresql:///db", |k| {
+            (k == "PGHOST").then(|| "db.example.com".to_string())
+        }),
+        full
+    );
+    assert_eq!(
+        default_tls_mode_with(Driver::Sqlite, "sqlite:x.db", none),
+        None
+    );
+}
+
+#[test]
+fn an_explicit_tls_mode_or_ca_file_wins_over_the_default() {
+    use conn::TlsMode;
+    let mode = |pairs: &[(&str, &str)]| -> Option<TlsMode> {
+        let a: Args = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        args::common(args::Reader { args: &a }, Driver::Postgres, "app", 5000)
+            .unwrap()
+            .tls_mode
+    };
+    let remote = ("dsn", "postgresql://u@db.example.com/db");
+    let local = ("dsn", "postgresql://u@127.0.0.1/db");
+    assert_eq!(mode(&[remote]), Some(TlsMode::VerifyFull));
+    assert_eq!(
+        mode(&[remote, ("tls_mode", "prefer")]),
+        Some(TlsMode::Prefer)
+    );
+    assert_eq!(
+        mode(&[remote, ("tls_mode", "disable")]),
+        Some(TlsMode::Disable)
+    );
+    assert_eq!(mode(&[local]), Some(TlsMode::Prefer));
+    assert_eq!(
+        mode(&[local, ("tls_mode", "require")]),
+        Some(TlsMode::Require)
+    );
+    let dir = TempDir::new().unwrap();
+    let pem = dir.path().join("ca.pem");
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    std::fs::write(&pem, cert.serialize_pem().unwrap()).unwrap();
+    assert_eq!(
+        mode(&[local, ("ca_file", pem.to_str().unwrap())]),
+        Some(TlsMode::VerifyFull)
+    );
+}
+
+// --- symbolic links --------------------------------------------------------------------------
+
+#[test]
+fn sqlite_files_behind_symbolic_links_are_refused() {
+    let dir = TempDir::new().unwrap();
+    let real = dir.path().join("real.db");
+    std::fs::write(&real, b"").unwrap();
+    let link = dir.path().join("app.db");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let h = handle("db://sqlite/app");
+    for dsn in [
+        format!("sqlite:{}", link.display()),
+        format!("sqlite://{}?mode=rwc", link.display()),
+    ] {
+        call_on(&h, "exec", &[("dsn", &dsn), ("sql", "CREATE TABLE t (x)")])
+            .usage("db.invalid_argument", "symbolic link");
+    }
+    assert_eq!(std::fs::read(&real).unwrap().len(), 0);
+    // A planted journal link is refused too; nothing is written through it.
+    let db = Db::new();
+    db.exec("CREATE TABLE t (x INTEGER)");
+    let victim = dir.path().join("victim");
+    std::os::unix::fs::symlink(&victim, format!("{}-journal", db.path.display())).unwrap();
+    db.call("exec", &[("sql", "INSERT INTO t VALUES (1)")])
+        .usage("db.invalid_argument", "-journal is a symbolic link");
+    assert!(!victim.exists());
+}

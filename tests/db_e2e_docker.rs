@@ -20,6 +20,43 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 const PASSWORD: &str = "Db-Pa55word-x9";
 
+/// A container address on a test bridge network: reached from the host
+/// without loopback, so the remote TLS default (verify_full) applies.
+const BRIDGE_IP: &str = "172.31.213.10";
+
+/// A Docker bridge network for [`BRIDGE_IP`], removed on drop.
+struct Network {
+    name: String,
+}
+
+impl Network {
+    fn new() -> Self {
+        let name = "resh-db-e2e".to_string();
+        // A network left over by an interrupted run.
+        let _ = Command::new("docker")
+            .args(["network", "rm", &name])
+            .output();
+        let out = Command::new("docker")
+            .args(["network", "create", "--subnet", "172.31.213.0/24", &name])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Self { name }
+    }
+}
+
+impl Drop for Network {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .args(["network", "rm", &self.name])
+            .output();
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Postgres,
@@ -70,6 +107,7 @@ impl Pki {
         leaf(
             vec![
                 SanType::IpAddress("127.0.0.1".parse().unwrap()),
+                SanType::IpAddress(BRIDGE_IP.parse().unwrap()),
                 SanType::DnsName("localhost".into()),
             ],
             "good",
@@ -124,6 +162,11 @@ impl Server {
     /// Starts `kind`, with TLS from `certs` (server.crt, server.key,
     /// ca.crt) when given.
     fn start(kind: Kind, certs: Option<&Path>) -> Self {
+        Self::start_on(kind, certs, None)
+    }
+
+    /// Like `start`, also attached to `net` at [`BRIDGE_IP`].
+    fn start_on(kind: Kind, certs: Option<&Path>, net: Option<&Network>) -> Self {
         let mut cmd = Command::new("docker");
         cmd.args(["run", "-d", "-p"]);
         let (image, port) = match kind {
@@ -132,6 +175,9 @@ impl Server {
             Kind::Mariadb => ("mariadb:11", "3306"),
         };
         cmd.arg(format!("127.0.0.1::{port}"));
+        if let Some(n) = net {
+            cmd.args(["--network", &n.name, "--ip", BRIDGE_IP]);
+        }
         if let Some(c) = certs {
             cmd.arg("-v").arg(format!("{}:/certs:ro", c.display()));
         }
@@ -221,6 +267,16 @@ impl Server {
         format!("{scheme}://app:{PASSWORD}@127.0.0.1:{}/app", self.port)
     }
 
+    /// The DSN by the container's bridge address (a remote host to resh).
+    fn remote_dsn(&self) -> String {
+        let (scheme, port) = if self.kind == Kind::Postgres {
+            ("postgresql", 5432)
+        } else {
+            ("mysql", 3306)
+        };
+        format!("{scheme}://app:{PASSWORD}@{BRIDGE_IP}:{port}/app")
+    }
+
     /// Waits until the real server (not the init-time one) answers, using
     /// ping with retries.
     fn wait_ready(&self) {
@@ -298,8 +354,13 @@ impl Run {
 
 fn run_with(args: &[&str], env: &[(&str, &str)]) -> Run {
     let tmp = TempDir::new().unwrap();
+    run_in(tmp.path(), args, env)
+}
+
+/// Runs resh with `dir` as working directory and HOME.
+fn run_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Run {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("resh");
-    cmd.current_dir(tmp.path()).env("HOME", tmp.path());
+    cmd.current_dir(dir).env("HOME", dir);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -865,13 +926,131 @@ fn mariadb_checks_the_certificate_name() {
 #[test]
 fn postgres_without_tls() {
     let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let s = Server::start(Kind::Postgres, None);
+    let net = Network::new();
+    let s = Server::start_on(Kind::Postgres, None, Some(&net));
     let v = s.run(&[&s.url("connect")]).ok().json();
     assert_eq!(v["tls"], false);
     for mode in ["require", "verify_ca", "verify_full"] {
         s.run(&[&s.url("connect"), &format!("tls_mode={mode}")])
             .fails(1, "db.tls_failed");
     }
+    // A remote address defaults to verify_full: no TLS, no connection.
+    let remote = s.remote_dsn();
+    let env = [("DB_APP_DSN", remote.as_str())];
+    let r = run_with(&[&s.url("connect")], &env).fails(1, "db.tls_failed");
+    assert!(r.err.contains("does not support TLS"), "{}", r.err);
+    let v = run_with(&[&s.url("connect"), "tls_mode=disable"], &env)
+        .ok()
+        .json();
+    assert_eq!(v["tls"], false);
+    let v = run_with(&[&s.url("connect"), "tls_mode=prefer"], &env)
+        .ok()
+        .json();
+    assert_eq!(v["tls"], false);
+}
+
+/// The default TLS mode for a remote host is verify_full: a server whose
+/// certificate a private CA signed is refused without `ca_file=` and
+/// verified with it; an explicit tls_mode wins; 127.0.0.1 uses prefer.
+fn remote_default(kind: Kind) {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let pki = Pki::new();
+    let net = Network::new();
+    let s = Server::start_on(kind, Some(&pki.certs("good")), Some(&net));
+    let remote = s.remote_dsn();
+    let env = [("DB_APP_DSN", remote.as_str())];
+    let ca = format!("ca_file={}", pki.ca());
+    for (verb, args) in [
+        ("connect", vec![]),
+        ("ping", vec![]),
+        ("query", vec!["sql=SELECT 1 AS one"]),
+        ("exec", vec!["sql=CREATE TABLE r (id INT)"]),
+        ("tables", vec![]),
+        ("schema", vec!["table=r"]),
+        (
+            "transaction",
+            vec!["statements=[\"INSERT INTO r VALUES (1)\"]"],
+        ),
+    ] {
+        let url = s.url(verb);
+        let mut a: Vec<&str> = vec![&url];
+        a.extend(args.iter().copied());
+        // Without the CA: refused.
+        let r = run_with(&a, &env).fails(1, "db.tls_failed");
+        assert!(r.err.contains("UnknownIssuer"), "{verb}: {}", r.err);
+        // With it: verified.
+        a.push(&ca);
+        run_with(&a, &env).ok();
+    }
+    let v = run_with(&[&s.url("connect"), &ca], &env).ok().json();
+    assert_eq!(v["tls"], true);
+    // An SSL mode in the DSN is used as given.
+    let in_dsn = if kind == Kind::Postgres {
+        format!("{remote}?sslmode=disable")
+    } else {
+        format!("{remote}?ssl-mode=disabled")
+    };
+    let v = run_with(
+        &[&s.url("query"), "sql=SELECT count(*) AS n FROM r"],
+        &[("DB_APP_DSN", &in_dsn)],
+    )
+    .ok()
+    .json();
+    assert_eq!(v["rows"][0]["n"], 1);
+    // An explicit tls_mode wins over the default.
+    let v = run_with(&[&s.url("connect"), "tls_mode=require"], &env)
+        .ok()
+        .json();
+    assert_eq!(v["tls"], true);
+    let v = run_with(&[&s.url("connect"), "tls_mode=disable"], &env)
+        .ok()
+        .json();
+    assert_eq!(v["tls"], false);
+    // 127.0.0.1 (the published port): prefer, encrypted but not verified.
+    let v = s.run(&[&s.url("connect")]).ok().json();
+    assert_eq!(v["tls"], true);
+    if kind == Kind::Postgres {
+        // The connect and tables help examples, as written.
+        let dir = TempDir::new().unwrap();
+        std::fs::copy(pki.ca(), dir.path().join("ca.pem")).unwrap();
+        let v = run_in(
+            dir.path(),
+            &[
+                "--json-pretty",
+                "db://postgres/app.connect",
+                "ca_file=ca.pem",
+            ],
+            &env,
+        )
+        .ok()
+        .json();
+        assert_eq!(v["tls"], true);
+        assert_eq!(v["database"], "app");
+        let v = s
+            .run(&[
+                "--json-pretty",
+                "db://postgres/app.tables",
+                "include_views=true",
+            ])
+            .ok()
+            .json();
+        assert_eq!(v["tables"][0]["name"], "r");
+    }
+}
+
+#[test]
+fn postgres_remote_hosts_are_verified_by_default() {
+    remote_default(Kind::Postgres);
+}
+
+#[test]
+fn mysql_remote_hosts_are_verified_by_default() {
+    remote_default(Kind::Mysql);
+}
+
+#[test]
+fn mariadb_remote_hosts_are_verified_by_default() {
+    remote_default(Kind::Mariadb);
 }
 
 /// MySQL generates a self-signed certificate: TLS by default (prefer), but

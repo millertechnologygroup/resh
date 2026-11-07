@@ -147,6 +147,86 @@ pub fn check_dsn(driver: Driver, dsn: &str) -> Result<(), DbError> {
     Ok(())
 }
 
+/// True if `host` names this machine: no host (the driver's local
+/// default), `localhost`, a loopback address (127.0.0.0/8, ::1) or a Unix
+/// socket path.
+pub fn is_local_host(host: Option<&str>) -> bool {
+    let Some(h) = host.map(str::trim).filter(|h| !h.is_empty()) else {
+        return true;
+    };
+    let h = h.trim_start_matches('[').trim_end_matches(']');
+    if h.starts_with('/')
+        || h.eq_ignore_ascii_case("localhost")
+        || h.eq_ignore_ascii_case("localhost.")
+    {
+        return true;
+    }
+    h.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.to_canonical().is_loopback())
+}
+
+/// The TLS mode used when `tls_mode=` is not given: `None` when the DSN
+/// (or, for PostgreSQL, `PGSSLMODE`) sets an SSL mode itself, otherwise
+/// `prefer` for this machine and `verify_full` for any other host.
+pub fn default_tls_mode(driver: Driver, dsn: &str) -> Option<TlsMode> {
+    default_tls_mode_with(driver, dsn, |k| std::env::var(k).ok())
+}
+
+/// [`default_tls_mode`] with the environment given as a function.
+pub fn default_tls_mode_with(
+    driver: Driver,
+    dsn: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<TlsMode> {
+    if driver == Driver::Sqlite {
+        return None;
+    }
+    let url = url::Url::parse(dsn).ok()?;
+    let mut host = url.host_str().map(str::to_string);
+    for (k, v) in url.query_pairs() {
+        match k.to_ascii_lowercase().as_str() {
+            "sslmode" | "ssl-mode" | "ssl_mode" => return None,
+            // PostgreSQL host= (a name or a socket directory), MySQL socket=.
+            "host" | "socket" => host = Some(v.into_owned()),
+            _ => {}
+        }
+    }
+    if driver == Driver::Postgres {
+        if env("PGSSLMODE").is_some_and(|m| !m.is_empty()) {
+            return None;
+        }
+        if host.as_deref().is_none_or(str::is_empty) {
+            host = env("PGHOST");
+        }
+    }
+    Some(if is_local_host(host.as_deref()) {
+        TlsMode::Prefer
+    } else {
+        TlsMode::VerifyFull
+    })
+}
+
+/// Refuses a SQLite database (or its journal, WAL or shared-memory file)
+/// that is a symbolic link: resh never writes through a link.
+pub fn check_sqlite_not_linked(dsn: &str) -> Result<(), DbError> {
+    let rest = dsn.strip_prefix("sqlite:").unwrap_or(dsn);
+    let rest = rest.strip_prefix("//").unwrap_or(rest);
+    let path = rest.split('?').next().unwrap_or_default();
+    if path.is_empty() || path == ":memory:" {
+        return Ok(());
+    }
+    for suffix in ["", "-journal", "-wal", "-shm"] {
+        let p = format!("{path}{suffix}");
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(DbError::usage(format!(
+                "the SQLite file {p} is a symbolic link; resh does not open databases \
+                 through links (use the real path)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The certificates of a `ca_file=` PEM file, checked to hold at least one
 /// valid certificate. Returns the file's bytes.
 pub fn load_ca_file(path: &str) -> Result<Vec<u8>, String> {

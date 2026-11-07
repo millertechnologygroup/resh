@@ -560,8 +560,7 @@ async fn pg_details(
             .map_err(failed)?
             .iter()
             .map(|r| -> Result<_, DbError> { Ok((g(r, 0)?, (g(r, 1)?, g(r, 2)?, g(r, 3)?))) })
-            .collect::<Result<Vec<_>, DbError>>()?
-            .into();
+            .collect::<Result<Vec<_>, DbError>>()?;
         out["triggers"] = triggers_json(rows);
     }
     Ok(())
@@ -617,8 +616,7 @@ async fn my_details(
         .map_err(failed)?
         .iter()
         .map(|r| -> Result<_, DbError> { Ok(((g(r, 0)?, g(r, 1)?), g(r, 2)?)) })
-        .collect::<Result<Vec<_>, DbError>>()?
-        .into();
+        .collect::<Result<Vec<_>, DbError>>()?;
     let keys = group(rows);
     out["primary_key"] = keys
         .iter()
@@ -645,8 +643,7 @@ async fn my_details(
             .map_err(failed)?
             .iter()
             .map(|r| -> Result<_, DbError> { Ok(((g(r, 0)?, g(r, 1)?), g(r, 2)?)) })
-            .collect::<Result<Vec<_>, DbError>>()?
-            .into();
+            .collect::<Result<Vec<_>, DbError>>()?;
         out["indexes"] = group(rows)
             .into_iter()
             .map(|((name, non_unique), cols)| {
@@ -687,8 +684,7 @@ async fn my_details(
                     )
                 })
             })
-            .collect::<Result<Vec<_>, DbError>>()?
-            .into();
+            .collect::<Result<Vec<_>, DbError>>()?;
         out["foreign_keys"] = group(rows)
             .into_iter()
             .map(|((name, rs, rt, upd, del), cols)| {
@@ -755,8 +751,7 @@ async fn my_details(
             .map_err(failed)?
             .iter()
             .map(|r| -> Result<_, DbError> { Ok((g(r, 0)?, (g(r, 1)?, g(r, 2)?, g(r, 3)?))) })
-            .collect::<Result<Vec<_>, DbError>>()?
-            .into();
+            .collect::<Result<Vec<_>, DbError>>()?;
         out["triggers"] = triggers_json(rows);
     }
     Ok(())
@@ -772,15 +767,15 @@ async fn lite_index_columns(
 ) -> Result<Vec<Option<String>>, DbError> {
     let q = "SELECT name FROM pragma_index_info(?, ?) ORDER BY seqno";
     log.sql(q);
-    Ok(sqlx::query(q)
+    sqlx::query(q)
         .bind(index)
         .bind(schema)
         .fetch_all(&mut *c)
         .await
         .map_err(failed)?
         .iter()
-        .map(|r| -> Result<_, DbError> { Ok(g::<Option<String>, _>(r, 0)?) })
-        .collect::<Result<Vec<_>, DbError>>()?)
+        .map(|r| -> Result<_, DbError> { g::<Option<String>, _>(r, 0) })
+        .collect::<Result<Vec<_>, DbError>>()
 }
 
 async fn lite_details(
@@ -800,9 +795,8 @@ async fn lite_details(
         .await
         .map_err(failed)?
         .iter()
-        .map(|r| -> Result<_, DbError> { Ok(g(r, 0)?) })
-        .collect::<Result<Vec<_>, DbError>>()?
-        .into();
+        .map(|r| -> Result<_, DbError> { g(r, 0) })
+        .collect::<Result<Vec<_>, DbError>>()?;
     out["primary_key"] = if pk.is_empty() {
         Value::Null
     } else {
@@ -819,8 +813,7 @@ async fn lite_details(
         .map_err(failed)?
         .iter()
         .map(|r| -> Result<_, DbError> { Ok((g(r, 0)?, r.get::<i64, _>(1) != 0, g(r, 2)?)) })
-        .collect::<Result<Vec<_>, DbError>>()?
-        .into();
+        .collect::<Result<Vec<_>, DbError>>()?;
     let mut indexes = Vec::new();
     let mut uniques = Vec::new();
     for (name, unique, origin) in list {
@@ -859,8 +852,7 @@ async fn lite_details(
                     (g(r, 2)?, g(r, 3)?),
                 ))
             })
-            .collect::<Result<Vec<_>, DbError>>()?
-            .into();
+            .collect::<Result<Vec<_>, DbError>>()?;
         out["foreign_keys"] = group(rows)
             .into_iter()
             .map(|((_, table, upd, del), cols)| {

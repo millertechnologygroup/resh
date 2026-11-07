@@ -44,11 +44,14 @@ DSN itself is not shown in the message.
 
 ## TLS
 
-MySQL 8 and recent MariaDB offer TLS with a self-signed certificate by
-default. The default `tls_mode=prefer` uses it without checking the
-certificate, which does not protect against an impostor server. Use
-`tls_mode=verify_full`, and `ca_file=` when the server certificate comes from
-a private CA:
+Without `tls_mode=` (or `ssl-mode` in the DSN), resh uses `verify_full` for
+any remote host: the server certificate must be trusted and name the host.
+MySQL 8 and recent MariaDB generate a self-signed certificate by default,
+which is not trusted, so a remote server with that certificate needs
+`ca_file=` (its CA) or an explicit `tls_mode`. For `localhost`, loopback
+addresses (127.0.0.0/8, ::1) and Unix sockets the default is `prefer`
+(encrypted when offered, certificate not checked). `prefer`, `require` and
+`disable` given explicitly do not protect against an impostor server.
 
 ```bash
 resh db://mysql/app.connect tls_mode=verify_full ca_file=/etc/ssl/private-ca.pem

@@ -30,8 +30,11 @@ pub fn tokens(sql: &str, driver: Driver) -> Result<Vec<Tok>, String> {
     Ok(spanned(sql, driver)?.into_iter().map(|(t, _)| t).collect())
 }
 
-/// Like [`tokens`], with each token's start and end as character indices.
-fn spanned(sql: &str, driver: Driver) -> Result<Vec<(Tok, (usize, usize))>, String> {
+/// A token with its start and end as character indices.
+type Spanned = (Tok, (usize, usize));
+
+/// Like [`tokens`], with each token's position.
+fn spanned(sql: &str, driver: Driver) -> Result<Vec<Spanned>, String> {
     let c: Vec<char> = sql.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -95,12 +98,11 @@ fn spanned(sql: &str, driver: Driver) -> Result<Vec<(Tok, (usize, usize))>, Stri
                 i += 1;
             }
             // The E of E'...' was read as a word just before; fold it in.
-            if pg_e {
-                if let Some((Tok::Word(w), _)) = out.last() {
-                    if w.eq_ignore_ascii_case("e") {
-                        out.pop();
-                    }
-                }
+            if pg_e
+                && let Some((Tok::Word(w), _)) = out.last()
+                && w.eq_ignore_ascii_case("e")
+            {
+                out.pop();
             }
             out.push((Tok::Quoted(c[start..i].iter().collect()), (start, i)));
         } else if ch == '$'
@@ -296,10 +298,10 @@ pub fn sqlite_trigger_parts(sql: &str) -> (Option<String>, Vec<String>) {
             timing = Some("AFTER".to_string());
         } else if is_word(t, "instead") && toks.get(k + 1).is_some_and(|n| is_word(n, "of")) {
             timing = Some("INSTEAD OF".to_string());
-        } else if ["insert", "update", "delete"].iter().any(|e| is_word(t, e)) {
-            if let Tok::Word(w) = t {
-                events.push(w.to_ascii_uppercase());
-            }
+        } else if ["insert", "update", "delete"].iter().any(|e| is_word(t, e))
+            && let Tok::Word(w) = t
+        {
+            events.push(w.to_ascii_uppercase());
         }
     }
     (timing.or(Some("BEFORE".to_string())), events)

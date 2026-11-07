@@ -483,3 +483,66 @@ fn streamed_rows_pretty_print_and_log_queries_goes_to_stderr() {
     assert_eq!(v["rows"], json!([{"name": "alice"}, {"name": "bob"}]));
     assert_eq!(v["meta"]["truncated"], true);
 }
+
+// --- default TLS mode ---------------------------------------------------------------------
+
+/// A fake PostgreSQL server on `ip` that answers the client's SSLRequest
+/// with "N" (no TLS) and then closes each connection. Returns the port.
+fn no_tls_postgres(ip: std::net::IpAddr) -> u16 {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind((ip, 0)).unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { continue };
+            let mut req = [0u8; 8];
+            if s.read_exact(&mut req).is_ok() && req[4..] == [0x04, 0xd2, 0x16, 0x2f] {
+                let _ = s.write_all(b"N");
+                let mut rest = [0u8; 512];
+                let _ = s.read(&mut rest);
+            }
+        }
+    });
+    port
+}
+
+/// This machine's first non-loopback IPv4 address (an interface address,
+/// so nothing leaves the host).
+fn local_non_loopback_ip() -> Option<std::net::IpAddr> {
+    if_addrs::get_if_addrs()
+        .ok()?
+        .into_iter()
+        .map(|i| i.ip())
+        .find(|ip| ip.is_ipv4() && !ip.is_loopback())
+}
+
+#[test]
+fn remote_hosts_default_to_verify_full_and_local_ones_to_prefer() {
+    let env = Env::new();
+    // 127.0.0.1: prefer, so a server without TLS is used in plain text (the
+    // fake then closes, which is a connect failure, not a TLS one).
+    let lo = no_tls_postgres("127.0.0.1".parse().unwrap());
+    let dsn = format!("dsn=postgresql://u:pw@127.0.0.1:{lo}/db");
+    env.run(&["db://postgres/app.connect", &dsn])
+        .fails(1, "db.connect_failed");
+    let Some(ip) = local_non_loopback_ip() else {
+        eprintln!("no non-loopback interface address; remote default not tested");
+        return;
+    };
+    // Any other address: verify_full, which refuses a server without TLS.
+    let port = no_tls_postgres(ip);
+    let dsn = format!("dsn=postgresql://u:pw@{ip}:{port}/db");
+    let r = env
+        .run(&["db://postgres/app.connect", &dsn])
+        .fails(1, "db.tls_failed");
+    assert!(r.err.contains("does not support TLS"), "{}", r.err);
+    // An explicit tls_mode wins.
+    env.run(&["db://postgres/app.connect", &dsn, "tls_mode=prefer"])
+        .fails(1, "db.connect_failed");
+    // So does an SSL mode in the DSN.
+    env.run(&[
+        "db://postgres/app.connect",
+        &format!("{dsn}?sslmode=disable"),
+    ])
+    .fails(1, "db.connect_failed");
+}

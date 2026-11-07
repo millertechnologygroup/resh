@@ -249,6 +249,12 @@ pub fn common(
         },
     };
     conn::check_dsn(driver, &dsn)?;
+    if driver == Driver::Sqlite {
+        conn::check_sqlite_not_linked(&dsn)?;
+    }
+    // Without tls_mode= (or an SSL mode in the DSN), remote servers are
+    // verified and the local machine uses prefer.
+    let tls_mode = tls_mode.or_else(|| conn::default_tls_mode(driver, &dsn));
     Ok(Common {
         dsn,
         tls_mode,
@@ -371,15 +377,14 @@ pub struct TablesArgs {
 
 pub fn tables(r: Reader) -> Result<TablesArgs, DbError> {
     let table = name(r, "table")?;
-    if table.is_some() {
-        if let Some(k) = ["include_views", "include_system", "max_tables"]
+    if table.is_some()
+        && let Some(k) = ["include_views", "include_system", "max_tables"]
             .into_iter()
             .find(|k| r.has(k))
-        {
-            return Err(DbError::usage(format!(
-                "{k} applies to listing tables, not to table="
-            )));
-        }
+    {
+        return Err(DbError::usage(format!(
+            "{k} applies to listing tables, not to table="
+        )));
     }
     Ok(TablesArgs {
         table,

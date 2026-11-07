@@ -29,10 +29,10 @@ impl Log<'_> {
 /// deadline's progress handler becomes `interrupted` (turned into a timeout
 /// by `Control::within`).
 pub fn stmt_error(code: &'static str, e: sqlx::Error) -> DbError {
-    if let sqlx::Error::Database(d) = &e {
-        if d.code().as_deref() == Some("9") || d.message().contains("interrupted") {
-            return DbError::new("interrupted", e.to_string());
-        }
+    if let sqlx::Error::Database(d) = &e
+        && (d.code().as_deref() == Some("9") || d.message().contains("interrupted"))
+    {
+        return DbError::new("interrupted", e.to_string());
     }
     DbError::new(code, e.to_string())
 }
