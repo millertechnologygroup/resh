@@ -15,7 +15,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
   `<handle>.invalid_argument`. Handles not yet aligned (cache, db, mq, event,
-  log, secret, proc, svc, cron, firewall, user, pkg, system, cert, backup,
+  log, proc, svc, cron, firewall, user, pkg, system, cert, backup,
   plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
@@ -50,6 +50,23 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   reports server rejections, a fast-forward `merge` updates the working
   tree, `pull` no longer overwrites local changes, `sync` handles a detached
   HEAD and bare repositories.
+
+### secret
+
+- `local` values move to the OS keyring (`local.json` becomes a names-only
+  index; legacy plaintext is read with a warning and migrated on the next
+  write; no keyring = refused, exit 1, `secret.keyring_unavailable`).
+- `vault` scope works (HashiCorp Vault KV v2: VAULT_ADDR, VAULT_TOKEN or
+  ~/.vault-token, VAULT_NAMESPACE, `mount=`, `field=`, `ca_file=` or
+  VAULT_CACERT; check-and-set writes).
+- `rotate` works: `strategy=random|uuid|aes|rsa`, `length=`, `encoding=`;
+  the new value is never printed.
+- Strict arguments, exit codes 0/1/2/124, `[secret.<code>]` errors with a
+  JSON `error` object; `timeout_ms` on local and vault; writes are locked.
+  Breaking: env writes exit 2 (`secret.read_only`); `redact` takes the shared
+  boolean spellings; `value=` with `from_env=`, or an empty value, is
+  refused (exit 2); the JSON `error` is an object.
+- `?help` and `?help=<verb>` in a stage URL show help (all handles).
 
 ### http and https
 
@@ -368,8 +385,7 @@ This section supersedes the test counts and "Still open" list in the
 - **Significant limitations that remain** (each is documented in its
   handle's page under `docs/`):
   - Unsupported by design in this release: encrypted ZIP creation, git sync
-    merge/rebase (fast-forward only), secret encryption at rest and
-    `rotate`, backup `schedule`
+    merge/rebase (fast-forward only), backup `schedule`
     installation, pkg restore version pinning/rollback, cert encrypted keys, `proc limits.set` on other processes. (dns
     `zone.update` and cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are kept in the OS keyring (Secret Service /
@@ -378,6 +394,12 @@ This section supersedes the test counts and "Still open" list in the
     MAIL_SMTP_PASSWORD). Legacy base64 passwords are still read, with a
     warning, and moved to the keyring on the next config change. The macOS
     Keychain path is not tested.
+  - `secret://local` values are kept in the OS keyring (service
+    `resh-secret`); `local.json` is an index of names only. Without a
+    keyring, local reads and writes are refused (use `env` or `vault`).
+    The plaintext store of earlier releases is still read, with a warning,
+    and moved to the keyring on the next write. The macOS Keychain path is
+    not tested.
   - No dry-run mode for svc, proc, file writes (except `file replace`),
     cache/db writes, mq, mail send and backup restore; for
     these `dry_run=true` is refused before anything runs; git enforces
@@ -450,7 +472,7 @@ Stages 1 and 3; see the release-candidate status above).
 | C3 | firewall `rules.add family=any`: adds both the IPv4 and IPv6 rule. With an address, the family follows the address, and a mismatch is an error. |
 | C4 | ssh `download` and `upload`: real transfers over the system `ssh`. Writes go to a temp file that is renamed into place. Checksums are reported only when actually compared. |
 | C5 | cert `verify`: real chain signature checks (ring), trust anchors, hostname, purpose and keypair checks. A check that was not performed is reported as `not_checked` or `unsupported`, never as a pass. |
-| C6 | secret: the store file is created with 0600 and its directory with 0700. Writes are atomic (temp file then rename). There is no `/tmp` fallback, and the help says the store is unencrypted. |
+| C6 | secret: values are in the OS keyring, never in a file; `local.json` holds only names and keyring references (0600 from creation, 0700 directory, atomic, symlinks refused, writers locked). No `/tmp` or file fallback: without a keyring, writes are refused. Legacy plaintext stores are read with a warning and migrated on the next write. |
 | H1 | plugin `install` and `update` really install, and `dry_run` returns the plan. Nothing panics. |
 | H2 | In-URL help detection is exact everywhere (`help::is_help_flag`, `parse.rs` `is_help_request`). |
 | H3 | cron: `extract_job_id` uses the right offset. `match_comment`, `/etc/cron.d` paths, path reporting and `list` arguments are also fixed. |
@@ -508,8 +530,6 @@ These were found during the fixes, or are Medium items that were not fixed:
   missing key.
 - **cache test speed:** the existing cache tests try `127.0.0.1:11211` with
   no timeout, so they are slow when memcached isn't running.
-- **secret `?help=<verb>`:** `secret://local/x?help=get` is rejected by the
-  stage parser before it reaches the handle.
 - **cert:**
   - `chain.info` is simplified.
   - Encrypted private keys are not supported. CMS signatures (`sign
@@ -594,6 +614,9 @@ These were found during the fixes, or are Medium items that were not fixed:
   mismatched certificates.
 
 ### C6. `secret` local store is plaintext and briefly world-readable
+
+**Status: fixed (Unreleased).** Values are in the OS keyring; see the
+Unreleased `secret` section. The description below is kept for reference.
 
 - **Where:** `src/handles/security/secreth.rs`.
   - `:1403-1406` writes plain JSON to
@@ -867,9 +890,6 @@ typed structs:
   `input=<json>` is read.
 - **pkg.** Every verb needs `manager` in `input`, but the `PKG_HELP_TEXT`
   examples omit it.
-- **secret.**
-  - `rotate` is not implemented (`secreth.rs:1718`).
-  - The `vault` scope is accepted, but every verb returns "not implemented".
 
 ---
 
