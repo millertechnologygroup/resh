@@ -415,9 +415,10 @@ This section supersedes the test counts and "Still open" list in the
     webpki-roots 1.0.10), plus bytes 1.11.1 and h2 0.4.16.
 - **Significant limitations that remain** (each is documented in its
   handle's page under `docs/`):
-  - Unsupported by design in this release: encrypted ZIP creation, backup `schedule`
-    installation, pkg restore version pinning/rollback, cert encrypted keys, `proc limits.set` on other processes. (dns
-    `zone.update` and cert CMS signatures were added after v1.0.6-beta.)
+  - Unsupported by design in this release: encrypted ZIP creation, backup
+    `schedule` installation, pkg restore version pinning/rollback, cert
+    encrypted keys, `proc limits.set` on other processes. (dns `zone.update`
+    and cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are kept in the OS keyring (Secret Service /
     Keychain); the profile file holds only a reference. Without a keyring,
     storing a password is refused (pass it per call or via
