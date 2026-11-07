@@ -106,6 +106,10 @@ zstd = "0.13"
 # rustls instead of the default native-tls (OpenSSL)
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "pool", "smtp-transport", "rustls-tls"] }
 email-address-parser = "2.0"
+# OS keyring for stored SMTP passwords: Secret Service on Linux (secret-service
+# 3 over the zbus 3 already in the tree, tokio runtime, pure-Rust crypto) and
+# Keychain on macOS.
+keyring = { version = "=2.3.3", default-features = false, features = ["linux-secret-service-rt-tokio-crypto-rust", "platform-macos"] }
 
 [dev-dependencies]
 assert_cmd = "2"

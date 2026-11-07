@@ -14,6 +14,9 @@ use crate::core::{
     status::Status,
 };
 
+#[path = "mail_secrets.rs"]
+mod mail_secrets;
+
 use lettre::{
     Message, SmtpTransport, Transport,
     message::Mailbox,
@@ -39,8 +42,9 @@ static MAIL_HELP: HandleHelp = HandleHelp {
             detail: Some(VerbDetail {
                 usage: "resh mail://test [smtp_host=<host>] [smtp_port=<n>]\n  \
                     [use_tls=none|starttls|tls] [smtp_username=<user>] [smtp_password=<pass>]\n  \
-                    [tls_accept_invalid_certs=true|false] [connection_only=true|false]\n  \
-                    [send_test_email=true|false] [to=<addr,...>] [from=<addr>]\n  \
+                    [tls_accept_invalid_certs=true|false] [ca_file=<pem>]\n  \
+                    [connection_only=true|false] [send_test_email=true|false]\n  \
+                    [to=<addr,...>] [from=<addr>]\n  \
                     [subject=<text>] [text_body=<text>] [html_body=<html>]\n  \
                     [timeout_ms=<ms>] [max_retry=<n>] [retry_backoff_ms=<ms>]\n  \
                     [format_output=json|text]",
@@ -138,7 +142,7 @@ indented JSON without --json-pretty."#,
                     [reply_to=<addr>] [attachments=<json-array>]\n  \
                     [header_<Name>=<value> ...] [smtp_host=<host>] [smtp_port=<n>]\n  \
                     [use_tls=none|starttls|tls] [smtp_username=<user>] [smtp_password=<pass>]\n  \
-                    [tls_accept_invalid_certs=true|false] [timeout_ms=<ms>]\n  \
+                    [tls_accept_invalid_certs=true|false] [ca_file=<pem>] [timeout_ms=<ms>]\n  \
                     [max_retry=<n>] [retry_backoff_ms=<ms>] [format_output=json|text]",
                 example: "resh mail://send to=alice@example.com subject=Backup \
                     'text_body=Backup done'",
@@ -187,7 +191,7 @@ form, shortened here. mail prints sorted, indented JSON itself."#,
                     [attachments=<json-array>] [headers=<json-object>]\n  \
                     [smtp_host=<host>] [smtp_port=<n>] [use_tls=none|starttls|tls]\n  \
                     [smtp_username=<user>] [smtp_password=<pass>]\n  \
-                    [tls_accept_invalid_certs=true|false] [timeout_ms=<ms>]\n  \
+                    [tls_accept_invalid_certs=true|false] [ca_file=<pem>] [timeout_ms=<ms>]\n  \
                     [max_retry=<n>] [retry_backoff_ms=<ms>] [format_output=json|text]",
                 example: "resh mail://send_template template=welcome to=bob@example.com \
                     dry_run=true",
@@ -281,6 +285,9 @@ pub const MAIL_CONFIG_STORE_WRITE_ERROR: &str = "mail.config_store_write_error";
 pub const MAIL_CONFIG_STORE_PARSE_ERROR: &str = "mail.config_store_parse_error";
 pub const MAIL_CONFIG_INTERNAL_ERROR: &str = "mail.config_internal_error";
 pub const MAIL_CONFIG_INVALID_ADDRESS: &str = "mail.config_invalid_address";
+pub const MAIL_CONFIG_KEYRING_UNAVAILABLE: &str = "mail.config_keyring_unavailable";
+pub const MAIL_SEND_KEYRING_ERROR: &str = "mail.send_keyring_error";
+pub const MAIL_TEST_KEYRING_ERROR: &str = "mail.test_keyring_error";
 
 // Codes added with the strict validation and real SMTP sessions.
 pub const MAIL_SEND_MISSING_FROM: &str = "mail.send_missing_from";
@@ -294,13 +301,14 @@ pub const MAIL_INVALID_ARGUMENT: &str = "mail.invalid_argument";
 pub const EXIT_TIMEOUT: i32 = crate::core::status::exit::TIMEOUT;
 
 /// SMTP settings accepted by send, send_template and test.
-const SMTP_ARGS: [&str; 6] = [
+const SMTP_ARGS: [&str; 7] = [
     "smtp_host",
     "smtp_port",
     "smtp_username",
     "smtp_password",
     "use_tls",
     "tls_accept_invalid_certs",
+    "ca_file",
 ];
 
 /// Arguments `send` accepts, besides `header_<Name>` words. Help usage lists
@@ -321,6 +329,7 @@ pub const SEND_ARGS: &[&str] = &[
     SMTP_ARGS[3],
     SMTP_ARGS[4],
     SMTP_ARGS[5],
+    SMTP_ARGS[6],
     "timeout_ms",
     "max_retry",
     "retry_backoff_ms",
@@ -347,6 +356,7 @@ pub const SEND_TEMPLATE_ARGS: &[&str] = &[
     SMTP_ARGS[3],
     SMTP_ARGS[4],
     SMTP_ARGS[5],
+    SMTP_ARGS[6],
     "timeout_ms",
     "max_retry",
     "retry_backoff_ms",
@@ -361,6 +371,7 @@ pub const TEST_ARGS: &[&str] = &[
     SMTP_ARGS[3],
     SMTP_ARGS[4],
     SMTP_ARGS[5],
+    SMTP_ARGS[6],
     "connection_only",
     "send_test_email",
     "to",
@@ -647,8 +658,15 @@ pub struct SmtpProfile {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_username: Option<String>,
-    pub smtp_password_encrypted: Option<String>, // base64 encoded for simple obfuscation
-    pub use_tls: String,                         // "none" | "starttls" | "tls"
+    /// Where the password is kept: `keyring:<service>/<profile>` in the OS
+    /// keyring. The password itself is never written to the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_password_ref: Option<String>,
+    /// Legacy (before the keyring): the password base64-encoded. Still read,
+    /// with a warning, and moved to the keyring on the next write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_password_encrypted: Option<String>,
+    pub use_tls: String, // "none" | "starttls" | "tls"
     pub tls_accept_invalid_certs: bool,
     pub from: Option<String>,
     pub reply_to: Option<String>,
@@ -682,17 +700,12 @@ impl SmtpProfile {
             reply_to: self.reply_to.clone(),
             description: self.description.clone(),
             is_active: self.is_active,
-            has_password: self.smtp_password_encrypted.is_some(),
+            has_password: self.smtp_password_ref.is_some()
+                || self.smtp_password_encrypted.is_some(),
         }
     }
 
-    pub fn encrypt_password(password: &str) -> String {
-        // Simple base64 encoding for password obfuscation
-        // In production, consider using proper encryption
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(password.as_bytes())
-    }
-
+    /// The legacy base64 password, decoded.
     pub fn decrypt_password(&self) -> Option<String> {
         self.smtp_password_encrypted.as_ref().and_then(|enc| {
             use base64::Engine;
@@ -1473,6 +1486,7 @@ pub struct MailSendOptions {
     pub smtp_password: Option<String>,
     pub use_tls: Option<TlsMode>,
     pub tls_accept_invalid_certs: Option<bool>,
+    pub ca_file: Option<CaFile>,
 
     pub timeout_ms: u64,
     pub max_retry: u32,
@@ -1500,6 +1514,7 @@ impl Default for MailSendOptions {
             smtp_password: None,
             use_tls: None,
             tls_accept_invalid_certs: None,
+            ca_file: None,
             timeout_ms: 10000,
             max_retry: 0,
             retry_backoff_ms: 1000,
@@ -1666,6 +1681,7 @@ pub struct MailSendTemplateOptions {
     pub smtp_password: Option<String>,
     pub use_tls: Option<TlsMode>,
     pub tls_accept_invalid_certs: Option<bool>,
+    pub ca_file: Option<CaFile>,
 
     pub timeout_ms: u64,
     pub max_retry: u32,
@@ -1695,6 +1711,7 @@ impl Default for MailSendTemplateOptions {
             smtp_password: None,
             use_tls: None,
             tls_accept_invalid_certs: None,
+            ca_file: None,
             timeout_ms: 10000,
             max_retry: 0,
             retry_backoff_ms: 1000,
@@ -1856,6 +1873,7 @@ pub struct MailTestOptions {
     pub smtp_password: Option<String>,
     pub use_tls: Option<TlsMode>,
     pub tls_accept_invalid_certs: Option<bool>,
+    pub ca_file: Option<CaFile>,
 
     // Test behavior
     pub connection_only: bool,
@@ -1884,6 +1902,7 @@ impl Default for MailTestOptions {
             smtp_password: None,
             use_tls: None,
             tls_accept_invalid_certs: None,
+            ca_file: None,
             connection_only: false,
             send_test_email: false,
             max_retry: 0,
@@ -2294,7 +2313,10 @@ fn validate_email_address(email: &str) -> Result<()> {
 pub fn config(opts: MailConfigOptions) -> Result<MailConfigResponse> {
     let mut response = MailConfigResponse::new(&opts);
 
-    match handle_config_action(&opts) {
+    let mut warnings = Vec::new();
+    let outcome = handle_config_action(&opts, &mut warnings);
+    response.warnings = warnings;
+    match outcome {
         Ok(result) => {
             response.ok = true;
 
@@ -2346,14 +2368,72 @@ enum ConfigActionResult {
     GetActive(SmtpProfile),
 }
 
-fn handle_config_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
+fn handle_config_action(
+    opts: &MailConfigOptions,
+    w: &mut Vec<String>,
+) -> Result<ConfigActionResult> {
     match opts.action {
-        MailConfigAction::List => handle_list_action(),
-        MailConfigAction::Get => handle_get_action(opts),
-        MailConfigAction::Set => handle_set_action(opts),
-        MailConfigAction::Delete => handle_delete_action(opts),
-        MailConfigAction::Activate => handle_activate_action(opts),
-        MailConfigAction::GetActive => handle_get_active_action(),
+        MailConfigAction::List => handle_list_action(w),
+        MailConfigAction::Get => handle_get_action(opts, w),
+        MailConfigAction::Set => handle_set_action(opts, w),
+        MailConfigAction::Delete => handle_delete_action(opts, w),
+        MailConfigAction::Activate => handle_activate_action(opts, w),
+        MailConfigAction::GetActive => handle_get_active_action(w),
+    }
+}
+
+/// The keyring error for `config`: nothing was changed.
+fn keyring_error(what: &str, e: String) -> anyhow::Error {
+    anyhow::anyhow!(
+        "[{}] Cannot {what}: {e}. Nothing was changed. Passwords are kept only in the OS \
+         keyring; without one, pass smtp_password= per call or set MAIL_SMTP_PASSWORD.",
+        MAIL_CONFIG_KEYRING_UNAVAILABLE
+    )
+}
+
+/// Warns about profiles that still hold a legacy base64 password.
+fn legacy_warnings(profiles: &[SmtpProfile], w: &mut Vec<String>) {
+    for p in profiles
+        .iter()
+        .filter(|p| p.smtp_password_encrypted.is_some())
+    {
+        w.push(format!(
+            "Profile '{}' still stores its password base64-encoded in the profile file; \
+             it moves to the OS keyring on the next config change.",
+            p.name
+        ));
+    }
+}
+
+/// Moves legacy base64 passwords into the keyring before a write. A
+/// profile whose password cannot be moved keeps it, with a warning.
+fn migrate_legacy(profiles: &mut [SmtpProfile], w: &mut Vec<String>) {
+    let store = mail_secrets::store();
+    for p in profiles
+        .iter_mut()
+        .filter(|p| p.smtp_password_encrypted.is_some())
+    {
+        let Some(password) = p.decrypt_password() else {
+            w.push(format!(
+                "Profile '{}' has an unreadable legacy password; set it again with smtp_password=.",
+                p.name
+            ));
+            continue;
+        };
+        match store.set(&p.name, &password) {
+            Ok(()) => {
+                p.smtp_password_ref = Some(mail_secrets::reference(&p.name));
+                p.smtp_password_encrypted = None;
+                w.push(format!(
+                    "Moved the password of profile '{}' to the OS keyring.",
+                    p.name
+                ));
+            }
+            Err(e) => w.push(format!(
+                "Profile '{}' still stores its password base64-encoded: {e}",
+                p.name
+            )),
+        }
     }
 }
 
@@ -2368,8 +2448,9 @@ fn required_profile(opts: &MailConfigOptions) -> Result<&String> {
     })
 }
 
-fn handle_list_action() -> Result<ConfigActionResult> {
+fn handle_list_action(w: &mut Vec<String>) -> Result<ConfigActionResult> {
     let profiles = load_profiles()?;
+    legacy_warnings(&profiles, w);
     let active_profile = profiles
         .iter()
         .find(|p| p.is_active)
@@ -2378,11 +2459,19 @@ fn handle_list_action() -> Result<ConfigActionResult> {
     Ok(ConfigActionResult::List(profiles, active_profile))
 }
 
-fn handle_get_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
+fn handle_get_action(opts: &MailConfigOptions, w: &mut Vec<String>) -> Result<ConfigActionResult> {
     let profile_name = required_profile(opts)?;
     validate_profile_name(profile_name)?;
 
     let profiles = load_profiles()?;
+    legacy_warnings(
+        &profiles
+            .iter()
+            .filter(|p| p.name == *profile_name)
+            .cloned()
+            .collect::<Vec<_>>(),
+        w,
+    );
     let profile = profiles
         .into_iter()
         .find(|p| p.name == *profile_name)
@@ -2397,7 +2486,7 @@ fn handle_get_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
     Ok(ConfigActionResult::Get(profile))
 }
 
-fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
+fn handle_set_action(opts: &MailConfigOptions, w: &mut Vec<String>) -> Result<ConfigActionResult> {
     let profile_name = required_profile(opts)?;
     validate_profile_name(profile_name)?;
 
@@ -2423,6 +2512,7 @@ fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
             smtp_host: String::new(), // Will be set below
             smtp_port: 0,             // Will be set below
             smtp_username: None,
+            smtp_password_ref: None,
             smtp_password_encrypted: None,
             use_tls: "starttls".to_string(),
             tls_accept_invalid_certs: false,
@@ -2450,10 +2540,6 @@ fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
         profile.smtp_username = Some(username.clone());
     }
 
-    if let Some(ref password) = opts.smtp_password {
-        profile.smtp_password_encrypted = Some(SmtpProfile::encrypt_password(password));
-    }
-
     if let Some(ref tls) = opts.use_tls {
         profile.use_tls = tls.clone();
     }
@@ -2477,6 +2563,16 @@ fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
     // Validate the profile configuration
     validate_smtp_config(&profile)?;
 
+    // The password goes to the OS keyring only; without one, nothing is
+    // changed.
+    if let Some(ref password) = opts.smtp_password {
+        mail_secrets::store()
+            .set(profile_name, password)
+            .map_err(|e| keyring_error("store the password in the OS keyring", e))?;
+        profile.smtp_password_ref = Some(mail_secrets::reference(profile_name));
+        profile.smtp_password_encrypted = None;
+    }
+
     // Handle activation
     if opts.is_default.unwrap_or(false) {
         profile.is_active = true;
@@ -2495,12 +2591,21 @@ fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
         profiles.push(profile.clone());
     }
 
+    migrate_legacy(&mut profiles, w);
     save_profiles(&profiles)?;
+    let profile = profiles
+        .iter()
+        .find(|p| p.name == *profile_name)
+        .cloned()
+        .unwrap_or(profile);
 
     Ok(ConfigActionResult::Set(profile))
 }
 
-fn handle_delete_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
+fn handle_delete_action(
+    opts: &MailConfigOptions,
+    w: &mut Vec<String>,
+) -> Result<ConfigActionResult> {
     let profile_name = required_profile(opts)?;
     validate_profile_name(profile_name)?;
 
@@ -2518,13 +2623,23 @@ fn handle_delete_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> 
             )
         })?;
 
+    // Remove the keyring entry first: if that fails, nothing is changed.
+    if profiles[index].smtp_password_ref.is_some() {
+        mail_secrets::store()
+            .delete(profile_name)
+            .map_err(|e| keyring_error("remove the password from the OS keyring", e))?;
+    }
     profiles.remove(index);
+    migrate_legacy(&mut profiles, w);
     save_profiles(&profiles)?;
 
     Ok(ConfigActionResult::Delete(profile_name.clone()))
 }
 
-fn handle_activate_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
+fn handle_activate_action(
+    opts: &MailConfigOptions,
+    w: &mut Vec<String>,
+) -> Result<ConfigActionResult> {
     let profile_name = required_profile(opts)?;
     validate_profile_name(profile_name)?;
 
@@ -2549,13 +2664,22 @@ fn handle_activate_action(opts: &MailConfigOptions) -> Result<ConfigActionResult
         )
     })?;
 
+    migrate_legacy(&mut profiles, w);
     save_profiles(&profiles)?;
 
     Ok(ConfigActionResult::Activate(profile))
 }
 
-fn handle_get_active_action() -> Result<ConfigActionResult> {
+fn handle_get_active_action(w: &mut Vec<String>) -> Result<ConfigActionResult> {
     let profiles = load_profiles()?;
+    legacy_warnings(
+        &profiles
+            .iter()
+            .filter(|p| p.is_active)
+            .cloned()
+            .collect::<Vec<_>>(),
+        w,
+    );
 
     let active_profiles: Vec<_> = profiles.into_iter().filter(|p| p.is_active).collect();
 
@@ -2602,6 +2726,34 @@ struct SmtpArgs {
     password: Option<String>,
     use_tls: Option<TlsMode>,
     accept_invalid_certs: Option<bool>,
+    ca_file: Option<CaFile>,
+}
+
+/// A private CA bundle given with `ca_file=`: its path and PEM contents.
+#[derive(Clone, Debug)]
+pub struct CaFile {
+    pub path: String,
+    pub pem: Vec<u8>,
+}
+
+/// Reads and checks `ca_file`: a readable file with at least one PEM
+/// certificate that parses.
+fn read_ca_file(path: &str) -> Result<CaFile> {
+    if path.trim().is_empty() || path.starts_with('-') {
+        bail!("invalid ca_file: {path:?}");
+    }
+    let pem = fs::read(path).map_err(|e| anyhow::anyhow!("cannot read ca_file {path:?}: {e}"))?;
+    let text = String::from_utf8_lossy(&pem);
+    if !text.contains("-----BEGIN CERTIFICATE-----") {
+        bail!("ca_file {path:?} contains no PEM certificate");
+    }
+    lettre::transport::smtp::client::Certificate::from_pem(&pem).map_err(|e| {
+        anyhow::anyhow!("ca_file {path:?} is not a valid PEM certificate bundle: {e}")
+    })?;
+    Ok(CaFile {
+        path: path.to_string(),
+        pem,
+    })
 }
 
 fn parse_smtp_args(args: &Args) -> Result<SmtpArgs> {
@@ -2624,6 +2776,21 @@ fn parse_smtp_args(args: &Args) -> Result<SmtpArgs> {
     if accept_invalid_certs == Some(true) && matches!(use_tls, Some(TlsMode::None)) {
         bail!("tls_accept_invalid_certs=true conflicts with use_tls=none, which uses no TLS");
     }
+    let ca_file = match args.get("ca_file") {
+        Some(path) => {
+            if matches!(use_tls, Some(TlsMode::None)) {
+                bail!("ca_file conflicts with use_tls=none, which uses no TLS");
+            }
+            if accept_invalid_certs == Some(true) {
+                bail!(
+                    "ca_file conflicts with tls_accept_invalid_certs=true: a CA file is for \
+                     verifying the certificate, which that option turns off"
+                );
+            }
+            Some(read_ca_file(path)?)
+        }
+        None => None,
+    };
     Ok(SmtpArgs {
         host,
         port,
@@ -2631,6 +2798,7 @@ fn parse_smtp_args(args: &Args) -> Result<SmtpArgs> {
         password: args.get("smtp_password").cloned(),
         use_tls,
         accept_invalid_certs,
+        ca_file,
     })
 }
 
@@ -2782,6 +2950,7 @@ impl MailSendOptions {
             smtp_password: smtp.password,
             use_tls: smtp.use_tls,
             tls_accept_invalid_certs: smtp.accept_invalid_certs,
+            ca_file: smtp.ca_file,
             timeout_ms: parse_number(args, "timeout_ms")?.unwrap_or(defaults.timeout_ms),
             max_retry: parse_number(args, "max_retry")?.unwrap_or(defaults.max_retry),
             retry_backoff_ms: parse_number(args, "retry_backoff_ms")?
@@ -2798,6 +2967,7 @@ impl MailSendOptions {
             password: self.smtp_password.clone(),
             use_tls: self.use_tls.clone(),
             accept_invalid_certs: self.tls_accept_invalid_certs,
+            ca_file: self.ca_file.clone(),
         }
     }
 }
@@ -2848,6 +3018,7 @@ impl MailSendTemplateOptions {
             smtp_password: smtp.password,
             use_tls: smtp.use_tls,
             tls_accept_invalid_certs: smtp.accept_invalid_certs,
+            ca_file: smtp.ca_file,
             timeout_ms: parse_number(args, "timeout_ms")?.unwrap_or(defaults.timeout_ms),
             max_retry: parse_number(args, "max_retry")?.unwrap_or(defaults.max_retry),
             retry_backoff_ms: parse_number(args, "retry_backoff_ms")?
@@ -2895,6 +3066,7 @@ impl MailTestOptions {
             smtp_password: smtp.password,
             use_tls: smtp.use_tls,
             tls_accept_invalid_certs: smtp.accept_invalid_certs,
+            ca_file: smtp.ca_file,
             connection_only,
             send_test_email,
             max_retry: parse_number(args, "max_retry")?.unwrap_or(defaults.max_retry),
@@ -2918,6 +3090,7 @@ impl MailTestOptions {
             password: self.smtp_password.clone(),
             use_tls: self.use_tls.clone(),
             accept_invalid_certs: self.tls_accept_invalid_certs,
+            ca_file: self.ca_file.clone(),
         }
     }
 }
@@ -2935,6 +3108,8 @@ struct SmtpSettings {
     password: Option<String>,
     use_tls: TlsMode,
     accept_invalid_certs: bool,
+    /// Extra trusted CA certificates (PEM) from `ca_file`.
+    ca_pem: Option<Vec<u8>>,
     /// Sender fallback: `MAIL_FROM`, or the profile's `from`.
     from: Option<MailAddress>,
     /// Reply-To fallback from the profile.
@@ -2958,6 +3133,8 @@ enum SettingsError {
     Invalid(String),
     /// `MAIL_FROM` or the profile's sender is not a valid address.
     InvalidFrom(String),
+    /// The profile's password cannot be read from the OS keyring.
+    Keyring(String),
 }
 
 fn env_var(name: &str) -> Option<String> {
@@ -3012,6 +3189,7 @@ fn resolve_smtp(a: &SmtpArgs) -> std::result::Result<SmtpSettings, SettingsError
             password: a.password.clone().or_else(|| env_var("MAIL_SMTP_PASSWORD")),
             use_tls,
             accept_invalid_certs: a.accept_invalid_certs.unwrap_or(false),
+            ca_pem: a.ca_file.as_ref().map(|c| c.pem.clone()),
             from,
             reply_to: None,
             warnings: Vec::new(),
@@ -3046,9 +3224,38 @@ fn resolve_smtp(a: &SmtpArgs) -> std::result::Result<SmtpSettings, SettingsError
         if p.smtp_port == 0 {
             return Err(bad("smtp_port"));
         }
-        let password = match &p.smtp_password_encrypted {
-            Some(_) => Some(p.decrypt_password().ok_or_else(|| bad("smtp_password"))?),
-            None => None,
+        let mut warnings = vec![format!("Using stored SMTP profile '{}'.", p.name)];
+        let password = if a.password.is_some() {
+            a.password.clone()
+        } else if let Some(reference) = &p.smtp_password_ref {
+            let account =
+                mail_secrets::account_of(reference).ok_or_else(|| bad("smtp_password_ref"))?;
+            match mail_secrets::store().get(account) {
+                Ok(Some(pw)) => Some(pw),
+                Ok(None) => {
+                    return Err(SettingsError::Keyring(format!(
+                        "the password of stored profile '{}' is missing from the OS keyring; \
+                         set it again with mail://config action=set smtp_password=",
+                        p.name
+                    )));
+                }
+                Err(e) => {
+                    return Err(SettingsError::Keyring(format!(
+                        "cannot read the password of stored profile '{}': {e}; pass \
+                         smtp_password= instead",
+                        p.name
+                    )));
+                }
+            }
+        } else if p.smtp_password_encrypted.is_some() {
+            warnings.push(format!(
+                "Profile '{}' stores its password base64-encoded (legacy); run mail://config \
+                 action=set profile={} to move it to the OS keyring.",
+                p.name, p.name
+            ));
+            Some(p.decrypt_password().ok_or_else(|| bad("smtp_password"))?)
+        } else {
+            None
         };
         let address = |v: &Option<String>, what: &str| match v {
             Some(addr) => MailAddress::from_str(addr).map(Some).map_err(|_| {
@@ -3063,15 +3270,24 @@ fn resolve_smtp(a: &SmtpArgs) -> std::result::Result<SmtpSettings, SettingsError
             host: p.smtp_host.clone(),
             port: a.port.unwrap_or(p.smtp_port),
             username: a.username.clone().or_else(|| p.smtp_username.clone()),
-            password: a.password.clone().or(password),
+            password,
             use_tls: a.use_tls.clone().unwrap_or(profile_tls),
-            accept_invalid_certs: a.accept_invalid_certs.unwrap_or(p.tls_accept_invalid_certs),
+            // A ca_file asks for verification, whatever the profile says.
+            accept_invalid_certs: a
+                .accept_invalid_certs
+                .unwrap_or(p.tls_accept_invalid_certs && a.ca_file.is_none()),
+            ca_pem: a.ca_file.as_ref().map(|c| c.pem.clone()),
             from: address(&p.from, "from")?,
             reply_to: address(&p.reply_to, "reply_to")?,
-            warnings: vec![format!("Using stored SMTP profile '{}'.", p.name)],
+            warnings,
         }
     };
 
+    if s.ca_pem.is_some() && matches!(s.use_tls, TlsMode::None) {
+        return Err(SettingsError::Invalid(
+            "ca_file conflicts with use_tls=none, which uses no TLS".to_string(),
+        ));
+    }
     if s.username.is_some() != s.password.is_some() {
         s.warnings.push(
             "Only one of smtp_username and smtp_password is set; the session is not \
@@ -3110,9 +3326,14 @@ fn build_transport(
     builder = match s.use_tls {
         TlsMode::None => builder.tls(Tls::None),
         ref mode => {
-            let params = TlsParameters::builder(host.to_string())
-                .dangerous_accept_invalid_certs(s.accept_invalid_certs)
-                .build()?;
+            let mut params = TlsParameters::builder(host.to_string())
+                .dangerous_accept_invalid_certs(s.accept_invalid_certs);
+            if let Some(pem) = &s.ca_pem {
+                params = params.add_root_certificate(
+                    lettre::transport::smtp::client::Certificate::from_pem(pem)?,
+                );
+            }
+            let params = params.build()?;
             builder.tls(match mode {
                 TlsMode::StartTls => Tls::Required(params),
                 _ => Tls::Wrapper(params),
@@ -3650,6 +3871,7 @@ fn deliver(opts: MailSendOptions, default_from: Option<&str>) -> MailSendRespons
         Err(SettingsError::InvalidFrom(m)) => {
             return fail(response, MAIL_SEND_INVALID_ADDRESS, m);
         }
+        Err(SettingsError::Keyring(m)) => return fail(response, MAIL_SEND_KEYRING_ERROR, m),
     };
     response.query["use_tls"] = json!(settings.use_tls.as_str());
     response.warnings.extend(settings.warnings.iter().cloned());
@@ -3831,6 +4053,7 @@ pub fn send_template(opts: MailSendTemplateOptions) -> Result<MailSendTemplateRe
         smtp_password: opts.smtp_password,
         use_tls: opts.use_tls,
         tls_accept_invalid_certs: opts.tls_accept_invalid_certs,
+        ca_file: opts.ca_file,
         timeout_ms: opts.timeout_ms,
         max_retry: opts.max_retry,
         retry_backoff_ms: opts.retry_backoff_ms,
@@ -3917,6 +4140,7 @@ pub fn test(opts: MailTestOptions) -> Result<MailTestResponse> {
         }
         Err(SettingsError::Invalid(m)) => return fail(response, MAIL_TEST_SMTP_NOT_CONFIGURED, m),
         Err(SettingsError::InvalidFrom(m)) => return fail(response, MAIL_TEST_INVALID_ADDRESS, m),
+        Err(SettingsError::Keyring(m)) => return fail(response, MAIL_TEST_KEYRING_ERROR, m),
     };
     response.query["use_tls"] = json!(settings.use_tls.as_str());
     response.warnings.extend(settings.warnings.iter().cloned());
@@ -4423,6 +4647,7 @@ mod mail_verb_tests {
     /// current thread, restored on drop.
     struct Ctx {
         dir: tempfile::TempDir,
+        secrets: std::sync::Arc<mail_secrets::MemStore>,
     }
 
     impl Ctx {
@@ -4434,7 +4659,18 @@ mod mail_verb_tests {
             let dir = tempfile::TempDir::new().unwrap();
             test_config_dir::set(Some(dir.path().join("cfg/resh/mail")));
             test_config_dir::set_env(Some(env));
-            Self { dir }
+            let secrets = std::sync::Arc::new(mail_secrets::MemStore::default());
+            mail_secrets::set_test_store(Some(secrets.clone()));
+            Self { dir, secrets }
+        }
+
+        /// Makes the keyring unavailable for this thread.
+        fn no_keyring(&self) {
+            mail_secrets::set_test_store(Some(std::sync::Arc::new(mail_secrets::Unavailable)));
+        }
+
+        fn secret(&self, account: &str) -> Option<String> {
+            self.secrets.0.lock().unwrap().get(account).cloned()
         }
 
         fn store(&self) -> PathBuf {
@@ -4452,6 +4688,7 @@ mod mail_verb_tests {
         fn drop(&mut self) {
             test_config_dir::set(None);
             test_config_dir::set_env(None);
+            mail_secrets::set_test_store(None);
         }
     }
 
@@ -5646,8 +5883,18 @@ mod mail_verb_tests {
         assert_eq!(mode(&c.store()), 0o600);
         assert_eq!(mode(c.store().parent().unwrap()), 0o700);
         let stored = fs::read_to_string(c.store()).unwrap();
-        // base64, not encrypted (documented).
-        assert!(stored.contains("\"cGE6c3M=\""), "{stored}");
+        // The file keeps only a keyring reference; the keyring has the
+        // password.
+        assert!(
+            !stored.contains("pa:ss") && !stored.contains("cGE6c3M="),
+            "{stored}"
+        );
+        assert!(
+            stored.contains("\"smtp_password_ref\": \"keyring:resh-mail-smtp/work\""),
+            "{stored}"
+        );
+        assert!(!stored.contains("smtp_password_encrypted"), "{stored}");
+        assert_eq!(c.secret("work").as_deref(), Some("pa:ss"));
 
         call(
             "config",
@@ -5863,6 +6110,239 @@ mod mail_verb_tests {
             .usage("timeout_ms is not accepted");
         call("config", &[("action", "list"), ("profiel", "x")]).usage("did you mean `profile`?");
         assert!(!c.dir.path().join("cfg").exists());
+    }
+
+    // --- keyring ----------------------------------------------------------------
+
+    /// A profile store with one active profile holding a legacy base64
+    /// password ("legacy-pw").
+    fn legacy_store(c: &Ctx, port: u16) {
+        let p = json!({"name":"old","smtp_host":"127.0.0.1","smtp_port":port,
+            "smtp_username":"bob","smtp_password_encrypted":"bGVnYWN5LXB3",
+            "use_tls":"none","tls_accept_invalid_certs":false,
+            "from":"old@example.com","reply_to":null,"description":null,"is_active":true});
+        fs::create_dir_all(c.store().parent().unwrap()).unwrap();
+        fs::write(c.store(), json!([p]).to_string()).unwrap();
+    }
+
+    #[test]
+    fn config_refuses_to_store_a_password_without_a_keyring() {
+        let c = Ctx::new();
+        c.no_keyring();
+        let r = call(
+            "config",
+            &[
+                ("action", "set"),
+                ("profile", "w"),
+                ("smtp_host", "h.example.com"),
+                ("smtp_password", "secret"),
+            ],
+        )
+        .fails(1, MAIL_CONFIG_KEYRING_UNAVAILABLE);
+        let msg = r.json()["error"]["message"].as_str().unwrap().to_string();
+        assert!(
+            msg.contains("MAIL_SMTP_PASSWORD") && msg.contains("Nothing was changed"),
+            "{msg}"
+        );
+        assert!(!c.store().exists());
+        // Without a password the profile is stored.
+        call(
+            "config",
+            &[
+                ("action", "set"),
+                ("profile", "w"),
+                ("smtp_host", "h.example.com"),
+            ],
+        )
+        .ok();
+        assert!(!fs::read_to_string(c.store()).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn config_delete_removes_the_keyring_entry() {
+        let c = Ctx::new();
+        call(
+            "config",
+            &[
+                ("action", "set"),
+                ("profile", "w"),
+                ("smtp_host", "h.example.com"),
+                ("smtp_password", "secret"),
+            ],
+        )
+        .ok();
+        assert_eq!(c.secret("w").as_deref(), Some("secret"));
+        // A keyring that cannot be reached: nothing is deleted.
+        c.no_keyring();
+        call("config", &[("action", "delete"), ("profile", "w")])
+            .fails(1, MAIL_CONFIG_KEYRING_UNAVAILABLE);
+        assert!(fs::read_to_string(c.store()).unwrap().contains("\"w\""));
+        mail_secrets::set_test_store(Some(c.secrets.clone()));
+        call("config", &[("action", "delete"), ("profile", "w")]).ok();
+        assert_eq!(c.secret("w"), None);
+    }
+
+    #[test]
+    fn legacy_passwords_are_read_with_a_warning_and_migrated_on_write() {
+        let c = Ctx::new();
+        let server = FakeSmtp::start(Behavior {
+            auth_mechs: Some("PLAIN"),
+            credentials: Some(("bob".into(), "legacy-pw".into())),
+            ..Behavior::default()
+        });
+        legacy_store(&c, server.port);
+        let msg = [
+            ("to", "a@example.com"),
+            ("subject", "s"),
+            ("text_body", "b"),
+        ];
+
+        let r = call("config", &[("action", "list")]).ok();
+        assert!(
+            r.json()["warnings"].to_string().contains("base64"),
+            "{}",
+            r.out
+        );
+        assert_eq!(r.json()["profiles"][0]["has_password"], true);
+
+        // Sending still works, with a warning.
+        let r = call("send", &msg).ok();
+        assert!(
+            r.json()["warnings"].to_string().contains("legacy"),
+            "{}",
+            r.out
+        );
+        assert_eq!(
+            server.messages()[0].auth,
+            Some(("PLAIN".into(), "bob".into(), "legacy-pw".into()))
+        );
+
+        // A write without a keyring keeps it, with a warning.
+        c.no_keyring();
+        let r = call("config", &[("action", "activate"), ("profile", "old")]).ok();
+        assert!(
+            r.json()["warnings"].to_string().contains("still stores"),
+            "{}",
+            r.out
+        );
+        assert!(
+            fs::read_to_string(c.store())
+                .unwrap()
+                .contains("bGVnYWN5LXB3")
+        );
+
+        // A write with a keyring moves it.
+        mail_secrets::set_test_store(Some(c.secrets.clone()));
+        let r = call("config", &[("action", "activate"), ("profile", "old")]).ok();
+        assert!(
+            r.json()["warnings"].to_string().contains("Moved"),
+            "{}",
+            r.out
+        );
+        let stored = fs::read_to_string(c.store()).unwrap();
+        assert!(
+            !stored.contains("bGVnYWN5LXB3") && stored.contains("keyring:"),
+            "{stored}"
+        );
+        assert_eq!(c.secret("old").as_deref(), Some("legacy-pw"));
+        // And is read from the keyring afterwards.
+        let r = call("send", &msg).ok();
+        assert!(!r.json()["warnings"].to_string().contains("legacy"));
+        assert_eq!(server.messages()[1].auth.as_ref().unwrap().2, "legacy-pw");
+    }
+
+    #[test]
+    fn keyring_read_failures_are_reported() {
+        let c = Ctx::new();
+        let server = FakeSmtp::start(Behavior {
+            auth_mechs: Some("PLAIN"),
+            ..Behavior::default()
+        });
+        let port = server.port.to_string();
+        call(
+            "config",
+            &[
+                ("action", "set"),
+                ("profile", "w"),
+                ("smtp_host", "127.0.0.1"),
+                ("smtp_port", &port),
+                ("use_tls", "none"),
+                ("smtp_username", "u"),
+                ("smtp_password", "p"),
+                ("from", "w@example.com"),
+                ("is_default", "true"),
+            ],
+        )
+        .ok();
+        let msg = [
+            ("to", "a@example.com"),
+            ("subject", "s"),
+            ("text_body", "b"),
+        ];
+        c.secrets.0.lock().unwrap().clear();
+        call("send", &msg).fails(1, MAIL_SEND_KEYRING_ERROR);
+        c.no_keyring();
+        call("send", &msg).fails(1, MAIL_SEND_KEYRING_ERROR);
+        call("test", &[]).fails(1, MAIL_TEST_KEYRING_ERROR);
+        // A password given with the call does not need the keyring.
+        let mut with_pw = msg.to_vec();
+        with_pw.push(("smtp_password", "p"));
+        call("send", &with_pw).ok();
+        assert_eq!(server.messages().len(), 1);
+    }
+
+    // --- ca_file ----------------------------------------------------------------
+
+    fn ca_pem(c: &Ctx) -> String {
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new());
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca = rcgen::Certificate::from_params(params).unwrap();
+        c.file("ca.pem", ca.serialize_pem().unwrap().as_bytes())
+    }
+
+    #[test]
+    fn ca_file_is_checked_and_used() {
+        let c = Ctx::new();
+        let server = FakeSmtp::start(Behavior {
+            starttls: true,
+            ..Behavior::default()
+        });
+        let ca = ca_pem(&c);
+        let not_pem = c.file("x.txt", b"hello");
+        let missing = c.dir.path().join("none.pem").display().to_string();
+        send_to(&server, &[("use_tls", "starttls"), ("ca_file", &missing)])
+            .usage("cannot read ca_file");
+        send_to(&server, &[("use_tls", "starttls"), ("ca_file", &not_pem)])
+            .usage("no PEM certificate");
+        send_to(&server, &[("ca_file", &ca)]).usage("conflicts with use_tls=none");
+        send_to(
+            &server,
+            &[
+                ("use_tls", "tls"),
+                ("ca_file", &ca),
+                ("tls_accept_invalid_certs", "1"),
+            ],
+        )
+        .usage("conflicts with tls_accept_invalid_certs=true");
+        test_with(&server, &[("ca_file", &ca)]).usage("conflicts with use_tls=none");
+        let base = smtp(&server);
+        call(
+            "send_template",
+            &with(
+                &base,
+                &[
+                    ("template", "welcome"),
+                    ("to", "b@example.com"),
+                    ("dry_run", "true"),
+                    ("ca_file", &ca),
+                ],
+            ),
+        )
+        .usage("conflicts with use_tls=none");
+        assert!(server.sessions().is_empty());
+        // A valid CA file is accepted; this server's TLS still fails.
+        send_to(&server, &[("use_tls", "starttls"), ("ca_file", &ca)])
+            .fails(1, MAIL_SEND_SMTP_TLS_ERROR);
     }
 
     // --- shared ---------------------------------------------------------------

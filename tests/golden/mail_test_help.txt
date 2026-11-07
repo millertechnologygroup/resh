@@ -7,8 +7,9 @@ Definition: Checks SMTP settings by opening a real session (TLS and AUTH as
 Usage:
   resh mail://test [smtp_host=<host>] [smtp_port=<n>]
     [use_tls=none|starttls|tls] [smtp_username=<user>] [smtp_password=<pass>]
-    [tls_accept_invalid_certs=true|false] [connection_only=true|false]
-    [send_test_email=true|false] [to=<addr,...>] [from=<addr>]
+    [tls_accept_invalid_certs=true|false] [ca_file=<pem>]
+    [connection_only=true|false] [send_test_email=true|false]
+    [to=<addr,...>] [from=<addr>]
     [subject=<text>] [text_body=<text>] [html_body=<html>]
     [timeout_ms=<ms>] [max_retry=<n>] [retry_backoff_ms=<ms>]
     [format_output=json|text]

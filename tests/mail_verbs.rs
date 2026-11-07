@@ -88,7 +88,13 @@ impl Env {
         let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("resh");
         cmd.current_dir(d)
             .env("HOME", d)
-            .env("XDG_CONFIG_HOME", d.join("config"));
+            .env("XDG_CONFIG_HOME", d.join("config"))
+            // Never the host's OS keyring: the debug-build test file store
+            // (a test may override this with `unavailable`).
+            .env(
+                "RESH_TEST_KEYRING",
+                format!("file:{}", d.join("keyring.json").display()),
+            );
         for k in [
             "MAIL_SMTP_HOST",
             "MAIL_SMTP_PORT",
@@ -377,6 +383,63 @@ fn config_help_example_and_store_permissions() {
         .usage("mail.config_invalid_flag", "profile");
     env.run(&["mail://config", "action=frob"])
         .usage("mail.config_invalid_action", "frob");
+}
+
+// --- keyring and ca_file ----------------------------------------------------
+
+#[test]
+fn profile_passwords_live_in_the_keyring_not_the_file() {
+    let env = Env::new();
+    let server = FakeSmtp::start(Behavior {
+        auth_mechs: Some("LOGIN"),
+        credentials: Some(("u".into(), "p@ss".into())),
+        ..Behavior::default()
+    });
+    env.profile(&server, &["smtp_username=u", "smtp_password=p@ss"]);
+    let store =
+        std::fs::read_to_string(env.dir().join("config/resh/mail/smtp_profiles.json")).unwrap();
+    assert!(!store.contains("p@ss") && store.contains("keyring:resh-mail-smtp/work"));
+    let keyring = std::fs::read_to_string(env.dir().join("keyring.json")).unwrap();
+    assert!(keyring.contains("p@ss"));
+    env.run(&["mail://test"]).ok();
+    assert_eq!(server.wait_sessions(1)[0].auth.as_ref().unwrap().2, "p@ss");
+
+    // Without a keyring: refused, nothing changed.
+    let env2 = Env::new().var("RESH_TEST_KEYRING", "unavailable");
+    env2.run(&[
+        "mail://config",
+        "action=set",
+        "profile=x",
+        "smtp_host=h.example.com",
+        "smtp_password=p",
+    ])
+    .fails(1, "mail.config_keyring_unavailable");
+    assert!(
+        !env2
+            .dir()
+            .join("config/resh/mail/smtp_profiles.json")
+            .exists()
+    );
+}
+
+#[test]
+fn ca_file_is_validated() {
+    let env = Env::new();
+    std::fs::write(env.dir().join("bad.pem"), "nope").unwrap();
+    env.run(&[
+        "mail://test",
+        "smtp_host=127.0.0.1",
+        "use_tls=tls",
+        "ca_file=bad.pem",
+    ])
+    .usage("mail.invalid_argument", "no PEM certificate");
+    env.run(&[
+        "mail://test",
+        "smtp_host=127.0.0.1",
+        "use_tls=none",
+        "ca_file=bad.pem",
+    ])
+    .usage("mail.invalid_argument", "conflicts with use_tls=none");
 }
 
 // --- help -----------------------------------------------------------------

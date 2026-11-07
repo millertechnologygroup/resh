@@ -14,7 +14,13 @@ fn resh(dir: &Path) -> Command {
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_DATA_HOME", dir.join("data"))
         .env("XDG_STATE_HOME", dir.join("state"))
-        .env("XDG_CACHE_HOME", dir.join("cache"));
+        .env("XDG_CACHE_HOME", dir.join("cache"))
+        // Never touch the host's OS keyring (mail profile passwords): debug
+        // builds use a test-only file store instead.
+        .env(
+            "RESH_TEST_KEYRING",
+            format!("file:{}", dir.join("keyring.json").display()),
+        );
     cmd
 }
 

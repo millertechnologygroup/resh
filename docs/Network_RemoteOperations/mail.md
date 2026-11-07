@@ -6,7 +6,8 @@ The `mail` handle sends email over SMTP with the lettre library, renders two
 built-in message templates, checks SMTP settings with a real SMTP session,
 and keeps named SMTP profiles in a local JSON file.
 
-Read section 7 before storing a password: profiles are **not encrypted**.
+Passwords of stored profiles are kept in the OS keyring, never in the
+profile file (section 7).
 
 Linux is the only supported and verified platform. Each `resh` invocation is a
 separate process; there is no SMTP connection reuse or queue between
@@ -82,7 +83,11 @@ Settings are resolved in this order:
    fall back to the environment, then to the defaults below.
 3. Otherwise the **active stored profile** (section 7) supplies the host and
    every setting the arguments leave out: port, `use_tls`, user name,
-   password, `tls_accept_invalid_certs`, `from` and `reply_to`. The
+   password (read from the OS keyring), `tls_accept_invalid_certs`, `from`
+   and `reply_to`. If the keyring cannot be read or has no entry for the
+   profile, the verb fails with `mail.send_keyring_error` /
+   `mail.test_keyring_error` (exit 1); `smtp_password=` on the call avoids
+   the keyring. The
    environment is not read in this case, and the response carries the
    warning `Using stored SMTP profile '<name>'.`
 4. With neither, the verb fails with `mail.send_smtp_not_configured` or
@@ -97,6 +102,7 @@ Settings are resolved in this order:
 | `from`          | `MAIL_FROM`          | (required for `send` and `test`; see `send_template`) |
 | `use_tls`       | (none)               | `starttls` |
 | `tls_accept_invalid_certs` | (none)    | `false` |
+| `ca_file`       | (none)               | (none) |
 
 An invalid `MAIL_SMTP_HOST` or `MAIL_SMTP_PORT`, an unreadable profile store,
 or more than one active profile is an error (`mail.send_smtp_not_configured`,
@@ -111,10 +117,19 @@ or more than one active profile is an error (`mail.send_smtp_not_configured`,
 * `none`: no encryption at all. Credentials and message travel in clear text
   (a warning says so when credentials are used).
 
-The server certificate is verified against the system's trusted roots.
+The server certificate is verified against the built-in public CA roots
+(webpki roots). `ca_file=<pem>` adds the CA certificates in that PEM file
+for this call, for a server whose certificate comes from a private CA;
+verification stays on. The file must be readable and contain at least one
+PEM certificate (otherwise exit 2, nothing done). `ca_file` is refused with
+`use_tls=none` (also when that mode comes from the active profile) and
+together with `tls_accept_invalid_certs=true` (exit 2); with a profile that
+has `tls_accept_invalid_certs=true`, a `ca_file` turns verification back
+on.
 `tls_accept_invalid_certs=true` turns that verification off (self-signed,
 expired or wrong-host certificates are accepted) for both `starttls` and
-`tls`, and adds a warning. Use it only for a server you control.
+`tls`, and adds a warning. **This is insecure**: anyone on the network path
+can read the mail and the password. Prefer `ca_file`.
 `tls_accept_invalid_certs=true` with `use_tls=none` is refused (exit 2).
 
 Credentials are used only when both a user name and a password are set; if
@@ -259,6 +274,11 @@ resh mail://config action=delete profile=work
 | `activate`   | yes | Marks one profile active and the others inactive. |
 | `get_active` | no (refused) | The active profile; an error if none or more than one. |
 
+`set` stores `smtp_password` in the OS keyring (section 7); if no keyring is
+available it fails with `mail.config_keyring_unavailable` (exit 1) and
+changes nothing. `delete` also removes the keyring entry (if the keyring
+cannot be reached: the same error, nothing deleted).
+
 `set` fields: `smtp_host`, `smtp_port` (1-65535; defaults from `use_tls` as
 in section 4, and is reset to that default when `use_tls` changes without a
 port), `use_tls` (`none`, `starttls`, `tls`, any case), `smtp_username`,
@@ -288,9 +308,21 @@ Profiles are written to `$XDG_CONFIG_HOME/resh/mail/smtp_profiles.json`
 (`~/.config/resh/mail/smtp_profiles.json` when `XDG_CONFIG_HOME` is unset).
 Reading (`list`, `get`, `get_active`, sending) never creates anything.
 
-* The password is stored in the field `smtp_password_encrypted`, but it is
-  only **base64-encoded, not encrypted**. Anyone who can read the file can
-  decode it (`base64 -d`).
+* **Passwords are kept in the OS keyring** (the Secret Service on Linux,
+  for example GNOME Keyring or KWallet over D-Bus; the Keychain on macOS),
+  under the service `resh-mail-smtp` with the profile name as the account.
+  The profile file keeps only a reference,
+  `"smtp_password_ref": "keyring:resh-mail-smtp/<profile>"`.
+* Without a reachable keyring (no D-Bus session, no Secret Service, a
+  locked keyring that does not answer within 10 seconds), `config set` with
+  `smtp_password=` is refused with `mail.config_keyring_unavailable`
+  (exit 1) and nothing is written. The password is never stored in the file
+  instead. Pass `smtp_password=` per call or set `MAIL_SMTP_PASSWORD`.
+* **Legacy files.** Earlier versions stored the password base64-encoded in
+  `smtp_password_encrypted`. Such a password is still used, with a warning,
+  and every `config set`, `delete` or `activate` moves it to the keyring
+  (warning `Moved the password of profile ...`). If the keyring is not
+  available it stays, with a warning, until a later write.
 * The file is written owner-only (`0600`) through a temporary file that is
   renamed into place; a symlink at the temporary name is refused and a
   symlink at the store itself is replaced, never written through. Created
@@ -298,9 +330,9 @@ Reading (`list`, `get`, `get_active`, sending) never creates anything.
   (`smtp_profiles.lock`, `0600`) so concurrent `config` commands cannot lose
   each other's update.
 
-A profile file written by an earlier version may still be readable by other
-users; resave a profile, or run `chmod 600 ~/.config/resh/mail/smtp_profiles.json`.
-Prefer `MAIL_SMTP_PASSWORD` to storing a password.
+Testing note: debug builds of resh honour `RESH_TEST_KEYRING=unavailable`
+(simulate no keyring) and `RESH_TEST_KEYRING=file:<path>` (a test-only
+file store) for the test suite. Release builds ignore the variable.
 
 ## 8. Errors and exit codes
 
@@ -319,7 +351,7 @@ line (no JSON).
 
 | Code | Exit | When |
 | ---- | ---- | ---- |
-| `mail.invalid_argument` | 2 | Unknown argument, malformed value, conflicting options, `dry_run` on a verb without one. |
+| `mail.invalid_argument` | 2 | Unknown argument, malformed value (including an unreadable `ca_file`), conflicting options, `dry_run` on a verb without one. |
 | `mail.send_missing_recipients` | 2 | No `to`/`cc`/`bcc` (send), no `to` (send_template). |
 | `mail.send_missing_subject` | 2 | Blank subject. |
 | `mail.send_missing_body` | 2 | No non-empty body. |
@@ -329,7 +361,7 @@ line (no JSON).
 | `mail.send_invalid_header` | 2 | Bad header name or a line break in a value. |
 | `mail.send_invalid_timeout` | 2 | `timeout_ms=0`. |
 | `mail.send_invalid_retry_config` | 2 | `max_retry` above 10. |
-| `mail.send_smtp_not_configured` | 2 | No host, invalid `MAIL_SMTP_*`, unreadable profile store, several active profiles. |
+| `mail.send_smtp_not_configured` | 2 | No host, invalid `MAIL_SMTP_*`, unreadable profile store, several active profiles, `ca_file` with a profile using `use_tls=none`. |
 | `mail.send_attachment_missing` | 1 | Attachment path does not exist. |
 | `mail.send_attachment_io_error` | 1 | Attachment is not a regular file or cannot be read. |
 | `mail.send_attachments_too_large` | 1 | Attachments total more than 100 MB. |
@@ -339,6 +371,7 @@ line (no JSON).
 | `mail.send_smtp_rejected` | 1 | Permanent (5xx) reply, for example an unknown recipient. |
 | `mail.send_smtp_transient_failed` | 1 | Temporary (4xx) reply after all retries. |
 | `mail.send_timeout` | 124 | Deadline passed. |
+| `mail.send_keyring_error` | 1 | The active profile's password cannot be read from the OS keyring. |
 | `mail.send_internal_error` | 1 | The message could not be built (should not happen). |
 | `mail.send_template_not_found` | 1 | Unknown template. |
 | `mail.send_template_missing_var` | 2 | `strict_vars=true` and variables missing. |
@@ -357,6 +390,7 @@ line (no JSON).
 | `mail.test_send_rejected` | 1 | Permanent (5xx) reply, including a 5xx greeting. |
 | `mail.test_transient_failed` | 1 | Temporary (4xx) reply after all retries. |
 | `mail.test_timeout` | 124 | Deadline passed. |
+| `mail.test_keyring_error` | 1 | As `mail.send_keyring_error`. |
 | `mail.test_internal_error` | 1 | Internal client error (should not happen). |
 | `mail.config_invalid_action` | 2 | Missing or unknown `action`. |
 | `mail.config_profile_required` | 2 | `get`/`set`/`delete`/`activate` without `profile`. |
@@ -369,6 +403,7 @@ line (no JSON).
 | `mail.config_profile_not_found` | 1 | No such profile. |
 | `mail.config_no_active_profile` | 1 | `get_active` with none active. |
 | `mail.config_active_profile_inconsistent` | 1 | More than one profile active (hand-edited file). |
+| `mail.config_keyring_unavailable` | 1 | The OS keyring cannot store or remove a password; nothing was changed. |
 | `mail.config_store_read_error` | 1 | The store cannot be read (or no HOME/XDG_CONFIG_HOME). |
 | `mail.config_store_write_error` | 1 | The store or its directory cannot be written or locked. |
 | `mail.config_store_parse_error` | 1 | The store is not valid JSON. |
@@ -377,8 +412,7 @@ line (no JSON).
 ## 9. Limitations
 
 * `send` has no dry run; `dry_run=true` is refused and nothing is sent.
-* Passwords in stored profiles are base64-encoded, not encrypted (section 7).
-* There is no option to trust a private CA; use a certificate from a public
-  CA, or `tls_accept_invalid_certs=true` for a server you control.
+* Storing a profile password needs an OS keyring (section 7).
+* `ca_file` is per call; profiles do not store one.
 * Templates are fixed; there is no template store.
 * Linux only.

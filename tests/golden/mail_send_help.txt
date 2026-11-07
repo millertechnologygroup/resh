@@ -9,7 +9,7 @@ Usage:
     [reply_to=<addr>] [attachments=<json-array>]
     [header_<Name>=<value> ...] [smtp_host=<host>] [smtp_port=<n>]
     [use_tls=none|starttls|tls] [smtp_username=<user>] [smtp_password=<pass>]
-    [tls_accept_invalid_certs=true|false] [timeout_ms=<ms>]
+    [tls_accept_invalid_certs=true|false] [ca_file=<pem>] [timeout_ms=<ms>]
     [max_retry=<n>] [retry_backoff_ms=<ms>] [format_output=json|text]
 
 Example:
