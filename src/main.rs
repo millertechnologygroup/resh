@@ -172,15 +172,28 @@ fn main() -> Result<()> {
     // register schemes
     handles::register_all(&mut reg);
 
-    // `resh <handle> --help` and `resh <handle> <verb> --help`: answered from
-    // handle metadata without dispatching. Anything not covered falls through
-    // to clap unchanged.
+    // Handle and verb help (`resh <handle> [<verb>] --help|-h|help` and
+    // `resh help <handle> [<verb>]`): answered from handle metadata without
+    // dispatching. An unknown handle or verb is an error (exit 2).
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(req) = core::help::parse_help_request(&raw_args) {
-        if let Some(text) = core::help::render(&reg, &req) {
-            print!("{}", text);
-            return Ok(());
+        match core::help::render(&reg, &req) {
+            Ok(text) => {
+                print!("{}", text);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(2);
+            }
         }
+    }
+    // `resh help` on its own is the global help.
+    if raw_args.len() == 1 && raw_args[0] == "help" {
+        use clap::CommandFactory;
+        // A closed stdout (e.g. `resh help | head`) is not an error.
+        let _ = Cli::command().print_help();
+        return Ok(());
     }
 
     let cli = Cli::parse();
@@ -196,6 +209,17 @@ fn main() -> Result<()> {
         eprintln!("Error: no stage provided. Try `resh --help` or `resh --list-schemas`.");
         std::process::exit(2);
     };
+
+    // A bare handle name (`resh file`, `resh file read`) is not a stage: say
+    // how to write one instead of a generic parse error.
+    if !stage.contains("://") && reg.list_schemes().iter().any(|s| s.as_str() == stage) {
+        eprintln!(
+            "Error: '{stage}' is a handle name, not a stage.\n\
+             Stages are written as {stage}://<target>.<verb>; \
+             run `resh {stage} --help` to see its verbs."
+        );
+        std::process::exit(2);
+    }
 
     // Reconstruct mail URLs that were broken by shell parsing
     let (final_stage, final_args) = reconstruct_mail_command(&stage, &cli.args);

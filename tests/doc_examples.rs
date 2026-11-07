@@ -177,7 +177,7 @@ fn check_command(reg: &Registry, words: &[String]) -> Result<(), String> {
     // `resh <handle> --help` and `resh <handle> <verb> --help`.
     let owned: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
     if let Some(req) = help::parse_help_request(&owned) {
-        return match help::render(reg, &req) {
+        return match help::render(reg, &req).ok() {
             Some(_) => Ok(()),
             None => Err("help request names an unknown handle or verb".into()),
         };

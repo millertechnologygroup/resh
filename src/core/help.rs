@@ -56,42 +56,180 @@ pub enum HelpRequest<'a> {
     Verb(&'a str, &'a str),
 }
 
-/// Recognizes `<handle> --help` and `<handle> <verb> --help` (arguments
-/// after the program name). Anything else, including stage URLs such as
-/// `svc://nginx.status`, is not a handle help request.
+/// Command-line words that request help: `--help`, `-h` and `help`.
+const HELP_WORDS: &[&str] = &["--help", "-h", "help"];
+
+/// Recognizes the help request forms (arguments after the program name):
+///
+///   <handle> --help | -h | help
+///   <handle> <verb> --help | -h | help
+///   help <handle> [<verb>]
+///
+/// Anything else, including stage URLs such as `svc://nginx.status`, is not a
+/// handle help request.
 pub fn parse_help_request(args: &[String]) -> Option<HelpRequest<'_>> {
-    let is_word = |s: &str| !s.is_empty() && !s.starts_with('-') && !s.contains("://");
+    let is_word = |s: &str| {
+        !s.is_empty() && !s.starts_with('-') && !s.contains("://") && !HELP_WORDS.contains(&s)
+    };
+    let is_help = |s: &str| HELP_WORDS.contains(&s);
     match args {
-        [handle, flag] if flag == "--help" && is_word(handle) => Some(HelpRequest::Handle(handle)),
-        [handle, verb, flag] if flag == "--help" && is_word(handle) && is_word(verb) => {
+        [first, handle] if first == "help" && is_word(handle) => Some(HelpRequest::Handle(handle)),
+        [first, handle, verb] if first == "help" && is_word(handle) && is_word(verb) => {
+            Some(HelpRequest::Verb(handle, verb))
+        }
+        [handle, flag] if is_help(flag) && is_word(handle) => Some(HelpRequest::Handle(handle)),
+        // Help about help (`svc help --help`) is the handle's help.
+        [handle, h1, h2] if is_help(h1) && is_help(h2) && is_word(handle) => {
+            Some(HelpRequest::Handle(handle))
+        }
+        [handle, verb, flag] if is_help(flag) && is_word(handle) && is_word(verb) => {
             Some(HelpRequest::Verb(handle, verb))
         }
         _ => None,
     }
 }
 
-/// Renders help for `req`, or returns `None` if the handle is unknown, has
-/// no help metadata, or the verb is not registered or not documented.
+/// Why a help request could not be answered.
+#[derive(Debug, PartialEq, Eq)]
+pub enum HelpError {
+    /// No handle is registered under this name.
+    UnknownHandle {
+        name: String,
+        suggestion: Option<String>,
+    },
+    /// The handle exists but does not register this verb.
+    UnknownVerb {
+        handle: String,
+        verb: String,
+        verbs: Vec<String>,
+        suggestion: Option<String>,
+    },
+    /// The handle or verb exists but has no help metadata.
+    NoHelp { what: String },
+}
+
+impl std::fmt::Display for HelpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HelpError::UnknownHandle { name, suggestion } => {
+                write!(f, "unknown handle '{name}'.")?;
+                if let Some(s) = suggestion {
+                    write!(f, " Did you mean '{s}'?")?;
+                }
+                write!(
+                    f,
+                    "\nRun `resh --list-schemas` to list the available handles."
+                )
+            }
+            HelpError::UnknownVerb {
+                handle,
+                verb,
+                verbs,
+                suggestion,
+            } => {
+                write!(f, "unknown verb '{verb}' for handle '{handle}'.")?;
+                if let Some(s) = suggestion {
+                    write!(f, " Did you mean '{s}'?")?;
+                }
+                // "Error: " is prepended by the caller; wrap so no line
+                // exceeds the help width.
+                let list = wrap(&verbs.join(", "), "Available verbs: ", INDENT);
+                write!(f, "\n{}", list.trim_end())?;
+                write!(f, "\nRun `resh {handle} --help` for details.")
+            }
+            HelpError::NoHelp { what } => write!(f, "no help is available for {what}."),
+        }
+    }
+}
+
+/// Renders help for `req`. Fails if the handle is unknown, the verb is not
+/// registered, or there is no help metadata for it.
 ///
 /// Only constructs the handle to read its metadata; never calls it.
-pub fn render(reg: &Registry, req: &HelpRequest) -> Option<String> {
+pub fn render(reg: &Registry, req: &HelpRequest) -> Result<String, HelpError> {
     let handle_name = match req {
         HelpRequest::Handle(h) | HelpRequest::Verb(h, _) => *h,
     };
-    let handle = reg.instantiate(handle_name)?.ok()?;
-    let help = handle.help()?;
+    let unknown_handle = || HelpError::UnknownHandle {
+        name: handle_name.to_string(),
+        suggestion: closest(handle_name, reg.list_schemes().iter().map(|s| s.as_ref())),
+    };
+    let handle = match reg.instantiate(handle_name) {
+        Some(Ok(h)) => h,
+        _ => return Err(unknown_handle()),
+    };
+    let no_help = |what: String| HelpError::NoHelp { what };
+    let help = handle
+        .help()
+        .ok_or_else(|| no_help(format!("handle '{handle_name}'")))?;
     let registered = handle.verbs();
 
     match req {
-        HelpRequest::Handle(_) => Some(render_handle(handle_name, help, registered)),
+        HelpRequest::Handle(_) => Ok(render_handle(handle_name, help, registered)),
         HelpRequest::Verb(_, verb) => {
-            if !registered.contains(verb) {
-                return None;
+            if !registered.contains(verb) || HELP_ALIASES.contains(verb) {
+                let verbs: Vec<String> = listed_verbs(help, registered)
+                    .iter()
+                    .map(|v| v.name.to_string())
+                    .collect();
+                return Err(HelpError::UnknownVerb {
+                    handle: handle_name.to_string(),
+                    verb: verb.to_string(),
+                    suggestion: closest(verb, verbs.iter().map(String::as_str)),
+                    verbs,
+                });
             }
-            let verb_help = help.verbs.iter().find(|v| v.name == *verb)?;
-            render_verb(handle_name, verb_help)
+            let what = || format!("verb '{verb}' of handle '{handle_name}'");
+            let verb_help = help
+                .verbs
+                .iter()
+                .find(|v| v.name == *verb)
+                .ok_or_else(|| no_help(what()))?;
+            render_verb(handle_name, verb_help).ok_or_else(|| no_help(what()))
         }
     }
+}
+
+/// The candidate that `input` is an unambiguous prefix of, or else the
+/// candidate closest to it by edit distance when that is close enough to be
+/// a likely typo (at most 2, or a third of the length for longer names).
+fn closest<'a>(input: &str, candidates: impl Iterator<Item = &'a str>) -> Option<String> {
+    let input_lc = input.to_lowercase();
+    let mut best: Option<(usize, &str)> = None;
+    let mut prefix_matches = Vec::new();
+    for c in candidates {
+        if c.starts_with(&input_lc) {
+            prefix_matches.push(c);
+        }
+        let d = edit_distance(&input_lc, c);
+        if best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, c));
+        }
+    }
+    // An unambiguous prefix is the strongest hint (`fire` -> `firewall`).
+    if prefix_matches.len() == 1 && input.chars().count() >= 2 {
+        return Some(prefix_matches[0].to_string());
+    }
+    let limit = (input.chars().count() / 3).max(2);
+    match best {
+        Some((d, c)) if d <= limit && d < input.chars().count() => Some(c.to_string()),
+        _ => None,
+    }
+}
+
+/// Levenshtein distance between two strings (by `char`).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
 }
 
 /// Renders help for a handle's own in-URL help forms (for example
@@ -227,6 +365,43 @@ mod tests {
     }
 
     #[test]
+    fn parses_every_help_spelling() {
+        for flag in ["--help", "-h", "help"] {
+            assert_eq!(
+                parse_help_request(&args(&["svc", flag])),
+                Some(HelpRequest::Handle("svc")),
+                "{flag}"
+            );
+            assert_eq!(
+                parse_help_request(&args(&["svc", "status", flag])),
+                Some(HelpRequest::Verb("svc", "status")),
+                "{flag}"
+            );
+        }
+        assert_eq!(
+            parse_help_request(&args(&["help", "svc"])),
+            Some(HelpRequest::Handle("svc"))
+        );
+        assert_eq!(
+            parse_help_request(&args(&["help", "svc", "status"])),
+            Some(HelpRequest::Verb("svc", "status"))
+        );
+    }
+
+    #[test]
+    fn closest_suggests_likely_typos_only() {
+        let names = ["file", "fs", "firewall", "proc", "cert"];
+        let c = |s: &str| closest(s, names.iter().copied());
+        assert_eq!(c("fiel").as_deref(), Some("file"));
+        assert_eq!(c("firewal").as_deref(), Some("firewall"));
+        assert_eq!(c("prc").as_deref(), Some("proc"));
+        assert_eq!(c("fire").as_deref(), Some("firewall"));
+        assert_eq!(c("zzzzzz"), None);
+        assert_eq!(c("x"), None);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
     fn ignores_non_help_invocations() {
         assert_eq!(parse_help_request(&args(&["--help"])), None);
         assert_eq!(parse_help_request(&args(&["svc"])), None);
@@ -235,7 +410,17 @@ mod tests {
             parse_help_request(&args(&["svc://nginx.status", "--help"])),
             None
         );
-        assert_eq!(parse_help_request(&args(&["svc", "-h"])), None);
+        assert_eq!(parse_help_request(&args(&["help"])), None);
+        assert_eq!(parse_help_request(&args(&["svc", "h"])), None);
+        assert_eq!(parse_help_request(&args(&["help", "--help"])), None);
+        assert_eq!(
+            parse_help_request(&args(&["svc", "help", "help"])),
+            Some(HelpRequest::Handle("svc"))
+        );
+        assert_eq!(
+            parse_help_request(&args(&["help", "svc", "status", "x"])),
+            None
+        );
         assert_eq!(
             parse_help_request(&args(&["--json-pretty", "--help"])),
             None
@@ -342,9 +527,43 @@ mod tests {
     fn render_never_calls_handle() {
         let mut reg = Registry::default();
         reg.register_scheme("t", |_| Ok(Box::new(PanicOnCall)));
-        assert!(render(&reg, &HelpRequest::Handle("t")).is_some());
-        assert!(render(&reg, &HelpRequest::Verb("t", "a")).is_none());
-        assert!(render(&reg, &HelpRequest::Verb("t", "ghost")).is_none());
-        assert!(render(&reg, &HelpRequest::Handle("missing")).is_none());
+        assert!(render(&reg, &HelpRequest::Handle("t")).is_ok());
+        assert_eq!(
+            render(&reg, &HelpRequest::Verb("t", "a")),
+            Err(HelpError::NoHelp {
+                what: "verb 'a' of handle 't'".into()
+            })
+        );
+        assert!(matches!(
+            render(&reg, &HelpRequest::Verb("t", "ghost")),
+            Err(HelpError::UnknownVerb { .. })
+        ));
+        assert!(matches!(
+            render(&reg, &HelpRequest::Handle("missing")),
+            Err(HelpError::UnknownHandle { .. })
+        ));
+    }
+
+    #[test]
+    fn unknown_names_explain_and_suggest() {
+        let mut reg = Registry::default();
+        reg.register_scheme("t", |_| Ok(Box::new(PanicOnCall)));
+        let msg = render(&reg, &HelpRequest::Verb("t", "aa"))
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("unknown verb 'aa' for handle 't'"), "{msg}");
+        assert!(msg.contains("Did you mean 'a'?"), "{msg}");
+        assert!(msg.contains("Available verbs: a"), "{msg}");
+        // Help aliases are not verbs, even when a handle registers them.
+        assert!(matches!(
+            render(&reg, &HelpRequest::Verb("t", "help")),
+            Err(HelpError::UnknownVerb { .. }) | Err(HelpError::NoHelp { .. })
+        ));
+        let msg = render(&reg, &HelpRequest::Handle("tt"))
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("unknown handle 'tt'"), "{msg}");
+        assert!(msg.contains("Did you mean 't'?"), "{msg}");
+        assert!(msg.contains("resh --list-schemas"), "{msg}");
     }
 }

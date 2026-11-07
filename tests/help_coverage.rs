@@ -179,7 +179,7 @@ fn every_handle_and_verb_has_help() {
             }
         }
 
-        let handle_out = help::render(&reg, &HelpRequest::Handle(&scheme));
+        let handle_out = help::render(&reg, &HelpRequest::Handle(&scheme)).ok();
         match &handle_out {
             None => fail("handle help did not render".into()),
             Some(out) => {
@@ -235,7 +235,7 @@ fn every_handle_and_verb_has_help() {
                     fail("example_output is empty; use None".into());
                 }
             }
-            match help::render(&reg, &HelpRequest::Verb(&scheme, verb)) {
+            match help::render(&reg, &HelpRequest::Verb(&scheme, verb)).ok() {
                 None => fail("verb help did not render".into()),
                 Some(out) => {
                     if let Err(e) = check_text(&out) {

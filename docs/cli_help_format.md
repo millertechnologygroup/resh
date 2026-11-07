@@ -11,16 +11,32 @@ resh <handle> --help          handle-level help
 resh <handle> <verb> --help   verb-level help
 ```
 
-For example:
+`-h` and `help` work in place of `--help`, and the word `help` can also come
+first:
 
 ```bash
-resh svc --help
-resh svc status --help
+resh svc --help          # same as: resh svc -h, resh svc help, resh help svc
+resh svc status --help   # same as: resh svc status -h, resh svc status help,
+                         #          resh help svc status
 ```
 
-If a request can't be answered from help metadata, the CLI behaves as it did
-before and clap prints the global help. That covers an unknown handle, an
-unknown verb, and a handle or verb that has no help metadata yet.
+`resh help` on its own, like `resh --help`, prints the global help.
+
+Help is printed on stdout with exit code 0. A request that names an unknown
+handle or verb is an error: a message on stderr and exit code 2. It suggests
+the closest name when the input looks like a typo, and lists the handle's
+verbs for an unknown verb:
+
+```text
+$ resh file reed --help
+Error: unknown verb 'reed' for handle 'file'. Did you mean 'read'?
+Available verbs: read, exists, stat, ...
+Run `resh file --help` for details.
+```
+
+A bare handle name used as a stage (`resh file`, `resh file read`) is also
+refused with exit code 2 and a hint showing the stage syntax
+(`file://<target>.<verb>`) and the help command.
 
 ## Handle-level format
 

@@ -238,17 +238,24 @@ fn global_help_unchanged() {
 }
 
 #[test]
-fn unknown_handle_help_falls_back_to_global_help() {
-    let global = run(&["--help"]);
-    assert_eq!(run(&["invalidhandle", "--help"]), global);
+fn unknown_handle_help_is_an_error() {
+    let (code, out, err) = run(&["invalidhandle", "--help"]);
+    assert_eq!(code, 2);
+    assert!(out.is_empty());
+    assert!(err.contains("unknown handle 'invalidhandle'"), "{err}");
 }
 
 #[test]
-fn unknown_verb_help_falls_back_to_global_help() {
-    let global = run(&["--help"]);
-    assert_eq!(run(&["svc", "invalidverb", "--help"]), global);
-    // Help aliases are not operations and get no verb-level help.
-    assert_eq!(run(&["svc", "help", "--help"]), global);
+fn unknown_verb_help_is_an_error() {
+    let (code, out, err) = run(&["svc", "invalidverb", "--help"]);
+    assert_eq!(code, 2);
+    assert!(out.is_empty());
+    assert!(
+        err.contains("unknown verb 'invalidverb' for handle 'svc'"),
+        "{err}"
+    );
+    // Help aliases are not operations: help about `help` is the handle help.
+    assert_eq!(run(&["svc", "help", "--help"]), run(&["svc", "--help"]));
 }
 
 #[test]
