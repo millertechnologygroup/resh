@@ -112,7 +112,7 @@ fn zone_update_reports_refused_and_exits_1() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["ok"], false);
     assert_eq!(v["summary"]["rcode"], "REFUSED");
-    assert_eq!(v["error"][0], "dns.zone_update_refused");
+    assert_eq!(v["error"]["code"], "dns.zone_update_refused");
     assert_eq!(captured.lock().unwrap().len(), 1);
 }
 
@@ -141,7 +141,7 @@ fn zone_update_dry_run_sends_nothing() {
 }
 
 #[test]
-fn zone_update_invalid_input_exits_1_with_code() {
+fn zone_update_invalid_input_exits_2_with_code() {
     let tmp = TempDir::new().unwrap();
     let out = resh(tmp.path())
         .args([
@@ -152,9 +152,10 @@ fn zone_update_invalid_input_exits_1_with_code() {
         .timeout(Duration::from_secs(20))
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("[dns.zone_update_invalid_record_type]"),
+        String::from_utf8_lossy(&out.stderr)
+            .starts_with("Error: [dns.zone_update_invalid_record_type] "),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
