@@ -29,6 +29,19 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   never lose an existing destination, recursive chown that never follows
   links, find skips hidden directories and uses shell-style globs.
 
+### fs
+
+- `fs`: strict arguments (exit 2, did-you-mean) and exit codes 0/1/2/124.
+  Every tool runs under the operation deadline and is stopped at
+  `timeout_ms` (exit 124); previously fs timeouts left the tool running.
+  fsck/scrub failures are no longer reported as success; repair on a mounted
+  xfs/btrfs is refused instead of silently only checking; `resize` uses the
+  filesystem's native size and honors `force`; quota output is parsed
+  correctly and `all_subjects` is implemented; `max_pass` is refused; mount
+  targets that are symlinks are refused. mount, unmount, resize, check and
+  quota are tested as root against real ext4/xfs/btrfs/vfat images and loop
+  devices in a privileged container (`tests/fs_docker.rs`).
+
 ### cron and pkg
 
 These options were parsed and then ignored. Each one now does what its name
