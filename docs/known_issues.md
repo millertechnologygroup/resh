@@ -49,6 +49,8 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   given; `tls_accept_invalid_certs=true` disables certificate verification
   and STARTTLS never falls back to plain text; `header_<Name>` headers are
   sent; `mail://` arguments are no longer rewritten into `send`.
+- Profile passwords live in the OS keyring, never in the file; `ca_file=<pem>`
+  on send, send_template and test trusts a private CA with verification on.
 
 ### archive
 
@@ -341,8 +343,12 @@ This section supersedes the test counts and "Still open" list in the
     `rotate`, ssh `tunnel`/`keys.list`/`key.add`, backup `schedule`
     installation, pkg restore version pinning/rollback, cert encrypted keys, `proc limits.set` on other processes. (dns
     `zone.update` and cert CMS signatures were added after v1.0.6-beta.)
-  - SMTP profile passwords are base64-encoded, not encrypted. Since Stage 4
-    the profile file is written owner-only (0600).
+  - SMTP profile passwords are kept in the OS keyring (Secret Service /
+    Keychain); the profile file holds only a reference. Without a keyring,
+    storing a password is refused (pass it per call or via
+    MAIL_SMTP_PASSWORD). Legacy base64 passwords are still read, with a
+    warning, and moved to the keyring on the next config change. The macOS
+    Keychain path is not tested.
   - No dry-run mode for svc, proc, file writes (except `file replace`),
     cache/db writes, mq, ssh (except exec), mail send and backup restore; for
     these `dry_run=true` is refused before anything runs; git `timeout_ms` is
