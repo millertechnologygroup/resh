@@ -256,7 +256,7 @@ resh svc://nginx.restart
 **Handles:** `user`, `secret`, `cert`, `firewall` ([overview](Security_Secrets/overview.md))
 
 * `user`: local users and groups (exists, groups, add, delete, passwd, lock, unlock), with protection for system accounts.
-* `secret`: a local keystore file (mode 0600, **not encrypted**) and read-only environment lookup. The `vault` scope and `rotate` are not implemented.
+* `secret`: secrets in the OS keyring (`local`; a names-only index file, nothing in plaintext) or in HashiCorp Vault KV v2 (`vault`), and read-only environment lookup (`env`); `rotate` generates random, UUID, AES or RSA secrets.
 * `cert`: X.509 certificates, keys and CSRs in local files (info, verify, chain.info, generate, csr.create, sign, renew). There is no ACME / Let's Encrypt support.
 * `firewall`: rules and state for iptables, nftables, ufw and firewalld.
 

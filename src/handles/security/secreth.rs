@@ -13,7 +13,7 @@
 //!   `VAULT_TOKEN` or `~/.vault-token`).
 //!
 //! `rotate` replaces a secret with a newly generated one (random bytes, a
-//! UUID, an AES key or an RSA private key) and never prints it.
+//! UUID, an AES key or an RSA private key) and prints it only with `expose_value=true`.
 
 use anyhow::Result;
 use serde_json::{Map, Value, json};
@@ -78,7 +78,7 @@ static SECRET_HELP: HandleHelp = HandleHelp {
         vault, a HashiCorp Vault KV version 2 engine reached through VAULT_ADDR and \
         VAULT_TOKEN. The scope is the URL host and the key path follows it, as in \
         secret://local/app/db_password. Every verb prints a single JSON object, and only \
-        get ever prints a secret value.",
+        get (and rotate with expose_value=true) prints a secret value.",
     usage: "resh secret://<scope>/<key-path>.<verb> [key=value ...]",
     verbs: &[
         VerbHelp {
@@ -132,11 +132,12 @@ Shown with --json-pretty."#,
         },
         VerbHelp {
             name: "set",
-            definition: "Stores a secret in the OS keyring or in Vault from a literal value or \
-                from an environment variable.",
+            definition: "Stores a secret in the OS keyring or in Vault from stdin, an \
+                environment variable or a literal value.",
             detail: Some(VerbDetail {
                 usage: "resh secret://<local|vault>/<key-path>.set\n  \
-                    value=<secret>|from_env=<VAR_NAME> [timeout_ms=<ms>]\n  \
+                    from_stdin=true|from_env=<VAR_NAME>|value=<secret>\n  \
+                    [timeout_ms=<ms>]\n  \
                     [mount=<path>] [field=<name>] [ca_file=<pem>] (vault)",
                 example: "resh --json-pretty secret://local/app/db_password.set from_env=DB_PASSWORD",
                 example_output: Some(
@@ -148,9 +149,11 @@ Shown with --json-pretty."#,
   "source": "env"
 }
 
-Shown with --json-pretty. The source is "literal" when value= is used.
-local values go to the OS keyring only; without one, set fails with
-secret.keyring_unavailable and nothing is stored."#,
+Shown with --json-pretty. Give exactly one source; the source is
+"stdin" or "literal" for the others. from_stdin=true reads all of stdin
+and drops one trailing newline. local values go to the OS keyring only;
+without one, set fails with secret.keyring_unavailable and nothing is
+stored."#,
                 ),
             }),
         },
@@ -160,7 +163,7 @@ secret.keyring_unavailable and nothing is stored."#,
                 whether it existed.",
             detail: Some(VerbDetail {
                 usage: "resh secret://<local|vault>/<key-path>.rm [timeout_ms=<ms>]\n  \
-                    [mount=<path>] [ca_file=<pem>] (vault)",
+                    [destroy=true|false] [mount=<path>] [ca_file=<pem>] (vault)",
                 example: "resh --json-pretty secret://local/app/old_token.rm",
                 example_output: Some(
                     r#"{
@@ -170,19 +173,22 @@ secret.keyring_unavailable and nothing is stored."#,
   "scope": "local"
 }
 
-Shown with --json-pretty. In vault, rm deletes every version and field
-of the secret."#,
+Shown with --json-pretty. In vault, rm soft-deletes the latest version
+(recoverable with vault kv undelete) and reports "deleted":
+"latest_version" and its "version"; destroy=true deletes every version
+and the metadata ("deleted": "all_versions")."#,
                 ),
             }),
         },
         VerbHelp {
             name: "rotate",
             definition: "Replaces a secret with a newly generated value (random bytes, a UUID, \
-                an AES key or an RSA private key) without printing it.",
+                an AES key or an RSA private key), printing it only with expose_value=true.",
             detail: Some(VerbDetail {
                 usage: "resh secret://<local|vault>/<key-path>.rotate\n  \
                     [strategy=random|uuid|aes|rsa] [length=<bits>]\n  \
-                    [encoding=hex|base64|base64url] [timeout_ms=<ms>]\n  \
+                    [encoding=hex|base64|base64url] [expose_value=true|false]\n  \
+                    [timeout_ms=<ms>]\n  \
                     [mount=<path>] [field=<name>] [ca_file=<pem>] (vault)",
                 example: "resh --json-pretty secret://local/app/api_key.rotate strategy=random",
                 example_output: Some(
@@ -200,7 +206,9 @@ of the secret."#,
 Shown with --json-pretty. Defaults: random, 256 bits, hex. aes takes
 128, 192 or 256 bits; rsa 2048, 3072 (default) or 4096 bits, stores a
 PKCS#8 PEM private key and prints the public key as public_key; uuid
-takes no length. Read the new value with get."#,
+takes no length. The new value is not printed; read it with get, or
+pass expose_value=true to add it once as "value" (sensitive: do not log
+that output)."#,
                 ),
             }),
         },
@@ -430,7 +438,7 @@ impl SecretHandle {
         Ok(Status::ok())
     }
 
-    fn run(&self, verb: &str, args: &Args) -> VResult<Outcome> {
+    fn run(&self, verb: &str, args: &Args, stdin: &mut dyn std::io::Read) -> VResult<Outcome> {
         check_args(&self.scope, verb, args)?;
         check_key(&self.scope, verb, &self.key_path)?;
         let deadline = parse_deadline(args)?;
@@ -443,15 +451,7 @@ impl SecretHandle {
         let key = self.key_path.as_str();
         match verb {
             "get" => {
-                let redact = match args.get("redact") {
-                    None => false,
-                    Some(v) => lenient::parse_bool(v).ok_or_else(|| {
-                        Failure::usage(
-                            "secret.invalid_argument",
-                            format!("redact={v:?} is not true or false; nothing was read"),
-                        )
-                    })?,
-                };
+                let redact = bool_option(args, "redact")?;
                 let mut out = Outcome::new().with("key", json!(key));
                 let value = backend.get(key, &mut out.warnings)?;
                 out = out.with("exists", json!(value.is_some()));
@@ -466,7 +466,7 @@ impl SecretHandle {
             }
             "set" => {
                 backend.check_writable()?;
-                let (value, source) = secret_input(args)?;
+                let (value, source) = secret_input(args, stdin)?;
                 let mut out = Outcome::new();
                 backend.set(key, &value, &mut out.warnings)?;
                 Ok(out
@@ -477,8 +477,10 @@ impl SecretHandle {
             "rm" => {
                 backend.check_writable()?;
                 let mut out = Outcome::new();
-                let removed = backend.rm(key, &mut out.warnings)?;
-                Ok(out.with("key", json!(key)).with("removed", json!(removed)))
+                let (removed, extra) = backend.rm(key, &mut out.warnings)?;
+                out = out.with("key", json!(key)).with("removed", json!(removed));
+                out.fields.extend(extra);
+                Ok(out)
             }
             "ls" => {
                 let mut out = Outcome::new();
@@ -487,6 +489,7 @@ impl SecretHandle {
             }
             "rotate" => {
                 let spec = RotateSpec::from_args(args)?;
+                let expose = bool_option(args, "expose_value")?;
                 // Fails before generating anything when the scope is
                 // read-only or unreachable.
                 backend.check_writable()?;
@@ -505,6 +508,9 @@ impl SecretHandle {
                 }
                 if let Some(pk) = generated.public_key {
                     out = out.with("public_key", json!(pk));
+                }
+                if expose {
+                    out = out.with("value", json!(generated.value));
                 }
                 Ok(out)
             }
@@ -545,7 +551,7 @@ impl Handle for SecretHandle {
             );
             return self.emit_failure(io, f, verb);
         }
-        match self.run(verb, args) {
+        match self.run(verb, args, io.stdin) {
             Ok(out) => self.emit(io, out),
             Err(f) => self.emit_failure(io, f, verb),
         }
@@ -560,8 +566,8 @@ impl Handle for SecretHandle {
 fn allowed_args(scope: &str, verb: &str) -> Vec<&'static str> {
     let mut a: Vec<&'static str> = match verb {
         "get" => vec!["redact"],
-        "set" => vec!["value", "from_env"],
-        "rotate" => vec!["strategy", "length", "encoding"],
+        "set" => vec!["value", "from_env", "from_stdin"],
+        "rotate" => vec!["strategy", "length", "encoding", "expose_value"],
         _ => vec![],
     };
     match scope {
@@ -570,6 +576,9 @@ fn allowed_args(scope: &str, verb: &str) -> Vec<&'static str> {
             a.extend(["timeout_ms", "mount", "ca_file"]);
             if matches!(verb, "get" | "set" | "rotate") {
                 a.push("field");
+            }
+            if verb == "rm" {
+                a.push("destroy");
             }
         }
         _ => {}
@@ -603,6 +612,19 @@ fn check_args(scope: &str, verb: &str, args: &Args) -> VResult<()> {
         ));
     }
     Ok(())
+}
+
+/// A boolean option (the shared CLI spellings); absent is `false`.
+fn bool_option(args: &Args, name: &str) -> VResult<bool> {
+    match args.get(name) {
+        None => Ok(false),
+        Some(v) => lenient::parse_bool(v).ok_or_else(|| {
+            Failure::usage(
+                "secret.invalid_argument",
+                format!("{name}={v:?} is not true or false; nothing was done"),
+            )
+        }),
+    }
 }
 
 fn parse_deadline(args: &Args) -> VResult<Deadline> {
@@ -670,23 +692,65 @@ fn check_key(scope: &str, verb: &str, key: &str) -> VResult<()> {
     Ok(())
 }
 
-/// The value for `set`: exactly one of `value=` and `from_env=`.
-fn secret_input(args: &Args) -> VResult<(String, &'static str)> {
-    match (args.get("value"), args.get("from_env")) {
-        (Some(_), Some(_)) => Err(Failure::usage(
+/// The value for `set`: exactly one of `value=`, `from_env=` and
+/// `from_stdin=true`.
+fn secret_input(args: &Args, stdin: &mut dyn std::io::Read) -> VResult<(String, &'static str)> {
+    let from_stdin = bool_option(args, "from_stdin")?;
+    let given = [
+        args.contains_key("value"),
+        args.contains_key("from_env"),
+        from_stdin,
+    ]
+    .iter()
+    .filter(|g| **g)
+    .count();
+    if given > 1 {
+        return Err(Failure::usage(
             "secret.invalid_argument",
-            "give either value= or from_env=, not both; nothing was stored",
-        )),
+            "give exactly one of value=, from_env= and from_stdin=true; nothing was stored",
+        ));
+    }
+    if from_stdin {
+        let mut bytes = Vec::new();
+        stdin.read_to_end(&mut bytes).map_err(|e| {
+            Failure::failed(
+                "secret.store_error",
+                format!("cannot read the secret from stdin: {e}; nothing was stored"),
+            )
+        })?;
+        let mut text = String::from_utf8(bytes).map_err(|_| {
+            Failure::usage(
+                "secret.invalid_argument",
+                "stdin is not valid UTF-8; nothing was stored",
+            )
+        })?;
+        // One trailing newline (\n or \r\n), as `echo` or a here-string
+        // adds; anything else is part of the secret.
+        if text.ends_with('\n') {
+            text.pop();
+            if text.ends_with('\r') {
+                text.pop();
+            }
+        }
+        if text.is_empty() {
+            return Err(Failure::usage(
+                "secret.missing_value",
+                "stdin is empty; nothing was stored",
+            ));
+        }
+        return Ok((text, "stdin"));
+    }
+    match (args.get("value"), args.get("from_env")) {
         (None, None) => Err(Failure::usage(
             "secret.missing_value",
-            "secret set needs value=<secret> or from_env=<VAR_NAME> (preferred: value= is \
-             visible in the process list); nothing was stored",
+            "secret set needs from_stdin=true, from_env=<VAR_NAME> or value=<secret> \
+             (value= is visible in the process list); nothing was stored",
         )),
-        (Some(v), None) if v.is_empty() => Err(Failure::usage(
+        (Some(v), _) if v.is_empty() => Err(Failure::usage(
             "secret.missing_value",
             "value= is empty; nothing was stored",
         )),
-        (Some(v), None) => Ok((v.clone(), "literal")),
+        (Some(v), _) => Ok((v.clone(), "literal")),
         (None, Some(name)) => {
             if name.is_empty() || name.contains('=') || name.contains('\0') {
                 return Err(Failure::usage(
@@ -761,7 +825,8 @@ trait Backend {
         Ok(self.get(key, warnings)?.is_some())
     }
     fn set(&self, key: &str, value: &str, warnings: &mut Vec<String>) -> VResult<()>;
-    fn rm(&self, key: &str, warnings: &mut Vec<String>) -> VResult<bool>;
+    /// Whether the key existed, and extra result fields.
+    fn rm(&self, key: &str, warnings: &mut Vec<String>) -> VResult<(bool, Map<String, Value>)>;
     fn ls(&self, prefix: &str, warnings: &mut Vec<String>) -> VResult<Vec<String>>;
     /// Fails if this scope cannot be written.
     fn check_writable(&self) -> VResult<()> {
@@ -794,7 +859,7 @@ impl Backend for EnvScope {
     fn set(&self, _: &str, _: &str, _: &mut Vec<String>) -> VResult<()> {
         Err(read_only())
     }
-    fn rm(&self, _: &str, _: &mut Vec<String>) -> VResult<bool> {
+    fn rm(&self, _: &str, _: &mut Vec<String>) -> VResult<(bool, Map<String, Value>)> {
         Err(read_only())
     }
     fn ls(&self, prefix: &str, _: &mut Vec<String>) -> VResult<Vec<String>> {
@@ -1117,7 +1182,7 @@ impl Backend for Local {
         self.save(&index)
     }
 
-    fn rm(&self, key: &str, warnings: &mut Vec<String>) -> VResult<bool> {
+    fn rm(&self, key: &str, warnings: &mut Vec<String>) -> VResult<(bool, Map<String, Value>)> {
         let _lock = self.lock()?;
         let stored = self.load()?;
         let listed = stored.names().any(|k| k == key);
@@ -1132,7 +1197,7 @@ impl Backend for Local {
         if changed {
             self.save(&index)?;
         }
-        Ok(listed || in_keyring)
+        Ok((listed || in_keyring, Map::new()))
     }
 
     fn ls(&self, prefix: &str, warnings: &mut Vec<String>) -> VResult<Vec<String>> {
@@ -1161,6 +1226,9 @@ struct Vault {
     namespace: Option<String>,
     mount: Vec<String>,
     field: String,
+    /// rm: delete every version and the metadata instead of soft-deleting
+    /// the latest version.
+    destroy: bool,
     client: reqwest::blocking::Client,
     deadline: Deadline,
 }
@@ -1277,6 +1345,8 @@ impl Vault {
             ));
         }
 
+        let destroy = bool_option(args, "destroy")?;
+
         let mut builder = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(None);
@@ -1316,6 +1386,7 @@ impl Vault {
             namespace,
             mount,
             field,
+            destroy,
             client,
             deadline,
         })
@@ -1531,15 +1602,39 @@ impl Backend for Vault {
         Err(self.unexpected(&format!("write {key}"), &a))
     }
 
-    fn rm(&self, key: &str, _: &mut Vec<String>) -> VResult<bool> {
-        if self.current_version(key)?.is_none() {
-            return Ok(false);
+    /// By default soft-deletes the latest version (recoverable with Vault's
+    /// undelete); with `destroy=true` deletes every version and the
+    /// metadata. The result's `deleted` says which happened.
+    fn rm(&self, key: &str, warnings: &mut Vec<String>) -> VResult<(bool, Map<String, Value>)> {
+        let mut extra = Map::new();
+        extra.insert("deleted".into(), Value::Null);
+        if self.destroy {
+            if self.current_version(key)?.is_none() {
+                return Ok((false, extra));
+            }
+            let a = self.send(reqwest::Method::DELETE, self.url("metadata", key), None)?;
+            if a.status != 200 && a.status != 204 {
+                return Err(self.unexpected(&format!("destroy {key}"), &a));
+            }
+            extra.insert("deleted".into(), json!("all_versions"));
+            return Ok((true, extra));
         }
-        let a = self.send(reqwest::Method::DELETE, self.url("metadata", key), None)?;
-        if a.status == 200 || a.status == 204 {
-            return Ok(true);
+        let Some((_, version)) = self.read(key)? else {
+            if self.current_version(key)?.is_some() {
+                warnings.push(format!(
+                    "the latest version of {key} is already deleted; its other versions and \
+                     metadata remain (destroy=true removes them)"
+                ));
+            }
+            return Ok((false, extra));
+        };
+        let a = self.send(reqwest::Method::DELETE, self.url("data", key), None)?;
+        if a.status != 200 && a.status != 204 {
+            return Err(self.unexpected(&format!("delete {key}"), &a));
         }
-        Err(self.unexpected(&format!("delete {key}"), &a))
+        extra.insert("deleted".into(), json!("latest_version"));
+        extra.insert("version".into(), json!(version));
+        Ok((true, extra))
     }
 
     fn ls(&self, prefix: &str, _: &mut Vec<String>) -> VResult<Vec<String>> {

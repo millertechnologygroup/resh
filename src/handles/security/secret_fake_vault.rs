@@ -1,7 +1,8 @@
 //! A small in-process stand-in for HashiCorp Vault's KV version 2 API on
 //! 127.0.0.1, for `secret://vault` tests (unit tests and the binary tests
 //! include this file). It implements what resh uses: read/write a secret
-//! (`/v1/<mount>/data/<path>`, with check-and-set), read/delete/list
+//! (`/v1/<mount>/data/<path>`, with check-and-set), soft-delete the latest
+//! version (`DELETE .../data/<path>`), read/delete/list
 //! metadata (`/v1/<mount>/metadata/<path>`, `?list=true`), the
 //! `X-Vault-Token` check, and Vault's error bodies (`{"errors": [...]}`;
 //! a missing secret is a 404 with an empty list). The real server is
@@ -19,6 +20,8 @@ use std::time::Duration;
 struct State {
     /// Secret path -> (version, data) per mount.
     secrets: BTreeMap<String, (u64, serde_json::Map<String, Value>)>,
+    /// Paths whose latest version is soft-deleted (`DELETE .../data/...`).
+    deleted: std::collections::BTreeSet<String>,
     /// Requests seen: "METHOD path?query[ ns=<namespace>]".
     log: Vec<String>,
     delay: Option<Duration>,
@@ -82,12 +85,29 @@ impl FakeVault {
             .map(|(_, d)| d.clone())
     }
 
+    /// True if the latest version of `path` is soft-deleted (its data and
+    /// metadata are kept).
+    pub fn is_soft_deleted(&self, path: &str) -> bool {
+        self.state.lock().unwrap().deleted.contains(path)
+    }
+
+    /// The current version number of `path`.
+    pub fn version(&self, path: &str) -> Option<u64> {
+        self.state
+            .lock()
+            .unwrap()
+            .secrets
+            .get(path)
+            .map(|(v, _)| *v)
+    }
+
     /// Stores `fields` at `path` as a new version.
     pub fn put(&self, path: &str, fields: Value) {
         let mut st = self.state.lock().unwrap();
         let v = st.secrets.get(path).map(|(v, _)| *v).unwrap_or(0) + 1;
         st.secrets
             .insert(path.into(), (v, fields.as_object().unwrap().clone()));
+        st.deleted.remove(path);
     }
 
     /// The requests seen so far, as "METHOD path?query[ ns=<namespace>]".
@@ -219,7 +239,7 @@ fn serve(
     let list = req.query.split('&').any(|p| p == "list=true") || req.method == "LIST";
     let mut s = st.lock().unwrap();
     match (req.method.as_str(), kind.as_str()) {
-        ("GET", "data") => match s.secrets.get(&path) {
+        ("GET", "data") => match s.secrets.get(&path).filter(|_| !s.deleted.contains(&path)) {
             Some((v, d)) => respond(
                 &mut stream,
                 200,
@@ -248,6 +268,7 @@ fn serve(
                     ),
                 );
             }
+            s.deleted.remove(&path);
             s.secrets.insert(path, (current + 1, data));
             respond(
                 &mut stream,
@@ -286,8 +307,15 @@ fn serve(
             ),
             None => respond(&mut stream, 404, Some(json!({"errors": []}))),
         },
+        ("DELETE", "data") => {
+            if s.secrets.contains_key(&path) {
+                s.deleted.insert(path);
+            }
+            respond(&mut stream, 204, None)
+        }
         ("DELETE", "metadata") => {
             s.secrets.remove(&path);
+            s.deleted.remove(&path);
             respond(&mut stream, 204, None)
         }
         _ => respond(

@@ -93,6 +93,10 @@ dbus-run-session -- bash -c '
   resh secret://local/app/db.rotate strategy=aes length=128 >/tmp/rot.json; echo "ROT=$?"
   echo "ROTATED=$(secret-tool lookup service resh-secret username app/db)"
   echo "ROTOUT=$(tr -d "\n " < /tmp/rot.json)"
+  echo -n piped-pw | resh secret://local/app/stdin.set from_stdin=true >/dev/null; echo "STDIN=$?"
+  echo "STDINLOOKUP=$(secret-tool lookup service resh-secret username app/stdin)"
+  EXPOSED=$(resh secret://local/app/stdin.rotate strategy=uuid expose_value=true | grep -o "\"value\":\"[^\"]*\"" | cut -d\" -f4)
+  echo "EXPOSEDMATCH=$([ -n "$EXPOSED" ] && [ "$EXPOSED" = "$(secret-tool lookup service resh-secret username app/stdin)" ] && echo yes)"
   echo "RM=$(resh secret://local/app/db.rm | tr -d "\n ")"
   echo "AFTER=$(secret-tool lookup service resh-secret username app/db)"
 '
@@ -122,6 +126,9 @@ echo "NOKRLS=$(env -u DBUS_SESSION_BUS_ADDRESS resh secret://local/.ls | tr -d "
     assert_eq!(v["value"], "s3cr3t-pw");
     let v: Value = serde_json::from_str(&get("LS")).unwrap();
     assert_eq!(v["keys"], json!(["app/db", "legacy/token"]));
+    assert_eq!(get("STDIN"), "0");
+    assert_eq!(get("STDINLOOKUP"), "piped-pw");
+    assert_eq!(get("EXPOSEDMATCH"), "yes");
     assert_eq!(get("ROT"), "0");
     let rotated = get("ROTATED");
     assert_eq!(rotated.len(), 32, "{rotated}");
@@ -132,7 +139,7 @@ echo "NOKRLS=$(env -u DBUS_SESSION_BUS_ADDRESS resh secret://local/.ls | tr -d "
     assert_eq!(get("NOKR"), "1");
     assert_eq!(get("NOKRCODE"), "secret.keyring_unavailable");
     let v: Value = serde_json::from_str(&get("NOKRLS")).unwrap();
-    assert_eq!(v["keys"], json!(["legacy/token"]));
+    assert_eq!(v["keys"], json!(["app/stdin", "legacy/token"]));
 }
 
 /// A Vault dev server container, removed on drop.
@@ -336,9 +343,41 @@ fn vault_scope_against_a_real_vault() {
     assert!(pem.starts_with("-----BEGIN PRIVATE KEY-----"));
     assert!(!out.to_string().contains("PRIVATE"));
 
-    let (code, out, _) = run(&["secret://vault/app/db.rm"]);
-    assert_eq!((code, out["removed"].clone()), (0, json!(true)));
+    // rm soft-deletes the latest version (3), which undelete recovers.
+    let (code, out, err) = run(&["secret://vault/app/db.rm"]);
+    assert_eq!(code, 0, "{out} {err}");
+    assert_eq!(out["removed"], true);
+    assert_eq!(out["deleted"], "latest_version");
+    assert_eq!(out["version"], 3);
+    let (_, out, _) = run(&["secret://vault/app/db.get"]);
+    assert_eq!(out["exists"], false);
     let (_, out, _) = run(&["secret://vault/app/db.rm"]);
+    assert_eq!(out["removed"], false, "{out}");
+    assert!(
+        out["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("destroy=true")
+    );
+    v.api(
+        reqwest::Method::POST,
+        "secret/undelete/app/db",
+        Some(json!({"versions": [3]})),
+    );
+    let (_, out, _) = run(&["secret://vault/app/db.get"]);
+    assert_eq!(out["value"], "pw2");
+
+    // destroy=true removes every version and the metadata.
+    let (code, out, _) = run(&["secret://vault/app/db.rm", "destroy=true"]);
+    assert_eq!((code, out["deleted"].clone()), (0, json!("all_versions")));
+    let meta = v
+        .client()
+        .get(format!("{}/v1/secret/metadata/app/db", v.addr))
+        .header("X-Vault-Token", ROOT)
+        .send()
+        .unwrap();
+    assert_eq!(meta.status().as_u16(), 404);
+    let (_, out, _) = run(&["secret://vault/app/db.rm", "destroy=true"]);
     assert_eq!(out["removed"], false);
     let (_, out, _) = run(&["secret://vault/app/db.get"]);
     assert_eq!(out["exists"], false);

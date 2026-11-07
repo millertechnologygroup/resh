@@ -8,7 +8,7 @@ Resource Shell (resh) is a resource-oriented command-line environment that model
 
 ### What the handle does
 
-* Stores a secret from a literal value or from an environment variable (`set`).
+* Stores a secret from stdin, an environment variable or a literal value (`set`).
 * Reads a secret, optionally withholding the value from the output (`get`).
 * Lists keys by prefix, never values (`ls`).
 * Removes a secret (`rm`).
@@ -69,10 +69,10 @@ Every verb accepts only the arguments listed for it; any other argument is refus
 | Verb     | Scopes            | Arguments                                                      | Result                                    |
 | -------- | ----------------- | -------------------------------------------------------------- | ----------------------------------------- |
 | `get`    | local, env, vault | `redact=true\|false`                                           | `exists`, `value` (or `null`), `redacted` |
-| `set`    | local, vault      | `value=<secret>` or `from_env=<VAR>`                           | `set: true`, `source: "literal"` or `"env"` |
-| `rm`     | local, vault      | none                                                           | `removed: true/false`                     |
+| `set`    | local, vault      | `from_stdin=true`, `from_env=<VAR>` or `value=<secret>`        | `set: true`, `source: "stdin"`, `"env"` or `"literal"` |
+| `rm`     | local, vault      | `destroy=true\|false` (vault)                                  | `removed: true/false`; vault adds `deleted` (and `version`) |
 | `ls`     | local, env, vault | none (the key path is the prefix)                              | sorted `keys`, `prefix`                   |
-| `rotate` | local, vault      | `strategy=`, `length=`, `encoding=`                            | `rotated: true`, `existed`, `strategy`, `length`, `encoding`, `public_key` (rsa) |
+| `rotate` | local, vault      | `strategy=`, `length=`, `encoding=`, `expose_value=`           | `rotated: true`, `existed`, `strategy`, `length`, `encoding`, `public_key` (rsa), `value` (only with `expose_value=true`) |
 
 Common arguments:
 
@@ -124,13 +124,15 @@ When a result carries warnings (for example a value read from a legacy plaintext
 
 ```bash
 resh secret://local/app/db_password.set from_env=DB_PASSWORD
+pass show db/password | resh secret://local/app/db_password.set from_stdin=true
 resh secret://local/app/api_key.set value=sk-test123
 resh secret://vault/app/db.set from_env=DB_PASSWORD field=password
 ```
 
-* Give exactly one of `value=` and `from_env=`; both, neither, or an empty value is refused (exit 2) and nothing is stored.
+* Give exactly one source: `from_stdin=true`, `from_env=<VAR>` or `value=<secret>`. Two or more, none (`from_stdin=false` counts as none), or an empty value is refused (exit 2) and nothing is stored.
+* `from_stdin=true` reads the whole of stdin up to end of file, as UTF-8, and removes one trailing newline (`\n` or `\r\n`) if there is one; everything else, including leading or trailing spaces and further newlines, is part of the secret. Empty input (or input that is only one newline) is refused with `secret.missing_value` (exit 2); input that is not UTF-8 with `secret.invalid_argument` (exit 2). It waits for end of file, so do not use it with an interactive terminal unless you end the input with Ctrl-D.
 * `from_env=<VAR>` reads the value from the named environment variable of the `resh` process; if it is unset, the command fails with `secret.env_not_set` (exit 1).
-* **Prefer `from_env=`.** A `value=` argument is visible to other local users in the process list (`ps`) and is kept in shell history.
+* **Prefer `from_stdin=true` or `from_env=`.** A `value=` argument is visible to other local users in the process list (`ps`) and is kept in shell history.
 * `set` overwrites an existing key.
 * `env` scope is read-only: `set`, `rm` and `rotate` fail with `secret.read_only` (exit 2).
 
@@ -150,7 +152,16 @@ resh secret://vault/app/db.set from_env=DB_PASSWORD field=password
 resh secret://local/app/old_token.rm
 ```
 
-Removing a key that does not exist succeeds with `"removed": false`. In `vault`, `rm` deletes the secret's metadata: every version and every field of the secret is removed permanently.
+Removing a key that does not exist succeeds with `"removed": false`.
+
+In `vault`, `rm` by default **soft-deletes the latest version** (KV v2 `DELETE /v1/<mount>/data/<path>`): `get` then reports `"exists": false`, but the data and the older versions stay and the version can be recovered with `vault kv undelete -versions=<n> <mount>/<path>`. `destroy=true` instead deletes the metadata and **every version** permanently. The result says which happened:
+
+```json
+{"backend": "vault", "deleted": "latest_version", "key": "app/db", "removed": true, "scope": "vault", "version": 3}
+{"backend": "vault", "deleted": "all_versions", "key": "app/db", "removed": true, "scope": "vault"}
+```
+
+`deleted` is `null` when nothing was removed. A soft delete of a secret whose latest version is already deleted removes nothing and adds a warning that `destroy=true` removes the rest. A soft-deleted secret is still listed by `ls` (its metadata exists).
 
 ### ls
 
@@ -180,9 +191,12 @@ resh secret://local/app/api_key.rotate
 resh secret://local/app/session_key.rotate strategy=aes length=256 encoding=base64
 resh secret://local/app/request_id_salt.rotate strategy=uuid
 resh secret://vault/svc/signing_key.rotate strategy=rsa length=4096
+resh secret://local/app/webhook_secret.rotate expose_value=true
 ```
 
-Generates a new value from the operating system's secure random source, stores it under the key (replacing any existing value, or creating the key), and reports what it did. **The new value is never printed**; read it with `get`. `existed` tells whether the key had a value before.
+Generates a new value from the operating system's secure random source, stores it under the key (replacing any existing value, or creating the key), and reports what it did. `existed` tells whether the key had a value before.
+
+**By default the new value is not printed**; read it with `get`. With `expose_value=true` (default `false`) the result also carries the new value once, as `"value"` (for `rsa`, the PEM private key). **That output is sensitive:** do not log it or leave it in CI output; capture it straight into the consumer.
 
 | `strategy`         | `length` (bits)                    | `encoding`                                 | Stored value |
 | ------------------ | ---------------------------------- | ------------------------------------------ | ------------ |
@@ -258,7 +272,7 @@ Configuration comes from the standard Vault environment variables:
 * Each key path is a secret in the KV v2 engine at `mount` (default `secret`); the value is the secret's `field` (default `value`). Every path segment is percent-encoded, so a key path cannot reach another API endpoint.
 * `get` reads the latest version. A secret without the field fails with `secret.vault_field_missing` (exit 1) and lists the fields it has. A non-string field is returned as its JSON text.
 * `set` and `rotate` read the secret, change only `field`, keep the other fields, and write a new version with check-and-set. If someone else wrote the secret in between, the write fails with `secret.vault_conflict` (exit 1) and nothing is stored.
-* `rm` deletes the secret's metadata and all of its versions.
+* `rm` soft-deletes the latest version (recoverable with Vault's undelete); `rm destroy=true` deletes the metadata and all versions.
 * Requests use `timeout_ms`, or 30 s each by default; a timeout fails with `secret.timeout` (exit 124).
 * HTTP redirects are not followed.
 
@@ -289,11 +303,11 @@ and a JSON object on stdout:
 | Exit | Code                          | When |
 | ---- | ----------------------------- | ---- |
 | 0    |                               | Success, including `get` of a missing key and `rm` of a missing key |
-| 2    | `secret.invalid_argument`     | Unknown argument, bad `redact`/`timeout_ms`/`strategy`/`length`/`encoding`/`mount`/`field`/`ca_file`, both `value=` and `from_env=` |
+| 2    | `secret.invalid_argument`     | Unknown argument, bad `redact`/`from_stdin`/`expose_value`/`destroy`/`timeout_ms`/`strategy`/`length`/`encoding`/`mount`/`field`/`ca_file`, more than one of `value=`/`from_env=`/`from_stdin=true`, stdin that is not UTF-8 |
 | 2    | `secret.unknown_verb`         | A verb other than get, set, rm, ls, rotate |
 | 2    | `secret.missing_key`          | No key path for `get`, `set`, `rm` or `rotate` |
 | 2    | `secret.invalid_key`          | Key path with an empty, `.` or `..` segment, a control character, over 1024 bytes, or an env name with `=` |
-| 2    | `secret.missing_value`        | `set` without `value=`/`from_env=`, or with an empty value |
+| 2    | `secret.missing_value`        | `set` with no source, an empty value or empty stdin |
 | 2    | `secret.read_only`            | `set`, `rm` or `rotate` on `env` |
 | 2    | `secret.vault_not_configured` | No or invalid `VAULT_ADDR`, or no Vault token |
 | 2    | `secret.invalid_target`       | Unsupported scope (reported by the dispatcher) |
@@ -310,12 +324,12 @@ and a JSON object on stdout:
 
 ## 7. Limitations
 
-* **Command-line exposure.** `value=` is visible in the process list; use `from_env=`.
-* **`get` output contains the secret** unless `redact=true`. Do not log it.
+* **Command-line exposure.** `value=` is visible in the process list; use `from_stdin=true` or `from_env=`.
+* **`get` output contains the secret** unless `redact=true`, and so does `rotate` with `expose_value=true`. Do not log it.
 * **Keyring access is per user session.** Any process running as your user in the unlocked session can read the `resh-secret` entries, as with any keyring item.
 * **The macOS Keychain path is not tested;** Linux with a Secret Service provider is the tested platform. Windows is not supported (no state directory).
 * **The index and the keyring are separate stores.** If the index write fails after a keyring write, the value is stored but `ls` does not list it (the error says so; run `set` again).
-* **Vault:** token authentication only, KV version 2 only; `rm` is a permanent delete of all versions.
+* **Vault:** token authentication only, KV version 2 only; `rm` soft-deletes the latest version unless `destroy=true`.
 
 ---
 

@@ -79,6 +79,10 @@ impl Env {
     }
 
     fn run(&self, args: &[&str]) -> Run {
+        self.run_with_stdin(args, b"")
+    }
+
+    fn run_with_stdin(&self, args: &[&str], input: &[u8]) -> Run {
         let d = self.dir();
         let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("resh");
         cmd.current_dir(d)
@@ -100,7 +104,7 @@ impl Env {
         for (k, v) in &self.vars {
             cmd.env(k, v);
         }
-        let out = cmd.args(args).output().unwrap();
+        let out = cmd.args(args).write_stdin(input.to_vec()).output().unwrap();
         Run {
             code: out.status.code().unwrap_or(-1),
             out: String::from_utf8(out.stdout).unwrap(),
@@ -165,6 +169,40 @@ fn help_examples_work_and_values_stay_out_of_files() {
         .ok();
     assert_eq!(r.json()["removed"], true);
     assert!(env.keyring().get("resh-secret/app/api_key").is_none());
+}
+
+#[test]
+fn from_stdin_and_expose_value() {
+    let env = Env::new();
+    let r = env
+        .run_with_stdin(
+            &["secret://local/app/token.set", "from_stdin=true"],
+            b"piped-secret\n",
+        )
+        .ok();
+    assert_eq!(r.json()["source"], "stdin");
+    assert_eq!(env.keyring()["resh-secret/app/token"], "piped-secret");
+    env.run_with_stdin(&["secret://local/app/token.set", "from_stdin=true"], b"")
+        .fails(2, "secret.missing_value");
+    env.run_with_stdin(
+        &["secret://local/app/token.set", "from_stdin=true", "value=x"],
+        b"y",
+    )
+    .fails(2, "secret.invalid_argument");
+    assert_eq!(env.keyring()["resh-secret/app/token"], "piped-secret");
+
+    let r = env
+        .run(&[
+            "secret://local/app/token.rotate",
+            "strategy=uuid",
+            "expose_value=true",
+        ])
+        .ok();
+    let value = r.json()["value"].as_str().unwrap().to_string();
+    assert_eq!(value.len(), 36);
+    assert_eq!(env.keyring()["resh-secret/app/token"], value.as_str());
+    let r = env.run(&["secret://local/app/token.rotate"]).ok();
+    assert!(r.json().get("value").is_none());
 }
 
 #[test]
@@ -258,7 +296,11 @@ fn vault_through_the_binary() {
             .len(),
         36
     );
-    env.run(&["secret://vault/app/db.rm"]).ok();
+    let r = env.run(&["secret://vault/app/db.rm"]).ok();
+    assert_eq!(r.json()["deleted"], "latest_version");
+    assert!(fake.is_soft_deleted("app/db"));
+    let r = env.run(&["secret://vault/app/db.rm", "destroy=true"]).ok();
+    assert_eq!(r.json()["deleted"], "all_versions");
     assert!(fake.secret("app/db").is_none());
     // Nothing went to the keyring or the local index.
     assert!(!env.index().exists());

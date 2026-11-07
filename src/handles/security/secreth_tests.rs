@@ -111,12 +111,17 @@ impl Drop for Ctx {
     }
 }
 
-/// Runs one stage through the real dispatcher.
+/// Runs one stage through the real dispatcher, with empty stdin.
 fn run(stage: &str, args: &[&str]) -> Out {
+    run_with_stdin(stage, args, b"")
+}
+
+/// Runs one stage through the real dispatcher with `input` on stdin.
+fn run_with_stdin(stage: &str, args: &[&str], input: &[u8]) -> Out {
     let mut reg = crate::core::Registry::default();
     register(&mut reg);
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+    let (mut i, mut o, mut e) = (std::io::Cursor::new(input.to_vec()), Vec::new(), Vec::new());
     let status = crate::core::dispatch_stage(&mut reg, stage, &args, &mut i, &mut o, &mut e)
         .expect("dispatch");
     Out {
@@ -202,6 +207,38 @@ fn local_set_get_ls_rm_keep_values_in_the_keyring_only() {
         json!({"backend": "local", "exists": false, "key": "app/db_password",
                "scope": "local", "value": null})
     );
+}
+
+#[test]
+fn set_from_stdin_reads_all_input_and_drops_one_newline() {
+    let c = Ctx::new();
+    let set = |input: &[u8]| run_with_stdin("secret://local/k.set", &["from_stdin=true"], input);
+    let o = set(b"pa ss\n").ok();
+    assert_eq!(o.json()["source"], "stdin");
+    assert_eq!(c.keyring("k").as_deref(), Some("pa ss"));
+    set(b"two\n\n").ok();
+    assert_eq!(c.keyring("k").as_deref(), Some("two\n"));
+    set(b"crlf\r\n").ok();
+    assert_eq!(c.keyring("k").as_deref(), Some("crlf"));
+    set(b"multi\nline").ok();
+    assert_eq!(c.keyring("k").as_deref(), Some("multi\nline"));
+    set(b" spaced ").ok();
+    assert_eq!(c.keyring("k").as_deref(), Some(" spaced "));
+    for empty in [&b""[..], b"\n", b"\r\n"] {
+        set(empty).fails(2, "secret.missing_value");
+    }
+    set(b"\xff\xfe").fails(2, "secret.invalid_argument");
+    assert_eq!(c.keyring("k").as_deref(), Some(" spaced "));
+    // from_stdin=false is no source at all.
+    run_with_stdin("secret://local/k.set", &["from_stdin=false"], b"x")
+        .fails(2, "secret.missing_value");
+    run_with_stdin("secret://local/k.set", &["from_stdin=maybe"], b"x")
+        .fails(2, "secret.invalid_argument");
+    for other in ["value=v", "from_env=PATH"] {
+        run_with_stdin("secret://local/k.set", &["from_stdin=true", other], b"x")
+            .fails(2, "secret.invalid_argument");
+    }
+    assert_eq!(c.keyring("k").as_deref(), Some(" spaced "));
 }
 
 #[test]
@@ -564,6 +601,20 @@ fn rotate_generates_stores_and_never_prints_the_value() {
         .ok();
     assert_eq!(c.keyring("aes").unwrap().len(), 32);
 
+    // expose_value=true prints the new value once, in the result.
+    let o = c
+        .run("secret://local/k.rotate", &["expose_value=true"])
+        .ok();
+    let exposed = o.json()["value"].as_str().unwrap().to_string();
+    assert_eq!(c.keyring("k").as_deref(), Some(exposed.as_str()));
+    assert_eq!(exposed.len(), 64);
+    let o = c
+        .run("secret://local/k.rotate", &["expose_value=false"])
+        .ok();
+    assert!(o.json().get("value").is_none());
+    c.run("secret://local/k.rotate", &["expose_value=sure"])
+        .fails(2, "secret.invalid_argument");
+
     let o = c.run("secret://local/id.rotate", &["strategy=uuid"]).ok();
     assert_eq!(o.json()["length"], 128);
     assert!(o.json().get("encoding").is_none());
@@ -594,6 +645,13 @@ fn rotate_rsa_stores_a_private_key_and_prints_the_public_key() {
     );
     assert!(!o.out.contains("PRIVATE"));
     assert_eq!(o.json()["length"], 2048);
+    let o = c
+        .run(
+            "secret://local/tls/key.rotate",
+            &["strategy=rsa", "length=2048", "expose_value=true"],
+        )
+        .ok();
+    assert_eq!(o.json()["value"].as_str(), c.keyring("tls/key").as_deref());
 }
 
 #[test]
@@ -700,11 +758,49 @@ fn vault_set_get_ls_rm_rotate() {
     assert_eq!(new.len(), 64);
     assert!(!o.out.contains(&new));
 
+    // rm soft-deletes the latest version: the data and metadata stay.
+    let version = fake.version("app/db_password").unwrap();
     let o = c.run("secret://vault/app/db_password.rm", &[]).ok();
     assert_eq!(o.json()["removed"], true);
-    assert!(fake.secret("app/db_password").is_none());
+    assert_eq!(o.json()["deleted"], "latest_version");
+    assert_eq!(o.json()["version"], version);
+    assert!(fake.is_soft_deleted("app/db_password"));
+    assert!(fake.secret("app/db_password").is_some());
+    let o = c.run("secret://vault/app/db_password.get", &[]).ok();
+    assert_eq!(o.json()["exists"], false);
+    // Again: nothing current to delete; a warning points at destroy=true.
     let o = c.run("secret://vault/app/db_password.rm", &[]).ok();
     assert_eq!(o.json()["removed"], false);
+    assert_eq!(o.json()["deleted"], Value::Null);
+    assert!(
+        o.json()["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("destroy=true")
+    );
+    // set after a soft delete writes a new version.
+    c.run("secret://vault/app/db_password.set", &["value=again"])
+        .ok();
+    assert!(!fake.is_soft_deleted("app/db_password"));
+    assert_eq!(fake.version("app/db_password"), Some(version + 1));
+
+    // destroy=true removes every version and the metadata.
+    let o = c
+        .run("secret://vault/app/db_password.rm", &["destroy=true"])
+        .ok();
+    assert_eq!(o.json()["removed"], true);
+    assert_eq!(o.json()["deleted"], "all_versions");
+    assert!(o.json().get("version").is_none());
+    assert!(fake.secret("app/db_password").is_none());
+    let o = c
+        .run("secret://vault/app/db_password.rm", &["destroy=true"])
+        .ok();
+    assert_eq!(o.json()["removed"], false);
+    c.run("secret://vault/x.rm", &["destroy=maybe"])
+        .fails(2, "secret.invalid_argument");
+    // destroy is a vault option only.
+    c.run("secret://local/x.rm", &["destroy=true"])
+        .fails(2, "secret.invalid_argument");
 }
 
 #[test]
