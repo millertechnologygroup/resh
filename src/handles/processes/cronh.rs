@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, FixedOffset, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
@@ -41,7 +41,8 @@ static CRON_HELP: HandleHelp = HandleHelp {
                     [include_raw=true|false] [include_paths=true|false]\n  \
                     [format=json|text]\n  \
                     timezone: zone for next-run times of entries without their own\n  \
-                    CRON_TZ (default UTC); now_unix: reference time (default now)",
+                    CRON_TZ (default: the host's local zone); now_unix: reference\n  \
+                    time for next runs, Unix seconds 0-253402300799 (default now)",
                 example: "resh cron://local.list",
                 example_output: Some(
                     r#"{
@@ -102,7 +103,9 @@ users, and the match_* filters are case-insensitive substring matches."#,
                     [now_unix=<seconds>] [allow_duplicate=true|false]\n  \
                     [dry_run=true|false] [format=json|text] [<option>=<value> ...]\n  \
                     timezone: systemd adds it to OnCalendar=; the cron backend writes\n  \
-                    CRON_TZ= and is refused unless the cron daemon is cronie",
+                    CRON_TZ= and is refused unless the cron daemon is cronie\n  \
+                    next run: computed in timezone (default: the host's local zone)\n  \
+                    after now_unix, Unix seconds 0-253402300799 (default now)",
                 example: "resh cron://local.add schedule=@daily command=/opt/backup.sh backend=cron",
                 example_output: Some(
                     r#"{
@@ -338,6 +341,7 @@ impl CronHandle {
                     entries_returned: 0,
                     entries_disabled: 0,
                     entries: Vec::new(),
+                    next_run_timezone: None,
                     raw: None,
                     paths: None,
                     human: None,
@@ -1411,6 +1415,10 @@ impl Handle for CronHandle {
 
         match method {
             "list" => {
+                // A bad timezone is a usage error: exit 2, nothing read.
+                if let Some(message) = list_timezone_error(args) {
+                    return Ok(Status::err(2, message));
+                }
                 let result = self.list_verb(args)?;
                 writeln!(io.stdout, "{}", result)?;
                 Ok(verb_status("list", &result))
@@ -1502,6 +1510,16 @@ fn verb_status(verb: &str, output: &str) -> Status {
         return Status::ok();
     }
     let error = value.get("error");
+    // Usage errors (nothing was done) exit 2, other failures 1. So far only
+    // the time-zone errors follow the project-wide exit-code convention.
+    let code = if error.and_then(|e| e.get("field")).and_then(Value::as_str) == Some("timezone")
+        || error.and_then(|e| e.get("code")).and_then(Value::as_str)
+            == Some("cron.add_timezone_unsupported")
+    {
+        2
+    } else {
+        1
+    };
     let message = error
         .and_then(|e| {
             e.get("message")
@@ -1510,7 +1528,7 @@ fn verb_status(verb: &str, output: &str) -> Status {
         })
         .or_else(|| error.and_then(|e| e.get("code")).and_then(Value::as_str))
         .unwrap_or("operation failed");
-    Status::err(1, format!("cron {}: {}", verb, message))
+    Status::err(code, format!("cron {}: {}", verb, message))
 }
 
 // ===========================================================================
@@ -1586,6 +1604,9 @@ pub trait CronHost: std::fmt::Debug + Send + Sync {
     /// no `-V` and fail with a usage message, giving `None`.
     fn crontab_version(&self) -> Option<String>;
     fn now(&self) -> DateTime<Utc>;
+    /// The zone cron and systemd read schedules in when none is given: the
+    /// host's local time zone.
+    fn local_zone(&self) -> RunZone;
 }
 
 /// The real host.
@@ -1707,6 +1728,19 @@ impl CronHost for SystemCronHost {
 
     fn now(&self) -> DateTime<Utc> {
         Utc::now()
+    }
+
+    fn local_zone(&self) -> RunZone {
+        let tz_env = std::env::var("TZ").ok();
+        let localtime_link = fs::read_link("/etc/localtime").ok();
+        let etc_timezone = fs::read_to_string("/etc/timezone").ok();
+        detect_local_zone(
+            tz_env.as_deref(),
+            localtime_link.as_ref().and_then(|p| p.to_str()),
+            etc_timezone.as_deref(),
+            Utc::now(),
+            chrono::Local::now().offset().fix(),
+        )
     }
 }
 
@@ -1851,6 +1885,7 @@ impl CronProvider for SystemCronProvider {
             .and_then(reference_time_from_unix)
             .unwrap_or(start_time);
 
+        let mut next_run_timezone = None;
         if options.include_next_run {
             // An entry's own CRON_TZ counts only where cron honors it
             // (cronie); otherwise the entry runs in the default zone.
@@ -1866,12 +1901,21 @@ impl CronProvider for SystemCronProvider {
                         false
                     }
                 };
-            let default_zone = options.timezone.as_deref().and_then(parse_timezone);
+            // Entries without their own zone run in timezone=, else in the
+            // host's local zone, as cron reads them.
+            let default_zone = match options.timezone.as_deref().and_then(parse_timezone) {
+                Some(tz) => RunZone::Named(tz),
+                None => self.host.local_zone(),
+            };
+            if let Some(w) = default_zone.offset_warning() {
+                warnings.push(w);
+            }
+            next_run_timezone = Some(default_zone.label());
             for entry in &mut entries {
                 if entry.enabled && entry.schedule.is_some() {
                     let zone = match &entry.timezone {
                         Some(tz) if honor_entry_zones => match parse_timezone(tz) {
-                            Some(zone) => Some(zone),
+                            Some(zone) => RunZone::Named(zone),
                             None => {
                                 warnings.push(format!(
                                     "{}: CRON_TZ={} is not a known time zone; no next run computed",
@@ -1925,6 +1969,7 @@ impl CronProvider for SystemCronProvider {
             entries_returned,
             entries_disabled,
             entries,
+            next_run_timezone,
             raw: if options.include_raw {
                 Some(json!({}))
             } else {
@@ -2094,6 +2139,12 @@ impl CronProvider for SystemCronProvider {
                 })),
                 warnings,
             });
+        }
+
+        if options.include_next_run
+            && let Some(w) = self.add_zone(options).offset_warning()
+        {
+            warnings.push(w);
         }
 
         // Dispatch to appropriate backend implementation
@@ -3109,6 +3160,91 @@ fn parse_timezone(name: &str) -> Option<Tz> {
     name.parse::<Tz>().ok()
 }
 
+/// The zone a schedule is read in for next-run times.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RunZone {
+    /// An IANA zone (follows daylight-saving changes).
+    Named(Tz),
+    /// Only the host's current UTC offset is known: the local zone could not
+    /// be named. Next runs after a daylight-saving change are off by the
+    /// change.
+    Offset(FixedOffset),
+}
+
+impl RunZone {
+    /// The zone name, or the offset such as `+01:00`.
+    fn label(&self) -> String {
+        match self {
+            RunZone::Named(tz) => tz.name().to_string(),
+            RunZone::Offset(offset) => offset.to_string(),
+        }
+    }
+
+    /// The warning for a zone known only by its offset.
+    fn offset_warning(&self) -> Option<String> {
+        match self {
+            RunZone::Named(_) => None,
+            RunZone::Offset(offset) => Some(format!(
+                "the host's local time zone could not be identified by name (TZ, \
+                 /etc/localtime); next-run times use its current UTC offset {}, which does \
+                 not follow daylight-saving changes; pass timezone= to name the zone",
+                offset
+            )),
+        }
+    }
+}
+
+/// An IANA zone from a name (`Europe/Berlin`) or a zoneinfo path
+/// (`/usr/share/zoneinfo/Europe/Berlin`, `../usr/share/zoneinfo/posix/UTC`).
+fn zone_from_name_or_path(value: &str) -> Option<Tz> {
+    let value = value.trim();
+    if let Some(tz) = parse_timezone(value) {
+        return Some(tz);
+    }
+    let (_, rest) = value.rsplit_once("zoneinfo/")?;
+    let rest = rest
+        .strip_prefix("posix/")
+        .or_else(|| rest.strip_prefix("right/"))
+        .unwrap_or(rest);
+    parse_timezone(rest)
+}
+
+/// The host's local zone, the way the C library finds it: the `TZ`
+/// variable when set (a zone name, `:name` or a zoneinfo path), else the
+/// zone `/etc/localtime` links to. When `/etc/localtime` is a copy rather
+/// than a link, `/etc/timezone` (Debian) names it, if that zone's offset now
+/// matches the host's. Anything else (a POSIX rule such as `EST5EDT`-like
+/// strings chrono-tz does not know, or no name at all) falls back to the
+/// host's current offset, `local_offset`.
+fn detect_local_zone(
+    tz_env: Option<&str>,
+    localtime_link: Option<&str>,
+    etc_timezone: Option<&str>,
+    now: DateTime<Utc>,
+    local_offset: FixedOffset,
+) -> RunZone {
+    if let Some(tz) = tz_env.map(str::trim).filter(|t| !t.is_empty()) {
+        // With TZ set, /etc/localtime is not consulted.
+        let name = tz.strip_prefix(':').unwrap_or(tz);
+        return zone_from_name_or_path(name)
+            .map(RunZone::Named)
+            .unwrap_or(RunZone::Offset(local_offset));
+    }
+    if let Some(tz) = localtime_link.and_then(zone_from_name_or_path) {
+        return RunZone::Named(tz);
+    }
+    if let Some(tz) = etc_timezone.and_then(parse_timezone_trimmed)
+        && now.with_timezone(&tz).offset().fix() == local_offset
+    {
+        return RunZone::Named(tz);
+    }
+    RunZone::Offset(local_offset)
+}
+
+fn parse_timezone_trimmed(name: &str) -> Option<Tz> {
+    parse_timezone(name.trim())
+}
+
 fn check_timezone(field: &'static str, name: &str) -> Result<(), InvalidField> {
     check_single_line(field, name)?;
     if parse_timezone(name).is_none() {
@@ -3811,6 +3947,11 @@ pub struct CronListResponse {
     pub entries_returned: u32,
     pub entries_disabled: u32,
     pub entries: Vec<CronEntry>,
+    /// The zone next-run times of entries without their own CRON_TZ were
+    /// computed in (`timezone=`, else the host's local zone; an offset such
+    /// as `+01:00` when the local zone has no known name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_run_timezone: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3894,6 +4035,10 @@ pub struct CronAddJobInfo {
     pub next_run_unix: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_run_iso8601: Option<String>,
+    /// The zone the next run was computed in (`timezone`, else the host's
+    /// local zone; an offset such as `+01:00` when it has no known name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_run_timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4350,20 +4495,33 @@ impl SystemCronProvider {
         Ok((cron_line, comment_line))
     }
 
-    /// `add`'s next run: after `now_unix` (else the current time), in
-    /// `timezone` (else UTC), when `include_next_run` is set.
-    fn add_next_run(&self, options: &CronAddOptions) -> (Option<i64>, Option<String>) {
+    /// The zone `add` reads the schedule in: `timezone`, else the host's
+    /// local zone (where cron and systemd run a job without one).
+    fn add_zone(&self, options: &CronAddOptions) -> RunZone {
+        match options.timezone.as_deref().and_then(parse_timezone) {
+            Some(tz) => RunZone::Named(tz),
+            None => self.host.local_zone(),
+        }
+    }
+
+    /// `add`'s next run, when `include_next_run` is set: after `now_unix`
+    /// (else the current time), in `add_zone`. Returns the Unix time, the
+    /// RFC 3339 text and the zone's label.
+    fn add_next_run(
+        &self,
+        options: &CronAddOptions,
+    ) -> (Option<i64>, Option<String>, Option<String>) {
         if !options.include_next_run {
-            return (None, None);
+            return (None, None, None);
         }
         let reference = options
             .now_unix
             .and_then(reference_time_from_unix)
             .unwrap_or_else(|| self.get_current_time());
-        let zone = options.timezone.as_deref().and_then(parse_timezone);
+        let zone = self.add_zone(options);
         match compute_next_run(&options.schedule, reference, zone) {
-            Some((unix, iso)) => (Some(unix), Some(iso)),
-            None => (None, None),
+            Some((unix, iso)) => (Some(unix), Some(iso), Some(zone.label())),
+            None => (None, None, Some(zone.label())),
         }
     }
 
@@ -4375,7 +4533,7 @@ impl SystemCronProvider {
         file_path: &str,
         line_added: Option<u32>,
     ) -> Result<CronAddJobInfo> {
-        let (next_run_unix, next_run_iso8601) = self.add_next_run(options);
+        let (next_run_unix, next_run_iso8601, next_run_timezone) = self.add_next_run(options);
 
         Ok(CronAddJobInfo {
             id: options.id.clone(),
@@ -4394,6 +4552,7 @@ impl SystemCronProvider {
             },
             next_run_unix,
             next_run_iso8601,
+            next_run_timezone,
         })
     }
 
@@ -4629,7 +4788,7 @@ impl SystemCronProvider {
         unit_name: &str,
         unit_scope: &str,
     ) -> Result<CronAddJobInfo> {
-        let (next_run_unix, next_run_iso8601) = self.add_next_run(options);
+        let (next_run_unix, next_run_iso8601, next_run_timezone) = self.add_next_run(options);
 
         let unit_dir = if unit_scope == "user" {
             std::env::var("HOME")
@@ -4656,6 +4815,7 @@ impl SystemCronProvider {
             },
             next_run_unix,
             next_run_iso8601,
+            next_run_timezone,
         })
     }
 
@@ -6800,6 +6960,21 @@ fn split_command_comment(input: &str) -> (String, Option<String>) {
 // Filtering and sorting functions
 // ===========================================================================
 
+/// The error for a `list` `timezone=` that is not an IANA zone name.
+fn list_timezone_error(args: &Args) -> Option<String> {
+    let value = args
+        .get("timezone")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())?;
+    parse_timezone(value).is_none().then(|| {
+        format!(
+            "cron.list_invalid_argument: timezone={} is not an IANA time zone name \
+             such as Europe/Berlin or UTC",
+            value
+        )
+    })
+}
+
 /// Builds list options from CLI arguments, using the documented defaults.
 fn list_options_from_args(args: &Args) -> Result<CronListOptions> {
     let get = |k: &str| args.get(k).map(|s| s.trim()).filter(|s| !s.is_empty());
@@ -6864,15 +7039,9 @@ fn list_options_from_args(args: &Args) -> Result<CronListOptions> {
             },
             None => None,
         },
-        timezone: match get("timezone") {
-            Some(v) if parse_timezone(v).is_none() => {
-                return Err(anyhow::anyhow!(
-                    "cron.list_invalid_argument: timezone={} is not an IANA time zone name \
-                     such as Europe/Berlin or UTC",
-                    v
-                ));
-            }
-            v => v.map(String::from),
+        timezone: match list_timezone_error(args) {
+            Some(message) => return Err(anyhow::anyhow!(message)),
+            None => get("timezone").map(String::from),
         },
         max_entries: match get("max_entries") {
             Some(v) => v.parse::<u32>().map_err(|_| {
@@ -7080,13 +7249,13 @@ fn reference_time_from_unix(now_unix: i64) -> Option<DateTime<Utc>> {
 }
 
 /// The first run of a crontab schedule after `reference_time`, with the
-/// schedule read in `zone` (UTC when None), as the Unix time and as RFC 3339
-/// text in that zone's offset. None for `@reboot`, for a schedule that never
-/// runs again, and for a reference outside `NOW_UNIX_RANGE`.
+/// schedule read in `zone`, as the Unix time and as RFC 3339 text in that
+/// zone's offset. None for `@reboot`, for a schedule that never runs again,
+/// and for a reference outside `NOW_UNIX_RANGE`.
 fn compute_next_run(
     schedule_str: &str,
     reference_time: DateTime<Utc>,
-    zone: Option<Tz>,
+    zone: RunZone,
 ) -> Option<(i64, String)> {
     if !NOW_UNIX_RANGE.contains(&reference_time.timestamp()) {
         return None;
@@ -7117,12 +7286,12 @@ fn compute_next_run(
     };
 
     match zone {
-        Some(tz) => schedule
+        RunZone::Named(tz) => schedule
             .after(&reference_time.with_timezone(&tz))
             .next()
             .map(|t| (t.timestamp(), t.to_rfc3339())),
-        None => schedule
-            .after(&reference_time)
+        RunZone::Offset(offset) => schedule
+            .after(&reference_time.with_timezone(&offset))
             .next()
             .map(|t| (t.timestamp(), t.to_rfc3339())),
     }
@@ -8115,6 +8284,8 @@ mod option_tests {
         crontab_version: Option<String>,
         crontab_writes: usize,
         systemctl: Vec<String>,
+        /// The host's local zone (None: UTC).
+        local_zone: Option<RunZone>,
     }
 
     #[derive(Debug, Clone)]
@@ -8222,6 +8393,9 @@ mod option_tests {
             // 2026-01-15T00:00:00Z
             Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap()
         }
+        fn local_zone(&self) -> RunZone {
+            self.state().local_zone.unwrap_or(RunZone::Named(Tz::UTC))
+        }
     }
 
     const CRONIE: Option<&str> = Some("cronie 1.7.2");
@@ -8253,7 +8427,7 @@ mod option_tests {
         match h.call(verb, &args, &mut io) {
             Ok(status) => (
                 status.exit_code(),
-                serde_json::from_slice(&o).unwrap_or(Value::Null),
+                serde_json::from_slice(&o).unwrap_or_else(|_| json!({ "reason": status.reason })),
             ),
             Err(err) => (1, json!({ "cli_error": err.to_string() })),
         }
@@ -8344,7 +8518,8 @@ mod option_tests {
                         ("dry_run", dry),
                     ],
                 );
-                assert_eq!(code, 1, "{version:?} dry={dry}: {out}");
+                // A usage error: exit 2.
+                assert_eq!(code, 2, "{version:?} dry={dry}: {out}");
                 assert_eq!(out["ok"], false);
                 assert_eq!(out["error"]["code"], "cron.add_timezone_unsupported");
                 assert_eq!(out["error"]["field"], "timezone");
@@ -8497,7 +8672,7 @@ mod option_tests {
                         ("timezone", tz),
                     ],
                 );
-                assert_eq!(code, 1, "{backend} {tz:?}: {out}");
+                assert_eq!(code, 2, "{backend} {tz:?}: {out}");
                 assert_eq!(out["error"]["code"], "cron.add_invalid_argument");
                 assert_eq!(out["error"]["field"], "timezone");
                 let st = host.state();
@@ -8705,12 +8880,119 @@ mod option_tests {
     }
 
     #[test]
+    fn next_runs_default_to_the_hosts_local_zone() {
+        let now = march_first_noon();
+        let (h, host) = setup(CRONIE);
+        host.state().local_zone = Some(RunZone::Named(Tz::America__New_York));
+        host.state()
+            .crontabs
+            .insert("alice".into(), zoned_crontab());
+
+        // list: entries without CRON_TZ run in the local zone.
+        let (code, out) = run(
+            &h,
+            "list",
+            &[("include_next_run", "true"), ("now_unix", &now)],
+        );
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["next_run_timezone"], "America/New_York");
+        let entries = list_entries(&out);
+        assert_eq!(entries[0].2.as_deref(), Some("2026-03-02T02:00:00-05:00"));
+        assert_eq!(entries[1].2.as_deref(), Some("2026-03-02T02:00:00+09:00"));
+        assert_eq!(out["warnings"], json!([]));
+        // timezone= overrides the local zone.
+        let (_, out) = run(
+            &h,
+            "list",
+            &[
+                ("include_next_run", "true"),
+                ("now_unix", &now),
+                ("timezone", "UTC"),
+            ],
+        );
+        assert_eq!(out["next_run_timezone"], "UTC");
+        assert_eq!(
+            list_entries(&out)[0].2.as_deref(),
+            Some("2026-03-02T02:00:00+00:00")
+        );
+        // Without include_next_run no zone is reported.
+        let (_, out) = run(&h, "list", &[]);
+        assert!(out.get("next_run_timezone").is_none());
+
+        // add: both backends, without and with timezone.
+        for backend in ["cron", "systemd"] {
+            let mut args = vec![
+                ("schedule", "0 2 * * *"),
+                ("command", "/bin/true"),
+                ("backend", backend),
+                ("unit_scope", "user"),
+                ("now_unix", now.as_str()),
+                ("dry_run", "true"),
+            ];
+            let (code, out) = run(&h, "add", &args);
+            assert_eq!(code, 0, "{backend}: {out}");
+            assert_eq!(out["job"]["next_run_timezone"], "America/New_York");
+            assert_eq!(out["job"]["next_run_iso8601"], "2026-03-02T02:00:00-05:00");
+            args.push(("timezone", "Asia/Tokyo"));
+            let (_, out) = run(&h, "add", &args);
+            assert_eq!(out["job"]["next_run_timezone"], "Asia/Tokyo");
+            assert_eq!(out["job"]["next_run_iso8601"], "2026-03-02T02:00:00+09:00");
+        }
+    }
+
+    #[test]
+    fn a_local_zone_known_only_by_offset_is_reported_as_such() {
+        let now = march_first_noon();
+        let (h, host) = setup(CRONIE);
+        host.state().local_zone = Some(RunZone::Offset(FixedOffset::east_opt(3 * 3600).unwrap()));
+        host.state()
+            .crontabs
+            .insert("alice".into(), "0 2 * * * /opt/plain.sh\n".into());
+        let (code, out) = run(
+            &h,
+            "list",
+            &[("include_next_run", "true"), ("now_unix", &now)],
+        );
+        assert_eq!(code, 0);
+        assert_eq!(out["next_run_timezone"], "+03:00");
+        assert_eq!(
+            list_entries(&out)[0].2.as_deref(),
+            Some("2026-03-02T02:00:00+03:00")
+        );
+        assert!(
+            out["warnings"][0]
+                .as_str()
+                .unwrap()
+                .contains("could not be identified by name"),
+            "{out}"
+        );
+
+        let add = |extra: &[(&str, &str)]| {
+            let mut args = vec![
+                ("schedule", "0 2 * * *"),
+                ("command", "/bin/true"),
+                ("backend", "cron"),
+                ("now_unix", now.as_str()),
+                ("dry_run", "true"),
+            ];
+            args.extend_from_slice(extra);
+            run(&h, "add", &args).1
+        };
+        let out = add(&[]);
+        assert_eq!(out["job"]["next_run_timezone"], "+03:00");
+        assert!(out["warnings"][0].as_str().unwrap().contains("+03:00"));
+        // A named timezone= or include_next_run=false needs no local zone.
+        assert_eq!(add(&[("timezone", "UTC")])["warnings"], json!([]));
+        assert_eq!(add(&[("include_next_run", "false")])["warnings"], json!([]));
+    }
+
+    #[test]
     fn list_refuses_unknown_time_zones() {
         let (h, _) = setup(CRONIE);
         let (code, out) = run(&h, "list", &[("timezone", "Nowhere/Land")]);
-        assert_eq!(code, 1);
+        assert_eq!(code, 2);
         assert!(
-            out["cli_error"]
+            out["reason"]
                 .as_str()
                 .unwrap()
                 .contains("cron.list_invalid_argument: timezone=Nowhere/Land"),
@@ -8993,10 +9275,12 @@ mod next_run_edge_tests {
     #[test]
     fn next_run_never_panics_on_extreme_times_or_dst_edges() {
         let zones = [
-            None,
-            Some(Tz::Asia__Tokyo),
-            Some(Tz::America__Los_Angeles),
-            Some(Tz::Europe__Berlin),
+            RunZone::Named(Tz::UTC),
+            RunZone::Named(Tz::Asia__Tokyo),
+            RunZone::Named(Tz::America__Los_Angeles),
+            RunZone::Named(Tz::Europe__Berlin),
+            RunZone::Offset(FixedOffset::east_opt(14 * 3600).unwrap()),
+            RunZone::Offset(FixedOffset::west_opt(12 * 3600).unwrap()),
         ];
         let times = [
             DateTime::<Utc>::MAX_UTC,
@@ -9020,7 +9304,7 @@ mod next_run_edge_tests {
         let r = compute_next_run(
             "30 2 * * *",
             Utc.with_ymd_and_hms(2026, 3, 29, 0, 0, 0).unwrap(),
-            Some(Tz::Europe__Berlin),
+            RunZone::Named(Tz::Europe__Berlin),
         );
         assert!(r.is_some());
     }
@@ -9114,6 +9398,9 @@ mod argument_error_tests {
         fn now(&self) -> DateTime<Utc> {
             Utc.timestamp_opt(0, 0).unwrap()
         }
+        fn local_zone(&self) -> RunZone {
+            RunZone::Named(Tz::UTC)
+        }
     }
 
     fn run(verb: &str, args: &[(&str, &str)]) -> (i32, Value) {
@@ -9138,7 +9425,7 @@ mod argument_error_tests {
         match h.call(verb, &args, &mut io) {
             Ok(status) => (
                 status.exit_code(),
-                serde_json::from_slice(&o).unwrap_or(Value::Null),
+                serde_json::from_slice(&o).unwrap_or_else(|_| json!({ "reason": status.reason })),
             ),
             Err(err) => (1, json!({ "cli_error": err.to_string() })),
         }
@@ -9163,7 +9450,8 @@ mod argument_error_tests {
             args.push(("backend", backend));
             args.push((field, value));
             let (code, out) = run("add", &args);
-            assert_eq!(code, 1, "{backend} {field}={value}: {out}");
+            let expected = if field == "timezone" { 2 } else { 1 };
+            assert_eq!(code, expected, "{backend} {field}={value}: {out}");
             assert_eq!(out["error"]["code"], "cron.add_invalid_argument");
             assert_eq!(out["error"]["field"], field);
         }
@@ -9203,12 +9491,120 @@ mod argument_error_tests {
             ("now_unix", "tomorrow"),
         ] {
             let (code, out) = run("list", &[(key, value)]);
-            assert_eq!(code, 1, "{key}={value}");
-            let msg = out["cli_error"].as_str().unwrap();
+            // timezone follows the exit-2 usage convention already.
+            let (expected, field) = if key == "timezone" {
+                (2, "reason")
+            } else {
+                (1, "cli_error")
+            };
+            assert_eq!(code, expected, "{key}={value}");
+            let msg = out[field].as_str().unwrap();
             assert!(
                 msg.starts_with(&format!("cron.list_invalid_argument: {key}={value}")),
                 "{msg}"
             );
         }
+    }
+}
+
+/// Next-run times without `timezone=` use the host's local zone.
+#[cfg(test)]
+mod local_zone_tests {
+    use super::*;
+
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).unwrap()
+    }
+
+    fn plus(hours: i32) -> FixedOffset {
+        FixedOffset::east_opt(hours * 3600).unwrap()
+    }
+
+    fn named(tz: Tz) -> RunZone {
+        RunZone::Named(tz)
+    }
+
+    #[test]
+    fn tz_variable_wins_and_accepts_names_colons_and_paths() {
+        let link = Some("/usr/share/zoneinfo/Europe/Berlin");
+        for value in [
+            "Asia/Tokyo",
+            ":Asia/Tokyo",
+            "/usr/share/zoneinfo/Asia/Tokyo",
+            ":/usr/share/zoneinfo/posix/Asia/Tokyo",
+        ] {
+            assert_eq!(
+                detect_local_zone(Some(value), link, None, now(), plus(1)),
+                named(Tz::Asia__Tokyo),
+                "{value}"
+            );
+        }
+        // A TZ value without a known name (a POSIX rule): /etc/localtime is
+        // not used, only the host's offset is known.
+        assert_eq!(
+            detect_local_zone(Some("XYZ-3"), link, None, now(), plus(3)),
+            RunZone::Offset(plus(3))
+        );
+        // An empty TZ counts as unset.
+        assert_eq!(
+            detect_local_zone(Some(" "), link, None, now(), plus(1)),
+            named(Tz::Europe__Berlin)
+        );
+    }
+
+    #[test]
+    fn localtime_link_names_the_zone() {
+        for link in [
+            "/usr/share/zoneinfo/Europe/Berlin",
+            "../usr/share/zoneinfo/Europe/Berlin",
+            "/usr/share/zoneinfo/right/Europe/Berlin",
+        ] {
+            assert_eq!(
+                detect_local_zone(None, Some(link), None, now(), plus(1)),
+                named(Tz::Europe__Berlin),
+                "{link}"
+            );
+        }
+        assert_eq!(
+            detect_local_zone(None, Some("/usr/share/zoneinfo/UTC"), None, now(), plus(0)),
+            named(Tz::UTC)
+        );
+    }
+
+    #[test]
+    fn etc_timezone_is_used_only_when_it_matches_the_host_offset() {
+        // /etc/localtime is a copy (no link).
+        assert_eq!(
+            detect_local_zone(None, None, Some("Europe/Berlin\n"), now(), plus(1)),
+            named(Tz::Europe__Berlin)
+        );
+        // A stale /etc/timezone is not trusted.
+        assert_eq!(
+            detect_local_zone(None, None, Some("Europe/Berlin\n"), now(), plus(9)),
+            RunZone::Offset(plus(9))
+        );
+        assert_eq!(
+            detect_local_zone(
+                None,
+                Some("/etc/elsewhere"),
+                Some("Nowhere"),
+                now(),
+                plus(-5)
+            ),
+            RunZone::Offset(plus(-5))
+        );
+    }
+
+    #[test]
+    fn labels_and_warnings() {
+        assert_eq!(named(Tz::Europe__Berlin).label(), "Europe/Berlin");
+        assert_eq!(RunZone::Offset(plus(-5)).label(), "-05:00");
+        assert!(named(Tz::UTC).offset_warning().is_none());
+        assert!(
+            RunZone::Offset(plus(3))
+                .offset_warning()
+                .unwrap()
+                .contains("current UTC offset +03:00")
+        );
     }
 }

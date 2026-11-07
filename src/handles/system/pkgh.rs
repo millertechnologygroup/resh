@@ -1109,9 +1109,6 @@ pub struct SnapshotConfig {
     pub exclude_patterns: Vec<String>,
     #[serde(default = "default_snapshot_format")]
     pub format: SnapshotFormat,
-    #[serde(default = "default_true")]
-    #[allow(dead_code)]
-    pub inline: bool,
     #[serde(default = "default_snapshot_timeout")]
     pub timeout_ms: u64,
     pub extra_args: Option<Vec<String>>,
@@ -1640,6 +1637,10 @@ impl PkgHandle {
             PkgError::InvalidSnapshotConfig("Missing input configuration".to_string())
         })?;
 
+        // A removed key is a usage error: exit 2, nothing runs.
+        if let Err(e) = check_snapshot_input(config_json) {
+            return Ok(Status::err(2, e.to_string()));
+        }
         let config: SnapshotConfig = serde_json::from_str(config_json)
             .map_err(|e| PkgError::InvalidSnapshotConfig(format!("Invalid JSON: {}", e)))?;
 
@@ -6970,16 +6971,7 @@ impl PkgHandle {
             .await
         {
             if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                // Parse the policy output to extract repository info
-                for line in stdout.lines() {
-                    if line.trim().starts_with("***") || line.trim().starts_with("500") {
-                        // Look for the repository line
-                        if let Some(repo_part) = line.split_whitespace().nth(2) {
-                            return Some(repo_part.to_string());
-                        }
-                    }
-                }
+                return apt_policy_installed_repository(&String::from_utf8_lossy(&output.stdout));
             }
         }
         None
@@ -10124,7 +10116,6 @@ mod tests {
             include_os_metadata: true,
             exclude_patterns: vec![],
             format: SnapshotFormat::Json,
-            inline: true,
             timeout_ms: 0, // Invalid
             extra_args: None,
             env: None,
@@ -10155,7 +10146,6 @@ mod tests {
             include_os_metadata: true,
             exclude_patterns: vec![],
             format: SnapshotFormat::Json,
-            inline: true,
             timeout_ms: 15000,
             extra_args: None,
             env: None,
@@ -10180,7 +10170,6 @@ mod tests {
             include_os_metadata: true,
             exclude_patterns: vec![],
             format: SnapshotFormat::Json,
-            inline: true,
             timeout_ms: 15000,
             extra_args: Some(vec!["valid".to_string(), "".to_string()]), // Empty string invalid
             env: None,
@@ -10232,7 +10221,6 @@ mod tests {
             include_os_metadata: true,
             exclude_patterns: vec![],
             format: SnapshotFormat::Json,
-            inline: true,
             timeout_ms: 15000,
             extra_args: None,
             env: None,
@@ -10279,7 +10267,6 @@ mod tests {
             include_os_metadata: true,
             exclude_patterns: vec![],
             format: SnapshotFormat::Json,
-            inline: true,
             timeout_ms: 15000,
             extra_args: None,
             env: None,
@@ -10997,6 +10984,75 @@ mod tests {
 // SEC-04: package-manager commands run without a shell. Nothing here
 // invokes a real package manager; execution is checked with a mock
 // executable inside a temporary directory.
+/// The repository of the installed version in `apt-cache policy <name>`
+/// output, as `<suite>/<component>` (e.g. `noble/main`) or, for a flat
+/// repository, its path (e.g. `./`).
+///
+/// The version table lists each version on a line indented by five columns,
+/// the installed one marked `***`, followed by its sources indented further:
+///
+/// ```text
+///  *** 1.24.0-2ubuntu7 500
+///         500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+///         100 /var/lib/dpkg/status
+/// ```
+///
+/// The first source of the installed version that is a repository (`<prio>
+/// <uri> <suite/component> ...`) is taken. `/var/lib/dpkg/status` alone (a
+/// package installed from a local file, or whose repository is gone) gives
+/// None: the repository is not known. Not installed also gives None.
+fn apt_policy_installed_repository(policy: &str) -> Option<String> {
+    let mut in_installed = false;
+    for line in policy.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("***") {
+            in_installed = true;
+            continue;
+        }
+        if !in_installed {
+            continue;
+        }
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        // A source line starts with its priority; anything else (the next
+        // version line, or the end of the table) ends the installed block.
+        let is_source = words.len() >= 2
+            && words[0].bytes().all(|b| b.is_ascii_digit() || b == b'-')
+            && (words[1].contains(':') || words[1].starts_with('/'));
+        if !is_source {
+            return None;
+        }
+        // `<prio> <uri> <suite/component|path> [arch] Packages`; the dpkg
+        // status file has only `<prio> /var/lib/dpkg/status`.
+        if words.len() >= 3 && words[1].contains(':') {
+            return Some(words[2].to_string());
+        }
+    }
+    None
+}
+
+/// Keys that `snapshot` used to accept without any effect and now refuses,
+/// so a request that relies on one fails instead of being silently ignored.
+const SNAPSHOT_REMOVED_KEYS: &[&str] = &["inline"];
+
+/// Refuses removed `snapshot` keys before anything runs. Malformed JSON is
+/// left to the normal parse, which reports it.
+fn check_snapshot_input(config_json: &str) -> Result<(), PkgError> {
+    let Ok(Value::Object(input)) = serde_json::from_str::<Value>(config_json) else {
+        return Ok(());
+    };
+    match SNAPSHOT_REMOVED_KEYS
+        .iter()
+        .find(|k| input.contains_key(**k))
+    {
+        Some(key) => Err(PkgError::InvalidSnapshotConfig(format!(
+            "{} is not supported (the lockfile is always returned in the lockfile field); \
+             remove it from the request; nothing was run",
+            key
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// `list_installed` with `include_versions: false`: every result keeps its
 /// `version` key, set to null (as `repository` is with `include_repo: false`).
 fn omit_installed_versions(list_result: &mut Value) {
@@ -11928,5 +11984,127 @@ mod option_tests {
             "p0, p1, p2, p3, p4, p5, p6, p7, p8, p9 and 2 more"
         );
         assert_eq!(name_list(&names[..2]), "p0, p1");
+    }
+}
+
+/// `apt-cache policy` parsing and the removed snapshot `inline` key.
+#[cfg(test)]
+mod apt_policy_and_snapshot_tests {
+    use super::*;
+
+    // `apt-cache policy` output in the layout apt 2.x prints (Ubuntu 24.04
+    // and Debian 12 style). Transcribed, since no apt runs where these
+    // tests were written.
+
+    /// Installed from noble/main; a newer candidate in noble-updates.
+    const POLICY_UPDATES: &str = "nginx:
+  Installed: 1.24.0-2ubuntu7
+  Candidate: 1.24.0-2ubuntu7.1
+  Version table:
+     1.24.0-2ubuntu7.1 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+ *** 1.24.0-2ubuntu7 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+";
+
+    /// Installed version is the newest; the status line comes first.
+    const POLICY_CURRENT: &str = "curl:
+  Installed: 7.88.1-10+deb12u5
+  Candidate: 7.88.1-10+deb12u5
+  Version table:
+ *** 7.88.1-10+deb12u5 500
+        100 /var/lib/dpkg/status
+        500 http://deb.debian.org/debian bookworm/main amd64 Packages
+";
+
+    /// Installed from a local .deb: only the dpkg status file.
+    const POLICY_LOCAL: &str = "mytool:
+  Installed: 0.3.1
+  Candidate: 0.3.1
+  Version table:
+ *** 0.3.1 100
+        100 /var/lib/dpkg/status
+";
+
+    /// Installed from a flat repository, with an epoch in the version.
+    const POLICY_FLAT: &str = "vendor-agent:
+  Installed: 2:4.1-1
+  Candidate: 2:4.1-1
+  Version table:
+ *** 2:4.1-1 500
+        500 file:/srv/repo ./ Packages
+        100 /var/lib/dpkg/status
+";
+
+    /// Not installed.
+    const POLICY_NOT_INSTALLED: &str = "jq:
+  Installed: (none)
+  Candidate: 1.7.1-3build1
+  Version table:
+     1.7.1-3build1 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+";
+
+    #[test]
+    fn apt_policy_reports_the_installed_versions_repository() {
+        assert_eq!(
+            apt_policy_installed_repository(POLICY_UPDATES).as_deref(),
+            Some("noble/main")
+        );
+        assert_eq!(
+            apt_policy_installed_repository(POLICY_CURRENT).as_deref(),
+            Some("bookworm/main")
+        );
+        assert_eq!(
+            apt_policy_installed_repository(POLICY_FLAT).as_deref(),
+            Some("./")
+        );
+        assert_eq!(apt_policy_installed_repository(POLICY_LOCAL), None);
+        assert_eq!(apt_policy_installed_repository(POLICY_NOT_INSTALLED), None);
+        assert_eq!(apt_policy_installed_repository(""), None);
+        // Never the priority, which the old parser returned.
+        for policy in [POLICY_UPDATES, POLICY_CURRENT, POLICY_FLAT] {
+            assert_ne!(
+                apt_policy_installed_repository(policy).as_deref(),
+                Some("500")
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_refuses_inline_before_anything_runs() {
+        for input in [
+            r#"{"manager":"apt","inline":true}"#,
+            r#"{"manager":"apt","inline":false}"#,
+        ] {
+            let err = check_snapshot_input(input).unwrap_err();
+            assert!(matches!(err, PkgError::InvalidSnapshotConfig(_)));
+            assert!(err.to_string().contains("inline is not supported"), "{err}");
+        }
+        assert!(check_snapshot_input(r#"{"manager":"apt"}"#).is_ok());
+        // Through the verb: refused with the snapshot error, no manager
+        // lookup (an unknown manager binary would otherwise fail later).
+        let handle = PkgHandle {
+            alias: "system".into(),
+        };
+        let mut args = Args::new();
+        args.insert("input".into(), r#"{"manager":"brew","inline":true}"#.into());
+        let mut i: &[u8] = &[];
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let mut io = IoStreams {
+            stdin: &mut i,
+            stdout: &mut o,
+            stderr: &mut e,
+        };
+        let status = handle.call("snapshot", &args, &mut io).unwrap();
+        assert_eq!(status.exit_code(), 2);
+        let reason = status.reason.unwrap_or_default();
+        assert!(
+            reason.starts_with("Invalid snapshot configuration: inline is not supported"),
+            "{reason}"
+        );
+        assert!(o.is_empty());
     }
 }

@@ -42,8 +42,11 @@ line=$(grep "^$2	" "$FAKE_PKG_DIR/installed") || exit 1
 printf 'Package: %s\nVersion: %s\nArchitecture: %s\n' "$2" "$(echo "$line" | cut -f2)" "$(echo "$line" | cut -f3)"
 "#;
 
-/// `apt-cache policy <name>` shows the repository in $FAKE_PKG_DIR/repo_<name>
-/// (default stable/main); `apt-cache show <name>` a minimal record.
+/// `apt-cache policy <name>` prints apt's version table: a newer candidate
+/// from stable-updates/main, then the installed version (`***`) from the
+/// repository in $FAKE_PKG_DIR/repo_<name> (default stable/main), or only
+/// from the dpkg status file when $FAKE_PKG_DIR/local_<name> exists.
+/// `apt-cache show <name>` prints a minimal record.
 const FAKE_APT_CACHE: &str = r#"
 name=$2
 case "$1" in
@@ -51,8 +54,12 @@ case "$1" in
   policy)
     repo=stable/main
     [ -f "$FAKE_PKG_DIR/repo_$name" ] && repo=$(cat "$FAKE_PKG_DIR/repo_$name")
-    printf '%s:\n  Installed: 1.0\n  Candidate: 2.0\n  Version table:\n     2.0 500\n' "$name"
-    printf '        500 http://deb.example.org/debian %s amd64 Packages\n' "$repo" ;;
+    printf '%s:\n  Installed: 1.0\n  Candidate: 2.0\n  Version table:\n' "$name"
+    printf '     2.0 500\n        500 http://deb.example.org/debian stable-updates/main amd64 Packages\n'
+    printf ' *** 1.0 500\n'
+    [ -f "$FAKE_PKG_DIR/local_$name" ] ||
+      printf '        500 http://deb.example.org/debian %s amd64 Packages\n' "$repo"
+    printf '        100 /var/lib/dpkg/status\n' ;;
 esac
 exit 0
 "#;
@@ -85,6 +92,7 @@ impl Fixture {
         for (name, body) in [
             ("crontab", FAKE_CRONTAB),
             ("systemctl", FAKE_OK),
+            ("apt", FAKE_OK),
             ("apt-get", FAKE_OK),
             ("apt-cache", FAKE_APT_CACHE),
             ("apt-mark", FAKE_APT_MARK),
@@ -152,7 +160,17 @@ impl Fixture {
     }
 
     fn run(&self, crontab_version: Option<&str>, args: &[&str]) -> Run {
-        let out = self.resh(crontab_version).args(args).output().unwrap();
+        self.run_tz("UTC", crontab_version, args)
+    }
+
+    /// Like `run`, with the TZ variable (the host's local zone) set to `tz`.
+    fn run_tz(&self, tz: &str, crontab_version: Option<&str>, args: &[&str]) -> Run {
+        let out = self
+            .resh(crontab_version)
+            .env("TZ", tz)
+            .args(args)
+            .output()
+            .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         Run {
             code: out.status.code().unwrap_or(-1),
@@ -211,7 +229,7 @@ fn cron_add_timezone_is_refused_when_cron_is_not_cronie() {
                 dry,
             ],
         );
-        assert_eq!(r.code, 1, "{dry}: {}", r.stdout);
+        assert_eq!(r.code, 2, "{dry}: {}", r.stdout);
         assert_eq!(r.json["error"]["code"], "cron.add_timezone_unsupported");
         assert!(
             r.stderr.contains("only cronie honors CRON_TZ"),
@@ -366,12 +384,13 @@ fn cron_timezone_must_be_an_iana_name() {
             "dry_run=true",
         ],
     );
-    assert_eq!(r.code, 1);
+    assert_eq!(r.code, 2);
     assert_eq!(r.json["error"]["code"], "cron.add_invalid_argument");
     assert_eq!(r.json["error"]["field"], "timezone");
 
     let r = f.run(CRONIE, &["cron://local.list", "timezone=Mars/Olympus"]);
-    assert_eq!(r.code, 1);
+    assert_eq!(r.code, 2);
+    assert!(r.stdout.is_empty());
     assert!(r.stderr.contains("timezone=Mars/Olympus"), "{}", r.stderr);
 }
 
@@ -720,6 +739,7 @@ fn help_of_changed_verbs_lists_the_wired_options() {
                 "[include_next_run=true|false]",
                 "CRON_TZ",
                 "cronie",
+                "computed in timezone (default: the host's local zone) after now_unix",
             ],
             &[],
         ),
@@ -729,7 +749,8 @@ fn help_of_changed_verbs_lists_the_wired_options() {
             &[
                 "[timezone=<IANA zone>]",
                 "[now_unix=<seconds>]",
-                "default UTC",
+                "default: the host's local zone",
+                "Unix seconds 0-253402300799",
             ],
             &[],
         ),
@@ -803,4 +824,149 @@ fn help_of_changed_verbs_lists_the_wired_options() {
     }
     // The help commands ran nothing.
     assert!(f.calls_to("crontab").is_empty() && f.calls_to("apt-get").is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Local zone default, snapshot inline, apt repository
+// ---------------------------------------------------------------------------
+
+/// Next runs without timezone= use the host's local zone, here set with TZ.
+#[test]
+fn cron_next_runs_default_to_the_local_zone() {
+    let f = Fixture::new();
+    std::fs::write(f.crontab_file(), "0 2 * * * /opt/plain.sh\n").unwrap();
+    let list = [
+        "cron://local.list",
+        "include_next_run=true",
+        "now_unix=1772366400",
+    ];
+    for tz in [
+        "Asia/Tokyo",
+        ":Asia/Tokyo",
+        "/usr/share/zoneinfo/Asia/Tokyo",
+    ] {
+        let r = f.run_tz(tz, None, &list);
+        assert_eq!(r.code, 0, "{tz}: {}", r.stderr);
+        assert_eq!(r.json["next_run_timezone"], "Asia/Tokyo", "{tz}");
+        assert_eq!(
+            r.json["entries"][0]["next_run_iso8601"], "2026-03-02T02:00:00+09:00",
+            "{tz}"
+        );
+        assert_eq!(r.json["warnings"], json!([]));
+    }
+    // timezone= wins over the local zone.
+    let mut with_tz = list.to_vec();
+    with_tz.push("timezone=Europe/Berlin");
+    let r = f.run_tz("Asia/Tokyo", None, &with_tz);
+    assert_eq!(
+        r.json["entries"][0]["next_run_iso8601"],
+        "2026-03-02T02:00:00+01:00"
+    );
+
+    // add, dry run.
+    let r = f.run_tz(
+        "Asia/Tokyo",
+        None,
+        &[
+            "cron://local.add",
+            "backend=cron",
+            "schedule=0 2 * * *",
+            "command=/bin/true",
+            "now_unix=1772366400",
+            "dry_run=true",
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert_eq!(r.json["job"]["next_run_timezone"], "Asia/Tokyo");
+    assert_eq!(
+        r.json["job"]["next_run_iso8601"],
+        "2026-03-02T02:00:00+09:00"
+    );
+    assert_eq!(f.crontab_writes(), 0);
+}
+
+/// A TZ value that names no known zone (a POSIX rule): only the offset is
+/// known, and the output says so.
+#[test]
+fn cron_unnamed_local_zone_is_reported_as_an_offset() {
+    let f = Fixture::new();
+    std::fs::write(f.crontab_file(), "0 2 * * * /opt/plain.sh\n").unwrap();
+    let r = f.run_tz(
+        "XYZ-3",
+        None,
+        &[
+            "cron://local.list",
+            "include_next_run=true",
+            "now_unix=1772366400",
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let label = r.json["next_run_timezone"].as_str().unwrap();
+    assert!(label.starts_with('+') || label.starts_with('-'), "{label}");
+    assert!(
+        r.json["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("could not be identified by name"),
+        "{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn pkg_snapshot_refuses_inline() {
+    for value in ["true", "false"] {
+        let f = Fixture::new();
+        f.installed(&[("jq", "1.7")], &["jq"]);
+        let r = f.run(
+            None,
+            &[
+                "pkg://system.snapshot",
+                &format!(r#"input={{"manager":"apt","inline":{value}}}"#),
+            ],
+        );
+        assert_eq!(r.code, 2, "{}", r.stdout);
+        assert!(
+            r.stderr
+                .contains("Invalid snapshot configuration: inline is not supported"),
+            "{}",
+            r.stderr
+        );
+        assert!(r.stdout.is_empty());
+        for program in ["apt", "apt-cache", "apt-mark", "dpkg-query"] {
+            assert!(f.calls_to(program).is_empty(), "{program} ran");
+        }
+    }
+}
+
+/// snapshot records the installed version's suite/component, not the
+/// priority; a package known only from the dpkg status file has none.
+#[test]
+fn pkg_snapshot_records_the_installed_versions_apt_repository() {
+    let f = Fixture::new();
+    f.installed(
+        &[("curl", "1.0"), ("jq", "1.0"), ("mytool", "1.0")],
+        &["jq"],
+    );
+    f.host_repo("curl", "noble-security/main");
+    std::fs::write(f.pkg_dir().join("local_mytool"), "").unwrap();
+    let r = f.run(
+        None,
+        &["pkg://system.snapshot", r#"input={"manager":"apt"}"#],
+    );
+    assert_eq!(r.code, 0, "{} {}", r.stdout, r.stderr);
+    let lock: Value = serde_json::from_str(r.json["lockfile"].as_str().unwrap()).unwrap();
+    let repo = |name: &str| {
+        lock["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .unwrap()
+            .get("repository")
+            .cloned()
+    };
+    assert_eq!(repo("curl"), Some(json!("noble-security/main")));
+    assert_eq!(repo("jq"), Some(json!("stable/main")));
+    assert_eq!(repo("mytool"), None);
 }

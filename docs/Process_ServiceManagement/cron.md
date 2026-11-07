@@ -69,7 +69,8 @@ No `cron` verb has a timeout and none reads `timeout_ms`; a `timeout_ms` argumen
 * Success: exit 0 and a JSON object with `"ok": true`.
 * Failure: the JSON object has `"ok": false` and an `error` object with `code` and `message`; resh exits 1 and prints `Error: cron <verb>: <message>` on stderr. In `format=text` a failure is still printed as the JSON error object.
 * Missing required arguments to `add` (`schedule`, `command`) and invalid `list` options are reported as `Error: <reason>` on stderr only, with exit 1.
-* The JSON `ok` field and the exit status always agree. `cron` has no other exit codes.
+* Time-zone usage errors exit **2** (nothing is read or written): `add` with a `timezone` that is not an IANA name (`cron.add_invalid_argument`, `field` `timezone`) or that the cron backend cannot apply (`cron.add_timezone_unsupported`), and `list` with an invalid `timezone` (`Error: cron.list_invalid_argument: timezone=...` on stderr, no JSON). This follows the project-wide convention (0 success, 1 failure, 2 invalid usage, 124 timeout); the other `cron` errors still exit 1 until the handle is aligned with it.
+* The JSON `ok` field and the exit status always agree.
 
 ---
 
@@ -100,7 +101,7 @@ resh cron://<label>.list [scope=current|user|system|all] [users=<user,...>]
 * `match_*` filters are case-insensitive substring matches.
 * Commented-out jobs appear with `"enabled": false`; plain comment lines appear with `"comment_only": true`.
 * `max_entries` defaults to 1024; `truncated` is true when more entries existed.
-* `include_next_run=true` adds `next_run_unix` and `next_run_iso8601` to enabled entries. `now_unix` is the reference time (default: now). A schedule is read in its own `CRON_TZ` zone when it has one and the cron daemon is cronie. Otherwise it is read in `timezone`, default UTC. `next_run_iso8601` carries that zone's offset. If the cron is not cronie, `CRON_TZ` lines are ignored for next-run times and a warning says so. A `timezone` that is not an IANA zone name (such as `Europe/Berlin` or `UTC`) is an error.
+* `include_next_run=true` adds `next_run_unix` and `next_run_iso8601` to enabled entries. `now_unix` is the reference time (Unix seconds from 0 to 253402300799, i.e. up to the year 9999; default: now; anything else is an error). A schedule is read in its own `CRON_TZ` zone when it has one and the cron daemon is cronie. Otherwise it is read in `timezone`, and without `timezone` in the **host's local zone**, as cron reads it. `next_run_iso8601` carries that zone's offset, and the response's `next_run_timezone` names the zone used for entries without their own `CRON_TZ`. If the cron is not cronie, `CRON_TZ` lines are ignored for next-run times and a warning says so. A `timezone` that is not an IANA zone name (such as `Europe/Berlin` or `UTC`) is an error.
 * An entry that follows a `CRON_TZ=` line has a `timezone` field with that zone.
 * systemd timers are not listed.
 
@@ -170,12 +171,16 @@ resh cron://<label>.add schedule=<expr> command=<cmd>
 * Cron backend: `scope=current` (default) and `scope=user` add to a user crontab through `crontab`; `scope=system` appends to `/etc/crontab` or `cron_file=` with a user column (`user=`, default `root`). `id` and `description` are written as a comment line above the job: `# job-id=<id> description=<text>`.
 * systemd backend: writes `<unit_name>.service` and `<unit_name>.timer` into `~/.config/systemd/user` (user scope) or `/etc/systemd/system` (system scope), runs `daemon-reload`, and enables and starts the timer (`systemctl enable --now`). `unit_scope=auto` means system for root and user otherwise. The unit name is derived from the command if `unit_name` is not given. `persistent` (default true), `accuracy_sec`, `random_delay_sec`, `service_user`, `service_working_dir` and the `env` options apply only to the systemd backend.
 * `allow_duplicate` defaults to **true**, so the same job can be added twice. With `allow_duplicate=false`, an existing job with the same schedule, command and time zone makes `add` return `"ok": true, "duplicate": true` without writing.
-* `include_next_run` (default true) reports the job's next run, counted from `now_unix` (a Unix time in seconds; default: now) and read in `timezone` (default UTC). A `now_unix` that is not a Unix time is refused with `cron.add_invalid_argument` (`field` `now_unix`).
+* `include_next_run` (default true) reports the job's next run (`next_run_unix`, `next_run_iso8601`) and the zone it was computed in (`next_run_timezone`).
+  * `now_unix` is the reference "now" the next run is counted from: Unix seconds from 0 to 253402300799 (up to the year 9999), default the current time. It changes only the reported next run, never the job. A value that is not an integer in that range is refused with `cron.add_invalid_argument` (`field` `now_unix`), exit 1.
+  * The schedule is read in `timezone`, and without it in the **host's local zone**, which is where cron and systemd run a job without a zone.
 
-**Time zones (`timezone=`).** The value must be an IANA time zone name such as `Europe/Berlin`, `America/New_York` or `UTC`; anything else is refused with `cron.add_invalid_argument` (`field` `timezone`) for both backends.
+**Host local zone.** Found the way the C library finds it: the `TZ` variable when set (a zone name, `:name`, or a zoneinfo path such as `/usr/share/zoneinfo/Europe/Berlin`), else the zone `/etc/localtime` links to, else `/etc/timezone` when that zone's current offset matches the host's. If none of these names a known zone (for example `TZ` holds a POSIX rule, or `/etc/localtime` is a plain copy), only the host's current UTC offset is known: next runs use that offset, `next_run_timezone` is the offset (such as `+03:00`), and a warning says the zone has no name and the offset does not follow daylight-saving changes.
+
+**Time zones (`timezone=`).** The value must be an IANA time zone name such as `Europe/Berlin`, `America/New_York` or `UTC`; anything else is refused with `cron.add_invalid_argument` (`field` `timezone`) and exit 2 for both backends.
 
 * systemd backend: the zone is added to the timer's calendar expression, for example `OnCalendar=2:0 Europe/Berlin`, and systemd runs the timer in that zone.
-* Cron backend: only **cronie** honors `CRON_TZ`. Debian/Ubuntu cron and busybox crond ignore it without any error. So the cron backend refuses `timezone` (`cron.add_timezone_unsupported`, also with `dry_run`) unless `crontab -V` prints a cronie version string. Only cronie's crontab has `-V`, and the crontab command and the daemon come from the same package. If the cron cannot be identified as cronie, `timezone` is refused, never written.
+* Cron backend: only **cronie** honors `CRON_TZ`. Debian/Ubuntu cron and busybox crond ignore it without any error. So the cron backend refuses `timezone` (`cron.add_timezone_unsupported`, exit 2, also with `dry_run`) unless `crontab -V` prints a cronie version string. Only cronie's crontab has `-V`, and the crontab command and the daemon come from the same package. If the cron cannot be identified as cronie, `timezone` is refused, never written.
 * With cronie, a `CRON_TZ=` line applies to every following line in the same file. An empty `CRON_TZ=` does not fully reset it either: cronie handles such jobs differently while the default zone changes DST. So `add` keeps zoned jobs in a block at the end of the file, and each zoned job has its own `CRON_TZ` line:
 
   ```text
@@ -302,7 +307,7 @@ Output of `rm` (shown with `--json-pretty`):
 }
 ```
 
-Error codes used in the `error.code` field include `cron.add_invalid_argument`, `cron.add_invalid_schedule`, `cron.add_missing_command`, `cron.add_backend_unavailable`, `cron.add_systemd_unavailable`, `cron.add_schedule_translation_unsupported`, `cron.add_timezone_unsupported`, `cron.<verb>_invalid_argument` (`rm`, `enable`, `disable`: `cron_file`), `cron.<verb>_no_selector`, `cron.<verb>_invalid_backend`, `cron.<verb>_no_match`, `cron.<verb>_error` and `cron.list_error`. All of them exit 1.
+Error codes used in the `error.code` field include `cron.add_invalid_argument`, `cron.add_invalid_schedule`, `cron.add_missing_command`, `cron.add_backend_unavailable`, `cron.add_systemd_unavailable`, `cron.add_schedule_translation_unsupported`, `cron.add_timezone_unsupported`, `cron.<verb>_invalid_argument` (`rm`, `enable`, `disable`: `cron_file`), `cron.<verb>_no_selector`, `cron.<verb>_invalid_backend`, `cron.<verb>_no_match`, `cron.<verb>_error` and `cron.list_error`. They exit 1, except the time-zone errors described in section 2, which exit 2.
 
 ---
 
@@ -320,7 +325,7 @@ These are current behaviors of this release, verified in `src/handles/processes/
   * Schedules with steps (`*/5`) or a specific day of month, month or weekday (other than the fixed patterns for hourly, daily, monthly and yearly) are rejected with `cron.add_schedule_translation_unsupported`.
   * `@reboot` is rejected for systemd.
 * **`allow_duplicate` defaults to true.** Pass `allow_duplicate=false` to skip an identical existing job.
-* **Next-run times default to UTC.** Without `timezone` (and without a `CRON_TZ` for the entry), next runs are computed as if cron ran in UTC, not in the host's local zone. Pass `timezone=` with the host's zone for local next-run times.
+* **Next-run times use the host's local zone** without `timezone` (and without a `CRON_TZ` for the entry). Before this release they were computed in UTC. If the local zone cannot be named, its current offset is used and a warning says so (see 3.3).
 * **Time zones with the cron backend need cronie.** See 3.3. Jobs typed in by hand below the time-zone block run in the zone above them.
 * **Commands are code.** `command` is run by a shell (cron) or by systemd exactly as given; the checks above stop it from adding crontab lines or unit directives, not from doing what it says. Only schedule commands you trust. Before v1.0.4-beta line breaks in job fields and path characters in `unit_name` were not rejected (see 3.3).
 
