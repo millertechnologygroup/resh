@@ -144,15 +144,15 @@ fn assert_list_refused(dir: &Path, archive: &str) {
         "{archive}"
     );
     assert_eq!(r.json["ok"], false, "{archive}");
-    assert_eq!(r.json["error"][1], LIMIT_MESSAGE, "{archive}");
+    assert_eq!(r.json["error"]["message"], LIMIT_MESSAGE, "{archive}");
     assert!(r.json["manifest"].is_null(), "{archive}");
 }
 
 fn assert_json_refused(r: &Run, code: &str) {
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert_eq!(r.json["ok"], false, "{}", r.json);
-    assert_eq!(r.json["error"][0], code, "{}", r.json);
-    assert_eq!(r.json["error"][1], LIMIT_MESSAGE, "{}", r.json);
+    assert_eq!(r.json["error"]["code"], code, "{}", r.json);
+    assert_eq!(r.json["error"]["message"], LIMIT_MESSAGE, "{}", r.json);
 }
 
 fn tree(dir: &Path) -> Vec<String> {
@@ -197,11 +197,11 @@ fn oversized_header_data_is_refused_by_every_tar_verb() {
     let r = resh(dir, &["archive://.test", "archive=t.tar.gz"]);
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert_eq!(r.json["ok"], false);
-    assert_eq!(r.json["error"][0], "archive.test_entry_failed");
+    assert_eq!(r.json["error"]["code"], "archive.test_entry_failed");
     assert_eq!(r.json["summary"]["valid"], false);
     let entry = &r.json["entries"][0];
-    assert_eq!(entry["error_code"], "archive.test_entry_header_error");
-    assert_eq!(entry["error_message"], LIMIT_MESSAGE);
+    assert_eq!(entry["error"]["code"], "archive.test_entry_header_error");
+    assert_eq!(entry["error"]["message"], LIMIT_MESSAGE);
 
     // add and remove read the existing archive first and leave it as it was.
     std::fs::write(dir.join("new.txt"), b"new").unwrap();
@@ -320,8 +320,11 @@ fn malformed_and_truncated_archives_still_fail() {
             ],
         );
         assert_eq!(r.code, 1, "{name}: {}", r.stderr);
-        assert_eq!(r.json["error"][0], "archive.extract_archive_read_error");
-        assert_ne!(r.json["error"][1], LIMIT_MESSAGE, "{name}");
+        assert_eq!(
+            r.json["error"]["code"],
+            "archive.extract_archive_read_error"
+        );
+        assert_ne!(r.json["error"]["message"], LIMIT_MESSAGE, "{name}");
     }
 }
 

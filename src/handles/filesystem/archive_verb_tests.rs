@@ -17,13 +17,14 @@ impl Run {
         self.status.exit_code()
     }
 
-    /// The error code: from the JSON report, else from `[code]` on stderr.
+    /// The error code: from the JSON report's `error` object, else from the
+    /// `Error: [code] message` line on stderr.
     fn code(&self) -> String {
-        if let Some(c) = self.json["error"][0].as_str() {
+        if let Some(c) = self.json["error"]["code"].as_str() {
             return c.to_string();
         }
-        let s = self.stderr.trim_start_matches("Error: ");
-        s.strip_prefix('[')
+        self.stderr
+            .strip_prefix("Error: [")
             .and_then(|r| r.split(']').next())
             .unwrap_or("")
             .to_string()
@@ -43,6 +44,11 @@ impl Run {
     fn fails(&self, code: &str, exit: i32) -> &Self {
         assert_eq!(self.code(), code, "{}\n{}", self.stdout, self.stderr);
         assert_eq!(self.exit(), exit, "{code}: {}", self.stderr);
+        assert!(
+            self.stderr.contains(&format!("Error: [{code}] ")),
+            "stderr lacks the standard error line: {}",
+            self.stderr
+        );
         if exit == 2 && self.json.is_null() {
             assert!(self.stdout.is_empty(), "usage error printed a report");
         }
@@ -1471,7 +1477,7 @@ fn test_detects_damage() {
     assert_eq!(r.json["summary"]["valid"], false);
     assert_eq!(r.json["summary"]["stopped_early"], true);
     assert_eq!(
-        r.json["entries"][1]["error_code"],
+        r.json["entries"][1]["error"]["code"],
         "archive.test_entry_checksum_error"
     );
     let r = call("test", &[("archive", &z), ("stop_on_first_error", "false")]);

@@ -144,22 +144,49 @@ status 124:
 | 2    | Invalid usage: an argument, value, format or archive type the verb cannot work with; nothing was done |
 | 124  | `timeout_ms` passed |
 
-Error codes have the form `archive.<verb>_<kind>`.
+Error codes have the form `archive.<verb>_<kind>` (lowercase snake_case,
+prefixed with the handle name), the same format every resh handle uses.
 
-* An argument refused before the verb runs prints only
-  `[<error code>] <message>` on stderr; nothing goes to stdout.
-* A failure while the verb runs prints the JSON report on stdout with
-  `"ok": false` and `error` set to `[code, message]`, and
-  `Error: [<error code>] <message>` on stderr, for example:
+* Every failure prints one line on stderr:
+  `Error: [<error code>] <message>`.
+* An argument refused before the verb runs prints only that line; nothing
+  goes to stdout.
+* A failure while the verb runs also prints the JSON report on stdout with
+  `"ok": false` and `error` set to an object
+  `{"code": "<error code>", "message": "<message>"}`, for example:
 
 ```text
 Error: [archive.create_output_exists] Output file exists and overwrite=false
 ```
 
-
 Codes every verb can return: `invalid_argument` (2), `timeout` (124),
-`internal_error` (1). The verb-specific codes are listed in each section of
-chapter 3, with their exit status.
+`internal_error` (1). The verb-specific codes are described in each
+section of chapter 3; the complete list is below.
+
+#### Error code reference
+
+Every code the handle reports. An argument refused before anything runs
+always exits 2, so `archive.create_compression_failed` exits 2 for an
+output format `create` cannot write and 1 when writing the archive fails.
+
+| Verb | Exit 2 (invalid usage) | Exit 1 (failed) | Exit 124 |
+| ---- | ---------------------- | --------------- | -------- |
+| `create` | `archive.create_invalid_argument`, `archive.create_invalid_output`, `archive.create_invalid_sources`, `archive.create_invalid_format`, `archive.create_invalid_base_dir`, `archive.create_invalid_compression_level`, `archive.create_invalid_pattern`, `archive.create_invalid_max_files`, `archive.create_invalid_max_size` | `archive.create_internal_error`, `archive.create_password_not_supported`, `archive.create_compression_failed`, `archive.create_output_exists`, `archive.create_source_not_found`, `archive.create_source_permission_denied`, `archive.create_max_files_exceeded`, `archive.create_max_size_exceeded`, `archive.create_permission_denied`, `archive.create_disk_full` | `archive.create_timeout` |
+| `extract` | `archive.extract_invalid_argument`, `archive.extract_invalid_archive_path`, `archive.extract_invalid_format`, `archive.extract_invalid_format_infer`, `archive.extract_invalid_compression`, `archive.extract_invalid_format_compression`, `archive.extract_invalid_max_entries`, `archive.extract_invalid_max_size`, `archive.extract_7z_unsupported`, `archive.extract_invalid_destination`, `archive.extract_invalid_include_pattern`, `archive.extract_invalid_exclude_pattern`, `archive.extract_invalid_strip_components`, `archive.extract_invalid_max_file_size` | `archive.extract_internal_error`, `archive.extract_missing_archive`, `archive.extract_io_error`, `archive.extract_archive_read_error`, `archive.extract_max_entries_exceeded`, `archive.extract_max_size_exceeded`, `archive.extract_destination_missing`, `archive.extract_destination_create_failed`, `archive.extract_path_traversal_detected`, `archive.extract_absolute_path_rejected`, `archive.extract_symlink_rejected`, `archive.extract_unsupported_entry_type`, `archive.extract_max_file_size_exceeded` | `archive.extract_timeout` |
+| `list` | `archive.list_invalid_argument`, `archive.list_invalid_archive_path`, `archive.list_invalid_format`, `archive.list_invalid_format_infer`, `archive.list_invalid_compression`, `archive.list_invalid_format_compression`, `archive.list_invalid_max_entries`, `archive.list_invalid_max_size`, `archive.list_7z_unsupported`, `archive.list_invalid_include_pattern`, `archive.list_invalid_exclude_pattern` | `archive.list_internal_error`, `archive.list_missing_archive`, `archive.list_io_error`, `archive.list_archive_read_error`, `archive.list_max_entries_exceeded`, `archive.list_max_size_exceeded` | `archive.list_timeout` |
+| `test` | `archive.test_invalid_argument`, `archive.test_invalid_archive_path`, `archive.test_invalid_format`, `archive.test_invalid_format_infer`, `archive.test_invalid_compression`, `archive.test_invalid_format_compression`, `archive.test_invalid_max_entries`, `archive.test_invalid_max_size`, `archive.test_7z_unsupported`, `archive.test_invalid_max_file_size` | `archive.test_internal_error`, `archive.test_missing_archive`, `archive.test_io_error`, `archive.test_archive_read_error`, `archive.test_max_entries_exceeded`, `archive.test_max_size_exceeded`, `archive.test_entry_failed`, `archive.test_max_file_size_exceeded`, `archive.test_entry_header_error`, `archive.test_entry_io_error`, `archive.test_entry_compression_error`, `archive.test_entry_checksum_error`, `archive.test_entry_size_mismatch` | `archive.test_timeout` |
+| `info` | `archive.info_invalid_argument`, `archive.info_invalid_archive_path`, `archive.info_invalid_format`, `archive.info_invalid_format_infer`, `archive.info_invalid_compression`, `archive.info_invalid_format_compression`, `archive.info_invalid_max_entries`, `archive.info_invalid_max_size`, `archive.info_7z_unsupported` | `archive.info_internal_error`, `archive.info_missing_archive`, `archive.info_io_error`, `archive.info_archive_read_error`, `archive.info_max_entries_exceeded`, `archive.info_max_size_exceeded` | `archive.info_timeout` |
+| `add` | `archive.add_invalid_argument`, `archive.add_invalid_archive_path`, `archive.add_invalid_format`, `archive.add_invalid_format_infer`, `archive.add_invalid_compression`, `archive.add_invalid_format_compression`, `archive.add_invalid_max_entries`, `archive.add_invalid_max_size`, `archive.add_7z_unsupported`, `archive.add_invalid_input`, `archive.add_invalid_include_pattern`, `archive.add_invalid_exclude_pattern`, `archive.add_unsupported_for_raw` | `archive.add_internal_error`, `archive.add_missing_archive`, `archive.add_io_error`, `archive.add_archive_read_error`, `archive.add_max_entries_exceeded`, `archive.add_max_size_exceeded`, `archive.add_archive_write_error`, `archive.add_backup_failed` | `archive.add_timeout` |
+| `remove` | `archive.remove_invalid_argument`, `archive.remove_invalid_archive_path`, `archive.remove_invalid_format`, `archive.remove_invalid_format_infer`, `archive.remove_invalid_compression`, `archive.remove_invalid_format_compression`, `archive.remove_invalid_max_entries`, `archive.remove_invalid_max_size`, `archive.remove_7z_unsupported`, `archive.remove_invalid_pattern`, `archive.remove_unsupported_for_raw` | `archive.remove_internal_error`, `archive.remove_missing_archive`, `archive.remove_io_error`, `archive.remove_archive_read_error`, `archive.remove_max_entries_exceeded`, `archive.remove_max_size_exceeded`, `archive.remove_nothing_to_remove`, `archive.remove_archive_write_error`, `archive.remove_backup_failed`, `archive.remove_replace_failed` | `archive.remove_timeout` |
+
+**Breaking change (error format):** before this release a refused argument
+printed `[<error code>] <message>` on stderr without the `Error: ` prefix,
+the JSON `error` field was a `[code, message]` array, and a `test` entry
+reported `error_code` / `error_message` fields. Now every failure line is
+`Error: [<error code>] <message>`, the JSON `error` is a
+`{"code", "message"}` object, and each `test` entry carries the same
+`error` object (`null` when the entry is fine). The codes themselves are
+unchanged. Scripts that parse the old forms must be updated.
 
 ### fail_on_missing_archive
 
@@ -388,9 +415,9 @@ checks headers only), `report_entries` (default `true`),
 `fail_on_missing_archive`, `timeout_ms`, `format_output`.
 `summary.valid` gives the overall result.
 
-A damaged entry is reported on the entry (`status: "error"` with
-`archive.test_entry_header_error`, `entry_io_error`,
-`entry_compression_error`, `entry_checksum_error`, `entry_size_mismatch` or
+A damaged entry is reported on the entry (`status: "error"` and `error`
+set to `{"code", "message"}` with code `archive.test_entry_header_error`,
+`entry_io_error`, `entry_compression_error`, `entry_checksum_error`, `entry_size_mismatch` or
 `max_file_size_exceeded`) and the verb fails with
 `archive.test_entry_failed` (1). An archive with more than `max_entries`
 entries, or more than `max_total_bytes` of data, fails with
@@ -550,15 +577,15 @@ others), `error` and `warnings`. Abbreviated `info` output:
 ```
 
 Abbreviated error report (stdout); stderr carries the
-`Error: [code] message` line:
+`Error: [<error code>] <message>` line:
 
 ```json
 {
   "ok": false,
-  "error": [
-    "archive.extract_path_traversal_detected",
-    "Unsafe archive entry '../evil.txt': Path traversal detected (..); extraction stopped after 1 entries were written"
-  ]
+  "error": {
+    "code": "archive.extract_path_traversal_detected",
+    "message": "Unsafe archive entry '../evil.txt': Path traversal detected (..); extraction stopped after 1 entries were written"
+  }
 }
 ```
 

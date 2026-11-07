@@ -14,7 +14,7 @@ use walkdir::WalkDir;
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{self, Status, error_line},
 };
 use crate::handles::filesystem::tar_limit::limited_archive;
 
@@ -184,8 +184,7 @@ Shown with --json-pretty."#,
                     r#"{
   "entries": [
     {
-      "error_code": null,
-      "error_message": null,
+      "error": null,
       "is_dir": false,
       "is_symlink": false,
       "path": "app.log",
@@ -882,6 +881,7 @@ pub struct ArchiveListResponse {
     pub summary: Option<ArchiveListSummary>,
     pub manifest: Option<Vec<ArchiveListEntry>>,
 
+    #[serde(serialize_with = "ser_error")]
     pub error: Option<(String, String)>,
     pub warnings: Vec<String>,
 }
@@ -894,8 +894,8 @@ pub struct ArchiveTestEntryResult {
     pub size: u64,
 
     pub status: String,
-    pub error_code: Option<String>,
-    pub error_message: Option<String>,
+    #[serde(serialize_with = "ser_error")]
+    pub error: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -919,6 +919,7 @@ pub struct ArchiveTestResponse {
     pub summary: Option<ArchiveTestSummary>,
     pub entries: Option<Vec<ArchiveTestEntryResult>>,
 
+    #[serde(serialize_with = "ser_error")]
     pub error: Option<(String, String)>,
     pub warnings: Vec<String>,
 }
@@ -976,6 +977,7 @@ pub struct ArchiveInfoResponse {
     pub summary: Option<ArchiveInfoSummary>,
     pub details: Option<ArchiveInfoDetails>,
 
+    #[serde(serialize_with = "ser_error")]
     pub error: Option<(String, String)>,
     pub warnings: Vec<String>,
 }
@@ -1020,6 +1022,7 @@ pub struct ArchiveAddResponse {
     pub summary: Option<ArchiveAddSummary>,
     pub details: Option<ArchiveAddDetails>,
 
+    #[serde(serialize_with = "ser_error")]
     pub error: Option<(String, String)>,
     pub warnings: Vec<String>,
 }
@@ -1033,6 +1036,7 @@ pub struct ArchiveRemoveResponse {
     pub summary: Option<ArchiveRemoveSummary>,
     pub details: Option<ArchiveRemoveDetails>,
 
+    #[serde(serialize_with = "ser_error")]
     pub error: Option<(String, String)>,
     pub warnings: Vec<String>,
 }
@@ -1122,6 +1126,7 @@ pub struct ArchiveCreateResponse {
     pub files: Vec<FileEntry>,
     pub statistics: ArchiveStatistics,
     pub warnings: Vec<String>,
+    #[serde(serialize_with = "ser_error")]
     pub error: Option<(String, String)>,
 }
 
@@ -1134,6 +1139,7 @@ pub struct ArchiveExtractResponse {
     pub summary: Option<ArchiveExtractSummary>,
     pub manifest: Option<Vec<ArchiveExtractManifestEntry>>,
 
+    #[serde(serialize_with = "ser_error")]
     pub error: Option<(String, String)>,
     pub warnings: Vec<String>,
 }
@@ -1813,9 +1819,7 @@ impl ArchiveTestResponse {
                         output.push_str("\nFailed Entries:\n");
                         for entry in failed_entries.iter().take(10) {
                             // Limit to first 10 failed
-                            if let (Some(code), Some(message)) =
-                                (&entry.error_code, &entry.error_message)
-                            {
+                            if let Some((code, message)) = &entry.error {
                                 output.push_str(&format!(
                                     "  - {}: [{}] {}\n",
                                     entry.path, code, message
@@ -2580,10 +2584,190 @@ pub const ARCHIVE_REMOVE_MAX_ENTRIES_EXCEEDED: &str = "archive.remove_max_entrie
 pub const ARCHIVE_REMOVE_MAX_SIZE_EXCEEDED: &str = "archive.remove_max_size_exceeded";
 pub const ARCHIVE_REMOVE_INTERNAL_ERROR: &str = "archive.remove_internal_error";
 
+/// Every error code the archive handle can report (on stderr, in the JSON
+/// `error` object, or on a `test` entry). Each one is listed in
+/// docs/Filesystem_Storage/archive.md.
+pub const ERROR_CODES: &[&str] = &[
+    // create
+    "archive.create_invalid_argument",
+    "archive.create_internal_error",
+    "archive.create_timeout",
+    "archive.create_invalid_output",
+    "archive.create_invalid_sources",
+    "archive.create_invalid_format",
+    "archive.create_invalid_base_dir",
+    "archive.create_invalid_compression_level",
+    "archive.create_invalid_pattern",
+    "archive.create_invalid_max_files",
+    "archive.create_invalid_max_size",
+    "archive.create_password_not_supported",
+    "archive.create_compression_failed",
+    "archive.create_output_exists",
+    "archive.create_source_not_found",
+    "archive.create_source_permission_denied",
+    "archive.create_max_files_exceeded",
+    "archive.create_max_size_exceeded",
+    "archive.create_permission_denied",
+    "archive.create_disk_full",
+    // extract
+    "archive.extract_invalid_argument",
+    "archive.extract_internal_error",
+    "archive.extract_timeout",
+    "archive.extract_invalid_archive_path",
+    "archive.extract_invalid_format",
+    "archive.extract_invalid_format_infer",
+    "archive.extract_invalid_compression",
+    "archive.extract_invalid_format_compression",
+    "archive.extract_invalid_max_entries",
+    "archive.extract_invalid_max_size",
+    "archive.extract_7z_unsupported",
+    "archive.extract_missing_archive",
+    "archive.extract_io_error",
+    "archive.extract_archive_read_error",
+    "archive.extract_max_entries_exceeded",
+    "archive.extract_max_size_exceeded",
+    "archive.extract_invalid_destination",
+    "archive.extract_invalid_include_pattern",
+    "archive.extract_invalid_exclude_pattern",
+    "archive.extract_invalid_strip_components",
+    "archive.extract_invalid_max_file_size",
+    "archive.extract_destination_missing",
+    "archive.extract_destination_create_failed",
+    "archive.extract_path_traversal_detected",
+    "archive.extract_absolute_path_rejected",
+    "archive.extract_symlink_rejected",
+    "archive.extract_unsupported_entry_type",
+    "archive.extract_max_file_size_exceeded",
+    // list
+    "archive.list_invalid_argument",
+    "archive.list_internal_error",
+    "archive.list_timeout",
+    "archive.list_invalid_archive_path",
+    "archive.list_invalid_format",
+    "archive.list_invalid_format_infer",
+    "archive.list_invalid_compression",
+    "archive.list_invalid_format_compression",
+    "archive.list_invalid_max_entries",
+    "archive.list_invalid_max_size",
+    "archive.list_7z_unsupported",
+    "archive.list_missing_archive",
+    "archive.list_io_error",
+    "archive.list_archive_read_error",
+    "archive.list_max_entries_exceeded",
+    "archive.list_max_size_exceeded",
+    "archive.list_invalid_include_pattern",
+    "archive.list_invalid_exclude_pattern",
+    // test
+    "archive.test_invalid_argument",
+    "archive.test_internal_error",
+    "archive.test_timeout",
+    "archive.test_invalid_archive_path",
+    "archive.test_invalid_format",
+    "archive.test_invalid_format_infer",
+    "archive.test_invalid_compression",
+    "archive.test_invalid_format_compression",
+    "archive.test_invalid_max_entries",
+    "archive.test_invalid_max_size",
+    "archive.test_7z_unsupported",
+    "archive.test_missing_archive",
+    "archive.test_io_error",
+    "archive.test_archive_read_error",
+    "archive.test_max_entries_exceeded",
+    "archive.test_max_size_exceeded",
+    "archive.test_invalid_max_file_size",
+    "archive.test_entry_failed",
+    "archive.test_max_file_size_exceeded",
+    "archive.test_entry_header_error",
+    "archive.test_entry_io_error",
+    "archive.test_entry_compression_error",
+    "archive.test_entry_checksum_error",
+    "archive.test_entry_size_mismatch",
+    // info
+    "archive.info_invalid_argument",
+    "archive.info_internal_error",
+    "archive.info_timeout",
+    "archive.info_invalid_archive_path",
+    "archive.info_invalid_format",
+    "archive.info_invalid_format_infer",
+    "archive.info_invalid_compression",
+    "archive.info_invalid_format_compression",
+    "archive.info_invalid_max_entries",
+    "archive.info_invalid_max_size",
+    "archive.info_7z_unsupported",
+    "archive.info_missing_archive",
+    "archive.info_io_error",
+    "archive.info_archive_read_error",
+    "archive.info_max_entries_exceeded",
+    "archive.info_max_size_exceeded",
+    // add
+    "archive.add_invalid_argument",
+    "archive.add_internal_error",
+    "archive.add_timeout",
+    "archive.add_invalid_archive_path",
+    "archive.add_invalid_format",
+    "archive.add_invalid_format_infer",
+    "archive.add_invalid_compression",
+    "archive.add_invalid_format_compression",
+    "archive.add_invalid_max_entries",
+    "archive.add_invalid_max_size",
+    "archive.add_7z_unsupported",
+    "archive.add_missing_archive",
+    "archive.add_io_error",
+    "archive.add_archive_read_error",
+    "archive.add_max_entries_exceeded",
+    "archive.add_max_size_exceeded",
+    "archive.add_invalid_input",
+    "archive.add_invalid_include_pattern",
+    "archive.add_invalid_exclude_pattern",
+    "archive.add_unsupported_for_raw",
+    "archive.add_archive_write_error",
+    "archive.add_backup_failed",
+    // remove
+    "archive.remove_invalid_argument",
+    "archive.remove_internal_error",
+    "archive.remove_timeout",
+    "archive.remove_invalid_archive_path",
+    "archive.remove_invalid_format",
+    "archive.remove_invalid_format_infer",
+    "archive.remove_invalid_compression",
+    "archive.remove_invalid_format_compression",
+    "archive.remove_invalid_max_entries",
+    "archive.remove_invalid_max_size",
+    "archive.remove_7z_unsupported",
+    "archive.remove_missing_archive",
+    "archive.remove_io_error",
+    "archive.remove_archive_read_error",
+    "archive.remove_max_entries_exceeded",
+    "archive.remove_max_size_exceeded",
+    "archive.remove_nothing_to_remove",
+    "archive.remove_invalid_pattern",
+    "archive.remove_unsupported_for_raw",
+    "archive.remove_archive_write_error",
+    "archive.remove_backup_failed",
+    "archive.remove_replace_failed",
+];
+
 /// The error code for a failure of `kind` in `verb`:
 /// `archive.<verb>_<kind>`.
 pub fn error_code(verb: &str, kind: &str) -> String {
-    format!("archive.{verb}_{kind}")
+    let code = format!("archive.{verb}_{kind}");
+    debug_assert!(
+        ERROR_CODES.contains(&code.as_str()),
+        "undocumented archive error code {code}"
+    );
+    code
+}
+
+/// Serializes a `(code, message)` failure as the project-wide JSON error
+/// object `{"code": ..., "message": ...}` (or `null`).
+fn ser_error<S: serde::Serializer>(
+    error: &Option<(String, String)>,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match error {
+        Some((code, message)) => status::error_json(code, message).serialize(s),
+        None => s.serialize_none(),
+    }
 }
 
 /// The kind of a failure that happened while a verb ran. The tar header
@@ -2598,10 +2782,18 @@ fn runtime_kind(err: &anyhow::Error, default: &'static str) -> &'static str {
     default
 }
 
-/// `[code] message` for an argument that was refused before anything ran.
-fn validation_message(verb: &str, err: &anyhow::Error) -> String {
-    let kind = kind_of(err).unwrap_or("invalid_argument");
-    format!("[{}] {}", error_code(verb, kind), err)
+/// The error code for an argument that was refused before anything ran.
+fn validation_code(verb: &str, err: &anyhow::Error) -> String {
+    error_code(verb, kind_of(err).unwrap_or("invalid_argument"))
+}
+
+/// Writes the standard `Error: [code] message` line on stderr and returns
+/// the matching status. The handle writes the line itself because `create`
+/// may already have written progress lines, after which the CLI adds
+/// nothing.
+fn failed(stderr: &mut dyn Write, code: &str, message: &str) -> Result<Status> {
+    writeln!(stderr, "{}", error_line(code, message))?;
+    Ok(Status::coded(exit_for(code), code, message))
 }
 
 /// Common shape of the verb reports.
@@ -2655,9 +2847,11 @@ fn run_verb<O, R: Report>(
     let opts = match parse(args) {
         Ok(opts) => opts,
         Err(e) => {
-            let msg = validation_message(verb, &e);
-            writeln!(io.stderr, "{}", msg)?;
-            return Ok(Status::err(EXIT_USAGE, msg));
+            // Invalid usage whatever the kind: nothing was done.
+            let code = validation_code(verb, &e);
+            let message = e.to_string();
+            writeln!(io.stderr, "{}", error_line(&code, &message))?;
+            return Ok(Status::coded(EXIT_USAGE, &code, message));
         }
     };
     let format = output(&opts);
@@ -2665,9 +2859,7 @@ fn run_verb<O, R: Report>(
         Ok(report) => report,
         Err(e) => {
             let code = error_code(verb, runtime_kind(&e, "internal_error"));
-            let msg = format!("[{}] {}", code, e);
-            writeln!(io.stderr, "{}", msg)?;
-            return Ok(Status::err(exit_for(&code), msg));
+            return failed(&mut *io.stderr, &code, &e.to_string());
         }
     };
     let rendered = match format {
@@ -2678,23 +2870,21 @@ fn run_verb<O, R: Report>(
     if report.is_ok() {
         return Ok(Status::ok());
     }
-    Ok(match report.error_pair() {
-        Some((code, message)) => {
-            // Written here rather than by the CLI, which adds nothing once
-            // the handle has written to stderr (create progress lines).
-            writeln!(io.stderr, "Error: [{}] {}", code, message)?;
-            Status::err(exit_for(code), format!("[{}] {}", code, message))
+    match report.error_pair() {
+        Some((code, message)) => failed(&mut *io.stderr, code, message),
+        None => {
+            let code = error_code(verb, "internal_error");
+            failed(&mut *io.stderr, &code, &format!("archive {verb} failed"))
         }
-        None => Status::err(EXIT_FAILED, format!("archive {verb} failed")),
-    })
+    }
 }
 
 /// Exit status: the operation failed.
-pub const EXIT_FAILED: i32 = 1;
+pub const EXIT_FAILED: i32 = status::exit::FAILED;
 /// Exit status: invalid usage or arguments; nothing was done.
-pub const EXIT_USAGE: i32 = 2;
+pub const EXIT_USAGE: i32 = status::exit::USAGE;
 /// Exit status: `timeout_ms` passed before the operation finished.
-pub const EXIT_TIMEOUT: i32 = 124;
+pub const EXIT_TIMEOUT: i32 = status::exit::TIMEOUT;
 
 /// The exit status for a failure reported with error code `code`: an
 /// argument or archive type the verb cannot work with is invalid usage
@@ -3849,8 +4039,7 @@ struct TestSummary {
 
 fn entry_error(entry: &mut ArchiveTestEntryResult, code: &str, message: String) {
     entry.status = "error".to_string();
-    entry.error_code = Some(code.to_string());
-    entry.error_message = Some(message);
+    entry.error = Some((code.to_string(), message));
 }
 
 fn total_limit_error(max: u64) -> anyhow::Error {
@@ -3873,8 +4062,7 @@ fn test_raw_compressed(
         is_symlink: false,
         size: 0,
         status: "ok".to_string(),
-        error_code: None,
-        error_message: None,
+        error: None,
     };
 
     let mut bytes_tested = 0u64;
@@ -3964,8 +4152,7 @@ fn test_tar_archive(
                     is_symlink: false,
                     size: 0,
                     status: "error".to_string(),
-                    error_code: Some(ARCHIVE_TEST_ENTRY_HEADER_ERROR.to_string()),
-                    error_message: Some(e.to_string()),
+                    error: Some((ARCHIVE_TEST_ENTRY_HEADER_ERROR.to_string(), e.to_string())),
                 });
                 entries_failed += 1;
                 entries_tested += 1;
@@ -3990,8 +4177,7 @@ fn test_tar_archive(
             is_symlink: entry_type.is_symlink() || entry_type.is_hard_link(),
             size,
             status: "ok".to_string(),
-            error_code: None,
-            error_message: None,
+            error: None,
         };
 
         if opts.verify_data && !is_dir && size > 0 {
@@ -4087,8 +4273,7 @@ fn test_zip_archive(
                 is_symlink: is_zip_symlink(f.unix_mode()),
                 size: f.size(),
                 status: "ok".to_string(),
-                error_code: None,
-                error_message: None,
+                error: None,
             },
             Err(e) => ArchiveTestEntryResult {
                 path: format!("entry_{}", i),
@@ -4096,8 +4281,7 @@ fn test_zip_archive(
                 is_symlink: false,
                 size: 0,
                 status: "error".to_string(),
-                error_code: Some(ARCHIVE_TEST_ENTRY_HEADER_ERROR.to_string()),
-                error_message: Some(e.to_string()),
+                error: Some((ARCHIVE_TEST_ENTRY_HEADER_ERROR.to_string(), e.to_string())),
             },
         };
         let size = entry_result.size;
@@ -8808,8 +8992,8 @@ mod extract_limit_tests {
             for v in bad {
                 let err = ArchiveExtractOptions::from_args(&limit_args(&[(key, v)]))
                     .expect_err(&format!("{key}={v:?} accepted"));
-                let msg = validation_message("extract", &err);
-                assert!(msg.starts_with(&format!("[{code}] ")), "{key}={v:?}: {msg}");
+                assert_eq!(validation_code("extract", &err), code, "{key}={v:?}");
+                let msg = err.to_string();
                 assert!(msg.contains(&format!("{v:?}")), "{msg}");
             }
         }
@@ -8979,3 +9163,78 @@ mod tar_header_limit_tests {
 #[cfg(test)]
 #[path = "archive_verb_tests.rs"]
 mod verb_tests;
+
+#[cfg(test)]
+mod error_code_tests {
+    use super::*;
+    use crate::core::status::is_valid_error_code;
+
+    /// Every code the handle can report has the project-wide form and is
+    /// listed in the archive docs page.
+    #[test]
+    fn every_error_code_is_valid_and_documented() {
+        let docs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/Filesystem_Storage/archive.md"
+        ))
+        .unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for code in ERROR_CODES {
+            assert!(is_valid_error_code(code), "{code}");
+            assert!(seen.insert(code), "listed twice: {code}");
+            assert!(
+                docs.contains(&format!("`{code}`")),
+                "not documented: {code}"
+            );
+        }
+        // The fixed codes used outside error_code() are in the list.
+        for code in [
+            ARCHIVE_TEST_ENTRY_HEADER_ERROR,
+            ARCHIVE_TEST_ENTRY_IO_ERROR,
+            ARCHIVE_TEST_ENTRY_COMPRESSION_ERROR,
+            ARCHIVE_TEST_ENTRY_CHECKSUM_ERROR,
+            ARCHIVE_TEST_ENTRY_SIZE_MISMATCH,
+            ARCHIVE_TEST_ENTRY_FAILED,
+            ARCHIVE_TEST_MAX_FILE_SIZE_EXCEEDED,
+            ARCHIVE_EXTRACT_PATH_TRAVERSAL_DETECTED,
+            ARCHIVE_EXTRACT_ABSOLUTE_PATH_REJECTED,
+            ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+            ARCHIVE_EXTRACT_UNSUPPORTED_ENTRY_TYPE,
+        ] {
+            assert!(ERROR_CODES.contains(&code), "{code}");
+        }
+    }
+
+    /// Exit status by code: usage errors 2, timeouts 124, the rest 1.
+    #[test]
+    fn exit_status_follows_the_code() {
+        for code in ERROR_CODES {
+            let want = if code.ends_with("_timeout") {
+                124
+            } else if code.contains("_invalid_")
+                || code.ends_with("_7z_unsupported")
+                || code.ends_with("_unsupported_for_raw")
+            {
+                2
+            } else {
+                1
+            };
+            assert_eq!(exit_for(code), want, "{code}");
+        }
+    }
+
+    /// A failure in a JSON report is a `{"code", "message"}` object.
+    #[test]
+    fn json_error_is_an_object() {
+        let args = Args::from([("archive".to_string(), "/nonexistent/x.tar".to_string())]);
+        let opts = ArchiveListOptions::from_args(&args).unwrap();
+        let mut r = ArchiveListResponse::new(&opts);
+        r.ok = false;
+        r.error = Some(("archive.list_missing_archive".into(), "gone".into()));
+        let v: Value = serde_json::from_str(&r.to_json()).unwrap();
+        assert_eq!(
+            v["error"],
+            json!({"code": "archive.list_missing_archive", "message": "gone"})
+        );
+    }
+}

@@ -171,7 +171,7 @@ fn extract(f: &Fixture, archive: &str, extra: &[&str]) -> Run {
 fn assert_extract_refused(r: &Run, code: &str) {
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert_eq!(r.json["ok"], false, "{}", r.json);
-    assert_eq!(r.json["error"][0], code, "{}", r.json);
+    assert_eq!(r.json["error"]["code"], code, "{}", r.json);
     assert!(r.json["summary"].is_null(), "{}", r.json);
     assert!(r.stderr.contains(code));
 }
@@ -284,7 +284,10 @@ fn archive_extract_refuses_unreadable_limits() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{arg}: {stderr}");
         assert!(out.stdout.is_empty(), "{arg}");
-        assert!(stderr.starts_with(&format!("[{code}] ")), "{arg}: {stderr}");
+        assert!(
+            stderr.starts_with(&format!("Error: [{code}] ")),
+            "{arg}: {stderr}"
+        );
         assert!(!f.path().join("out").exists(), "{arg}");
     }
     let f = Fixture::new();

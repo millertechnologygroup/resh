@@ -18,8 +18,7 @@ Example Output:
   {
     "entries": [
       {
-        "error_code": null,
-        "error_message": null,
+        "error": null,
         "is_dir": false,
         "is_symlink": false,
         "path": "app.log",

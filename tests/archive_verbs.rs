@@ -173,7 +173,8 @@ fn gzip_and_raw_streams() {
     );
     assert_eq!(r.code, 2);
     assert!(
-        r.stderr.starts_with("[archive.add_unsupported_for_raw] "),
+        r.stderr
+            .starts_with("Error: [archive.add_unsupported_for_raw] "),
         "{}",
         r.stderr
     );
@@ -197,7 +198,7 @@ fn usage_errors_exit_2_with_a_suggestion_and_do_nothing() {
         assert!(r.stdout.is_empty(), "{verb}");
         assert!(
             r.stderr.starts_with(&format!(
-                "[archive.{verb}_invalid_argument] unknown option "
+                "Error: [archive.{verb}_invalid_argument] unknown option "
             )),
             "{verb}: {}",
             r.stderr
@@ -233,7 +234,7 @@ fn runtime_failures_exit_1_with_a_report() {
     let d = tmp.path();
     let r = resh(d, &["archive://.list", "archive=missing.tar"]);
     assert_eq!(r.code, 1);
-    assert_eq!(r.json["error"][0], "archive.list_missing_archive");
+    assert_eq!(r.json["error"]["code"], "archive.list_missing_archive");
     assert_eq!(
         r.stderr,
         "Error: [archive.list_missing_archive] Archive 'missing.tar' does not exist.\n"
@@ -244,7 +245,7 @@ fn runtime_failures_exit_1_with_a_report() {
         &["archive://.create", "output=x.tar", r#"sources=["data"]"#],
     );
     assert_eq!(r.code, 1);
-    assert_eq!(r.json["error"][0], "archive.create_output_exists");
+    assert_eq!(r.json["error"]["code"], "archive.create_output_exists");
     assert_eq!(fs::read(d.join("x.tar")).unwrap(), b"x");
 }
 
@@ -272,7 +273,7 @@ fn timeout_exits_124() {
         ],
     );
     assert_eq!(r.code, 124, "{}", r.stderr);
-    assert_eq!(r.json["error"][0], "archive.create_timeout");
+    assert_eq!(r.json["error"]["code"], "archive.create_timeout");
     assert!(!d.join("b.tar.xz").exists());
 }
 
