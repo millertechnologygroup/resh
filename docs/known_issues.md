@@ -213,8 +213,8 @@ This section supersedes the test counts and "Still open" list in the
     merge/rebase (fast-forward only), secret encryption at rest and
     `rotate`, ssh `tunnel`/`keys.list`/`key.add`, backup `schedule`
     installation, pkg restore version pinning/rollback, dns `zone.update`
-    (simulated) and TSIG, cert CMS and encrypted keys, `proc limits.set` on
-    other processes.
+    (simulated) and TSIG, cert encrypted keys, `proc limits.set` on
+    other processes. (cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are base64-encoded, not encrypted. Since Stage 4
     the profile file is written owner-only (0600).
   - No dry-run mode for svc, proc, file writes, cache/db writes, mq, ssh
@@ -347,7 +347,9 @@ These were found during the fixes, or are Medium items that were not fixed:
   stage parser before it reaches the handle.
 - **cert:**
   - `chain.info` is simplified.
-  - Encrypted private keys and CMS signatures are not supported.
+  - Encrypted private keys are not supported. CMS signatures (`sign
+    signature_format=cms_detached|cms_attached`) were added after
+    v1.0.6-beta.
   - `csr.create` cannot put key usage into a CSR (an rcgen limitation).
 - **ssh `exec env=`:** sets variables on the local ssh process, not on the
   remote host.

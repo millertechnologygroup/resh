@@ -14,14 +14,13 @@ It uses pure-Rust libraries (x509-parser, rcgen, ring, rsa, p256, p384, ed25519-
 * Verify a certificate's structure, signature chain, validity period, hostname, purpose, and matching private key (`verify`).
 * Generate private keys, self-signed certificates, CA-signed leaf certificates, and CSRs (`generate`).
 * Create a CSR from an existing or new key (`csr.create`).
-* Sign data with a private key, or issue a certificate from a CSR with `mode=csr` (`sign`).
+* Sign data with a private key, as a raw signature or a CMS (PKCS#7) SignedData, or issue a certificate from a CSR with `mode=csr` (`sign`).
 * Issue a replacement for an existing certificate (`renew`).
 * List the certificates of a bundle as chain candidates (`chain.info`, limited; see below).
 
 ### What the handle does not do
 
 * **No encrypted private keys.** `key_passphrase` (on `generate` and `renew`) is rejected with an error. Encrypted signer keys (`signer_key_passphrase`) and encrypted existing keys are rejected too. All keys are written unencrypted.
-* **No CMS/PKCS#7 signatures** (see [sign](#sign)).
 * **No revocation checking** (CRL/OCSP): `check_revocation=soft` reports `not_checked` and `hard` fails.
 * No ACME, no automatic renewal, no HSM/PKCS#11.
 
@@ -139,11 +138,25 @@ Data signing:
 resh --json-pretty cert://./ca.sign signer_key=ca-key.pem data_source=app.tar signature_output_path=app.tar.sig
 ```
 
-The target (`./ca`) is only a label in the output. Options: `signer_key` (required), `data_source=<path>` or `data_bytes_base64=`, `signature_algorithm`, `signature_encoding=base64|pem|der`, `signature_output_path`, `include_signature_bytes=true`. Without `signature_output_path` or `include_signature_bytes=true` the signature is computed but not kept.
+The target (`./ca`) is only a label in the output. Options: `signer_key` (required), `data_source=<path>` or `data_bytes_base64=`, `signature_algorithm`, `signature_format=raw|cms_detached|cms_attached` (default `raw`), `signer_cert` (required for CMS), `signature_encoding=base64|pem|der` (default `base64`), `signature_output_path`, `include_signature_bytes=true`. Without `signature_output_path` or `include_signature_bytes=true` the signature is computed but not kept. `bytes_base64` in the output is the base64 of the raw signature or of the DER CMS structure, whatever `signature_encoding` is.
 
-`signature_algorithm` defaults to the key's natural algorithm (`rsa_pss_sha256` for RSA, `ecdsa_sha256` for P-256, `ecdsa_sha384` for P-384, `ed25519`). An explicit value is honoured exactly or refused: `ecdsa_sha512` with a P-384 key signs a SHA-512 digest (truncated to 384 bits, as ECDSA specifies), and a key/algorithm pair resh does not implement, such as P-256 with `ecdsa_sha384` or `ecdsa_sha512`, fails without writing a signature. Before v1.0.4-beta, `ecdsa_sha512` with a P-384 key silently produced a SHA-384 signature, which verifiers expecting SHA-512 reject; re-create such signatures.
+`signature_algorithm` defaults to the key's natural algorithm (`rsa_pss_sha256` for RSA; `rsa_pss_sha384`, `rsa_pkcs1_sha256` and `rsa_pkcs1_sha384` are also available for RSA keys; `ecdsa_sha256` for P-256, `ecdsa_sha384` for P-384, `ed25519`). An explicit value is honoured exactly or refused: `ecdsa_sha512` with a P-384 key signs a SHA-512 digest (truncated to 384 bits, as ECDSA specifies), and a key/algorithm pair resh does not implement, such as P-256 with `ecdsa_sha384` or `ecdsa_sha512`, fails without writing a signature. Before v1.0.4-beta, `ecdsa_sha512` with a P-384 key silently produced a SHA-384 signature, which verifiers expecting SHA-512 reject; re-create such signatures.
 
-`signature_format=cms_detached` or `cms_attached` is accepted and echoed in the output, but **CMS is not implemented**: a raw signature is produced regardless. Do not rely on CMS output.
+Raw signatures (`signature_format=raw`) are the bare signature bytes: PKCS#1 v1.5 or PSS (salt length equal to the digest length) for RSA, a DER `ECDSA-Sig-Value` for ECDSA, and 64 bytes for Ed25519. With `signature_encoding=pem` the label is `SIGNATURE`. In v1.0.6-beta and earlier, `rsa_pkcs1_sha256` and `rsa_pkcs1_sha384` failed with "not fully implemented".
+
+CMS signatures:
+
+```bash
+resh cert://./signer.sign signer_key=signer-key.pem signer_cert=signer.pem data_source=app.tar signature_format=cms_detached signature_encoding=der signature_output_path=app.tar.p7s
+openssl cms -verify -binary -inform DER -in app.tar.p7s -content app.tar -CAfile signer.pem -purpose any
+```
+
+`signature_format=cms_detached` and `cms_attached` produce a CMS `SignedData` (RFC 5652) in a DER `ContentInfo`, then apply `signature_encoding` (PEM label `CMS`). `cms_detached` leaves the data out (verify with the data supplied separately); `cms_attached` carries it as the encapsulated content. There is one signer, identified by the issuer and serial number of `signer_cert`, with the signed attributes content-type (`id-data`), message-digest and signing-time (the local clock), and `signer_cert` is included in `certificates`; no other certificates or CRLs are added. The digest algorithm follows `signature_algorithm` (SHA-256, SHA-384 or SHA-512); Ed25519 uses SHA-512 for the message digest, as RFC 8419 specifies. The signature algorithm is recorded as `rsaEncryption` (PKCS#1 v1.5), `id-RSASSA-PSS` with its parameters, `ecdsa-with-SHA256/384/512`, or `id-Ed25519`.
+
+* CMS needs `signer_cert`, the certificate (PEM or DER; the first certificate of a PEM bundle is used) whose public key is that of `signer_key`. Without it the request fails before anything is read, with `cert.invalid_options` (exit 1). A `signer_cert` that cannot be read or parsed fails with `cert.signer_load_failed`, and one for a different key with `cert.keypair_mismatch` (exit 1); nothing is written.
+* The certificate is not validated (expiry, key usage, chain): verifiers do that.
+* With `signature_format=raw`, `signer_cert` is ignored and a warning says so.
+* In v1.0.6-beta and earlier, `cms_detached` and `cms_attached` were accepted but produced a raw signature.
 
 Issuing a certificate from a CSR (`mode=csr`):
 
@@ -221,7 +234,6 @@ Success is always 0.
 * `timeout_ms`: ignored by every cert verb (all work is local).
 * `key_passphrase`, `signer_key_passphrase`, `existing_key_passphrase`: rejected (no encrypted keys).
 * `new_key_passphrase` (csr.create): accepted but has no effect (see above).
-* `signature_format=cms_detached|cms_attached`: accepted but produces a raw signature.
 * `key_kdf`, `key_kdf_iterations`: parsed, but only meaningful with `key_passphrase`, which is rejected.
 * `trust`, `trust_paths`, `trust_pem` on `chain.info`: no effect on the result.
 

@@ -271,13 +271,16 @@ this build."#,
         },
         VerbHelp {
             name: "sign",
-            definition: "Signs a file or base64 data with a private key, or with mode=csr \
-                issues a certificate for a CSR signed by the CA in signer_cert and signer_key, \
-                using the target only as the signer label in the output.",
+            definition: "Signs a file or base64 data with a private key, as a raw signature \
+                or, with signature_format=cms_detached|cms_attached and the key's signer_cert, \
+                as a CMS SignedData, or with mode=csr issues a certificate for a CSR signed by \
+                the CA in signer_cert and signer_key, using the target only as the signer \
+                label in the output.",
             detail: Some(VerbDetail {
                 usage: "resh cert://<label>.sign signer_key=<path> data_source=<path>\n  \
                     [signature_output_path=<path>] [signature_algorithm=<alg>]\n  \
                     [signature_encoding=base64|pem|der]\n  \
+                    [signature_format=raw|cms_detached|cms_attached signer_cert=<path>]\n  \
                     [include_signature_bytes=true|false] [signer_key_passphrase=<pass>]\n  \
                     [mode=csr csr_source=<path> signer_cert=<path> cert_output_path=<path>]\n  \
                     [format=json|text] [<option>=<value> ...]",
@@ -311,9 +314,12 @@ this build."#,
 
 Shown for a P-256 signer key with --json-pretty. Pass
 signature_output_path or include_signature_bytes=true to keep the
-signature. With mode=csr the CSR signature is verified, the certificate
-keeps the CSR subject, SANs, and public key, and cert reports its real
-serial number, validity, and fingerprints."#,
+signature. signature_format=cms_detached or cms_attached needs
+signer_cert, the certificate of signer_key, and produces a CMS SignedData
+(RFC 5652) without or with the data, as a DER ContentInfo encoded with
+signature_encoding (PEM label CMS). With mode=csr the CSR signature is
+verified, the certificate keeps the CSR subject, SANs, and public key,
+and cert reports its real serial number, validity, and fingerprints."#,
                 ),
             }),
         },
@@ -5388,6 +5394,13 @@ impl CertHandle {
                 if opts.data_source.is_some() && opts.data_bytes_base64.is_some() {
                     bail!("Cannot specify both data_source and data_bytes_base64");
                 }
+                if !matches!(opts.signature_format, SignatureFormat::Raw)
+                    && opts.signer_cert.is_none()
+                {
+                    bail!(
+                        "signature_format=cms_detached|cms_attached requires signer_cert (the certificate of signer_key)"
+                    );
+                }
             }
             CertSignMode::Csr => {
                 if opts.csr_source.is_none() {
@@ -6073,13 +6086,47 @@ impl CertHandle {
                 }
             };
 
-        if opts.signer_cert.is_some() {
-            response
-                .warnings
-                .push("signer_cert is not used in data mode (raw signatures only)".to_string());
-        }
+        let cms = !matches!(opts.signature_format, SignatureFormat::Raw);
+        let signer_cert = match (&opts.signer_cert, cms) {
+            (Some(source), true) => {
+                let loaded = self
+                    .load_data_from_source(source)
+                    .with_context(|| format!("Failed to read signer_cert {}", source))
+                    .and_then(|data| parse_cms_signer_cert(&data, source));
+                match loaded {
+                    Ok(cert) if signer_key_matches_cert(&signer_key, &cert) => Some(cert),
+                    Ok(_) => {
+                        response.error = Some(SignErrorInfo {
+                            code: "cert.keypair_mismatch".to_string(),
+                            message: format!(
+                                "signer_key {} does not match the public key of signer_cert {}",
+                                opts.signer_key, source
+                            ),
+                            details: HashMap::new(),
+                        });
+                        return Ok(response);
+                    }
+                    Err(e) => {
+                        response.error = Some(SignErrorInfo {
+                            code: "cert.signer_load_failed".to_string(),
+                            message: format!("Failed to load signer certificate: {:#}", e),
+                            details: HashMap::new(),
+                        });
+                        return Ok(response);
+                    }
+                }
+            }
+            (Some(_), false) => {
+                response.warnings.push(
+                    "signer_cert is not used with signature_format=raw; it is only used for CMS signatures"
+                        .to_string(),
+                );
+                None
+            }
+            (None, _) => None,
+        };
 
-        if let Err(e) = self.sign_data(&opts, &signer_key, None, &mut response) {
+        if let Err(e) = self.sign_data(&opts, &signer_key, signer_cert.as_ref(), &mut response) {
             response.ok = false;
             response.error = Some(SignErrorInfo {
                 code: "cert.signing_failed".to_string(),
@@ -7607,9 +7654,18 @@ impl CertHandle {
         &self,
         opts: &CertSignOptions,
         signer_key: &SignerKey,
-        _signer_cert: Option<&Certificate>,
+        signer_cert: Option<&x509_cert::Certificate>,
         response: &mut CertSignResponse,
     ) -> Result<()> {
+        let cms_attached = match opts.signature_format {
+            SignatureFormat::Raw => None,
+            SignatureFormat::CmsDetached => Some(false),
+            SignatureFormat::CmsAttached => Some(true),
+        };
+        if cms_attached.is_some() && signer_cert.is_none() {
+            bail!("signature_format=cms_detached|cms_attached requires signer_cert");
+        }
+
         // Get the data to sign
         let data = if let Some(ref source) = opts.data_source {
             self.load_data_from_source(source)?
@@ -7628,12 +7684,22 @@ impl CertHandle {
             self.default_signature_algorithm(signer_key)?
         };
 
-        // Create signature
-        let signature_bytes = self.create_signature(&data, signer_key, &algorithm)?;
+        // Create the raw signature, or a CMS SignedData wrapping one
+        let signature_bytes = match (cms_attached, signer_cert) {
+            (Some(attached), Some(cert)) => {
+                self.create_cms_signature(&data, signer_key, &algorithm, cert, attached)?
+            }
+            _ => self.create_signature(&data, signer_key, &algorithm)?,
+        };
 
         // Encode signature
+        let pem_label = if cms_attached.is_some() {
+            "CMS"
+        } else {
+            "SIGNATURE"
+        };
         let encoded_signature =
-            self.encode_signature(&signature_bytes, &opts.signature_encoding)?;
+            self.encode_signature(&signature_bytes, &opts.signature_encoding, pem_label)?;
 
         // Write signature to file if path specified
         let signature_stored_path = if let Some(ref output_path) = opts.signature_output_path {
@@ -7960,11 +8026,10 @@ impl CertHandle {
                 let signature = rsa_key.sign_with_rng(&mut rng, padding, &hash)?;
                 Ok(signature)
             }
-            (SignerKey::Rsa(_rsa_key), SignatureAlgorithm::RsaPkcs1Sha256) => {
-                let _hash = sha2::Sha256::digest(data);
-                // Note: PKCS1v15Sign may need different trait imports for AssociatedOid
-                // For now, use a simpler approach or different padding
-                bail!("RSA PKCS1 signature creation not fully implemented due to trait bounds");
+            (SignerKey::Rsa(rsa_key), SignatureAlgorithm::RsaPkcs1Sha256) => {
+                let hash = sha2::Sha256::digest(data);
+                let padding = rsa::Pkcs1v15Sign::new::<sha2::Sha256>();
+                Ok(rsa_key.sign(padding, &hash)?)
             }
             (SignerKey::Rsa(rsa_key), SignatureAlgorithm::RsaPssSha384) => {
                 let mut rng = OsRng;
@@ -7973,13 +8038,10 @@ impl CertHandle {
                 let signature = rsa_key.sign_with_rng(&mut rng, padding, &hash)?;
                 Ok(signature)
             }
-            (SignerKey::Rsa(_rsa_key), SignatureAlgorithm::RsaPkcs1Sha384) => {
-                let _hash = sha2::Sha384::digest(data);
-                // Note: PKCS1v15Sign may need different trait imports for AssociatedOid
-                // For now, use a simpler approach or different padding
-                bail!(
-                    "RSA PKCS1 SHA384 signature creation not fully implemented due to trait bounds"
-                );
+            (SignerKey::Rsa(rsa_key), SignatureAlgorithm::RsaPkcs1Sha384) => {
+                let hash = sha2::Sha384::digest(data);
+                let padding = rsa::Pkcs1v15Sign::new::<sha2::Sha384>();
+                Ok(rsa_key.sign(padding, &hash)?)
             }
             (SignerKey::EcdsaP256(ecdsa_key), SignatureAlgorithm::EcdsaSha256) => {
                 let signature: P256Signature = ecdsa_key.sign(data);
@@ -8005,37 +8067,125 @@ impl CertHandle {
             }
             _ => bail!(
                 "Unsupported key/algorithm combination: a {} key cannot sign with {:?}; nothing was signed",
-                match key {
-                    SignerKey::Rsa(_) => "RSA",
-                    SignerKey::EcdsaP256(_) => "P-256 ECDSA",
-                    SignerKey::EcdsaP384(_) => "P-384 ECDSA",
-                    SignerKey::Ed25519(_) => "Ed25519",
-                },
+                signer_key_label(key),
                 algorithm
             ),
         }
     }
 
-    #[allow(dead_code)]
+    /// Builds a DER-encoded CMS (RFC 5652) ContentInfo holding a SignedData
+    /// over `data`: one SignerInfo identified by the issuer and serial number
+    /// of `signer_cert`, with content-type, message-digest and signing-time
+    /// signed attributes, and `signer_cert` in `certificates`. With
+    /// `attached` the data is carried as eContent; otherwise the SignedData
+    /// is detached. Ed25519 follows RFC 8419 (SHA-512 message digest).
     fn create_cms_signature(
         &self,
-        _data: &[u8],
-        _signature: &[u8],
-        _signer_cert: Option<&Certificate>,
-        _attached: bool,
+        data: &[u8],
+        key: &SignerKey,
+        algorithm: &SignatureAlgorithm,
+        signer_cert: &x509_cert::Certificate,
+        attached: bool,
     ) -> Result<Vec<u8>> {
-        bail!("CMS signatures not yet implemented");
+        use cms::cert::{CertificateChoices, IssuerAndSerialNumber};
+        use cms::content_info::{CmsVersion, ContentInfo};
+        use cms::signed_data::{
+            CertificateSet, EncapsulatedContentInfo, SignedData, SignerIdentifier, SignerInfo,
+            SignerInfos,
+        };
+        use const_oid::db::rfc5911::{
+            ID_CONTENT_TYPE, ID_DATA, ID_MESSAGE_DIGEST, ID_SIGNED_DATA, ID_SIGNING_TIME,
+        };
+        use der::asn1::{OctetString, SetOfVec};
+        use der::{Any, Encode};
+        use x509_cert::attr::Attribute;
+
+        let (digest_alg, signature_alg) = cms_algorithm_identifiers(key, algorithm)?;
+        let message_digest = cms_message_digest(algorithm, data);
+
+        let attribute = |oid, value: Any| -> Result<Attribute> {
+            let mut values = SetOfVec::new();
+            values.insert(value)?;
+            Ok(Attribute { oid, values })
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("System clock is before 1970")?;
+        // RFC 5652 section 11.3: UTCTime for 1950-2049, GeneralizedTime after.
+        let now = std::time::Duration::from_secs(now.as_secs());
+        let signing_time = match der::asn1::UtcTime::from_unix_duration(now) {
+            Ok(t) => x509_cert::time::Time::UtcTime(t),
+            Err(_) => x509_cert::time::Time::GeneralTime(
+                der::asn1::GeneralizedTime::from_unix_duration(now)
+                    .context("Failed to encode signing-time")?,
+            ),
+        };
+        let signed_attrs = SetOfVec::try_from(vec![
+            attribute(ID_CONTENT_TYPE, Any::encode_from(&ID_DATA)?)?,
+            attribute(
+                ID_MESSAGE_DIGEST,
+                Any::encode_from(&OctetString::new(message_digest)?)?,
+            )?,
+            attribute(ID_SIGNING_TIME, Any::encode_from(&signing_time)?)?,
+        ])?;
+
+        // RFC 5652 section 5.4: the signature covers the DER encoding of the
+        // signed attributes with an explicit SET OF tag.
+        let signature = self.create_signature(&signed_attrs.to_der()?, key, algorithm)?;
+
+        let signer_info = SignerInfo {
+            version: CmsVersion::V1,
+            sid: SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+                issuer: signer_cert.tbs_certificate.issuer.clone(),
+                serial_number: signer_cert.tbs_certificate.serial_number.clone(),
+            }),
+            digest_alg: digest_alg.clone(),
+            signed_attrs: Some(signed_attrs),
+            signature_algorithm: signature_alg,
+            signature: OctetString::new(signature)?,
+            unsigned_attrs: None,
+        };
+
+        let mut certificates = SetOfVec::new();
+        certificates.insert(CertificateChoices::Certificate(signer_cert.clone()))?;
+        let mut digest_algorithms = SetOfVec::new();
+        digest_algorithms.insert(digest_alg)?;
+        let mut signer_infos = SetOfVec::new();
+        signer_infos.insert(signer_info)?;
+
+        let signed_data = SignedData {
+            version: CmsVersion::V1,
+            digest_algorithms,
+            encap_content_info: EncapsulatedContentInfo {
+                econtent_type: ID_DATA,
+                econtent: if attached {
+                    Some(Any::encode_from(&OctetString::new(data)?)?)
+                } else {
+                    None
+                },
+            },
+            certificates: Some(CertificateSet(certificates)),
+            crls: None,
+            signer_infos: SignerInfos(signer_infos),
+        };
+
+        let content_info = ContentInfo {
+            content_type: ID_SIGNED_DATA,
+            content: Any::encode_from(&signed_data)?,
+        };
+        Ok(content_info.to_der()?)
     }
 
-    fn encode_signature(&self, signature: &[u8], encoding: &SignatureEncoding) -> Result<Vec<u8>> {
+    fn encode_signature(
+        &self,
+        signature: &[u8],
+        encoding: &SignatureEncoding,
+        pem_label: &str,
+    ) -> Result<Vec<u8>> {
         match encoding {
             SignatureEncoding::Base64 => Ok(BASE64_STANDARD.encode(signature).into_bytes()),
             SignatureEncoding::Pem => {
-                let pem_data = format!(
-                    "-----BEGIN SIGNATURE-----\n{}\n-----END SIGNATURE-----\n",
-                    BASE64_STANDARD.encode(signature)
-                );
-                Ok(pem_data.into_bytes())
+                Ok(pem_encode_lf(&Pem::new(pem_label, signature.to_vec())).into_bytes())
             }
             SignatureEncoding::Der => Ok(signature.to_vec()),
         }
@@ -9717,6 +9867,121 @@ fn verify_signature_with_key(
     match rs::UnparsedPublicKey::new(alg, spki_key_bytes(signer)).verify(message, signature) {
         Ok(()) => SignatureCheck::Valid,
         Err(_) => SignatureCheck::Invalid,
+    }
+}
+
+/// CMS digestAlgorithm and signatureAlgorithm identifiers for a SignerInfo
+/// made with `key` and `algorithm` (RFC 5754, RFC 4056, RFC 8419). The
+/// digest parameters are absent, as RFC 5754 prefers.
+fn cms_algorithm_identifiers(
+    key: &SignerKey,
+    algorithm: &SignatureAlgorithm,
+) -> Result<(
+    spki::AlgorithmIdentifierOwned,
+    spki::AlgorithmIdentifierOwned,
+)> {
+    use const_oid::db::rfc5912::{
+        ECDSA_WITH_SHA_256, ECDSA_WITH_SHA_384, ECDSA_WITH_SHA_512, ID_SHA_256, ID_SHA_384,
+        ID_SHA_512, RSA_ENCRYPTION,
+    };
+    use spki::AlgorithmIdentifierOwned as AlgId;
+    let plain = |oid| AlgId {
+        oid,
+        parameters: None,
+    };
+    let rsa_pkcs1 = || AlgId {
+        oid: RSA_ENCRYPTION,
+        parameters: Some(der::Any::null()),
+    };
+    Ok(match (key, algorithm) {
+        (SignerKey::Rsa(_), SignatureAlgorithm::RsaPssSha256) => (
+            plain(ID_SHA_256),
+            rsa::pss::get_default_pss_signature_algo_id::<sha2::Sha256>()?,
+        ),
+        (SignerKey::Rsa(_), SignatureAlgorithm::RsaPssSha384) => (
+            plain(ID_SHA_384),
+            rsa::pss::get_default_pss_signature_algo_id::<sha2::Sha384>()?,
+        ),
+        (SignerKey::Rsa(_), SignatureAlgorithm::RsaPkcs1Sha256) => (plain(ID_SHA_256), rsa_pkcs1()),
+        (SignerKey::Rsa(_), SignatureAlgorithm::RsaPkcs1Sha384) => (plain(ID_SHA_384), rsa_pkcs1()),
+        (SignerKey::EcdsaP256(_), SignatureAlgorithm::EcdsaSha256) => {
+            (plain(ID_SHA_256), plain(ECDSA_WITH_SHA_256))
+        }
+        (SignerKey::EcdsaP384(_), SignatureAlgorithm::EcdsaSha384) => {
+            (plain(ID_SHA_384), plain(ECDSA_WITH_SHA_384))
+        }
+        (SignerKey::EcdsaP384(_), SignatureAlgorithm::EcdsaSha512) => {
+            (plain(ID_SHA_512), plain(ECDSA_WITH_SHA_512))
+        }
+        (SignerKey::Ed25519(_), SignatureAlgorithm::Ed25519) => (
+            plain(ID_SHA_512),
+            plain(const_oid::db::rfc8410::ID_ED_25519),
+        ),
+        // The same pairs create_signature refuses; checked here first so no
+        // CMS structure is built for them.
+        (_, algorithm) => bail!(
+            "Unsupported key/algorithm combination: a {} key cannot sign with {:?}; nothing was signed",
+            signer_key_label(key),
+            algorithm
+        ),
+    })
+}
+
+/// The CMS message-digest of `data` for `algorithm`: SHA-256, SHA-384 or
+/// SHA-512 as the signature algorithm names, and SHA-512 for Ed25519
+/// (RFC 8419 section 3).
+fn cms_message_digest(algorithm: &SignatureAlgorithm, data: &[u8]) -> Vec<u8> {
+    match algorithm {
+        SignatureAlgorithm::RsaPssSha256
+        | SignatureAlgorithm::RsaPkcs1Sha256
+        | SignatureAlgorithm::EcdsaSha256 => sha2::Sha256::digest(data).to_vec(),
+        SignatureAlgorithm::RsaPssSha384
+        | SignatureAlgorithm::RsaPkcs1Sha384
+        | SignatureAlgorithm::EcdsaSha384 => sha2::Sha384::digest(data).to_vec(),
+        SignatureAlgorithm::EcdsaSha512 | SignatureAlgorithm::Ed25519 => {
+            sha2::Sha512::digest(data).to_vec()
+        }
+    }
+}
+
+fn signer_key_label(key: &SignerKey) -> &'static str {
+    match key {
+        SignerKey::Rsa(_) => "RSA",
+        SignerKey::EcdsaP256(_) => "P-256 ECDSA",
+        SignerKey::EcdsaP384(_) => "P-384 ECDSA",
+        SignerKey::Ed25519(_) => "Ed25519",
+    }
+}
+
+/// Parses the first certificate in `data` (PEM or DER) for use as a CMS
+/// signer certificate.
+fn parse_cms_signer_cert(data: &[u8], label: &str) -> Result<x509_cert::Certificate> {
+    use der::Decode;
+    let ders = certificate_ders(data);
+    let der = ders
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("No certificate found in signer_cert {}", label))?;
+    x509_cert::Certificate::from_der(der)
+        .map_err(|e| anyhow::anyhow!("Failed to parse signer_cert {}: {}", label, e))
+}
+
+/// Whether the public key of `cert` is the public half of `key`.
+fn signer_key_matches_cert(key: &SignerKey, cert: &x509_cert::Certificate) -> bool {
+    use rsa::pkcs1::EncodeRsaPublicKey;
+    let cert_key = cert
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .raw_bytes();
+    match key {
+        SignerKey::Rsa(k) => k
+            .to_public_key()
+            .to_pkcs1_der()
+            .map(|d| d.as_bytes() == cert_key)
+            .unwrap_or(false),
+        SignerKey::EcdsaP256(k) => k.verifying_key().to_encoded_point(false).as_bytes() == cert_key,
+        SignerKey::EcdsaP384(k) => k.verifying_key().to_encoded_point(false).as_bytes() == cert_key,
+        SignerKey::Ed25519(k) => k.verifying_key().as_bytes().as_slice() == cert_key,
     }
 }
 
@@ -13972,6 +14237,608 @@ mod ecdsa_algorithm_tests {
                 err.to_string().contains("P-256 ECDSA key cannot sign"),
                 "{err}"
             );
+        }
+    }
+}
+
+/// `cert sign` data signing end to end through the verb: every key type,
+/// signature algorithm, signature_format and signature_encoding, with raw
+/// signatures and CMS SignedData verified independently of the signer.
+#[cfg(test)]
+mod sign_verb_tests {
+    use super::*;
+    use cms::content_info::ContentInfo;
+    use cms::signed_data::{SignedData, SignerIdentifier};
+    use der::{Decode, Encode};
+    use rsa::pkcs1::DecodeRsaPublicKey;
+    use std::path::Path;
+    use std::sync::OnceLock;
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Kind {
+        Rsa,
+        P256,
+        P384,
+        Ed25519,
+    }
+
+    const KINDS: [Kind; 4] = [Kind::Rsa, Kind::P256, Kind::P384, Kind::Ed25519];
+
+    const ALGORITHMS: [&str; 8] = [
+        "rsa_pss_sha256",
+        "rsa_pkcs1_sha256",
+        "rsa_pss_sha384",
+        "rsa_pkcs1_sha384",
+        "ecdsa_sha256",
+        "ecdsa_sha384",
+        "ecdsa_sha512",
+        "ed25519",
+    ];
+
+    /// The (key, algorithm) pairs `cert sign` implements.
+    fn supported(kind: Kind, alg: &str) -> bool {
+        match kind {
+            Kind::Rsa => alg.starts_with("rsa_"),
+            Kind::P256 => alg == "ecdsa_sha256",
+            Kind::P384 => alg == "ecdsa_sha384" || alg == "ecdsa_sha512",
+            Kind::Ed25519 => alg == "ed25519",
+        }
+    }
+
+    /// PKCS#8 PEM key and self-signed certificate PEM for each key type,
+    /// generated once (RSA key generation is slow in debug builds).
+    fn material(kind: Kind) -> &'static (String, String) {
+        static MATERIAL: OnceLock<Vec<(String, String)>> = OnceLock::new();
+        let all = MATERIAL.get_or_init(|| {
+            KINDS
+                .iter()
+                .map(|kind| {
+                    let key_pem = match kind {
+                        Kind::Rsa => RsaPrivateKey::new(&mut OsRng, 2048)
+                            .unwrap()
+                            .to_pkcs8_pem(pkcs8::LineEnding::LF)
+                            .unwrap()
+                            .to_string(),
+                        Kind::P256 => P256SigningKey::random(&mut OsRng)
+                            .to_pkcs8_pem(pkcs8::LineEnding::LF)
+                            .unwrap()
+                            .to_string(),
+                        Kind::P384 => P384SigningKey::random(&mut OsRng)
+                            .to_pkcs8_pem(pkcs8::LineEnding::LF)
+                            .unwrap()
+                            .to_string(),
+                        Kind::Ed25519 => {
+                            let mut seed = [0u8; 32];
+                            OsRng.fill_bytes(&mut seed);
+                            pem_encode_lf(&Pem::new(
+                                "PRIVATE KEY",
+                                ed25519_pkcs8_from_seed(&seed).unwrap(),
+                            ))
+                        }
+                    };
+                    let key_pair = KeyPair::from_pem(&key_pem).unwrap();
+                    let mut params = CertificateParams::new(vec![]);
+                    params.distinguished_name = DistinguishedName::new();
+                    params
+                        .distinguished_name
+                        .push(rcgen::DnType::CommonName, format!("{:?} signer", kind));
+                    params.alg = key_pair.algorithm();
+                    params.key_pair = Some(key_pair);
+                    let cert_pem = Certificate::from_params(params)
+                        .unwrap()
+                        .serialize_pem()
+                        .unwrap();
+                    (key_pem, cert_pem)
+                })
+                .collect()
+        });
+        &all[KINDS.iter().position(|k| *k == kind).unwrap()]
+    }
+
+    /// Writes the key and certificate of `kind` into `dir`.
+    fn write_signer(dir: &Path, kind: Kind) -> (String, String) {
+        let (key_pem, cert_pem) = material(kind);
+        let key = dir.join(format!("{:?}-key.pem", kind));
+        let cert = dir.join(format!("{:?}-cert.pem", kind));
+        fs::write(&key, key_pem).unwrap();
+        fs::write(&cert, cert_pem).unwrap();
+        (
+            key.to_string_lossy().into_owned(),
+            cert.to_string_lossy().into_owned(),
+        )
+    }
+
+    fn sign_verb(args: &[(&str, &str)]) -> (i32, Value) {
+        let handle = CertHandle {
+            target_path: "./signer".to_string(),
+        };
+        let args: Args = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let mut stdin = std::io::empty();
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        let status = {
+            let mut io = IoStreams {
+                stdin: &mut stdin,
+                stdout: &mut out,
+                stderr: &mut err,
+            };
+            handle.call("sign", &args, &mut io).unwrap()
+        };
+        let json: Value = serde_json::from_slice(&out)
+            .unwrap_or_else(|e| panic!("non-JSON output {:?}: {e}", String::from_utf8_lossy(&out)));
+        (status.exit_code(), json)
+    }
+
+    fn error_code(json: &Value) -> &str {
+        json["error"]["code"].as_str().unwrap_or("")
+    }
+
+    /// Decodes a signature file written with `encoding`, checking the PEM label.
+    fn decode_output(bytes: &[u8], encoding: &str, pem_label: &str) -> Vec<u8> {
+        match encoding {
+            "der" => bytes.to_vec(),
+            "base64" => BASE64_STANDARD
+                .decode(std::str::from_utf8(bytes).unwrap().trim())
+                .unwrap(),
+            "pem" => {
+                let text = std::str::from_utf8(bytes).unwrap();
+                let block = ::pem::parse(text).unwrap();
+                assert_eq!(block.tag(), pem_label);
+                assert!(text.lines().all(|l| l.len() <= 64), "PEM lines over 64");
+                block.contents().to_vec()
+            }
+            other => panic!("unknown encoding {other}"),
+        }
+    }
+
+    fn digest_for(alg: &str, data: &[u8]) -> Vec<u8> {
+        if alg.ends_with("sha256") {
+            sha2::Sha256::digest(data).to_vec()
+        } else if alg.ends_with("sha384") {
+            sha2::Sha384::digest(data).to_vec()
+        } else {
+            // ecdsa_sha512, and ed25519 in CMS (RFC 8419)
+            sha2::Sha512::digest(data).to_vec()
+        }
+    }
+
+    /// Verifies `signature` over `message` with the public key of `cert`,
+    /// using verifier-side APIs only.
+    fn verify_raw(cert: &x509_cert::Certificate, alg: &str, message: &[u8], signature: &[u8]) {
+        let spki = cert
+            .tbs_certificate
+            .subject_public_key_info
+            .subject_public_key
+            .raw_bytes();
+        let ok = match alg {
+            "rsa_pss_sha256" | "rsa_pss_sha384" | "rsa_pkcs1_sha256" | "rsa_pkcs1_sha384" => {
+                let public = rsa::RsaPublicKey::from_pkcs1_der(spki).unwrap();
+                let hash = digest_for(alg, message);
+                match alg {
+                    "rsa_pss_sha256" => {
+                        public.verify(rsa::Pss::new::<sha2::Sha256>(), &hash, signature)
+                    }
+                    "rsa_pss_sha384" => {
+                        public.verify(rsa::Pss::new::<sha2::Sha384>(), &hash, signature)
+                    }
+                    "rsa_pkcs1_sha256" => {
+                        public.verify(rsa::Pkcs1v15Sign::new::<sha2::Sha256>(), &hash, signature)
+                    }
+                    _ => public.verify(rsa::Pkcs1v15Sign::new::<sha2::Sha384>(), &hash, signature),
+                }
+                .is_ok()
+            }
+            "ecdsa_sha256" => {
+                use p256::ecdsa::signature::Verifier;
+                let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(spki).unwrap();
+                vk.verify(message, &P256Signature::from_der(signature).unwrap())
+                    .is_ok()
+            }
+            "ecdsa_sha384" | "ecdsa_sha512" => {
+                use p384::ecdsa::signature::hazmat::PrehashVerifier;
+                let vk = p384::ecdsa::VerifyingKey::from_sec1_bytes(spki).unwrap();
+                let sig = P384Signature::from_der(signature).unwrap();
+                vk.verify_prehash(&digest_for(alg, message), &sig).is_ok()
+            }
+            "ed25519" => {
+                use ed25519_dalek::Verifier;
+                let vk = ed25519_dalek::VerifyingKey::from_bytes(spki.try_into().unwrap()).unwrap();
+                vk.verify(message, &Ed25519Signature::from_slice(signature).unwrap())
+                    .is_ok()
+            }
+            other => panic!("unknown algorithm {other}"),
+        };
+        assert!(ok, "{alg} signature does not verify");
+    }
+
+    fn expected_algorithm_oids(alg: &str) -> (&'static str, &'static str) {
+        match alg {
+            "rsa_pss_sha256" => ("2.16.840.1.101.3.4.2.1", "1.2.840.113549.1.1.10"),
+            "rsa_pss_sha384" => ("2.16.840.1.101.3.4.2.2", "1.2.840.113549.1.1.10"),
+            "rsa_pkcs1_sha256" => ("2.16.840.1.101.3.4.2.1", "1.2.840.113549.1.1.1"),
+            "rsa_pkcs1_sha384" => ("2.16.840.1.101.3.4.2.2", "1.2.840.113549.1.1.1"),
+            "ecdsa_sha256" => ("2.16.840.1.101.3.4.2.1", "1.2.840.10045.4.3.2"),
+            "ecdsa_sha384" => ("2.16.840.1.101.3.4.2.2", "1.2.840.10045.4.3.3"),
+            "ecdsa_sha512" => ("2.16.840.1.101.3.4.2.3", "1.2.840.10045.4.3.4"),
+            "ed25519" => ("2.16.840.1.101.3.4.2.3", "1.3.101.112"),
+            other => panic!("unknown algorithm {other}"),
+        }
+    }
+
+    /// Parses a CMS ContentInfo and checks it is a SignedData over `data` by
+    /// the key of `cert`, as RFC 5652 (and RFC 8419 for Ed25519) define.
+    fn verify_cms(cms_der: &[u8], cert_pem: &str, alg: &str, data: &[u8], attached: bool) {
+        use const_oid::db::rfc5911::{
+            ID_CONTENT_TYPE, ID_DATA, ID_MESSAGE_DIGEST, ID_SIGNED_DATA, ID_SIGNING_TIME,
+        };
+        let cert = parse_cms_signer_cert(cert_pem.as_bytes(), "test").unwrap();
+        let ci = ContentInfo::from_der(cms_der).unwrap();
+        assert_eq!(ci.content_type, ID_SIGNED_DATA);
+        let sd: SignedData = ci.content.decode_as().unwrap();
+
+        // Content: attached carries the data, detached carries none.
+        assert_eq!(sd.encap_content_info.econtent_type, ID_DATA);
+        match (&sd.encap_content_info.econtent, attached) {
+            (Some(any), true) => {
+                let content: der::asn1::OctetString = any.decode_as().unwrap();
+                assert_eq!(content.as_bytes(), data, "attached content round trip");
+            }
+            (None, false) => {}
+            (econtent, _) => panic!("attached={attached} but eContent={econtent:?}"),
+        }
+
+        // The signer certificate is included.
+        let certs = sd.certificates.as_ref().expect("certificates");
+        assert!(certs.0.iter().any(|c| matches!(
+            c,
+            cms::cert::CertificateChoices::Certificate(c) if c == &cert
+        )));
+
+        let (digest_oid, sig_oid) = expected_algorithm_oids(alg);
+        assert_eq!(sd.digest_algorithms.len(), 1);
+        assert_eq!(
+            sd.digest_algorithms.get(0).unwrap().oid.to_string(),
+            digest_oid
+        );
+        assert_eq!(sd.signer_infos.0.len(), 1);
+        let si = sd.signer_infos.0.get(0).unwrap();
+        match &si.sid {
+            SignerIdentifier::IssuerAndSerialNumber(ias) => {
+                assert_eq!(ias.issuer, cert.tbs_certificate.issuer);
+                assert_eq!(ias.serial_number, cert.tbs_certificate.serial_number);
+            }
+            other => panic!("unexpected sid {other:?}"),
+        }
+        assert_eq!(si.digest_alg.oid.to_string(), digest_oid);
+        assert_eq!(si.signature_algorithm.oid.to_string(), sig_oid);
+
+        let attrs = si.signed_attrs.as_ref().expect("signed attributes");
+        let attr = |oid| {
+            attrs
+                .iter()
+                .find(|a| a.oid == oid)
+                .unwrap_or_else(|| panic!("missing attribute {oid}"))
+                .values
+                .get(0)
+                .unwrap()
+                .clone()
+        };
+        let content_type: const_oid::ObjectIdentifier = attr(ID_CONTENT_TYPE).decode_as().unwrap();
+        assert_eq!(content_type, ID_DATA);
+        let md: der::asn1::OctetString = attr(ID_MESSAGE_DIGEST).decode_as().unwrap();
+        assert_eq!(md.as_bytes(), digest_for(alg, data), "message-digest");
+        let signing_time =
+            x509_cert::time::Time::from_der(&attr(ID_SIGNING_TIME).to_der().unwrap()).unwrap();
+        let age = std::time::SystemTime::now()
+            .duration_since(signing_time.to_system_time())
+            .unwrap();
+        assert!(age.as_secs() < 600, "signing-time is not now");
+
+        // The signature covers the DER signed attributes (SET OF tag).
+        verify_raw(
+            &cert,
+            alg,
+            &attrs.to_der().unwrap(),
+            si.signature.as_bytes(),
+        );
+    }
+
+    /// Every key type x algorithm x signature_format x signature_encoding:
+    /// supported pairs produce a verifiable raw or CMS signature, both in
+    /// the output file and in bytes_base64; unsupported pairs fail with
+    /// cert.signing_failed and write nothing.
+    #[test]
+    fn sign_verb_matrix() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_path = dir.path().join("data.bin");
+        let data: Vec<u8> = (0..3000u32).map(|i| (i * 7 % 251) as u8).collect();
+        fs::write(&data_path, &data).unwrap();
+        let data_source = data_path.to_string_lossy().into_owned();
+
+        for kind in KINDS {
+            let (key, cert) = write_signer(dir.path(), kind);
+            let cert_pem = &material(kind).1;
+            let parsed_cert = parse_cms_signer_cert(cert_pem.as_bytes(), "test").unwrap();
+            for alg in ALGORITHMS {
+                for format in ["raw", "cms_detached", "cms_attached"] {
+                    for encoding in ["der", "pem", "base64"] {
+                        let case = format!("{kind:?} {alg} {format} {encoding}");
+                        let out = dir
+                            .path()
+                            .join(format!("{kind:?}-{alg}-{format}.{encoding}"));
+                        let out_s = out.to_string_lossy().into_owned();
+                        let (code, json) = sign_verb(&[
+                            ("signer_key", &key),
+                            ("signer_cert", &cert),
+                            ("data_source", &data_source),
+                            ("signature_algorithm", alg),
+                            ("signature_format", format),
+                            ("signature_encoding", encoding),
+                            ("signature_output_path", &out_s),
+                            ("include_signature_bytes", "true"),
+                        ]);
+
+                        if !supported(kind, alg) {
+                            assert_eq!(code, 1, "{case}: {json}");
+                            assert_eq!(error_code(&json), "cert.signing_failed", "{case}");
+                            assert!(
+                                json["error"]["message"]
+                                    .as_str()
+                                    .unwrap()
+                                    .contains("Unsupported key/algorithm combination"),
+                                "{case}: {json}"
+                            );
+                            assert!(!out.exists(), "{case}: wrote a signature");
+                            continue;
+                        }
+
+                        assert_eq!(code, 0, "{case}: {json}");
+                        assert_eq!(json["ok"], true, "{case}");
+                        let expected_format = match format {
+                            "raw" => "Raw",
+                            "cms_detached" => "CmsDetached",
+                            _ => "CmsAttached",
+                        };
+                        assert_eq!(json["signature_format"], expected_format, "{case}");
+                        let label = if format == "raw" { "SIGNATURE" } else { "CMS" };
+                        let written = decode_output(&fs::read(&out).unwrap(), encoding, label);
+                        let included = BASE64_STANDARD
+                            .decode(json["signature"]["bytes_base64"].as_str().unwrap())
+                            .unwrap();
+                        assert_eq!(written, included, "{case}");
+
+                        if format == "raw" {
+                            assert!(
+                                json["warnings"].as_array().unwrap().iter().any(|w| w
+                                    .as_str()
+                                    .unwrap()
+                                    .contains("signer_cert is not used")),
+                                "{case}"
+                            );
+                            verify_raw(&parsed_cert, alg, &data, &written);
+                        } else {
+                            verify_cms(&written, cert_pem, alg, &data, format == "cms_attached");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Each key type's default algorithm also works with CMS.
+    #[test]
+    fn cms_uses_the_default_algorithm_of_each_key() {
+        let dir = tempfile::tempdir().unwrap();
+        for (kind, alg) in [
+            (Kind::Rsa, "rsa_pss_sha256"),
+            (Kind::P256, "ecdsa_sha256"),
+            (Kind::P384, "ecdsa_sha384"),
+            (Kind::Ed25519, "ed25519"),
+        ] {
+            let (key, cert) = write_signer(dir.path(), kind);
+            let (code, json) = sign_verb(&[
+                ("signer_key", &key),
+                ("signer_cert", &cert),
+                ("data_bytes_base64", "aGVsbG8gY21z"),
+                ("signature_format", "cms_attached"),
+                ("include_signature_bytes", "true"),
+            ]);
+            assert_eq!(code, 0, "{kind:?}: {json}");
+            let cms = BASE64_STANDARD
+                .decode(json["signature"]["bytes_base64"].as_str().unwrap())
+                .unwrap();
+            verify_cms(&cms, &material(kind).1, alg, b"hello cms", true);
+        }
+    }
+
+    #[test]
+    fn cms_without_signer_cert_is_refused_before_signing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, _) = write_signer(dir.path(), Kind::P256);
+        let out = dir.path().join("sig.der");
+        for format in ["cms_detached", "cms_attached"] {
+            let (code, json) = sign_verb(&[
+                ("signer_key", &key),
+                ("data_bytes_base64", "aGVsbG8="),
+                ("signature_format", format),
+                ("signature_output_path", &out.to_string_lossy()),
+            ]);
+            assert_eq!(code, 1, "{format}: {json}");
+            assert_eq!(error_code(&json), "cert.invalid_options", "{format}");
+            assert!(
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("requires signer_cert"),
+                "{json}"
+            );
+            assert!(!out.exists());
+        }
+    }
+
+    #[test]
+    fn cms_with_a_certificate_for_another_key_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, _) = write_signer(dir.path(), Kind::P256);
+        let (_, other_cert) = write_signer(dir.path(), Kind::P384);
+        let out = dir.path().join("sig.der");
+        let (code, json) = sign_verb(&[
+            ("signer_key", &key),
+            ("signer_cert", &other_cert),
+            ("data_bytes_base64", "aGVsbG8="),
+            ("signature_format", "cms_detached"),
+            ("signature_output_path", &out.to_string_lossy()),
+        ]);
+        assert_eq!(code, 1, "{json}");
+        assert_eq!(error_code(&json), "cert.keypair_mismatch");
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn cms_with_an_unreadable_signer_cert_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, _) = write_signer(dir.path(), Kind::P256);
+        let not_a_cert = dir.path().join("junk.pem");
+        fs::write(&not_a_cert, "not a certificate").unwrap();
+        for cert in [
+            not_a_cert.to_string_lossy().into_owned(),
+            dir.path()
+                .join("missing.pem")
+                .to_string_lossy()
+                .into_owned(),
+        ] {
+            let (code, json) = sign_verb(&[
+                ("signer_key", &key),
+                ("signer_cert", &cert),
+                ("data_bytes_base64", "aGVsbG8="),
+                ("signature_format", "cms_attached"),
+                ("include_signature_bytes", "true"),
+            ]);
+            assert_eq!(code, 1, "{json}");
+            assert_eq!(error_code(&json), "cert.signer_load_failed", "{json}");
+        }
+    }
+
+    #[test]
+    fn cms_accepts_a_der_signer_cert() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, _) = write_signer(dir.path(), Kind::Ed25519);
+        let cert_pem = &material(Kind::Ed25519).1;
+        let der_path = dir.path().join("cert.der");
+        fs::write(&der_path, ::pem::parse(cert_pem).unwrap().contents()).unwrap();
+        let (code, json) = sign_verb(&[
+            ("signer_key", &key),
+            ("signer_cert", &der_path.to_string_lossy()),
+            ("data_bytes_base64", "aGVsbG8="),
+            ("signature_format", "cms_detached"),
+            ("include_signature_bytes", "true"),
+        ]);
+        assert_eq!(code, 0, "{json}");
+        let cms = BASE64_STANDARD
+            .decode(json["signature"]["bytes_base64"].as_str().unwrap())
+            .unwrap();
+        verify_cms(&cms, cert_pem, "ed25519", b"hello", false);
+    }
+
+    /// Cross-checks the verb's CMS output with `openssl cms -verify` for
+    /// every key type and algorithm; skipped when openssl is not installed.
+    #[test]
+    fn cms_output_verifies_with_openssl() {
+        if std::process::Command::new("openssl")
+            .arg("version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping: openssl not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let data_path = dir.path().join("data.bin");
+        fs::write(&data_path, b"openssl interop \x00\x01\xff payload").unwrap();
+        for kind in KINDS {
+            let (key, cert) = write_signer(dir.path(), kind);
+            for alg in ALGORITHMS.iter().filter(|a| supported(kind, a)) {
+                for format in ["cms_detached", "cms_attached"] {
+                    let out = dir.path().join(format!("{kind:?}-{alg}-{format}.der"));
+                    let (code, json) = sign_verb(&[
+                        ("signer_key", &key),
+                        ("signer_cert", &cert),
+                        ("data_source", &data_path.to_string_lossy()),
+                        ("signature_algorithm", alg),
+                        ("signature_format", format),
+                        ("signature_encoding", "der"),
+                        ("signature_output_path", &out.to_string_lossy()),
+                    ]);
+                    assert_eq!(code, 0, "{json}");
+                    let recovered = dir.path().join("recovered.bin");
+                    let mut cmd = std::process::Command::new("openssl");
+                    cmd.args([
+                        "cms", "-verify", "-binary", "-inform", "DER", "-purpose", "any",
+                    ])
+                    .arg("-in")
+                    .arg(&out)
+                    .arg("-CAfile")
+                    .arg(&cert)
+                    .arg("-out")
+                    .arg(&recovered);
+                    if format == "cms_detached" {
+                        cmd.arg("-content").arg(&data_path);
+                    }
+                    let result = cmd.output().unwrap();
+                    assert!(
+                        result.status.success(),
+                        "openssl rejected {kind:?} {alg} {format}: {}",
+                        String::from_utf8_lossy(&result.stderr)
+                    );
+                    assert_eq!(
+                        fs::read(&recovered).unwrap(),
+                        fs::read(&data_path).unwrap(),
+                        "{kind:?} {alg} {format}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Raw RSA PKCS#1 v1.5 signatures (previously refused) verify with ring,
+    /// an independent implementation.
+    #[test]
+    fn raw_rsa_pkcs1_verifies_with_ring() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, _) = write_signer(dir.path(), Kind::Rsa);
+        let cert = parse_cms_signer_cert(material(Kind::Rsa).1.as_bytes(), "test").unwrap();
+        let spki = cert
+            .tbs_certificate
+            .subject_public_key_info
+            .subject_public_key
+            .raw_bytes()
+            .to_vec();
+        for (alg, ring_alg) in [
+            (
+                "rsa_pkcs1_sha256",
+                &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+            ),
+            (
+                "rsa_pkcs1_sha384",
+                &ring::signature::RSA_PKCS1_2048_8192_SHA384,
+            ),
+        ] {
+            let (code, json) = sign_verb(&[
+                ("signer_key", &key),
+                ("data_bytes_base64", "aGVsbG8="),
+                ("signature_algorithm", alg),
+                ("include_signature_bytes", "true"),
+            ]);
+            assert_eq!(code, 0, "{json}");
+            let sig = BASE64_STANDARD
+                .decode(json["signature"]["bytes_base64"].as_str().unwrap())
+                .unwrap();
+            ring::signature::UnparsedPublicKey::new(ring_alg, &spki)
+                .verify(b"hello", &sig)
+                .unwrap_or_else(|_| panic!("{alg} does not verify with ring"));
         }
     }
 }
