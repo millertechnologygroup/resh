@@ -3987,6 +3987,7 @@ dependencies = [
  "reqwest",
  "ring 0.17.14",
  "rsa",
+ "rustls",
  "scopeguard",
  "sec1",
  "serde",
