@@ -28,8 +28,7 @@ static MAIL_HELP: HandleHelp = HandleHelp {
         first path segment of the URL, such as mail://send, and its arguments follow as \
         key=value words. SMTP settings come from arguments, then from the MAIL_SMTP_HOST, \
         MAIL_SMTP_PORT, MAIL_SMTP_USERNAME, MAIL_SMTP_PASSWORD, and MAIL_FROM environment \
-        variables when MAIL_SMTP_HOST is set, and otherwise from the active stored profile. \
-        Exit codes: 0 success, 1 failure, 2 invalid arguments (nothing done), 124 timeout.",
+        variables when MAIL_SMTP_HOST is set, and otherwise from the active stored profile.",
     usage: "resh mail://<verb> [key=value ...]",
     verbs: &[
         VerbHelp {
