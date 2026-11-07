@@ -117,9 +117,27 @@ fn stage_help_request(args: &[String]) -> Option<(String, Option<String>)> {
     match args {
         [stage] => {
             let (scheme, rest) = scheme_of(stage)?;
-            HELP_WORDS
-                .contains(&rest.trim_start_matches('/'))
-                .then_some((scheme, None))
+            if HELP_WORDS.contains(&rest.trim_start_matches('/')) {
+                return Some((scheme, None));
+            }
+            // `<scheme>://<target>?help` or `?help=<verb>`, only when the
+            // stage is not otherwise a valid stage (an http URL may carry a
+            // real `help=` query parameter).
+            if core::parse::parse_stage(stage).is_ok() {
+                return None;
+            }
+            let (_, query) = rest.split_once('?')?;
+            query
+                .split('&')
+                .find_map(|pair| match pair.split_once('=') {
+                    Some(("help", verb)) if !verb.is_empty() => {
+                        Some((scheme.clone(), Some(verb.to_string())))
+                    }
+                    Some(("help", _)) | None if pair == "help" || pair == "help=" => {
+                        Some((scheme.clone(), None))
+                    }
+                    _ => None,
+                })
         }
         [stage, flag] if HELP_WORDS.contains(&flag.as_str()) => {
             let (scheme, _) = scheme_of(stage)?;

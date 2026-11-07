@@ -184,3 +184,18 @@ fn help_word_as_a_value_is_not_a_help_request() {
     assert_eq!(code, 0, "{err}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "help");
 }
+
+#[test]
+fn query_help_forms() {
+    let (_, verb_help, _) = resh(&["secret", "get", "--help"]);
+    let (code, out, err) = resh(&["secret://local/x?help=get"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, verb_help);
+    let (_, handle_help, _) = resh(&["secret", "--help"]);
+    let (code, out, _) = resh(&["secret://local?help"]);
+    assert_eq!(code, 0);
+    assert_eq!(out, handle_help);
+    let (code, _, err) = resh(&["secret://local/x?help=nope"]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("Error: [secret.unknown_verb]"), "{err}");
+}
