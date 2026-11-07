@@ -1,167 +1,90 @@
 # MySQL Connection Guide for RESH
 
-## Connecting to Remote MySQL Database
+This guide covers connecting `resh db://mysql/...` to a MySQL or MariaDB
+server. The full reference is `docs/Data_StateManagement/db.md`.
 
-### Quick Start
+## How connections work
 
-To connect to a remote MySQL database and execute queries using `resh`:
+Every `db` verb opens one connection, runs its work and disconnects. Nothing
+is kept between `resh` runs, so each command needs the DSN: pass `dsn=` or,
+better, set `DB_<ALIAS>_DSN` (the alias in upper case, `-` as `_`).
 
 ```bash
-# Basic connection with quoted DSN (recommended for passwords with special characters)
-resh db://mysql/stocks.connect dsn='mysql://username:password@host:port/database'
-
-# Execute a query after connecting
-resh db://mysql/stocks.query sql="SELECT * FROM your_table LIMIT 10"
+export DB_STOCKS_DSN='mysql://appuser:secret@db.example.com:3306/stocks'
+resh db://mysql/stocks.connect tls_mode=verify_full
+resh db://mysql/stocks.query 'sql=SELECT symbol, price FROM stocks WHERE price > ?' 'params=[100]'
 ```
 
-### Step-by-Step Instructions
+The environment variable keeps the password out of the process list and the
+shell history; resh never prints it (errors show `***`).
 
-**Option 1: Traditional Two-Step Process**
+## DSN format
 
-1. **Connect to the Database**
-   ```bash
-   resh db://mysql/stocks.connect dsn='mysql://appuser:pa$$word@db.example.com:3306/stocks'
-   ```
-
-2. **Execute a Query**
-   ```bash
-   resh db://mysql/stocks.query sql="SELECT * FROM stocks LIMIT 5"
-   ```
-
-3. **Execute Commands (INSERT, UPDATE, DELETE)**
-   ```bash
-   resh db://mysql/stocks.exec sql="INSERT INTO stocks (symbol, price) VALUES ('AAPL', 150.00)"
-   ```
-
-**Option 2: Auto-Connect (Recommended for CLI usage)**
-
-1. **Query with Auto-Connect**
-   ```bash
-   resh db://mysql/stocks.query dsn='mysql://appuser:pa$$word@db.example.com:3306/stocks' sql="SELECT * FROM stocks LIMIT 5"
-   ```
-
-2. **Exec with Auto-Connect**
-   ```bash
-   resh db://mysql/stocks.exec dsn='mysql://appuser:pa$$word@db.example.com:3306/stocks' sql="INSERT INTO stocks (symbol, price) VALUES ('AAPL', 150.00)"
-   ```
-
-> **Note**: When using auto-connect, the DSN parameter can be provided directly to `query` and `exec` commands. If no existing connection is found for the alias, resh will automatically establish a connection using the provided DSN.
-
-### DSN Format
-
-The Data Source Name (DSN) follows this format:
-```
+```text
 mysql://username:password@host:port/database
 ```
 
-**Components:**
-- `username`: Your MySQL username
-- `password`: Your MySQL password
-- `host`: MySQL server hostname or IP address
-- `port`: MySQL server port (typically 3306)
-- `database`: Name of the database to connect to
+`mariadb://` works too. Special characters in the user name or password must
+be percent-encoded, and the DSN should be in single quotes:
 
-### Handling Special Characters in Passwords
+| Character | Encoded |
+| --------- | ------- |
+| `$`       | `%24`   |
+| `@`       | `%40`   |
+| `#`       | `%23`   |
+| `%`       | `%25`   |
+| space     | `%20`   |
 
-If your password contains special characters (like `$`, `@`, `#`, etc.), you have two options:
-
-#### Option 1: Use Single Quotes (Recommended)
 ```bash
-resh db://mysql/stocks.connect dsn='mysql://appuser:pa$$word@db.example.com:3306/stocks'
+export DB_APP_DSN='mysql://appuser:pa%24%24word@db.example.com:3306/app'
 ```
 
-#### Option 2: URL-Encode Special Characters
+A DSN that is not a valid URL is refused with `db.invalid_dsn` (exit 2); the
+DSN itself is not shown in the message.
+
+## TLS
+
+MySQL 8 and recent MariaDB offer TLS with a self-signed certificate by
+default. The default `tls_mode=prefer` uses it without checking the
+certificate, which does not protect against an impostor server. Use
+`tls_mode=verify_full`, and `ca_file=` when the server certificate comes from
+a private CA:
+
 ```bash
-resh db://mysql/stocks.connect dsn=mysql://appuser:pa%24%24word@db.example.com:3306/stocks
+resh db://mysql/app.connect tls_mode=verify_full ca_file=/etc/ssl/private-ca.pem
 ```
 
-**Common URL Encodings:**
-- `$` → `%24`
-- `@` → `%40`
-- `#` → `%23`
-- `%` → `%25`
-- ` ` (space) → `%20`
+`connect` reports `"tls": true` when the session is encrypted.
 
-### Common Error and Solutions
+## Examples
 
-#### Shell Variable Expansion Error
-**Error Message:**
-```
-Invalid DSN: missing @ symbol in connection string
-Password may contain special characters that were interpreted by shell.
-Use single quotes around DSN or URL-encode special characters ($ becomes %24)
-```
-
-**Cause:** The shell interpreted special characters in your password (particularly `$` symbols).
-
-**Solutions:**
-1. Wrap the DSN in single quotes: `dsn='mysql://...'`
-2. URL-encode the special characters: `$` becomes `%24`
-
-### Examples
-
-#### Traditional Connection Method
 ```bash
-# Connect first, then query
-resh db://mysql/myapp.connect dsn='mysql://root:password@localhost:3306/myapp'
-resh db://mysql/myapp.query sql="SELECT COUNT(*) FROM users"
+# Check the connection
+resh db://mysql/app.connect
+
+# Readiness check: up to 10 attempts, 2 s apart
+resh db://mysql/app.ping retries=10 backoff_ms=2000 timeout_ms=2000
+
+# Select data with a bound parameter
+resh db://mysql/app.query 'sql=SELECT id, name FROM users WHERE id = ?' 'params=[42]'
+
+# Count rows
+resh db://mysql/app.query 'sql=SELECT COUNT(*) FROM users' mode=scalar
+
+# Insert and get the new id
+resh db://mysql/app.exec 'sql=INSERT INTO users (name) VALUES (?)' 'params=["alice"]' return_last_insert_id=true
+
+# Several changes atomically
+resh db://mysql/app.transaction 'statements=["DELETE FROM sessions", "UPDATE users SET active = 0"]'
 ```
 
-#### Auto-Connect Method (Recommended)
-```bash
-# Query directly with DSN - connection established automatically
-resh db://mysql/myapp.query dsn='mysql://root:password@localhost:3306/myapp' sql="SELECT COUNT(*) FROM users"
-```
+## Troubleshooting
 
-#### Remote Connection with Special Characters
-```bash
-# Password contains $ character - use quotes and auto-connect
-resh db://mysql/production.query dsn='mysql://admin:P@ssw0rd$123@prod-server:3306/production_db' sql="SELECT version()"
-```
-
-#### Query Examples with Auto-Connect
-```bash
-# Select data
-resh db://mysql/stocks.query dsn='mysql://user:pass@host:3306/stocks' sql="SELECT symbol, price FROM stocks WHERE price > 100"
-
-# Count records
-resh db://mysql/stocks.query dsn='mysql://user:pass@host:3306/stocks' sql="SELECT COUNT(*) as total_stocks FROM stocks"
-
-# Insert data
-resh db://mysql/stocks.exec dsn='mysql://user:pass@host:3306/stocks' sql="INSERT INTO stocks (symbol, price, volume) VALUES ('GOOGL', 2800.50, 1000000)"
-
-# Update data
-resh db://mysql/stocks.exec dsn='mysql://user:pass@host:3306/stocks' sql="UPDATE stocks SET price = 151.25 WHERE symbol = 'AAPL'"
-```
-
-### Connection Testing
-
-**Traditional Method:**
-```bash
-# Test connection
-resh db://mysql/test.connect dsn='mysql://user:pass@host:3306/db'
-
-# Simple test query
-resh db://mysql/test.query sql="SELECT 1 as test"
-```
-
-**Auto-Connect Method (Recommended):**
-```bash
-# Test connection and query in one step
-resh db://mysql/test.query dsn='mysql://user:pass@host:3306/db' sql="SELECT 1 as test"
-```
-
-### Troubleshooting
-
-1. **Connection Refused**: Check if MySQL server is running and accepting connections
-2. **Access Denied**: Verify username, password, and user permissions
-3. **Database Not Found**: Ensure the database name is correct
-4. **Special Character Issues**: Use single quotes around the DSN or URL-encode characters
-
-### Enhanced Error Detection
-
-RESH now provides enhanced error detection for common issues:
-- Detects shell variable expansion problems
-- Suggests solutions for special character handling
-- Provides clear error messages with actionable guidance
-- **Auto-connect capability**: Query and exec commands can accept DSN parameter for automatic connection establishment
+| Error | Cause |
+| ----- | ----- |
+| `db.dsn_missing` | Neither `dsn=` nor `DB_<ALIAS>_DSN` is set. |
+| `db.invalid_dsn` | The DSN is not a valid `mysql://` URL; percent-encode special characters. |
+| `db.connect_failed` | The server is not reachable (check host, port, firewall). |
+| `db.auth_failed` | Wrong user name or password, or the user may not connect from this host. |
+| `db.tls_failed` | The server has no TLS, or its certificate is not trusted (`ca_file=`) or does not name the host. |
+| `db.timeout` (exit 124) | `timeout_ms` (default 5000) passed; the statement was stopped with `KILL QUERY`. |
