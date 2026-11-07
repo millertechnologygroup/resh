@@ -14,8 +14,9 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (log, proc, svc, cron, firewall, user, pkg, system, cert, backup,
-  plugin) still print their own formats until they are.
+  `<handle>.invalid_argument`. Handles not yet aligned (proc, svc, cron,
+  firewall, user, pkg, system, cert, backup, plugin) still print their own
+  formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
@@ -173,6 +174,20 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   refused. `hooks.enable`/`hooks.disable` persist in `_hooks.json` and refuse
   unknown hooks. No state directory is an error (`event.store_unavailable`)
   instead of a silent per-process in-memory bus.
+
+### log
+
+- `tail` refuses unknown arguments and invalid values (exit 2), exits
+  0/1/2/124 with `[log.<code>]` errors and a JSON `error` object. Breaking:
+  not found / not a file and a failing journalctl exit 1 (were 2 or
+  journalctl's own code); a relative path is reported as `./x`.
+- `timeout_ms` is enforced (default 600000; journalctl is stopped at the
+  deadline, exit 124). `follow=true` streams new lines (files: rotation and
+  truncation handled; journal: `journalctl --follow`).
+- Invalid UTF-8 no longer fails small files, the large-file scan no longer
+  cuts the first line, lines over 1 MiB are cut with a warning, paths are
+  percent-decoded, a FIFO target is refused, `log://svc/<service>` works and
+  service names are validated (no shell, no leading `-`).
 
 ### http and https
 
@@ -911,8 +926,11 @@ typed structs:
   created (archive.md 1 and 6). Rewriting a tar with add/remove drops PAX
   extended attributes of kept entries; add/remove fail on zip archives whose
   kept entries are encrypted.
-- **log.** `log://svc/<service>` is unreachable, because `from_url` always
-  builds a file source (`src/handles/data/logh.rs:484-502`).
+- **log.** `tail follow=true` polls files every 100 ms (no inotify); a file
+  truncated and refilled past its previous size between two polls is not
+  seen as truncated. With `follow=true`, `journalctl --follow` shows only
+  the current boot's entries. Service names cannot be glob patterns; there
+  are no time-range or priority filters.
 
 ### Processes
 

@@ -129,7 +129,7 @@ Verbs: `emit`, `subscribe`, `list-topics`, `hooks.list`, `hooks.enable`, `hooks.
 
 ### 4.5 Logs (`log`)
 
-Verb: `tail`. Reads files (absolute or `./` relative) or `log://svc/<service>` journals through `journalctl`, with substring filtering. File paths are not percent-decoded. See [log.md](log.md).
+Verb: `tail`. Reads files (absolute or `./` relative) or `log://svc/<service>` journals through `journalctl`, with substring filtering. File paths are percent-decoded; follow=true streams new lines. See [log.md](log.md).
 
 ### 4.6 Message queues (`mq`)
 
@@ -160,7 +160,7 @@ Linux is the only supported and tested platform. The state and config directorie
 | `db`     | every verb: covers connecting and the work; at the deadline the statement is cancelled on the server (exit 124) | none (`connect_timeout_ms` and pool options are refused) |
 | `config` | `watch` (run time limit; default none)                   | `get`, `set`, `ls`                   |
 | `event`  | `emit`, `subscribe`, `list-topics` (default 30000; `follow=true` has no default and ends normally at the limit) | `hooks.list`, `hooks.enable`, `hooks.disable` |
-| `log`    | none                                                     | `tail`                               |
+| `log`    | `tail` (default 600000; `follow=true` has no default; exit 124 at the limit) | none |
 | `mq`     | `put`, `get`, `purge` (wait for the queue lock, and `purge`'s deletion; default no limit; exit 124) | none (`len`, `peek`, `create` refuse it) |
 
 ---
