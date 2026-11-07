@@ -1,0 +1,37 @@
+Handle: net
+Verb: scan
+Definition: Scans a list of TCP ports on a host and reports each port as open,
+  closed, timeout, or error.
+
+Usage:
+  resh net://<host>.scan [ports=<list>] [timeout_ms=<ms>]
+    [concurrency=<n>] [host=<host>] [protocol=tcp]
+
+Example:
+  resh net://192.0.2.10.scan ports=22,80
+
+Example Output:
+  {
+    "ports": [
+      {
+        "port": 22,
+        "state": "open"
+      },
+      {
+        "error": "connection refused",
+        "port": 80,
+        "state": "closed"
+      }
+    ],
+    "protocol": "tcp",
+    "scan": {
+      "concurrency": 32,
+      "duration_ms": 3,
+      "started_at": "2026-10-16T09:12:44.512309123+00:00",
+      "timeout_ms": 500
+    },
+    "target": "192.0.2.10"
+  }
+
+  Shown with --json-pretty. Ports accept lists and ranges such as
+  22,80,8000-8005 and default to 80,443.

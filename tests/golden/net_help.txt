@@ -1,0 +1,30 @@
+Handle: net
+
+Description:
+  The net handle lists local network interfaces and routes and probes remote
+  hosts with ping, TCP connection checks, port scans, and DNS queries. It uses
+  the system ping and ip commands where available, with TCP and /proc fallbacks.
+  The URL host names the target, such as net://example.com or
+  net://192.0.2.10:22, and net://if is used for interface listing.
+
+Available Verbs:
+  list         Lists local network interfaces with their flags, index, MAC
+               address, MTU and IP addresses as JSON.
+  route.list   Lists the local routing table as a JSON array, read from the ip
+               command or /proc on Linux.
+  dns          Looks up DNS records of one type for the URL host and prints them
+               as JSON.
+  ping         Pings a host with the system ping command, falling back to TCP
+               connection attempts, and reports reachability and round-trip
+               time.
+  tcp_check    Tests whether a TCP connection to the URL host and port succeeds,
+               optionally with a TLS handshake and retries, and reports the
+               result as JSON.
+  scan         Scans a list of TCP ports on a host and reports each port as
+               open, closed, timeout, or error.
+
+Usage:
+  resh net://<host>[:<port>].<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh net <verb> --help

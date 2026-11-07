@@ -1,0 +1,40 @@
+Handle: net
+Verb: list
+Definition: Lists local network interfaces with their flags, index, MAC address,
+  MTU and IP addresses as JSON.
+
+Usage:
+  resh net://if.list [family=ipv4|ipv6|all] [up=true|false]
+
+Example:
+  resh net://if.list family=ipv4 up=true
+
+Example Output:
+  {
+    "interfaces": [
+      {
+        "addresses": [
+          {
+            "addr": "192.0.2.10",
+            "family": "ipv4",
+            "scope": "global"
+          }
+        ],
+        "flags": [
+          "up",
+          "broadcast",
+          "running",
+          "multicast",
+          "lower_up"
+        ],
+        "index": 2,
+        "mac": "52:54:00:12:34:56",
+        "mtu": 1500,
+        "name": "eth0"
+      }
+    ]
+  }
+
+  Shown with --json-pretty. up=true keeps interfaces that are
+  administratively up, up=false those that are down. With a family,
+  only interfaces with an address of that family are listed.

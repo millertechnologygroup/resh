@@ -1,0 +1,44 @@
+Handle: net
+Verb: route.list
+Definition: Lists the local routing table as a JSON array, read from the ip
+  command or /proc on Linux.
+
+Usage:
+  resh net://<host>.route.list [family=ipv4|ipv6|all]
+    [table=main|local|default|all|<id>] [timeout_ms=<ms>]
+
+Example:
+  resh net://localhost.route.list
+
+Example Output:
+  [
+    {
+      "dst": "default",
+      "family": "ipv4",
+      "flags": [
+        "gateway"
+      ],
+      "gateway": "192.0.2.1",
+      "iface": "eth0",
+      "metric": 100,
+      "protocol": "dhcp",
+      "scope": null,
+      "table": "main"
+    },
+    {
+      "dst": "192.0.2.0/24",
+      "family": "ipv4",
+      "flags": [
+        "link"
+      ],
+      "gateway": null,
+      "iface": "eth0",
+      "metric": 100,
+      "protocol": "kernel",
+      "scope": "link",
+      "table": "main"
+    }
+  ]
+
+  Shown for a Linux host with the ip command. Without it, routes come from
+  /proc/net/route with null protocol and scope (main table only).

@@ -1,0 +1,28 @@
+Handle: net
+Verb: ping
+Definition: Pings a host with the system ping command, falling back to TCP
+  connection attempts, and reports reachability and round-trip time.
+
+Usage:
+  resh net://<host>.ping [count=<n>] [timeout_ms=<ms>] [port=<n>]
+    [family=auto|ipv4|ipv6] [raw=true|false]
+
+Example:
+  resh net://192.0.2.10.ping count=3
+
+Example Output:
+  {
+    "avg_rtt_ms": 0.412,
+    "backend": "system_ping",
+    "host": "192.0.2.10",
+    "loss": 0.0,
+    "port": 80,
+    "reachable": true,
+    "received": 3,
+    "sent": 3,
+    "timeout_ms": 3000
+  }
+
+  Shown with --json-pretty. Exits 1 when no reply came back. If the ping
+  command cannot run, backend is tcp_fallback and port is the TCP port
+  that was tried.

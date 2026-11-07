@@ -1,0 +1,28 @@
+Handle: net
+Verb: dns
+Definition: Looks up DNS records of one type for the URL host and prints them as
+  JSON.
+
+Usage:
+  resh net://<name>.dns [type=A|AAAA|CNAME|MX|TXT|NS|SRV|PTR]
+    [server=<ip>] [port=<n>] [timeout_ms=<ms>]
+
+Example:
+  resh net://example.com.dns type=A
+
+Example Output:
+  {
+    "query": "example.com",
+    "records": [
+      {
+        "data": "192.0.2.10",
+        "name": "example.com",
+        "ttl": 300
+      }
+    ],
+    "rtype": "A",
+    "server": "system"
+  }
+
+  Shown with --json-pretty. Without server=, the system resolver
+  (/etc/resolv.conf) is asked. MX and SRV records report data as an object.

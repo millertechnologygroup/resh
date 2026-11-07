@@ -1,0 +1,28 @@
+Handle: net
+Verb: tcp_check
+Definition: Tests whether a TCP connection to the URL host and port succeeds,
+  optionally with a TLS handshake and retries, and reports the result as JSON.
+
+Usage:
+  resh net://<host>:<port>.tcp_check [port=<n>] [timeout_ms=<ms>]
+    [retries=<n>] [backoff_ms=<ms>] [expect_tls=true|false]
+
+Example:
+  resh net://192.0.2.10:22.tcp_check retries=3
+
+Example Output:
+  {
+    "attempts": 1,
+    "backend": "tcp",
+    "host": "192.0.2.10",
+    "latency_ms": 2,
+    "ok": true,
+    "port": 22,
+    "retries": 3,
+    "timeout_ms": 3000,
+    "tls_checked": false
+  }
+
+  Shown for an open port with --json-pretty. A failed check has ok false
+  and an error field instead of latency_ms, and exits 1 (124 when the last
+  attempt timed out).

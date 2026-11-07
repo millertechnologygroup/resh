@@ -1,14 +1,26 @@
-use anyhow::{Context, Result, bail};
-use if_addrs;
-use serde_json::json;
+//! `net://`: local interfaces and routes, and TCP/ICMP/DNS probes of a host.
+//!
+//! Every verb takes exactly the arguments listed in [`verb_args`]; anything
+//! else is refused (exit 2) before any work is done. Exit codes: 0 success,
+//! 1 the operation failed, 2 invalid arguments, 124 timeout or outcome
+//! unknown. Failures print a JSON object with
+//! `"error": {"code": "net.<code>", "message"}` on stdout, and
+//! `Error: [net.<code>] <message>` on stderr.
+
+use anyhow::{Context, Result};
+use serde_json::{Map, Value, json};
+use std::io;
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+use trust_dns_resolver::error::ResolveErrorKind;
 use trust_dns_resolver::proto::rr::{RData, RecordType as TrustDnsRecordType};
 use trust_dns_resolver::{
-    TokioAsyncResolver,
+    IntoName, TokioAsyncResolver,
     config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
 };
 use url::Url;
@@ -30,7 +42,8 @@ static NET_HELP: HandleHelp = HandleHelp {
     verbs: &[
         VerbHelp {
             name: "list",
-            definition: "Lists local network interfaces and their IP addresses as JSON.",
+            definition: "Lists local network interfaces with their flags, index, MAC \
+                address, MTU and IP addresses as JSON.",
             detail: Some(VerbDetail {
                 usage: "resh net://if.list [family=ipv4|ipv6|all] [up=true|false]",
                 example: "resh net://if.list family=ipv4 up=true",
@@ -47,19 +60,22 @@ static NET_HELP: HandleHelp = HandleHelp {
       ],
       "flags": [
         "up",
+        "broadcast",
         "running",
-        "multicast"
+        "multicast",
+        "lower_up"
       ],
-      "index": null,
-      "mac": null,
-      "mtu": null,
+      "index": 2,
+      "mac": "52:54:00:12:34:56",
+      "mtu": 1500,
       "name": "eth0"
     }
   ]
 }
 
-Shown with --json-pretty. The index, mac, and mtu fields are always null,
-and up=true excludes loopback interfaces while up=false shows only them."#,
+Shown with --json-pretty. up=true keeps interfaces that are
+administratively up, up=false those that are down. With a family,
+only interfaces with an address of that family are listed."#,
                 ),
             }),
         },
@@ -68,7 +84,8 @@ and up=true excludes loopback interfaces while up=false shows only them."#,
             definition: "Lists the local routing table as a JSON array, read from the ip \
                 command or /proc on Linux.",
             detail: Some(VerbDetail {
-                usage: "resh net://<host>.route.list [family=ipv4|ipv6|all]",
+                usage: "resh net://<host>.route.list [family=ipv4|ipv6|all]\n  \
+                    [table=main|local|default|all|<id>] [timeout_ms=<ms>]",
                 example: "resh net://localhost.route.list",
                 example_output: Some(
                     r#"[
@@ -101,7 +118,7 @@ and up=true excludes loopback interfaces while up=false shows only them."#,
 ]
 
 Shown for a Linux host with the ip command. Without it, routes come from
-/proc/net/route with null protocol and scope."#,
+/proc/net/route with null protocol and scope (main table only)."#,
                 ),
             }),
         },
@@ -127,8 +144,8 @@ Shown for a Linux host with the ip command. Without it, routes come from
   "server": "system"
 }
 
-Shown with --json-pretty. MX and SRV records report data as an object;
-A and AAAA records always report a ttl of 300."#,
+Shown with --json-pretty. Without server=, the system resolver
+(/etc/resolv.conf) is asked. MX and SRV records report data as an object."#,
                 ),
             }),
         },
@@ -153,18 +170,19 @@ A and AAAA records always report a ttl of 300."#,
   "timeout_ms": 3000
 }
 
-Shown with --json-pretty. If the ping command cannot run, backend is
-tcp_fallback and port is the TCP port that was tried."#,
+Shown with --json-pretty. Exits 1 when no reply came back. If the ping
+command cannot run, backend is tcp_fallback and port is the TCP port
+that was tried."#,
                 ),
             }),
         },
         VerbHelp {
             name: "tcp_check",
             definition: "Tests whether a TCP connection to the URL host and port succeeds, \
-                with optional retries, and reports the result as JSON.",
+                optionally with a TLS handshake and retries, and reports the result as JSON.",
             detail: Some(VerbDetail {
-                usage: "resh net://<host>:<port>.tcp_check [timeout_ms=<ms>] [retries=<n>]\n  \
-                    [backoff_ms=<ms>]",
+                usage: "resh net://<host>:<port>.tcp_check [port=<n>] [timeout_ms=<ms>]\n  \
+                    [retries=<n>] [backoff_ms=<ms>] [expect_tls=true|false]",
                 example: "resh net://192.0.2.10:22.tcp_check retries=3",
                 example_output: Some(
                     r#"{
@@ -180,7 +198,8 @@ tcp_fallback and port is the TCP port that was tried."#,
 }
 
 Shown for an open port with --json-pretty. A failed check has ok false
-and an error field instead of latency_ms."#,
+and an error field instead of latency_ms, and exits 1 (124 when the last
+attempt timed out)."#,
                 ),
             }),
         },
@@ -223,7 +242,270 @@ Shown with --json-pretty. Ports accept lists and ranges such as
     ],
 };
 
-// DNS-related types and traits
+// ------------------------------------------------------------- arguments --
+
+const LIST_ARGS: &[&str] = &["family", "up"];
+const ROUTE_LIST_ARGS: &[&str] = &["family", "table", "timeout_ms"];
+const DNS_ARGS: &[&str] = &["type", "server", "port", "timeout_ms"];
+const PING_ARGS: &[&str] = &["count", "timeout_ms", "port", "family", "raw"];
+const TCP_CHECK_ARGS: &[&str] = &["port", "timeout_ms", "retries", "backoff_ms", "expect_tls"];
+const SCAN_ARGS: &[&str] = &["ports", "timeout_ms", "concurrency", "host", "protocol"];
+
+/// The largest accepted `timeout_ms` / `backoff_ms` (24 hours).
+const MAX_MS: u64 = 86_400_000;
+/// The largest number of ports one scan may probe.
+const MAX_SCAN_PORTS: usize = 4096;
+
+/// The arguments `verb` accepts, or `None` for an unknown verb. This is the
+/// single list the argument check and the help usage are tested against.
+fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
+    Some(match verb {
+        "list" => LIST_ARGS,
+        "route.list" => ROUTE_LIST_ARGS,
+        "dns" => DNS_ARGS,
+        "ping" => PING_ARGS,
+        "tcp_check" => TCP_CHECK_ARGS,
+        "scan" => SCAN_ARGS,
+        _ => return None,
+    })
+}
+
+/// A failure of a verb: its exit code, error code and message.
+#[derive(Debug)]
+struct Fail {
+    exit: i32,
+    code: &'static str,
+    detail: String,
+}
+
+impl Fail {
+    fn new(exit: i32, code: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            exit,
+            code,
+            detail: detail.into(),
+        }
+    }
+
+    /// Invalid usage (exit 2): nothing was done.
+    fn invalid(detail: impl Into<String>) -> Self {
+        Self::new(2, "invalid_argument", detail)
+    }
+}
+
+/// Every error code `net` reports (without the `net.` prefix).
+const ERROR_CODES: &[&str] = &[
+    "invalid_argument",
+    "lookup_failed",
+    "resolve_failed",
+    "timeout",
+    "unreachable",
+    "ping_failed",
+    "connect_failed",
+    "tls_failed",
+    "scan_failed",
+    "route_read_failed",
+    "interfaces_failed",
+    "unsupported_platform",
+];
+
+/// `{"code": "net.<code>", "message": ...}`, the `error` of a JSON failure.
+fn error_obj(code: &str, message: &str) -> Value {
+    debug_assert!(ERROR_CODES.contains(&code), "undocumented code {code}");
+    json!({"code": format!("net.{code}"), "message": message})
+}
+
+/// A failure status whose message is `[net.<code>] <message>`.
+fn coded(exit: i32, code: &str, message: &str) -> Status {
+    debug_assert!(ERROR_CODES.contains(&code), "undocumented code {code}");
+    Status::err(exit, format!("[net.{code}] {message}"))
+}
+
+/// Prints `fail` as `{"verb", ...extra, "error": {"code", "message"}}` on
+/// stdout and returns its status.
+fn report(io: &mut IoStreams, verb: &str, fail: Fail, extra: &[(&str, Value)]) -> Result<Status> {
+    let mut obj = Map::new();
+    obj.insert("verb".into(), json!(verb));
+    for (k, v) in extra {
+        obj.insert((*k).to_string(), v.clone());
+    }
+    obj.insert("error".into(), error_obj(fail.code, &fail.detail));
+    writeln!(io.stdout, "{}", Value::Object(obj))?;
+    Ok(coded(
+        fail.exit,
+        fail.code,
+        &format!("net {verb}: {}", fail.detail),
+    ))
+}
+
+/// Refuses any argument `verb` does not take.
+fn check_args(verb: &str, args: &Args) -> Result<(), Fail> {
+    let allowed = verb_args(verb).unwrap_or(&[]);
+    let mut keys: Vec<&String> = args.keys().collect();
+    keys.sort();
+    let Some(bad) = keys.into_iter().find(|k| !allowed.contains(&k.as_str())) else {
+        return Ok(());
+    };
+    Err(Fail::invalid(match bad.as_str() {
+        "timeout_ms" => "timeout_ms is not accepted: this verb does not wait".to_string(),
+        "dry_run" => "dry_run is not accepted: this verb changes nothing".to_string(),
+        _ => format!(
+            "unknown argument: {bad}{}",
+            suggest(bad, allowed)
+                .map(|s| format!(" (did you mean `{s}`?)"))
+                .unwrap_or_default()
+        ),
+    }))
+}
+
+/// The accepted argument closest to `bad` (edit distance at most 2 after
+/// lowercasing and `-` to `_`), for a "did you mean" hint.
+fn suggest(bad: &str, allowed: &[&'static str]) -> Option<&'static str> {
+    fn distance(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut cur = vec![i + 1; b.len() + 1];
+            for (j, cb) in b.iter().enumerate() {
+                let cost = usize::from(ca != *cb);
+                cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+    let lower = bad.to_ascii_lowercase().replace('-', "_");
+    allowed
+        .iter()
+        .map(|a| (distance(&lower, a), *a))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, a)| a)
+}
+
+/// Integer argument `key` in `min..=max`, `default` when absent.
+fn u64_arg(args: &Args, key: &str, default: u64, min: u64, max: u64) -> Result<u64, Fail> {
+    let Some(raw) = args.get(key) else {
+        return Ok(default);
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(v) if (min..=max).contains(&v) => Ok(v),
+        _ => Err(Fail::invalid(format!(
+            "invalid value for {key}: {raw:?} (expected an integer from {min} to {max})"
+        ))),
+    }
+}
+
+/// Optional port argument (1-65535).
+fn port_arg(args: &Args) -> Result<Option<u16>, Fail> {
+    if !args.contains_key("port") {
+        return Ok(None);
+    }
+    Ok(Some(u64_arg(args, "port", 0, 1, 65535)? as u16))
+}
+
+/// Boolean argument (`true|false|1|0|yes|no|on|off`).
+fn bool_arg(args: &Args, key: &str, default: bool) -> Result<bool, Fail> {
+    crate::core::lenient::bool_arg(args, key)
+        .map(|v| v.unwrap_or(default))
+        .map_err(|e| Fail::invalid(e.to_string()))
+}
+
+/// One of `choices`, `default` when absent.
+fn choice_arg<'a>(
+    args: &'a Args,
+    key: &str,
+    default: &'a str,
+    choices: &[&str],
+) -> Result<&'a str, Fail> {
+    let v = args.get(key).map(String::as_str).unwrap_or(default);
+    if choices.contains(&v) {
+        Ok(v)
+    } else {
+        Err(Fail::invalid(format!(
+            "invalid value for {key}: {v:?} (expected {})",
+            choices.join(", ")
+        )))
+    }
+}
+
+/// A host name or address given by the user: non-empty, no whitespace or
+/// control characters, and not option-shaped (it is passed to `ping`).
+fn check_host(host: &str, what: &str) -> Result<(), Fail> {
+    if host.is_empty() {
+        return Err(Fail::invalid(format!("{what} is empty")));
+    }
+    if host.starts_with('-') {
+        return Err(Fail::invalid(format!(
+            "{what} {host:?} starts with '-' and could be read as an option"
+        )));
+    }
+    if host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(Fail::invalid(format!(
+            "{what} {host:?} contains whitespace or control characters"
+        )));
+    }
+    Ok(())
+}
+
+/// Resolves `host:port`, giving up after `timeout` (the system resolver has
+/// no time limit of its own). An IP literal needs no lookup.
+fn resolve(host: &str, port: u16, timeout: Duration) -> io::Result<Vec<SocketAddr>> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let (tx, rx) = mpsc::channel();
+    let name = host.to_string();
+    thread::spawn(move || {
+        let found = (name.as_str(), port)
+            .to_socket_addrs()
+            .map(|a| a.collect::<Vec<_>>());
+        // The receiver is gone when the lookup outlived its timeout; the
+        // late result is simply dropped.
+        tx.send(found).ok();
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(addrs)) if addrs.is_empty() => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no address found for {host}"),
+        )),
+        Ok(Ok(addrs)) => Ok(addrs),
+        Ok(Err(e)) => Err(io::Error::new(
+            e.kind(),
+            format!("cannot resolve {host}: {e}"),
+        )),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "resolving {host} took longer than {} ms",
+                timeout.as_millis()
+            ),
+        )),
+    }
+}
+
+/// Takes the record of a tool stopped at its deadline. The tools net runs
+/// (`ping`, `ip`) only read, so the verb reports the timeout itself
+/// (`net.timeout`, exit 124) instead of the generic "may already have made
+/// changes" outcome; a tool that could not be stopped is still named.
+fn take_lost_note() -> String {
+    match crate::core::process::take_lost() {
+        Some(l) if matches!(l.stopped, crate::core::process::Stopped::StillRunning) => {
+            format!("; {} could not be stopped and may still be running", l.tool)
+        }
+        _ => String::new(),
+    }
+}
+
+/// True when `err` is a timeout.
+fn is_timeout(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
+}
+
+// ------------------------------------------------------------------- DNS --
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecordType {
@@ -248,7 +530,7 @@ impl RecordType {
             "NS" => Ok(Self::NS),
             "SRV" => Ok(Self::SRV),
             "PTR" => Ok(Self::PTR),
-            _ => bail!("Unknown record type: {}", s),
+            _ => anyhow::bail!("Unknown record type: {}", s),
         }
     }
 
@@ -308,7 +590,21 @@ pub enum ResolvedKind {
 
 pub type ResolvedRecords = Vec<ResolvedRecord>;
 
+/// A DNS lookup that did not finish within its time limit.
+#[derive(Debug)]
+pub struct DnsTimeout;
+
+impl std::fmt::Display for DnsTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DNS lookup timed out")
+    }
+}
+
+impl std::error::Error for DnsTimeout {}
+
 pub trait DnsResolver: Send + Sync {
+    /// Looks up `name`. A lookup that runs out of time fails with a
+    /// [`DnsTimeout`] in its error chain.
     fn lookup(
         &self,
         name: &str,
@@ -318,7 +614,8 @@ pub trait DnsResolver: Send + Sync {
     ) -> Result<ResolvedRecords>;
 }
 
-// System DNS resolver implementation
+/// Resolver backed by trust-dns: the given server, or the system
+/// configuration (`/etc/resolv.conf`).
 pub struct SystemDnsResolver;
 
 impl SystemDnsResolver {
@@ -335,205 +632,162 @@ impl DnsResolver for SystemDnsResolver {
         server: Option<SocketAddr>,
         timeout: Duration,
     ) -> Result<ResolvedRecords> {
-        let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
-
-        rt.block_on(async {
-            let resolver = if let Some(server_addr) = server {
-                // Create resolver with custom server
-                let nameserver = NameServerConfig::new(server_addr, Protocol::Udp);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("cannot start the DNS runtime")?;
+        let mut opts = ResolverOpts::default();
+        opts.timeout = timeout;
+        let config = match server {
+            Some(server_addr) => {
                 let mut config = ResolverConfig::new();
-                config.add_name_server(nameserver);
-                let mut opts = ResolverOpts::default();
-                opts.timeout = timeout;
-                TokioAsyncResolver::tokio(config, opts)
-            } else {
-                // Use system resolver
-                let mut opts = ResolverOpts::default();
-                opts.timeout = timeout;
-                let config = crate::handles::network::dnsh::system_resolver_config()?;
-                TokioAsyncResolver::tokio(config, opts)
-            };
-
-            self.perform_lookup(&resolver, name, rtype).await
+                config.add_name_server(NameServerConfig::new(server_addr, Protocol::Udp));
+                config
+            }
+            None => crate::handles::network::dnsh::system_resolver_config()?,
+        };
+        rt.block_on(async {
+            let resolver = TokioAsyncResolver::tokio(config, opts);
+            // The whole lookup (retries, several servers) gets `timeout`.
+            match tokio::time::timeout(timeout, perform_lookup(&resolver, name, rtype)).await {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::Error::new(DnsTimeout)),
+            }
         })
     }
 }
 
-impl SystemDnsResolver {
-    async fn perform_lookup(
-        &self,
-        resolver: &TokioAsyncResolver,
-        name: &str,
-        rtype: RecordType,
-    ) -> Result<ResolvedRecords> {
-        match rtype {
-            RecordType::A => {
-                let response = resolver
-                    .ipv4_lookup(name)
-                    .await
-                    .context("A record lookup failed")?;
-                Ok(response
-                    .iter()
-                    .map(|ip| ResolvedRecord {
-                        name: name.to_string(),
-                        ttl: 300, // Default TTL fallback
-                        kind: ResolvedKind::A(ip.to_string()),
-                    })
-                    .collect())
-            }
-            RecordType::AAAA => {
-                let response = resolver
-                    .ipv6_lookup(name)
-                    .await
-                    .context("AAAA record lookup failed")?;
-                Ok(response
-                    .iter()
-                    .map(|ip| ResolvedRecord {
-                        name: name.to_string(),
-                        ttl: 300, // Default TTL fallback
-                        kind: ResolvedKind::AAAA(ip.to_string()),
-                    })
-                    .collect())
-            }
-            RecordType::CNAME => {
-                let response = resolver
-                    .lookup(name, rtype.to_trust_dns())
-                    .await
-                    .context("CNAME record lookup failed")?;
-                let mut records = Vec::new();
-                for record in response.records() {
-                    if let Some(RData::CNAME(cname)) = record.data() {
-                        records.push(ResolvedRecord {
-                            name: record.name().to_string(),
-                            ttl: record.ttl(),
-                            kind: ResolvedKind::CNAME(cname.to_string()),
-                        });
-                    }
-                }
-                Ok(records)
-            }
-            RecordType::MX => {
-                let response = resolver
-                    .mx_lookup(name)
-                    .await
-                    .context("MX record lookup failed")?;
-                Ok(response
-                    .iter()
-                    .map(|mx| ResolvedRecord {
-                        name: name.to_string(),
-                        ttl: 300, // Default TTL fallback
-                        kind: ResolvedKind::MX {
-                            priority: mx.preference(),
-                            exchange: mx.exchange().to_string(),
-                        },
-                    })
-                    .collect())
-            }
-            RecordType::TXT => {
-                let response = resolver
-                    .txt_lookup(name)
-                    .await
-                    .context("TXT record lookup failed")?;
-                Ok(response
-                    .iter()
-                    .map(|txt| ResolvedRecord {
-                        name: name.to_string(),
-                        ttl: 300, // Default TTL fallback
-                        kind: ResolvedKind::TXT(
-                            txt.txt_data()
-                                .iter()
-                                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                                .collect::<Vec<_>>()
-                                .join(""),
-                        ),
-                    })
-                    .collect())
-            }
-            RecordType::NS => {
-                let response = resolver
-                    .lookup(name, rtype.to_trust_dns())
-                    .await
-                    .context("NS record lookup failed")?;
-                let mut records = Vec::new();
-                for record in response.records() {
-                    if let Some(RData::NS(ns)) = record.data() {
-                        records.push(ResolvedRecord {
-                            name: record.name().to_string(),
-                            ttl: record.ttl(),
-                            kind: ResolvedKind::NS(ns.to_string()),
-                        });
-                    }
-                }
-                Ok(records)
-            }
-            RecordType::SRV => {
-                let response = resolver
-                    .lookup(name, rtype.to_trust_dns())
-                    .await
-                    .context("SRV record lookup failed")?;
-                let mut records = Vec::new();
-                for record in response.records() {
-                    if let Some(RData::SRV(srv)) = record.data() {
-                        records.push(ResolvedRecord {
-                            name: record.name().to_string(),
-                            ttl: record.ttl(),
-                            kind: ResolvedKind::SRV {
-                                priority: srv.priority(),
-                                weight: srv.weight(),
-                                port: srv.port(),
-                                target: srv.target().to_string(),
-                            },
-                        });
-                    }
-                }
-                Ok(records)
-            }
-            RecordType::PTR => {
-                // For PTR records, try to parse as IP and do reverse lookup
-                if let Ok(ip) = name.parse::<IpAddr>() {
-                    let response = resolver
-                        .reverse_lookup(ip)
-                        .await
-                        .context("PTR record lookup failed")?;
-                    Ok(response
-                        .iter()
-                        .map(|ptr| ResolvedRecord {
-                            name: name.to_string(),
-                            ttl: 300, // Default TTL fallback
-                            kind: ResolvedKind::PTR(ptr.to_string()),
-                        })
-                        .collect())
-                } else {
-                    bail!("PTR lookup requires a valid IP address, got: {}", name);
-                }
-            }
+async fn perform_lookup(
+    resolver: &TokioAsyncResolver,
+    name: &str,
+    rtype: RecordType,
+) -> Result<ResolvedRecords> {
+    let lookup = if rtype == RecordType::PTR {
+        let ip: IpAddr = name
+            .parse()
+            .with_context(|| format!("PTR lookup requires an IP address, got: {name}"))?;
+        resolver
+            .lookup(ip.into_name()?, TrustDnsRecordType::PTR)
+            .await
+    } else {
+        resolver.lookup(name, rtype.to_trust_dns()).await
+    };
+    let lookup = match lookup {
+        Ok(l) => l,
+        Err(e) if matches!(e.kind(), ResolveErrorKind::Timeout) => {
+            return Err(anyhow::Error::new(DnsTimeout));
         }
+        Err(e) => {
+            return Err(anyhow::Error::new(e))
+                .context(format!("{} record lookup failed", rtype.as_str()));
+        }
+    };
+    let mut records = Vec::new();
+    for record in lookup.records() {
+        let ttl = record.ttl();
+        let owner = record.name().to_string();
+        let (rname, kind) = match (record.data(), &rtype) {
+            (Some(RData::A(a)), RecordType::A) => {
+                (name.to_string(), ResolvedKind::A(a.to_string()))
+            }
+            (Some(RData::AAAA(a)), RecordType::AAAA) => {
+                (name.to_string(), ResolvedKind::AAAA(a.to_string()))
+            }
+            (Some(RData::CNAME(c)), RecordType::CNAME) => {
+                (owner, ResolvedKind::CNAME(c.to_string()))
+            }
+            (Some(RData::MX(mx)), RecordType::MX) => (
+                name.to_string(),
+                ResolvedKind::MX {
+                    priority: mx.preference(),
+                    exchange: mx.exchange().to_string(),
+                },
+            ),
+            (Some(RData::TXT(txt)), RecordType::TXT) => (
+                name.to_string(),
+                ResolvedKind::TXT(
+                    txt.txt_data()
+                        .iter()
+                        .map(|b| String::from_utf8_lossy(b).into_owned())
+                        .collect::<Vec<_>>()
+                        .join(""),
+                ),
+            ),
+            (Some(RData::NS(ns)), RecordType::NS) => (owner, ResolvedKind::NS(ns.to_string())),
+            (Some(RData::SRV(srv)), RecordType::SRV) => (
+                owner,
+                ResolvedKind::SRV {
+                    priority: srv.priority(),
+                    weight: srv.weight(),
+                    port: srv.port(),
+                    target: srv.target().to_string(),
+                },
+            ),
+            (Some(RData::PTR(p)), RecordType::PTR) => {
+                (name.to_string(), ResolvedKind::PTR(p.to_string()))
+            }
+            // CNAMEs followed on the way to the answer, and anything else.
+            _ => continue,
+        };
+        records.push(ResolvedRecord {
+            name: rname,
+            ttl,
+            kind,
+        });
     }
+    Ok(records)
 }
+
+fn record_json(record: ResolvedRecord) -> Value {
+    let data = match record.kind {
+        ResolvedKind::A(s)
+        | ResolvedKind::AAAA(s)
+        | ResolvedKind::CNAME(s)
+        | ResolvedKind::NS(s)
+        | ResolvedKind::PTR(s)
+        | ResolvedKind::TXT(s) => json!(s),
+        ResolvedKind::MX { priority, exchange } => {
+            json!({"priority": priority, "exchange": exchange})
+        }
+        ResolvedKind::SRV {
+            priority,
+            weight,
+            port,
+            target,
+        } => json!({"priority": priority, "weight": weight, "port": port, "target": target}),
+    };
+    json!({"name": record.name, "ttl": record.ttl, "data": data})
+}
+
+// ---------------------------------------------------------------- handle --
 
 pub struct NetHandle {
     resource: String, // e.g., "if", "interfaces", or host for ping/tcp_check
     host: Option<String>,
     port: Option<u16>,
     resolver: Arc<dyn DnsResolver>,
+    /// CA bundle for `expect_tls`; `None` reads `SSL_CERT_FILE` or the
+    /// system bundle. Tests set it instead of the environment.
+    ca_file: Option<PathBuf>,
 }
 
 impl NetHandle {
     pub fn from_url(u: &Url) -> Result<Self> {
-        // Extract host from URL
         let host = u
             .host_str()
-            .ok_or_else(|| anyhow::anyhow!("net:// URL missing host"))?
+            .ok_or_else(|| anyhow::anyhow!("net:// URL missing host"))?;
+        // An IPv6 literal comes back in brackets.
+        let host = host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host)
             .to_string();
         let port = u.port();
 
-        // For backwards compatibility with existing functionality:
-        // If host looks like a special resource name, treat it as such
         let (resource, actual_host) = if host == "if" || host == "interfaces" || host == "iface" {
             (host.clone(), None)
         } else {
-            // This is a host specification for ping/tcp_check/dns
-            (host.clone(), Some(host.clone()))
+            (host.clone(), Some(host))
         };
 
         Ok(NetHandle {
@@ -541,45 +795,44 @@ impl NetHandle {
             host: actual_host,
             port,
             resolver: Arc::new(SystemDnsResolver::new()),
+            ca_file: None,
         })
     }
 
-    // Constructor for tests with custom resolver
-    #[allow(dead_code)]
+    /// A handle for `target` that asks `resolver` for DNS lookups.
+    #[cfg(test)]
     pub fn with_resolver(target: String, resolver: Arc<dyn DnsResolver>) -> Self {
         NetHandle {
             resource: target.clone(),
             host: Some(target),
             port: None,
             resolver,
-        }
-    }
-
-    fn target(&self) -> String {
-        if let (Some(host), Some(port)) = (&self.host, self.port) {
-            format!("{}:{}", host, port)
-        } else if let Some(host) = &self.host {
-            host.clone()
-        } else {
-            self.resource.clone()
+            ca_file: None,
         }
     }
 
     // Extract domain name from URL for DNS queries
-    fn extract_dns_query_name(&self) -> Result<String> {
-        // For DNS queries, we use the resource as the query name
-        // but we need to handle the case where the resource ends with .dns
-        let query_name = if self.resource.ends_with(".dns") {
-            self.resource.strip_suffix(".dns").unwrap_or(&self.resource)
-        } else {
-            &self.resource
-        };
-
-        if query_name.is_empty() || query_name == "if" || query_name == "interfaces" {
-            bail!("No valid domain name or IP provided for DNS query");
+    fn extract_dns_query_name(&self) -> Result<String, Fail> {
+        let query_name = self.resource.strip_suffix(".dns").unwrap_or(&self.resource);
+        if query_name.is_empty() || self.host.is_none() {
+            return Err(Fail::invalid(
+                "No valid domain name or IP provided for DNS query",
+            ));
         }
-
+        check_host(query_name, "query name")?;
         Ok(query_name.to_string())
+    }
+
+    /// The URL host, refused when missing (`net://if`) or option-shaped.
+    fn target_host(&self, verb: &str) -> Result<&str, Fail> {
+        let host = self.host.as_deref().ok_or_else(|| {
+            Fail::invalid(format!(
+                "needs a host: net://<host>.{verb} (\"{}\" names the interface list)",
+                self.resource
+            ))
+        })?;
+        check_host(host, "host")?;
+        Ok(host)
     }
 
     /// Check if this is a help request (`help`, `--help`, `-h`, or
@@ -594,6 +847,9 @@ impl NetHandle {
             args.get("verb").map(String::as_str)
         } else if let Some(v) = verb.strip_prefix("--help=") {
             Some(v)
+        } else if args.contains_key("help") {
+            // `net://host.ping(help=1)`
+            Some(verb)
         } else {
             return Ok(None);
         };
@@ -623,122 +879,93 @@ impl Handle for NetHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Check for help requests first
         if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
-
+        if verb_args(verb).is_none() {
+            return Ok(coded(
+                2,
+                "invalid_argument",
+                &format!(
+                    "unknown verb for net://: {verb} (verbs: list, route.list, dns, ping, \
+                     tcp_check, scan)"
+                ),
+            ));
+        }
+        if let Err(fail) = check_args(verb, args) {
+            return report(io, verb, fail, &[]);
+        }
         match verb {
             "list" => list_interfaces(args, io),
             "ping" => self.verb_ping(args, io),
             "tcp_check" => self.verb_tcp_check(args, io),
             "scan" => self.scan(args, io),
             "dns" => self.call_dns(args, io),
-            "route.list" => self.route_list(args, io),
-            _ => bail!("unknown verb for net://: {}", verb),
+            _ => self.route_list(args, io),
         }
     }
 }
+
+// ------------------------------------------------------------------- dns --
 
 impl NetHandle {
     fn call_dns(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let query_name = match self.extract_dns_query_name() {
             Ok(name) => name,
-            Err(e) => {
-                let error_json = json!({
-                    "query": self.resource,
-                    "error": "invalid_query",
-                    "detail": format!("{}", e)
-                });
-                writeln!(io.stdout, "{}", error_json)?;
-                return Ok(Status::err(2, format!("Invalid query: {}", e)));
+            Err(fail) => {
+                let q = json!(self.resource);
+                return report(io, "dns", fail, &[("query", q)]);
             }
         };
+        let q = json!(query_name);
 
-        // Parse record type
-        let rtype = match args.get("type").map(|s| s.as_str()).unwrap_or("A") {
-            type_str => match RecordType::from_str(type_str) {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let error_json = json!({
-                        "query": query_name,
-                        "rtype": type_str,
-                        "error": "invalid_type",
-                        "detail": format!("{}", e)
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(2, format!("Invalid record type: {}", e)));
-                }
-            },
+        let type_str = args.get("type").map(String::as_str).unwrap_or("A");
+        let rtype = match RecordType::from_str(type_str) {
+            Ok(rt) => rt,
+            Err(e) => {
+                let fail = Fail::invalid(format!(
+                    "{e} (expected A, AAAA, CNAME, MX, TXT, NS, SRV or PTR)"
+                ));
+                return report(io, "dns", fail, &[("query", q), ("rtype", json!(type_str))]);
+            }
         };
+        let ctx = [("query", q), ("rtype", json!(rtype.as_str()))];
 
-        // Parse timeout
-        let timeout = match args.get("timeout_ms") {
-            Some(timeout_str) => match timeout_str.parse::<u64>() {
-                Ok(ms) if ms > 0 => Duration::from_millis(ms),
-                Ok(_) => {
-                    let error_json = json!({
-                        "query": query_name,
-                        "rtype": rtype.as_str(),
-                        "error": "invalid_timeout",
-                        "detail": "Timeout must be positive"
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(2, "Timeout must be positive"));
-                }
-                Err(e) => {
-                    let error_json = json!({
-                        "query": query_name,
-                        "rtype": rtype.as_str(),
-                        "error": "invalid_timeout",
-                        "detail": format!("Cannot parse timeout: {}", e)
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(2, format!("Invalid timeout: {}", e)));
-                }
-            },
-            None => Duration::from_millis(3000), // Default 3 seconds
+        if rtype == RecordType::PTR && query_name.parse::<IpAddr>().is_err() {
+            let fail = Fail::invalid(format!(
+                "PTR lookup requires an IP address as the URL host, got: {query_name}"
+            ));
+            return report(io, "dns", fail, &ctx);
+        }
+
+        let timeout_ms = match u64_arg(args, "timeout_ms", 3000, 1, MAX_MS) {
+            Ok(t) => t,
+            Err(f) => return report(io, "dns", f, &ctx),
         };
+        let timeout = Duration::from_millis(timeout_ms);
 
-        // Parse DNS server
+        let port = match port_arg(args) {
+            Ok(p) => p,
+            Err(f) => return report(io, "dns", f, &ctx),
+        };
         let server = match args.get("server") {
-            Some(server_str) => {
-                match server_str.parse::<IpAddr>() {
-                    Ok(ip) => {
-                        let port = match args.get("port") {
-                            Some(port_str) => match port_str.parse::<u16>() {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    let error_json = json!({
-                                        "query": query_name,
-                                        "rtype": rtype.as_str(),
-                                        "error": "invalid_port",
-                                        "detail": format!("Cannot parse port: {}", e)
-                                    });
-                                    writeln!(io.stdout, "{}", error_json)?;
-                                    return Ok(Status::err(2, format!("Invalid port: {}", e)));
-                                }
-                            },
-                            None => 53, // Default DNS port
-                        };
-                        Some(SocketAddr::new(ip, port))
-                    }
-                    Err(e) => {
-                        let error_json = json!({
-                            "query": query_name,
-                            "rtype": rtype.as_str(),
-                            "error": "invalid_server",
-                            "detail": format!("Cannot parse server IP: {}", e)
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        return Ok(Status::err(2, format!("Invalid server IP: {}", e)));
-                    }
+            Some(server_str) => match server_str.trim().parse::<IpAddr>() {
+                Ok(ip) => Some(SocketAddr::new(ip, port.unwrap_or(53))),
+                Err(e) => {
+                    let fail = Fail::invalid(format!("Cannot parse server IP {server_str:?}: {e}"));
+                    return report(io, "dns", fail, &ctx);
                 }
+            },
+            None if port.is_some() => {
+                let fail = Fail::invalid(
+                    "port= needs server=<ip>; the system resolver \
+                     uses the ports in /etc/resolv.conf",
+                );
+                return report(io, "dns", fail, &ctx);
             }
             None => None,
         };
 
-        // Perform DNS lookup
         match self
             .resolver
             .lookup(&query_name, rtype.clone(), server, timeout)
@@ -751,230 +978,204 @@ impl NetHandle {
                     "query": query_name,
                     "rtype": rtype.as_str(),
                     "server": server_info,
-                    "records": records.into_iter().map(|record| {
-                        match record.kind {
-                            ResolvedKind::A(ip) => json!({
-                                "name": record.name,
-                                "ttl": record.ttl,
-                                "data": ip
-                            }),
-                            ResolvedKind::AAAA(ip) => json!({
-                                "name": record.name,
-                                "ttl": record.ttl,
-                                "data": ip
-                            }),
-                            ResolvedKind::CNAME(cname) => json!({
-                                "name": record.name,
-                                "ttl": record.ttl,
-                                "data": cname
-                            }),
-                            ResolvedKind::NS(ns) => json!({
-                                "name": record.name,
-                                "ttl": record.ttl,
-                                "data": ns
-                            }),
-                            ResolvedKind::PTR(ptr) => json!({
-                                "name": record.name,
-                                "ttl": record.ttl,
-                                "data": ptr
-                            }),
-                            ResolvedKind::MX { priority, exchange } => json!({
-                                "name": record.name,
-                                "ttl": record.ttl,
-                                "data": {
-                                    "priority": priority,
-                                    "exchange": exchange
-                                }
-                            }),
-                            ResolvedKind::TXT(text) => json!({
-                                "name": record.name,
-                                "ttl": record.ttl,
-                                "data": text
-                            }),
-                            ResolvedKind::SRV { priority, weight, port, target } => json!({
-                                "name": record.name,
-                                "ttl": record.ttl,
-                                "data": {
-                                    "priority": priority,
-                                    "weight": weight,
-                                    "port": port,
-                                    "target": target
-                                }
-                            }),
-                        }
-                    }).collect::<Vec<_>>()
+                    "records": records.into_iter().map(record_json).collect::<Vec<_>>()
                 });
                 writeln!(io.stdout, "{}", output)?;
                 Ok(Status::ok())
             }
+            Err(e) if e.chain().any(|c| c.is::<DnsTimeout>()) => {
+                let fail = Fail::new(
+                    124,
+                    "timeout",
+                    format!("DNS lookup did not finish within timeout_ms={timeout_ms}"),
+                );
+                report(io, "dns", fail, &ctx)
+            }
             Err(e) => {
-                let error_json = json!({
-                    "query": query_name,
-                    "rtype": rtype.as_str(),
-                    "error": "lookup_failed",
-                    "detail": format!("{}", e)
-                });
-                writeln!(io.stdout, "{}", error_json)?;
-                Ok(Status::err(1, format!("DNS lookup failed: {}", e)))
+                let fail = Fail::new(1, "lookup_failed", format!("DNS lookup failed: {e:#}"));
+                report(io, "dns", fail, &ctx)
             }
         }
     }
+}
 
-    fn verb_ping(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        if self.host.is_none() {
-            return Ok(Status::err(3, "net:// URL missing host"));
+// ------------------------------------------------------------------ ping --
+
+struct PingResult {
+    sent: u32,
+    received: u32,
+    avg_rtt_ms: Option<f64>,
+}
+
+impl PingResult {
+    fn loss(&self) -> f64 {
+        if self.sent == 0 {
+            1.0
+        } else {
+            1.0 - (self.received.min(self.sent) as f64 / self.sent as f64)
         }
+    }
+}
 
-        let host = self.host.as_ref().unwrap();
+/// What running the system `ping` came to.
+enum SystemPing {
+    /// It ran and reported its counts.
+    Ran(PingResult),
+    /// The host name does not resolve.
+    Unresolved(String),
+    /// It could not run here (missing, no permission, no route...): use the
+    /// TCP fallback.
+    Unavailable(String),
+    /// It did not finish in time.
+    TimedOut,
+}
 
-        // Parse arguments with validation
-        let count = match self.parse_ping_count(args) {
-            Ok(c) => c,
-            Err(e) => {
-                writeln!(io.stderr, "bad argument: {}", e)?;
-                return Ok(Status::err(2, format!("bad argument: {}", e)));
+/// Counts and average round trip from the output of `ping` (iputils or
+/// busybox). Only the summary line counts replies: ICMP error lines such as
+/// `From 192.0.2.1 icmp_seq=1 Destination Host Unreachable` are not
+/// replies.
+fn parse_ping_output(stdout: &str) -> Option<PingResult> {
+    let mut summary = None;
+    let mut avg_rtt_ms = None;
+    for line in stdout.lines() {
+        if let Some(pos) = line.find(" packets transmitted, ") {
+            let sent = line[..pos].trim().parse::<u32>().ok();
+            let rest = &line[pos + " packets transmitted, ".len()..];
+            let received = rest
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|n| n.parse::<u32>().ok());
+            if let (Some(sent), Some(received)) = (sent, received) {
+                summary = Some((sent, received));
             }
-        };
-
-        let timeout_ms = match self.parse_ping_timeout_ms(args) {
-            Ok(t) => t,
-            Err(e) => {
-                writeln!(io.stderr, "bad argument: {}", e)?;
-                return Ok(Status::err(2, format!("bad argument: {}", e)));
+        }
+        if let Some(pos) = line.find("min/avg/max") {
+            if let Some(eq) = line[pos..].find(" = ") {
+                let stats = &line[pos + eq + 3..];
+                avg_rtt_ms = stats
+                    .split(['/', ' '])
+                    .nth(1)
+                    .and_then(|v| v.parse::<f64>().ok());
             }
-        };
+        }
+    }
+    let (sent, received) = summary?;
+    Some(PingResult {
+        sent,
+        received,
+        avg_rtt_ms: if received > 0 { avg_rtt_ms } else { None },
+    })
+}
 
-        let port_override = match self.parse_ping_port(args) {
+/// True when `ping`'s error output says the name does not resolve.
+fn is_resolve_error(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    [
+        "name or service not known",
+        "temporary failure in name resolution",
+        "unknown host",
+        "no address associated",
+        "bad address",
+        "nodename nor servname",
+    ]
+    .iter()
+    .any(|p| s.contains(p))
+}
+
+impl NetHandle {
+    fn verb_ping(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let parsed = (|| {
+            let host = self.target_host("ping")?.to_string();
+            let count = u64_arg(args, "count", 3, 1, u32::MAX as u64)? as u32;
+            let timeout_ms = u64_arg(args, "timeout_ms", 3000, 100, MAX_MS)?;
+            let port = port_arg(args)?;
+            let family = choice_arg(args, "family", "auto", &["auto", "ipv4", "ipv6"])?.to_string();
+            let raw = bool_arg(args, "raw", false)?;
+            Ok::<_, Fail>((host, count, timeout_ms, port, family, raw))
+        })();
+        let (host, count, timeout_ms, port, family, raw) = match parsed {
             Ok(p) => p,
-            Err(e) => {
-                writeln!(io.stderr, "bad argument: {}", e)?;
-                return Ok(Status::err(2, format!("bad argument: {}", e)));
-            }
+            Err(fail) => return report(io, "ping", fail, &[]),
         };
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let fallback_port = port.or(self.port).unwrap_or(80);
+        let host_json = json!(host);
 
-        let family = match self.parse_ping_family(args) {
-            Ok(f) => f,
-            Err(e) => {
-                writeln!(io.stderr, "bad argument: {}", e)?;
-                return Ok(Status::err(2, format!("bad argument: {}", e)));
+        let (backend, result) = match self
+            .system_ping(&host, count, timeout_ms, &family, raw, io)?
+        {
+            SystemPing::Ran(r) => ("system_ping", r),
+            SystemPing::TimedOut => {
+                let fail = Fail::new(
+                    124,
+                    "timeout",
+                    format!(
+                        "ping did not finish within timeout_ms={timeout_ms} and was stopped{}",
+                        take_lost_note()
+                    ),
+                );
+                return report(io, "ping", fail, &[("host", host_json)]);
             }
-        };
-
-        let raw_output = match self.parse_ping_raw(args) {
-            Ok(r) => r,
-            Err(e) => {
-                writeln!(io.stderr, "bad argument: {}", e)?;
-                return Ok(Status::err(2, format!("bad argument: {}", e)));
+            SystemPing::Unresolved(msg) => {
+                let fail = Fail::new(1, "resolve_failed", msg);
+                return report(io, "ping", fail, &[("host", host_json)]);
             }
-        };
-
-        // Determine the port to use for TCP fallback
-        let fallback_port = port_override.unwrap_or(self.port.unwrap_or(80));
-
-        // Try system ping first
-        match self.try_system_ping(host, count, timeout_ms, &family, raw_output, io) {
-            Ok(result) => {
-                let json_obj = json!({
-                    "host": host,
-                    "port": fallback_port,
-                    "backend": "system_ping",
-                    "sent": result.sent,
-                    "received": result.received,
-                    "loss": result.loss,
-                    "avg_rtt_ms": result.avg_rtt_ms,
-                    "timeout_ms": timeout_ms,
-                    "reachable": result.reachable
-                });
-                writeln!(io.stdout, "{}", json_obj)?;
-                return Ok(Status::ok());
-            }
-            Err(_) => {
-                // Fall back to TCP ping
-                match self.try_tcp_fallback(host, fallback_port, count, timeout_ms, io) {
-                    Ok(result) => {
-                        let json_obj = json!({
-                            "host": host,
-                            "port": fallback_port,
-                            "backend": "tcp_fallback",
-                            "sent": result.sent,
-                            "received": result.received,
-                            "loss": result.loss,
-                            "avg_rtt_ms": result.avg_rtt_ms,
-                            "timeout_ms": timeout_ms,
-                            "reachable": result.reachable
-                        });
-                        writeln!(io.stdout, "{}", json_obj)?;
-                        return Ok(Status::ok());
-                    }
+            SystemPing::Unavailable(why) => {
+                if raw {
+                    writeln!(
+                        io.stderr,
+                        "system ping unavailable ({why}); using TCP connects"
+                    )?;
+                }
+                match tcp_ping(&host, fallback_port, count, timeout_ms, &family, deadline) {
+                    Ok(r) => ("tcp_fallback", r),
                     Err(e) => {
-                        return Ok(Status::err(
-                            1,
-                            format!("Both ping and TCP fallback failed: {}", e),
-                        ));
+                        let (exit, code) = if is_timeout(&e) {
+                            (124, "timeout")
+                        } else {
+                            (1, "ping_failed")
+                        };
+                        let fail = Fail::new(
+                            exit,
+                            code,
+                            format!("system ping unavailable ({why}) and TCP fallback failed: {e}"),
+                        );
+                        return report(io, "ping", fail, &[("host", host_json)]);
                     }
                 }
             }
+        };
+
+        let reachable = result.received > 0;
+        let no_reply = format!(
+            "net ping: no reply from {host} ({} sent, 0 received)",
+            result.sent
+        );
+        let mut json_obj = json!({
+            "host": host,
+            "port": fallback_port,
+            "backend": backend,
+            "sent": result.sent,
+            "received": result.received,
+            "loss": result.loss(),
+            "avg_rtt_ms": result.avg_rtt_ms,
+            "timeout_ms": timeout_ms,
+            "reachable": reachable
+        });
+        if !reachable {
+            json_obj["error"] = error_obj("unreachable", &no_reply);
         }
-    }
-
-    fn parse_ping_count(&self, args: &Args) -> Result<u32> {
-        let count_str = args.get("count").map(String::as_str).unwrap_or("3");
-        let count: u32 = count_str
-            .parse()
-            .with_context(|| format!("count must be a number, got: {}", count_str))?;
-
-        if count < 1 {
-            bail!("count must be >= 1, got: {}", count);
-        }
-
-        Ok(count)
-    }
-
-    fn parse_ping_timeout_ms(&self, args: &Args) -> Result<u64> {
-        let timeout_str = args.get("timeout_ms").map(String::as_str).unwrap_or("3000");
-        let timeout_ms: u64 = timeout_str
-            .parse()
-            .with_context(|| format!("timeout_ms must be a number, got: {}", timeout_str))?;
-
-        if timeout_ms < 100 {
-            bail!("timeout_ms must be >= 100, got: {}", timeout_ms);
-        }
-
-        Ok(timeout_ms)
-    }
-
-    fn parse_ping_port(&self, args: &Args) -> Result<Option<u16>> {
-        if let Some(port_str) = args.get("port") {
-            let port: u16 = port_str
-                .parse()
-                .with_context(|| format!("port must be a number, got: {}", port_str))?;
-            Ok(Some(port))
+        writeln!(io.stdout, "{}", json_obj)?;
+        if reachable {
+            Ok(Status::ok())
         } else {
-            Ok(None)
+            Ok(coded(1, "unreachable", &no_reply))
         }
     }
 
-    fn parse_ping_family(&self, args: &Args) -> Result<String> {
-        let family = args.get("family").map(String::as_str).unwrap_or("auto");
-        match family {
-            "auto" | "ipv4" | "ipv6" => Ok(family.to_string()),
-            _ => bail!("family must be 'auto', 'ipv4', or 'ipv6', got: {}", family),
-        }
-    }
-
-    fn parse_ping_raw(&self, args: &Args) -> Result<bool> {
-        if let Some(raw_str) = args.get("raw") {
-            match raw_str.to_lowercase().as_str() {
-                "true" | "1" | "yes" => Ok(true),
-                "false" | "0" | "no" => Ok(false),
-                _ => bail!("raw must be 'true' or 'false', got: {}", raw_str),
-            }
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn try_system_ping(
+    /// Runs `ping -c <count> -w <seconds>`: ping stops once `count` replies
+    /// arrived or `timeout_ms` (rounded up to whole seconds) passed.
+    fn system_ping(
         &self,
         host: &str,
         count: u32,
@@ -982,1568 +1183,1055 @@ impl NetHandle {
         family: &str,
         raw: bool,
         io: &mut IoStreams,
-    ) -> Result<PingResult> {
-        let ping_cmd = match family {
-            "ipv6" => {
-                // Try ping6 first, then ping -6
-                if which::which("ping6").is_ok() {
-                    "ping6"
-                } else if which::which("ping").is_ok() {
-                    "ping"
-                } else {
-                    bail!("No ping binary available");
-                }
-            }
-            _ => {
-                if which::which("ping").is_err() {
-                    bail!("No ping binary available");
-                }
-                "ping"
+    ) -> Result<SystemPing> {
+        let (program, family_flag) = match family {
+            "ipv6" if which::which("ping6").is_ok() => ("ping6", None),
+            "ipv6" => ("ping", Some("-6")),
+            "ipv4" => ("ping", Some("-4")),
+            _ => ("ping", None),
+        };
+        if which::which(program).is_err() {
+            return Ok(SystemPing::Unavailable(format!(
+                "{program} not found in PATH"
+            )));
+        }
+        let deadline_s = timeout_ms.div_ceil(1000).max(1);
+        let mut cmd = Command::new(program);
+        if let Some(flag) = family_flag {
+            cmd.arg(flag);
+        }
+        cmd.arg("-c")
+            .arg(count.to_string())
+            .arg("-w")
+            .arg(deadline_s.to_string())
+            .arg(host);
+
+        // ping ends itself at -w; the limit only catches a stuck tool.
+        let limit = Duration::from_millis(deadline_s * 1000 + 2000);
+        let output = match crate::core::process::run(&mut cmd, Some(limit)) {
+            Ok(o) => o,
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => return Ok(SystemPing::TimedOut),
+            Err(e) => {
+                return Ok(SystemPing::Unavailable(format!(
+                    "cannot run {program}: {e}"
+                )));
             }
         };
-
-        let per_packet_timeout_s = std::cmp::max(1, timeout_ms / 1000);
-        let mut cmd = Command::new(ping_cmd);
-
-        cmd.arg("-c").arg(count.to_string());
-        cmd.arg("-W").arg(per_packet_timeout_s.to_string());
-
-        if family == "ipv6" && ping_cmd == "ping" {
-            cmd.arg("-6");
-        }
-
-        cmd.arg(host);
-
-        // ping's own -W bounds a reply, not a stuck tool.
-        let limit = Duration::from_millis(timeout_ms.saturating_mul(count as u64 + 1));
-        let output = crate::core::process::run(&mut cmd, Some(limit))
-            .with_context(|| format!("Failed to execute ping command"))?;
-
-        let stdout_str = String::from_utf8_lossy(&output.stdout);
-        let stderr_str = String::from_utf8_lossy(&output.stderr);
-
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         if raw {
             write!(
                 io.stderr,
                 "Raw ping output:\nSTDOUT:\n{}\nSTDERR:\n{}\n",
-                stdout_str, stderr_str
+                stdout, stderr
             )?;
         }
+        if let Some(result) = parse_ping_output(&stdout) {
+            return Ok(SystemPing::Ran(result));
+        }
+        let msg = stderr.trim();
+        if is_resolve_error(msg) {
+            return Ok(SystemPing::Unresolved(format!(
+                "cannot resolve {host}: {msg}"
+            )));
+        }
+        Ok(SystemPing::Unavailable(format!(
+            "{program} exited with {}: {}",
+            output.status,
+            if msg.is_empty() { "no output" } else { msg }
+        )))
+    }
+}
 
-        // Parse the output
-        let parsed = self.parse_system_ping_output(&stdout_str, output.status.success());
-
-        Ok(PingResult {
-            sent: count,
-            received: parsed.received,
-            loss: 1.0 - (parsed.received as f64 / count as f64),
-            avg_rtt_ms: parsed.avg_rtt_ms,
-            reachable: parsed.received > 0,
+/// The TCP fallback: up to `count` connects to `port`, each with a timeout
+/// of `max(200, timeout_ms / count)` ms, all within `deadline`.
+fn tcp_ping(
+    host: &str,
+    port: u16,
+    count: u32,
+    timeout_ms: u64,
+    family: &str,
+    deadline: Instant,
+) -> io::Result<PingResult> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    let addrs: Vec<SocketAddr> = resolve(host, port, left)?
+        .into_iter()
+        .filter(|a| match family {
+            "ipv4" => a.is_ipv4(),
+            "ipv6" => a.is_ipv6(),
+            _ => true,
         })
+        .collect();
+    if addrs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{host} has no {family} address"),
+        ));
     }
-
-    fn parse_system_ping_output(&self, stdout: &str, _success: bool) -> ParsedOutput {
-        let mut received = 0u32;
-        let mut avg_rtt_ms: Option<f64> = None;
-
-        for line in stdout.lines() {
-            // Count replies - look for lines like "64 bytes from" or "icmp_seq="
-            if line.contains("bytes from") || line.contains("icmp_seq=") {
-                received += 1;
-            }
-
-            // Parse RTT statistics from lines like "rtt min/avg/max/mdev = 12.345/23.456/34.567/5.678 ms"
-            if let Some(rtt_pos) = line.find("rtt min/avg/max") {
-                if let Some(eq_pos) = line[rtt_pos..].find(" = ") {
-                    let stats_part = &line[rtt_pos + eq_pos + 3..];
-                    if let Some(ms_pos) = stats_part.find(" ms") {
-                        let numbers_part = &stats_part[..ms_pos];
-                        let values: Vec<&str> = numbers_part.split('/').collect();
-                        if values.len() >= 2 {
-                            if let Ok(avg) = values[1].parse::<f64>() {
-                                avg_rtt_ms = Some(avg);
-                            }
-                        }
-                    }
-                }
-            }
+    let per_attempt = Duration::from_millis((timeout_ms / count as u64).max(200));
+    let mut result = PingResult {
+        sent: 0,
+        received: 0,
+        avg_rtt_ms: None,
+    };
+    let mut total_rtt = 0.0;
+    while result.sent < count {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
         }
-
-        ParsedOutput {
-            received,
-            avg_rtt_ms,
+        result.sent += 1;
+        let start = Instant::now();
+        let attempt_end = start + per_attempt.min(left);
+        // Like a name with A and AAAA records, the first address that
+        // answers counts.
+        for addr in &addrs {
+            let left = attempt_end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            if TcpStream::connect_timeout(addr, left).is_ok() {
+                total_rtt += start.elapsed().as_secs_f64() * 1000.0;
+                result.received += 1;
+                break;
+            }
         }
     }
+    if result.received > 0 {
+        result.avg_rtt_ms = Some(total_rtt / result.received as f64);
+    }
+    Ok(result)
+}
 
-    fn try_tcp_fallback(
-        &self,
-        host: &str,
-        port: u16,
-        count: u32,
-        timeout_ms: u64,
-        _io: &mut IoStreams,
-    ) -> Result<PingResult> {
-        let per_attempt_timeout = std::cmp::max(200, timeout_ms / count as u64);
-        let timeout_duration = Duration::from_millis(per_attempt_timeout);
+// ------------------------------------------------------------- tcp_check --
 
-        let mut successes = 0u32;
-        let mut total_rtt = 0.0f64;
-        let mut rtt_count = 0;
+/// Why one tcp_check attempt failed.
+struct AttemptError {
+    message: String,
+    /// `timeout`, `resolve_failed`, `connect_failed` or `tls_failed`.
+    code: &'static str,
+    tls_tried: bool,
+}
 
-        for _ in 0..count {
-            let start = Instant::now();
-
-            match std::net::TcpStream::connect_timeout(
-                &format!("{}:{}", host, port).parse()?,
-                timeout_duration,
-            ) {
-                Ok(_) => {
-                    let elapsed = start.elapsed();
-                    total_rtt += elapsed.as_millis() as f64;
-                    rtt_count += 1;
-                    successes += 1;
+impl NetHandle {
+    fn verb_tcp_check(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let parsed = (|| {
+            let host = self.target_host("tcp_check")?.to_string();
+            let port = match (port_arg(args)?, self.port) {
+                (Some(p), _) | (None, Some(p)) => p,
+                (None, None) => {
+                    return Err(Fail::invalid(
+                        "needs a port: net://<host>:<port>.tcp_check or port=<n>",
+                    ));
                 }
-                Err(_) => {
-                    // Connection failed, this is expected for unreachable hosts
+            };
+            if port == 0 {
+                return Err(Fail::invalid("port 0 cannot be connected to"));
+            }
+            let timeout_ms = u64_arg(args, "timeout_ms", 3000, 1, MAX_MS)?;
+            let retries = u64_arg(args, "retries", 1, 1, 1000)? as u32;
+            let backoff_ms = u64_arg(args, "backoff_ms", 0, 0, MAX_MS)?;
+            let expect_tls = bool_arg(args, "expect_tls", false)?;
+            Ok::<_, Fail>((host, port, timeout_ms, retries, backoff_ms, expect_tls))
+        })();
+        let (host, port, timeout_ms, retries, backoff_ms, expect_tls) = match parsed {
+            Ok(p) => p,
+            Err(fail) => return report(io, "tcp_check", fail, &[]),
+        };
+
+        let tls = if expect_tls {
+            let ca = self
+                .ca_file
+                .clone()
+                .or_else(|| std::env::var_os("SSL_CERT_FILE").map(PathBuf::from));
+            match tls::client_config(ca.as_deref()) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    let fail = Fail::new(1, "tls_failed", e);
+                    return report(
+                        io,
+                        "tcp_check",
+                        fail,
+                        &[("host", json!(host)), ("port", json!(port))],
+                    );
                 }
             }
-        }
-
-        let avg_rtt_ms = if rtt_count > 0 {
-            Some(total_rtt / rtt_count as f64)
         } else {
             None
         };
 
-        Ok(PingResult {
-            sent: count,
-            received: successes,
-            loss: 1.0 - (successes as f64 / count as f64),
-            avg_rtt_ms,
-            reachable: successes > 0,
-        })
-    }
-
-    // Keep legacy parsing functions for backwards compatibility with other functions
-    #[allow(dead_code)]
-    fn parse_count(&self, args: &Args) -> Result<u32> {
-        let count_str = args.get("count").map(String::as_str).unwrap_or("4");
-        let count: u32 = count_str
-            .parse()
-            .with_context(|| format!("Invalid count value: {}", count_str))?;
-
-        if count == 0 || count > 100 {
-            bail!("count must be between 1 and 100, got: {}", count);
-        }
-
-        Ok(count)
-    }
-
-    #[allow(dead_code)]
-    fn parse_timeout_ms(&self, args: &Args) -> Result<u64> {
-        let timeout_str = args.get("timeout_ms").map(String::as_str).unwrap_or("2000");
-        let timeout_ms: u64 = timeout_str
-            .parse()
-            .with_context(|| format!("Invalid timeout_ms value: {}", timeout_str))?;
-
-        if timeout_ms == 0 {
-            bail!("timeout_ms must be greater than 0, got: {}", timeout_ms);
-        }
-
-        Ok(timeout_ms)
-    }
-
-    #[allow(dead_code)]
-    fn parse_ipv(&self, args: &Args) -> Result<String> {
-        if let Some(ipv_str) = args.get("ipv") {
-            match ipv_str.as_str() {
-                "4" => Ok("4".to_string()),
-                "6" => Ok("6".to_string()),
-                _ => bail!("ipv must be '4' or '6', got: {}", ipv_str),
-            }
-        } else {
-            Ok("auto".to_string())
-        }
-    }
-
-    #[allow(dead_code)]
-    fn parse_size(&self, args: &Args) -> Result<Option<u32>> {
-        if let Some(size_str) = args.get("size") {
-            let size: u32 = size_str
-                .parse()
-                .with_context(|| format!("Invalid size value: {}", size_str))?;
-
-            if size < 8 || size > 65507 {
-                bail!("size must be between 8 and 65507 bytes, got: {}", size);
-            }
-
-            Ok(Some(size))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn verb_tcp_check(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        if self.host.is_none() {
-            bail!("No target host/IP specified for tcp_check. Use net://hostname:port.tcp_check");
-        }
-
-        // Resolve port from args or URL
-        let port = match self.resolve_port(args) {
-            Ok(p) => p,
-            Err(e) => {
-                writeln!(io.stderr, "Error: {}", e)?;
-                return Ok(Status::err(2, format!("Port resolution failed: {}", e)));
-            }
-        };
-
-        // Parse other arguments with defaults and validation
-        let timeout_ms = match self.parse_tcp_timeout_ms(args) {
-            Ok(t) => t,
-            Err(e) => {
-                writeln!(io.stderr, "Error: {}", e)?;
-                return Ok(Status::err(2, format!("Invalid timeout: {}", e)));
-            }
-        };
-
-        let retries = match self.parse_retries(args) {
-            Ok(r) => r,
-            Err(e) => {
-                writeln!(io.stderr, "Error: {}", e)?;
-                return Ok(Status::err(2, format!("Invalid retries: {}", e)));
-            }
-        };
-
-        let backoff_ms = match self.parse_backoff_ms(args) {
-            Ok(b) => b,
-            Err(e) => {
-                writeln!(io.stderr, "Error: {}", e)?;
-                return Ok(Status::err(2, format!("Invalid backoff: {}", e)));
-            }
-        };
-
-        let _expect_tls = match self.parse_expect_tls(args) {
-            Ok(t) => t,
-            Err(e) => {
-                writeln!(io.stderr, "Error: {}", e)?;
-                return Ok(Status::err(2, format!("Invalid expect_tls: {}", e)));
-            }
-        };
-
-        // Execute TCP check
-        match self.execute_tcp_check(port, timeout_ms, retries, backoff_ms) {
-            Ok((success, json_output)) => {
-                writeln!(io.stdout, "{}", json_output)?;
-                if success {
-                    Ok(Status::ok())
-                } else {
-                    Ok(Status::err(111, "connection failed"))
-                }
-            }
-            Err(e) => {
-                writeln!(io.stderr, "Error: {}", e)?;
-                Ok(Status::err(1, format!("TCP check execution failed: {}", e)))
-            }
-        }
-    }
-
-    fn resolve_port(&self, args: &Args) -> Result<u16> {
-        // Args port takes precedence over URL port
-        if let Some(port_str) = args.get("port") {
-            let port: u16 = port_str
-                .parse()
-                .with_context(|| format!("Invalid port value: {}", port_str))?;
-            if port == 0 {
-                bail!("port must be greater than 0, got: {}", port);
-            }
-            return Ok(port);
-        }
-
-        // Fall back to URL port
-        if let Some(port) = self.port {
-            return Ok(port);
-        }
-
-        bail!("Port is required - specify in URL (net://host:port) or as argument (port=N)");
-    }
-
-    fn parse_tcp_timeout_ms(&self, args: &Args) -> Result<u64> {
-        let timeout_str = args.get("timeout_ms").map(String::as_str).unwrap_or("3000");
-        let timeout_ms: u64 = timeout_str
-            .parse()
-            .with_context(|| format!("Invalid timeout_ms value: {}", timeout_str))?;
-
-        if timeout_ms == 0 {
-            bail!("timeout_ms must be greater than 0, got: {}", timeout_ms);
-        }
-
-        Ok(timeout_ms)
-    }
-
-    fn parse_retries(&self, args: &Args) -> Result<u32> {
-        let retries_str = args.get("retries").map(String::as_str).unwrap_or("1");
-        let retries: u32 = retries_str
-            .parse()
-            .with_context(|| format!("Invalid retries value: {}", retries_str))?;
-
-        if retries == 0 {
-            bail!("retries must be greater than 0, got: {}", retries);
-        }
-
-        Ok(retries)
-    }
-
-    fn parse_backoff_ms(&self, args: &Args) -> Result<u64> {
-        let backoff_str = args.get("backoff_ms").map(String::as_str).unwrap_or("0");
-        let backoff_ms: u64 = backoff_str
-            .parse()
-            .with_context(|| format!("Invalid backoff_ms value: {}", backoff_str))?;
-
-        Ok(backoff_ms)
-    }
-
-    fn parse_expect_tls(&self, args: &Args) -> Result<bool> {
-        let expect_tls_str = args
-            .get("expect_tls")
-            .map(String::as_str)
-            .unwrap_or("false");
-        match expect_tls_str {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            _ => bail!(
-                "expect_tls must be 'true' or 'false', got: {}",
-                expect_tls_str
-            ),
-        }
-    }
-
-    fn execute_tcp_check(
-        &self,
-        port: u16,
-        timeout_ms: u64,
-        retries: u32,
-        backoff_ms: u64,
-    ) -> Result<(bool, serde_json::Value)> {
         let timeout = Duration::from_millis(timeout_ms);
-        let mut last_error = None;
-
+        let mut last: Option<AttemptError> = None;
         for attempt in 1..=retries {
-            let start_time = Instant::now();
-
-            // Resolve hostname to socket addresses
-            let target = self.target();
-            let addr = match target.to_socket_addrs() {
-                Ok(mut addrs) => match addrs.next() {
-                    Some(addr) => addr,
-                    None => {
-                        last_error = Some(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            "No addresses found for hostname",
-                        ));
-                        continue;
-                    }
-                },
-                Err(e) => {
-                    last_error = Some(e);
-                    continue;
-                }
-            };
-
-            match TcpStream::connect_timeout(&addr, timeout) {
-                Ok(_stream) => {
-                    // Connection successful
-                    let latency_ms = start_time.elapsed().as_millis() as u64;
-
+            let start = Instant::now();
+            match attempt_connect(&host, port, timeout, tls.as_ref()) {
+                Ok(()) => {
                     let json_output = json!({
-                        "host": self.host.as_deref().unwrap_or(&self.resource),
+                        "host": host,
                         "port": port,
                         "ok": true,
                         "attempts": attempt,
-                        "latency_ms": latency_ms,
+                        "latency_ms": start.elapsed().as_millis() as u64,
                         "timeout_ms": timeout_ms,
                         "retries": retries,
                         "backend": "tcp",
-                        "tls_checked": false
+                        "tls_checked": expect_tls
                     });
-
-                    return Ok((true, json_output));
+                    writeln!(io.stdout, "{}", json_output)?;
+                    return Ok(Status::ok());
                 }
-                Err(e) => {
-                    last_error = Some(e);
-
-                    // If not the last attempt and we have backoff, sleep
-                    if attempt < retries && backoff_ms > 0 {
-                        std::thread::sleep(Duration::from_millis(backoff_ms));
-                    }
-                }
+                Err(e) => last = Some(e),
+            }
+            if attempt < retries && backoff_ms > 0 {
+                thread::sleep(Duration::from_millis(backoff_ms));
             }
         }
 
-        // All attempts failed
-        let error_msg = match last_error {
-            Some(e) => format!("{}", e),
-            None => "unknown error".to_string(),
-        };
-
+        let last = last.unwrap_or(AttemptError {
+            message: "no attempt was made".into(),
+            code: "connect_failed",
+            tls_tried: false,
+        });
+        let message = format!("{host}:{port}: {}", last.message);
         let json_output = json!({
-            "host": self.host.as_deref().unwrap_or(&self.resource),
+            "host": host,
             "port": port,
             "ok": false,
             "attempts": retries,
             "timeout_ms": timeout_ms,
             "retries": retries,
             "backend": "tcp",
-            "error": error_msg,
-            "tls_checked": false
+            "error": error_obj(last.code, &message),
+            "tls_checked": last.tls_tried
         });
+        writeln!(io.stdout, "{}", json_output)?;
+        let exit = if last.code == "timeout" { 124 } else { 1 };
+        Ok(coded(exit, last.code, &format!("net tcp_check: {message}")))
+    }
+}
 
-        Ok((false, json_output))
+/// One attempt: resolve, connect to each address in turn, and (with `tls`)
+/// complete a verified TLS handshake, all within `timeout`.
+fn attempt_connect(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    tls: Option<&Arc<rustls::ClientConfig>>,
+) -> Result<(), AttemptError> {
+    let deadline = Instant::now() + timeout;
+    let fail = |e: io::Error, code: &'static str, tls_tried: bool| AttemptError {
+        code: if is_timeout(&e) { "timeout" } else { code },
+        message: e.to_string(),
+        tls_tried,
+    };
+    let addrs = resolve(host, port, timeout).map_err(|e| fail(e, "resolve_failed", false))?;
+    let mut last = None;
+    for addr in addrs {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match TcpStream::connect_timeout(&addr, left) {
+            Ok(mut stream) => {
+                let Some(config) = tls else {
+                    return Ok(());
+                };
+                return tls::handshake(&mut stream, host, deadline, config).map_err(|e| {
+                    let mut err = fail(e, "tls_failed", true);
+                    err.message = format!("TLS handshake failed: {}", err.message);
+                    err
+                });
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(fail(
+        last.unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "connection timed out")),
+        "connect_failed",
+        false,
+    ))
+}
+
+mod tls {
+    //! The TLS client handshake of `tcp_check expect_tls=true`.
+
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, ServerName};
+    use rustls::{ClientConfig, ClientConnection, RootCertStore};
+    use std::io;
+    use std::net::TcpStream;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// CA bundles of the common Linux distributions.
+    const SYSTEM_BUNDLES: &[&str] = &[
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+    ];
+
+    /// A client configuration trusting the CAs in `ca_file`, or in the
+    /// system bundle when it is `None`.
+    pub fn client_config(ca_file: Option<&Path>) -> Result<Arc<ClientConfig>, String> {
+        let path = match ca_file {
+            Some(p) => p.to_path_buf(),
+            None => SYSTEM_BUNDLES
+                .iter()
+                .map(Path::new)
+                .find(|p| p.is_file())
+                .ok_or("no CA bundle found (set SSL_CERT_FILE)")?
+                .to_path_buf(),
+        };
+        let mut roots = RootCertStore::empty();
+        let certs = CertificateDer::pem_file_iter(&path)
+            .map_err(|e| format!("cannot read CA bundle {}: {e}", path.display()))?;
+        for cert in certs {
+            let cert = cert.map_err(|e| format!("bad certificate in {}: {e}", path.display()))?;
+            // A certificate the verifier cannot use is skipped, as other
+            // TLS clients do with system bundles.
+            roots.add(cert).ok();
+        }
+        if roots.is_empty() {
+            return Err(format!("no usable CA certificate in {}", path.display()));
+        }
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|e| format!("TLS setup failed: {e}"))?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        Ok(Arc::new(config))
     }
 
-    /// Implements the scan verb for TCP port scanning
-    ///
-    /// Supported arguments:
-    /// - ports: comma-separated list of ports and ranges (e.g., "80,443,8000-8005")
-    /// - timeout_ms: timeout per port in milliseconds (default: 500)
-    /// - concurrency: max concurrent connections (default: 32, max: 256)
-    /// - protocol: only "tcp" supported (default: "tcp")
-    /// - host: override URL host for scanning target
-    ///
-    /// Output JSON schema:
-    /// {
-    ///   "target": "example.com",
-    ///   "protocol": "tcp",
-    ///   "ports": [
-    ///     { "port": 80, "state": "open" },
-    ///     { "port": 22, "state": "closed", "error": "connection refused" }
-    ///   ],
-    ///   "scan": {
-    ///     "timeout_ms": 500,
-    ///     "concurrency": 32,
-    ///     "started_at": "2025-11-15T12:34:56Z",
-    ///     "duration_ms": 42
-    ///   }
-    /// }
-    fn scan(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let start_time = Instant::now();
-        let started_at = chrono::Utc::now().to_rfc3339();
-
-        // 1. Determine target host
-        let target_host = if let Some(host) = args.get("host") {
-            host.clone()
-        } else if let Some(host) = &self.host {
-            host.clone()
-        } else if !self.resource.is_empty()
-            && self.resource != "if"
-            && self.resource != "interfaces"
-        {
-            self.resource.clone()
-        } else {
-            writeln!(io.stderr, "missing host")?;
-            return Ok(Status::err(1, "missing host"));
-        };
-
-        // 2. Parse protocol
-        let protocol = args.get("protocol").map(String::as_str).unwrap_or("tcp");
-        if protocol != "tcp" {
-            writeln!(io.stderr, "unsupported protocol; only tcp is supported")?;
-            return Ok(Status::err(
-                6,
-                "unsupported protocol; only tcp is supported",
-            ));
-        }
-
-        // 3. Parse timeout
-        let timeout_ms = match args.get("timeout_ms") {
-            Some(timeout_str) => match timeout_str.parse::<u64>() {
-                Ok(t) => t,
-                Err(_) => {
-                    writeln!(io.stderr, "invalid timeout_ms")?;
-                    return Ok(Status::err(5, "invalid timeout_ms"));
-                }
-            },
-            None => 500, // default
-        };
-
-        // 4. Parse concurrency
-        let concurrency = match args.get("concurrency") {
-            Some(concurrency_str) => match concurrency_str.parse::<usize>() {
-                Ok(c) => c.max(1).min(256),
-                Err(_) => 32, // default on parse error
-            },
-            None => 32, // default
-        };
-
-        // 5. Parse ports
-        let port_list = match self.parse_ports(args) {
-            Ok(ports) => ports,
-            Err(e) => {
-                writeln!(io.stderr, "invalid ports specification: {}", e)?;
-                return Ok(Status::err(
-                    3,
-                    format!("invalid ports specification: {}", e),
+    /// Completes a TLS handshake with `host` over `stream` by `deadline`,
+    /// verifying the certificate chain and the host name (or IP address).
+    pub fn handshake(
+        stream: &mut TcpStream,
+        host: &str,
+        deadline: Instant,
+        config: &Arc<ClientConfig>,
+    ) -> io::Result<()> {
+        let name = ServerName::try_from(host.to_string())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+        let mut conn = ClientConnection::new(Arc::clone(config), name)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        while conn.is_handshaking() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "handshake did not finish in time",
                 ));
             }
+            stream.set_read_timeout(Some(left))?;
+            stream.set_write_timeout(Some(left))?;
+            match conn.complete_io(stream) {
+                Ok((0, 0)) if conn.is_handshaking() && conn.wants_read() => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "the server closed the connection",
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "no TLS answer from the server in time",
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        // Say goodbye cleanly; the check is already decided.
+        conn.send_close_notify();
+        conn.write_tls(stream).ok();
+        Ok(())
+    }
+}
+
+// ------------------------------------------------------------------ scan --
+
+/// Parses `ports` ("80,443,8000-8005") into a list without duplicates, in
+/// the order given.
+fn parse_ports(spec: &str) -> Result<Vec<u16>, String> {
+    let mut ports = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for token in spec.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let num = |s: &str| -> Result<u16, String> {
+            match s.trim().parse::<u16>() {
+                Ok(p) if p > 0 => Ok(p),
+                _ => Err(format!("invalid port {s:?} (expected 1-65535)")),
+            }
+        };
+        let (start, end) = match token.split_once('-') {
+            Some((a, b)) => (num(a)?, num(b)?),
+            None => {
+                let p = num(token)?;
+                (p, p)
+            }
+        };
+        if start > end {
+            return Err(format!("invalid range {token}: start > end"));
+        }
+        for port in start..=end {
+            if seen.insert(port) {
+                ports.push(port);
+                if ports.len() > MAX_SCAN_PORTS {
+                    return Err(format!("too many ports; at most {MAX_SCAN_PORTS}"));
+                }
+            }
+        }
+    }
+    if ports.is_empty() {
+        return Err("no port given".into());
+    }
+    Ok(ports)
+}
+
+/// The result of connecting to `port` on any of `addrs`.
+fn scan_port(addrs: &[IpAddr], port: u16, timeout: Duration) -> Value {
+    let mut last = None;
+    for ip in addrs {
+        match TcpStream::connect_timeout(&SocketAddr::new(*ip, port), timeout) {
+            Ok(_) => return json!({"port": port, "state": "open"}),
+            Err(e) => last = Some(e),
+        }
+    }
+    match last {
+        Some(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            json!({"port": port, "state": "closed", "error": "connection refused"})
+        }
+        Some(e) if is_timeout(&e) => json!({"port": port, "state": "timeout"}),
+        Some(e) => json!({"port": port, "state": "error", "error": e.to_string()}),
+        None => json!({"port": port, "state": "error", "error": "no address to connect to"}),
+    }
+}
+
+impl NetHandle {
+    fn scan(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let parsed = (|| {
+            let target = match args.get("host") {
+                Some(h) => {
+                    let h = h.trim();
+                    let h = h
+                        .strip_prefix('[')
+                        .and_then(|x| x.strip_suffix(']'))
+                        .unwrap_or(h);
+                    check_host(h, "host")?;
+                    h.to_string()
+                }
+                None => self.target_host("scan")?.to_string(),
+            };
+            let protocol = choice_arg(args, "protocol", "tcp", &["tcp"])?.to_string();
+            let timeout_ms = u64_arg(args, "timeout_ms", 500, 1, MAX_MS)?;
+            // Documented as clamped to 1-256.
+            let concurrency = u64_arg(args, "concurrency", 32, 0, u64::MAX)?.clamp(1, 256) as usize;
+            let spec = args.get("ports").map(String::as_str).unwrap_or("80,443");
+            let ports = parse_ports(spec)
+                .map_err(|e| Fail::invalid(format!("invalid ports {spec:?}: {e}")))?;
+            Ok::<_, Fail>((target, protocol, timeout_ms, concurrency, ports))
+        })();
+        let (target, protocol, timeout_ms, concurrency, ports) = match parsed {
+            Ok(p) => p,
+            Err(fail) => return report(io, "scan", fail, &[]),
         };
 
-        // 6. Check port list size limit
-        if port_list.len() > 4096 {
-            writeln!(io.stderr, "port range too large; max 4096 ports")?;
-            return Ok(Status::err(4, "port range too large; max 4096 ports"));
-        }
+        let start_time = Instant::now();
+        let started_at = chrono::Utc::now().to_rfc3339();
+        let timeout = Duration::from_millis(timeout_ms);
 
-        // 7. Perform the scan
-        let scan_results = self.perform_scan(&target_host, &port_list, timeout_ms, concurrency)?;
+        // Resolve once, not once per port.
+        let resolve_limit = timeout.max(Duration::from_secs(5));
+        let results: Vec<Value> = match resolve(&target, 0, resolve_limit) {
+            Ok(addrs) => {
+                let ips: Vec<IpAddr> = addrs.iter().map(|a| a.ip()).collect();
+                scan_ports(&ips, &ports, timeout, concurrency)
+            }
+            Err(e) => ports
+                .iter()
+                .map(|p| json!({"port": p, "state": "error", "error": e.to_string()}))
+                .collect(),
+        };
 
-        // 8. Build output JSON
-        let duration_ms = start_time.elapsed().as_millis() as u64;
-        let output = serde_json::json!({
-            "target": target_host,
+        let all_error = results.iter().all(|p| p["state"] == "error");
+        let failed = format!("net scan: no port of {target} could be probed");
+        let mut output = json!({
+            "target": target,
             "protocol": protocol,
-            "ports": scan_results,
+            "ports": results,
             "scan": {
                 "timeout_ms": timeout_ms,
                 "concurrency": concurrency,
                 "started_at": started_at,
-                "duration_ms": duration_ms
+                "duration_ms": start_time.elapsed().as_millis() as u64
             }
         });
-
-        writeln!(io.stdout, "{}", serde_json::to_string(&output)?)?;
         // Every probe failing, for example on a name that does not resolve,
         // says nothing about the ports.
-        let ports = output["ports"].as_array();
-        if ports.is_some_and(|p| !p.is_empty() && p.iter().all(|p| p["state"] == "error")) {
-            return Ok(Status::err(1, "no port could be probed"));
+        if all_error {
+            output["error"] = error_obj("scan_failed", &failed);
+        }
+        writeln!(io.stdout, "{}", output)?;
+        if all_error {
+            return Ok(coded(1, "scan_failed", &failed));
         }
         Ok(Status::ok())
     }
+}
 
-    /// Parse ports argument into a list of port numbers
-    /// Supports:
-    /// - Single ports: "80"
-    /// - Comma-separated: "80,443,8080"
-    /// - Ranges: "8000-8005"
-    /// - Mixed: "80,443,8000-8005"
-    fn parse_ports(&self, args: &Args) -> Result<Vec<u16>> {
-        let ports_str = args.get("ports").map(String::as_str).unwrap_or("80,443");
-
-        let mut ports = Vec::new();
-
-        for token in ports_str.split(',') {
-            let token = token.trim();
-            if token.is_empty() {
-                continue;
-            }
-
-            if token.contains('-') {
-                // Parse range: "8000-8005"
-                let parts: Vec<&str> = token.split('-').collect();
-                if parts.len() != 2 {
-                    bail!("invalid range format: {}", token);
-                }
-
-                let start = parts[0]
-                    .trim()
-                    .parse::<u16>()
-                    .with_context(|| format!("invalid start port in range: {}", parts[0]))?;
-                let end = parts[1]
-                    .trim()
-                    .parse::<u16>()
-                    .with_context(|| format!("invalid end port in range: {}", parts[1]))?;
-
-                if start == 0 || end == 0 {
-                    bail!("port numbers must be in range 1-65535");
-                }
-
-                if start > end {
-                    bail!("invalid range: start port {} > end port {}", start, end);
-                }
-
-                for port in start..=end {
-                    ports.push(port);
-                }
-            } else {
-                // Parse single port
-                let port = token
-                    .parse::<u16>()
-                    .with_context(|| format!("invalid port number: {}", token))?;
-
-                if port == 0 {
-                    bail!("port numbers must be in range 1-65535");
-                }
-
-                ports.push(port);
-            }
-        }
-
-        Ok(ports)
-    }
-
-    /// Perform the actual TCP port scan
-    /// Returns a list of port scan results in JSON format
-    fn perform_scan(
-        &self,
-        host: &str,
-        ports: &[u16],
-        timeout_ms: u64,
-        concurrency: usize,
-    ) -> Result<Vec<serde_json::Value>> {
-        let timeout = Duration::from_millis(timeout_ms);
-
-        // Ensure reasonable concurrency limits
-        let concurrency = concurrency.max(1).min(256);
-
-        // If there are fewer ports than concurrency limit or very few ports, scan sequentially
-        if ports.len() <= 4 || concurrency == 1 {
-            return self.perform_sequential_scan(host, ports, timeout);
-        }
-
-        // Create channels for work distribution and result collection
-        let (port_tx, port_rx) = mpsc::channel::<u16>();
-        let port_rx = Arc::new(Mutex::new(port_rx));
-        let (result_tx, result_rx) = mpsc::channel::<(usize, serde_json::Value)>();
-
-        // Clone host string for threads
-        let host = host.to_string();
-
-        // Start worker threads
-        let mut handles = Vec::new();
-        for _ in 0..concurrency {
-            let port_rx = Arc::clone(&port_rx);
-            let result_tx = result_tx.clone();
-            let host = host.clone();
-
-            let handle = thread::spawn(move || {
+/// Probes `ports` with at most `concurrency` connects at a time and returns
+/// the results in the order of `ports`.
+fn scan_ports(
+    addrs: &[IpAddr],
+    ports: &[u16],
+    timeout: Duration,
+    concurrency: usize,
+) -> Vec<Value> {
+    let next = AtomicUsize::new(0);
+    let slots: Mutex<Vec<Option<Value>>> = Mutex::new(vec![None; ports.len()]);
+    thread::scope(|s| {
+        for _ in 0..concurrency.min(ports.len()) {
+            s.spawn(|| {
                 loop {
-                    let port = {
-                        let receiver = port_rx.lock().unwrap();
-                        match receiver.try_recv() {
-                            Ok(port) => port,
-                            Err(_) => break, // Channel is empty or disconnected
-                        }
-                    };
-
-                    let result = Self::scan_port_static(&host, port, timeout);
-                    if let Err(_) = result_tx.send((port as usize, result)) {
-                        break; // Channel closed
-                    }
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&port) = ports.get(i) else { break };
+                    let result = scan_port(addrs, port, timeout);
+                    let mut slots = slots.lock().unwrap_or_else(|e| e.into_inner());
+                    slots[i] = Some(result);
                 }
             });
-            handles.push(handle);
         }
-
-        // Send ports to worker threads
-        for &port in ports {
-            if port_tx.send(port).is_err() {
-                break; // Channel closed
-            }
-        }
-        drop(port_tx); // Signal no more work
-
-        // Collect results
-        let mut results_map = std::collections::HashMap::new();
-        drop(result_tx); // Close sender so receiver will eventually close
-
-        for (port, result) in result_rx {
-            results_map.insert(port, result);
-        }
-
-        // Wait for all threads to finish
-        for handle in handles {
-            let _ = handle.join();
-        }
-
-        // Reconstruct results in original port order
-        let mut results = Vec::new();
-        for &port in ports {
-            if let Some(result) = results_map.remove(&(port as usize)) {
-                results.push(result);
-            } else {
-                // Fallback if somehow a result was lost
-                results.push(serde_json::json!({
-                    "port": port,
-                    "state": "error",
-                    "error": "scan result lost"
-                }));
-            }
-        }
-
-        Ok(results)
-    }
-
-    /// Fallback sequential implementation for small port lists or single-threaded operation
-    fn perform_sequential_scan(
-        &self,
-        host: &str,
-        ports: &[u16],
-        timeout: Duration,
-    ) -> Result<Vec<serde_json::Value>> {
-        let mut results = Vec::new();
-
-        for &port in ports {
-            let result = self.scan_port(host, port, timeout);
-            results.push(result);
-        }
-
-        Ok(results)
-    }
-
-    /// Static version of scan_port for use in threads
-    fn scan_port_static(host: &str, port: u16, timeout: Duration) -> serde_json::Value {
-        let addr_str = format!("{}:{}", host, port);
-
-        // Try to resolve the address first
-        let socket_addrs: Vec<_> = match addr_str.to_socket_addrs() {
-            Ok(addrs) => addrs.collect(),
-            Err(e) => {
-                return serde_json::json!({
-                    "port": port,
-                    "state": "error",
-                    "error": format!("dns resolution failed: {}", e)
-                });
-            }
-        };
-
-        if socket_addrs.is_empty() {
-            return serde_json::json!({
-                "port": port,
-                "state": "error",
-                "error": "no addresses resolved"
-            });
-        }
-
-        // Try connecting to each resolved address
-        let last_addr = socket_addrs.last().cloned();
-        for addr in socket_addrs {
-            match TcpStream::connect_timeout(&addr, timeout) {
-                Ok(_) => {
-                    return serde_json::json!({
-                        "port": port,
-                        "state": "open"
-                    });
-                }
-                Err(e) => {
-                    use std::io::ErrorKind;
-                    let state_and_error = match e.kind() {
-                        ErrorKind::ConnectionRefused => {
-                            ("closed", Some("connection refused".to_string()))
-                        }
-                        ErrorKind::TimedOut => ("timeout", None),
-                        _ => ("error", Some(format!("{}", e))),
-                    };
-
-                    // Continue to next address, but save this result as fallback
-                    // If no address works, we'll use the last error
-                    if Some(addr) == last_addr {
-                        // This was the last address, return the error
-                        let mut result = serde_json::json!({
-                            "port": port,
-                            "state": state_and_error.0
-                        });
-                        if let Some(error_msg) = state_and_error.1 {
-                            result["error"] = serde_json::Value::String(error_msg);
-                        }
-                        return result;
-                    }
-                }
-            }
-        }
-
-        // Fallback (shouldn't reach here)
-        serde_json::json!({
-            "port": port,
-            "state": "error",
-            "error": "unknown error"
-        })
-    }
-
-    /// Scan a single port and return the result as JSON
-    fn scan_port(&self, host: &str, port: u16, timeout: Duration) -> serde_json::Value {
-        let addr_str = format!("{}:{}", host, port);
-
-        // Try to resolve the address first
-        let socket_addrs: Vec<_> = match addr_str.to_socket_addrs() {
-            Ok(addrs) => addrs.collect(),
-            Err(e) => {
-                return serde_json::json!({
-                    "port": port,
-                    "state": "error",
-                    "error": format!("dns resolution failed: {}", e)
-                });
-            }
-        };
-
-        if socket_addrs.is_empty() {
-            return serde_json::json!({
-                "port": port,
-                "state": "error",
-                "error": "no addresses resolved"
-            });
-        }
-
-        // Try connecting to each resolved address
-        let last_addr = socket_addrs.last().cloned();
-        for addr in socket_addrs {
-            match TcpStream::connect_timeout(&addr, timeout) {
-                Ok(_) => {
-                    return serde_json::json!({
-                        "port": port,
-                        "state": "open"
-                    });
-                }
-                Err(e) => {
-                    use std::io::ErrorKind;
-                    let state_and_error = match e.kind() {
-                        ErrorKind::ConnectionRefused => {
-                            ("closed", Some("connection refused".to_string()))
-                        }
-                        ErrorKind::TimedOut => ("timeout", None),
-                        _ => ("error", Some(format!("{}", e))),
-                    };
-
-                    // Continue to next address, but save this result as fallback
-                    // If no address works, we'll use the last error
-                    if Some(addr) == last_addr {
-                        // This was the last address, return the error
-                        let mut result = serde_json::json!({
-                            "port": port,
-                            "state": state_and_error.0
-                        });
-                        if let Some(error_msg) = state_and_error.1 {
-                            result["error"] = serde_json::Value::String(error_msg);
-                        }
-                        return result;
-                    }
-                }
-            }
-        }
-
-        // Fallback (shouldn't reach here)
-        serde_json::json!({
-            "port": port,
-            "state": "error",
-            "error": "unknown error"
-        })
-    }
-}
-
-struct PingResult {
-    sent: u32,
-    received: u32,
-    loss: f64,
-    avg_rtt_ms: Option<f64>,
-    reachable: bool,
-}
-
-struct ParsedOutput {
-    received: u32,
-    avg_rtt_ms: Option<f64>,
-}
-
-impl NetHandle {
-    /// Implement route.list verb to enumerate system routing table as JSON.
-    ///
-    /// Arguments:
-    /// - family (optional): "ipv4", "ipv6", or "all" (default: "ipv4")
-    /// - table (optional): routing table filter (e.g. "main", "default")
-    ///
-    /// Returns JSON array of route entries on stdout or error JSON on failure.
-    fn route_list(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Handle unsupported platforms first
-        #[cfg(not(target_os = "linux"))]
-        {
-            let error_json = json!({
-                "backend": "net",
-                "verb": "route.list",
-                "error": "route.list not supported on this platform"
-            });
-            writeln!(io.stdout, "{}", error_json)?;
-            return Ok(Status::err(1, "route.list not supported on this platform"));
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            // Parse arguments
-            let family = args.get("family").map(|s| s.as_str()).unwrap_or("ipv4");
-            let _table_filter = args.get("table"); // For future use if needed
-
-            // Validate family argument
-            match family {
-                "ipv4" | "ipv6" | "all" => {}
-                _ => {
-                    let error_json = json!({
-                        "backend": "net",
-                        "verb": "route.list",
-                        "error": "invalid family",
-                        "detail": format!("family must be ipv4, ipv6, or all, got: {}", family)
-                    });
-                    writeln!(io.stdout, "{}", error_json)?;
-                    return Ok(Status::err(2, "invalid family argument"));
-                }
-            }
-
-            let mut all_routes = Vec::new();
-
-            // Try IPv4 routes if requested
-            if family == "ipv4" || family == "all" {
-                match self.get_ipv4_routes() {
-                    Ok(mut routes) => all_routes.append(&mut routes),
-                    Err(e) => {
-                        writeln!(io.stderr, "Failed to get IPv4 routes: {}", e)?;
-                        let error_json = json!({
-                            "backend": "net",
-                            "verb": "route.list",
-                            "error": "failed to read IPv4 routing table",
-                            "detail": format!("{}", e)
-                        });
-                        writeln!(io.stdout, "{}", error_json)?;
-                        return Ok(Status::err(2, "failed to read routing table"));
-                    }
-                }
-            }
-
-            // Try IPv6 routes if requested
-            if family == "ipv6" || family == "all" {
-                match self.get_ipv6_routes() {
-                    Ok(mut routes) => all_routes.append(&mut routes),
-                    Err(e) => {
-                        // IPv6 failure is non-fatal if IPv4 succeeded
-                        if family == "ipv6" {
-                            writeln!(io.stderr, "Failed to get IPv6 routes: {}", e)?;
-                            let error_json = json!({
-                                "backend": "net",
-                                "verb": "route.list",
-                                "error": "failed to read IPv6 routing table",
-                                "detail": format!("{}", e)
-                            });
-                            writeln!(io.stdout, "{}", error_json)?;
-                            return Ok(Status::err(2, "failed to read routing table"));
-                        } else {
-                            // Just log to stderr if IPv6 fails but IPv4 succeeded
-                            writeln!(io.stderr, "Warning: Failed to get IPv6 routes: {}", e)?;
-                        }
-                    }
-                }
-            }
-
-            // Output the routes as JSON array
-            let json_output = serde_json::to_string_pretty(&all_routes)?;
-            writeln!(io.stdout, "{}", json_output)?;
-            Ok(Status::ok())
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_ipv4_routes(&self) -> Result<Vec<serde_json::Value>> {
-        // Try ip command first (preferred)
-        if let Ok(ip_path) = which::which("ip") {
-            match self.try_ip_command_ipv4(&ip_path) {
-                Ok(routes) => return Ok(routes),
-                Err(e) => {
-                    // Log warning but continue to proc fallback
-                    eprintln!("ip command failed, falling back to /proc: {}", e);
-                }
-            }
-        }
-
-        // Fallback to /proc/net/route
-        self.parse_proc_net_route()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn get_ipv6_routes(&self) -> Result<Vec<serde_json::Value>> {
-        // Try ip command first (preferred)
-        if let Ok(ip_path) = which::which("ip") {
-            match self.try_ip_command_ipv6(&ip_path) {
-                Ok(routes) => return Ok(routes),
-                Err(e) => {
-                    // Log warning but continue to proc fallback
-                    eprintln!("ip -6 command failed, falling back to /proc: {}", e);
-                }
-            }
-        }
-
-        // Fallback to /proc/net/ipv6_route
-        self.parse_proc_net_ipv6_route()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn try_ip_command_ipv4(&self, ip_path: &std::path::Path) -> Result<Vec<serde_json::Value>> {
-        let output = Command::new(ip_path)
-            .args(&["-j", "route", "show"])
-            .output()
-            .context("Failed to execute ip -j route show")?;
-
-        if !output.status.success() {
-            bail!("ip command failed with status: {}", output.status);
-        }
-
-        let stdout =
-            String::from_utf8(output.stdout).context("ip command output is not valid UTF-8")?;
-
-        if stdout.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let ip_routes: serde_json::Value =
-            serde_json::from_str(&stdout).context("Failed to parse ip command JSON output")?;
-
-        let routes_array = ip_routes
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("ip command output is not an array"))?;
-
-        let mut normalized_routes = Vec::new();
-        for route in routes_array {
-            normalized_routes.push(self.normalize_ip_route_ipv4(route)?);
-        }
-
-        Ok(normalized_routes)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn try_ip_command_ipv6(&self, ip_path: &std::path::Path) -> Result<Vec<serde_json::Value>> {
-        let output = Command::new(ip_path)
-            .args(&["-j", "-6", "route", "show"])
-            .output()
-            .context("Failed to execute ip -j -6 route show")?;
-
-        if !output.status.success() {
-            bail!("ip -6 command failed with status: {}", output.status);
-        }
-
-        let stdout =
-            String::from_utf8(output.stdout).context("ip -6 command output is not valid UTF-8")?;
-
-        if stdout.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let ip_routes: serde_json::Value =
-            serde_json::from_str(&stdout).context("Failed to parse ip -6 command JSON output")?;
-
-        let routes_array = ip_routes
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("ip -6 command output is not an array"))?;
-
-        let mut normalized_routes = Vec::new();
-        for route in routes_array {
-            normalized_routes.push(self.normalize_ip_route_ipv6(route)?);
-        }
-
-        Ok(normalized_routes)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn normalize_ip_route_ipv4(&self, route: &serde_json::Value) -> Result<serde_json::Value> {
-        // Extract fields from ip command JSON output and normalize to our schema
-        let dst = route
-            .get("dst")
-            .and_then(|v| v.as_str())
-            .unwrap_or("0.0.0.0/0");
-        let gateway = route.get("gateway").and_then(|v| v.as_str());
-        let dev = route
-            .get("dev")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let metric = route.get("metric").and_then(|v| v.as_u64()).unwrap_or(0);
-        let table = route
-            .get("table")
-            .and_then(|v| v.as_str())
-            .unwrap_or("main");
-        let protocol = route.get("protocol").and_then(|v| v.as_str());
-        let scope = route.get("scope").and_then(|v| v.as_str());
-
-        let mut flags = Vec::new();
-        if gateway.is_some() {
-            flags.push("gateway");
-        }
-        // Add other flags based on route properties
-        if scope == Some("link") {
-            flags.push("link");
-        }
-        if scope == Some("host") {
-            flags.push("host");
-        }
-
-        Ok(json!({
-            "family": "ipv4",
-            "dst": dst,
-            "gateway": gateway,
-            "iface": dev,
-            "metric": metric,
-            "table": table,
-            "protocol": protocol,
-            "scope": scope,
-            "flags": flags
-        }))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn normalize_ip_route_ipv6(&self, route: &serde_json::Value) -> Result<serde_json::Value> {
-        // Extract fields from ip -6 command JSON output and normalize to our schema
-        let dst = route.get("dst").and_then(|v| v.as_str()).unwrap_or("::/0");
-        let gateway = route.get("gateway").and_then(|v| v.as_str());
-        let dev = route
-            .get("dev")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let metric = route.get("metric").and_then(|v| v.as_u64()).unwrap_or(0);
-        let table = route
-            .get("table")
-            .and_then(|v| v.as_str())
-            .unwrap_or("main");
-        let protocol = route.get("protocol").and_then(|v| v.as_str());
-        let scope = route.get("scope").and_then(|v| v.as_str());
-
-        let mut flags = Vec::new();
-        if gateway.is_some() {
-            flags.push("gateway");
-        }
-        if scope == Some("link") {
-            flags.push("link");
-        }
-        if scope == Some("host") {
-            flags.push("host");
-        }
-
-        Ok(json!({
-            "family": "ipv6",
-            "dst": dst,
-            "gateway": gateway,
-            "iface": dev,
-            "metric": metric,
-            "table": table,
-            "protocol": protocol,
-            "scope": scope,
-            "flags": flags
-        }))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn parse_proc_net_route(&self) -> Result<Vec<serde_json::Value>> {
-        use std::fs;
-
-        let contents =
-            fs::read_to_string("/proc/net/route").context("Failed to read /proc/net/route")?;
-
-        let mut routes = Vec::new();
-        let lines: Vec<&str> = contents.lines().collect();
-
-        // Skip header line
-        for line in lines.iter().skip(1) {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 11 {
-                continue; // Skip malformed lines
-            }
-
-            let iface = fields[0];
-            let dest_hex = fields[1];
-            let gateway_hex = fields[2];
-            let flags_hex = fields[3];
-            let _refcnt = fields[4];
-            let _use = fields[5];
-            let metric = fields[6];
-            let mask_hex = fields[7];
-            let _mtu = fields[8];
-            let _window = fields[9];
-            let _irtt = fields[10];
-
-            // Convert hex values to IP addresses
-            let dest_addr = self.hex_to_ipv4(dest_hex)?;
-            let gateway_addr = self.hex_to_ipv4(gateway_hex)?;
-            let mask_addr = self.hex_to_ipv4(mask_hex)?;
-
-            // Calculate prefix length from netmask
-            let prefix_len = self.mask_to_prefix_len(mask_addr);
-            let dst = if dest_addr.is_unspecified() && prefix_len == 0 {
-                "0.0.0.0/0".to_string()
-            } else {
-                format!("{}/{}", dest_addr, prefix_len)
-            };
-
-            let gateway = if gateway_addr.is_unspecified() {
-                None
-            } else {
-                Some(gateway_addr.to_string())
-            };
-
-            // Parse flags
-            let flags_val = u32::from_str_radix(flags_hex, 16).unwrap_or(0);
-            let flags = self.parse_route_flags(flags_val);
-
-            let metric_val = metric.parse::<u64>().unwrap_or(0);
-
-            routes.push(json!({
-                "family": "ipv4",
-                "dst": dst,
-                "gateway": gateway,
-                "iface": iface,
-                "metric": metric_val,
-                "table": "main", // /proc/net/route doesn't provide table info
-                "protocol": null,
-                "scope": null,
-                "flags": flags
-            }));
-        }
-
-        Ok(routes)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn parse_proc_net_ipv6_route(&self) -> Result<Vec<serde_json::Value>> {
-        use std::fs;
-
-        let contents = fs::read_to_string("/proc/net/ipv6_route")
-            .context("Failed to read /proc/net/ipv6_route")?;
-
-        let mut routes = Vec::new();
-
-        for line in contents.lines() {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 10 {
-                continue; // Skip malformed lines
-            }
-
-            let dest_net = fields[0];
-            let dest_prefix_len = fields[1];
-            let _src_net = fields[2];
-            let _src_prefix_len = fields[3];
-            let next_hop = fields[4];
-            let metric = fields[5];
-            let _refcnt = fields[6];
-            let _use = fields[7];
-            let flags = fields[8];
-            let dev_name = fields[9];
-
-            // Format IPv6 destination
-            let dest_formatted = self.format_ipv6_from_hex(dest_net)?;
-            let prefix_len = u32::from_str_radix(dest_prefix_len, 16).unwrap_or(128);
-            let dst = format!("{}/{}", dest_formatted, prefix_len);
-
-            // Format IPv6 gateway
-            let gateway = if next_hop == "00000000000000000000000000000000" {
-                None
-            } else {
-                Some(self.format_ipv6_from_hex(next_hop)?)
-            };
-
-            let metric_val = u32::from_str_radix(metric, 16).unwrap_or(0) as u64;
-
-            // Parse IPv6 route flags (simplified)
-            let flags_val = u32::from_str_radix(flags, 16).unwrap_or(0);
-            let route_flags = self.parse_ipv6_route_flags(flags_val);
-
-            routes.push(json!({
-                "family": "ipv6",
-                "dst": dst,
-                "gateway": gateway,
-                "iface": dev_name,
-                "metric": metric_val,
-                "table": "main", // /proc/net/ipv6_route doesn't provide table info
-                "protocol": null,
-                "scope": null,
-                "flags": route_flags
-            }));
-        }
-
-        Ok(routes)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn hex_to_ipv4(&self, hex_str: &str) -> Result<std::net::Ipv4Addr> {
-        use std::net::Ipv4Addr;
-
-        if hex_str.len() != 8 {
-            bail!("Invalid hex string length for IPv4: {}", hex_str);
-        }
-
-        let val = u32::from_str_radix(hex_str, 16).context("Failed to parse hex string as u32")?;
-
-        // /proc/net/route stores addresses in little-endian format
-        let bytes = val.to_le_bytes();
-        Ok(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn mask_to_prefix_len(&self, mask: std::net::Ipv4Addr) -> u8 {
-        let mask_val = u32::from(mask);
-        mask_val.leading_ones() as u8
-    }
-
-    #[cfg(target_os = "linux")]
-    fn parse_route_flags(&self, flags: u32) -> Vec<&'static str> {
-        let mut flag_names = Vec::new();
-
-        // Linux route flags from include/uapi/linux/route.h
-        if flags & 0x0001 != 0 {
-            flag_names.push("up");
-        } // RTF_UP
-        if flags & 0x0002 != 0 {
-            flag_names.push("gateway");
-        } // RTF_GATEWAY  
-        if flags & 0x0004 != 0 {
-            flag_names.push("host");
-        } // RTF_HOST
-        if flags & 0x0008 != 0 {
-            flag_names.push("reinstate");
-        } // RTF_REINSTATE
-        if flags & 0x0010 != 0 {
-            flag_names.push("dynamic");
-        } // RTF_DYNAMIC
-        if flags & 0x0020 != 0 {
-            flag_names.push("modified");
-        } // RTF_MODIFIED
-
-        flag_names
-    }
-
-    #[cfg(target_os = "linux")]
-    fn format_ipv6_from_hex(&self, hex_str: &str) -> Result<String> {
-        if hex_str.len() != 32 {
-            bail!("Invalid hex string length for IPv6: {}", hex_str);
-        }
-
-        let mut parts = Vec::new();
-        for i in 0..8 {
-            let start = i * 4;
-            let end = start + 4;
-            let part = &hex_str[start..end];
-            let val = u16::from_str_radix(part, 16)
-                .with_context(|| format!("Failed to parse IPv6 part: {}", part))?;
-            parts.push(format!("{:x}", val));
-        }
-
-        Ok(parts.join(":"))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn parse_ipv6_route_flags(&self, flags: u32) -> Vec<&'static str> {
-        let mut flag_names = Vec::new();
-
-        // Simplified IPv6 route flags
-        if flags & 0x0001 != 0 {
-            flag_names.push("up");
-        }
-        if flags & 0x0002 != 0 {
-            flag_names.push("gateway");
-        }
-        if flags & 0x0004 != 0 {
-            flag_names.push("host");
-        }
-
-        flag_names
-    }
-}
-
-fn list_interfaces(args: &Args, io: &mut IoStreams) -> Result<Status> {
-    // Get all network interfaces
-    let interfaces = match if_addrs::get_if_addrs() {
-        Ok(interfaces) => interfaces,
-        Err(e) => {
-            writeln!(io.stderr, "Failed to get network interfaces: {}", e)?;
-            return Ok(Status::err(
-                50,
-                format!("Failed to get network interfaces: {}", e),
-            ));
-        }
-    };
-
-    // Parse filtering arguments
-    let up_filter = args.get("up").map(|v| v.to_lowercase() == "true");
-    let family_filter = args.get("family").map(|v| v.to_lowercase());
-
-    // Validate arguments first
-    if let Some(family) = args.get("family") {
-        match family.to_lowercase().as_str() {
-            "ipv4" | "ipv6" | "all" => {} // valid
-            _ => {
-                let error_json = json!({
-                    "error": "Invalid family argument",
-                    "detail": format!("family must be 'ipv4', 'ipv6', or 'all', got '{}'", family)
-                });
-                writeln!(io.stderr, "{}", error_json)?;
-                return Ok(Status::err(1, format!("Invalid family: {}", family)));
-            }
-        }
-    }
-
-    if let Some(up) = args.get("up") {
-        match up.to_lowercase().as_str() {
-            "true" | "false" => {} // valid
-            _ => {
-                let error_json = json!({
-                    "error": "Invalid up argument",
-                    "detail": format!("up must be 'true' or 'false', got '{}'", up)
-                });
-                writeln!(io.stderr, "{}", error_json)?;
-                return Ok(Status::err(1, format!("Invalid up: {}", up)));
-            }
-        }
-    }
-
-    // Group interfaces by name and collect their addresses
-    let mut interface_map: std::collections::BTreeMap<String, InterfaceData> =
-        std::collections::BTreeMap::new();
-
-    for iface in interfaces {
-        let name = iface.name.clone();
-        let is_loopback = iface.is_loopback();
-        let is_up = !is_loopback; // Basic approximation - if-addrs doesn't provide detailed up/down status
-
-        // Apply up/down filtering
-        if let Some(up_required) = up_filter {
-            if up_required && is_loopback {
-                // Skip loopback interfaces when looking for "up" interfaces
-                continue;
-            }
-            if !up_required && !is_loopback {
-                // Skip non-loopback when looking for "down" interfaces
-                continue;
-            }
-        }
-
-        // Apply family filtering on the address
-        let addr = iface.ip();
-        let (family, addr_str, scope) = match addr {
-            std::net::IpAddr::V4(ipv4) => {
-                if let Some(ref filter) = family_filter {
-                    if filter == "ipv6" {
-                        continue;
-                    }
-                }
-                let scope = if is_loopback { "host" } else { "global" };
-                ("ipv4", ipv4.to_string(), scope)
-            }
-            std::net::IpAddr::V6(ipv6) => {
-                if let Some(ref filter) = family_filter {
-                    if filter == "ipv4" {
-                        continue;
-                    }
-                }
-                let scope = if is_loopback {
-                    "host"
-                } else if ipv6.segments()[0] & 0xffc0 == 0xfe80 {
-                    "link"
-                } else {
-                    "global"
-                };
-                ("ipv6", ipv6.to_string(), scope)
-            }
-        };
-
-        let entry = interface_map
-            .entry(name.clone())
-            .or_insert_with(|| InterfaceData {
-                name: name.clone(),
-                index: None, // if-addrs doesn't provide interface index
-                mac: None,   // if-addrs doesn't provide MAC address
-                flags: build_flags(is_up, is_loopback),
-                mtu: None, // if-addrs doesn't provide MTU
-                addresses: Vec::new(),
-            });
-
-        // Create address entry
-        let address_entry = json!({
-            "family": family,
-            "addr": addr_str,
-            "scope": scope
-        });
-
-        // Note: if-addrs doesn't provide prefix length information
-        // We could enhance this with platform-specific code in the future
-
-        entry.addresses.push(address_entry);
-    }
-
-    // Convert to sorted array
-    let mut result: Vec<serde_json::Value> = interface_map
-        .into_values()
-        .map(|iface| {
-            json!({
-                "name": iface.name,
-                "index": iface.index,
-                "mac": iface.mac,
-                "flags": iface.flags,
-                "mtu": iface.mtu,
-                "addresses": iface.addresses
-            })
-        })
-        .collect();
-
-    // Sort by name
-    result.sort_by(|a, b| {
-        let name_a = a["name"].as_str().unwrap_or("");
-        let name_b = b["name"].as_str().unwrap_or("");
-        name_a.cmp(name_b)
     });
-
-    // Output JSON object with interfaces array (as required by spec)
-    let json_output = json!({
-        "interfaces": result
-    });
-
-    writeln!(io.stdout, "{}", json_output)?;
-
-    Ok(Status::ok())
+    slots
+        .into_inner()
+        .unwrap_or_else(|e| e.into_inner())
+        .into_iter()
+        .zip(ports)
+        .map(|(r, p)| {
+            r.unwrap_or_else(|| json!({"port": p, "state": "error", "error": "not probed"}))
+        })
+        .collect()
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-enum AddressFamily {
-    IPv4,
-    IPv6,
-}
+// ------------------------------------------------------------ route.list --
 
-#[allow(dead_code)]
-fn parse_bool_arg(args: &Args, key: &str) -> Option<bool> {
-    args.get(key).and_then(|v| match v.to_lowercase().as_str() {
-        "true" | "1" | "yes" => Some(true),
-        "false" | "0" | "no" => Some(false),
-        _ => None,
-    })
-}
-
-#[derive(Debug)]
-struct InterfaceData {
-    name: String,
-    index: Option<u32>,
-    mac: Option<String>,
-    flags: Vec<String>,
-    mtu: Option<u32>,
-    addresses: Vec<serde_json::Value>,
-}
-
-fn build_flags(is_up: bool, is_loopback: bool) -> Vec<String> {
+/// Route flags of the ip JSON output, normalized.
+fn route_flags(gateway: bool, scope: Option<&str>, extra: &[Value]) -> Vec<String> {
     let mut flags = Vec::new();
-    if is_up {
-        flags.push("up".to_string());
+    if gateway {
+        flags.push("gateway".to_string());
     }
-    if is_loopback {
-        flags.push("loopback".to_string());
+    match scope {
+        Some("link") => flags.push("link".to_string()),
+        Some("host") => flags.push("host".to_string()),
+        _ => {}
     }
-    // Assume running and multicast for non-loopback interfaces
-    if !is_loopback {
-        flags.push("running".to_string());
-        flags.push("multicast".to_string());
+    for f in extra.iter().filter_map(Value::as_str) {
+        if !flags.iter().any(|x| x == f) {
+            flags.push(f.to_string());
+        }
     }
     flags
 }
 
-#[allow(dead_code)]
-fn ipv4_netmask_from_prefix(prefix_len: u8) -> String {
-    let mask = if prefix_len == 0 {
-        0u32
-    } else {
-        !((1u32 << (32 - prefix_len)) - 1)
+/// Normalizes `ip -j [-6] route show table <table>` output.
+fn normalize_ip_routes(stdout: &str, v6: bool, table: &str) -> Result<Vec<Value>, String> {
+    if stdout.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let parsed: Value =
+        serde_json::from_str(stdout).map_err(|e| format!("ip printed invalid JSON: {e}"))?;
+    let routes = parsed
+        .as_array()
+        .ok_or("ip printed JSON that is not an array")?;
+    // ip names the table only when listing several; one listed table, or
+    // main, is not named.
+    let default_table = if table == "all" { "main" } else { table };
+    Ok(routes
+        .iter()
+        .map(|route| {
+            let s = |k: &str| route.get(k).and_then(Value::as_str);
+            // A multipath route keeps its gateway and device in nexthops.
+            let first_hop = route
+                .get("nexthops")
+                .and_then(Value::as_array)
+                .and_then(|h| h.first());
+            let hop = |k: &str| s(k).or_else(|| first_hop.and_then(|h| h.get(k)?.as_str()));
+            let gateway = hop("gateway");
+            let scope = s("scope");
+            let empty = Vec::new();
+            let extra = route
+                .get("flags")
+                .and_then(Value::as_array)
+                .unwrap_or(&empty);
+            let table = match route.get("table") {
+                Some(Value::String(t)) => json!(t),
+                Some(Value::Number(n)) => json!(n.to_string()),
+                _ => json!(default_table),
+            };
+            json!({
+                "family": if v6 { "ipv6" } else { "ipv4" },
+                "dst": s("dst").unwrap_or("default"),
+                "gateway": gateway,
+                "iface": hop("dev"),
+                "metric": route.get("metric").and_then(Value::as_u64).unwrap_or(0),
+                "table": table,
+                "protocol": s("protocol"),
+                "scope": scope,
+                "flags": route_flags(gateway.is_some(), scope, extra),
+            })
+        })
+        .collect())
+}
+
+/// Address from a little-endian hex field of `/proc/net/route`.
+fn hex_to_ipv4(hex_str: &str) -> Option<std::net::Ipv4Addr> {
+    if hex_str.len() != 8 {
+        return None;
+    }
+    let val = u32::from_str_radix(hex_str, 16).ok()?;
+    Some(std::net::Ipv4Addr::from(val.to_le_bytes()))
+}
+
+/// Address from a hex field of `/proc/net/ipv6_route`.
+fn hex_to_ipv6(hex_str: &str) -> Option<std::net::Ipv6Addr> {
+    if hex_str.len() != 32 {
+        return None;
+    }
+    u128::from_str_radix(hex_str, 16)
+        .ok()
+        .map(std::net::Ipv6Addr::from)
+}
+
+fn kernel_route_flags(flags: u32, names: &[(u32, &'static str)]) -> Vec<&'static str> {
+    names
+        .iter()
+        .filter(|(bit, _)| flags & bit != 0)
+        .map(|(_, n)| *n)
+        .collect()
+}
+
+/// Routes of the main IPv4 table from the text of `/proc/net/route`.
+fn parse_proc_net_route(contents: &str) -> Result<Vec<Value>, String> {
+    const NAMES: &[(u32, &str)] = &[
+        (0x0001, "up"),
+        (0x0002, "gateway"),
+        (0x0004, "host"),
+        (0x0008, "reinstate"),
+        (0x0010, "dynamic"),
+        (0x0020, "modified"),
+        (0x0200, "reject"),
+    ];
+    let mut routes = Vec::new();
+    for line in contents.lines().skip(1) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 11 {
+            continue;
+        }
+        let bad = || format!("malformed /proc/net/route line: {line:?}");
+        let dest = hex_to_ipv4(f[1]).ok_or_else(bad)?;
+        let gateway = hex_to_ipv4(f[2]).ok_or_else(bad)?;
+        let flags = u32::from_str_radix(f[3], 16).map_err(|_| bad())?;
+        let metric = f[6].parse::<u64>().map_err(|_| bad())?;
+        let mask = hex_to_ipv4(f[7]).ok_or_else(bad)?;
+        let prefix = u32::from(mask).leading_ones();
+        let dst = match prefix {
+            0 if dest.is_unspecified() => "default".to_string(),
+            32 => dest.to_string(),
+            _ => format!("{dest}/{prefix}"),
+        };
+        routes.push(json!({
+            "family": "ipv4",
+            "dst": dst,
+            "gateway": (!gateway.is_unspecified()).then(|| gateway.to_string()),
+            "iface": f[0],
+            "metric": metric,
+            "table": "main",
+            "protocol": null,
+            "scope": null,
+            "flags": kernel_route_flags(flags, NAMES)
+        }));
+    }
+    Ok(routes)
+}
+
+/// IPv6 routes from the text of `/proc/net/ipv6_route` (every table: the
+/// file does not say which table a route is in, so `table` is null).
+fn parse_proc_net_ipv6_route(contents: &str) -> Result<Vec<Value>, String> {
+    const NAMES: &[(u32, &str)] = &[
+        (0x0001, "up"),
+        (0x0002, "gateway"),
+        (0x0004, "host"),
+        (0x0200, "reject"),
+        (0x8000_0000, "local"),
+    ];
+    let mut routes = Vec::new();
+    for line in contents.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 10 {
+            continue;
+        }
+        let bad = || format!("malformed /proc/net/ipv6_route line: {line:?}");
+        let dest = hex_to_ipv6(f[0]).ok_or_else(bad)?;
+        let prefix = u32::from_str_radix(f[1], 16).map_err(|_| bad())?;
+        let next_hop = hex_to_ipv6(f[4]).ok_or_else(bad)?;
+        let metric = u32::from_str_radix(f[5], 16).map_err(|_| bad())?;
+        let flags = u32::from_str_radix(f[8], 16).map_err(|_| bad())?;
+        let dst = match prefix {
+            0 if dest.is_unspecified() => "default".to_string(),
+            128 => dest.to_string(),
+            _ => format!("{dest}/{prefix}"),
+        };
+        routes.push(json!({
+            "family": "ipv6",
+            "dst": dst,
+            "gateway": (!next_hop.is_unspecified()).then(|| next_hop.to_string()),
+            "iface": f[9],
+            "metric": metric as u64,
+            "table": null,
+            "protocol": null,
+            "scope": null,
+            "flags": kernel_route_flags(flags, NAMES)
+        }));
+    }
+    Ok(routes)
+}
+
+impl NetHandle {
+    fn route_list(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let ctx = [("backend", json!("net"))];
+        let parsed = (|| {
+            let family = choice_arg(args, "family", "ipv4", &["ipv4", "ipv6", "all"])?.to_string();
+            let table = args
+                .get("table")
+                .map(|t| t.trim())
+                .unwrap_or("main")
+                .to_string();
+            let named = ["main", "local", "default", "all"].contains(&table.as_str());
+            if !named && table.parse::<u32>().is_err() {
+                return Err(Fail::invalid(format!(
+                    "invalid value for table: {table:?} (expected main, local, default, all \
+                     or a table number)"
+                )));
+            }
+            let timeout_ms = u64_arg(args, "timeout_ms", 5000, 1, MAX_MS)?;
+            Ok::<_, Fail>((family, table, timeout_ms))
+        })();
+        let (family, table, timeout_ms) = match parsed {
+            Ok(p) => p,
+            Err(fail) => return report(io, "route.list", fail, &ctx),
+        };
+
+        if !cfg!(target_os = "linux") {
+            let fail = Fail::new(
+                1,
+                "unsupported_platform",
+                "route.list is only supported on Linux",
+            );
+            return report(io, "route.list", fail, &ctx);
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut all_routes = Vec::new();
+        for v6 in [false, true] {
+            let wanted = family == "all" || (family == "ipv6") == v6;
+            if !wanted {
+                continue;
+            }
+            match self.routes(v6, &table, deadline, io) {
+                Ok(mut routes) => all_routes.append(&mut routes),
+                // With family=all an unreadable IPv6 table (IPv6 disabled)
+                // does not hide the IPv4 routes.
+                Err(fail) if v6 && family == "all" && fail.exit != 124 => {
+                    writeln!(io.stderr, "Warning: no IPv6 routes: {}", fail.detail)?;
+                }
+                Err(fail) => return report(io, "route.list", fail, &ctx),
+            }
+        }
+
+        writeln!(io.stdout, "{}", serde_json::to_string_pretty(&all_routes)?)?;
+        Ok(Status::ok())
+    }
+
+    /// Routes of one family: from `ip -j route`, else from /proc.
+    fn routes(
+        &self,
+        v6: bool,
+        table: &str,
+        deadline: Instant,
+        io: &mut IoStreams,
+    ) -> Result<Vec<Value>, Fail> {
+        let ip_error = match which::which("ip") {
+            Ok(ip) => {
+                let mut cmd = Command::new(ip);
+                cmd.arg("-j");
+                if v6 {
+                    cmd.arg("-6");
+                }
+                cmd.args(["route", "show", "table", table]);
+                let left = deadline.saturating_duration_since(Instant::now());
+                match crate::core::process::run(&mut cmd, Some(left)) {
+                    Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                        return Err(Fail::new(
+                            124,
+                            "timeout",
+                            format!(
+                                "the ip command did not finish within timeout_ms and was \
+                                 stopped{}",
+                                take_lost_note()
+                            ),
+                        ));
+                    }
+                    Err(e) => format!("cannot run ip: {e}"),
+                    Ok(out) if out.status.success() => {
+                        match normalize_ip_routes(&String::from_utf8_lossy(&out.stdout), v6, table)
+                        {
+                            Ok(routes) => return Ok(routes),
+                            Err(e) => e,
+                        }
+                    }
+                    Ok(out) => format!(
+                        "ip route failed ({}): {}",
+                        out.status,
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                }
+            }
+            Err(_) => "the ip command is not installed".to_string(),
+        };
+
+        // /proc/net/route only holds the main IPv4 table.
+        if (!v6 && table != "main") || (v6 && table != "all" && table != "main") {
+            return Err(Fail::new(
+                1,
+                "route_read_failed",
+                format!("table={table} needs the ip command ({ip_error})"),
+            ));
+        }
+        let path = if v6 {
+            "/proc/net/ipv6_route"
+        } else {
+            "/proc/net/route"
+        };
+        if which::which("ip").is_ok() {
+            writeln!(io.stderr, "Warning: {ip_error}; reading {path}")
+                .map_err(|e| Fail::new(1, "route_read_failed", e.to_string()))?;
+        }
+        let contents = std::fs::read_to_string(path).map_err(|e| {
+            Fail::new(
+                1,
+                "route_read_failed",
+                format!("cannot read {path}: {e} ({ip_error})"),
+            )
+        })?;
+        let parsed = if v6 {
+            parse_proc_net_ipv6_route(&contents)
+        } else {
+            parse_proc_net_route(&contents)
+        };
+        parsed.map_err(|e| Fail::new(1, "route_read_failed", e))
+    }
+}
+
+// ------------------------------------------------------------------ list --
+
+/// Interface flag bits (`<linux/if.h>`) and their names, in bit order.
+const IFF_NAMES: &[(u32, &str)] = &[
+    (0x1, "up"),
+    (0x2, "broadcast"),
+    (0x8, "loopback"),
+    (0x10, "pointopoint"),
+    (0x40, "running"),
+    (0x80, "noarp"),
+    (0x100, "promisc"),
+    (0x200, "allmulti"),
+    (0x1000, "multicast"),
+    (0x10000, "lower_up"),
+    (0x20000, "dormant"),
+];
+const IFF_UP: u32 = 0x1;
+
+#[derive(Debug, Default)]
+struct InterfaceData {
+    index: Option<u32>,
+    mac: Option<String>,
+    flags: u32,
+    addresses: Vec<IpAddr>,
+}
+
+/// Interfaces and their addresses from `getifaddrs(3)`, by name.
+fn read_interfaces() -> io::Result<std::collections::BTreeMap<String, InterfaceData>> {
+    let mut map: std::collections::BTreeMap<String, InterfaceData> = Default::default();
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `head` with a list freed below.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut cur = head;
+    while !cur.is_null() {
+        // SAFETY: `cur` is a node of the list getifaddrs returned.
+        let ifa = unsafe { &*cur };
+        cur = ifa.ifa_next;
+        if ifa.ifa_name.is_null() {
+            continue;
+        }
+        // SAFETY: a non-null ifa_name is a NUL-terminated string.
+        let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }
+            .to_string_lossy()
+            .into_owned();
+        let entry = map.entry(name).or_default();
+        entry.flags |= ifa.ifa_flags;
+        if ifa.ifa_addr.is_null() {
+            continue;
+        }
+        // SAFETY: ifa_addr points to a sockaddr of the family it names.
+        unsafe {
+            match i32::from((*ifa.ifa_addr).sa_family) {
+                libc::AF_INET => {
+                    let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                    let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                    entry.addresses.push(IpAddr::V4(ip));
+                }
+                libc::AF_INET6 => {
+                    let sin6 = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
+                    let ip = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
+                    entry.addresses.push(IpAddr::V6(ip));
+                }
+                #[cfg(target_os = "linux")]
+                libc::AF_PACKET => {
+                    let sll = &*(ifa.ifa_addr as *const libc::sockaddr_ll);
+                    if sll.sll_ifindex > 0 {
+                        entry.index = Some(sll.sll_ifindex as u32);
+                    }
+                    let len = usize::from(sll.sll_halen).min(sll.sll_addr.len());
+                    if len > 0 {
+                        entry.mac = Some(
+                            sll.sll_addr[..len]
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<Vec<_>>()
+                                .join(":"),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // SAFETY: `head` came from getifaddrs and is freed once.
+    unsafe { libc::freeifaddrs(head) };
+    Ok(map)
+}
+
+/// The kernel index of interface `name`, if it has one.
+fn if_index(name: &str) -> Option<u32> {
+    let c = std::ffi::CString::new(name).ok()?;
+    // SAFETY: `c` is a valid NUL-terminated string.
+    let index = unsafe { libc::if_nametoindex(c.as_ptr()) };
+    (index != 0).then_some(index)
+}
+
+/// The MTU of interface `name` from sysfs.
+fn if_mtu(name: &str) -> Option<u32> {
+    if name.contains('/') || name.starts_with('.') {
+        return None;
+    }
+    std::fs::read_to_string(Path::new("/sys/class/net").join(name).join("mtu"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn address_scope(ip: &IpAddr) -> &'static str {
+    match ip {
+        IpAddr::V4(v4) if v4.is_loopback() => "host",
+        IpAddr::V4(v4) if v4.is_link_local() => "link",
+        IpAddr::V6(v6) if v6.is_loopback() => "host",
+        IpAddr::V6(v6) if v6.segments()[0] & 0xffc0 == 0xfe80 => "link",
+        _ => "global",
+    }
+}
+
+fn list_interfaces(args: &Args, io: &mut IoStreams) -> Result<Status> {
+    let parsed = (|| {
+        let family = args.get("family").map(|f| f.to_ascii_lowercase());
+        let family = match family.as_deref() {
+            None | Some("all") => None,
+            Some("ipv4") => Some(false),
+            Some("ipv6") => Some(true),
+            Some(_) => {
+                return Err(Fail::invalid(format!(
+                    "invalid value for family: {:?} (expected ipv4, ipv6, all)",
+                    args.get("family").map(String::as_str).unwrap_or_default()
+                )));
+            }
+        };
+        let up =
+            crate::core::lenient::bool_arg(args, "up").map_err(|e| Fail::invalid(e.to_string()))?;
+        Ok::<_, Fail>((family, up))
+    })();
+    let (family_v6, up_filter) = match parsed {
+        Ok(p) => p,
+        Err(fail) => return report(io, "list", fail, &[]),
     };
-    format!(
-        "{}.{}.{}.{}",
-        (mask >> 24) & 0xff,
-        (mask >> 16) & 0xff,
-        (mask >> 8) & 0xff,
-        mask & 0xff
-    )
+
+    let interfaces = match read_interfaces() {
+        Ok(i) => i,
+        Err(e) => {
+            let fail = Fail::new(
+                1,
+                "interfaces_failed",
+                format!("cannot list interfaces: {e}"),
+            );
+            return report(io, "list", fail, &[]);
+        }
+    };
+
+    let mut result = Vec::new();
+    for (name, iface) in interfaces {
+        if up_filter.is_some_and(|up| up != (iface.flags & IFF_UP != 0)) {
+            continue;
+        }
+        let addresses: Vec<Value> = iface
+            .addresses
+            .iter()
+            .filter(|ip| family_v6.is_none_or(|v6| ip.is_ipv6() == v6))
+            .map(|ip| {
+                json!({
+                    "family": if ip.is_ipv6() { "ipv6" } else { "ipv4" },
+                    "addr": ip.to_string(),
+                    "scope": address_scope(ip)
+                })
+            })
+            .collect();
+        if family_v6.is_some() && addresses.is_empty() {
+            continue;
+        }
+        let flags: Vec<&str> = IFF_NAMES
+            .iter()
+            .filter(|(bit, _)| iface.flags & bit != 0)
+            .map(|(_, n)| *n)
+            .collect();
+        result.push(json!({
+            "name": name,
+            "index": iface.index.or_else(|| if_index(&name)),
+            "mac": iface.mac,
+            "flags": flags,
+            "mtu": if_mtu(&name),
+            "addresses": addresses
+        }));
+    }
+
+    writeln!(io.stdout, "{}", json!({ "interfaces": result }))?;
+    Ok(Status::ok())
 }
 
 // Mock DNS resolver for testing
@@ -2583,7 +2271,7 @@ impl DnsResolver for MockResolver {
         _timeout: Duration,
     ) -> Result<ResolvedRecords> {
         if self.should_error {
-            bail!("{}", self.error_message);
+            anyhow::bail!("{}", self.error_message);
         }
         Ok(self.records.clone())
     }
@@ -2594,322 +2282,5 @@ pub fn register(reg: &mut crate::core::Registry) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::registry::Args;
-
-    fn help_output(url: &str, verb: &str, args: &[(&str, &str)]) -> Option<String> {
-        let h = NetHandle::from_url(&Url::parse(url).unwrap()).unwrap();
-        let args: Args = args
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
-        let mut io = IoStreams::new(&mut i, &mut o, &mut e);
-        let shown = h
-            .check_and_display_help(verb, &args, &mut io)
-            .unwrap()
-            .is_some();
-        shown.then(|| String::from_utf8(o).unwrap())
-    }
-
-    #[test]
-    fn in_url_help_renders_approved_help() {
-        let all = help_output("net://--help", "help", &[]).unwrap();
-        assert!(all.starts_with("Handle: net\n"), "{all}");
-        let ping = help_output("net://--help", "help", &[("verb", "ping")]).unwrap();
-        assert_ne!(all, ping);
-        assert_eq!(help_output("net://x", "--help=ping", &[]).unwrap(), ping);
-        assert!(help_output("net://my-hosts", "list", &[]).is_none());
-    }
-
-    #[test]
-    fn test_dns_invalid_query_name() {
-        let mock_resolver = Arc::new(MockResolver::new(vec![]));
-        let handle = NetHandle::with_resolver("".into(), mock_resolver);
-
-        let args = Args::new();
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut io = IoStreams {
-            stdin: &mut &[][..],
-            stdout: &mut stdout_buf,
-            stderr: &mut stderr_buf,
-        };
-
-        let status = handle.call_dns(&args, &mut io).unwrap();
-
-        assert!(!status.ok);
-        assert_eq!(status.code, Some(2));
-
-        let output = String::from_utf8(stdout_buf).unwrap();
-        assert!(output.contains("\"error\":\"invalid_query\""));
-    }
-
-    #[test]
-    fn test_dns_invalid_record_type() {
-        let mock_resolver = Arc::new(MockResolver::new(vec![]));
-        let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-
-        let mut args = Args::new();
-        args.insert("type".into(), "FOO".into());
-
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut io = IoStreams {
-            stdin: &mut &[][..],
-            stdout: &mut stdout_buf,
-            stderr: &mut stderr_buf,
-        };
-
-        let status = handle.call_dns(&args, &mut io).unwrap();
-
-        assert!(!status.ok);
-        assert_eq!(status.code, Some(2));
-
-        let output = String::from_utf8(stdout_buf).unwrap();
-        assert!(output.contains("\"error\":\"invalid_type\""));
-        assert!(output.contains("Unknown record type: FOO"));
-    }
-
-    #[test]
-    fn test_dns_invalid_timeout() {
-        let mock_resolver = Arc::new(MockResolver::new(vec![]));
-        let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-
-        let mut args = Args::new();
-        args.insert("timeout_ms".into(), "-1".into());
-
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut io = IoStreams {
-            stdin: &mut &[][..],
-            stdout: &mut stdout_buf,
-            stderr: &mut stderr_buf,
-        };
-
-        let status = handle.call_dns(&args, &mut io).unwrap();
-
-        assert!(!status.ok);
-        assert_eq!(status.code, Some(2));
-
-        let output = String::from_utf8(stdout_buf).unwrap();
-        assert!(output.contains("\"error\":\"invalid_timeout\""));
-    }
-
-    #[test]
-    fn test_dns_invalid_server() {
-        let mock_resolver = Arc::new(MockResolver::new(vec![]));
-        let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-
-        let mut args = Args::new();
-        args.insert("server".into(), "not-an-ip".into());
-
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut io = IoStreams {
-            stdin: &mut &[][..],
-            stdout: &mut stdout_buf,
-            stderr: &mut stderr_buf,
-        };
-
-        let status = handle.call_dns(&args, &mut io).unwrap();
-
-        assert!(!status.ok);
-        assert_eq!(status.code, Some(2));
-
-        let output = String::from_utf8(stdout_buf).unwrap();
-        assert!(output.contains("\"error\":\"invalid_server\""));
-    }
-
-    #[test]
-    fn test_dns_successful_a_record() {
-        let records = vec![ResolvedRecord {
-            name: "example.com.".into(),
-            ttl: 300,
-            kind: ResolvedKind::A("93.184.216.34".into()),
-        }];
-        let mock_resolver = Arc::new(MockResolver::new(records));
-        let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-
-        let args = Args::new();
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut io = IoStreams {
-            stdin: &mut &[][..],
-            stdout: &mut stdout_buf,
-            stderr: &mut stderr_buf,
-        };
-
-        let status = handle.call_dns(&args, &mut io).unwrap();
-
-        assert!(status.ok);
-        assert_eq!(status.code, Some(0));
-
-        let output = String::from_utf8(stdout_buf).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-
-        assert_eq!(json["query"], "example.com");
-        assert_eq!(json["rtype"], "A");
-        assert_eq!(json["server"], "system");
-        assert_eq!(json["records"][0]["name"], "example.com.");
-        assert_eq!(json["records"][0]["ttl"], 300);
-        assert_eq!(json["records"][0]["data"], "93.184.216.34");
-    }
-
-    #[test]
-    fn test_dns_successful_mx_record() {
-        let records = vec![ResolvedRecord {
-            name: "example.com.".into(),
-            ttl: 3600,
-            kind: ResolvedKind::MX {
-                priority: 10,
-                exchange: "mail.example.com.".into(),
-            },
-        }];
-        let mock_resolver = Arc::new(MockResolver::new(records));
-        let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-
-        let mut args = Args::new();
-        args.insert("type".into(), "MX".into());
-
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut io = IoStreams {
-            stdin: &mut &[][..],
-            stdout: &mut stdout_buf,
-            stderr: &mut stderr_buf,
-        };
-
-        let status = handle.call_dns(&args, &mut io).unwrap();
-
-        assert!(status.ok);
-
-        let output = String::from_utf8(stdout_buf).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-
-        assert_eq!(json["rtype"], "MX");
-        assert_eq!(json["records"][0]["data"]["priority"], 10);
-        assert_eq!(json["records"][0]["data"]["exchange"], "mail.example.com.");
-    }
-
-    #[test]
-    fn test_dns_successful_srv_record() {
-        let records = vec![ResolvedRecord {
-            name: "_sip._tcp.example.com.".into(),
-            ttl: 300,
-            kind: ResolvedKind::SRV {
-                priority: 10,
-                weight: 20,
-                port: 5060,
-                target: "sip.example.com.".into(),
-            },
-        }];
-        let mock_resolver = Arc::new(MockResolver::new(records));
-        let handle = NetHandle::with_resolver("_sip._tcp.example.com".into(), mock_resolver);
-
-        let mut args = Args::new();
-        args.insert("type".into(), "SRV".into());
-
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut io = IoStreams {
-            stdin: &mut &[][..],
-            stdout: &mut stdout_buf,
-            stderr: &mut stderr_buf,
-        };
-
-        let status = handle.call_dns(&args, &mut io).unwrap();
-
-        assert!(status.ok);
-
-        let output = String::from_utf8(stdout_buf).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-
-        assert_eq!(json["rtype"], "SRV");
-        assert_eq!(json["records"][0]["data"]["priority"], 10);
-        assert_eq!(json["records"][0]["data"]["weight"], 20);
-        assert_eq!(json["records"][0]["data"]["port"], 5060);
-        assert_eq!(json["records"][0]["data"]["target"], "sip.example.com.");
-    }
-
-    #[test]
-    fn test_dns_lookup_failed() {
-        let mock_resolver = Arc::new(MockResolver::with_error("NXDOMAIN".into()));
-        let handle = NetHandle::with_resolver("nonexistent.example.com".into(), mock_resolver);
-
-        let args = Args::new();
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut io = IoStreams {
-            stdin: &mut &[][..],
-            stdout: &mut stdout_buf,
-            stderr: &mut stderr_buf,
-        };
-
-        let status = handle.call_dns(&args, &mut io).unwrap();
-
-        assert!(!status.ok);
-        assert_eq!(status.code, Some(1));
-
-        let output = String::from_utf8(stdout_buf).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-
-        assert_eq!(json["error"], "lookup_failed");
-        assert!(json["detail"].as_str().unwrap().contains("NXDOMAIN"));
-    }
-
-    #[test]
-    fn test_dns_with_custom_server_and_port() {
-        let records = vec![ResolvedRecord {
-            name: "example.com.".into(),
-            ttl: 300,
-            kind: ResolvedKind::A("1.2.3.4".into()),
-        }];
-        let mock_resolver = Arc::new(MockResolver::new(records));
-        let handle = NetHandle::with_resolver("example.com".into(), mock_resolver);
-
-        let mut args = Args::new();
-        args.insert("server".into(), "8.8.8.8".into());
-        args.insert("port".into(), "53".into());
-        args.insert("timeout_ms".into(), "5000".into());
-
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let mut io = IoStreams {
-            stdin: &mut &[][..],
-            stdout: &mut stdout_buf,
-            stderr: &mut stderr_buf,
-        };
-
-        let status = handle.call_dns(&args, &mut io).unwrap();
-
-        assert!(status.ok);
-
-        let output = String::from_utf8(stdout_buf).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-
-        assert_eq!(json["server"], "8.8.8.8:53");
-    }
-
-    #[test]
-    fn test_record_type_parsing() {
-        assert_eq!(RecordType::from_str("A").unwrap(), RecordType::A);
-        assert_eq!(RecordType::from_str("aaaa").unwrap(), RecordType::AAAA);
-        assert_eq!(RecordType::from_str("MX").unwrap(), RecordType::MX);
-        assert_eq!(RecordType::from_str("txt").unwrap(), RecordType::TXT);
-
-        assert!(RecordType::from_str("UNKNOWN").is_err());
-    }
-
-    #[test]
-    fn test_url_domain_extraction() {
-        let url = url::Url::parse("net://example.com.dns").unwrap();
-        let handle = NetHandle::from_url(&url).unwrap();
-        assert_eq!(handle.extract_dns_query_name().unwrap(), "example.com");
-
-        let url = url::Url::parse("net://8.8.8.8.dns").unwrap();
-        let handle = NetHandle::from_url(&url).unwrap();
-        assert_eq!(handle.extract_dns_query_name().unwrap(), "8.8.8.8");
-    }
-}
+#[path = "neth_tests.rs"]
+mod tests;
