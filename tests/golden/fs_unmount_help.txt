@@ -1,0 +1,46 @@
+Handle: fs
+Verb: unmount
+Definition: Unmounts the filesystems matching a mount point or source device,
+  optionally with their child mounts, and reports the result as JSON.
+
+Usage:
+  resh fs://<alias>.unmount target=<dir-or-device>
+    [by=target|source|auto] [force=true|false] [lazy=true|false]
+    [detach_children=true|false] [fail_if_not_mounted=true|false]
+    [dry_run=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty fs://local.unmount target=/mnt/data
+
+Example Output:
+  {
+    "action": "unmounted",
+    "alias": "local",
+    "backend": "fs",
+    "by": "target",
+    "detach_children": false,
+    "errors": [],
+    "force": false,
+    "lazy": false,
+    "skipped": [],
+    "target": "/mnt/data",
+    "unmounted": [
+      {
+        "options": [
+          "rw",
+          "relatime"
+        ],
+        "source": "/dev/loop0",
+        "target": "/mnt/data",
+        "type": "ext4"
+      }
+    ],
+    "verb": "unmount"
+  }
+
+  Shown with --json-pretty. The verb field is "unmount" for both spellings.
+  A target that is not mounted gives action "already_unmounted" (an error
+  with fail_if_not_mounted=true). If any mount cannot be unmounted, the
+  result still lists what was unmounted, skipped and failed, and resh
+  exits 1. Defaults: by=target, force, lazy, detach_children and
+  fail_if_not_mounted false, timeout_ms=5000.

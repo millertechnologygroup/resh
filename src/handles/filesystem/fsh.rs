@@ -110,8 +110,8 @@ static FS_HELP: HandleHelp = HandleHelp {
     description: "The fs handle manages mounted filesystems on the local host, covering \
         mounting and unmounting, mount table listings and lockfile snapshots, disk usage, \
         quotas, resizing, and consistency checks. It reads /proc/mounts and statvfs data \
-        and runs system tools such as mount, umount, quota, resize2fs, xfs_growfs, and \
-        fsck. The URL host is a free-form alias, such as fs://local, that is echoed back \
+        and runs system tools such as mount, umount, quota, repquota, resize2fs, \
+        xfs_growfs, btrfs, and fsck. The URL host is a free-form alias, such as fs://local, that is echoed back \
         in the JSON result.",
     usage: "resh fs://<alias>.<verb>[(key=value,...)]",
     verbs: &[
@@ -284,7 +284,8 @@ include_inodes=false, timeout_ms=5000."#,
         VerbHelp {
             name: "quota",
             definition: "Reports the disk space and inode quota usage and limits of one \
-                user, group, or project on the filesystem holding a path, using the quota tool.",
+                user, group, or project, or of every subject, on the filesystem holding a \
+                path, using quota or repquota.",
             detail: Some(VerbDetail {
                 usage: "resh fs://<alias>.quota [path=<path>] [subject=<name-or-id>]\n  \
                     [subject_type=auto|user|group|project] [all_subjects=true|false]\n  \
@@ -349,8 +350,9 @@ timeout_ms=5000."#,
         },
         VerbHelp {
             name: "quota_summary",
-            definition: "Aggregates the quota usage and limits of one user or group across \
-                all mounted filesystems, listing filesystems without quotas separately.",
+            definition: "Aggregates the quota usage and limits of one user, group, or \
+                project, or of every subject, across the mounted filesystems, listing \
+                filesystems without quotas separately.",
             detail: Some(VerbDetail {
                 usage: "resh fs://<alias>.quota_summary [subject=<name-or-id>]\n  \
                     [subject_type=auto|user|group|project] [all_subjects=true|false]\n  \

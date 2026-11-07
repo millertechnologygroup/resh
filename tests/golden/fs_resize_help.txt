@@ -1,0 +1,66 @@
+Handle: fs
+Verb: resize
+Definition: Grows or shrinks a filesystem, located by mount point or device, to
+  an absolute size or by a delta using resize2fs, xfs_growfs, or btrfs.
+
+Usage:
+  resh fs://<alias>.resize target=<dir-or-device>
+    size=<size> | delta=<+size|-size> [by=auto|mountpoint|device]
+    [size_units=auto|bytes|kilobytes|megabytes|gigabytes|terabytes]
+    [mode=grow|shrink|auto] [allow_shrink=true|false]
+    [min_free_space_percent=<0-100>]
+    [manage_underlying_volume=true|false]
+    [volume_resize_only=true|false] [filesystem_resize_only=true|false]
+    [require_unmounted_for_shrink=true|false] [force=true|false]
+    [dry_run=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty fs://local.resize target=/mnt/data size=2G
+
+Example Output:
+  {
+    "action": "success",
+    "actions": [
+      {
+        "command": "resize2fs /dev/loop0 2097152K",
+        "status": "success",
+        "tool": "resize2fs",
+        "type": "filesystem_resize"
+      }
+    ],
+    "alias": "local",
+    "backend": "fs",
+    "by": "auto",
+    "delta_bytes": 1073741824,
+    "dry_run": false,
+    "filesystem": {
+      "current_size_bytes": 1073741824,
+      "delta_bytes": 1073741824,
+      "fstype": "ext4",
+      "mounted": true,
+      "requested_size_bytes": 2147483648,
+      "source": "/dev/loop0"
+    },
+    "final_size_bytes": 2147483648,
+    "mode": "grow",
+    "plan": null,
+    "previous_size_bytes": 1073741824,
+    "reason": null,
+    "requested_size_bytes": 2147483648,
+    "summary": {
+      "grew": true,
+      "shrink": false,
+      "status": "success"
+    },
+    "target": "/mnt/data",
+    "verb": "resize"
+  }
+
+  Shown for an ext4 filesystem with --json-pretty. Sizes accept K, M, G
+  and T suffixes (powers of 1024); a bare number counts size_units. A size
+  equal to the current size returns action "noop". Shrinking needs
+  mode=shrink or auto and allow_shrink=true, is refused for xfs, and needs
+  an unmounted ext3/ext4 filesystem; xfs and btrfs are resized while
+  mounted. force=true passes -f to resize2fs. Defaults: by=auto,
+  mode=grow, size_units=auto (bytes), min_free_space_percent=5,
+  require_unmounted_for_shrink=true, timeout_ms=600000.

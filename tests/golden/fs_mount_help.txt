@@ -1,0 +1,44 @@
+Handle: fs
+Verb: mount
+Definition: Mounts a device, network share, or bind source on a target
+  directory, creating the directory if needed, and reports the result as JSON.
+
+Usage:
+  resh fs://<alias>.mount target=<dir> [source=<device-or-path>]
+    [type=<fstype>] [options=<opt,opt,...>] [read_only=true|false]
+    [bind=true|false] [remount=true|false] [network=true|false]
+    [create_target=true|false] [make_parents=true|false]
+    [fail_if_mounted=true|false] [dry_run=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty fs://local.mount target=/mnt/data source=/srv/disk.img
+
+Example Output:
+  {
+    "action": "mounted",
+    "alias": "local",
+    "backend": "fs",
+    "bind": false,
+    "created_target": true,
+    "details": {
+      "device": "/srv/disk.img",
+      "from_existing": false,
+      "fs_type": null,
+      "mount_flags": []
+    },
+    "dry_run": null,
+    "options": [],
+    "plan": null,
+    "read_only": false,
+    "remount": false,
+    "source": "/srv/disk.img",
+    "target": "/mnt/data",
+    "type": null,
+    "verb": "mount"
+  }
+
+  Shown with --json-pretty; an image file is attached to a loop device by
+  mount(8). An existing compatible mount returns action "already_mounted";
+  dry_run=true returns action "planned" with a plan. A relative target is
+  resolved from the current directory. Defaults: create_target=true,
+  make_parents=true, other switches false, timeout_ms=5000.

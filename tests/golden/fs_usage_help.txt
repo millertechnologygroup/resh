@@ -1,0 +1,64 @@
+Handle: fs
+Verb: usage
+Definition: Reports size, used, and free space and inode counts for each mounted
+  filesystem, or an aggregate total, as JSON.
+
+Usage:
+  resh fs://<alias>.usage [mode=mounts|paths|aggregate] [paths=<path,...>]
+    [units=auto|bytes|kilobytes|megabytes|gigabytes|blocks]
+    [human_readable=true|false] [include_inodes=true|false]
+    [include_readonly=true|false] [normalize_paths=true|false]
+    [threshold_used_percent_min=<0-100>]
+    [threshold_used_percent_max=<0-100>]
+    [include_mountpoints=<path,...>] [exclude_mountpoints=<path,...>]
+    [include_types=<type,...>] [exclude_types=<type,...>]
+    [include_sources=<source,...>] [exclude_sources=<source,...>]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty fs://local.usage units=megabytes
+
+Example Output:
+  {
+    "alias": "local",
+    "backend": "fs",
+    "filesystems": [
+      {
+        "free": 61440,
+        "fstype": "ext4",
+        "inodes": {
+          "free": 5120000,
+          "total": 6553600,
+          "used": 1433600,
+          "used_percent": 21.875
+        },
+        "read_only": false,
+        "size": 102400,
+        "source": "/dev/sda2",
+        "target": "/",
+        "used": 40960,
+        "used_percent": 40.0
+      }
+    ],
+    "filters": {
+      "exclude_mountpoints": [],
+      "exclude_sources": [],
+      "exclude_types": [],
+      "include_mountpoints": [],
+      "include_sources": [],
+      "include_types": []
+    },
+    "include_inodes": true,
+    "mode": "mounts",
+    "units": "megabytes",
+    "verb": "usage"
+  }
+
+  Shown with --json-pretty and one filesystem. With mode=aggregate the
+  result also has an aggregate object with the summed size, used, free,
+  used_percent, and inodes. paths is used only with mode=paths, which adds
+  a path_to_filesystem list. Mounts whose usage cannot be read are skipped
+  and listed in a warnings array. Filters that select nothing are an
+  error; thresholds may leave an empty list. Defaults: mode=mounts,
+  units=auto (bytes), include_inodes=true, include_readonly=true,
+  timeout_ms=5000.

@@ -1,0 +1,45 @@
+Handle: fs
+Verb: snapshot
+Definition: Captures the current mount table, with usage and filesystem
+  metadata, as a deterministic fs-lock/v1 lockfile string.
+
+Usage:
+  resh fs://<alias>.snapshot [format=json|yaml|text]
+    [include_usage=true|false] [include_inodes=true|false]
+    [include_fs_metadata=true|false] [include_os_metadata=true|false]
+    [normalize_paths=true|false]
+    [include_mountpoints=<path,...>] [exclude_mountpoints=<path,...>]
+    [include_types=<type,...>] [exclude_types=<type,...>]
+    [include_sources=<source,...>] [exclude_sources=<source,...>]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty fs://local.snapshot format=json
+
+Example Output:
+  {
+    "action": "snapshot",
+    "alias": "local",
+    "backend": "fs",
+    "format": "json",
+    "lockfile": "{\n  \"lockfile_version\": \"fs-lock/v1\",\n  ...\n}",
+    "parsed": {
+      "filters_applied": false,
+      "host": {
+        "architecture": "x86_64",
+        "hostname": "web01",
+        "kernel": "6.8.0-45-generic",
+        "os_family": "Linux",
+        "os_name": "Ubuntu",
+        "os_version": "24.04"
+      },
+      "lockfile_version": "fs-lock/v1",
+      "mount_count": 25
+    }
+  }
+
+  Shown with --json-pretty; the lockfile string is abbreviated. It holds
+  the generated_at time, alias, host, filters, and one entry per mount, as
+  JSON, YAML or text. Nothing is written to disk. Defaults: format=json,
+  include_usage, include_fs_metadata and include_os_metadata true,
+  include_inodes=false, timeout_ms=5000.

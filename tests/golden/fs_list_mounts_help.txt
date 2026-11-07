@@ -1,0 +1,60 @@
+Handle: fs
+Verb: list-mounts
+Definition: Lists the mounted filesystems from the mount table with their
+  options and read-only, pseudo, network, and loop flags, as JSON.
+
+Usage:
+  resh fs://<alias>.list-mounts [paths=<path,...>]
+    [include_readonly=true|false] [include_readwrite=true|false]
+    [include_pseudo=true|false] [include_loop=true|false]
+    [include_network=true|false] [normalize_paths=true|false]
+    [resolve_labels=true|false] [resolve_fs_features=true|false]
+    [include_mountpoints=<path,...>] [exclude_mountpoints=<path,...>]
+    [include_types=<type,...>] [exclude_types=<type,...>]
+    [include_sources=<source,...>] [exclude_sources=<source,...>]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty fs://local.list-mounts
+
+Example Output:
+  {
+    "alias": "local",
+    "backend": "fs",
+    "filters": {
+      "exclude_mountpoints": [],
+      "exclude_sources": [],
+      "exclude_types": [],
+      "include_loop": true,
+      "include_mountpoints": [],
+      "include_network": true,
+      "include_pseudo": false,
+      "include_readonly": true,
+      "include_readwrite": true,
+      "include_sources": [],
+      "include_types": [],
+      "paths": []
+    },
+    "mounts": [
+      {
+        "fstype": "ext4",
+        "loop": false,
+        "network": false,
+        "options": [
+          "noatime",
+          "rw"
+        ],
+        "pseudo": false,
+        "read_only": false,
+        "source": "/dev/sda2",
+        "target": "/"
+      }
+    ],
+    "verb": "list-mounts"
+  }
+
+  Shown with --json-pretty and one mount. List options take
+  comma-separated values, for example include_types=ext4,xfs. Mount point
+  filters match whole path components (/home matches /home/a, not
+  /homex). Defaults: include_pseudo=false, resolve_labels and
+  resolve_fs_features false, the other switches true, timeout_ms=3000.

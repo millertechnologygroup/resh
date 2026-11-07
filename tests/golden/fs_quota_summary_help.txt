@@ -1,0 +1,98 @@
+Handle: fs
+Verb: quota_summary
+Definition: Aggregates the quota usage and limits of one user, group, or
+  project, or of every subject, across the mounted filesystems, listing
+  filesystems without quotas separately.
+
+Usage:
+  resh fs://<alias>.quota_summary [subject=<name-or-id>]
+    [subject_type=auto|user|group|project] [all_subjects=true|false]
+    [units=auto|blocks|bytes] [include_space=true|false]
+    [include_inodes=true|false] [include_grace=true|false]
+    [resolve_uid_gid=true|false]
+    [include_mountpoints=<path,...>] [exclude_mountpoints=<path,...>]
+    [include_types=<type,...>] [exclude_types=<type,...>]
+    [include_sources=<source,...>] [exclude_sources=<source,...>]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty fs://local.quota_summary subject=alice
+
+Example Output:
+  {
+    "alias": "local",
+    "all_subjects": false,
+    "backend": "fs",
+    "filesystems": [
+      {
+        "fstype": "ext4",
+        "inode_quota_enabled": true,
+        "inodes": {
+          "grace_exceeded": false,
+          "grace_time_remaining_sec": null,
+          "hard_limit": 120000,
+          "soft_limit": 100000,
+          "used": 4210,
+          "used_percent_of_soft": 4.21
+        },
+        "source": "/dev/sda3",
+        "space": {
+          "grace_exceeded": false,
+          "grace_time_remaining_sec": null,
+          "hard_limit": 12582912,
+          "soft_limit": 10485760,
+          "used": 2097152,
+          "used_percent_of_soft": 20.0
+        },
+        "space_quota_enabled": true,
+        "target": "/home"
+      }
+    ],
+    "filesystems_without_quotas": [
+      {
+        "fstype": "vfat",
+        "source": "/dev/sda1",
+        "target": "/boot/efi"
+      }
+    ],
+    "filters": {
+      "exclude_mountpoints": [],
+      "exclude_sources": [],
+      "exclude_types": [],
+      "include_mountpoints": [],
+      "include_sources": [],
+      "include_types": []
+    },
+    "include_inodes": true,
+    "include_space": true,
+    "partial_failures": [],
+    "subject_query": {
+      "resolved_gid": 1000,
+      "resolved_uid": 1000,
+      "subject": "alice",
+      "subject_type": "user"
+    },
+    "summary": {
+      "inodes": {
+        "any_grace_exceeded": false,
+        "hard_limit": 120000,
+        "soft_limit": 100000,
+        "used": 4210,
+        "used_percent_of_soft": 4.21
+      },
+      "space": {
+        "any_grace_exceeded": false,
+        "hard_limit": 12582912,
+        "soft_limit": 10485760,
+        "used": 2097152,
+        "used_percent_of_soft": 20.0
+      }
+    },
+    "units": "auto",
+    "verb": "quota_summary"
+  }
+
+  Shown with --json-pretty, trimmed to one filesystem in each list.
+  Pseudo filesystems are not considered. With all_subjects=true the result
+  has a subjects list with one total per subject instead of summary.
+  Defaults as for quota, timeout_ms=8000.

@@ -1,0 +1,68 @@
+Handle: fs
+Verb: check
+Definition: Checks a filesystem for errors with fsck, xfs_repair, or btrfs,
+  read-only unless repair is allowed, and reports the tool output and analysis
+  as JSON.
+
+Usage:
+  resh fs://<alias>.check target=<dir-or-device>
+    [by=auto|mountpoint|device] [filesystem_type=<fstype>]
+    [mode=check|repair|auto] [allow_repair=true|false]
+    [aggressiveness=safe|normal|aggressive] [force=true|false]
+    [allow_online_check=true|false]
+    [require_unmounted_for_repair=true|false]
+    [skip_if_mounted=true|false] [btrfs_use_scrub=true|false]
+    [btrfs_allow_offline_check=true|false] [dry_run=true|false]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty fs://local.check target=/srv/disk.img
+
+Example Output:
+  {
+    "action": "check",
+    "alias": "local",
+    "allow_repair": false,
+    "analysis": {
+      "errors_found": false,
+      "filesystem_state": "clean",
+      "needs_repair": false,
+      "repaired": false
+    },
+    "backend": "fs",
+    "by": "auto",
+    "dry_run": null,
+    "filesystem": {
+      "fstype": "ext4",
+      "mounted": false,
+      "readonly": false,
+      "source": "/srv/disk.img"
+    },
+    "mode": "check",
+    "plan": null,
+    "reason": null,
+    "summary": {
+      "skipped_reason": null,
+      "status": "success"
+    },
+    "target": "/srv/disk.img",
+    "tool": {
+      "command": "fsck.ext4 -n /srv/disk.img",
+      "exit_code": 0,
+      "name": "fsck.ext4",
+      "stderr": "e2fsck 1.47.0 (5-Feb-2023)\n",
+      "stdout": "/srv/disk.img: clean, 11/65536 files, 12955/262144 blocks\n"
+    },
+    "verb": "check"
+  }
+
+  Shown for an unmounted ext4 image file with --json-pretty. The verb field
+  is "check" for both spellings. Supported types: ext2, ext3, ext4, vfat,
+  xfs, btrfs. mode=repair (needs allow_repair=true) runs fsck -p (-y with
+  aggressiveness=aggressive), fsck.vfat -a, xfs_repair or btrfs check
+  --repair on an unmounted filesystem; a mounted btrfs is scrubbed. Errors
+  found are reported in analysis with exit 0; a tool that fails to run its
+  check exits 1. Defaults: by=auto, mode=check, aggressiveness=safe,
+  allow_repair=false, allow_online_check=true,
+  require_unmounted_for_repair=true, btrfs_use_scrub=true,
+  timeout_ms=600000.

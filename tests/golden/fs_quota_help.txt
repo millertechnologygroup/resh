@@ -1,0 +1,68 @@
+Handle: fs
+Verb: quota
+Definition: Reports the disk space and inode quota usage and limits of one user,
+  group, or project, or of every subject, on the filesystem holding a path,
+  using quota or repquota.
+
+Usage:
+  resh fs://<alias>.quota [path=<path>] [subject=<name-or-id>]
+    [subject_type=auto|user|group|project] [all_subjects=true|false]
+    [units=auto|blocks|bytes] [include_space=true|false]
+    [include_inodes=true|false] [include_grace=true|false]
+    [resolve_uid_gid=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty fs://local.quota path=/home subject=alice
+
+Example Output:
+  {
+    "alias": "local",
+    "backend": "fs",
+    "filesystem": {
+      "fstype": "ext4",
+      "source": "/dev/sda3",
+      "target": "/home"
+    },
+    "inode_quota_enabled": true,
+    "path": "/home",
+    "space_quota_enabled": true,
+    "subject_query": {
+      "resolved_gid": 1000,
+      "resolved_uid": 1000,
+      "subject": "alice",
+      "subject_type": "user"
+    },
+    "subjects": [
+      {
+        "gid": 1000,
+        "inodes": {
+          "grace_exceeded": false,
+          "grace_time_remaining_sec": null,
+          "hard_limit": 120000,
+          "soft_limit": 100000,
+          "used": 4210,
+          "used_percent_of_soft": 4.21
+        },
+        "space": {
+          "grace_exceeded": false,
+          "grace_time_remaining_sec": null,
+          "hard_limit": 12582912,
+          "soft_limit": 10485760,
+          "used": 2097152,
+          "used_percent_of_soft": 20.0
+        },
+        "subject": "alice",
+        "subject_type": "user",
+        "uid": 1000
+      }
+    ],
+    "units": "auto",
+    "verb": "quota"
+  }
+
+  Shown with --json-pretty. Without path the root filesystem is queried,
+  and without subject the current user is queried. all_subjects=true
+  lists every subject on the filesystem (repquota, needs root). Sizes are
+  bytes, or 1 KiB blocks with units=blocks. Defaults: subject_type=auto,
+  units=auto, the include switches and resolve_uid_gid true,
+  timeout_ms=5000.

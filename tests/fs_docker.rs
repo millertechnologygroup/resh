@@ -617,3 +617,103 @@ r snap_text fs://local.snapshot format=text include_types=ext4 include_inodes=tr
             .contains("on /mnt/my disk type=ext4")
     );
 }
+
+/// The example line and the top-level keys of the sample output from
+/// `resh fs <verb> --help`.
+fn help_example(verb: &str) -> (String, Vec<String>) {
+    let out = Command::new(env!("CARGO_BIN_EXE_resh"))
+        .args(["fs", verb, "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let example = text
+        .split("Example:\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .trim()
+        .to_string();
+    let sample: String = text
+        .split("Example Output:\n")
+        .nth(1)
+        .unwrap()
+        .split("\n\n")
+        .next()
+        .unwrap()
+        .lines()
+        .map(|l| format!("{}\n", l.strip_prefix("  ").unwrap_or(l)))
+        .collect();
+    let v: Value = serde_json::from_str(&sample).unwrap();
+    let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    (example, keys)
+}
+
+/// Every example in `resh fs <verb> --help` for the verbs that need root
+/// runs verbatim and prints an object with the keys of the help sample.
+/// (list-mounts, usage and snapshot examples run on the host in
+/// tests/fs_verbs.rs.)
+#[test]
+fn help_examples_run_as_documented() {
+    let verbs = [
+        "check",
+        "fsck",
+        "mount",
+        "resize",
+        "unmount",
+        "umount",
+        "quota",
+        "quota_summary",
+    ];
+    let examples: Vec<(&str, String, Vec<String>)> = verbs
+        .iter()
+        .map(|v| {
+            let (ex, keys) = help_example(v);
+            (*v, ex, keys)
+        })
+        .collect();
+    let step = |verb: &str| -> String {
+        let ex = &examples.iter().find(|e| e.0 == verb).unwrap().1;
+        format!("r {verb} {}", ex.strip_prefix("resh ").unwrap())
+    };
+    let script = format!(
+        r#"
+truncate -s 1G /srv/disk.img && mkfs.ext4 -q /srv/disk.img
+{check}
+{fsck}
+truncate -s 3G /srv/disk.img
+{mount}
+{resize}
+{unmount}
+mount /srv/disk.img /mnt/data
+{umount}
+useradd -M alice
+truncate -s 300M /srv/q.img && mkfs.ext4 -q -O quota -E quotatype=usrquota:grpquota /srv/q.img
+mount -o usrquota,grpquota /srv/q.img /home
+setquota -u alice 10240 12288 100000 120000 /home
+{quota}
+{quota_summary}
+"#,
+        check = step("check"),
+        fsck = step("fsck"),
+        mount = step("mount"),
+        resize = step("resize"),
+        unmount = step("unmount"),
+        umount = step("umount"),
+        quota = step("quota"),
+        quota_summary = step("quota_summary"),
+    );
+    let r = scenario(&script);
+    for (verb, example, keys) in &examples {
+        let v = r.ok(verb);
+        let mut got: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        got.sort();
+        assert_eq!(
+            &got, keys,
+            "{example}: output keys differ from the help sample"
+        );
+    }
+    assert_eq!(r.ok("resize")["final_size_bytes"], 2u64 << 30);
+}

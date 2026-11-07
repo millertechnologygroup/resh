@@ -1,0 +1,44 @@
+Handle: fs
+
+Description:
+  The fs handle manages mounted filesystems on the local host, covering mounting
+  and unmounting, mount table listings and lockfile snapshots, disk usage,
+  quotas, resizing, and consistency checks. It reads /proc/mounts and statvfs
+  data and runs system tools such as mount, umount, quota, repquota, resize2fs,
+  xfs_growfs, btrfs, and fsck. The URL host is a free-form alias, such as
+  fs://local, that is echoed back in the JSON result.
+
+Available Verbs:
+  list-mounts     Lists the mounted filesystems from the mount table with their
+                  options and read-only, pseudo, network, and loop flags, as
+                  JSON.
+  usage           Reports size, used, and free space and inode counts for each
+                  mounted filesystem, or an aggregate total, as JSON.
+  snapshot        Captures the current mount table, with usage and filesystem
+                  metadata, as a deterministic fs-lock/v1 lockfile string.
+  quota           Reports the disk space and inode quota usage and limits of one
+                  user, group, or project, or of every subject, on the
+                  filesystem holding a path, using quota or repquota.
+  quota_summary   Aggregates the quota usage and limits of one user, group, or
+                  project, or of every subject, across the mounted filesystems,
+                  listing filesystems without quotas separately.
+  mount           Mounts a device, network share, or bind source on a target
+                  directory, creating the directory if needed, and reports the
+                  result as JSON.
+  unmount         Unmounts the filesystems matching a mount point or source
+                  device, optionally with their child mounts, and reports the
+                  result as JSON.
+  umount          Alias for unmount.
+  resize          Grows or shrinks a filesystem, located by mount point or
+                  device, to an absolute size or by a delta using resize2fs,
+                  xfs_growfs, or btrfs.
+  check           Checks a filesystem for errors with fsck, xfs_repair, or
+                  btrfs, read-only unless repair is allowed, and reports the
+                  tool output and analysis as JSON.
+  fsck            Alias for check.
+
+Usage:
+  resh fs://<alias>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh fs <verb> --help
