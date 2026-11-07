@@ -1,28 +1,68 @@
-use anyhow::{Result, bail};
-use std::fs;
-use std::io::Read;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+//! `mq://<queue>`: a local, file-based FIFO message queue.
+//!
+//! Storage (under `$XDG_STATE_HOME/resh/mq`, owner-only):
+//!
+//! ```text
+//! <queue>/                     0700
+//!   .seq                       0600  queue lock (flock) and the next message number
+//!   .tmp/<pid>-<uuid>          0600  messages being written by put
+//!   _inflight/<n>.msg          0600  messages being taken by get
+//!   <n>.msg                    0600  queued messages, <n> = 20-digit number
+//! ```
+//!
+//! Concurrency: `put` writes and syncs the message in `.tmp`, then, holding
+//! the queue lock, takes the next number from `.seq` and renames the file
+//! into place, so numbers follow the order in which puts finished and never
+//! repeat. `get` and `purge` hold the lock while they choose and move or
+//! delete messages, so two consumers never take the same message. `len` and
+//! `peek` only read and take no lock. The lock is an `flock` on `.seq`,
+//! released by the kernel if a process dies.
+
+use anyhow::Result;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{DirBuilderExt, FileExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use url::Url;
 
 use crate::core::{
     help::{self, HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{Status, exit},
 };
-use dirs::state_dir;
+
+#[cfg(test)]
+mod tests;
+
+/// Every error code the handle reports.
+pub const ERROR_CODES: &[&str] = &[
+    "mq.invalid_argument",
+    "mq.invalid_target",
+    "mq.empty",
+    "mq.timeout",
+    "mq.no_state_dir",
+    "mq.unsafe_path",
+    "mq.io_error",
+];
+
+/// Longest accepted queue name.
+const MAX_NAME: usize = 120;
 
 /// Metadata for `resh mq --help` and `resh mq <verb> --help`.
 static MQ_HELP: HandleHelp = HandleHelp {
     description: "The mq handle provides a local, file-based FIFO message queue, storing each \
-        message as a file under the user's state directory, normally \
-        ~/.local/state/resh/mq/<queue>. The queue is named by the URL, such as mq://jobs, and \
-        unsafe characters in the name are replaced with underscores.",
+        message as an owner-only file under the user's state directory, normally \
+        ~/.local/state/resh/mq/<queue>. The queue is named by the URL, such as mq://jobs, \
+        using letters, digits, '.', '-' and '_'. Producers and consumers may run at the same \
+        time: each message is taken by exactly one get, in the order the puts finished.",
     usage: "resh mq://<queue>.<verb>[(key=value,...)]",
     verbs: &[
         VerbHelp {
             name: "len",
-            definition: "Prints the number of messages waiting in the queue.",
+            definition: "Prints the number of messages waiting in the queue, 0 if the queue \
+                does not exist.",
             detail: Some(VerbDetail {
                 usage: "resh mq://<queue>.len",
                 example: "resh mq://jobs.len",
@@ -31,12 +71,16 @@ static MQ_HELP: HandleHelp = HandleHelp {
         },
         VerbHelp {
             name: "peek",
-            definition: "Prints the oldest message without removing it, exiting with status 2 \
-                if the queue is empty.",
+            definition: "Prints the oldest message without removing it, failing with exit \
+                status 1 and the code mq.empty if the queue is empty.",
             detail: Some(VerbDetail {
                 usage: "resh mq://<queue>.peek",
                 example: "resh mq://jobs.peek",
-                example_output: Some("backup-db"),
+                example_output: Some(
+                    r#"backup-db
+
+The message is printed exactly as stored, with no newline added."#,
+                ),
             }),
         },
         VerbHelp {
@@ -53,117 +97,766 @@ static MQ_HELP: HandleHelp = HandleHelp {
             definition: "Appends a message to the queue, taken from the data argument or, if \
                 it is absent, from standard input.",
             detail: Some(VerbDetail {
-                usage: "resh mq://<queue>.put [data=<message>]",
+                usage: "resh mq://<queue>.put [data=<message>] [timeout_ms=<ms>]",
                 example: "resh mq://jobs.put data=backup-db",
-                example_output: None,
+                example_output: Some(
+                    r#"Prints nothing on success. Without data=, all of standard input is the
+message, stored byte for byte. timeout_ms limits the wait for the queue lock
+(0 or absent: no limit); past it the command exits 124 with mq.timeout and
+nothing is queued."#,
+                ),
             }),
         },
         VerbHelp {
             name: "get",
-            definition: "Removes the oldest message from the queue and prints it, exiting with \
-                status 2 if the queue is empty.",
+            definition: "Removes the oldest message from the queue and prints it, failing with \
+                exit status 1 and the code mq.empty if the queue is empty.",
             detail: Some(VerbDetail {
-                usage: "resh mq://<queue>.get",
+                usage: "resh mq://<queue>.get [timeout_ms=<ms>]",
                 example: "resh mq://jobs.get",
-                example_output: Some("backup-db"),
+                example_output: Some(
+                    r#"backup-db
+
+The message is printed exactly as stored, with no newline added; if it
+cannot be written out it is put back at the head of the queue. get does not
+wait for a message. timeout_ms limits the wait for the queue lock (0 or
+absent: no limit); past it the command exits 124 with mq.timeout and nothing
+is taken."#,
+                ),
             }),
         },
         VerbHelp {
             name: "purge",
             definition: "Deletes every message in the queue, including any left in flight.",
             detail: Some(VerbDetail {
-                usage: "resh mq://<queue>.purge",
+                usage: "resh mq://<queue>.purge [timeout_ms=<ms>]",
                 example: "resh mq://jobs.purge",
-                example_output: None,
+                example_output: Some(
+                    r#"Prints nothing on success. timeout_ms limits the wait for the queue lock and
+the deletion (0 or absent: no limit); past it the command exits 124 with
+mq.timeout, and messages not yet deleted stay queued."#,
+                ),
             }),
         },
     ],
 };
 
+/// The arguments each verb accepts.
+fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
+    Some(match verb {
+        "len" | "peek" | "create" => &[],
+        "put" => &["data", "timeout_ms"],
+        "get" | "purge" => &["timeout_ms"],
+        _ => return None,
+    })
+}
+
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("mq", |u| Ok(Box::new(MQHandle::from_url(u)?)));
 }
 
-fn sanitize_name(s: &str) -> String {
-    let mut out = String::new();
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.len() > 120 {
-        out.truncate(120);
-    }
-    if out.is_empty() { "_".to_string() } else { out }
+// ---------------------------------------------------------------------------
+// Failures
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct Failure {
+    exit: i32,
+    code: &'static str,
+    message: String,
 }
 
+type R<T> = std::result::Result<T, Failure>;
+
+impl Failure {
+    fn new(exit: i32, code: &'static str, message: impl Into<String>) -> Self {
+        debug_assert!(ERROR_CODES.contains(&code), "{code} not listed");
+        Self {
+            exit,
+            code,
+            message: message.into(),
+        }
+    }
+    fn usage(message: impl Into<String>) -> Self {
+        Self::new(exit::USAGE, "mq.invalid_argument", message)
+    }
+    fn io(what: impl std::fmt::Display, e: io::Error) -> Self {
+        Self::new(exit::FAILED, "mq.io_error", format!("{what}: {e}"))
+    }
+    fn unsafe_path(path: &Path, why: &str) -> Self {
+        Self::new(
+            exit::FAILED,
+            "mq.unsafe_path",
+            format!("{} {why}; nothing was done", path.display()),
+        )
+    }
+    fn into_status(self) -> Status {
+        Status::coded(self.exit, self.code, self.message)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Arguments
+// ---------------------------------------------------------------------------
+
+/// Refuses an argument `verb` does not take (exit 2). `dry_run` is checked
+/// by the dispatcher, which refuses `dry_run=true` for every mq verb, so
+/// only `dry_run=false` reaches here and it changes nothing.
+fn check_args(verb: &str, allowed: &[&str], args: &Args) -> R<()> {
+    let mut keys: Vec<&String> = args.keys().collect();
+    keys.sort();
+    let Some(bad) = keys
+        .into_iter()
+        .find(|k| k.as_str() != "dry_run" && !allowed.contains(&k.as_str()))
+    else {
+        return Ok(());
+    };
+    if bad == "timeout_ms" {
+        return Err(Failure::usage(format!(
+            "mq {verb} does not take timeout_ms: it never waits for the queue lock \
+             (only put, get and purge do); nothing was done"
+        )));
+    }
+    let hint = suggest(bad, allowed)
+        .map(|s| format!(" (did you mean `{s}`?)"))
+        .unwrap_or_default();
+    let accepted = if allowed.is_empty() {
+        "it takes no arguments".to_string()
+    } else {
+        format!("accepted: {}", allowed.join(", "))
+    };
+    Err(Failure::usage(format!(
+        "unknown argument for mq {verb}: {bad}{hint} ({accepted}); nothing was done"
+    )))
+}
+
+/// The accepted argument closest to `bad` (edit distance at most 2, a
+/// case-only difference, or one a prefix of the other), for a "did you
+/// mean" hint.
+fn suggest<'a>(bad: &str, allowed: &[&'a str]) -> Option<&'a str> {
+    fn distance(a: &str, b: &str) -> usize {
+        let b: Vec<char> = b.chars().collect();
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.chars().enumerate() {
+            let mut cur = vec![i + 1];
+            for (j, cb) in b.iter().enumerate() {
+                let cost = usize::from(ca != *cb);
+                cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+    let lower = bad.to_ascii_lowercase().replace('-', "_");
+    allowed
+        .iter()
+        .map(|a| (distance(&lower, a), *a))
+        .filter(|(d, a)| {
+            *d <= 2 || (lower.len() >= 3 && (a.starts_with(lower.as_str()) || lower.starts_with(a)))
+        })
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, a)| a)
+}
+
+/// `timeout_ms`: a whole number of milliseconds; 0 or absent means no limit.
+fn deadline_arg(args: &Args) -> R<Option<Instant>> {
+    let Some(raw) = args.get("timeout_ms") else {
+        return Ok(None);
+    };
+    let ms: u64 = raw.parse().map_err(|_| {
+        Failure::usage(format!(
+            "timeout_ms must be a whole number of milliseconds (0 = no limit), got {raw:?}; \
+             nothing was done"
+        ))
+    })?;
+    if ms == 0 {
+        return Ok(None);
+    }
+    Ok(Some(Instant::now() + Duration::from_millis(ms)))
+}
+
+// ---------------------------------------------------------------------------
+// Queue names and storage
+// ---------------------------------------------------------------------------
+
+/// Checks a queue name: 1-120 letters, digits, '.', '-' or '_', not
+/// starting with '.'.
+fn validate_name(name: &str) -> std::result::Result<(), String> {
+    let rule = "a queue name is 1-120 letters, digits, '.', '-' or '_' and does not start \
+                with '.'";
+    if name.is_empty() {
+        return Err(format!("missing queue name: use mq://<queue> ({rule})"));
+    }
+    if name.len() > MAX_NAME
+        || name.starts_with('.')
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return Err(format!("invalid queue name {name:?}: {rule}"));
+    }
+    Ok(())
+}
+
+/// Parses `mq://<queue>`: the queue name is the URL host; anything else in
+/// the URL (a path, port, user, query or fragment) is refused.
+fn queue_name(u: &Url) -> std::result::Result<String, String> {
+    if !u.username().is_empty()
+        || u.password().is_some()
+        || u.port().is_some()
+        || u.query().is_some()
+        || u.fragment().is_some()
+        || !(u.path().is_empty() || u.path() == "/")
+    {
+        let shown = u.as_str();
+        return Err(format!(
+            "invalid queue {shown:?}: use mq://<queue>, a single name without '/', ':', \
+             '?', '#' or '@'"
+        ));
+    }
+    let name = u.host_str().unwrap_or("").to_string();
+    validate_name(&name)?;
+    Ok(name)
+}
+
+/// The mq store root, `<state dir>/resh/mq`; None if the state directory
+/// cannot be determined (there is no fallback to a shared directory).
+fn store_root() -> Option<PathBuf> {
+    dirs::state_dir().map(|d| d.join("resh").join("mq"))
+}
+
+/// True if `name` is a queued-message file name: 20 digits then `.msg`.
+fn message_number(name: &str) -> Option<u64> {
+    let digits = name.strip_suffix(".msg")?;
+    if digits.len() != 20 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn message_file_name(n: u64) -> String {
+    format!("{n:020}.msg")
+}
+
+/// Creates `dir` (owner-only) or checks an existing one: a symlink or a
+/// non-directory is refused, and an existing directory is tightened to 0700.
+fn private_dir(dir: &Path) -> R<()> {
+    match fs::symlink_metadata(dir) {
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err(Failure::unsafe_path(dir, "is a symlink"));
+        }
+        Ok(m) if !m.is_dir() => return Err(Failure::unsafe_path(dir, "is not a directory")),
+        Ok(m) => {
+            if m.permissions().mode() & 0o777 != 0o700 {
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| {
+                    Failure::io(format!("cannot set mode 0700 on {}", dir.display()), e)
+                })?;
+            }
+            return Ok(());
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(Failure::io(format!("cannot inspect {}", dir.display()), e)),
+    }
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        // Created by a concurrent resh: check it again.
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return private_dir_existing(dir),
+        Err(e) => return Err(Failure::io(format!("cannot create {}", dir.display()), e)),
+    }
+    // The umask can only remove bits from 0700; set it exactly anyway.
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+        .map_err(|e| Failure::io(format!("cannot set mode 0700 on {}", dir.display()), e))
+}
+
+fn private_dir_existing(dir: &Path) -> R<()> {
+    match fs::symlink_metadata(dir) {
+        Ok(m) if m.file_type().is_symlink() => Err(Failure::unsafe_path(dir, "is a symlink")),
+        Ok(m) if !m.is_dir() => Err(Failure::unsafe_path(dir, "is not a directory")),
+        Ok(_) => Ok(()),
+        Err(e) => Err(Failure::io(format!("cannot inspect {}", dir.display()), e)),
+    }
+}
+
+/// Opens a file inside the queue for reading without following a symlink.
+fn open_nofollow(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    File::open(dir)?.sync_all()
+}
+
+fn timed_out(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|d| Instant::now() >= d)
+}
+
+/// The exclusive queue lock: an `flock` on `.seq`, released when dropped
+/// (or by the kernel when the process dies). The file also holds the next
+/// message number.
+struct QueueLock {
+    file: File,
+}
+
+impl QueueLock {
+    /// Reads the stored next message number, if the file holds a valid one.
+    fn stored_next(&self) -> io::Result<Option<u64>> {
+        let mut buf = [0u8; 32];
+        let n = self.file.read_at(&mut buf, 0)?;
+        Ok(std::str::from_utf8(&buf[..n])
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|n| *n > 0))
+    }
+
+    fn store_next(&self, next: u64) -> io::Result<()> {
+        let text = format!("{next:020}\n");
+        self.file.write_all_at(text.as_bytes(), 0)?;
+        self.file.set_len(text.len() as u64)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The handle
+// ---------------------------------------------------------------------------
+
 pub struct MQHandle {
-    #[allow(dead_code)]
     name: String,
-    dir: PathBuf,
+    /// `<state dir>/resh/mq`, or None when there is no state directory.
+    root: Option<PathBuf>,
+}
+
+/// Where a queue's files are.
+struct Paths {
+    queue: PathBuf,
+    lock: PathBuf,
+    tmp: PathBuf,
+    inflight: PathBuf,
 }
 
 impl MQHandle {
     pub fn from_url(u: &Url) -> Result<Self> {
-        let name = format!("{}{}", u.host_str().unwrap_or(""), u.path());
-        let safe = sanitize_name(&name);
-        let base = state_dir().unwrap_or(std::path::PathBuf::from("/tmp"));
-        let dir = base.join("resh").join("mq").join(safe);
-        Ok(Self { name: name, dir })
+        let name = queue_name(u).map_err(anyhow::Error::msg)?;
+        Ok(Self {
+            name,
+            root: store_root(),
+        })
     }
 
-    fn ensure(&self) -> Result<()> {
-        fs::create_dir_all(&self.dir)?;
-        fs::create_dir_all(self.dir.join("_inflight"))?;
+    #[cfg(test)]
+    fn at(root: Option<PathBuf>, name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            root,
+        }
+    }
+
+    fn paths(&self) -> R<Paths> {
+        let Some(root) = &self.root else {
+            return Err(Failure::new(
+                exit::FAILED,
+                "mq.no_state_dir",
+                "cannot determine the state directory (set XDG_STATE_HOME to an absolute path \
+                 or HOME); nothing was done",
+            ));
+        };
+        let queue = root.join(&self.name);
+        Ok(Paths {
+            lock: queue.join(".seq"),
+            tmp: queue.join(".tmp"),
+            inflight: queue.join("_inflight"),
+            queue,
+        })
+    }
+
+    /// Creates (or checks) the store and the queue's directories.
+    fn ensure(&self, p: &Paths) -> R<()> {
+        let root = p.queue.parent().expect("queue has a parent");
+        // The directories above the mq root are created owner-only too;
+        // existing ones are left as they are.
+        if let Some(parent) = root.parent()
+            && !parent.exists()
+        {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .map_err(|e| Failure::io(format!("cannot create {}", parent.display()), e))?;
+        }
+        for dir in [root, &p.queue, &p.tmp, &p.inflight] {
+            private_dir(dir)?;
+        }
         Ok(())
     }
 
-    fn now_ns() -> u128 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+    /// True if the queue directory exists; a symlink in its place is refused.
+    fn queue_exists(&self, p: &Paths) -> R<bool> {
+        let root = p.queue.parent().expect("queue has a parent");
+        for dir in [root, &p.queue] {
+            match fs::symlink_metadata(dir) {
+                Ok(m) if m.file_type().is_symlink() => {
+                    return Err(Failure::unsafe_path(dir, "is a symlink"));
+                }
+                Ok(m) if !m.is_dir() => {
+                    return Err(Failure::unsafe_path(dir, "is not a directory"));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+                Err(e) => return Err(Failure::io(format!("cannot inspect {}", dir.display()), e)),
+            }
+        }
+        Ok(true)
     }
 
-    fn purge_impl(&self) -> Result<()> {
-        // Ensure directory structure exists (idempotent)
-        self.ensure()?;
+    /// Takes the queue lock, waiting until `deadline` (no limit if None).
+    fn lock(&self, p: &Paths, deadline: Option<Instant>, verb: &str) -> R<QueueLock> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&p.lock)
+            .map_err(|e| {
+                if e.raw_os_error() == Some(libc::ELOOP) {
+                    Failure::unsafe_path(&p.lock, "is a symlink")
+                } else {
+                    Failure::io(
+                        format!("cannot open the queue lock {}", p.lock.display()),
+                        e,
+                    )
+                }
+            })?;
+        let fd = file.as_raw_fd();
+        let started = Instant::now();
+        let mut pause = Duration::from_millis(1);
+        loop {
+            let flags = if deadline.is_some() {
+                libc::LOCK_EX | libc::LOCK_NB
+            } else {
+                libc::LOCK_EX
+            };
+            // SAFETY: fd is a valid open descriptor owned by `file`.
+            if unsafe { libc::flock(fd, flags) } == 0 {
+                break;
+            }
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(libc::EINTR) => continue,
+                Some(libc::EWOULDBLOCK) => {
+                    if timed_out(deadline) {
+                        return Err(Failure::new(
+                            exit::TIMEOUT,
+                            "mq.timeout",
+                            format!(
+                                "mq {verb}: timed out after {} ms waiting for the lock on \
+                                 queue {:?} (another process holds it); nothing was done",
+                                started.elapsed().as_millis(),
+                                self.name
+                            ),
+                        ));
+                    }
+                    let left = deadline
+                        .map(|d| d.saturating_duration_since(Instant::now()))
+                        .unwrap_or(pause);
+                    std::thread::sleep(pause.min(left));
+                    pause = (pause * 2).min(Duration::from_millis(20));
+                }
+                _ => return Err(Failure::io("cannot lock the queue", e)),
+            }
+        }
+        // Keep the lock file owner-only even if an older resh created it.
+        let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+        Ok(QueueLock { file })
+    }
 
-        // Purge .msg files from main directory
-        if self.dir.exists() {
-            for entry in fs::read_dir(&self.dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("msg")) {
-                    // Handle NotFound errors gracefully (file may have been deleted by concurrent operation)
-                    match fs::remove_file(&path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => return Err(e.into()),
+    /// Queued messages by number, oldest first.
+    fn list_messages(dir: &Path) -> R<Vec<(u64, String)>> {
+        let mut out = Vec::new();
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(Failure::io(format!("cannot read {}", dir.display()), e)),
+        };
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| Failure::io(format!("cannot read {}", dir.display()), e))?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(n) = message_number(name) else {
+                continue;
+            };
+            // Only regular files are messages (a planted symlink is not).
+            match entry.file_type() {
+                Ok(t) if t.is_file() => out.push((n, name.to_string())),
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(Failure::io(format!("cannot read {}", dir.display()), e)),
+            }
+        }
+        out.sort_unstable();
+        Ok(out)
+    }
+
+    /// The next free message number: one past the highest number queued or
+    /// in flight. Used when `.seq` is missing or damaged (a queue made by an
+    /// older resh, whose numbers are put times in nanoseconds).
+    fn recompute_next(p: &Paths) -> R<u64> {
+        let mut max = 0;
+        for dir in [&p.queue, &p.inflight] {
+            if let Some((n, _)) = Self::list_messages(dir)?.last() {
+                max = max.max(*n);
+            }
+        }
+        max.checked_add(1).ok_or_else(|| {
+            Failure::new(exit::FAILED, "mq.io_error", "message numbers are exhausted")
+        })
+    }
+
+    // -- verbs --------------------------------------------------------------
+
+    fn create(&self) -> R<()> {
+        let p = self.paths()?;
+        self.ensure(&p)
+    }
+
+    fn len(&self, io: &mut IoStreams) -> R<()> {
+        let p = self.paths()?;
+        let n = if self.queue_exists(&p)? {
+            Self::list_messages(&p.queue)?.len()
+        } else {
+            0
+        };
+        write!(io.stdout, "{n}").map_err(|e| Failure::io("cannot write to stdout", e))
+    }
+
+    fn empty(&self, verb: &str) -> Failure {
+        Failure::new(
+            exit::FAILED,
+            "mq.empty",
+            format!("mq {verb}: queue {:?} is empty", self.name),
+        )
+    }
+
+    fn peek(&self, io: &mut IoStreams) -> R<()> {
+        let p = self.paths()?;
+        if !self.queue_exists(&p)? {
+            return Err(self.empty("peek"));
+        }
+        // No lock: a message taken by a get between listing and opening is
+        // skipped and the listing repeated.
+        loop {
+            let Some((_, name)) = Self::list_messages(&p.queue)?.into_iter().next() else {
+                return Err(self.empty("peek"));
+            };
+            let path = p.queue.join(&name);
+            let mut f = match open_nofollow(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(Failure::io(format!("cannot read {}", path.display()), e)),
+            };
+            return copy_out(&mut f, io.stdout, &path);
+        }
+    }
+
+    fn put(&self, args: &Args, deadline: Option<Instant>, io: &mut IoStreams) -> R<()> {
+        let p = self.paths()?;
+        self.ensure(&p)?;
+
+        // 1. Write and sync the message under a private temporary name.
+        let tmp = p.tmp.join(format!(
+            "{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&tmp)
+            .map_err(|e| Failure::io(format!("cannot create {}", tmp.display()), e))?;
+        let written = match args.get("data") {
+            Some(data) => f
+                .write_all(data.as_bytes())
+                .map_err(|e| Failure::io(format!("cannot write {}", tmp.display()), e)),
+            None => copy_in(io.stdin, &mut f, &tmp),
+        }
+        .and_then(|_| {
+            f.sync_all()
+                .map_err(|e| Failure::io(format!("cannot sync {}", tmp.display()), e))
+        });
+        drop(f);
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+
+        // 2. Number it and move it into the queue, holding the lock.
+        let result = (|| {
+            let lock = self.lock(&p, deadline, "put")?;
+            let mut n = match lock
+                .stored_next()
+                .map_err(|e| Failure::io("cannot read the queue's message counter", e))?
+            {
+                Some(n) => n,
+                None => Self::recompute_next(&p)?,
+            };
+            // A counter that went backwards (damaged, or lost in a crash) must
+            // never overwrite a message.
+            if fs::symlink_metadata(p.queue.join(message_file_name(n))).is_ok()
+                || fs::symlink_metadata(p.inflight.join(message_file_name(n))).is_ok()
+            {
+                n = n.max(Self::recompute_next(&p)?);
+            }
+            let next = n.checked_add(1).ok_or_else(|| {
+                Failure::new(exit::FAILED, "mq.io_error", "message numbers are exhausted")
+            })?;
+            lock.store_next(next)
+                .map_err(|e| Failure::io("cannot update the queue's message counter", e))?;
+            let dest = p.queue.join(message_file_name(n));
+            fs::rename(&tmp, &dest).map_err(|e| {
+                Failure::io(format!("cannot move the message to {}", dest.display()), e)
+            })?;
+            sync_dir(&p.queue).map_err(|e| {
+                Failure::io(
+                    format!("message {n} was queued but the queue directory could not be synced"),
+                    e,
+                )
+            })?;
+            drop(lock);
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        result
+    }
+
+    fn get(&self, deadline: Option<Instant>, io: &mut IoStreams) -> R<()> {
+        let p = self.paths()?;
+        if !self.queue_exists(&p)? {
+            return Err(self.empty("get"));
+        }
+        private_dir(&p.inflight)?;
+
+        // Claim the oldest message: move it to _inflight and open it while
+        // holding the lock, so no other get can take it.
+        let lock = self.lock(&p, deadline, "get")?;
+        let Some((_, name)) = Self::list_messages(&p.queue)?.into_iter().next() else {
+            return Err(self.empty("get"));
+        };
+        let queued = p.queue.join(&name);
+        let claimed = p.inflight.join(&name);
+        fs::rename(&queued, &claimed)
+            .map_err(|e| Failure::io(format!("cannot claim {}", queued.display()), e))?;
+        let opened = open_nofollow(&claimed);
+        let mut f = match opened {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = fs::rename(&claimed, &queued);
+                return Err(Failure::io(format!("cannot read {}", claimed.display()), e));
+            }
+        };
+        drop(lock);
+
+        if let Err(e) = copy_out(&mut f, io.stdout, &claimed) {
+            // Not delivered: put it back at the head of the queue.
+            let back = self.lock(&p, None, "get").and_then(|_lock| {
+                if fs::symlink_metadata(&queued).is_ok() {
+                    return Err(Failure::io(
+                        "cannot put the message back",
+                        io::Error::from(io::ErrorKind::AlreadyExists),
+                    ));
+                }
+                fs::rename(&claimed, &queued)
+                    .map_err(|e| Failure::io("cannot put the message back", e))
+            });
+            return Err(match back {
+                Ok(()) => Failure::new(
+                    e.exit,
+                    e.code,
+                    format!("{}; the message was put back in the queue", e.message),
+                ),
+                Err(b) => Failure::new(
+                    e.exit,
+                    e.code,
+                    format!(
+                        "{}; {} - it is left in {}",
+                        e.message,
+                        b.message,
+                        claimed.display()
+                    ),
+                ),
+            });
+        }
+        match fs::remove_file(&claimed) {
+            Ok(()) => {}
+            // Deleted by a concurrent purge.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                // Delivered; the leftover copy is never returned again.
+                let _ = writeln!(
+                    io.stderr,
+                    "Warning: message delivered, but its in-flight copy {} could not be \
+                     deleted: {e}",
+                    claimed.display()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn purge(&self, deadline: Option<Instant>) -> R<()> {
+        let p = self.paths()?;
+        if !self.queue_exists(&p)? {
+            return Ok(());
+        }
+        let lock = self.lock(&p, deadline, "purge")?;
+        let mut deleted = 0usize;
+        for dir in [&p.queue, &p.inflight] {
+            let entries = match fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(Failure::io(format!("cannot read {}", dir.display()), e)),
+            };
+            for entry in entries {
+                let entry =
+                    entry.map_err(|e| Failure::io(format!("cannot read {}", dir.display()), e))?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                // Messages, and the partial `tmp-<ns>.msg` files older resh
+                // versions could leave behind.
+                if !name.ends_with(".msg") || entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                if timed_out(deadline) {
+                    return Err(Failure::new(
+                        exit::TIMEOUT,
+                        "mq.timeout",
+                        format!(
+                            "mq purge: timed out after deleting {deleted} messages from queue \
+                             {:?}; the rest are still queued",
+                            self.name
+                        ),
+                    ));
+                }
+                match fs::remove_file(entry.path()) {
+                    Ok(()) => deleted += 1,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(Failure::io(
+                            format!("cannot delete {}", entry.path().display()),
+                            e,
+                        ));
                     }
                 }
             }
         }
-
-        // Purge .msg files from _inflight directory
-        let inflight = self.dir.join("_inflight");
-        if inflight.exists() {
-            for entry in fs::read_dir(&inflight)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("msg")) {
-                    // Handle NotFound errors gracefully (file may have been deleted by concurrent operation)
-                    match fs::remove_file(&path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-            }
-        }
-
+        remove_abandoned_temps(&p.tmp);
+        drop(lock);
         Ok(())
     }
 
@@ -182,9 +875,12 @@ impl MQHandle {
                 .iter()
                 .any(|k| args.contains_key(*k))
         {
+            let is_verb = |v: &str| MQ_HELP.verbs.iter().any(|h| h.name == v);
             args.get("verb")
                 .cloned()
-                .or_else(|| args.get("help").filter(|v| !v.is_empty()).cloned())
+                .or_else(|| args.get("help").filter(|v| is_verb(v)).cloned())
+                // `mq://q.put(help=1)`: help for the verb being called.
+                .or_else(|| is_verb(verb).then(|| verb.to_string()))
         } else {
             return Ok(None);
         };
@@ -194,6 +890,87 @@ impl MQHandle {
             help::render_legacy("mq", &MQ_HELP, self.verbs(), help_verb.as_deref())
         )?;
         Ok(Some(Status::ok()))
+    }
+
+    fn run(&self, verb: &str, args: &Args, io: &mut IoStreams) -> R<()> {
+        let Some(allowed) = verb_args(verb) else {
+            let verbs = ["len", "peek", "create", "put", "get", "purge"];
+            let hint = suggest(verb, &verbs)
+                .map(|s| format!(" (did you mean `{s}`?)"))
+                .unwrap_or_default();
+            return Err(Failure::usage(format!(
+                "unknown mq verb {verb:?}{hint}; verbs: {}",
+                verbs.join(", ")
+            )));
+        };
+        check_args(verb, allowed, args)?;
+        let deadline = deadline_arg(args)?;
+        match verb {
+            "len" => self.len(io),
+            "peek" => self.peek(io),
+            "create" => self.create(),
+            "put" => self.put(args, deadline, io),
+            "get" => self.get(deadline, io),
+            "purge" => self.purge(deadline),
+            _ => unreachable!("verb_args lists every verb"),
+        }
+    }
+}
+
+/// Streams `src` to stdout and flushes it.
+fn copy_out(src: &mut File, out: &mut dyn Write, path: &Path) -> R<()> {
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match src.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(Failure::io(format!("cannot read {}", path.display()), e)),
+        };
+        out.write_all(&buf[..n])
+            .map_err(|e| Failure::io("cannot write the message to stdout", e))?;
+    }
+    out.flush()
+        .map_err(|e| Failure::io("cannot write the message to stdout", e))
+}
+
+/// Streams stdin into the message file, so a large message is never held
+/// in memory.
+fn copy_in(stdin: &mut dyn Read, dest: &mut File, path: &Path) -> R<()> {
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match stdin.read(&mut buf) {
+            Ok(0) => return Ok(()),
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(Failure::io("cannot read the message from stdin", e)),
+        };
+        dest.write_all(&buf[..n])
+            .map_err(|e| Failure::io(format!("cannot write {}", path.display()), e))?;
+    }
+}
+
+/// Deletes temporary files in `.tmp` whose writing process no longer
+/// exists (a put that was killed). Files of running puts are kept.
+fn remove_abandoned_temps(tmp: &Path) {
+    let Ok(entries) = fs::read_dir(tmp) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        // SAFETY: kill with signal 0 only checks that the process exists.
+        let gone = unsafe { libc::kill(pid, 0) } != 0
+            && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone {
+            let _ = fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -209,155 +986,12 @@ impl Handle for MQHandle {
     }
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Check for help requests first
         if let Some(status) = self.check_and_display_help(verb, args, io)? {
             return Ok(status);
         }
-
-        match verb {
-            "create" => match self.ensure() {
-                Ok(_) => Ok(Status::ok()),
-                Err(e) => Ok(Status::err(1, format!("mq create failed: {}", e))),
-            },
-            "put" => {
-                self.ensure()?;
-
-                // Get message data from args or stdin
-                let data = if let Some(data_str) = args.get("data") {
-                    // Use data from arguments if provided
-                    data_str.as_bytes().to_vec()
-                } else {
-                    // Read from stdin if no data argument provided
-                    let mut buf = Vec::new();
-                    io.stdin.read_to_end(&mut buf)?;
-                    buf
-                };
-
-                // Use atomic write: write to temp file then rename
-                let now = Self::now_ns();
-                let tmp = self.dir.join(format!("tmp-{}.msg", now));
-                let final_path = self.dir.join(format!("{:020}.msg", now));
-
-                // Write to temp file
-                fs::write(&tmp, &data)?;
-
-                // Atomically move to final location
-                fs::rename(&tmp, &final_path)?;
-
-                Ok(Status::ok())
-            }
-            "get" => {
-                self.ensure()?;
-                let mut entries: Vec<_> = fs::read_dir(&self.dir)?
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.file_name().to_string_lossy().ends_with(".msg"))
-                    .collect();
-                entries.sort_by_key(|e| e.path());
-                if let Some(first) = entries.first() {
-                    let src = first.path();
-                    let inflight = self.dir.join("_inflight").join(src.file_name().unwrap());
-                    // rename to inflight (atomic lock on same fs)
-                    fs::rename(&src, &inflight)?;
-                    let mut f = fs::File::open(&inflight)?;
-                    let mut buf = Vec::new();
-                    f.read_to_end(&mut buf)?;
-                    io.stdout.write_all(&buf)?;
-                    let _ = fs::remove_file(&inflight);
-                    Ok(Status::ok())
-                } else {
-                    Ok(Status::err(2, "empty"))
-                }
-            }
-            "len" => {
-                self.ensure()?;
-                let count = fs::read_dir(&self.dir)?
-                    .filter_map(|e| e.ok())
-                    .filter(|e| {
-                        let path = e.path();
-                        path.is_file() && path.extension() == Some(std::ffi::OsStr::new("msg"))
-                    })
-                    .count();
-                write!(io.stdout, "{}", count)?;
-                Ok(Status::ok())
-            }
-            "purge" => match self.purge_impl() {
-                Ok(()) => Ok(Status::ok()),
-                Err(e) => Ok(Status::err(1, format!("failed to purge queue: {}", e))),
-            },
-            "peek" => {
-                self.ensure()?;
-                let mut entries: Vec<_> = fs::read_dir(&self.dir)?
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.file_name().to_string_lossy().ends_with(".msg"))
-                    .collect();
-                entries.sort_by_key(|e| e.path());
-                if let Some(first) = entries.first() {
-                    let src = first.path();
-                    // Read directly without moving/renaming (non-destructive)
-                    let mut f = fs::File::open(&src)?;
-                    let mut buf = Vec::new();
-                    f.read_to_end(&mut buf)?;
-                    io.stdout.write_all(&buf)?;
-                    Ok(Status::ok())
-                } else {
-                    Ok(Status::err(2, "empty"))
-                }
-            }
-            _ => {
-                bail!("unknown verb for mq://: {}", verb)
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-
-    fn help_out(verb: &str, args: &[(&str, &str)]) -> Option<String> {
-        let h = MQHandle {
-            name: "t".into(),
-            dir: PathBuf::from("/nonexistent-resh-mq-test"),
-        };
-        let args: Args = args
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        let (mut i, mut o, mut e) = (
-            Cursor::new(Vec::new()),
-            Cursor::new(Vec::new()),
-            Cursor::new(Vec::new()),
-        );
-        let mut io = IoStreams {
-            stdin: &mut i,
-            stdout: &mut o,
-            stderr: &mut e,
-        };
-        let r = h.check_and_display_help(verb, &args, &mut io).unwrap();
-        r.map(|_| String::from_utf8(o.into_inner()).unwrap())
-    }
-
-    #[test]
-    fn legacy_help_forms_render_approved_help() {
-        assert!(help_out("help", &[]).unwrap().starts_with("Handle: mq"));
-        assert!(help_out("-h", &[]).unwrap().starts_with("Handle: mq"));
-        assert!(
-            help_out("help", &[("verb", "put")])
-                .unwrap()
-                .contains("Verb: put")
-        );
-        assert!(help_out("--help=get", &[]).unwrap().contains("Verb: get"));
-        assert!(
-            help_out("len", &[("help", "peek")])
-                .unwrap()
-                .contains("Verb: peek")
-        );
-    }
-
-    #[test]
-    fn normal_verbs_are_not_help() {
-        assert!(help_out("put", &[("data", "my-hosts")]).is_none());
-        assert!(help_out("len", &[]).is_none());
+        Ok(match self.run(verb, args, io) {
+            Ok(()) => Status::ok(),
+            Err(f) => f.into_status(),
+        })
     }
 }
