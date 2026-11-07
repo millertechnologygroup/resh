@@ -60,7 +60,8 @@ static ARCHIVE_HELP: HandleHelp = HandleHelp {
                     [include_compressed_size=true|false] [max_entries=<n>]\n  \
                     [max_total_bytes=<n>] [format=<archive-format>]\n  \
                     [compression=auto|none|gzip|xz|zstd]\n  \
-                    [fail_on_missing_archive=true|false] [format_output=json|text]",
+                    [fail_on_missing_archive=true|false] [timeout_ms=<n>]\n  \
+                    [format_output=json|text]",
                 example: "resh --json-pretty archive://.list archive=logs.tar.gz",
                 example_output: Some(
                     r#"{
@@ -68,12 +69,12 @@ static ARCHIVE_HELP: HandleHelp = HandleHelp {
   "manifest": [
     {
       "compressed_size": null,
-      "gid": 100,
+      "gid": 1000,
       "gname": "",
       "is_dir": false,
       "is_symlink": false,
       "mode": "100644",
-      "mtime_unix": 1792166499,
+      "mtime_unix": 1794055642,
       "path": "app.log",
       "size": 14,
       "uid": 1000,
@@ -96,14 +97,14 @@ static ARCHIVE_HELP: HandleHelp = HandleHelp {
   },
   "summary": {
     "archive": "logs.tar.gz",
-    "bytes_compressed": 115,
+    "bytes_compressed": 113,
     "bytes_total": 14,
     "compression": "gzip",
     "entries_listed": 1,
     "entries_total": 1,
     "format": "tar.gz"
   },
-  "timestamp_unix_ms": 1792166499478,
+  "timestamp_unix_ms": 1794055642946,
   "warnings": []
 }
 
@@ -119,7 +120,8 @@ Shown with --json-pretty."#,
                 usage: "resh archive://.info archive=<path> [scan_entries=true|false]\n  \
                     [max_entries=<n>] [max_total_bytes=<n>] [format=<archive-format>]\n  \
                     [compression=auto|none|gzip|xz|zstd]\n  \
-                    [fail_on_missing_archive=true|false] [format_output=json|text]",
+                    [fail_on_missing_archive=true|false] [timeout_ms=<n>]\n  \
+                    [format_output=json|text]",
                 example: "resh --json-pretty archive://.info archive=logs.tar.gz",
                 example_output: Some(
                     r#"{
@@ -141,23 +143,23 @@ Shown with --json-pretty."#,
   },
   "summary": {
     "archive": "logs.tar.gz",
-    "archive_mtime_unix": 1792166499,
-    "archive_size_bytes": 115,
+    "archive_mtime_unix": 1794055642,
+    "archive_size_bytes": 113,
     "compression": "gzip",
-    "compression_ratio": 0.1217391304347826,
+    "compression_ratio": 0.12389380530973453,
     "directories": 0,
     "encrypted": false,
     "entries_total": 1,
     "files": 1,
     "format": "tar.gz",
-    "max_mtime_unix": 1792166499,
-    "min_mtime_unix": 1792166499,
+    "max_mtime_unix": 1794055642,
+    "min_mtime_unix": 1794055642,
     "other": 0,
     "solid": null,
     "symlinks": 0,
     "uncompressed_bytes_total": 14
   },
-  "timestamp_unix_ms": 1792166499484,
+  "timestamp_unix_ms": 1794055642963,
   "warnings": []
 }
 
@@ -174,7 +176,8 @@ Shown with --json-pretty."#,
                     [report_entries=true|false] [stop_on_first_error=true|false]\n  \
                     [max_entries=<n>] [max_total_bytes=<n>] [max_file_bytes=<n>]\n  \
                     [format=<archive-format>] [compression=auto|none|gzip|xz|zstd]\n  \
-                    [fail_on_missing_archive=true|false] [format_output=json|text]",
+                    [fail_on_missing_archive=true|false] [timeout_ms=<n>]\n  \
+                    [format_output=json|text]",
                 example: "resh --json-pretty archive://.test archive=logs.tar.gz",
                 example_output: Some(
                     r#"{
@@ -214,7 +217,7 @@ Shown with --json-pretty."#,
     "stopped_early": false,
     "valid": true
   },
-  "timestamp_unix_ms": 1792166499489,
+  "timestamp_unix_ms": 1794055642976,
   "warnings": []
 }
 
@@ -224,19 +227,18 @@ Shown with --json-pretty."#,
         },
         VerbHelp {
             name: "create",
-            definition: "Creates an unencrypted tar, tar.gz, zip, or gzip archive from source \
-                files and directories, with optional glob filters, and reports the archived files \
-                as JSON (password= is rejected).",
+            definition: "Creates an unencrypted tar, tar.gz, tar.xz, tar.zst, zip, or gzip \
+                archive from source files and directories, with optional glob filters, and \
+                reports the archived files as JSON (password= is refused).",
             detail: Some(VerbDetail {
                 usage: "resh archive://.create output=<path> sources=<json-array>\n  \
-                    [format=auto|tar|tar.gz|zip|gzip] [base_dir=<dir>]\n  \
+                    [format=auto|tar|tar.gz|tar.xz|tar.zst|zip|gzip] [base_dir=<dir>]\n  \
                     [compression_level=<n>] [include_patterns=<json-array>]\n  \
                     [exclude_patterns=<json-array>] [include_hidden=true|false]\n  \
                     [follow_symlinks=true|false] [overwrite=true|false]\n  \
-                    [preserve_permissions=true|false]\n  \
-                    [preserve_timestamps=true|false] [max_files=<n>]\n  \
-                    [max_size_mb=<n>] [progress=true|false]\n  \
-                    [format_output=json|text]",
+                    [preserve_permissions=true|false] [preserve_timestamps=true|false]\n  \
+                    [max_files=<n>] [max_size_mb=<n>] [progress=true|false]\n  \
+                    [timeout_ms=<n>] [format_output=json|text] [password=<refused>]",
                 example: "resh --json-pretty archive://.create output=logs.tar.gz 'sources=[\"app.log\"]'",
                 example_output: Some(
                     r#"{
@@ -244,27 +246,37 @@ Shown with --json-pretty."#,
   "files": [
     {
       "file_type": "file",
-      "modified_unix_ms": 1792166499466,
+      "modified_unix_ms": 1794055642912,
       "path": "app.log",
       "size_bytes": 14
     }
   ],
   "ok": true,
   "query": {
+    "base_dir": null,
     "compression_level": null,
     "exclude_patterns": [],
+    "follow_symlinks": false,
     "format": "tar.gz",
+    "format_output": "json",
+    "include_hidden": true,
+    "include_patterns": [],
+    "max_files": 100000,
+    "max_size_mb": 10240,
     "output": "logs.tar.gz",
     "overwrite": false,
+    "preserve_permissions": true,
+    "preserve_timestamps": true,
+    "progress": false,
     "sources": [
       "app.log"
     ]
   },
   "result": {
-    "compressed_size_bytes": 0,
-    "compression_ratio": 1.0,
+    "compressed_size_bytes": 113,
+    "compression_ratio": -7.071428571428571,
     "directories_archived": 0,
-    "duration_ms": 0,
+    "duration_ms": 1,
     "files_archived": 1,
     "format_detected": "tar.gz",
     "output_path": "logs.tar.gz",
@@ -277,19 +289,19 @@ Shown with --json-pretty."#,
     "largest_files": [
       {
         "file_type": "file",
-        "modified_unix_ms": 1792166499466,
+        "modified_unix_ms": 1794055642912,
         "path": "app.log",
         "size_bytes": 14
       }
     ]
   },
-  "timestamp_unix_ms": 1792166499472,
+  "timestamp_unix_ms": 1794055642929,
   "warnings": []
 }
 
 Shown with --json-pretty. The format argument selects the archive format
-and format_output the report format; tar.xz, tar.zst, and 7z are not yet
-supported for creation."#,
+and format_output the report format; 7z archives and raw .xz or .zst
+streams cannot be created."#,
                 ),
             }),
         },
@@ -304,11 +316,11 @@ supported for creation."#,
                     [overwrite=true|false] [strip_components=<n>]\n  \
                     [create_destination=true|false] [allow_absolute_paths=true|false]\n  \
                     [allow_parent_traversal=true|false] [allow_symlinks=true|false]\n  \
-                    [follow_symlinks=true|false] [max_entries=<n>]\n  \
+                    [follow_symlinks=false] [max_entries=<n>]\n  \
                     [max_total_bytes=<n>] [max_file_bytes=<n>]\n  \
                     [format=<archive-format>] [compression=auto|none|gzip|xz|zstd]\n  \
                     [fail_on_missing_archive=true|false] [include_manifest=true|false]\n  \
-                    [format_output=json|text]",
+                    [timeout_ms=<n>] [format_output=json|text]",
                 example: "resh --json-pretty archive://.extract archive=logs.tar.gz destination=restore",
                 example_output: Some(
                     r#"{
@@ -334,6 +346,8 @@ supported for creation."#,
     "fail_on_missing_archive": true,
     "follow_symlinks": false,
     "format": "tar.gz",
+    "format_output": "json",
+    "include_manifest": true,
     "includes": [],
     "max_entries": 1000000,
     "max_file_bytes": null,
@@ -352,7 +366,7 @@ supported for creation."#,
     "entries_total": 1,
     "format": "tar.gz"
   },
-  "timestamp_unix_ms": 1792166499495,
+  "timestamp_unix_ms": 1794055642992,
   "warnings": []
 }
 
@@ -367,9 +381,13 @@ Shown with --json-pretty."#,
             detail: Some(VerbDetail {
                 usage: "resh archive://.add archive=<path> inputs=<json-array>\n  \
                     [base_dir=<dir>] [includes=<json-array>] [excludes=<json-array>]\n  \
-                    [overwrite=true|false] [follow_symlinks=true|false]\n  \
+                    [overwrite=true|false] [keep_existing_dirs=true|false]\n  \
+                    [follow_symlinks=true|false] [preserve_owner=true|false]\n  \
+                    [preserve_permissions=true|false] [preserve_timestamps=true|false]\n  \
                     [deterministic=true|false] [backup_suffix=<suffix>]\n  \
-                    [tmp_dir=<dir>] [max_entries=<n>] [<option>=<value> ...]",
+                    [tmp_dir=<dir>] [max_entries=<n>] [max_total_bytes=<n>]\n  \
+                    [format=<archive-format>] [compression=auto|none|gzip|xz|zstd]\n  \
+                    [timeout_ms=<n>] [format_output=json|text]",
                 example: "resh --json-pretty archive://.add archive=logs.tar.gz 'inputs=[\"db.log\"]'",
                 example_output: Some(
                     r#"{
@@ -407,8 +425,8 @@ Shown with --json-pretty."#,
   },
   "summary": {
     "archive": "logs.tar.gz",
-    "archive_size_bytes_after": 150,
-    "archive_size_bytes_before": 115,
+    "archive_size_bytes_after": 148,
+    "archive_size_bytes_before": 113,
     "compression": "gzip",
     "entries_added": 1,
     "entries_after": 2,
@@ -419,7 +437,7 @@ Shown with --json-pretty."#,
     "uncompressed_bytes_after": 24,
     "uncompressed_bytes_before": 14
   },
-  "timestamp_unix_ms": 1792166499501,
+  "timestamp_unix_ms": 1794055643010,
   "warnings": []
 }
 
@@ -436,7 +454,11 @@ patterns."#,
                 usage: "resh archive://.remove archive=<path> [paths=<json-array>]\n  \
                     [patterns=<json-array>] [dir_prefixes=<json-array>]\n  \
                     [dry_run=true|false] [remove_empty_dirs=true|false]\n  \
-                    [backup_suffix=<suffix>] [tmp_dir=<dir>] [<option>=<value> ...]",
+                    [backup_suffix=<suffix>] [tmp_dir=<dir>] [max_entries=<n>]\n  \
+                    [max_total_bytes=<n>] [format=<archive-format>]\n  \
+                    [compression=auto|none|gzip|xz|zstd]\n  \
+                    [fail_on_missing_archive=true|false] [timeout_ms=<n>]\n  \
+                    [format_output=json|text]",
                 example: "resh --json-pretty archive://.remove archive=logs.tar.gz 'paths=[\"db.log\"]'",
                 example_output: Some(
                     r#"{
@@ -471,8 +493,8 @@ patterns."#,
   },
   "summary": {
     "archive": "logs.tar.gz",
-    "archive_size_bytes_after": 89,
-    "archive_size_bytes_before": 150,
+    "archive_size_bytes_after": 113,
+    "archive_size_bytes_before": 148,
     "compression": "gzip",
     "dirs_removed": 0,
     "dry_run": false,
@@ -483,7 +505,7 @@ patterns."#,
     "uncompressed_bytes_after": 14,
     "uncompressed_bytes_before": 24
   },
-  "timestamp_unix_ms": 1792166499506,
+  "timestamp_unix_ms": 1794055643063,
   "warnings": []
 }
 
@@ -1985,9 +2007,19 @@ impl ArchiveCreateResponse {
             "output": opts.output,
             "sources": opts.sources,
             "format": opts.format.as_str(),
+            "base_dir": opts.base_dir,
             "compression_level": opts.compression_level,
+            "include_patterns": opts.include_patterns,
             "exclude_patterns": opts.exclude_patterns,
-            "overwrite": opts.overwrite
+            "include_hidden": opts.include_hidden,
+            "follow_symlinks": opts.follow_symlinks,
+            "overwrite": opts.overwrite,
+            "preserve_permissions": opts.preserve_permissions,
+            "preserve_timestamps": opts.preserve_timestamps,
+            "max_files": opts.max_files,
+            "max_size_mb": opts.max_size_mb,
+            "progress": opts.progress,
+            "format_output": opts.output_format.as_str()
         });
 
         let result = ArchiveResult {
@@ -2042,7 +2074,7 @@ impl ArchiveCreateResponse {
             let compression = (self.result.compression_ratio * 100.0) as i32;
 
             output.push_str(&format!(
-                "Size        : {:.1} MB → {:.1} MB ({}% compression)\n",
+                "Size        : {:.1} MB -> {:.1} MB ({}% compression)\n",
                 total_mb, compressed_mb, compression
             ));
             output.push_str(&format!(
@@ -2090,7 +2122,9 @@ impl ArchiveExtractResponse {
             "follow_symlinks": opts.follow_symlinks,
             "max_entries": opts.max_entries,
             "max_total_bytes": opts.max_total_bytes,
-            "max_file_bytes": opts.max_file_bytes
+            "max_file_bytes": opts.max_file_bytes,
+            "include_manifest": opts.include_manifest,
+            "format_output": opts.format_output.as_str()
         });
 
         Self {
@@ -2619,20 +2653,17 @@ fn run_verb<O, R: Report>(
         Err(e) => {
             let msg = validation_message(verb, &e);
             writeln!(io.stderr, "{}", msg)?;
-            return Ok(Status::err(1, msg));
+            return Ok(Status::err(EXIT_USAGE, msg));
         }
     };
     let format = output(&opts);
     let report = match exec(opts, &mut *io.stderr) {
         Ok(report) => report,
         Err(e) => {
-            let msg = format!(
-                "[{}] {}",
-                error_code(verb, runtime_kind(verb, &e, "internal_error")),
-                e
-            );
+            let code = error_code(verb, runtime_kind(verb, &e, "internal_error"));
+            let msg = format!("[{}] {}", code, e);
             writeln!(io.stderr, "{}", msg)?;
-            return Ok(Status::err(1, msg));
+            return Ok(Status::err(exit_for(&code), msg));
         }
     };
     let rendered = match format {
@@ -2644,9 +2675,37 @@ fn run_verb<O, R: Report>(
         return Ok(Status::ok());
     }
     Ok(match report.error_pair() {
-        Some((code, message)) => Status::err(1, format!("[{}] {}", code, message)),
-        None => Status::err(1, format!("archive {verb} failed")),
+        Some((code, message)) => {
+            // Written here rather than by the CLI, which adds nothing once
+            // the handle has written to stderr (create progress lines).
+            writeln!(io.stderr, "Error: [{}] {}", code, message)?;
+            Status::err(exit_for(code), format!("[{}] {}", code, message))
+        }
+        None => Status::err(EXIT_FAILED, format!("archive {verb} failed")),
     })
+}
+
+/// Exit status: the operation failed.
+pub const EXIT_FAILED: i32 = 1;
+/// Exit status: invalid usage or arguments; nothing was done.
+pub const EXIT_USAGE: i32 = 2;
+/// Exit status: `timeout_ms` passed before the operation finished.
+pub const EXIT_TIMEOUT: i32 = 124;
+
+/// The exit status for a failure reported with error code `code`: an
+/// argument or archive type the verb cannot work with is invalid usage
+/// (these are all detected before anything is changed).
+pub fn exit_for(code: &str) -> i32 {
+    if code.ends_with("_timeout") {
+        EXIT_TIMEOUT
+    } else if code.contains("_invalid_")
+        || code.ends_with("_7z_unsupported")
+        || code.ends_with("_unsupported_for_raw")
+    {
+        EXIT_USAGE
+    } else {
+        EXIT_FAILED
+    }
 }
 
 impl Handle for ArchiveHandle {
@@ -5854,6 +5913,7 @@ fn extract_zip_archive(
     let mut bytes_written = 0u64;
     let mut manifest = Vec::new();
     let mut warnings = Vec::new();
+    let mut created_symlinks: Vec<PathBuf> = Vec::new();
 
     // Check safety limits early
     if entries_total > opts.max_entries {
@@ -5902,6 +5962,61 @@ fn extract_zip_archive(
         }
 
         let is_dir = file.is_dir();
+
+        // A symlink entry (Unix mode S_IFLNK) holds its target as data.
+        if !is_dir && is_zip_symlink(file.unix_mode()) {
+            if !opts.allow_symlinks {
+                warnings.push(format!(
+                    "Skipped symlink '{}' (allow_symlinks=false)",
+                    stripped_path
+                ));
+                entries_skipped += 1;
+                continue;
+            }
+            let mut raw = Vec::new();
+            (&mut file).take(4097).read_to_end(&mut raw)?;
+            if raw.is_empty() || raw.len() > 4096 || raw.contains(&0) {
+                return Err(stop_unsafe(
+                    unsafe_entry(
+                        ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+                        "symlink target is empty, longer than 4096 bytes or contains NUL"
+                            .to_string(),
+                    ),
+                    &path_str,
+                    entries_extracted,
+                ));
+            }
+            let target = PathBuf::from(
+                <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(raw),
+            );
+            if !symlink_target_stays_inside(dest_path, &safe_path, &target) {
+                return Err(stop_unsafe(
+                    unsafe_entry(
+                        ARCHIVE_EXTRACT_SYMLINK_REJECTED,
+                        format!(
+                            "symlink target '{}' points outside the destination",
+                            target.display()
+                        ),
+                    ),
+                    &path_str,
+                    entries_extracted,
+                ));
+            }
+            prepare_parent_dirs(dest_path, &safe_path)
+                .and_then(|_| clear_existing_target(&safe_path, false))
+                .map_err(|e| stop_unsafe(e, &path_str, entries_extracted))?;
+            std::os::unix::fs::symlink(&target, &safe_path)?;
+            created_symlinks.push(safe_path.clone());
+            entries_extracted += 1;
+            manifest.push(ArchiveExtractManifestEntry {
+                path: stripped_path,
+                size: 0,
+                is_dir: false,
+                is_symlink: true,
+            });
+            continue;
+        }
+
         // The size the archive records; checked early, but not trusted
         let mut size = file.size();
         check_entry_size(opts, &path_str, size, bytes_written)?;
@@ -5949,6 +6064,9 @@ fn extract_zip_archive(
             is_symlink: false,
         });
     }
+
+    // Resolve every created link; reject any that leaves the destination.
+    verify_symlinks_inside(dest_path, &created_symlinks)?;
 
     let summary = ArchiveExtractSummary {
         archive: opts.archive.clone(),

@@ -246,8 +246,8 @@ fn raw_extract_over_a_limit_writes_nothing() {
 }
 
 /// A limit that cannot be read is refused like the other extract option
-/// errors (exit 1, `[code] message` on stderr, nothing on stdout) before the
-/// destination is created, instead of meaning "no limit".
+/// errors (exit 2, invalid usage; `[code] message` on stderr, nothing on
+/// stdout) before the destination is created, instead of meaning "no limit".
 #[test]
 fn archive_extract_refuses_unreadable_limits() {
     for (arg, code) in [
@@ -277,7 +277,7 @@ fn archive_extract_refuses_unreadable_limits() {
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(1), "{arg}: {stderr}");
+        assert_eq!(out.status.code(), Some(2), "{arg}: {stderr}");
         assert!(out.stdout.is_empty(), "{arg}");
         assert!(stderr.starts_with(&format!("[{code}] ")), "{arg}: {stderr}");
         assert!(!f.path().join("out").exists(), "{arg}");

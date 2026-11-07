@@ -158,6 +158,34 @@ pub fn options_for(verb: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// The accepted option closest to `key` when it is a likely typo: at most
+/// two edits away, or one of the two contains the other.
+pub fn suggest(key: &str, allowed: &[&'static str]) -> Option<&'static str> {
+    let key = key.to_ascii_lowercase();
+    allowed
+        .iter()
+        .map(|a| (edit_distance(&key, a), *a))
+        .filter(|(d, a)| {
+            *d <= 2 || (key.len() >= 4 && (a.contains(key.as_str()) || key.contains(a)))
+        })
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, a)| a)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
 /// A failure of a known kind. The verb reports it as
 /// `archive.<verb>_<kind>`, for example `archive.list_invalid_argument`.
 #[derive(Debug)]
@@ -326,10 +354,13 @@ impl<'a> Parser<'a> {
             .collect();
         unknown.sort_unstable();
         if let Some(first) = unknown.first() {
+            let hint = suggest(first, allowed)
+                .map(|s| format!(" (did you mean {s:?}?)"))
+                .unwrap_or_default();
             return Err(fail(
                 "invalid_argument",
                 format!(
-                    "unknown option {first:?} for archive {verb}; accepted options: {}",
+                    "unknown option {first:?} for archive {verb}{hint}; accepted options: {}",
                     allowed.join(", ")
                 ),
             ));
@@ -480,6 +511,17 @@ mod tests {
         assert_eq!(kind_of(&e), Some("invalid_argument"));
         assert!(e.to_string().contains("\"verbose\""), "{e}");
         assert!(Parser::new(&args(&[("archive", "a")]), "list").is_ok());
+    }
+
+    #[test]
+    fn typos_get_a_suggestion() {
+        assert_eq!(suggest("destnation", EXTRACT_OPTIONS), Some("destination"));
+        assert_eq!(suggest("dryrun", REMOVE_OPTIONS), Some("dry_run"));
+        assert_eq!(suggest("timeout", LIST_OPTIONS), Some("timeout_ms"));
+        assert_eq!(suggest("zzzz", LIST_OPTIONS), None);
+        let a = args(&[("archive", "a.tar"), ("include", "[]")]);
+        let e = Parser::new(&a, "list").err().unwrap().to_string();
+        assert!(e.contains("did you mean \"includes\"?"), "{e}");
     }
 
     #[test]
