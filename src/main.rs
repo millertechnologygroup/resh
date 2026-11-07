@@ -102,6 +102,37 @@ struct Cli {
     args: Vec<String>,
 }
 
+/// Recognizes help requests written with a stage URL. Returns the scheme and,
+/// for verb help, the verb:
+/// - `<scheme>://help`, `<scheme>://-h`, `<scheme>://--help` → handle help
+///   (only when nothing else follows);
+/// - `<stage> --help|-h|help`, for a stage that names a verb → that verb's
+///   help, or the handle's help if the stage has no verb.
+fn stage_help_request(args: &[String]) -> Option<(String, Option<String>)> {
+    const HELP_WORDS: [&str; 3] = ["--help", "-h", "help"];
+    let scheme_of = |stage: &str| {
+        let (scheme, rest) = stage.split_once("://")?;
+        (!scheme.is_empty()).then(|| (scheme.to_ascii_lowercase(), rest.to_string()))
+    };
+    match args {
+        [stage] => {
+            let (scheme, rest) = scheme_of(stage)?;
+            HELP_WORDS
+                .contains(&rest.trim_start_matches('/'))
+                .then_some((scheme, None))
+        }
+        [stage, flag] if HELP_WORDS.contains(&flag.as_str()) => {
+            let (scheme, _) = scheme_of(stage)?;
+            let verb = core::parse::parse_stage(stage)
+                .ok()
+                .map(|p| p.verb)
+                .filter(|v| !v.is_empty() && !HELP_WORDS.contains(&v.as_str()));
+            Some((scheme, verb))
+        }
+        _ => None,
+    }
+}
+
 fn main() -> Result<()> {
     let mut reg = Registry::default();
     // register schemes
@@ -118,7 +149,25 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             Err(e) => {
-                eprintln!("Error: {e}");
+                eprintln!("{}", core::status::error_line(&e.code(), &e.to_string()));
+                std::process::exit(2);
+            }
+        }
+    }
+    // Help for a stage URL: `resh <scheme>://help` (handle help) and
+    // `resh <stage> --help|-h|help` (help for the stage's verb).
+    if let Some((scheme, verb)) = stage_help_request(&raw_args) {
+        let req = match &verb {
+            Some(v) => core::help::HelpRequest::Verb(&scheme, v),
+            None => core::help::HelpRequest::Handle(&scheme),
+        };
+        match core::help::render(&reg, &req) {
+            Ok(text) => {
+                print!("{}", text);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("{}", core::status::error_line(&e.code(), &e.to_string()));
                 std::process::exit(2);
             }
         }

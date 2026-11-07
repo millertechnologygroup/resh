@@ -108,13 +108,24 @@ pub enum HelpError {
     NoHelp { what: String },
 }
 
+impl HelpError {
+    /// The error code for this failure (see `status::error_line`).
+    pub fn code(&self) -> String {
+        match self {
+            HelpError::UnknownHandle { .. } => "resh.unknown_handle".to_string(),
+            HelpError::UnknownVerb { handle, .. } => format!("{handle}.unknown_verb"),
+            HelpError::NoHelp { .. } => "resh.no_help".to_string(),
+        }
+    }
+}
+
 impl std::fmt::Display for HelpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HelpError::UnknownHandle { name, suggestion } => {
                 write!(f, "unknown handle '{name}'.")?;
                 if let Some(s) = suggestion {
-                    write!(f, " Did you mean '{s}'?")?;
+                    write!(f, "\nDid you mean '{s}'?")?;
                 }
                 write!(
                     f,
@@ -129,7 +140,7 @@ impl std::fmt::Display for HelpError {
             } => {
                 write!(f, "unknown verb '{verb}' for handle '{handle}'.")?;
                 if let Some(s) = suggestion {
-                    write!(f, " Did you mean '{s}'?")?;
+                    write!(f, "\nDid you mean '{s}'?")?;
                 }
                 // "Error: " is prepended by the caller; wrap so no line
                 // exceeds the help width.

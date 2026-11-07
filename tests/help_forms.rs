@@ -145,3 +145,42 @@ fn bare_help_is_global_help() {
     assert_eq!(code, 0);
     assert_eq!(out, global);
 }
+
+#[test]
+fn stage_url_help_forms() {
+    // `<scheme>://help` (and -h, --help) is handle help.
+    let (_, handle_help, _) = resh(&["git", "--help"]);
+    for url in ["git://help", "git://-h", "git://--help"] {
+        let (code, out, err) = resh(&[url]);
+        assert_eq!(code, 0, "{url}: {err}");
+        assert_eq!(out, handle_help, "{url}");
+    }
+    // `<stage> --help|-h|help` is help for the stage's verb.
+    let (_, verb_help, _) = resh(&["git", "status", "--help"]);
+    for flag in ["--help", "-h", "help"] {
+        let (code, out, err) = resh(&["git://main.status", flag]);
+        assert_eq!(code, 0, "{flag}: {err}");
+        assert_eq!(out, verb_help, "{flag}");
+    }
+    // Unknown verb or handle in a stage: error with a code, exit 2.
+    let (code, out, err) = resh(&["file:///tmp/x.reed", "--help"]);
+    assert_eq!(code, 2);
+    assert!(out.is_empty());
+    assert!(
+        err.starts_with("Error: [file.unknown_verb] unknown verb 'reed'"),
+        "{err}"
+    );
+    let (code, _, err) = resh(&["nosuch://x.read", "-h"]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("Error: [resh.unknown_handle]"), "{err}");
+}
+
+#[test]
+fn help_word_as_a_value_is_not_a_help_request() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("x");
+    let url = format!("file://{}.write", path.display());
+    let (code, _, err) = resh(&[&url, "data=help"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "help");
+}

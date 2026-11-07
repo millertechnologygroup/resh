@@ -22,14 +22,23 @@ resh svc status --help   # same as: resh svc status -h, resh svc status help,
 
 `resh help` on its own, like `resh --help`, prints the global help.
 
+Help can also be asked for with a stage URL: `resh <handle>://help` (or
+`-h`, `--help`) prints the handle help, and `resh <stage> --help` (or `-h`,
+`help`) prints the help for the stage's verb, for example
+`resh git://main.status --help`. Only an exact help word counts: a value
+such as `data=help` is an argument, not a help request.
+
 Help is printed on stdout with exit code 0. A request that names an unknown
-handle or verb is an error: a message on stderr and exit code 2. It suggests
+handle or verb is an error: a message on stderr in the shared format
+(`Error: [resh.unknown_handle] ...` or `Error: [<handle>.unknown_verb] ...`)
+and exit code 2. It suggests
 the closest name when the input looks like a typo, and lists the handle's
 verbs for an unknown verb:
 
 ```text
 $ resh file reed --help
-Error: unknown verb 'reed' for handle 'file'. Did you mean 'read'?
+Error: [file.unknown_verb] unknown verb 'reed' for handle 'file'.
+Did you mean 'read'?
 Available verbs: read, exists, stat, ...
 Run `resh file --help` for details.
 ```
