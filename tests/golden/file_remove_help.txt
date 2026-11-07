@@ -1,0 +1,10 @@
+Handle: file
+Verb: remove
+Definition: Alias for delete.
+
+Usage:
+  resh file://<path>.remove [recursive=true|false] [force=true|false]
+    [missing_ok=true|false]
+
+Example:
+  resh file:///tmp/old.log.remove missing_ok=true

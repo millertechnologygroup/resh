@@ -1,0 +1,21 @@
+Handle: file
+Verb: tag.add
+Definition: Adds comma-separated lowercase tags to a file, stored in the
+  user.resh.tags extended attribute, and reports the full tag list as JSON.
+
+Usage:
+  resh file://<path>.tag.add name=<tag>[,<tag>...]
+
+Example:
+  resh --json-pretty file:///srv/data/report.pdf.tag.add name=work,q3
+
+Example Output:
+  {
+    "path": "/srv/data/report.pdf",
+    "tags": [
+      "q3",
+      "work"
+    ]
+  }
+
+  Shown with --json-pretty.

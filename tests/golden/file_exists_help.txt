@@ -1,0 +1,19 @@
+Handle: file
+Verb: exists
+Definition: Reports whether a path exists and whether it is a file, directory,
+  or symlink, as a JSON object.
+
+Usage:
+  resh file://<path>.exists
+
+Example:
+  resh --json-pretty file:///etc/hosts.exists
+
+Example Output:
+  {
+    "exists": true,
+    "kind": "file",
+    "path": "/etc/hosts"
+  }
+
+  A missing path reports exists false and kind none. Shown with --json-pretty.

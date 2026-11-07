@@ -1,0 +1,23 @@
+Handle: file
+Verb: ea.set
+Definition: Writes an extended attribute on a file on Unix and reports its
+  previous and current values as a JSON object.
+
+Usage:
+  resh file://<path>.ea.set name=<attr> value=<text>
+    [mode=create|update|upsert]
+
+Example:
+  resh --json-pretty file:///srv/report.pdf.ea.set name=user.comment value=final
+
+Example Output:
+  {
+    "current": "final",
+    "encoding": "utf-8",
+    "mode": "upsert",
+    "name": "user.comment",
+    "path": "/srv/report.pdf",
+    "previous": "reviewed by alice"
+  }
+
+  Shown with --json-pretty.

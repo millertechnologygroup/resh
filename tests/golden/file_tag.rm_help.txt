@@ -1,0 +1,20 @@
+Handle: file
+Verb: tag.rm
+Definition: Removes comma-separated tags from a file's user.resh.tags extended
+  attribute and reports the remaining tag list as JSON.
+
+Usage:
+  resh file://<path>.tag.rm name=<tag>[,<tag>...]
+
+Example:
+  resh --json-pretty file:///srv/data/report.pdf.tag.rm name=q3
+
+Example Output:
+  {
+    "path": "/srv/data/report.pdf",
+    "tags": [
+      "work"
+    ]
+  }
+
+  Shown with --json-pretty.

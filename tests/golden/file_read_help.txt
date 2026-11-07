@@ -1,0 +1,12 @@
+Handle: file
+Verb: read
+Definition: Prints the entire contents of a file to standard output.
+
+Usage:
+  resh file://<path>.read
+
+Example:
+  resh file:///etc/hostname.read
+
+Example Output:
+  web01

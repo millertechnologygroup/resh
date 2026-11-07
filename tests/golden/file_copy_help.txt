@@ -1,0 +1,11 @@
+Handle: file
+Verb: copy
+Definition: Copies a regular file to the path given by to through a temporary
+  file and prints nothing on success.
+
+Usage:
+  resh file://<path>.copy to=<path> [overwrite=true|false]
+    [preserve_mode=true|false] [preserve_times=true|false]
+
+Example:
+  resh file:///etc/nginx/nginx.conf.copy to=/etc/nginx/nginx.conf.bak

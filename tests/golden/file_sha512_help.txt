@@ -1,0 +1,20 @@
+Handle: file
+Verb: sha512
+Definition: Computes the SHA-512 digest of a file and reports it with the file
+  size as a JSON object.
+
+Usage:
+  resh file://<path>.sha512
+
+Example:
+  resh --json-pretty file:///srv/data/users.csv.sha512
+
+Example Output:
+  {
+    "algorithm": "sha512",
+    "hash": "d7cb064f0a32ab92d3268f23...d0d7848436f4987102",
+    "path": "/srv/data/users.csv",
+    "size": 51
+  }
+
+  The 128-digit hash is shortened here to fit. Shown with --json-pretty.

@@ -1,0 +1,11 @@
+Handle: file
+Verb: watch
+Definition: Watches a path for create, modify, remove, and rename events and
+  prints each one as a line of JSON until max_events or timeout_ms is reached.
+
+Usage:
+  resh file://<path>.watch [timeout_ms=<ms>] [max_events=<n>]
+    [events=create,modify,remove,rename]
+
+Example:
+  resh file:///etc/nginx/nginx.conf.watch events=modify timeout_ms=60000

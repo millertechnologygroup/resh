@@ -1,0 +1,10 @@
+Handle: file
+Verb: chmod
+Definition: Sets a file's permission bits from an octal mode on Unix and prints
+  nothing on success.
+
+Usage:
+  resh file://<path>.chmod mode=<octal>
+
+Example:
+  resh file:///usr/local/bin/backup.sh.chmod mode=755

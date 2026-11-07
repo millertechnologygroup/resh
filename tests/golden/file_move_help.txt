@@ -1,0 +1,10 @@
+Handle: file
+Verb: move
+Definition: Moves a file or directory to the path given by to, or into it when
+  to is an existing directory, and prints nothing on success.
+
+Usage:
+  resh file://<path>.move to=<path> [overwrite=true|false]
+
+Example:
+  resh file:///tmp/report.pdf.move to=/srv/reports

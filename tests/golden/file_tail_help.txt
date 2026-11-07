@@ -1,0 +1,15 @@
+Handle: file
+Verb: tail
+Definition: Prints the last lines or bytes of a file, defaulting to 10 lines,
+  and with follow=true keeps printing data appended to it.
+
+Usage:
+  resh file://<path>.tail [lines=<n>] [bytes=<n>] [follow=true|false]
+    [timeout_ms=<ms>]
+
+Example:
+  resh file:///var/log/syslog.tail lines=2
+
+Example Output:
+  Oct 16 09:12:44 web01 systemd[1]: Started nginx.service.
+  Oct 16 09:13:02 web01 CRON[2211]: (root) CMD (run-parts /etc/cron.hourly)

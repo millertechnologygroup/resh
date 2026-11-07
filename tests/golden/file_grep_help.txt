@@ -1,0 +1,21 @@
+Handle: file
+Verb: grep
+Definition: Searches a file line by line for a regular expression or literal
+  text and prints the matching lines with their line numbers.
+
+Usage:
+  resh file://<path>.grep pattern=<pattern> [regex=true|false]
+    [ignore_case=true|false] [invert=true|false] [max=<n>]
+    [before=<n>] [after=<n>] [format=text|json]
+    [line_numbers=true|false]
+
+Example:
+  resh file:///var/log/app.log.grep pattern=error ignore_case=true
+
+Example Output:
+  2:ERROR disk full
+  4:error again
+
+  The pattern is a regular expression unless regex=false. With
+  format=json, matches print as an array of objects with path, line,
+  text, and matched fields.

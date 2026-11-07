@@ -1,0 +1,19 @@
+Handle: file
+Verb: append
+Definition: Appends the data argument or standard input to the end of a file and
+  reports the bytes appended as a JSON object.
+
+Usage:
+  resh file://<path>.append [data=<text>] [create=true|false]
+
+Example:
+  resh --json-pretty file:///var/tmp/jobs.log.append data='job finished'
+
+Example Output:
+  {
+    "appended": true,
+    "bytes": 12,
+    "path": "/var/tmp/jobs.log"
+  }
+
+  Shown with --json-pretty. No newline is added after the data.

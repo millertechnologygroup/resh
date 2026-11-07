@@ -1,0 +1,19 @@
+Handle: file
+Verb: write
+Definition: Atomically replaces a file's contents with the data argument or
+  standard input and reports the bytes written as a JSON object.
+
+Usage:
+  resh file://<path>.write [data=<text>] [create=true|false] [mode=<octal>]
+
+Example:
+  resh --json-pretty file:///tmp/greeting.txt.write data='hello world'
+
+Example Output:
+  {
+    "bytes": 11,
+    "path": "/tmp/greeting.txt",
+    "written": true
+  }
+
+  Shown with --json-pretty. Without data, the content is read from stdin.

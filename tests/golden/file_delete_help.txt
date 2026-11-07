@@ -1,0 +1,11 @@
+Handle: file
+Verb: delete
+Definition: Deletes a file, or a directory tree when recursive=true, and prints
+  nothing on success.
+
+Usage:
+  resh file://<path>.delete [recursive=true|false] [force=true|false]
+    [missing_ok=true|false]
+
+Example:
+  resh file:///tmp/build.cache.delete recursive=true

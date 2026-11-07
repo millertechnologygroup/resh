@@ -1,0 +1,20 @@
+Handle: file
+Verb: hash
+Definition: Computes a SHA-256, SHA-512, SHA-1, MD5, or BLAKE3 digest of a
+  regular file, defaulting to SHA-256, and reports it as a JSON object.
+
+Usage:
+  resh file://<path>.hash [algo=sha256|sha512|sha1|md5|blake3]
+
+Example:
+  resh --json-pretty file:///srv/data/users.csv.hash algo=blake3
+
+Example Output:
+  {
+    "algo": "blake3",
+    "hash_hex": "148ae65478551f4df22f13b148664e39...3b50bcface7c2564",
+    "path": "/srv/data/users.csv",
+    "size_bytes": 51
+  }
+
+  The 64-digit hash is shortened here to fit. Shown with --json-pretty.

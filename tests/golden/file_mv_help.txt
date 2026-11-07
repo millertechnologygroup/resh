@@ -1,0 +1,9 @@
+Handle: file
+Verb: mv
+Definition: Alias for move.
+
+Usage:
+  resh file://<path>.mv to=<path> [overwrite=true|false]
+
+Example:
+  resh file:///tmp/report.pdf.mv to=/srv/reports/q3.pdf

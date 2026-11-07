@@ -1,0 +1,26 @@
+Handle: file
+Verb: summary
+Definition: Summarizes a file's size, modification time, content type, and line
+  statistics, or a directory's entry count, as a JSON object.
+
+Usage:
+  resh file://<path>.summary [max_bytes=<n>]
+
+Example:
+  resh --json-pretty file:///srv/data/users.csv.summary
+
+Example Output:
+  {
+    "avg_line_length": 16.0,
+    "content_type": "csv",
+    "exists": true,
+    "is_dir": false,
+    "line_count": 3,
+    "modified": "2026-10-16T15:52:21.053651+00:00",
+    "path": "/srv/data/users.csv",
+    "sample": "id,name,joined\n1,alice,2026-01-05\n2,bob,2026-02-11\n",
+    "size": 51
+  }
+
+  Shown for a CSV file with --json-pretty. Directories report only path,
+  exists, is_dir, and entry_count.

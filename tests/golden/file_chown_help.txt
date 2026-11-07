@@ -1,0 +1,11 @@
+Handle: file
+Verb: chown
+Definition: Changes a path's owner and group by name or numeric ID on Unix,
+  optionally recursively, and prints nothing on success.
+
+Usage:
+  resh file://<path>.chown [user=<name>] [uid=<n>] [group=<name>]
+    [gid=<n>] [recursive=true|false]
+
+Example:
+  resh file:///srv/www.chown user=alice group=www recursive=true

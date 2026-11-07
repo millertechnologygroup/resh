@@ -1,0 +1,28 @@
+Handle: file
+Verb: verify
+Definition: Computes a file's digest and checks it against expected values and
+  an optional size, reporting the result as JSON and failing on a mismatch.
+
+Usage:
+  resh file://<path>.verify [algo=sha256|sha512|sha1|md5|blake3]
+    [expected=<hex>] [expected_any=<hex>;<hex>...] [size=<bytes>]
+
+Example:
+  resh --json-pretty file:///srv/data/users.csv.verify algo=md5 size=51
+
+Example Output:
+  {
+    "algorithm": "md5",
+    "digest": "d8dc1c6300e5fa108ffbd95730a9ac2e",
+    "error": null,
+    "expected": null,
+    "expected_any": [],
+    "match": true,
+    "path": "/srv/data/users.csv",
+    "size": 51,
+    "size_match": true,
+    "verified": true
+  }
+
+  Shown with --json-pretty. A wrong expected digest or size sets verified
+  to false and exits with status 1.

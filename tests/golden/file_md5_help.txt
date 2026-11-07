@@ -1,0 +1,20 @@
+Handle: file
+Verb: md5
+Definition: Computes the MD5 digest of a file and reports it with the file size
+  as a JSON object.
+
+Usage:
+  resh file://<path>.md5
+
+Example:
+  resh --json-pretty file:///srv/data/users.csv.md5
+
+Example Output:
+  {
+    "algorithm": "md5",
+    "hash": "d8dc1c6300e5fa108ffbd95730a9ac2e",
+    "path": "/srv/data/users.csv",
+    "size": 51
+  }
+
+  Shown with --json-pretty.

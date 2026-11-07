@@ -1,0 +1,89 @@
+Handle: file
+
+Description:
+  The file handle reads, writes, inspects, hashes, and searches files and
+  directories on the local filesystem, and on Unix also manages permissions,
+  ownership, extended attributes, and tags. It uses the Rust standard library
+  for file I/O, the xattr crate for extended attributes, and the notify crate
+  for change watching. The target is the path after file://: absolute paths take
+  three slashes, as in file:///var/log/syslog, and relative paths such as
+  file://data.txt or file://./logs/app.log resolve from the current directory,
+  except that URL parsing lowercases the first segment of a relative path and
+  drops a leading localhost, so write file://./Report.txt for a mixed-case
+  relative name.
+
+Available Verbs:
+  read      Prints the entire contents of a file to standard output.
+  exists    Reports whether a path exists and whether it is a file, directory,
+            or symlink, as a JSON object.
+  stat      Reports a path's type, size, permissions, ownership, and timestamps
+            as a JSON object.
+  preview   Reads the first bytes and lines of a file and reports them as a JSON
+            object, base64 or hex encoding the sample when the content is
+            binary.
+  summary   Summarizes a file's size, modification time, content type, and line
+            statistics, or a directory's entry count, as a JSON object.
+  analyze   Samples a file and reports its ASCII ratio, byte entropy, line
+            count, and a json, csv, log, text, or binary classification as a
+            JSON object.
+  schema    Detects whether a file is JSON, NDJSON, CSV, TSV, or plain text and
+            reports its inferred structure as a JSON object.
+  tail      Prints the last lines or bytes of a file, defaulting to 10 lines,
+            and with follow=true keeps printing data appended to it.
+  grep      Searches a file line by line for a regular expression or literal
+            text and prints the matching lines with their line numbers.
+  find      Walks a directory tree and lists matching entries with their type,
+            size, mode, and modification time as a JSON array.
+  watch     Watches a path for create, modify, remove, and rename events and
+            prints each one as a line of JSON until max_events or timeout_ms is
+            reached.
+  md5       Computes the MD5 digest of a file and reports it with the file size
+            as a JSON object.
+  sha1      Computes the SHA-1 digest of a file and reports it with the file
+            size as a JSON object.
+  sha256    Computes the SHA-256 digest of a file and reports it with the file
+            size as a JSON object.
+  sha512    Computes the SHA-512 digest of a file and reports it with the file
+            size as a JSON object.
+  hash      Computes a SHA-256, SHA-512, SHA-1, MD5, or BLAKE3 digest of a
+            regular file, defaulting to SHA-256, and reports it as a JSON
+            object.
+  verify    Computes a file's digest and checks it against expected values and
+            an optional size, reporting the result as JSON and failing on a
+            mismatch.
+  write     Atomically replaces a file's contents with the data argument or
+            standard input and reports the bytes written as a JSON object.
+  append    Appends the data argument or standard input to the end of a file and
+            reports the bytes appended as a JSON object.
+  replace   Replaces literal text or regular expression matches in a file,
+            rewriting it atomically, and reports the replacement count as a JSON
+            object.
+  copy      Copies a regular file to the path given by to through a temporary
+            file and prints nothing on success.
+  rename    Renames a file or directory to the path given by to, copying across
+            filesystems when needed, and reports the result as a JSON object.
+  move      Moves a file or directory to the path given by to, or into it when
+            to is an existing directory, and prints nothing on success.
+  mv        Alias for move.
+  delete    Deletes a file, or a directory tree when recursive=true, and prints
+            nothing on success.
+  remove    Alias for delete.
+  chmod     Sets a file's permission bits from an octal mode on Unix and prints
+            nothing on success.
+  chown     Changes a path's owner and group by name or numeric ID on Unix,
+            optionally recursively, and prints nothing on success.
+  ea.get    Reads one extended attribute of a file on Unix and reports its value
+            as a JSON object.
+  ea.set    Writes an extended attribute on a file on Unix and reports its
+            previous and current values as a JSON object.
+  tag.add   Adds comma-separated lowercase tags to a file, stored in the
+            user.resh.tags extended attribute, and reports the full tag list as
+            JSON.
+  tag.rm    Removes comma-separated tags from a file's user.resh.tags extended
+            attribute and reports the remaining tag list as JSON.
+
+Usage:
+  resh file://<path>.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh file <verb> --help

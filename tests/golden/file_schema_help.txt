@@ -1,0 +1,41 @@
+Handle: file
+Verb: schema
+Definition: Detects whether a file is JSON, NDJSON, CSV, TSV, or plain text and
+  reports its inferred structure as a JSON object.
+
+Usage:
+  resh file://<path>.schema [format=json|ndjson|csv|tsv|text]
+    [max_bytes=<n>] [max_rows=<n>]
+
+Example:
+  resh --json-pretty file:///srv/data/users.csv.schema
+
+Example Output:
+  {
+    "byte_sample": 51,
+    "detected": {
+      "columns": [
+        {
+          "name": "id",
+          "types": [
+            "integer"
+          ]
+        },
+        {
+          "name": "joined",
+          "types": [
+            "datetime"
+          ]
+        }
+      ],
+      "delimiter": ",",
+      "has_header": true,
+      "row_count_sampled": 2
+    },
+    "encoding": "utf-8",
+    "format": "csv",
+    "path": "/srv/data/users.csv"
+  }
+
+  Shown for a CSV file with --json-pretty, with one column omitted. The
+  detected object has different fields for JSON, NDJSON, and text input.

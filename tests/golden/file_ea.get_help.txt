@@ -1,0 +1,21 @@
+Handle: file
+Verb: ea.get
+Definition: Reads one extended attribute of a file on Unix and reports its value
+  as a JSON object.
+
+Usage:
+  resh file://<path>.ea.get name=<attr> [allow_missing=true|false]
+
+Example:
+  resh --json-pretty file:///srv/data/report.pdf.ea.get name=user.comment
+
+Example Output:
+  {
+    "exists": true,
+    "name": "user.comment",
+    "path": "/srv/data/report.pdf",
+    "value": "reviewed by alice"
+  }
+
+  Shown with --json-pretty. Non-UTF-8 values are base64 encoded and add
+  an encoding field.

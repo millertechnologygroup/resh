@@ -1,0 +1,20 @@
+Handle: file
+Verb: sha256
+Definition: Computes the SHA-256 digest of a file and reports it with the file
+  size as a JSON object.
+
+Usage:
+  resh file://<path>.sha256
+
+Example:
+  resh --json-pretty file:///srv/data/users.csv.sha256
+
+Example Output:
+  {
+    "algorithm": "sha256",
+    "hash": "8ce5f37fbff5c2cf2dfe59511587fd29e7a55104ab1629ac0b646bc6bdddc049",
+    "path": "/srv/data/users.csv",
+    "size": 51
+  }
+
+  Shown with --json-pretty.

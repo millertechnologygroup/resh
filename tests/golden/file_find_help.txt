@@ -1,0 +1,27 @@
+Handle: file
+Verb: find
+Definition: Walks a directory tree and lists matching entries with their type,
+  size, mode, and modification time as a JSON array.
+
+Usage:
+  resh file://<dir>.find [name=<glob>] [type=file|dir|symlink]
+    [max_depth=<n>] [limit=<n>] [include_hidden=true|false]
+    [follow_symlinks=true|false]
+
+Example:
+  resh --json-pretty file:///srv/www.find name='*.html' type=file
+
+Example Output:
+  [
+    {
+      "depth": 1,
+      "is_hidden": false,
+      "mode": "0644",
+      "mtime": "2026-09-30T17:45:10.902113+00:00",
+      "path": "/srv/www/index.html",
+      "size": 5120,
+      "type": "file"
+    }
+  ]
+
+  Shown with --json-pretty.

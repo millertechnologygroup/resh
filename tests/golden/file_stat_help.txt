@@ -1,0 +1,28 @@
+Handle: file
+Verb: stat
+Definition: Reports a path's type, size, permissions, ownership, and timestamps
+  as a JSON object.
+
+Usage:
+  resh file://<path>.stat [nofollow=true|false]
+
+Example:
+  resh --json-pretty file:///etc/hosts.stat
+
+Example Output:
+  {
+    "accessed": "2026-10-16T08:01:12.442193+00:00",
+    "created": "2026-03-02T14:20:05.118374+00:00",
+    "exists": true,
+    "file_type": "file",
+    "gid": 0,
+    "mode": "0644",
+    "modified": "2026-03-02T14:20:05.118374+00:00",
+    "path": "/etc/hosts",
+    "readonly": false,
+    "size": 220,
+    "uid": 0
+  }
+
+  Shown for a Unix host with --json-pretty. On other platforms mode, uid,
+  and gid are null, and created is null where the filesystem lacks it.
