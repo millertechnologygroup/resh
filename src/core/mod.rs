@@ -31,9 +31,11 @@ pub fn dispatch_stage(
     // Add CLI arguments to parsed arguments
     for arg in cli_args {
         if let Some((key, value)) = arg.split_once('=') {
+            // The value is kept exactly as the shell passed it: leading or
+            // trailing spaces can be data (file contents, patterns).
             parsed
                 .args
-                .insert(key.trim().to_string(), value.trim().to_string());
+                .insert(key.trim().to_string(), value.to_string());
         } else if parse::is_bare_dry_run(arg) {
             // A bare `dry_run` asks for a dry run; dropping it would run
             // the real change.
