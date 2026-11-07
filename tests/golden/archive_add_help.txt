@@ -1,0 +1,74 @@
+Handle: archive
+Verb: add
+Definition: Adds files or directories to an existing archive by rewriting it,
+  optionally replacing entries that already exist, and reports the changes as
+  JSON.
+
+Usage:
+  resh archive://.add archive=<path> inputs=<json-array>
+    [base_dir=<dir>] [includes=<json-array>] [excludes=<json-array>]
+    [overwrite=true|false] [keep_existing_dirs=true|false]
+    [follow_symlinks=true|false] [preserve_owner=true|false]
+    [preserve_permissions=true|false] [preserve_timestamps=true|false]
+    [deterministic=true|false] [backup_suffix=<suffix>]
+    [tmp_dir=<dir>] [max_entries=<n>] [max_total_bytes=<n>]
+    [format=<archive-format>] [compression=auto|none|gzip|xz|zstd]
+    [timeout_ms=<n>] [format_output=json|text]
+
+Example:
+  resh --json-pretty archive://.add archive=logs.tar.gz 'inputs=["db.log"]'
+
+Example Output:
+  {
+    "details": {
+      "added": [
+        "db.log"
+      ],
+      "replaced": [],
+      "skipped": []
+    },
+    "error": null,
+    "ok": true,
+    "query": {
+      "archive": "logs.tar.gz",
+      "backup_suffix": null,
+      "base_dir": null,
+      "compression": "gzip",
+      "deterministic": false,
+      "excludes": [],
+      "follow_symlinks": false,
+      "format": "tar.gz",
+      "format_output": "json",
+      "includes": [],
+      "inputs": [
+        "db.log"
+      ],
+      "keep_existing_dirs": true,
+      "max_entries": 1000000,
+      "max_total_bytes": null,
+      "overwrite": false,
+      "preserve_owner": false,
+      "preserve_permissions": true,
+      "preserve_timestamps": true,
+      "tmp_dir": null
+    },
+    "summary": {
+      "archive": "logs.tar.gz",
+      "archive_size_bytes_after": 148,
+      "archive_size_bytes_before": 113,
+      "compression": "gzip",
+      "entries_added": 1,
+      "entries_after": 2,
+      "entries_before": 1,
+      "entries_replaced": 0,
+      "entries_skipped": 0,
+      "format": "tar.gz",
+      "uncompressed_bytes_after": 24,
+      "uncompressed_bytes_before": 14
+    },
+    "timestamp_unix_ms": 1794055643010,
+    "warnings": []
+  }
+
+  Shown with --json-pretty. Inputs prefixed with glob: are expanded as
+  patterns.

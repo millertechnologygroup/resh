@@ -1,0 +1,81 @@
+Handle: archive
+Verb: create
+Definition: Creates an unencrypted tar, tar.gz, tar.xz, tar.zst, zip, or gzip
+  archive from source files and directories, with optional glob filters, and
+  reports the archived files as JSON (password= is refused).
+
+Usage:
+  resh archive://.create output=<path> sources=<json-array>
+    [format=auto|tar|tar.gz|tar.xz|tar.zst|zip|gzip] [base_dir=<dir>]
+    [compression_level=<n>] [include_patterns=<json-array>]
+    [exclude_patterns=<json-array>] [include_hidden=true|false]
+    [follow_symlinks=true|false] [overwrite=true|false]
+    [preserve_permissions=true|false] [preserve_timestamps=true|false]
+    [max_files=<n>] [max_size_mb=<n>] [progress=true|false]
+    [timeout_ms=<n>] [format_output=json|text] [password=<refused>]
+
+Example:
+  resh --json-pretty archive://.create output=logs.tar.gz 'sources=["app.log"]'
+
+Example Output:
+  {
+    "error": null,
+    "files": [
+      {
+        "file_type": "file",
+        "modified_unix_ms": 1794055642912,
+        "path": "app.log",
+        "size_bytes": 14
+      }
+    ],
+    "ok": true,
+    "query": {
+      "base_dir": null,
+      "compression_level": null,
+      "exclude_patterns": [],
+      "follow_symlinks": false,
+      "format": "tar.gz",
+      "format_output": "json",
+      "include_hidden": true,
+      "include_patterns": [],
+      "max_files": 100000,
+      "max_size_mb": 10240,
+      "output": "logs.tar.gz",
+      "overwrite": false,
+      "preserve_permissions": true,
+      "preserve_timestamps": true,
+      "progress": false,
+      "sources": [
+        "app.log"
+      ]
+    },
+    "result": {
+      "compressed_size_bytes": 113,
+      "compression_ratio": -7.071428571428571,
+      "directories_archived": 0,
+      "duration_ms": 1,
+      "files_archived": 1,
+      "format_detected": "tar.gz",
+      "output_path": "logs.tar.gz",
+      "total_size_bytes": 14
+    },
+    "statistics": {
+      "files_by_type": {
+        "log": 1
+      },
+      "largest_files": [
+        {
+          "file_type": "file",
+          "modified_unix_ms": 1794055642912,
+          "path": "app.log",
+          "size_bytes": 14
+        }
+      ]
+    },
+    "timestamp_unix_ms": 1794055642929,
+    "warnings": []
+  }
+
+  Shown with --json-pretty. The format argument selects the archive format
+  and format_output the report format; 7z archives and raw .xz or .zst
+  streams cannot be created.

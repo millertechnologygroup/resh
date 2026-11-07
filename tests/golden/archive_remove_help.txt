@@ -1,0 +1,69 @@
+Handle: archive
+Verb: remove
+Definition: Removes entries from an existing archive by exact path, glob
+  pattern, or directory prefix, rewriting the archive unless dry_run is set.
+
+Usage:
+  resh archive://.remove archive=<path> [paths=<json-array>]
+    [patterns=<json-array>] [dir_prefixes=<json-array>]
+    [dry_run=true|false] [remove_empty_dirs=true|false]
+    [backup_suffix=<suffix>] [tmp_dir=<dir>] [max_entries=<n>]
+    [max_total_bytes=<n>] [format=<archive-format>]
+    [compression=auto|none|gzip|xz|zstd]
+    [fail_on_missing_archive=true|false] [timeout_ms=<n>]
+    [format_output=json|text]
+
+Example:
+  resh --json-pretty archive://.remove archive=logs.tar.gz 'paths=["db.log"]'
+
+Example Output:
+  {
+    "details": {
+      "kept": [
+        "app.log"
+      ],
+      "not_found": [],
+      "removed": [
+        "db.log"
+      ]
+    },
+    "error": null,
+    "ok": true,
+    "query": {
+      "archive": "logs.tar.gz",
+      "backup_suffix": null,
+      "compression": "gzip",
+      "dir_prefixes": [],
+      "dry_run": false,
+      "fail_on_missing_archive": true,
+      "format": "tar.gz",
+      "format_output": "json",
+      "max_entries": 1000000,
+      "max_total_bytes": null,
+      "paths": [
+        "db.log"
+      ],
+      "patterns": [],
+      "remove_empty_dirs": true,
+      "tmp_dir": null
+    },
+    "summary": {
+      "archive": "logs.tar.gz",
+      "archive_size_bytes_after": 113,
+      "archive_size_bytes_before": 148,
+      "compression": "gzip",
+      "dirs_removed": 0,
+      "dry_run": false,
+      "entries_after": 1,
+      "entries_before": 2,
+      "entries_removed": 1,
+      "format": "tar.gz",
+      "uncompressed_bytes_after": 14,
+      "uncompressed_bytes_before": 24
+    },
+    "timestamp_unix_ms": 1794055643063,
+    "warnings": []
+  }
+
+  Shown with --json-pretty. At least one of paths, patterns, or
+  dir_prefixes is required.

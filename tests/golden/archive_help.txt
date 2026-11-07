@@ -1,0 +1,37 @@
+Handle: archive
+
+Description:
+  The archive handle creates, inspects, verifies, extracts, and modifies local
+  archive files in tar, tar.gz, tar.xz, tar.zst, zip, and gzip formats using
+  built-in libraries, detecting the format from the file extension. The URL
+  target is left empty, as in archive://.list, and every file path is passed as
+  a key=value argument, with path lists given as JSON arrays.
+
+Available Verbs:
+  list      Lists the entries of an archive with their sizes, modes, owners, and
+            modification times, as JSON.
+  info      Reports archive-level details such as format, compression, size,
+            entry counts, compression ratio, and modification time range, as
+            JSON.
+  test      Verifies the integrity of an archive by reading every entry and its
+            data, reporting a per-entry status and an overall valid flag as
+            JSON.
+  create    Creates an unencrypted tar, tar.gz, tar.xz, tar.zst, zip, or gzip
+            archive from source files and directories, with optional glob
+            filters, and reports the archived files as JSON (password= is
+            refused).
+  extract   Extracts the entries of an archive into a destination directory,
+            rejecting absolute paths and parent traversal by default, and
+            reports a manifest as JSON.
+  add       Adds files or directories to an existing archive by rewriting it,
+            optionally replacing entries that already exist, and reports the
+            changes as JSON.
+  remove    Removes entries from an existing archive by exact path, glob
+            pattern, or directory prefix, rewriting the archive unless dry_run
+            is set.
+
+Usage:
+  resh archive://.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh archive <verb> --help

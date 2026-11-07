@@ -19,7 +19,7 @@ use crate::core::{
 use crate::handles::filesystem::tar_limit::limited_archive;
 
 #[path = "archive_args.rs"]
-mod archive_args;
+pub mod archive_args;
 pub use archive_args::{Deadline, OutputFormat};
 use archive_args::{
     DeadlineReader, Parser, backup_path, check_backup_suffix, fail, io_kind, is_tar_header_limit,
@@ -1604,7 +1604,7 @@ impl ArchiveListResponse {
     pub fn new(opts: &ArchiveListOptions) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as i64;
 
         let query = json!({
@@ -1737,7 +1737,7 @@ impl ArchiveTestResponse {
     pub fn new(opts: &ArchiveTestOptions) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as i64;
 
         let query = json!({
@@ -1856,7 +1856,7 @@ impl ArchiveInfoResponse {
     pub fn new(opts: &ArchiveInfoOptions) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as i64;
 
         let query = json!({
@@ -2000,7 +2000,7 @@ impl ArchiveCreateResponse {
     pub fn new(opts: &ArchiveCreateOptions) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as i64;
 
         let query = json!({
@@ -2102,7 +2102,7 @@ impl ArchiveExtractResponse {
     pub fn new(opts: &ArchiveExtractOptions) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as i64;
 
         let query = json!({
@@ -2193,7 +2193,7 @@ impl ArchiveAddResponse {
     pub fn new(opts: &ArchiveAddOptions) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as i64;
 
         let query = json!({
@@ -2294,7 +2294,7 @@ impl ArchiveRemoveResponse {
     pub fn new(opts: &ArchiveRemoveOptions) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis() as i64;
 
         let query = json!({
@@ -2719,7 +2719,11 @@ impl Handle for ArchiveHandle {
 
     fn call(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         if should_show_help(verb, args) {
-            let help_verb = args.get("verb").map(String::as_str);
+            // `archive://.list(help=1)` shows the help of `list`.
+            let help_verb = args
+                .get("verb")
+                .map(String::as_str)
+                .or_else(|| (!crate::core::help::HELP_ALIASES.contains(&verb)).then_some(verb));
             write!(
                 io.stdout,
                 "{}",
@@ -4886,6 +4890,9 @@ fn expand_glob_pattern(
         let relative_path = if let Ok(rel) = path.strip_prefix(&search_root) {
             if base_dir.is_empty() || base_dir == "." {
                 rel.to_path_buf()
+            } else if rel.as_os_str().is_empty() {
+                // The search root itself, without a trailing '/'.
+                PathBuf::from(&base_dir)
             } else {
                 Path::new(&base_dir).join(rel)
             }
@@ -5370,9 +5377,51 @@ fn copy_zip_entries(
     let mut source = ZipArchive::new(open_archive(original, deadline)?)?;
     for i in 0..source.len() {
         deadline.check()?;
-        let entry = source.by_index_raw(i)?;
-        if keep(&entry_key(entry.name())) {
-            zip.raw_copy_file(entry)?;
+        let (name, is_dir, mode, mtime, method, size) = {
+            let e = source.by_index_raw(i)?;
+            (
+                e.name().to_string(),
+                e.is_dir(),
+                e.unix_mode(),
+                e.last_modified(),
+                e.compression(),
+                e.size(),
+            )
+        };
+        if !keep(&entry_key(&name)) {
+            continue;
+        }
+        let mut options = FileOptions::default()
+            .compression_method(method)
+            .last_modified_time(mtime)
+            .large_file(size >= 0xFFFF_FFFF);
+        if let Some(m) = mode {
+            options = options.unix_permissions(m & 0o7777);
+        }
+        // Entries are re-encoded (streamed) rather than copied raw: zip
+        // 0.6's raw copy drops the file type (directory, symlink) and the
+        // encryption flag.
+        let mut entry = match source.by_index(i) {
+            Ok(e) => e,
+            Err(zip::result::ZipError::UnsupportedArchive(msg))
+                if msg == zip::result::ZipError::PASSWORD_REQUIRED =>
+            {
+                return Err(fail(
+                    "archive_write_error",
+                    format!("encrypted zip entry '{name}' cannot be rewritten"),
+                ));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if is_dir {
+            zip.add_directory(&name, options)?;
+        } else if is_zip_symlink(mode) {
+            let mut target = String::new();
+            (&mut entry).take(4096).read_to_string(&mut target)?;
+            zip.add_symlink(&name, target, options)?;
+        } else {
+            zip.start_file(&name, options)?;
+            copy(&mut entry, zip)?;
         }
     }
     Ok(())
@@ -8927,3 +8976,7 @@ mod tar_header_limit_tests {
         assert_eq!(names, ["a.txt"]);
     }
 }
+
+#[cfg(test)]
+#[path = "archive_verb_tests.rs"]
+mod verb_tests;

@@ -1,0 +1,63 @@
+Handle: archive
+Verb: list
+Definition: Lists the entries of an archive with their sizes, modes, owners, and
+  modification times, as JSON.
+
+Usage:
+  resh archive://.list archive=<path> [includes=<json-array>]
+    [excludes=<json-array>] [include_metadata=true|false]
+    [include_compressed_size=true|false] [max_entries=<n>]
+    [max_total_bytes=<n>] [format=<archive-format>]
+    [compression=auto|none|gzip|xz|zstd]
+    [fail_on_missing_archive=true|false] [timeout_ms=<n>]
+    [format_output=json|text]
+
+Example:
+  resh --json-pretty archive://.list archive=logs.tar.gz
+
+Example Output:
+  {
+    "error": null,
+    "manifest": [
+      {
+        "compressed_size": null,
+        "gid": 1000,
+        "gname": "",
+        "is_dir": false,
+        "is_symlink": false,
+        "mode": "100644",
+        "mtime_unix": 1794055642,
+        "path": "app.log",
+        "size": 14,
+        "uid": 1000,
+        "uname": ""
+      }
+    ],
+    "ok": true,
+    "query": {
+      "archive": "logs.tar.gz",
+      "compression": "gzip",
+      "excludes": [],
+      "fail_on_missing_archive": true,
+      "format": "tar.gz",
+      "format_output": "json",
+      "include_compressed_size": true,
+      "include_metadata": true,
+      "includes": [],
+      "max_entries": 1000000,
+      "max_total_bytes": null
+    },
+    "summary": {
+      "archive": "logs.tar.gz",
+      "bytes_compressed": 113,
+      "bytes_total": 14,
+      "compression": "gzip",
+      "entries_listed": 1,
+      "entries_total": 1,
+      "format": "tar.gz"
+    },
+    "timestamp_unix_ms": 1794055642946,
+    "warnings": []
+  }
+
+  Shown with --json-pretty.

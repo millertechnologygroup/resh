@@ -111,7 +111,10 @@ That includes `dry_run` on any verb but `remove`.
   18446744073709551615 is refused with the code named for that argument
   (for example `archive.list_invalid_max_size` for `max_total_bytes`).
 * Lists are JSON arrays of strings. Glob patterns are checked before
-  anything runs.
+  anything runs. In all glob arguments of this handle (`sources`,
+  `includes`, `excludes`, `include_patterns`, `exclude_patterns`,
+  `patterns`, `glob:` inputs) `*` also matches `/`, so `data/*.txt`
+  matches `data/sub/b.txt` too.
 * `format_output` is `json` (default) or `text`.
 
 ### timeout_ms
@@ -451,8 +454,9 @@ resh archive://.add archive=logs.tar.gz 'inputs=["app.log"]' overwrite=true
 Behavior:
 
 * The archive is rewritten: the existing entries are copied (tar: with
-  their original headers, full names and link targets; zip: unchanged,
-  without recompression) followed by the new ones, to a new temporary file
+  their original headers, full names and link targets; zip: with their
+  name, Unix mode, file type, modification time and compression method,
+  recompressed) followed by the new ones, to a new temporary file
   with an unpredictable name and the original archive's permissions, which
   is then renamed over the original (copied first when `tmp_dir` is on
   another filesystem). An error leaves the original archive unchanged and
@@ -502,7 +506,8 @@ were already empty are kept), `backup_suffix` (copy the original to
 `compression`, `fail_on_missing_archive`, `timeout_ms`, `format_output`.
 
 The remaining entries keep their original headers, full names and link
-targets (tar) or are copied unchanged (zip). When nothing matches, the
+targets (tar) or their mode, type, time and compression method (zip).
+When nothing matches, the
 archive is not rewritten. Selectors that match nothing produce a warning
 (and `paths` are listed in `details.not_found`). The rewrite is atomic in
 the same way as for `add`.
@@ -582,8 +587,9 @@ rewrite compressed tar archives with the default levels.
 
 * No creation of 7z or raw xz/zstd files; no 7z support at all.
 * No password-protected (encrypted) archive creation. Encrypted zip
-  entries are counted by `info`, kept unchanged by `add` and `remove`, and
-  cannot be tested or extracted.
+  entries are counted by `info` but cannot be tested or extracted, and
+  `add` / `remove` fail with `archive_write_error` (archive unchanged) when
+  such an entry would have to be kept.
 * The 1 MiB limit on tar header data per member is fixed. A tar archive
   whose members carry more metadata than that (for example, very large
   extended attributes stored as PAX records) cannot be read.

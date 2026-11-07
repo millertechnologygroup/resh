@@ -1,0 +1,70 @@
+Handle: archive
+Verb: extract
+Definition: Extracts the entries of an archive into a destination directory,
+  rejecting absolute paths and parent traversal by default, and reports a
+  manifest as JSON.
+
+Usage:
+  resh archive://.extract archive=<path> destination=<dir>
+    [includes=<json-array>] [excludes=<json-array>]
+    [overwrite=true|false] [strip_components=<n>]
+    [create_destination=true|false] [allow_absolute_paths=true|false]
+    [allow_parent_traversal=true|false] [allow_symlinks=true|false]
+    [follow_symlinks=false] [max_entries=<n>]
+    [max_total_bytes=<n>] [max_file_bytes=<n>]
+    [format=<archive-format>] [compression=auto|none|gzip|xz|zstd]
+    [fail_on_missing_archive=true|false] [include_manifest=true|false]
+    [timeout_ms=<n>] [format_output=json|text]
+
+Example:
+  resh --json-pretty archive://.extract archive=logs.tar.gz destination=restore
+
+Example Output:
+  {
+    "error": null,
+    "manifest": [
+      {
+        "is_dir": false,
+        "is_symlink": false,
+        "path": "app.log",
+        "size": 14
+      }
+    ],
+    "ok": true,
+    "query": {
+      "allow_absolute_paths": false,
+      "allow_parent_traversal": false,
+      "allow_symlinks": true,
+      "archive": "logs.tar.gz",
+      "compression": "gzip",
+      "create_destination": true,
+      "destination": "restore",
+      "excludes": [],
+      "fail_on_missing_archive": true,
+      "follow_symlinks": false,
+      "format": "tar.gz",
+      "format_output": "json",
+      "include_manifest": true,
+      "includes": [],
+      "max_entries": 1000000,
+      "max_file_bytes": null,
+      "max_total_bytes": null,
+      "overwrite": false,
+      "strip_components": 0
+    },
+    "summary": {
+      "archive": "logs.tar.gz",
+      "bytes_written": 14,
+      "compression": "gzip",
+      "destination": "restore",
+      "duration_ms": 0,
+      "entries_extracted": 1,
+      "entries_skipped": 0,
+      "entries_total": 1,
+      "format": "tar.gz"
+    },
+    "timestamp_unix_ms": 1794055642992,
+    "warnings": []
+  }
+
+  Shown with --json-pretty.

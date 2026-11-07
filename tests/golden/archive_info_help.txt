@@ -1,0 +1,56 @@
+Handle: archive
+Verb: info
+Definition: Reports archive-level details such as format, compression, size,
+  entry counts, compression ratio, and modification time range, as JSON.
+
+Usage:
+  resh archive://.info archive=<path> [scan_entries=true|false]
+    [max_entries=<n>] [max_total_bytes=<n>] [format=<archive-format>]
+    [compression=auto|none|gzip|xz|zstd]
+    [fail_on_missing_archive=true|false] [timeout_ms=<n>]
+    [format_output=json|text]
+
+Example:
+  resh --json-pretty archive://.info archive=logs.tar.gz
+
+Example Output:
+  {
+    "details": {
+      "seven_z": null,
+      "zip": null
+    },
+    "error": null,
+    "ok": true,
+    "query": {
+      "archive": "logs.tar.gz",
+      "compression": "gzip",
+      "fail_on_missing_archive": true,
+      "format": "tar.gz",
+      "format_output": "json",
+      "max_entries": 1000000,
+      "max_total_bytes": null,
+      "scan_entries": true
+    },
+    "summary": {
+      "archive": "logs.tar.gz",
+      "archive_mtime_unix": 1794055642,
+      "archive_size_bytes": 113,
+      "compression": "gzip",
+      "compression_ratio": 0.12389380530973453,
+      "directories": 0,
+      "encrypted": false,
+      "entries_total": 1,
+      "files": 1,
+      "format": "tar.gz",
+      "max_mtime_unix": 1794055642,
+      "min_mtime_unix": 1794055642,
+      "other": 0,
+      "solid": null,
+      "symlinks": 0,
+      "uncompressed_bytes_total": 14
+    },
+    "timestamp_unix_ms": 1794055642963,
+    "warnings": []
+  }
+
+  Shown with --json-pretty.

@@ -1,0 +1,59 @@
+Handle: archive
+Verb: test
+Definition: Verifies the integrity of an archive by reading every entry and its
+  data, reporting a per-entry status and an overall valid flag as JSON.
+
+Usage:
+  resh archive://.test archive=<path> [verify_data=true|false]
+    [report_entries=true|false] [stop_on_first_error=true|false]
+    [max_entries=<n>] [max_total_bytes=<n>] [max_file_bytes=<n>]
+    [format=<archive-format>] [compression=auto|none|gzip|xz|zstd]
+    [fail_on_missing_archive=true|false] [timeout_ms=<n>]
+    [format_output=json|text]
+
+Example:
+  resh --json-pretty archive://.test archive=logs.tar.gz
+
+Example Output:
+  {
+    "entries": [
+      {
+        "error_code": null,
+        "error_message": null,
+        "is_dir": false,
+        "is_symlink": false,
+        "path": "app.log",
+        "size": 14,
+        "status": "ok"
+      }
+    ],
+    "error": null,
+    "ok": true,
+    "query": {
+      "archive": "logs.tar.gz",
+      "compression": "gzip",
+      "fail_on_missing_archive": true,
+      "format": "tar.gz",
+      "format_output": "json",
+      "max_entries": 1000000,
+      "max_file_bytes": null,
+      "max_total_bytes": null,
+      "report_entries": true,
+      "stop_on_first_error": true,
+      "verify_data": true
+    },
+    "summary": {
+      "archive": "logs.tar.gz",
+      "bytes_tested": 14,
+      "compression": "gzip",
+      "entries_failed": 0,
+      "entries_tested": 1,
+      "format": "tar.gz",
+      "stopped_early": false,
+      "valid": true
+    },
+    "timestamp_unix_ms": 1794055642976,
+    "warnings": []
+  }
+
+  Shown with --json-pretty.
