@@ -145,6 +145,7 @@ const CLONE: &[&str] = &[
     "url",
     "path",
     "branch",
+    "depth",
     "recursive",
     "ssh_key",
     "known_hosts_path",
@@ -159,6 +160,10 @@ const PULL: &[&str] = &[
     "remote",
     "branch",
     "ff_only",
+    "rebase",
+    "abort_on_conflict",
+    "author_name",
+    "author_email",
     "prune",
     "ssh_key",
     "known_hosts_path",
@@ -197,6 +202,8 @@ const SYNC: &[&str] = &[
     "allow_uncommitted",
     "stash_uncommitted",
     "abort_on_conflict",
+    "author_name",
+    "author_email",
     "dry_run",
     "known_hosts_path",
     "timeout_ms",
@@ -266,9 +273,7 @@ pub fn check_known(verb: &str, keys: &mut dyn Iterator<Item = &str>) -> Result<(
     let Some(first) = unknown.first() else {
         return Ok(());
     };
-    if let Some(reason) = unsupported(verb, first) {
-        return Err(format!("{first} is not supported by git {verb}: {reason}"));
-    }
+
     let hint = suggest(first, allowed)
         .map(|s| format!(" (did you mean {s:?}?)"))
         .unwrap_or_default();
@@ -276,17 +281,6 @@ pub fn check_known(verb: &str, keys: &mut dyn Iterator<Item = &str>) -> Result<(
         "unknown argument {first:?} for git {verb}{hint}; accepted arguments: {}",
         allowed.join(", ")
     ))
-}
-
-/// Arguments that are recognized but refused, with the reason.
-fn unsupported(verb: &str, key: &str) -> Option<&'static str> {
-    match (verb, key) {
-        ("clone", "depth") => Some(
-            "the linked libgit2 1.7 cannot make shallow clones (its shallow fetch is \
-             rejected by current git servers); omit depth for a full clone",
-        ),
-        _ => None,
-    }
 }
 
 /// Reads `timeout_ms`: absent is `None`; otherwise a whole number of
@@ -324,8 +318,6 @@ mod tests {
         assert!(e.contains("\"include_untrackd\""), "{e}");
         assert!(e.contains("did you mean \"include_untracked\"?"), "{e}");
         assert!(check_known("status", &mut ["path"].into_iter()).is_ok());
-        let e = check_known("clone", &mut ["depth"].into_iter()).unwrap_err();
-        assert!(e.contains("depth is not supported by git clone"), "{e}");
         let e = check_known("sync", &mut ["ssh_key"].into_iter()).unwrap_err();
         assert!(e.contains("accepted arguments: path"), "{e}");
     }

@@ -12,6 +12,7 @@ use thiserror::Error;
 use url::Url;
 
 mod args;
+mod integrate;
 mod known_hosts;
 mod net;
 #[cfg(test)]
@@ -435,7 +436,7 @@ operation=continue or operation=abort."#,
             definition: "Clones a remote repository into a new or empty local directory.",
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.clone url=<repo-url> path=<dir> [branch=<name>]\n  \
-                    [recursive=true|false] [ssh_key=<file>]\n  \
+                    [depth=<n>] [recursive=true|false] [ssh_key=<file>]\n  \
                     [known_hosts_path=<file>] [username=<user>] [password=<pass>]\n  \
                     [token=<token>] [timeout_ms=<ms>]",
                 example: "resh git://main.clone url=https://example.com/app.git path=/srv/app",
@@ -455,11 +456,14 @@ operation=continue or operation=abort."#,
         },
         VerbHelp {
             name: "pull",
-            definition: "Fetches from a remote and fast-forwards the local branch, returning \
-                an error when a merge or rebase would be needed, which is not implemented.",
+            definition: "Fetches from a remote and fast-forwards the local branch, or \
+                integrates diverged history with a merge commit (or a rebase with \
+                rebase=true), restoring the repository on conflicts.",
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.pull path=<repo-dir> [remote=<name>]\n  \
-                    [branch=<name>] [ff_only=true|false] [prune=true|false]\n  \
+                    [branch=<name>] [ff_only=true|false] [rebase=true|false]\n  \
+                    [abort_on_conflict=true|false] [author_name=<name>]\n  \
+                    [author_email=<email>] [prune=true|false]\n  \
                     [ssh_key=<file>] [known_hosts_path=<file>] [username=<user>]\n  \
                     [password=<pass>] [token=<token>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.pull path=/srv/app remote=origin",
@@ -479,7 +483,8 @@ operation=continue or operation=abort."#,
 }
 
 Shown for a fast-forward pull with --json-pretty. An up-to-date branch
-reports status up_to_date."#,
+reports status up_to_date; diverged history reports merged or rebased
+and the new commit."#,
                 ),
             }),
         },
@@ -518,16 +523,18 @@ Shown with --json-pretty."#,
         },
         VerbHelp {
             name: "sync",
-            definition: "Fetches from a remote, fast-forwards the current branch when it is \
-                behind, and then pushes it, failing without pushing when the histories have \
-                diverged (sync never rebases or merges).",
+            definition: "Fetches from a remote, brings the current branch up to date by \
+                fast-forward or, when the histories have diverged, by the pull_strategy \
+                (rebase, merge, or ff_only), and then pushes it, pushing nothing when that \
+                fails.",
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.sync path=<repo-dir> [remote=<name>]\n  \
                     [branch=<name>] [remote_branch=<name>]\n  \
                     [pull_strategy=rebase|merge|ff_only] [push=true|false]\n  \
                     [push_tags=true|false] [force_push=true|false]\n  \
                     [allow_uncommitted=true|false] [stash_uncommitted=true|false]\n  \
-                    [abort_on_conflict=true|false] [dry_run=true|false]\n  \
+                    [abort_on_conflict=true|false] [author_name=<name>]\n  \
+                    [author_email=<email>] [dry_run=true|false]\n  \
                     [known_hosts_path=<file>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.sync path=/srv/app pull_strategy=rebase",
                 example_output: None,
@@ -566,7 +573,9 @@ pub struct PullConfig {
     pub branch: Option<String>,
     pub rebase: Option<bool>,
     pub ff_only: Option<bool>,
-    pub depth: Option<u32>,
+    pub abort_on_conflict: Option<bool>,
+    pub author_name: Option<String>,
+    pub author_email: Option<String>,
     pub prune: Option<bool>,
     pub ssh_key: Option<String>,
     pub known_hosts_path: Option<String>,
@@ -1176,12 +1185,20 @@ fn pull_strategy_name(strategy: &PullStrategy) -> &'static str {
 /// The integration actually performed during sync, from the pull result:
 /// a fast-forward or nothing. `mode` is the requested pull_strategy.
 fn sync_integration_report(fetched: &Value, pull_strategy: &PullStrategy) -> Value {
-    let updated = fetched.get("status").and_then(Value::as_str) == Some("updated");
+    let pulled = fetched.get("status").and_then(Value::as_str);
+    let updated = pulled == Some("updated");
+    let status = match pulled {
+        Some("updated") => "fast_forward",
+        Some("merged") => "merged",
+        Some("rebased") => "rebased",
+        _ => "up_to_date",
+    };
     json!({
-        "status": if updated { "fast_forward" } else { "up_to_date" },
+        "status": status,
         "mode": pull_strategy_name(pull_strategy),
         "commits_fast_forwarded": if updated { fetched.get("behind_by").cloned().unwrap_or(json!(0)) } else { json!(0) },
         "local_commits_ahead": fetched.get("ahead_by").cloned().unwrap_or(json!(0)),
+        "commit": fetched.get("commit").cloned().unwrap_or(Value::Null),
     })
 }
 
@@ -1202,10 +1219,9 @@ pub struct SyncConfig {
     pub ff_only: Option<bool>,
     pub allow_uncommitted: Option<bool>,
     pub stash_uncommitted: Option<bool>,
-    /// Accepted and type-checked; sync only fast-forwards, which cannot
-    /// conflict, so it changes nothing.
-    #[allow(dead_code)]
     pub abort_on_conflict: Option<bool>,
+    pub author_name: Option<String>,
+    pub author_email: Option<String>,
     pub push: Option<bool>,
     pub push_tags: Option<bool>,
     pub force_push: Option<bool>,
@@ -1298,6 +1314,13 @@ pub enum GitError {
 
     #[error("non-fast-forward pull refused with ff_only=true")]
     PullNonFastForward,
+
+    /// Diverged history could not be merged or rebased without conflicts.
+    #[error("{}", conflict_message("pull", paths, *in_progress))]
+    PullConflict {
+        paths: Vec<String>,
+        in_progress: bool,
+    },
 
     #[error("pull operation failed: {message}")]
     PullFailed { message: String },
@@ -1528,6 +1551,14 @@ pub enum GitError {
     #[error("non-fast-forward sync refused with ff_only strategy")]
     SyncNonFastForward,
 
+    /// Diverged history could not be merged or rebased without conflicts;
+    /// nothing was pushed.
+    #[error("{}", conflict_message("sync", paths, *in_progress))]
+    SyncConflict {
+        paths: Vec<String>,
+        in_progress: bool,
+    },
+
     #[error("sync pull failed: {message}")]
     SyncPullFailed { message: String },
 
@@ -1537,8 +1568,8 @@ pub enum GitError {
     #[error("sync push failed: {message}")]
     SyncPushFailed { message: String },
 
-    #[error("sync stash apply conflicts detected")]
-    SyncStashApplyConflict,
+    #[error("restoring the stashed changes failed ({message}); they are kept in the stash")]
+    SyncStashApplyConflict { message: String },
 
     #[error("sync operation failed: {message}")]
     SyncFailed { message: String },
@@ -1628,6 +1659,8 @@ impl GitError {
             GitError::PullAuthFailed { .. } => "git.pull_auth_failed",
             GitError::PullDirtyWorktree => "git.pull_dirty_worktree",
             GitError::PullNonFastForward => "git.pull_non_fast_forward",
+            GitError::PullConflict { .. } => "git.pull_conflict",
+            GitError::SyncConflict { .. } => "git.sync_conflict",
             GitError::PullFailed { .. } => "git.pull_failed",
             GitError::InvalidPushConfig { .. } => "git.invalid_push_config",
             GitError::PushDetachedHead => "git.push_detached_head",
@@ -1701,7 +1734,7 @@ impl GitError {
             GitError::SyncPullFailed { .. } => "git.sync_pull_failed",
             GitError::SyncPushRejected { .. } => "git.sync_push_rejected",
             GitError::SyncPushFailed { .. } => "git.sync_push_failed",
-            GitError::SyncStashApplyConflict => "git.sync_stash_apply_conflict",
+            GitError::SyncStashApplyConflict { .. } => "git.sync_stash_apply_conflict",
             GitError::SyncFailed { .. } => "git.sync_failed",
             // Status Summary error codes
             GitError::InvalidStatusSummaryConfig { .. } => "git.invalid_status_summary_config",
@@ -1721,6 +1754,10 @@ impl From<GitError> for crate::core::status::ShellError {
         let code = err.code();
         let details = match &err {
             GitError::InvalidVerb { .. } => json!({}),
+            GitError::PullConflict { paths, in_progress }
+            | GitError::SyncConflict { paths, in_progress } => {
+                json!({ "paths": paths, "in_progress": in_progress })
+            }
             GitError::Timeout {
                 timeout_ms,
                 still_running,
@@ -1868,7 +1905,7 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::SyncPullFailed { .. } => json!({}),
             GitError::SyncPushRejected { .. } => json!({}),
             GitError::SyncPushFailed { .. } => json!({}),
-            GitError::SyncStashApplyConflict => json!({}),
+            GitError::SyncStashApplyConflict { .. } => json!({}),
             GitError::SyncFailed { .. } => json!({}),
             // Status Summary error details
             GitError::InvalidStatusSummaryConfig { .. } => json!({}),
@@ -2106,6 +2143,13 @@ impl GitHandle {
         }
 
         check_clone_url(&config.url).map_err(|message| GitError::InvalidCloneConfig { message })?;
+        if config.depth.is_some() && net::is_local_url(&config.url) {
+            return Err(GitError::InvalidCloneConfig {
+                message: "depth needs a network remote: libgit2's local transport (file:// URLs \
+                          and local paths) cannot make shallow clones"
+                    .to_string(),
+            });
+        }
         if config.path.starts_with('-') {
             return Err(GitError::InvalidCloneConfig {
                 message: format!("path {:?} must not start with '-'", config.path),
@@ -2151,15 +2195,6 @@ impl GitHandle {
             if timeout_ms == 0 {
                 return Err(GitError::InvalidPullConfig {
                     message: "timeout_ms must be greater than 0".to_string(),
-                });
-            }
-        }
-
-        // Check depth constraint
-        if let Some(depth) = config.depth {
-            if depth == 0 {
-                return Err(GitError::InvalidPullConfig {
-                    message: "depth must be greater than 0".to_string(),
                 });
             }
         }
@@ -3099,9 +3134,12 @@ impl GitHandle {
 
         for status_entry in statuses.iter() {
             let status = status_entry.status();
-            let path = status_entry.path().ok_or_else(|| GitError::CommitFailed {
-                message: "invalid file path in status".to_string(),
-            })?;
+            let path = status_entry
+                .path()
+                .ok()
+                .ok_or_else(|| GitError::CommitFailed {
+                    message: "invalid file path in status".to_string(),
+                })?;
 
             // Only stage tracked files that have working tree changes
             if status.contains(GitStatus::WT_MODIFIED) || status.contains(GitStatus::WT_DELETED) {
@@ -3428,6 +3466,9 @@ impl GitHandle {
         policy.install(&mut callbacks);
         let mut fetch_options = FetchOptions::new();
         fetch_options.remote_callbacks(callbacks);
+        if let Some(depth) = config.depth {
+            fetch_options.depth(i32::try_from(depth).unwrap_or(i32::MAX));
+        }
 
         let mut builder = git2::build::RepoBuilder::new();
         builder.fetch_options(fetch_options);
@@ -3485,7 +3526,7 @@ impl GitHandle {
             message: format!("submodule update failed: {}", e.message()),
         };
         for mut sm in repo.submodules().map_err(failed)? {
-            let url = sm.url().unwrap_or_default().to_string();
+            let url = sm.url().ok().flatten().unwrap_or_default().to_string();
             policy.prepare(&url)?;
             let creds = net::Credentials {
                 ssh_key: config.ssh_key.clone(),
@@ -3557,6 +3598,7 @@ impl GitHandle {
                 return Err(GitError::PullDetachedHead);
             }
             head.shorthand()
+                .ok()
                 .ok_or_else(|| GitError::PullFailed {
                     message: "the current branch name is not valid UTF-8".to_string(),
                 })?
@@ -3618,7 +3660,7 @@ impl GitHandle {
                 remote: remote_name.to_string(),
                 branch: target_branch.clone(),
                 status: status.to_string(),
-                rebase: false,
+                rebase: config.rebase.unwrap_or(false),
                 ff_only,
                 ahead_by: Some(ahead),
                 behind_by: Some(behind),
@@ -3641,13 +3683,14 @@ impl GitHandle {
             if ff_only {
                 return Err(GitError::PullNonFastForward);
             }
-            return Err(GitError::PullFailed {
-                message: format!(
-                    "merge operation not yet implemented: '{target_branch}' and \
-                     '{remote_name}/{target_branch}' have diverged and pull only fast-forwards. \
-                     Merge or rebase with the merge or rebase verb, then pull again"
-                ),
-            });
+            return self.pull_integrate(
+                &repo,
+                config,
+                remote_name,
+                &target_branch,
+                remote_oid,
+                (ahead, behind),
+            );
         }
         self.do_fast_forward(&repo, &local_ref_name, remote_oid, &target_branch)?;
         log::info!(
@@ -3658,6 +3701,97 @@ impl GitHandle {
             target_branch
         );
         Ok(report("updated", 0, behind))
+    }
+
+    /// Integrates diverged history for `pull`: a merge commit, or with
+    /// `rebase=true` the local commits replayed onto the upstream. Needs the
+    /// branch checked out and no changes to tracked files; a conflict
+    /// restores the repository (or, with `abort_on_conflict=false`, leaves
+    /// the merge or rebase in progress) and fails with `git.pull_conflict`.
+    fn pull_integrate(
+        &self,
+        repo: &Repository,
+        config: &PullConfig,
+        remote_name: &str,
+        branch: &str,
+        remote_oid: Oid,
+        (ahead, behind): (usize, usize),
+    ) -> Result<Value, GitError> {
+        let on_branch = repo
+            .head()
+            .map(|h| h.is_branch() && h.shorthand().ok() == Some(branch))
+            .unwrap_or(false);
+        if !on_branch {
+            return Err(GitError::PullFailed {
+                message: format!(
+                    "'{branch}' and '{remote_name}/{branch}' have diverged; merging or rebasing \
+                     needs '{branch}' checked out"
+                ),
+            });
+        }
+        let dirty = integrate::has_tracked_changes(repo).map_err(|e| GitError::PullFailed {
+            message: format!("cannot read the working tree status: {}", e.message()),
+        })?;
+        if dirty {
+            return Err(GitError::PullDirtyWorktree);
+        }
+        let (name, email) = identity(
+            repo,
+            config.author_name.as_deref(),
+            config.author_email.as_deref(),
+            "AUTHOR",
+        )
+        .ok_or_else(|| GitError::PullFailed {
+            message: "no identity for the merge or rebased commits: set user.name and \
+                      user.email, or give author_name and author_email"
+                .to_string(),
+        })?;
+        let sig = Signature::now(&name, &email).map_err(|e| GitError::PullFailed {
+            message: format!("invalid identity: {}", e.message()),
+        })?;
+        let rebase = config.rebase.unwrap_or(false);
+        let mode = if rebase {
+            integrate::Mode::Rebase
+        } else {
+            integrate::Mode::Merge
+        };
+        let upstream_name = format!("{remote_name}/{branch}");
+        let outcome = integrate::integrate(
+            repo,
+            branch,
+            &upstream_name,
+            remote_oid,
+            mode,
+            config.abort_on_conflict.unwrap_or(true),
+            &sig,
+        )
+        .map_err(|f| match f {
+            integrate::Failure::Conflict { paths, in_progress } => {
+                GitError::PullConflict { paths, in_progress }
+            }
+            integrate::Failure::Dirty => GitError::PullDirtyWorktree,
+            integrate::Failure::Failed(message) => GitError::PullFailed { message },
+        })?;
+        let (status, commit, replayed) = match outcome {
+            integrate::Outcome::Merged(oid) => ("merged", oid, 0),
+            integrate::Outcome::Rebased { head, commits } => ("rebased", head, commits),
+        };
+        let mut result = json!(PullResult {
+            backend: "git".to_string(),
+            alias: self.alias.clone(),
+            path: config.path.clone(),
+            remote: remote_name.to_string(),
+            branch: branch.to_string(),
+            status: status.to_string(),
+            rebase,
+            ff_only: false,
+            ahead_by: Some(ahead),
+            behind_by: Some(behind),
+            commits_fetched: Some(behind),
+        });
+        result["commit"] = json!(commit.to_string());
+        result["commits_rebased"] = json!(replayed);
+        Ok(result)
     }
 
     /// Fast-forwards `local_ref_name` to `remote_oid`. When it is the
@@ -3677,7 +3811,7 @@ impl GitHandle {
         };
         let on_branch = repo
             .head()
-            .map(|h| h.is_branch() && h.shorthand() == Some(branch_name))
+            .map(|h| h.is_branch() && h.shorthand().ok() == Some(branch_name))
             .unwrap_or(false);
         if on_branch {
             let commit = repo
@@ -3747,7 +3881,9 @@ impl GitHandle {
         // (libgit2 applies both when it reads the remote).
         let push_url = remote
             .pushurl()
-            .or_else(|| remote.url())
+            .ok()
+            .flatten()
+            .or_else(|| remote.url().ok())
             .unwrap_or_default()
             .to_string();
         policy.prepare(&push_url)?;
@@ -3769,7 +3905,7 @@ impl GitHandle {
             let tags = repo.tag_names(None).map_err(|e| GitError::PushFailed {
                 message: format!("failed to list tags: {}", e.message()),
             })?;
-            for tag in tags.iter().flatten() {
+            for tag in tags.iter().filter_map(|t| t.ok().flatten()) {
                 refspecs.push(format!(
                     "{}refs/tags/{tag}:refs/tags/{tag}",
                     if force { "+" } else { "" }
@@ -4150,7 +4286,7 @@ impl GitHandle {
 
         // Process each tag
         for i in 0..tag_names.len() {
-            if let Some(name) = tag_names.get(i) {
+            if let Ok(Some(name)) = tag_names.get(i) {
                 match self.get_tag_info(&repo, name) {
                     Ok(tag_entry) => tags.push(tag_entry),
                     Err(e) => {
@@ -4321,7 +4457,7 @@ impl GitHandle {
                         return Ok(TagEntry {
                             name: name.to_string(),
                             annotated: true,
-                            message: Some(tag.message().unwrap_or("").to_string()),
+                            message: Some(tag.message().ok().flatten().unwrap_or("").to_string()),
                             target: TagTarget {
                                 oid: target_obj.id().to_string(),
                                 object_type: match target_obj.kind().unwrap() {
@@ -4889,7 +5025,7 @@ impl GitHandle {
 
         // Get current branch for comparison
         let current_branch_name = match repo.head() {
-            Ok(head) if head.is_branch() => head.shorthand().map(|s| s.to_string()),
+            Ok(head) if head.is_branch() => head.shorthand().ok().map(|s| s.to_string()),
             _ => None,
         };
 
@@ -5390,7 +5526,7 @@ impl GitHandle {
         })?;
 
         let (name, detached) = if head.is_branch() {
-            let name = head.shorthand().map(|s| s.to_string());
+            let name = head.shorthand().ok().map(|s| s.to_string());
             (name, false)
         } else {
             (None, true)
@@ -5442,7 +5578,7 @@ impl GitHandle {
             .unwrap_or("unknown");
 
         // Extract remote name from upstream reference
-        let remote_name = if let Some(upstream_ref) = upstream_branch.get().name() {
+        let remote_name = if let Ok(upstream_ref) = upstream_branch.get().name() {
             if upstream_ref.starts_with("refs/remotes/") {
                 let parts: Vec<&str> = upstream_ref["refs/remotes/".len()..]
                     .splitn(2, '/')
@@ -5977,16 +6113,9 @@ impl GitHandle {
         let rebase_author = self.resolve_rebase_author(config)?;
 
         // Open the existing rebase - git2 can resume from rebase state files
-        let mut rebase = repo
-            .rebase(
-                None, // branch - will be read from state
-                None, // upstream - will be read from state
-                None, // onto - will be read from state
-                None, // options
-            )
-            .map_err(|e| GitError::RebaseFailed {
-                message: format!("failed to open existing rebase: {}", e),
-            })?;
+        let mut rebase = repo.open_rebase(None).map_err(|e| GitError::RebaseFailed {
+            message: format!("failed to open existing rebase: {}", e),
+        })?;
 
         let mut commits_rebased = 0;
 
@@ -6063,16 +6192,9 @@ impl GitHandle {
         config: &RebaseConfig,
     ) -> Result<Value, GitError> {
         // Open the existing rebase to access its state
-        let mut rebase = repo
-            .rebase(
-                None, // branch - will be read from state
-                None, // upstream - will be read from state
-                None, // onto - will be read from state
-                None, // options
-            )
-            .map_err(|e| GitError::RebaseFailed {
-                message: format!("failed to open existing rebase for abort: {}", e),
-            })?;
+        let mut rebase = repo.open_rebase(None).map_err(|e| GitError::RebaseFailed {
+            message: format!("failed to open existing rebase for abort: {}", e),
+        })?;
 
         // Abort the rebase - this restores the repository to its pre-rebase state
         rebase.abort().map_err(|e| GitError::RebaseFailed {
@@ -6316,7 +6438,7 @@ impl GitHandle {
                 message: format!("failed to get HEAD: {}", e),
             })?;
 
-            if let Some(current_branch) = head.shorthand() {
+            if let Ok(current_branch) = head.shorthand() {
                 if current_branch != target_name {
                     // Need to checkout target branch
                     self.checkout_merge_branch(repo, target_name)?;
@@ -6844,7 +6966,7 @@ impl GitHandle {
 
         // sync works on the checked-out branch.
         let current = match repo.head() {
-            Ok(head) if head.is_branch() => head.shorthand().map(str::to_string),
+            Ok(head) if head.is_branch() => head.shorthand().ok().map(str::to_string),
             Ok(_) => None,
             Err(e) if e.code() == git2::ErrorCode::UnbornBranch => {
                 return Err(GitError::SyncFailed {
@@ -6934,7 +7056,7 @@ impl GitHandle {
                     &remote_name,
                     &local_branch,
                     &pull_strategy,
-                    known_hosts,
+                    config,
                 )
                 .await?;
             let integration = sync_integration_report(&fetched, &pull_strategy);
@@ -7061,7 +7183,7 @@ impl GitHandle {
         let mut actions = vec![
             format!("Would fetch from {}/{}", remote, remote_branch),
             format!(
-                "Would fast-forward '{}' to '{}/{}' if behind; diverged history fails without pushing (pull_strategy={})",
+                "Would fast-forward '{}' to '{}/{}' if behind, and integrate diverged history with pull_strategy={} (a conflict fails without pushing)",
                 local_branch,
                 remote,
                 remote_branch,
@@ -7093,30 +7215,31 @@ impl GitHandle {
         remote: &str,
         branch: &str,
         pull_strategy: &PullStrategy,
-        known_hosts_path: Option<&str>,
+        config: &SyncConfig,
     ) -> Result<Value, GitError> {
         let mut pull_value = json!({
             "path": path,
             "remote": remote,
             "branch": branch,
-            "ff_only": true,
+            "ff_only": *pull_strategy == PullStrategy::FfOnly,
+            "rebase": *pull_strategy == PullStrategy::Rebase,
+            "abort_on_conflict": config.abort_on_conflict.unwrap_or(true),
         });
-        if let Some(kh) = known_hosts_path {
-            pull_value["known_hosts_path"] = json!(kh);
+        for (key, value) in [
+            ("known_hosts_path", &config.known_hosts_path),
+            ("author_name", &config.author_name),
+            ("author_email", &config.author_email),
+        ] {
+            if let Some(v) = value {
+                pull_value[key] = json!(v);
+            }
         }
 
         self.pull(pull_value).await.map_err(|e| match e {
-            GitError::PullNonFastForward => match pull_strategy {
-                PullStrategy::FfOnly => GitError::SyncNonFastForward,
-                PullStrategy::Rebase | PullStrategy::Merge => GitError::SyncFailed {
-                    message: format!(
-                        "'{branch}' and '{remote}/{branch}' have diverged; git sync can only fast-forward, \
-                         so pull_strategy={} was not performed and nothing was pushed. \
-                         Rebase or merge manually, then run sync again.",
-                        pull_strategy_name(pull_strategy)
-                    ),
-                },
-            },
+            GitError::PullNonFastForward => GitError::SyncNonFastForward,
+            GitError::PullConflict { paths, in_progress } => {
+                GitError::SyncConflict { paths, in_progress }
+            }
             GitError::PullDirtyWorktree => GitError::SyncDirtyWorktree,
             GitError::RemoteNotFound { remote } => GitError::SyncRemoteNotFound { remote },
             e @ GitError::HostKeyVerificationFailed { .. } => e,
@@ -7166,13 +7289,17 @@ impl GitHandle {
     /// Pops the sync auto-stash. Returns true when it could not be applied
     /// cleanly (the stash is then kept, as `git stash pop` does).
     fn sync_restore_stash(&self, repo: &mut Repository) -> Result<bool, GitError> {
+        // The fetch and integration ran through another handle: reload the
+        // index from disk before applying the stash on top of it.
+        if let Ok(mut index) = repo.index() {
+            let _ = index.read(true);
+        }
         match repo.stash_pop(0, None) {
             Ok(()) => Ok(false),
             Err(e) if e.code() == git2::ErrorCode::Conflict => Ok(true),
-            Err(e) => {
-                log::warn!("stash pop failed: {e}");
-                Err(GitError::SyncStashApplyConflict)
-            }
+            Err(e) => Err(GitError::SyncStashApplyConflict {
+                message: e.message().to_string(),
+            }),
         }
     }
 
@@ -7199,7 +7326,7 @@ impl GitHandle {
                     let head_oid = head_ref.target().map(|oid| oid.to_string());
 
                     if head_ref.is_branch() {
-                        let branch_name = head_ref.shorthand().map(|s| s.to_string());
+                        let branch_name = head_ref.shorthand().ok().map(|s| s.to_string());
                         Ok((branch_name, false, head_oid))
                     } else {
                         // Detached HEAD
@@ -7826,6 +7953,7 @@ impl GitHandle {
                 if head.is_branch() {
                     let branch_name = head
                         .shorthand()
+                        .ok()
                         .ok_or_else(|| GitError::StatusShortFailed {
                             message: "failed to get branch name".to_string(),
                         })?
@@ -8172,6 +8300,27 @@ fn identity(
     Some((name, email))
 }
 
+/// The message of a pull or sync conflict.
+fn conflict_message(verb: &str, paths: &[String], in_progress: bool) -> String {
+    let list = if paths.is_empty() {
+        "(unknown paths)".to_string()
+    } else {
+        paths.join(", ")
+    };
+    if in_progress {
+        format!(
+            "{verb} stopped on conflicts in {list}; the merge or rebase is left in progress: \
+             resolve the files and commit (merge) or use the rebase verb with \
+             operation=continue or operation=abort"
+        )
+    } else {
+        format!(
+            "{verb} stopped on conflicts in {list}; the repository was restored to its previous \
+             state and nothing was pushed"
+        )
+    }
+}
+
 /// URL schemes `clone` accepts.
 const CLONE_SCHEMES: &[&str] = &["https", "http", "ssh", "git+ssh", "ssh+git", "git", "file"];
 
@@ -8283,7 +8432,11 @@ fn fetch_remote(
     let refspecs = remote
         .fetch_refspecs()
         .map_err(|e| fail(format!("failed to read refspecs: {}", e.message()), false))?;
-    let refspecs: Vec<String> = refspecs.iter().flatten().map(str::to_string).collect();
+    let refspecs: Vec<String> = refspecs
+        .iter()
+        .filter_map(|r| r.ok().flatten())
+        .map(str::to_string)
+        .collect();
     let _timeouts = net::apply_server_timeouts(remote.url().unwrap_or_default());
     remote
         .fetch(&refspecs, Some(&mut fetch_options), None)
@@ -8559,7 +8712,9 @@ mod tests {
             branch: None,
             rebase: None,
             ff_only: None,
-            depth: None,
+            abort_on_conflict: None,
+            author_name: None,
+            author_email: None,
             prune: None,
             ssh_key: None,
             known_hosts_path: None,
@@ -8587,7 +8742,9 @@ mod tests {
             branch: None,
             rebase: None,
             ff_only: None,
-            depth: None,
+            abort_on_conflict: None,
+            author_name: None,
+            author_email: None,
             prune: None,
             ssh_key: None,
             known_hosts_path: None,
@@ -8601,27 +8758,6 @@ mod tests {
             Err(GitError::InvalidPullConfig { .. })
         ));
 
-        // Invalid depth
-        let config = PullConfig {
-            path: "/tmp/test".to_string(),
-            remote: None,
-            branch: None,
-            rebase: None,
-            ff_only: None,
-            depth: Some(0),
-            prune: None,
-            ssh_key: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-            timeout_ms: None,
-        };
-        assert!(matches!(
-            handle.validate_pull_config(&config),
-            Err(GitError::InvalidPullConfig { .. })
-        ));
-
         // Empty remote string
         let config = PullConfig {
             path: "/tmp/test".to_string(),
@@ -8629,7 +8765,9 @@ mod tests {
             branch: None,
             rebase: None,
             ff_only: None,
-            depth: None,
+            abort_on_conflict: None,
+            author_name: None,
+            author_email: None,
             prune: None,
             ssh_key: None,
             known_hosts_path: None,
@@ -8650,7 +8788,9 @@ mod tests {
             branch: Some("".to_string()),
             rebase: None,
             ff_only: None,
-            depth: None,
+            abort_on_conflict: None,
+            author_name: None,
+            author_email: None,
             prune: None,
             ssh_key: None,
             known_hosts_path: None,
@@ -8671,7 +8811,9 @@ mod tests {
             branch: None,
             rebase: None,
             ff_only: None,
-            depth: None,
+            abort_on_conflict: None,
+            author_name: None,
+            author_email: None,
             prune: None,
             ssh_key: Some("key".to_string()),
             known_hosts_path: None,
@@ -8709,7 +8851,6 @@ mod tests {
         assert_eq!(config.branch, Some("main".to_string()));
         assert_eq!(config.rebase, Some(true));
         assert_eq!(config.ff_only, Some(false));
-        assert_eq!(config.depth, Some(5));
         assert_eq!(config.prune, Some(true));
         assert_eq!(config.timeout_ms, Some(30000));
     }
@@ -8727,7 +8868,9 @@ mod tests {
             branch: None,
             rebase: None,
             ff_only: None,
-            depth: None,
+            abort_on_conflict: None,
+            author_name: None,
+            author_email: None,
             prune: None,
             ssh_key: Some("/path/to/key".to_string()),
             known_hosts_path: None,
@@ -8747,7 +8890,9 @@ mod tests {
             branch: None,
             rebase: None,
             ff_only: None,
-            depth: None,
+            abort_on_conflict: None,
+            author_name: None,
+            author_email: None,
             prune: None,
             ssh_key: None,
             known_hosts_path: None,
@@ -8766,7 +8911,9 @@ mod tests {
             branch: None,
             rebase: None,
             ff_only: None,
-            depth: None,
+            abort_on_conflict: None,
+            author_name: None,
+            author_email: None,
             prune: None,
             ssh_key: None,
             known_hosts_path: None,
@@ -9819,6 +9966,8 @@ mod tests {
             allow_uncommitted: Some(false),
             stash_uncommitted: Some(false),
             abort_on_conflict: Some(true),
+            author_name: None,
+            author_email: None,
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(false),
@@ -9847,6 +9996,8 @@ mod tests {
             allow_uncommitted: Some(false),
             stash_uncommitted: Some(false),
             abort_on_conflict: Some(true),
+            author_name: None,
+            author_email: None,
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(false),
@@ -9870,6 +10021,8 @@ mod tests {
             allow_uncommitted: Some(false),
             stash_uncommitted: Some(false),
             abort_on_conflict: Some(true),
+            author_name: None,
+            author_email: None,
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(false),
@@ -9893,6 +10046,8 @@ mod tests {
             allow_uncommitted: Some(false),
             stash_uncommitted: Some(false),
             abort_on_conflict: Some(true),
+            author_name: None,
+            author_email: None,
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(false),
@@ -9916,6 +10071,8 @@ mod tests {
             allow_uncommitted: Some(false),
             stash_uncommitted: Some(false),
             abort_on_conflict: Some(true),
+            author_name: None,
+            author_email: None,
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(true),
@@ -10775,7 +10932,7 @@ mod tests {
                 .all(|e| !e.status().contains(GitStatus::WT_MODIFIED))
         );
         let head = repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(head.message(), Some("update"));
+        assert_eq!(head.message().ok(), Some("update"));
 
         // paths= is resolved against the work tree, not the current directory.
         std::fs::write(temp_dir.path().join("b.txt"), "new\n").unwrap();
@@ -10950,42 +11107,64 @@ mod sync_correctness_tests {
     }
 
     #[test]
-    fn divergent_history_fails_and_pushes_nothing() {
+    fn divergent_history_is_integrated_by_strategy() {
         for strategy in ["rebase", "merge", "ff_only"] {
             let w = world();
             let upstream = commit(&w.a, "a.txt", "upstream work");
             push_main(&w.a);
             let local = commit(&w.b, "b.txt", "local work");
 
-            let err = sync(&w.b, &[("pull_strategy", strategy)]).unwrap_err();
-            match (strategy, &err) {
-                ("ff_only", GitError::SyncNonFastForward) => {}
-                (_, GitError::SyncFailed { message }) => {
-                    assert!(
-                        message.contains("diverged") && message.contains("nothing was pushed"),
-                        "{message}"
-                    );
-                    assert!(message.contains(strategy), "{message}");
-                }
-                _ => panic!("{strategy}: unexpected {err:?}"),
+            let result = sync(&w.b, &[("pull_strategy", strategy)]);
+            if strategy == "ff_only" {
+                assert!(
+                    matches!(result, Err(GitError::SyncNonFastForward)),
+                    "{result:?}"
+                );
+                assert_eq!(remote_main(&w), upstream, "remote unchanged");
+                assert_eq!(head(&w.b), local, "local commit kept");
+                continue;
             }
-            assert_eq!(remote_main(&w), upstream, "{strategy}: remote unchanged");
-            assert_eq!(head(&w.b), local, "{strategy}: local commit kept");
+            let v = result.unwrap();
+            let want = if strategy == "merge" {
+                "merged"
+            } else {
+                "rebased"
+            };
+            assert_eq!(v["integration"]["status"], want, "{v}");
+            let new_head = head(&w.b);
+            assert_eq!(remote_main(&w), new_head, "{strategy}: pushed");
+            assert!(w.b.graph_descendant_of(new_head, upstream).unwrap());
+            let tip = w.b.find_commit(new_head).unwrap();
+            assert_eq!(tip.parent_count(), if strategy == "merge" { 2 } else { 1 });
+            assert!(w.b.workdir().unwrap().join("a.txt").exists());
+            assert!(w.b.workdir().unwrap().join("b.txt").exists());
         }
     }
 
     #[test]
     fn conflicting_divergence_is_rejected_without_touching_files() {
-        let w = world();
-        commit(&w.a, "base.txt", "upstream edit");
-        push_main(&w.a);
-        commit(&w.b, "base.txt", "local edit");
-        assert!(sync(&w.b, &[("pull_strategy", "merge")]).is_err());
-        assert_eq!(
-            std::fs::read_to_string(w.b.workdir().unwrap().join("base.txt")).unwrap(),
-            "local edit"
-        );
-        assert_eq!(w.b.state(), git2::RepositoryState::Clean);
+        for strategy in ["merge", "rebase"] {
+            let w = world();
+            let upstream = commit(&w.a, "base.txt", "upstream edit");
+            push_main(&w.a);
+            let local = commit(&w.b, "base.txt", "local edit");
+            let err = sync(&w.b, &[("pull_strategy", strategy)]).unwrap_err();
+            match &err {
+                GitError::SyncConflict { paths, in_progress } => {
+                    assert_eq!(paths, &["base.txt".to_string()], "{strategy}");
+                    assert!(!in_progress);
+                }
+                other => panic!("{strategy}: {other:?}"),
+            }
+            assert_eq!(
+                std::fs::read_to_string(w.b.workdir().unwrap().join("base.txt")).unwrap(),
+                "local edit"
+            );
+            assert_eq!(w.b.state(), git2::RepositoryState::Clean, "{strategy}");
+            assert_eq!(head(&w.b), local, "{strategy}");
+            assert_eq!(remote_main(&w), upstream, "{strategy}: nothing pushed");
+            assert!(w.b.statuses(None).unwrap().is_empty(), "{strategy}");
+        }
     }
 
     #[test]
@@ -11038,7 +11217,13 @@ mod sync_correctness_tests {
         let dirty = w.b.workdir().unwrap().join("base.txt");
         std::fs::write(&dirty, "uncommitted edit").unwrap();
 
-        assert!(sync(&w.b, &[("stash_uncommitted", "true")]).is_err());
+        assert!(
+            sync(
+                &w.b,
+                &[("stash_uncommitted", "true"), ("pull_strategy", "ff_only")]
+            )
+            .is_err()
+        );
         assert_eq!(std::fs::read_to_string(&dirty).unwrap(), "uncommitted edit");
         let mut stashes = 0;
         let mut b = Repository::open(w.b.workdir().unwrap()).unwrap();

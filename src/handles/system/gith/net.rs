@@ -54,16 +54,10 @@ pub fn remaining() -> Option<Duration> {
     deadline().map(|d| d.saturating_duration_since(Instant::now()))
 }
 
-// libgit2 global options (include/git2/common.h, libgit2 1.7). git2 0.18
-// has no wrapper for these, so the C function is called directly; it is
+// libgit2's home-directory option (include/git2/common.h, libgit2 1.9).
+// git2 has no wrapper for it, so the C function is called directly; it is
 // part of the libgit2 that git2 links in.
 const GIT_OPT_SET_HOMEDIR: c_int = 38;
-const GIT_OPT_SET_SERVER_CONNECT_TIMEOUT: c_int = 39;
-#[cfg(test)]
-const GIT_OPT_GET_SERVER_CONNECT_TIMEOUT: c_int = 40;
-const GIT_OPT_SET_SERVER_TIMEOUT: c_int = 41;
-#[cfg(test)]
-const GIT_OPT_GET_SERVER_TIMEOUT: c_int = 42;
 
 unsafe extern "C" {
     fn git_libgit2_opts(option: c_int, ...) -> c_int;
@@ -115,10 +109,14 @@ fn set_server_timeouts() {
             .as_millis()
             .clamp(1, i32::MAX as u128) as c_int
     });
-    // SAFETY: both options take one int.
+    // SAFETY: plain integer options; callers serialize through TIMEOUT_LOCK.
     unsafe {
-        git_libgit2_opts(GIT_OPT_SET_SERVER_CONNECT_TIMEOUT, ms);
-        git_libgit2_opts(GIT_OPT_SET_SERVER_TIMEOUT, ms);
+        if let Err(e) = git2::opts::set_server_connect_timeout_in_milliseconds(ms) {
+            log::warn!("cannot set the libgit2 connect timeout: {e}");
+        }
+        if let Err(e) = git2::opts::set_server_timeout_in_milliseconds(ms) {
+            log::warn!("cannot set the libgit2 read timeout: {e}");
+        }
     }
 }
 
@@ -128,16 +126,13 @@ fn set_server_timeouts() {
 pub fn apply_and_read_server_timeouts() -> (i32, i32) {
     let _lock = TIMEOUT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     set_server_timeouts();
-    let (mut connect, mut read): (c_int, c_int) = (-1, -1);
-    // SAFETY: both options write one int.
+    // SAFETY: plain integer options, read under TIMEOUT_LOCK.
     unsafe {
-        git_libgit2_opts(
-            GIT_OPT_GET_SERVER_CONNECT_TIMEOUT,
-            &mut connect as *mut c_int,
-        );
-        git_libgit2_opts(GIT_OPT_GET_SERVER_TIMEOUT, &mut read as *mut c_int);
+        (
+            git2::opts::get_server_connect_timeout_in_milliseconds().unwrap_or(-1),
+            git2::opts::get_server_timeout_in_milliseconds().unwrap_or(-1),
+        )
     }
-    (connect, read)
 }
 
 /// The error libgit2 reports when a callback stops an operation at the
@@ -579,18 +574,7 @@ fn negotiation_failure(
              not be read ({probe})"
         ),
     };
-    let rsa_listed = listed.iter().any(|t| t == "ssh-rsa");
-    let legacy_rsa_offered = offered
-        .as_ref()
-        .map(|a| a.iter().any(|t| t == "ssh-rsa"))
-        .unwrap_or(true);
-    if rsa_listed && !legacy_rsa_offered {
-        reason.push_str(
-            ". An ssh-rsa entry makes the SSH library ask for the legacy ssh-rsa (SHA-1) \
-             signature, which this server does not offer; add the host's ssh-ed25519 or ECDSA \
-             key to the file",
-        );
-    } else if let Ok(algs) = &offered {
+    if let Ok(algs) = &offered {
         if let Some(first) = algs.iter().find(|a| !a.contains("-cert-")) {
             let key_type = key_type_of_algorithm(first);
             reason.push_str(&format!(
@@ -720,14 +704,6 @@ mod tests {
         assert!(msg.contains("offers host key types ssh-ed25519"), "{msg}");
         assert!(msg.contains("lists only ecdsa-sha2-nistp256"), "{msg}");
         assert!(msg.contains("ssh-keyscan -t ssh-ed25519"), "{msg}");
-
-        let msg = negotiation_failure(
-            "ssh://h/r",
-            &["ssh-rsa".to_string()],
-            Ok(vec!["rsa-sha2-512".to_string(), "ssh-ed25519".to_string()]),
-            "x",
-        );
-        assert!(msg.contains("legacy ssh-rsa (SHA-1)"), "{msg}");
 
         let msg = negotiation_failure("ssh://h/r", &[], Err("refused".into()), "kex failed");
         assert!(

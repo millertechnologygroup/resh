@@ -536,7 +536,7 @@ fn checkout_never_overwrites_local_changes() {
         std::fs::read_to_string(w.dir.path().join("work/a.txt")).unwrap(),
         "local edit\n"
     );
-    assert_eq!(w.work.head().unwrap().shorthand(), Some("main"));
+    assert_eq!(w.work.head().unwrap().shorthand().ok(), Some("main"));
     // An untracked file the switch does not touch is no obstacle.
     std::fs::write(w.dir.path().join("work/a.txt"), "a\n").unwrap();
     std::fs::write(w.dir.path().join("work/scratch.txt"), "x\n").unwrap();
@@ -545,7 +545,7 @@ fn checkout_never_overwrites_local_changes() {
         &[("path", &p), ("action", "checkout"), ("name", "other")],
     )
     .json();
-    assert_eq!(w.work.head().unwrap().shorthand(), Some("other"));
+    assert_eq!(w.work.head().unwrap().shorthand().ok(), Some("other"));
 }
 
 // ---------------------------------------------------------------- tag
@@ -800,7 +800,7 @@ fn rebase_ff_only_and_dirty_tree() {
     )
     .json();
     let head = w.work.head().unwrap().peel_to_commit().unwrap();
-    assert_eq!(head.author().name(), Some("Re Author"), "{v}");
+    assert_eq!(head.author().name().ok(), Some("Re Author"), "{v}");
 }
 
 #[test]
@@ -884,7 +884,7 @@ fn clone_refuses_bad_urls_without_side_effects() {
     }
     run(
         "clone",
-        &[("url", &w.origin_url()), ("path", &dest), ("depth", "1")],
+        &[("url", &w.origin_url()), ("path", &dest), ("depth", "0")],
     )
     .fails("git.invalid_clone_config", 2);
     run(
@@ -1002,8 +1002,19 @@ fn pull_errors() {
     w.advance_origin("b.txt");
     commit_file(&w.work, "c.txt", "mine\n");
     run("pull", &[("path", &p), ("ff_only", "true")]).fails("git.pull_non_fast_forward", 1);
-    let msg = run("pull", &[("path", &p)]).fails("git.pull_failed", 1);
-    assert!(msg.contains("diverged"), "{msg}");
+    // Diverged and not checked out: merging needs the working tree.
+    run(
+        "branch",
+        &[("path", &p), ("action", "checkout"), ("name", "local-only")],
+    )
+    .json();
+    let msg = run("pull", &[("path", &p), ("branch", "main")]).fails("git.pull_failed", 1);
+    assert!(msg.contains("checked out"), "{msg}");
+    run(
+        "branch",
+        &[("path", &p), ("action", "checkout"), ("name", "main")],
+    )
+    .json();
     let head = w.work.head().unwrap().target().unwrap();
     w.work.set_head_detached(head).unwrap();
     run("pull", &[("path", &p)]).fails("git.pull_detached_head", 1);
@@ -1147,7 +1158,8 @@ fn rejected_push_is_an_error() {
     // The remote-tracking ref is stale, so only the server can refuse it.
     run("push", &[("path", &p)]).fails("git.push_rejected", 1);
     assert_eq!(w.origin_main(), before);
-    run("pull", &[("path", &p), ("ff_only", "false")]).fails("git.pull_failed", 1);
+    // A fetch updates the remote-tracking branch, so ff_only can tell.
+    run("pull", &[("path", &p), ("ff_only", "true")]).fails("git.pull_non_fast_forward", 1);
     run("push", &[("path", &p), ("ff_only", "true")]).fails("git.push_non_fast_forward", 1);
     run("push", &[("path", &p), ("force", "true")]).json();
     assert_ne!(w.origin_main(), before);
@@ -1203,7 +1215,6 @@ fn sync_errors() {
     commit_file(&w.work, "c.txt", "c\n");
     run("sync", &[("path", &p), ("pull_strategy", "ff_only")])
         .fails("git.sync_non_fast_forward", 1);
-    run("sync", &[("path", &p)]).fails("git.sync_failed", 1);
     let head = w.work.head().unwrap().target().unwrap();
     w.work.set_head_detached(head).unwrap();
     run("sync", &[("path", &p)]).fails("git.sync_detached_head", 1);
@@ -1273,4 +1284,213 @@ fn error_codes_are_valid_and_documented() {
             "{code} is not documented in git.md"
         );
     }
+}
+
+// ---------------------------------------------------------------- integrating diverged history
+
+/// The state that a restored repository must match exactly.
+fn snapshot(repo: &Repository, files: &[&str]) -> (Option<Oid>, Option<String>, Oid, Vec<String>) {
+    let head = repo.head().ok();
+    let tree = repo.index().unwrap().write_tree().unwrap();
+    let wd = repo.workdir().unwrap();
+    let contents = files
+        .iter()
+        .map(|f| std::fs::read_to_string(wd.join(f)).unwrap_or_default())
+        .collect();
+    (
+        head.as_ref().and_then(|h| h.target()),
+        head.and_then(|h| h.shorthand().ok().map(str::to_string)),
+        tree,
+        contents,
+    )
+}
+
+/// `work` and origin diverged: origin edits `theirs`, work commits `mine`.
+fn diverged(theirs: (&str, &str), mine: (&str, &str)) -> (World, Oid, Oid) {
+    let w = World::new();
+    let other = w.dir.path().join("other");
+    let repo = Repository::clone(&w.origin_url(), &other).unwrap();
+    let up = commit_file(&repo, theirs.0, theirs.1);
+    w.push_main(&repo);
+    let local = commit_file(&w.work, mine.0, mine.1);
+    (w, up, local)
+}
+
+#[test]
+fn pull_merges_diverged_history() {
+    let (w, up, local) = diverged(("b.txt", "theirs\n"), ("c.txt", "mine\n"));
+    let v = run("pull", &[("path", &w.work_path())]).json();
+    assert_eq!(v["status"], "merged", "{v}");
+    let head = w.work.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(v["commit"], head.id().to_string());
+    let parents: Vec<Oid> = head.parent_ids().collect();
+    assert_eq!(parents, vec![local, up]);
+    assert_eq!(head.author().email().ok(), Some("test@example.invalid"));
+    assert!(w.dir.path().join("work/b.txt").exists());
+    assert!(w.work.statuses(None).unwrap().is_empty());
+}
+
+#[test]
+fn pull_rebase_replays_local_commits_with_given_author() {
+    let (w, up, _) = diverged(("b.txt", "theirs\n"), ("c.txt", "mine\n"));
+    let v = run(
+        "pull",
+        &[
+            ("path", &w.work_path()),
+            ("rebase", "true"),
+            ("author_name", "Rebaser"),
+            ("author_email", "rebaser@example.invalid"),
+        ],
+    )
+    .json();
+    assert_eq!(v["status"], "rebased", "{v}");
+    assert_eq!(v["commits_rebased"], 1);
+    let head = w.work.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(head.parent_ids().collect::<Vec<_>>(), vec![up]);
+    // the replayed commit keeps its author; the committer is the given identity
+    assert_eq!(head.committer().name().ok(), Some("Rebaser"));
+    assert_eq!(w.work.head().unwrap().shorthand().ok(), Some("main"));
+    assert!(w.dir.path().join("work/c.txt").exists());
+}
+
+#[test]
+fn pull_conflict_restores_the_exact_previous_state() {
+    for rebase in ["false", "true"] {
+        let (w, _, local) = diverged(("a.txt", "theirs\n"), ("a.txt", "mine\n"));
+        // an untracked file and an ignored-by-nobody scratch file survive
+        std::fs::write(w.dir.path().join("work/scratch.txt"), "keep\n").unwrap();
+        let before = snapshot(&w.work, &["a.txt", "scratch.txt"]);
+        let msg = run("pull", &[("path", &w.work_path()), ("rebase", rebase)])
+            .fails("git.pull_conflict", 1);
+        assert!(msg.contains("a.txt") && msg.contains("restored"), "{msg}");
+        let r = Repository::open(w.work_path()).unwrap();
+        assert_eq!(
+            snapshot(&r, &["a.txt", "scratch.txt"]),
+            before,
+            "rebase={rebase}"
+        );
+        assert_eq!(r.state(), git2::RepositoryState::Clean, "rebase={rebase}");
+        assert_eq!(r.head().unwrap().target(), Some(local));
+    }
+}
+
+#[test]
+fn pull_conflict_can_be_left_in_progress() {
+    let (w, _, _) = diverged(("a.txt", "theirs\n"), ("a.txt", "mine\n"));
+    let msg = run(
+        "pull",
+        &[("path", &w.work_path()), ("abort_on_conflict", "false")],
+    )
+    .fails("git.pull_conflict", 1);
+    assert!(
+        msg.contains("left in progress") && msg.contains("a.txt"),
+        "{msg}"
+    );
+    let r = Repository::open(w.work_path()).unwrap();
+    assert_eq!(r.state(), git2::RepositoryState::Merge);
+    assert!(r.index().unwrap().has_conflicts());
+    let text = std::fs::read_to_string(w.dir.path().join("work/a.txt")).unwrap();
+    assert!(text.contains("<<<<<<<"), "{text}");
+
+    let (w, _, _) = diverged(("a.txt", "theirs\n"), ("a.txt", "mine\n"));
+    run(
+        "pull",
+        &[
+            ("path", &w.work_path()),
+            ("rebase", "true"),
+            ("abort_on_conflict", "false"),
+        ],
+    )
+    .fails("git.pull_conflict", 1);
+    let r = Repository::open(w.work_path()).unwrap();
+    assert!(matches!(
+        r.state(),
+        git2::RepositoryState::RebaseMerge | git2::RepositoryState::Rebase
+    ));
+    // the rebase verb can abort it
+    run(
+        "rebase",
+        &[("path", &w.work_path()), ("operation", "abort")],
+    )
+    .json();
+    assert_eq!(
+        Repository::open(w.work_path()).unwrap().state(),
+        git2::RepositoryState::Clean
+    );
+}
+
+#[test]
+fn pull_refuses_to_integrate_over_local_changes() {
+    let (w, _, local) = diverged(("b.txt", "theirs\n"), ("c.txt", "mine\n"));
+    std::fs::write(w.dir.path().join("work/a.txt"), "uncommitted\n").unwrap();
+    for rebase in ["false", "true"] {
+        run("pull", &[("path", &w.work_path()), ("rebase", rebase)])
+            .fails("git.pull_dirty_worktree", 1);
+        assert_eq!(w.work.head().unwrap().target(), Some(local));
+        assert_eq!(
+            std::fs::read_to_string(w.dir.path().join("work/a.txt")).unwrap(),
+            "uncommitted\n"
+        );
+    }
+}
+
+#[test]
+fn sync_merges_or_rebases_and_reports_conflicts() {
+    let (w, up, _) = diverged(("b.txt", "theirs\n"), ("c.txt", "mine\n"));
+    let v = run(
+        "sync",
+        &[("path", &w.work_path()), ("pull_strategy", "merge")],
+    )
+    .json();
+    assert_eq!(v["integration"]["status"], "merged", "{v}");
+    assert_eq!(w.origin_main(), w.work.head().unwrap().target().unwrap());
+
+    let (w, _, _) = diverged(("b.txt", "theirs\n"), ("c.txt", "mine\n"));
+    let v = run("sync", &[("path", &w.work_path())]).json();
+    assert_eq!(v["integration"]["status"], "rebased", "{v}");
+
+    let (w, _, local) = diverged(("a.txt", "theirs\n"), ("a.txt", "mine\n"));
+    let msg = run("sync", &[("path", &w.work_path())]).fails("git.sync_conflict", 1);
+    assert!(msg.contains("nothing was pushed"), "{msg}");
+    assert_eq!(w.work.head().unwrap().target(), Some(local));
+    assert_ne!(w.origin_main(), local);
+    let _ = up;
+
+    // allow_uncommitted cannot integrate over local changes; stashing can
+    let (w, _, _) = diverged(("b.txt", "theirs\n"), ("c.txt", "mine\n"));
+    std::fs::write(w.dir.path().join("work/a.txt"), "dirty\n").unwrap();
+    run(
+        "sync",
+        &[("path", &w.work_path()), ("allow_uncommitted", "true")],
+    )
+    .fails("git.sync_dirty_worktree", 1);
+    let v = run(
+        "sync",
+        &[("path", &w.work_path()), ("stash_uncommitted", "true")],
+    )
+    .json();
+    assert_eq!(v["integration"]["status"], "rebased", "{v}");
+    assert_eq!(
+        std::fs::read_to_string(w.dir.path().join("work/a.txt")).unwrap(),
+        "dirty\n"
+    );
+}
+
+#[test]
+fn shallow_clone_of_a_local_repository_is_refused_cleanly() {
+    let w = World::new();
+    let dest = w.p("shallow");
+    let msg = run(
+        "clone",
+        &[("url", &w.origin_url()), ("path", &dest), ("depth", "1")],
+    )
+    .fails("git.invalid_clone_config", 2);
+    assert!(msg.contains("depth"), "{msg}");
+    assert!(!Path::new(&dest).exists());
+    let msg = run(
+        "clone",
+        &[("url", &w.p("origin.git")), ("path", &dest), ("depth", "1")],
+    )
+    .fails("git.invalid_clone_config", 2);
+    assert!(msg.contains("local"), "{msg}");
 }
