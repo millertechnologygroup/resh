@@ -1,0 +1,31 @@
+Handle: log
+Verb: tail
+Definition: Prints the last lines (default 100) of a log file or service
+  journal, optionally keeping only those that contain a pattern and following
+  new lines.
+
+Usage:
+  resh log://{<path>|svc/<service>}.tail [lines=<n>] [pattern=<text>]
+    [mode=raw|json] [follow=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty log:///var/log/syslog.tail lines=2 mode=json
+
+Example Output:
+  {
+    "lines": [
+      "Oct 16 09:12:44 host kernel: eth0: link up",
+      "Oct 16 09:13:02 host app[901]: error: disk quota exceeded"
+    ],
+    "path": "/var/log/syslog",
+    "pattern": null,
+    "requested_lines": 2,
+    "returned_lines": 2
+  }
+
+  Shown with --json-pretty. The default mode=raw prints only the lines. For
+  log://svc/<service> the JSON object has "service" in place of "path".
+  lines is 1 to 1000000; pattern keeps the lines (among those) that contain
+  the text. follow=true (mode=raw only) keeps printing new lines, across
+  rotation and truncation, until interrupted or until timeout_ms (exit 124).
+  timeout_ms defaults to 600000 without follow and to no limit with it.

@@ -1,0 +1,19 @@
+Handle: log
+
+Description:
+  The log handle reads the most recent lines of a plain-text log file or of a
+  systemd service's journal, and can follow them as they are written. A file is
+  named by the URL path, as in log:///var/log/syslog (absolute) or
+  log://./logs/app.log (relative), and log://svc/<service> reads the service's
+  journal through journalctl.
+
+Available Verbs:
+  tail   Prints the last lines (default 100) of a log file or service journal,
+         optionally keeping only those that contain a pattern and following new
+         lines.
+
+Usage:
+  resh log://{/<path>|./<path>|svc/<service>}.<verb>[(key=value,...)]
+
+For help with a specific verb:
+  resh log <verb> --help
