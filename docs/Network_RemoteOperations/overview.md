@@ -7,7 +7,7 @@ local network:
 
 | Handle             | Purpose | Details |
 | ------------------ | ------- | ------- |
-| `dns://`           | DNS lookups, resolution, delegation traces, zone transfers (AXFR). `zone.update` is simulated. | [dns.md](dns.md) |
+| `dns://`           | DNS lookups, resolution, delegation traces, zone transfers (AXFR), RFC 2136 dynamic updates (`zone.update`, optional TSIG). | [dns.md](dns.md) |
 | `http://`, `https://` | HTTP requests (one handle serves both schemes). | [http.md](http.md) |
 | `mail://`          | Sending email over SMTP, built-in templates, SMTP checks, stored profiles. | [mail.md](mail.md) |
 | `net://`           | Local interfaces and routes, ping, TCP checks, port scans, simple DNS queries. | [net.md](net.md) |
@@ -87,7 +87,7 @@ by these handles is the mail profile file (see below) and files that
 
 | Handle | Enforces `timeout_ms` | Ignores it |
 | ------ | --------------------- | ---------- |
-| dns    | `lookup`, `resolve`, `trace` (per query), `zone.fetch` (connect and each read) | `zone.update` (validated, but simulated) |
+| dns    | `lookup`, `resolve`, `trace` (per query), `zone.fetch` (connect and each read), `zone.update` (per attempt) | none |
 | http   | `get`, `post`, `put`, `delete`, `options`, `preflight`, `json`, `headers` | `head` (fixed 10 s), `patch` (fixed 30 s) |
 | mail   | `send`, `send_template` (SMTP transport), `test` only when a test message is sent | `config` |
 | net    | `dns`, `tcp_check` (per attempt), `scan` (per port); `ping` turns it into a per-reply wait in seconds | `list`, `route.list` |
@@ -100,8 +100,8 @@ silently fall back to their default instead.
 
 These features are visible in arguments or help but do not do real work:
 
-* `dns zone.update`: validates the input and reports success; no UPDATE is
-  sent. TSIG is never applied, for zone updates or zone transfers.
+* `dns zone.fetch`: TSIG options are validated but the transfer is never
+  signed.
 * `ssh tunnel`, `ssh keys.list`, `ssh key.add`: only `dry_run=true` succeeds;
   without it they exit 1 and change nothing.
 * `ssh test`: the `sftp` and `hostkey` checks always fail.

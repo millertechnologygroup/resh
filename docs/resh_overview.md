@@ -209,7 +209,7 @@ resh snapshot:///etc/nginx.create name=pre-change
 * `ssh`: remote commands and file upload/download through the system `ssh` client. `tunnel`, `keys.list` and `key.add` are stubs.
 * `http`/`https`: HTTP requests (get, head, headers, options, preflight, json, post, put, patch, delete).
 * `mail`: SMTP sending, built-in templates, SMTP checks. `send` has no dry run.
-* `dns`: lookups, resolution, delegation traces, zone transfers. `zone.update` is simulated and sends nothing.
+* `dns`: lookups, resolution, delegation traces, zone transfers, RFC 2136 dynamic updates (`zone.update`, optional TSIG).
 * `net`: local interfaces and routes, ping, TCP checks, port scans, simple DNS queries.
 
 ```bash

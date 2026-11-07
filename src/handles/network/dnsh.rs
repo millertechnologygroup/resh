@@ -6,11 +6,13 @@ use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use trust_dns_proto::error::ProtoResult;
 use trust_dns_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
-use trust_dns_proto::rr::rdata::{A, AAAA, CNAME, MX, TXT};
+use trust_dns_proto::rr::rdata::{A, AAAA, CNAME, MX, NS, NULL, PTR, SOA, SRV, TXT};
 use trust_dns_proto::rr::{
     RData as ProtoRData, Record as ProtoRecord, RecordType as ProtoRecordType,
 };
+use trust_dns_proto::serialize::binary::{BinDecodable, BinDecoder};
 use trust_dns_resolver::error::ResolveErrorKind;
 use trust_dns_resolver::proto::rr::{DNSClass, Name, RData, RecordType as TrustDnsRecordType};
 use trust_dns_resolver::{
@@ -230,12 +232,14 @@ requests are currently performed as AXFR."#,
         },
         VerbHelp {
             name: "zone.update",
-            definition: "Validates a dynamic DNS update and reports it as applied, but the \
-                update is simulated and no UPDATE message is sent.",
+            definition: "Sends an RFC 2136 dynamic DNS UPDATE (prerequisites, deletes and adds) \
+                to the zone's server, optionally TSIG-signed, and reports the server's RCODE.",
             detail: Some(VerbDetail {
                 usage: "resh dns://.zone.update zone=<zone> [adds=<json>] [deletes=<json>]\n  \
-                    [prerequisites=<json>] [servers=<ip>] [dry_run=true|false]\n  \
-                    [tsig_key_name=<name>] [tsig_secret=<base64>] [<option>=<value> ...]",
+                    [prerequisites=<json>] [servers=<ip>] [port=<n>] [use_tcp=true|false]\n  \
+                    [timeout_ms=<n>] [retries=<n>] [dry_run=true|false] [include_raw=true|false]\n  \
+                    [tsig_key_name=<name>] [tsig_secret=<base64>] [tsig_algorithm=<alg>]\n  \
+                    [<option>=<value> ...]",
                 example: "resh dns://.zone.update zone=example.com servers=192.0.2.53 dry_run=true",
                 example_output: Some(
                     r#"{
@@ -271,7 +275,9 @@ requests are currently performed as AXFR."#,
 }
 
 Shown with --json-pretty. The adds argument is a JSON array of objects
-with name, rtype, ttl, and data fields."#,
+with name, rtype, ttl, and data fields; data uses the same fields that
+lookup prints for that record type. dry_run builds (and signs) the message
+but sends nothing."#,
                 ),
             }),
         },
@@ -4873,7 +4879,7 @@ impl DnsZoneUpdateResponse {
                             String::new()
                         }
                     }
-                    _ => String::new(),
+                    _ => format!(" {}", add.data.json),
                 };
 
                 output.push_str(&data_str);
@@ -4938,30 +4944,48 @@ impl DnsZoneUpdateResponse {
     }
 }
 
-// Full RFC 2136 DNS UPDATE implementation
+// RFC 2136 DNS UPDATE: validate, build (and TSIG-sign) the message, then send
+// it to the first server that answers.
 pub async fn perform_zone_update(opts: DnsZoneUpdateOptions) -> Result<DnsZoneUpdateResponse> {
     let mut response = DnsZoneUpdateResponse::new(&opts);
 
-    // If dry run, validate input and return without network calls
-    if opts.dry_run {
-        // Validate the input parameters
-        if let Err(e) = validate_zone_update_options(&opts) {
+    if let Err(e) = validate_zone_update_options(&opts) {
+        response.ok = false;
+        response.error = Some(e);
+        return Ok(response);
+    }
+
+    // The message is built and signed for dry runs too, so that bad record
+    // data or a bad key is reported without contacting any server.
+    let tsig_key = match TsigKey::from_options(&opts) {
+        Ok(key) => key,
+        Err(e) => {
             response.ok = false;
-            response.error = Some((e.0, e.1));
+            response.error = Some(e);
             return Ok(response);
         }
+    };
 
+    let prepared = match build_update_message(&opts)
+        .and_then(|mut message| finalize_request(&mut message, tsig_key.as_ref()))
+    {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            response.ok = false;
+            response.error = Some(e);
+            return Ok(response);
+        }
+    };
+
+    if opts.include_raw {
+        response.raw = Some(json!({ "request_hex": hex::encode(&prepared.wire) }));
+    }
+
+    if opts.dry_run {
         response.ok = true;
         response.summary.dry_run = true;
         response.summary.applied_adds = opts.adds.len() as u32;
         response.summary.applied_deletes = opts.deletes.len() as u32;
-        return Ok(response);
-    }
-
-    // Validate all input parameters
-    if let Err(e) = validate_zone_update_options(&opts) {
-        response.ok = false;
-        response.error = Some((e.0, e.1));
         return Ok(response);
     }
 
@@ -4978,51 +5002,68 @@ pub async fn perform_zone_update(opts: DnsZoneUpdateOptions) -> Result<DnsZoneUp
         }
     };
 
-    // Try each server until one succeeds or all fail
-    let mut last_error = None;
+    // Try each server in order. Only transport failures (timeouts, network
+    // errors, unparsable replies) move on to the next server; any DNS answer
+    // ends the operation.
+    let mut failures: Vec<ExchangeError> = Vec::new();
     for server in &servers {
         let start_time = Instant::now();
 
-        match attempt_zone_update(&opts, server).await {
-            Ok(rcode) => {
+        match attempt_zone_update(&opts, server, &prepared, tsig_key.as_ref()).await {
+            Ok(outcome) => {
                 let rtt = start_time.elapsed().as_millis() as u64;
-
-                response.ok = rcode == ResponseCode::NoError;
                 response.summary.server_used = Some(server.to_string());
-                response.summary.rcode = Some(rcode.to_string());
                 response.summary.round_trip_time_ms = Some(rtt);
-                response.summary.applied_adds = if response.ok {
-                    opts.adds.len() as u32
-                } else {
-                    0
-                };
-                response.summary.applied_deletes = if response.ok {
-                    opts.deletes.len() as u32
-                } else {
-                    0
-                };
-
-                if !response.ok {
-                    response.error = Some(map_rcode_to_error(rcode));
+                response.warnings.extend(outcome.warnings);
+                if let Some(rcode) = outcome.rcode {
+                    response.summary.rcode = Some(rcode_mnemonic(rcode));
+                }
+                if opts.include_raw {
+                    let mut raw = json!({ "request_hex": hex::encode(&prepared.wire) });
+                    if let Some(ref wire) = outcome.response_wire {
+                        raw["response_hex"] = json!(hex::encode(wire));
+                    }
+                    response.raw = Some(raw);
                 }
 
+                match outcome.error {
+                    None => {
+                        response.ok = true;
+                        response.summary.applied_adds = opts.adds.len() as u32;
+                        response.summary.applied_deletes = opts.deletes.len() as u32;
+                    }
+                    Some(err) => {
+                        response.ok = false;
+                        response.error = Some(err);
+                    }
+                }
                 return Ok(response);
             }
             Err(e) => {
-                last_error = Some(e);
-                continue;
+                response
+                    .warnings
+                    .push(format!("server {}: {}", server, e.message));
+                failures.push(e);
             }
         }
     }
 
-    // All servers failed
+    // All servers failed at the transport level
     response.ok = false;
-    response.error = Some((
-        DNS_ZONE_UPDATE_ALL_SERVERS_FAILED.to_string(),
-        last_error
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "All target servers failed".to_string()),
-    ));
+    response.error = Some(match failures.len() {
+        0 => (
+            DNS_ZONE_UPDATE_ALL_SERVERS_FAILED.to_string(),
+            "No target servers".to_string(),
+        ),
+        1 => {
+            let e = failures.remove(0);
+            (e.code.to_string(), e.message)
+        }
+        n => (
+            DNS_ZONE_UPDATE_ALL_SERVERS_FAILED.to_string(),
+            format!("All {} target servers failed (see warnings)", n),
+        ),
+    });
 
     Ok(response)
 }
@@ -5073,7 +5114,7 @@ fn validate_zone_update_options(
         // Validate algorithm
         if let Some(ref alg) = opts.tsig_algorithm {
             match alg.as_str() {
-                "hmac-sha1" | "hmac-sha256" | "hmac-sha512" => {}
+                "hmac-sha1" | "hmac-sha256" | "hmac-sha384" | "hmac-sha512" => {}
                 _ => {
                     return Err((
                         DNS_ZONE_UPDATE_UNSUPPORTED_TSIG_ALGORITHM.to_string(),
@@ -5084,9 +5125,9 @@ fn validate_zone_update_options(
         }
     }
 
-    // Validate record types in adds
+    // Validate record types in adds (ANY cannot be added)
     for add in &opts.adds {
-        if DnsRecordType::from_str(&add.rtype).is_err() {
+        if DnsRecordType::from_str(&add.rtype).is_err() || add.rtype.eq_ignore_ascii_case("ANY") {
             return Err((
                 DNS_ZONE_UPDATE_INVALID_RECORD_TYPE.to_string(),
                 format!("Invalid record type: {}", add.rtype),
@@ -5108,11 +5149,25 @@ fn validate_zone_update_options(
             ));
         }
 
-        if let Some(ref rtype) = delete.rtype {
-            if DnsRecordType::from_str(rtype).is_err() {
+        match delete.rtype {
+            Some(ref rtype) if rtype.eq_ignore_ascii_case("ANY") => {
                 return Err((
-                    DNS_ZONE_UPDATE_INVALID_RECORD_TYPE.to_string(),
-                    format!("Invalid record type in delete: {}", rtype),
+                    DNS_ZONE_UPDATE_INVALID_DELETE_SPEC.to_string(),
+                    "Deleting a single record needs a concrete rtype, not ANY".to_string(),
+                ));
+            }
+            Some(ref rtype) => {
+                if DnsRecordType::from_str(rtype).is_err() {
+                    return Err((
+                        DNS_ZONE_UPDATE_INVALID_RECORD_TYPE.to_string(),
+                        format!("Invalid record type in delete: {}", rtype),
+                    ));
+                }
+            }
+            None => {
+                return Err((
+                    DNS_ZONE_UPDATE_INVALID_DELETE_SPEC.to_string(),
+                    "Delete without delete_all must specify rtype".to_string(),
                 ));
             }
         }
@@ -5138,6 +5193,32 @@ fn validate_zone_update_options(
                         DNS_ZONE_UPDATE_INVALID_PREREQUISITE.to_string(),
                         format!("Prerequisite {} requires name field", prereq.kind),
                     ));
+                }
+                if let Some(ref rtype) = prereq.rtype {
+                    if DnsRecordType::from_str(rtype).is_err() {
+                        return Err((
+                            DNS_ZONE_UPDATE_INVALID_RECORD_TYPE.to_string(),
+                            format!("Invalid record type in prerequisite: {}", rtype),
+                        ));
+                    }
+                }
+                if prereq.data.is_some() {
+                    if kind == ZoneUpdatePrerequisiteKind::RecordNotExists {
+                        return Err((
+                            DNS_ZONE_UPDATE_INVALID_PREREQUISITE.to_string(),
+                            "Prerequisite record_not_exists does not take data".to_string(),
+                        ));
+                    }
+                    match prereq.rtype {
+                        Some(ref rtype) if !rtype.eq_ignore_ascii_case("ANY") => {}
+                        _ => {
+                            return Err((
+                                DNS_ZONE_UPDATE_INVALID_PREREQUISITE.to_string(),
+                                "Prerequisite record_exists with data requires a concrete rtype"
+                                    .to_string(),
+                            ));
+                        }
+                    }
                 }
             }
             ZoneUpdatePrerequisiteKind::NameInUse | ZoneUpdatePrerequisiteKind::NameNotInUse => {
@@ -5206,201 +5287,582 @@ async fn resolve_target_servers(opts: &DnsZoneUpdateOptions) -> Result<Vec<Strin
     Ok(servers)
 }
 
-// Attempt zone update against a specific server
-async fn attempt_zone_update(opts: &DnsZoneUpdateOptions, server: &str) -> Result<ResponseCode> {
-    // Parse server address for validation
-    let server_addr = if server.contains(':') {
-        server.to_string()
-    } else {
-        format!("{}:{}", server, opts.port)
-    };
-
-    let _socket_addr: SocketAddr = server_addr
-        .parse()
-        .with_context(|| format!("Invalid server address: {}", server_addr))?;
-
-    // For now, we'll simulate the UPDATE operation since the trust-dns client API
-    // in version 0.23 has changed significantly and doesn't provide simple UPDATE support
-
-    // In a production implementation, this would:
-    // 1. Create a proper DNS UPDATE client
-    // 2. Build the UPDATE message with prerequisites and changes
-    // 3. Send the message and parse the response
-
-    // For this implementation, we'll validate the input and return a simulated response
-    tokio::time::sleep(Duration::from_millis(10)).await; // Simulate network delay
-
-    // Return success for now - in production this would be the actual response
-    Ok(ResponseCode::NoError)
+// A request message in wire format, ready to send.
+#[derive(Debug, Clone)]
+struct PreparedRequest {
+    wire: Vec<u8>,
+    id: u16,
+    // MAC of the request when it is TSIG-signed (needed to verify the reply).
+    mac: Option<Vec<u8>>,
 }
 
-// Build DNS UPDATE message from options
-#[allow(dead_code)]
-fn build_update_message(opts: &DnsZoneUpdateOptions) -> Result<Message> {
-    let zone_name = normalize_zone_name(&opts.zone);
-    let zone_name = Name::from_str(&zone_name)?;
+// A transport-level failure: the next server (if any) is tried.
+#[derive(Debug)]
+struct ExchangeError {
+    code: &'static str,
+    message: String,
+}
+
+impl ExchangeError {
+    fn timeout(message: impl Into<String>) -> Self {
+        Self {
+            code: DNS_ZONE_UPDATE_TIMEOUT,
+            message: message.into(),
+        }
+    }
+
+    fn network(message: impl Into<String>) -> Self {
+        Self {
+            code: DNS_ZONE_UPDATE_NETWORK_ERROR,
+            message: message.into(),
+        }
+    }
+}
+
+// The result of one server answering (successfully or not).
+#[derive(Debug, Default)]
+struct AttemptOutcome {
+    rcode: Option<ResponseCode>,
+    response_wire: Option<Vec<u8>>,
+    error: Option<(String, String)>,
+    warnings: Vec<String>,
+}
+
+// Turn a server string into a socket address. Accepts "ip", "ip:port",
+// "[v6]:port", or a host name (resolved with the system resolver).
+async fn server_socket_addr(server: &str, port: u16) -> Result<SocketAddr, ExchangeError> {
+    if let Ok(addr) = server.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    if let Ok(ip) = server
+        .trim_matches(|c| c == '[' || c == ']')
+        .parse::<IpAddr>()
+    {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    let mut addrs = tokio::net::lookup_host((server, port))
+        .await
+        .map_err(|e| ExchangeError::network(format!("cannot resolve server {}: {}", server, e)))?;
+    addrs
+        .next()
+        .ok_or_else(|| ExchangeError::network(format!("cannot resolve server {}", server)))
+}
+
+// Attempt zone update against a specific server
+async fn attempt_zone_update(
+    opts: &DnsZoneUpdateOptions,
+    server: &str,
+    prepared: &PreparedRequest,
+    tsig_key: Option<&TsigKey>,
+) -> Result<AttemptOutcome, ExchangeError> {
+    let addr = server_socket_addr(server, opts.port).await?;
+    let mut outcome = AttemptOutcome::default();
+
+    // zone_serial_at_least is not an RFC 2136 prerequisite: read the zone's
+    // SOA from the same server first and refuse to send the update if the
+    // serial is lower than required.
+    let required_serials: Vec<u32> = opts
+        .prerequisites
+        .iter()
+        .filter(|p| {
+            ZoneUpdatePrerequisiteKind::from_str(&p.kind).ok()
+                == Some(ZoneUpdatePrerequisiteKind::ZoneSerialAtLeast)
+        })
+        .filter_map(|p| p.serial)
+        .collect();
+    if !required_serials.is_empty() {
+        match query_zone_serial(opts, addr, tsig_key).await? {
+            Ok(current) => {
+                for required in required_serials {
+                    if !serial_at_least(current, required) {
+                        outcome.error = Some((
+                            DNS_ZONE_UPDATE_PRECONDITION_FAILED.to_string(),
+                            format!(
+                                "Prerequisites failed: zone serial {} is lower than required {}",
+                                current, required
+                            ),
+                        ));
+                        return Ok(outcome);
+                    }
+                }
+            }
+            Err(err) => {
+                outcome.error = Some(err);
+                return Ok(outcome);
+            }
+        }
+    }
+
+    let wire = exchange(opts, addr, prepared).await?;
+    let checked = match check_response(&wire, prepared, tsig_key, OpCode::Update) {
+        Ok(checked) => checked,
+        Err(ResponseCheckError::Tsig(msg)) => {
+            outcome.rcode = parse_rcode(&wire);
+            outcome.response_wire = Some(wire);
+            outcome.error = Some((DNS_ZONE_UPDATE_TSIG_FAILED.to_string(), msg));
+            return Ok(outcome);
+        }
+        Err(ResponseCheckError::Malformed(msg)) => return Err(ExchangeError::network(msg)),
+    };
+
+    let rcode = checked.message.response_code();
+    outcome.rcode = Some(rcode);
+    outcome.response_wire = Some(wire);
+    outcome.warnings = checked.warnings;
+    if rcode != ResponseCode::NoError {
+        outcome.error = Some(map_rcode_to_error(rcode));
+    }
+    Ok(outcome)
+}
+
+// Query the zone's SOA serial from `addr`. The outer error is a transport
+// failure; the inner error is an answer that does not give a usable serial.
+async fn query_zone_serial(
+    opts: &DnsZoneUpdateOptions,
+    addr: SocketAddr,
+    tsig_key: Option<&TsigKey>,
+) -> Result<std::result::Result<u32, (String, String)>, ExchangeError> {
+    let zone_name = Name::from_str(&normalize_zone_name(&opts.zone))
+        .map_err(|e| ExchangeError::network(format!("invalid zone name: {}", e)))?;
+
+    let mut message = Message::new();
+    message.set_message_type(MessageType::Query);
+    message.set_op_code(OpCode::Query);
+    message.set_recursion_desired(false);
+    message.add_query(Query::query(zone_name.clone(), ProtoRecordType::SOA));
+    let prepared =
+        finalize_request(&mut message, tsig_key).map_err(|(_, msg)| ExchangeError::network(msg))?;
+
+    let wire = exchange(opts, addr, &prepared).await?;
+    let checked = match check_response(&wire, &prepared, tsig_key, OpCode::Query) {
+        Ok(checked) => checked,
+        Err(ResponseCheckError::Tsig(msg)) => {
+            return Ok(Err((
+                DNS_ZONE_UPDATE_TSIG_FAILED.to_string(),
+                format!("SOA query: {}", msg),
+            )));
+        }
+        Err(ResponseCheckError::Malformed(msg)) => return Err(ExchangeError::network(msg)),
+    };
+
+    let rcode = checked.message.response_code();
+    if rcode != ResponseCode::NoError {
+        return Ok(Err((
+            DNS_ZONE_UPDATE_PRECONDITION_FAILED.to_string(),
+            format!(
+                "Prerequisites failed: SOA query for {} returned {}",
+                zone_name,
+                rcode_mnemonic(rcode)
+            ),
+        )));
+    }
+    let serial = checked.message.answers().iter().find_map(|record| {
+        if record.name() != &zone_name {
+            return None;
+        }
+        match record.data() {
+            Some(ProtoRData::SOA(soa)) => Some(soa.serial()),
+            _ => None,
+        }
+    });
+    Ok(serial.ok_or_else(|| {
+        (
+            DNS_ZONE_UPDATE_PRECONDITION_FAILED.to_string(),
+            format!(
+                "Prerequisites failed: no SOA record for {} in the server's answer",
+                zone_name
+            ),
+        )
+    }))
+}
+
+// RFC 1982 serial number arithmetic: is `current` >= `required`?
+// Serials exactly 2^31 apart are incomparable and treated as "not at least".
+fn serial_at_least(current: u32, required: u32) -> bool {
+    current == required || serial_lt(required, current)
+}
+
+fn serial_lt(a: u32, b: u32) -> bool {
+    const HALF: u32 = 1 << 31;
+    (a < b && b - a < HALF) || (a > b && a - b > HALF)
+}
+
+// Send a request and return the raw reply. UDP replies with the TC bit set
+// are retried over TCP. Each of the `retries + 1` attempts gets `timeout_ms`.
+async fn exchange(
+    opts: &DnsZoneUpdateOptions,
+    addr: SocketAddr,
+    request: &PreparedRequest,
+) -> Result<Vec<u8>, ExchangeError> {
+    let timeout = Duration::from_millis(opts.timeout_ms);
+    // Plain DNS over UDP is limited to 512 bytes without EDNS.
+    let tcp_only = opts.use_tcp || request.wire.len() > 512;
+    let mut last_error = None;
+
+    for _ in 0..=opts.retries {
+        let result = if tcp_only {
+            tcp_exchange(addr, request, timeout).await
+        } else {
+            match udp_exchange(addr, request, timeout).await {
+                Ok(reply) if reply.len() > 2 && reply[2] & 0x02 != 0 => {
+                    tcp_exchange(addr, request, timeout).await
+                }
+                other => other,
+            }
+        };
+        match result {
+            Ok(reply) => return Ok(reply),
+            Err(e) => last_error = Some(e),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| ExchangeError::network("no attempt was made")))
+}
+
+fn reply_matches(reply: &[u8], id: u16) -> bool {
+    reply.len() >= 12 && u16::from_be_bytes([reply[0], reply[1]]) == id && reply[2] & 0x80 != 0
+}
+
+async fn udp_exchange(
+    addr: SocketAddr,
+    request: &PreparedRequest,
+    timeout: Duration,
+) -> Result<Vec<u8>, ExchangeError> {
+    let bind_addr: SocketAddr = if addr.is_ipv4() {
+        SocketAddr::from(([0, 0, 0, 0], 0))
+    } else {
+        SocketAddr::from(([0u16; 8], 0))
+    };
+    let net_err = |e: std::io::Error| ExchangeError::network(format!("UDP {}: {}", addr, e));
+    let socket = tokio::net::UdpSocket::bind(bind_addr)
+        .await
+        .map_err(net_err)?;
+    socket.connect(addr).await.map_err(net_err)?;
+    socket.send(&request.wire).await.map_err(net_err)?;
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut buf = vec![0u8; 65535];
+    loop {
+        let len = match tokio::time::timeout_at(deadline, socket.recv(&mut buf)).await {
+            Err(_) => {
+                return Err(ExchangeError::timeout(format!(
+                    "no UDP reply from {} within {} ms",
+                    addr,
+                    timeout.as_millis()
+                )));
+            }
+            Ok(Err(e)) => return Err(net_err(e)),
+            Ok(Ok(len)) => len,
+        };
+        // Ignore stray datagrams whose ID does not match the request.
+        if reply_matches(&buf[..len], request.id) {
+            return Ok(buf[..len].to_vec());
+        }
+    }
+}
+
+async fn tcp_exchange(
+    addr: SocketAddr,
+    request: &PreparedRequest,
+    timeout: Duration,
+) -> Result<Vec<u8>, ExchangeError> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let exchange = async {
+        let mut stream = tokio::net::TcpStream::connect(addr).await?;
+        let mut framed = Vec::with_capacity(request.wire.len() + 2);
+        framed.extend_from_slice(&(request.wire.len() as u16).to_be_bytes());
+        framed.extend_from_slice(&request.wire);
+        stream.write_all(&framed).await?;
+        let mut len_buf = [0u8; 2];
+        stream.read_exact(&mut len_buf).await?;
+        let mut reply = vec![0u8; u16::from_be_bytes(len_buf) as usize];
+        stream.read_exact(&mut reply).await?;
+        Ok::<_, std::io::Error>(reply)
+    };
+
+    let reply = match tokio::time::timeout(timeout, exchange).await {
+        Err(_) => {
+            return Err(ExchangeError::timeout(format!(
+                "no TCP reply from {} within {} ms",
+                addr,
+                timeout.as_millis()
+            )));
+        }
+        Ok(Err(e)) => return Err(ExchangeError::network(format!("TCP {}: {}", addr, e))),
+        Ok(Ok(reply)) => reply,
+    };
+    if !reply_matches(&reply, request.id) {
+        return Err(ExchangeError::network(format!(
+            "TCP {}: reply does not match request ID {}",
+            addr, request.id
+        )));
+    }
+    Ok(reply)
+}
+
+enum ResponseCheckError {
+    // The reply could not be parsed or does not answer the request.
+    Malformed(String),
+    // The reply failed TSIG verification (or the server rejected our TSIG).
+    Tsig(String),
+}
+
+struct CheckedResponse {
+    message: Message,
+    warnings: Vec<String>,
+}
+
+fn parse_rcode(wire: &[u8]) -> Option<ResponseCode> {
+    if wire.len() < 4 {
+        return None;
+    }
+    Some(ResponseCode::from_low(wire[3] & 0x0F))
+}
+
+// Parse a reply, check that it answers `request`, and verify its TSIG.
+fn check_response(
+    wire: &[u8],
+    request: &PreparedRequest,
+    tsig_key: Option<&TsigKey>,
+    op_code: OpCode,
+) -> std::result::Result<CheckedResponse, ResponseCheckError> {
+    let (stripped, tsig) = split_trailing_tsig(wire).map_err(ResponseCheckError::Malformed)?;
+    let message = Message::from_vec(&stripped)
+        .map_err(|e| ResponseCheckError::Malformed(format!("unparsable reply: {}", e)))?;
+    if message.id() != request.id || message.message_type() != MessageType::Response {
+        return Err(ResponseCheckError::Malformed(
+            "reply does not match the request".to_string(),
+        ));
+    }
+    if message.op_code() != op_code {
+        return Err(ResponseCheckError::Malformed(format!(
+            "reply has opcode {:?}, expected {:?}",
+            message.op_code(),
+            op_code
+        )));
+    }
+
+    let mut warnings = Vec::new();
+    match (tsig_key, tsig) {
+        (Some(key), Some(tsig)) => {
+            let request_mac = request.mac.as_deref().unwrap_or(&[]);
+            verify_response_tsig(&stripped, &tsig, key, request_mac, unix_now())
+                .map_err(ResponseCheckError::Tsig)?;
+        }
+        (Some(_), None) => {
+            // An unsigned success cannot be trusted. An unsigned error is
+            // still reported with its RCODE.
+            if message.response_code() == ResponseCode::NoError {
+                return Err(ResponseCheckError::Tsig(
+                    "the server's reply is not TSIG-signed".to_string(),
+                ));
+            }
+            warnings.push("the server's reply is not TSIG-signed".to_string());
+        }
+        (None, Some(_)) => {
+            warnings.push(
+                "the server's reply carries a TSIG record that was not verified (no key given)"
+                    .to_string(),
+            );
+        }
+        (None, None) => {}
+    }
+
+    Ok(CheckedResponse { message, warnings })
+}
+
+fn rcode_mnemonic(rcode: ResponseCode) -> String {
+    match rcode {
+        ResponseCode::NoError => "NOERROR".to_string(),
+        ResponseCode::FormErr => "FORMERR".to_string(),
+        ResponseCode::ServFail => "SERVFAIL".to_string(),
+        ResponseCode::NXDomain => "NXDOMAIN".to_string(),
+        ResponseCode::NotImp => "NOTIMP".to_string(),
+        ResponseCode::Refused => "REFUSED".to_string(),
+        ResponseCode::YXDomain => "YXDOMAIN".to_string(),
+        ResponseCode::YXRRSet => "YXRRSET".to_string(),
+        ResponseCode::NXRRSet => "NXRRSET".to_string(),
+        ResponseCode::NotAuth => "NOTAUTH".to_string(),
+        ResponseCode::NotZone => "NOTZONE".to_string(),
+        other => format!("RCODE{}", u16::from(other)),
+    }
+}
+
+// Build DNS UPDATE message from options (RFC 2136 section 2): the zone
+// section is the question section, prerequisites go in the answer section
+// and updates in the authority section. TSIG is added later on the wire.
+fn build_update_message(
+    opts: &DnsZoneUpdateOptions,
+) -> std::result::Result<Message, (String, String)> {
+    let zone_name = Name::from_str(&normalize_zone_name(&opts.zone)).map_err(|e| {
+        (
+            DNS_ZONE_UPDATE_INVALID_ZONE.to_string(),
+            format!("Invalid zone name {}: {}", opts.zone, e),
+        )
+    })?;
 
     let mut message = Message::new();
     message.set_message_type(MessageType::Query);
     message.set_op_code(OpCode::Update);
     message.set_recursion_desired(false);
 
-    // Set zone section (question section in UPDATE messages)
-    let zone_query = Query::query(zone_name.clone(), ProtoRecordType::SOA);
-    message.add_query(zone_query);
+    // Zone section: ZNAME, ZTYPE=SOA, ZCLASS=IN
+    message.add_query(Query::query(zone_name, ProtoRecordType::SOA));
 
-    // Add prerequisites
     for prereq in &opts.prerequisites {
-        let prereq_record = build_prerequisite_record(prereq, &zone_name)?;
-        message.add_answer(prereq_record);
-    }
-
-    // Add delete records
-    for delete in &opts.deletes {
-        let delete_records = build_delete_records(delete)?;
-        for record in delete_records {
-            message.add_name_server(record);
+        let record = build_prerequisite_record(prereq).map_err(|e| {
+            (
+                DNS_ZONE_UPDATE_INVALID_PREREQUISITE.to_string(),
+                format!("Invalid prerequisite {}: {}", prereq.kind, e),
+            )
+        })?;
+        if let Some(record) = record {
+            message.add_answer(record);
         }
     }
 
-    // Add new records
-    for add in &opts.adds {
-        let add_record = build_add_record(add)?;
-        message.add_name_server(add_record);
+    for delete in &opts.deletes {
+        let record = build_delete_record(delete).map_err(|e| {
+            (
+                DNS_ZONE_UPDATE_INVALID_DELETE_SPEC.to_string(),
+                format!("Invalid delete for {}: {}", delete.name, e),
+            )
+        })?;
+        message.add_name_server(record);
     }
 
-    // Apply TSIG if configured
-    if let (Some(key_name), Some(secret)) = (&opts.tsig_key_name, &opts.tsig_secret) {
-        let algorithm = opts
-            .tsig_algorithm
-            .as_ref()
-            .map(|s| s.as_str())
-            .unwrap_or("hmac-sha256");
-        apply_tsig_to_message(&mut message, key_name, secret, algorithm)?;
+    for add in &opts.adds {
+        let record = build_add_record(add).map_err(|e| {
+            (
+                DNS_ZONE_UPDATE_INVALID_ADD_RECORD.to_string(),
+                format!("Invalid add for {}: {}", add.name, e),
+            )
+        })?;
+        message.add_name_server(record);
     }
 
     Ok(message)
 }
 
-// Build prerequisite record
-#[allow(dead_code)]
-fn build_prerequisite_record(
-    prereq: &ZoneUpdatePrerequisite,
-    _zone_name: &Name,
-) -> Result<ProtoRecord> {
+// Give the message a random ID, encode it and TSIG-sign it if a key is set.
+fn finalize_request(
+    message: &mut Message,
+    tsig_key: Option<&TsigKey>,
+) -> std::result::Result<PreparedRequest, (String, String)> {
+    let id: u16 = rand::random();
+    message.set_id(id);
+    let mut wire = message.to_vec().map_err(|e| {
+        (
+            DNS_ZONE_UPDATE_INTERNAL_ERROR.to_string(),
+            format!("Failed to encode DNS message: {}", e),
+        )
+    })?;
+    let mac = tsig_key.map(|key| tsig_sign(&mut wire, key, unix_now()));
+    Ok(PreparedRequest { wire, id, mac })
+}
+
+// A record with no RDATA (RDLENGTH 0), TTL 0 and the given class.
+fn empty_record(name: Name, rtype: ProtoRecordType, class: DNSClass) -> ProtoRecord {
+    let mut record = ProtoRecord::new();
+    record.set_name(name);
+    record.set_record_type(rtype);
+    record.set_dns_class(class);
+    record.set_ttl(0);
+    record
+}
+
+fn required_name(field: &Option<String>) -> Result<Name> {
+    let name = field
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("'name' is required"))?;
+    Ok(Name::from_str(&normalize_dns_name(name))?)
+}
+
+// Build a prerequisite record (RFC 2136 section 2.4). zone_serial_at_least
+// is checked with a separate SOA query and has no record (returns None).
+fn build_prerequisite_record(prereq: &ZoneUpdatePrerequisite) -> Result<Option<ProtoRecord>> {
     let kind = ZoneUpdatePrerequisiteKind::from_str(&prereq.kind)?;
 
-    match kind {
+    let record = match kind {
         ZoneUpdatePrerequisiteKind::RecordExists => {
-            let name = Name::from_str(&normalize_dns_name(&prereq.name.as_ref().unwrap()))?;
-            let rtype = if let Some(ref rt) = prereq.rtype {
-                string_to_proto_record_type(rt)?
-            } else {
-                ProtoRecordType::ANY
-            };
-
-            if prereq.data.is_some() {
-                // RRset exists (value dependent)
-                let rdata = build_proto_rdata(
-                    &prereq.rtype.as_ref().unwrap(),
-                    &prereq.data.as_ref().unwrap().json,
-                )?;
-                Ok(ProtoRecord::from_rdata(name, 0, rdata))
-            } else {
-                // RRset exists (value independent) - use NULL record
-                let mut record = ProtoRecord::new();
-                record.set_name(name);
-                record.set_record_type(rtype);
-                record.set_dns_class(DNSClass::ANY);
-                record.set_ttl(0);
-                Ok(record)
+            let name = required_name(&prereq.name)?;
+            match (&prereq.rtype, &prereq.data) {
+                // RRset exists (value dependent): class IN, TTL 0, RDATA
+                (Some(rtype), Some(data)) => {
+                    let rdata = build_proto_rdata(rtype, &data.json)?;
+                    ProtoRecord::from_rdata(name, 0, rdata)
+                }
+                (None, Some(_)) => bail!("'rtype' is required when 'data' is given"),
+                // RRset exists (value independent): class ANY, TTL 0, no RDATA
+                (Some(rtype), None) => {
+                    empty_record(name, string_to_proto_record_type(rtype)?, DNSClass::ANY)
+                }
+                (None, None) => empty_record(name, ProtoRecordType::ANY, DNSClass::ANY),
             }
         }
         ZoneUpdatePrerequisiteKind::RecordNotExists => {
-            let name = Name::from_str(&normalize_dns_name(&prereq.name.as_ref().unwrap()))?;
-            let rtype = if let Some(ref rt) = prereq.rtype {
-                string_to_proto_record_type(rt)?
-            } else {
-                ProtoRecordType::ANY
+            // RRset does not exist: class NONE, TTL 0, no RDATA
+            let name = required_name(&prereq.name)?;
+            if prereq.data.is_some() {
+                bail!("'data' is not allowed (RFC 2136 has no value-dependent form)");
+            }
+            let rtype = match prereq.rtype {
+                Some(ref rt) => string_to_proto_record_type(rt)?,
+                None => ProtoRecordType::ANY,
             };
-
-            // NXRRSET
-            let mut record = ProtoRecord::new();
-            record.set_name(name);
-            record.set_record_type(rtype);
-            record.set_dns_class(DNSClass::NONE);
-            record.set_ttl(0);
-            Ok(record)
+            empty_record(name, rtype, DNSClass::NONE)
         }
         ZoneUpdatePrerequisiteKind::NameInUse => {
-            let name = Name::from_str(&normalize_dns_name(&prereq.name.as_ref().unwrap()))?;
-            // Name is in use - ANY record type with class ANY
-            let mut record = ProtoRecord::new();
-            record.set_name(name);
-            record.set_record_type(ProtoRecordType::ANY);
-            record.set_dns_class(DNSClass::ANY);
-            record.set_ttl(0);
-            Ok(record)
+            // Name is in use: class ANY, type ANY
+            empty_record(
+                required_name(&prereq.name)?,
+                ProtoRecordType::ANY,
+                DNSClass::ANY,
+            )
         }
         ZoneUpdatePrerequisiteKind::NameNotInUse => {
-            let name = Name::from_str(&normalize_dns_name(&prereq.name.as_ref().unwrap()))?;
-            // NXDOMAIN - ANY record type with class NONE
-            let mut record = ProtoRecord::new();
-            record.set_name(name);
-            record.set_record_type(ProtoRecordType::ANY);
-            record.set_dns_class(DNSClass::NONE);
-            record.set_ttl(0);
-            Ok(record)
+            // Name is not in use: class NONE, type ANY
+            empty_record(
+                required_name(&prereq.name)?,
+                ProtoRecordType::ANY,
+                DNSClass::NONE,
+            )
         }
-        ZoneUpdatePrerequisiteKind::ZoneSerialAtLeast => {
-            // For zone serial checks, query SOA and validate separately
-            // For now, this is left as a logical check - real implementations might handle this differently
-            bail!("Zone serial prerequisites require implementation-specific handling")
-        }
-    }
+        ZoneUpdatePrerequisiteKind::ZoneSerialAtLeast => return Ok(None),
+    };
+    Ok(Some(record))
 }
 
-// Build delete records
-#[allow(dead_code)]
-fn build_delete_records(delete: &ZoneUpdateDelete) -> Result<Vec<ProtoRecord>> {
-    let mut records = Vec::new();
+// Build an update-section delete record (RFC 2136 section 2.5.2-2.5.4)
+fn build_delete_record(delete: &ZoneUpdateDelete) -> Result<ProtoRecord> {
     let name = Name::from_str(&normalize_dns_name(&delete.name))?;
 
     if delete.delete_all == Some(true) {
-        if let Some(ref rtype) = delete.rtype {
-            // Delete all records of specific type
-            let proto_type = string_to_proto_record_type(rtype)?;
-            let mut record = ProtoRecord::new();
-            record.set_name(name);
-            record.set_record_type(proto_type);
-            record.set_dns_class(DNSClass::ANY);
-            record.set_ttl(0);
-            records.push(record);
-        } else {
-            // Delete all records of all types
-            let mut record = ProtoRecord::new();
-            record.set_name(name);
-            record.set_record_type(ProtoRecordType::ANY);
-            record.set_dns_class(DNSClass::ANY);
-            record.set_ttl(0);
-            records.push(record);
-        }
-    } else if let Some(ref data) = delete.data {
-        // Delete specific record
-        let rtype = delete.rtype.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Delete operation with data must specify record type")
-        })?;
-        let rdata = build_proto_rdata(rtype, &data.json)?;
-        let mut record = ProtoRecord::from_rdata(name, 0, rdata);
-        record.set_dns_class(DNSClass::NONE);
-        records.push(record);
+        // Delete an RRset (class ANY, type T) or all RRsets (class ANY, type ANY)
+        let rtype = match delete.rtype {
+            Some(ref rtype) => string_to_proto_record_type(rtype)?,
+            None => ProtoRecordType::ANY,
+        };
+        return Ok(empty_record(name, rtype, DNSClass::ANY));
     }
 
-    Ok(records)
+    // Delete an RR from an RRset: class NONE, TTL 0, RDATA
+    let rtype = delete
+        .rtype
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("'rtype' is required"))?;
+    let data = delete
+        .data
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("'data' is required"))?;
+    let rdata = build_proto_rdata(rtype, &data.json)?;
+    let mut record = ProtoRecord::from_rdata(name, 0, rdata);
+    record.set_dns_class(DNSClass::NONE);
+    Ok(record)
 }
 
-// Build add record
-#[allow(dead_code)]
+// Build an update-section add record (RFC 2136 section 2.5.1): class IN
 fn build_add_record(add: &ZoneUpdateAdd) -> Result<ProtoRecord> {
     let name = Name::from_str(&normalize_dns_name(&add.name))?;
     let rdata = build_proto_rdata(&add.rtype, &add.data.json)?;
@@ -5408,71 +5870,116 @@ fn build_add_record(add: &ZoneUpdateAdd) -> Result<ProtoRecord> {
     Ok(ProtoRecord::from_rdata(name, add.ttl, rdata))
 }
 
-// Build protocol RData from JSON
-#[allow(dead_code)]
+fn data_str<'a>(data: &'a Value, field: &str, rtype: &str) -> Result<&'a str> {
+    data.get(field)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("{} record requires string field '{}'", rtype, field))
+}
+
+fn data_name(data: &Value, field: &str, rtype: &str) -> Result<Name> {
+    let s = data_str(data, field, rtype)?;
+    Name::from_str(&normalize_dns_name(s))
+        .with_context(|| format!("{} record field '{}' is not a valid name", rtype, field))
+}
+
+fn data_uint<T: TryFrom<u64>>(data: &Value, field: &str, rtype: &str) -> Result<T> {
+    let value = data
+        .get(field)
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow::anyhow!("{} record requires integer field '{}'", rtype, field))?;
+    T::try_from(value)
+        .map_err(|_| anyhow::anyhow!("{} record field '{}' is out of range", rtype, field))
+}
+
+// Build protocol RData from JSON. The JSON fields are the ones `lookup`
+// prints for each record type.
 fn build_proto_rdata(rtype: &str, data: &Value) -> Result<ProtoRData> {
-    match rtype.to_uppercase().as_str() {
+    let rtype_upper = rtype.to_uppercase();
+    let rt = rtype_upper.as_str();
+    match rt {
         "A" => {
-            let addr_str = data
-                .get("address")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("A record requires 'address' field"))?;
-            let addr: std::net::Ipv4Addr = addr_str.parse()?;
+            let addr: std::net::Ipv4Addr = data_str(data, "address", rt)?
+                .parse()
+                .context("A record 'address' is not an IPv4 address")?;
             Ok(ProtoRData::A(A(addr)))
         }
         "AAAA" => {
-            let addr_str = data
-                .get("address")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("AAAA record requires 'address' field"))?;
-            let addr: std::net::Ipv6Addr = addr_str.parse()?;
+            let addr: std::net::Ipv6Addr = data_str(data, "address", rt)?
+                .parse()
+                .context("AAAA record 'address' is not an IPv6 address")?;
             Ok(ProtoRData::AAAA(AAAA(addr)))
         }
-        "CNAME" => {
-            let cname_str = data
-                .get("cname")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("CNAME record requires 'cname' field"))?;
-            let target = Name::from_str(&normalize_dns_name(cname_str))?;
-            Ok(ProtoRData::CNAME(CNAME(target)))
-        }
-        "MX" => {
-            let preference = data
-                .get("preference")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| anyhow::anyhow!("MX record requires 'preference' field"))?
-                as u16;
-            let exchange_str = data
-                .get("exchange")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("MX record requires 'exchange' field"))?;
-            let exchange = Name::from_str(&normalize_dns_name(exchange_str))?;
-            Ok(ProtoRData::MX(MX::new(preference, exchange)))
-        }
+        "CNAME" => Ok(ProtoRData::CNAME(CNAME(data_name(data, "cname", rt)?))),
+        "NS" => Ok(ProtoRData::NS(NS(data_name(data, "nsdname", rt)?))),
+        "PTR" => Ok(ProtoRData::PTR(PTR(data_name(data, "ptrdname", rt)?))),
+        "MX" => Ok(ProtoRData::MX(MX::new(
+            data_uint(data, "preference", rt)?,
+            data_name(data, "exchange", rt)?,
+        ))),
+        "SRV" => Ok(ProtoRData::SRV(SRV::new(
+            data_uint(data, "priority", rt)?,
+            data_uint(data, "weight", rt)?,
+            data_uint(data, "port", rt)?,
+            data_name(data, "target", rt)?,
+        ))),
+        "SOA" => Ok(ProtoRData::SOA(SOA::new(
+            data_name(data, "mname", rt)?,
+            data_name(data, "rname", rt)?,
+            data_uint(data, "serial", rt)?,
+            data_uint(data, "refresh", rt)?,
+            data_uint(data, "retry", rt)?,
+            data_uint(data, "expire", rt)?,
+            data_uint(data, "minimum", rt)?,
+        ))),
         "TXT" => {
             let text_array = data
                 .get("text")
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| anyhow::anyhow!("TXT record requires 'text' array field"))?;
-
-            let txt_strings: Result<Vec<String>, _> = text_array
-                .iter()
-                .map(|text_val| {
-                    text_val
-                        .as_str()
-                        .ok_or_else(|| anyhow::anyhow!("TXT text array elements must be strings"))
-                        .map(|s| s.to_string())
-                })
-                .collect();
-
-            Ok(ProtoRData::TXT(TXT::new(txt_strings?)))
+            if text_array.is_empty() {
+                bail!("TXT record 'text' array must not be empty");
+            }
+            let mut strings = Vec::with_capacity(text_array.len());
+            for value in text_array {
+                let s = value
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("TXT text array elements must be strings"))?;
+                if s.len() > 255 {
+                    bail!("TXT strings are limited to 255 bytes each");
+                }
+                strings.push(s.to_string());
+            }
+            Ok(ProtoRData::TXT(TXT::new(strings)))
         }
+        "CAA" => {
+            // RFC 8659: flags (1 octet), tag length, tag, value. Encoded as raw
+            // RDATA so the value is sent exactly as given.
+            let flags: u8 = match data.get("flags") {
+                None => 0,
+                Some(_) => data_uint(data, "flags", rt)?,
+            };
+            let tag = data_str(data, "tag", rt)?;
+            if tag.is_empty() || tag.len() > 255 || !tag.bytes().all(|b| b.is_ascii_alphanumeric())
+            {
+                bail!("CAA record 'tag' must be 1-255 ASCII letters or digits");
+            }
+            let value = data_str(data, "value", rt)?;
+            let mut raw = Vec::with_capacity(2 + tag.len() + value.len());
+            raw.push(flags);
+            raw.push(tag.len() as u8);
+            raw.extend_from_slice(tag.as_bytes());
+            raw.extend_from_slice(value.as_bytes());
+            Ok(ProtoRData::Unknown {
+                code: u16::from(ProtoRecordType::CAA),
+                rdata: NULL::with(raw),
+            })
+        }
+        "ANY" => bail!("ANY cannot carry record data"),
         _ => bail!("Unsupported record type for UPDATE: {}", rtype),
     }
 }
 
 // Convert string record type to protocol record type
-#[allow(dead_code)]
 fn string_to_proto_record_type(rtype: &str) -> Result<ProtoRecordType> {
     match rtype.to_uppercase().as_str() {
         "A" => Ok(ProtoRecordType::A),
@@ -5485,12 +5992,12 @@ fn string_to_proto_record_type(rtype: &str) -> Result<ProtoRecordType> {
         "PTR" => Ok(ProtoRecordType::PTR),
         "SOA" => Ok(ProtoRecordType::SOA),
         "CAA" => Ok(ProtoRecordType::CAA),
+        "ANY" => Ok(ProtoRecordType::ANY),
         _ => bail!("Unsupported record type: {}", rtype),
     }
 }
 
 // Normalize DNS name to FQDN with trailing dot
-#[allow(dead_code)]
 fn normalize_dns_name(name: &str) -> String {
     if name.ends_with('.') {
         name.to_string()
@@ -5499,34 +6006,350 @@ fn normalize_dns_name(name: &str) -> String {
     }
 }
 
-// Apply TSIG authentication to message (simplified implementation)
-#[allow(dead_code)]
-fn apply_tsig_to_message(
-    _message: &mut Message,
-    key_name: &str,
-    secret: &str,
-    algorithm: &str,
-) -> Result<()> {
-    // Note: This is a simplified implementation
-    // In a production system, you would use a proper TSIG library or implement RFC 2845
-    // For now, we validate the TSIG parameters but don't apply actual signing
+// ==================== TSIG (RFC 8945) ====================
 
-    let _secret_bytes = general_purpose::STANDARD
-        .decode(secret)
-        .with_context(|| "Invalid base64 TSIG secret")?;
+const TSIG_RR_TYPE: u16 = 250;
+const DNS_CLASS_ANY: u16 = 255;
+const TSIG_FUDGE: u16 = 300;
 
-    let _key_name = Name::from_str(&normalize_dns_name(key_name))
-        .with_context(|| format!("Invalid TSIG key name: {}", key_name))?;
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TsigAlgorithm {
+    HmacSha1,
+    HmacSha256,
+    HmacSha384,
+    HmacSha512,
+}
 
-    // Validate algorithm
-    match algorithm {
-        "hmac-sha1" | "hmac-sha256" | "hmac-sha512" => {}
-        _ => bail!("Unsupported TSIG algorithm: {}", algorithm),
-    };
+impl TsigAlgorithm {
+    fn from_option(name: &str) -> Option<Self> {
+        match name {
+            "hmac-sha1" => Some(Self::HmacSha1),
+            "hmac-sha256" => Some(Self::HmacSha256),
+            "hmac-sha384" => Some(Self::HmacSha384),
+            "hmac-sha512" => Some(Self::HmacSha512),
+            _ => None,
+        }
+    }
 
-    // TODO: Implement actual TSIG signing with proper RFC 2845 support
-    // This would require additional dependencies or manual implementation
+    // Algorithm name as it appears in the TSIG RDATA (RFC 8945 section 6)
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::HmacSha1 => "hmac-sha1.",
+            Self::HmacSha256 => "hmac-sha256.",
+            Self::HmacSha384 => "hmac-sha384.",
+            Self::HmacSha512 => "hmac-sha512.",
+        }
+    }
 
+    fn mac(self, key: &[u8], data: &[u8]) -> Vec<u8> {
+        use hmac::{Hmac, Mac};
+        fn run<M: Mac + hmac::digest::KeyInit>(key: &[u8], data: &[u8]) -> Vec<u8> {
+            let mut mac = <M as hmac::digest::KeyInit>::new_from_slice(key)
+                .expect("HMAC accepts keys of any length");
+            mac.update(data);
+            mac.finalize().into_bytes().to_vec()
+        }
+        match self {
+            Self::HmacSha1 => run::<Hmac<sha1::Sha1>>(key, data),
+            Self::HmacSha256 => run::<Hmac<sha2::Sha256>>(key, data),
+            Self::HmacSha384 => run::<Hmac<sha2::Sha384>>(key, data),
+            Self::HmacSha512 => run::<Hmac<sha2::Sha512>>(key, data),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TsigKey {
+    // Lowercased, fully qualified key name
+    name: Name,
+    algorithm: TsigAlgorithm,
+    secret: Vec<u8>,
+}
+
+impl TsigKey {
+    // The default algorithm is hmac-sha256.
+    fn from_options(
+        opts: &DnsZoneUpdateOptions,
+    ) -> std::result::Result<Option<Self>, (String, String)> {
+        let (key_name, secret) = match (&opts.tsig_key_name, &opts.tsig_secret) {
+            (Some(name), Some(secret)) => (name, secret),
+            _ => return Ok(None),
+        };
+        let secret = general_purpose::STANDARD.decode(secret).map_err(|_| {
+            (
+                DNS_ZONE_UPDATE_INVALID_TSIG_SECRET.to_string(),
+                "TSIG secret must be valid base64".to_string(),
+            )
+        })?;
+        let name = Name::from_str(&normalize_dns_name(key_name)).map_err(|e| {
+            (
+                DNS_ZONE_UPDATE_INVALID_TSIG_CONFIG.to_string(),
+                format!("Invalid TSIG key name {}: {}", key_name, e),
+            )
+        })?;
+        let algorithm_name = opts.tsig_algorithm.as_deref().unwrap_or("hmac-sha256");
+        let algorithm = TsigAlgorithm::from_option(algorithm_name).ok_or_else(|| {
+            (
+                DNS_ZONE_UPDATE_UNSUPPORTED_TSIG_ALGORITHM.to_string(),
+                format!("Unsupported TSIG algorithm: {}", algorithm_name),
+            )
+        })?;
+        Ok(Some(TsigKey {
+            name: name.to_lowercase(),
+            algorithm,
+            secret,
+        }))
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+// Uncompressed, lowercased wire form of a name (RFC 4034 canonical form)
+fn canonical_name_wire(name: &Name, out: &mut Vec<u8>) {
+    for label in name.to_lowercase().iter() {
+        out.push(label.len() as u8);
+        out.extend_from_slice(label);
+    }
+    out.push(0);
+}
+
+// The "TSIG variables" part of the MAC input (RFC 8945 section 4.3.3)
+fn tsig_variables(
+    key: &TsigKey,
+    time_signed: u64,
+    fudge: u16,
+    error: u16,
+    other: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    canonical_name_wire(&key.name, &mut out);
+    out.extend_from_slice(&DNS_CLASS_ANY.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes()); // TTL
+    canonical_name_wire(
+        &Name::from_ascii(key.algorithm.wire_name()).expect("static algorithm name"),
+        &mut out,
+    );
+    out.extend_from_slice(&time_signed.to_be_bytes()[2..8]); // 48-bit
+    out.extend_from_slice(&fudge.to_be_bytes());
+    out.extend_from_slice(&error.to_be_bytes());
+    out.extend_from_slice(&(other.len() as u16).to_be_bytes());
+    out.extend_from_slice(other);
+    out
+}
+
+// Sign a request in place: compute the MAC over the message and the TSIG
+// variables, append the TSIG RR and increment ARCOUNT. Returns the MAC.
+fn tsig_sign(wire: &mut Vec<u8>, key: &TsigKey, time_signed: u64) -> Vec<u8> {
+    let mut mac_input = wire.clone();
+    mac_input.extend_from_slice(&tsig_variables(key, time_signed, TSIG_FUDGE, 0, &[]));
+    let mac = key.algorithm.mac(&key.secret, &mac_input);
+
+    let mut rdata = Vec::new();
+    canonical_name_wire(
+        &Name::from_ascii(key.algorithm.wire_name()).expect("static algorithm name"),
+        &mut rdata,
+    );
+    rdata.extend_from_slice(&time_signed.to_be_bytes()[2..8]);
+    rdata.extend_from_slice(&TSIG_FUDGE.to_be_bytes());
+    rdata.extend_from_slice(&(mac.len() as u16).to_be_bytes());
+    rdata.extend_from_slice(&mac);
+    rdata.extend_from_slice(&wire[0..2]); // original ID
+    rdata.extend_from_slice(&0u16.to_be_bytes()); // error
+    rdata.extend_from_slice(&0u16.to_be_bytes()); // other len
+
+    canonical_name_wire(&key.name, wire);
+    wire.extend_from_slice(&TSIG_RR_TYPE.to_be_bytes());
+    wire.extend_from_slice(&DNS_CLASS_ANY.to_be_bytes());
+    wire.extend_from_slice(&0u32.to_be_bytes());
+    wire.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+    wire.extend_from_slice(&rdata);
+
+    let arcount = u16::from_be_bytes([wire[10], wire[11]]) + 1;
+    wire[10..12].copy_from_slice(&arcount.to_be_bytes());
+    mac
+}
+
+#[derive(Debug, Clone)]
+struct TsigRecord {
+    key_name: Name,
+    algorithm: Name,
+    time_signed: u64,
+    fudge: u16,
+    mac: Vec<u8>,
+    original_id: u16,
+    error: u16,
+    other: Vec<u8>,
+}
+
+fn skip_wire_name(wire: &[u8], mut pos: usize) -> std::result::Result<usize, String> {
+    loop {
+        let len = *wire.get(pos).ok_or("truncated name in reply")? as usize;
+        match len & 0xC0 {
+            0xC0 => {
+                if pos + 2 > wire.len() {
+                    return Err("truncated name in reply".to_string());
+                }
+                return Ok(pos + 2);
+            }
+            0x00 if len == 0 => return Ok(pos + 1),
+            0x00 => pos += 1 + len,
+            _ => return Err("bad label in reply".to_string()),
+        }
+    }
+}
+
+// If the last additional record is a TSIG RR, remove it (decrementing
+// ARCOUNT) and return it parsed.
+fn split_trailing_tsig(wire: &[u8]) -> std::result::Result<(Vec<u8>, Option<TsigRecord>), String> {
+    if wire.len() < 12 {
+        return Err("reply shorter than a DNS header".to_string());
+    }
+    let count = |i: usize| u16::from_be_bytes([wire[i], wire[i + 1]]) as usize;
+    let (qd, an, ns, ar) = (count(4), count(6), count(8), count(10));
+
+    let mut pos = 12;
+    for _ in 0..qd {
+        pos = skip_wire_name(wire, pos)? + 4;
+    }
+    let total = an + ns + ar;
+    let mut last = None;
+    for _ in 0..total {
+        let start = pos;
+        pos = skip_wire_name(wire, pos)?;
+        if pos + 10 > wire.len() {
+            return Err("truncated record in reply".to_string());
+        }
+        let rtype = u16::from_be_bytes([wire[pos], wire[pos + 1]]);
+        let rdlen = u16::from_be_bytes([wire[pos + 8], wire[pos + 9]]) as usize;
+        pos += 10 + rdlen;
+        if pos > wire.len() {
+            return Err("truncated record in reply".to_string());
+        }
+        last = Some((start, rtype));
+    }
+
+    match last {
+        Some((start, TSIG_RR_TYPE)) if ar > 0 => {
+            let tsig = parse_tsig_record(wire, start)
+                .map_err(|e| format!("malformed TSIG record in reply: {}", e))?;
+            let mut stripped = wire[..start].to_vec();
+            stripped[10..12].copy_from_slice(&((ar - 1) as u16).to_be_bytes());
+            Ok((stripped, Some(tsig)))
+        }
+        _ => Ok((wire.to_vec(), None)),
+    }
+}
+
+fn parse_tsig_record(wire: &[u8], start: usize) -> ProtoResult<TsigRecord> {
+    let mut decoder = BinDecoder::new(wire);
+    decoder.read_slice(start)?;
+    let key_name = Name::read(&mut decoder)?;
+    decoder.read_slice(8)?; // type, class, TTL
+    decoder.read_u16()?; // RDLENGTH (already bounds-checked)
+    let algorithm = Name::read(&mut decoder)?;
+    let time_hi = decoder.read_u16()?.unverified() as u64;
+    let time_lo = decoder.read_u32()?.unverified() as u64;
+    let fudge = decoder.read_u16()?.unverified();
+    let mac_len = decoder.read_u16()?.unverified() as usize;
+    let mac = decoder.read_vec(mac_len)?.unverified();
+    let original_id = decoder.read_u16()?.unverified();
+    let error = decoder.read_u16()?.unverified();
+    let other_len = decoder.read_u16()?.unverified() as usize;
+    let other = decoder.read_vec(other_len)?.unverified();
+    Ok(TsigRecord {
+        key_name,
+        algorithm,
+        time_signed: (time_hi << 32) | time_lo,
+        fudge,
+        mac,
+        original_id,
+        error,
+        other,
+    })
+}
+
+fn tsig_error_name(error: u16) -> String {
+    match error {
+        16 => "BADSIG".to_string(),
+        17 => "BADKEY".to_string(),
+        18 => "BADTIME".to_string(),
+        22 => "BADTRUNC".to_string(),
+        other => format!("TSIG error {}", other),
+    }
+}
+
+// Verify the TSIG of a reply (RFC 8945 section 5.3): the MAC covers the
+// request MAC, the reply without its TSIG (original ID restored) and the
+// reply's TSIG variables.
+fn verify_response_tsig(
+    stripped: &[u8],
+    tsig: &TsigRecord,
+    key: &TsigKey,
+    request_mac: &[u8],
+    now: u64,
+) -> std::result::Result<(), String> {
+    if tsig.key_name != key.name {
+        return Err(format!(
+            "reply is signed with key {}, expected {}",
+            tsig.key_name, key.name
+        ));
+    }
+    if tsig.error != 0 {
+        return Err(format!(
+            "server rejected the request signature ({})",
+            tsig_error_name(tsig.error)
+        ));
+    }
+    let expected_alg = Name::from_ascii(key.algorithm.wire_name()).expect("static algorithm name");
+    if tsig.algorithm != expected_alg {
+        return Err(format!(
+            "reply is signed with algorithm {}, expected {}",
+            tsig.algorithm, expected_alg
+        ));
+    }
+
+    let mut message = stripped.to_vec();
+    message[0..2].copy_from_slice(&tsig.original_id.to_be_bytes());
+    let mut mac_input = Vec::with_capacity(message.len() + request_mac.len() + 64);
+    mac_input.extend_from_slice(&(request_mac.len() as u16).to_be_bytes());
+    mac_input.extend_from_slice(request_mac);
+    mac_input.extend_from_slice(&message);
+    mac_input.extend_from_slice(&tsig_variables(
+        key,
+        tsig.time_signed,
+        tsig.fudge,
+        tsig.error,
+        &tsig.other,
+    ));
+    let expected = key.algorithm.mac(&key.secret, &mac_input);
+
+    // A truncated MAC must keep at least half the bits and 10 octets
+    // (RFC 8945 section 5.2.2.1).
+    let len = tsig.mac.len();
+    if len == 0
+        || len > expected.len()
+        || (len < expected.len() && (len < 10 || len * 2 < expected.len()))
+    {
+        return Err(format!("reply TSIG MAC has invalid length {}", len));
+    }
+    let diff = expected[..len]
+        .iter()
+        .zip(&tsig.mac)
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
+    if diff != 0 {
+        return Err("reply TSIG MAC does not verify".to_string());
+    }
+    if now.abs_diff(tsig.time_signed) > u64::from(tsig.fudge) {
+        return Err(format!(
+            "reply TSIG time {} is outside the {} s fudge window",
+            tsig.time_signed, tsig.fudge
+        ));
+    }
     Ok(())
 }
 
@@ -6338,5 +7161,1086 @@ mod tests {
         assert_eq!(changes.deleted.len(), 0);
         assert_eq!(changes.added.len(), 1);
         assert_eq!(changes.added[0].name, "new.example.com.");
+    }
+}
+
+#[cfg(test)]
+mod zone_update_tests {
+    use super::*;
+    use hmac::{Hmac, Mac};
+    use std::net::{TcpListener, UdpSocket};
+    use std::sync::{Arc, Mutex};
+
+    // ---------- fake DNS server on 127.0.0.1 (UDP and TCP, same port) ----------
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Transport {
+        Udp,
+        Tcp,
+    }
+
+    // Returns the datagrams/frames to send back (possibly none).
+    type Responder = Arc<dyn Fn(Transport, &[u8], usize) -> Vec<Vec<u8>> + Send + Sync>;
+
+    struct FakeServer {
+        port: u16,
+        requests: Arc<Mutex<Vec<(Transport, Vec<u8>)>>>,
+    }
+
+    impl FakeServer {
+        fn start(responder: Responder) -> Self {
+            let (udp, tcp) = loop {
+                let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+                let port = udp.local_addr().unwrap().port();
+                if let Ok(tcp) = TcpListener::bind(("127.0.0.1", port)) {
+                    break (udp, tcp);
+                }
+            };
+            let port = udp.local_addr().unwrap().port();
+            let requests: Arc<Mutex<Vec<(Transport, Vec<u8>)>>> = Arc::default();
+
+            let (reqs, resp) = (requests.clone(), responder.clone());
+            std::thread::spawn(move || {
+                let mut buf = vec![0u8; 65535];
+                while let Ok((len, peer)) = udp.recv_from(&mut buf) {
+                    let req = buf[..len].to_vec();
+                    let n = {
+                        let mut r = reqs.lock().unwrap();
+                        r.push((Transport::Udp, req.clone()));
+                        r.len() - 1
+                    };
+                    for reply in resp(Transport::Udp, &req, n) {
+                        let _ = udp.send_to(&reply, peer);
+                    }
+                }
+            });
+
+            let (reqs, resp) = (requests.clone(), responder);
+            std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                for stream in tcp.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let mut len = [0u8; 2];
+                    if stream.read_exact(&mut len).is_err() {
+                        continue;
+                    }
+                    let mut req = vec![0u8; u16::from_be_bytes(len) as usize];
+                    if stream.read_exact(&mut req).is_err() {
+                        continue;
+                    }
+                    let n = {
+                        let mut r = reqs.lock().unwrap();
+                        r.push((Transport::Tcp, req.clone()));
+                        r.len() - 1
+                    };
+                    for reply in resp(Transport::Tcp, &req, n) {
+                        let mut framed = (reply.len() as u16).to_be_bytes().to_vec();
+                        framed.extend_from_slice(&reply);
+                        let _ = stream.write_all(&framed);
+                    }
+                }
+            });
+
+            FakeServer { port, requests }
+        }
+
+        fn requests(&self) -> Vec<(Transport, Vec<u8>)> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    fn responder(
+        f: impl Fn(Transport, &[u8], usize) -> Vec<Vec<u8>> + Send + Sync + 'static,
+    ) -> Responder {
+        Arc::new(f)
+    }
+
+    // Parse a captured request (TSIG removed) with trust-dns.
+    fn parse_request(wire: &[u8]) -> (Message, Option<TsigRecord>) {
+        let (stripped, tsig) = split_trailing_tsig(wire).unwrap();
+        (Message::from_vec(&stripped).unwrap(), tsig)
+    }
+
+    // A reply echoing the request's ID, opcode and zone/question section.
+    fn reply(req: &[u8], rcode: ResponseCode) -> Vec<u8> {
+        let (m, _) = parse_request(req);
+        let mut r = Message::new();
+        r.set_id(m.id());
+        r.set_message_type(MessageType::Response);
+        r.set_op_code(m.op_code());
+        r.set_response_code(rcode);
+        r.add_queries(m.queries().to_vec());
+        r.to_vec().unwrap()
+    }
+
+    fn soa_reply(req: &[u8], serial: u32) -> Vec<u8> {
+        let (m, _) = parse_request(req);
+        let mut r = Message::new();
+        r.set_id(m.id());
+        r.set_message_type(MessageType::Response);
+        r.set_op_code(OpCode::Query);
+        r.set_authoritative(true);
+        r.add_queries(m.queries().to_vec());
+        let zone = m.queries()[0].name().clone();
+        r.add_answer(ProtoRecord::from_rdata(
+            zone,
+            300,
+            ProtoRData::SOA(SOA::new(
+                Name::from_ascii("ns1.example.com.").unwrap(),
+                Name::from_ascii("hostmaster.example.com.").unwrap(),
+                serial,
+                7200,
+                3600,
+                1209600,
+                300,
+            )),
+        ));
+        r.to_vec().unwrap()
+    }
+
+    fn is_update(req: &[u8]) -> bool {
+        (req[2] >> 3) & 0x0F == 5
+    }
+
+    // ---------- independent TSIG (hmac-sha256, key tsig-key.example.) ----------
+
+    const KEY_B64: &str = "c2VjcmV0LWtleS1ieXRlcy0xMjM0NTY3ODkwYWJjZGVm";
+    const KEY_WIRE: &[u8] = b"\x08tsig-key\x07example\x00";
+    const ALG_WIRE: &[u8] = b"\x0bhmac-sha256\x00";
+
+    fn hmac256(data: &[u8]) -> Vec<u8> {
+        let secret = general_purpose::STANDARD.decode(KEY_B64).unwrap();
+        let mut m = <Hmac<sha2::Sha256> as hmac::digest::KeyInit>::new_from_slice(&secret).unwrap();
+        m.update(data);
+        m.finalize().into_bytes().to_vec()
+    }
+
+    // Byte layout written out by hand from RFC 8945 section 4.3.3.
+    fn test_variables(time: u64, error: u16) -> Vec<u8> {
+        let mut v = KEY_WIRE.to_vec();
+        v.extend_from_slice(&[0x00, 0xFF, 0, 0, 0, 0]); // class ANY, TTL 0
+        v.extend_from_slice(ALG_WIRE);
+        v.extend_from_slice(&time.to_be_bytes()[2..]);
+        v.extend_from_slice(&[0x01, 0x2C]); // fudge 300
+        v.extend_from_slice(&error.to_be_bytes());
+        v.extend_from_slice(&[0, 0]); // other len
+        v
+    }
+
+    // Verify a request's TSIG the way a server would; returns its MAC.
+    fn server_verify_request(req: &[u8]) -> Vec<u8> {
+        let (stripped, tsig) = split_trailing_tsig(req).unwrap();
+        let tsig = tsig.expect("request must be TSIG-signed");
+        assert_eq!(
+            tsig.key_name,
+            Name::from_ascii("tsig-key.example.").unwrap()
+        );
+        assert_eq!(tsig.algorithm, Name::from_ascii("hmac-sha256.").unwrap());
+        assert_eq!(tsig.fudge, 300);
+        assert_eq!(tsig.error, 0);
+        assert_eq!(tsig.original_id, u16::from_be_bytes([req[0], req[1]]));
+        assert!(unix_now().abs_diff(tsig.time_signed) < 5);
+        let mut data = stripped.clone();
+        data.extend_from_slice(&test_variables(tsig.time_signed, 0));
+        assert_eq!(hmac256(&data), tsig.mac, "request MAC does not verify");
+        tsig.mac
+    }
+
+    // Sign a reply as a server would (RFC 8945 section 5.3).
+    fn server_sign_reply(reply: &mut Vec<u8>, request_mac: &[u8], error: u16, corrupt: bool) {
+        let time = unix_now();
+        let mut data = (request_mac.len() as u16).to_be_bytes().to_vec();
+        data.extend_from_slice(request_mac);
+        data.extend_from_slice(reply);
+        data.extend_from_slice(&test_variables(time, error));
+        let mut mac = if error == 0 { hmac256(&data) } else { vec![] };
+        if corrupt {
+            mac[0] ^= 1;
+        }
+        let mut rdata = ALG_WIRE.to_vec();
+        rdata.extend_from_slice(&time.to_be_bytes()[2..]);
+        rdata.extend_from_slice(&[0x01, 0x2C]);
+        rdata.extend_from_slice(&(mac.len() as u16).to_be_bytes());
+        rdata.extend_from_slice(&mac);
+        rdata.extend_from_slice(&reply[0..2]);
+        rdata.extend_from_slice(&error.to_be_bytes());
+        rdata.extend_from_slice(&[0, 0]);
+        let mut rr = KEY_WIRE.to_vec();
+        rr.extend_from_slice(&[0x00, 0xFA, 0x00, 0xFF, 0, 0, 0, 0]);
+        rr.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        rr.extend_from_slice(&rdata);
+        reply.extend_from_slice(&rr);
+        reply[11] += 1;
+    }
+
+    // ---------- running the verb ----------
+
+    struct VerbRun {
+        status: Status,
+        json: Option<Value>,
+        stderr: String,
+    }
+
+    fn run_verb(kv: &[(&str, &str)]) -> VerbRun {
+        let h = DnsHandle::from_url(&Url::parse("dns://localhost").unwrap()).unwrap();
+        let args: Args = kv
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let (mut i, mut o, mut e) = (std::io::empty(), Vec::new(), Vec::new());
+        let status = {
+            let mut io = IoStreams::new(&mut i, &mut o, &mut e);
+            h.call("zone.update", &args, &mut io).unwrap()
+        };
+        VerbRun {
+            status,
+            json: serde_json::from_slice(&o).ok(),
+            stderr: String::from_utf8_lossy(&e).into_owned(),
+        }
+    }
+
+    fn error_code(run: &VerbRun) -> String {
+        run.json.as_ref().unwrap()["error"][0]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    const ADDS: &str = r#"[
+        {"name":"www.example.com","rtype":"A","ttl":300,"data":{"address":"203.0.113.10"}},
+        {"name":"www.example.com","rtype":"AAAA","ttl":300,"data":{"address":"2001:db8::10"}},
+        {"name":"alias.example.com","rtype":"CNAME","ttl":60,"data":{"cname":"www.example.com"}},
+        {"name":"example.com","rtype":"MX","ttl":3600,"data":{"preference":10,"exchange":"mail.example.com"}},
+        {"name":"t.example.com","rtype":"TXT","ttl":60,"data":{"text":["v=spf1 -all","second"]}},
+        {"name":"sub.example.com","rtype":"NS","ttl":60,"data":{"nsdname":"ns.sub.example.com"}},
+        {"name":"_sip._tcp.example.com","rtype":"SRV","ttl":60,"data":{"priority":10,"weight":5,"port":5060,"target":"sip.example.com"}},
+        {"name":"10.113.0.203.in-addr.arpa","rtype":"PTR","ttl":60,"data":{"ptrdname":"www.example.com"}},
+        {"name":"example.com","rtype":"CAA","ttl":60,"data":{"flags":128,"tag":"issue","value":"letsencrypt.org"}}
+    ]"#;
+    const DELETES: &str = r#"[
+        {"name":"old.example.com","rtype":"A","data":{"address":"192.0.2.9"}},
+        {"name":"mx.example.com","rtype":"MX","delete_all":true},
+        {"name":"gone.example.com","delete_all":true}
+    ]"#;
+    const PREREQS: &str = r#"[
+        {"kind":"record_exists","name":"old.example.com","rtype":"A","data":{"address":"192.0.2.9"}},
+        {"kind":"record_exists","name":"mx.example.com","rtype":"MX"},
+        {"kind":"record_not_exists","name":"www.example.com","rtype":"A"},
+        {"kind":"name_in_use","name":"old.example.com"},
+        {"kind":"name_not_in_use","name":"new.example.com"}
+    ]"#;
+
+    fn rec_shape(r: &ProtoRecord) -> (String, ProtoRecordType, DNSClass, u32, bool) {
+        (
+            r.name().to_string(),
+            r.record_type(),
+            r.dns_class(),
+            r.ttl(),
+            r.data().is_some(),
+        )
+    }
+
+    // ---------- verb tests ----------
+
+    #[test]
+    fn verb_sends_rfc2136_update_over_udp_and_reports_success() {
+        let server = FakeServer::start(responder(|_, req, _| {
+            vec![reply(req, ResponseCode::NoError)]
+        }));
+        let port = server.port.to_string();
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", &port),
+            ("use_tcp", "false"),
+            ("adds", ADDS),
+            ("deletes", DELETES),
+            ("prerequisites", PREREQS),
+        ]);
+        assert_eq!(run.status.exit_code(), 0, "{:?} {}", run.json, run.stderr);
+        let json = run.json.unwrap();
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["summary"]["rcode"], "NOERROR");
+        assert_eq!(json["summary"]["applied_adds"], 9);
+        assert_eq!(json["summary"]["applied_deletes"], 3);
+        assert_eq!(json["summary"]["server_used"], "127.0.0.1");
+        assert_eq!(json["summary"]["tsig_used"], false);
+        assert!(json.get("raw").is_none());
+
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].0, Transport::Udp);
+        let (m, tsig) = parse_request(&reqs[0].1);
+        assert!(tsig.is_none());
+        assert_eq!(m.op_code(), OpCode::Update);
+        assert_eq!(m.message_type(), MessageType::Query);
+        // Zone section
+        assert_eq!(m.queries().len(), 1);
+        assert_eq!(m.queries()[0].name().to_string(), "example.com.");
+        assert_eq!(m.queries()[0].query_type(), ProtoRecordType::SOA);
+        assert_eq!(m.queries()[0].query_class(), DNSClass::IN);
+        // Prerequisite section (answer section), RFC 2136 2.4
+        let pre: Vec<_> = m.answers().iter().map(rec_shape).collect();
+        assert_eq!(
+            pre,
+            vec![
+                (
+                    "old.example.com.".to_string(),
+                    ProtoRecordType::A,
+                    DNSClass::IN,
+                    0,
+                    true
+                ),
+                (
+                    "mx.example.com.".to_string(),
+                    ProtoRecordType::MX,
+                    DNSClass::ANY,
+                    0,
+                    false
+                ),
+                (
+                    "www.example.com.".to_string(),
+                    ProtoRecordType::A,
+                    DNSClass::NONE,
+                    0,
+                    false
+                ),
+                (
+                    "old.example.com.".to_string(),
+                    ProtoRecordType::ANY,
+                    DNSClass::ANY,
+                    0,
+                    false
+                ),
+                (
+                    "new.example.com.".to_string(),
+                    ProtoRecordType::ANY,
+                    DNSClass::NONE,
+                    0,
+                    false
+                ),
+            ]
+        );
+        // Update section (authority section), RFC 2136 2.5: deletes then adds
+        let upd: Vec<_> = m.name_servers().iter().map(rec_shape).collect();
+        assert_eq!(upd.len(), 12);
+        assert_eq!(
+            upd[0],
+            (
+                "old.example.com.".to_string(),
+                ProtoRecordType::A,
+                DNSClass::NONE,
+                0,
+                true
+            )
+        );
+        assert_eq!(
+            upd[1],
+            (
+                "mx.example.com.".to_string(),
+                ProtoRecordType::MX,
+                DNSClass::ANY,
+                0,
+                false
+            )
+        );
+        assert_eq!(
+            upd[2],
+            (
+                "gone.example.com.".to_string(),
+                ProtoRecordType::ANY,
+                DNSClass::ANY,
+                0,
+                false
+            )
+        );
+        for add in &upd[3..] {
+            assert_eq!(add.2, DNSClass::IN);
+            assert!(add.4);
+        }
+        let types: Vec<_> = upd[3..].iter().map(|r| r.1).collect();
+        assert_eq!(
+            types,
+            vec![
+                ProtoRecordType::A,
+                ProtoRecordType::AAAA,
+                ProtoRecordType::CNAME,
+                ProtoRecordType::MX,
+                ProtoRecordType::TXT,
+                ProtoRecordType::NS,
+                ProtoRecordType::SRV,
+                ProtoRecordType::PTR,
+                ProtoRecordType::CAA,
+            ]
+        );
+        assert_eq!(upd[3].3, 300);
+        assert_eq!(upd[6].3, 3600);
+        assert!(m.additionals().is_empty());
+
+        // Spot-check RDATA
+        let rdata = |i: usize| m.name_servers()[i].data().unwrap().clone();
+        assert_eq!(rdata(3), ProtoRData::A(A("203.0.113.10".parse().unwrap())));
+        assert_eq!(rdata(0), ProtoRData::A(A("192.0.2.9".parse().unwrap())));
+        match rdata(9) {
+            ProtoRData::SRV(srv) => {
+                assert_eq!((srv.priority(), srv.weight(), srv.port()), (10, 5, 5060));
+                assert_eq!(srv.target().to_string(), "sip.example.com.");
+            }
+            other => panic!("{other:?}"),
+        }
+        match rdata(7) {
+            ProtoRData::TXT(txt) => {
+                assert_eq!(txt.txt_data().len(), 2);
+                assert_eq!(&*txt.txt_data()[0], b"v=spf1 -all");
+            }
+            other => panic!("{other:?}"),
+        }
+        // CAA RDATA as raw RFC 8659 bytes: flags, tag length, tag, value
+        let caa = b"\x80\x05issueletsencrypt.org";
+        assert!(reqs[0].1.windows(caa.len()).any(|w| w == caa));
+    }
+
+    #[test]
+    fn verb_uses_tcp_by_default() {
+        let server = FakeServer::start(responder(|_, req, _| {
+            vec![reply(req, ResponseCode::NoError)]
+        }));
+        let port = server.port.to_string();
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", &port),
+            (
+                "adds",
+                r#"[{"name":"a.example.com","rtype":"A","ttl":60,"data":{"address":"192.0.2.1"}}]"#,
+            ),
+        ]);
+        assert_eq!(run.status.exit_code(), 0, "{:?}", run.json);
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].0, Transport::Tcp);
+    }
+
+    #[test]
+    fn verb_falls_back_to_tcp_when_udp_reply_is_truncated() {
+        let server = FakeServer::start(responder(|t, req, _| {
+            let mut r = reply(req, ResponseCode::NoError);
+            if t == Transport::Udp {
+                r[2] |= 0x02; // TC
+            }
+            vec![r]
+        }));
+        let port = server.port.to_string();
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", &port),
+            ("use_tcp", "false"),
+            (
+                "adds",
+                r#"[{"name":"a.example.com","rtype":"A","ttl":60,"data":{"address":"192.0.2.1"}}]"#,
+            ),
+        ]);
+        assert_eq!(run.status.exit_code(), 0, "{:?}", run.json);
+        let reqs = server.requests();
+        let transports: Vec<_> = reqs.iter().map(|r| r.0).collect();
+        assert_eq!(transports, vec![Transport::Udp, Transport::Tcp]);
+        assert_eq!(reqs[0].1, reqs[1].1, "same message is resent over TCP");
+    }
+
+    #[test]
+    fn verb_maps_each_error_rcode() {
+        let cases = [
+            (ResponseCode::Refused, "REFUSED", DNS_ZONE_UPDATE_REFUSED),
+            (
+                ResponseCode::NXRRSet,
+                "NXRRSET",
+                DNS_ZONE_UPDATE_PRECONDITION_FAILED,
+            ),
+            (
+                ResponseCode::YXRRSet,
+                "YXRRSET",
+                DNS_ZONE_UPDATE_PRECONDITION_FAILED,
+            ),
+            (
+                ResponseCode::YXDomain,
+                "YXDOMAIN",
+                DNS_ZONE_UPDATE_PRECONDITION_FAILED,
+            ),
+            (ResponseCode::NXDomain, "NXDOMAIN", DNS_ZONE_UPDATE_NXDOMAIN),
+            (ResponseCode::ServFail, "SERVFAIL", DNS_ZONE_UPDATE_SERVFAIL),
+            (ResponseCode::FormErr, "FORMERR", DNS_ZONE_UPDATE_FORMERR),
+            (ResponseCode::NotAuth, "NOTAUTH", DNS_ZONE_UPDATE_NOTAUTH),
+            (ResponseCode::NotZone, "NOTZONE", DNS_ZONE_UPDATE_NOTZONE),
+            (ResponseCode::NotImp, "NOTIMP", DNS_ZONE_UPDATE_RCODE_ERROR),
+        ];
+        for (rcode, mnemonic, code) in cases {
+            let server = FakeServer::start(responder(move |_, req, _| vec![reply(req, rcode)]));
+            let port = server.port.to_string();
+            let run = run_verb(&[
+                ("zone", "example.com"),
+                ("servers", "127.0.0.1"),
+                ("port", &port),
+                ("use_tcp", "false"),
+                ("deletes", r#"[{"name":"a.example.com","delete_all":true}]"#),
+            ]);
+            assert_eq!(run.status.exit_code(), 1, "{mnemonic}");
+            let json = run.json.as_ref().unwrap();
+            assert_eq!(json["ok"], false);
+            assert_eq!(json["summary"]["rcode"], mnemonic);
+            assert_eq!(json["summary"]["applied_deletes"], 0);
+            assert_eq!(error_code(&run), code, "{mnemonic}");
+            // A DNS answer ends the operation: no retries.
+            assert_eq!(server.requests().len(), 1);
+        }
+    }
+
+    #[test]
+    fn verb_tsig_signs_request_and_verifies_reply() {
+        let server = FakeServer::start(responder(|_, req, _| {
+            let mac = server_verify_request(req);
+            let mut r = reply(req, ResponseCode::NoError);
+            server_sign_reply(&mut r, &mac, 0, false);
+            vec![r]
+        }));
+        let port = server.port.to_string();
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", &port),
+            ("use_tcp", "false"),
+            ("tsig_key_name", "TSIG-Key.Example"),
+            ("tsig_secret", KEY_B64),
+            ("tsig_algorithm", "hmac-sha256"),
+            ("include_raw", "true"),
+            (
+                "adds",
+                r#"[{"name":"a.example.com","rtype":"A","ttl":60,"data":{"address":"192.0.2.1"}}]"#,
+            ),
+        ]);
+        assert_eq!(run.status.exit_code(), 0, "{:?} {}", run.json, run.stderr);
+        let json = run.json.unwrap();
+        assert_eq!(json["summary"]["tsig_used"], true);
+        assert_eq!(json["warnings"], json!([]));
+        let reqs = server.requests();
+        assert_eq!(reqs.len(), 1);
+        // include_raw: request and reply in hex
+        assert_eq!(json["raw"]["request_hex"], hex::encode(&reqs[0].1));
+        assert!(json["raw"]["response_hex"].as_str().unwrap().len() > 24);
+    }
+
+    #[test]
+    fn verb_tsig_default_algorithm_is_hmac_sha256() {
+        let server = FakeServer::start(responder(|_, req, _| {
+            let mac = server_verify_request(req);
+            let mut r = reply(req, ResponseCode::NoError);
+            server_sign_reply(&mut r, &mac, 0, false);
+            vec![r]
+        }));
+        let port = server.port.to_string();
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", &port),
+            ("tsig_key_name", "tsig-key.example."),
+            ("tsig_secret", KEY_B64),
+        ]);
+        assert_eq!(run.status.exit_code(), 0, "{:?}", run.json);
+    }
+
+    #[test]
+    fn verb_tsig_rejects_bad_unsigned_or_refused_replies() {
+        // (reply kind, expected error code, expected message fragment)
+        let cases: [(&str, &str, &str); 4] = [
+            ("corrupt", DNS_ZONE_UPDATE_TSIG_FAILED, "does not verify"),
+            (
+                "unsigned-ok",
+                DNS_ZONE_UPDATE_TSIG_FAILED,
+                "not TSIG-signed",
+            ),
+            ("badkey", DNS_ZONE_UPDATE_TSIG_FAILED, "BADKEY"),
+            ("unsigned-refused", DNS_ZONE_UPDATE_REFUSED, "refused"),
+        ];
+        for (kind, code, fragment) in cases {
+            let server = FakeServer::start(responder(move |_, req, _| {
+                let mac = server_verify_request(req);
+                let r = match kind {
+                    "corrupt" => {
+                        let mut r = reply(req, ResponseCode::NoError);
+                        server_sign_reply(&mut r, &mac, 0, true);
+                        r
+                    }
+                    "unsigned-ok" => reply(req, ResponseCode::NoError),
+                    "badkey" => {
+                        let mut r = reply(req, ResponseCode::NotAuth);
+                        server_sign_reply(&mut r, &mac, 17, false);
+                        r
+                    }
+                    _ => reply(req, ResponseCode::Refused),
+                };
+                vec![r]
+            }));
+            let port = server.port.to_string();
+            let run = run_verb(&[
+                ("zone", "example.com"),
+                ("servers", "127.0.0.1"),
+                ("port", &port),
+                ("tsig_key_name", "tsig-key.example"),
+                ("tsig_secret", KEY_B64),
+            ]);
+            assert_eq!(run.status.exit_code(), 1, "{kind}");
+            assert_eq!(error_code(&run), code, "{kind}");
+            let msg = run.json.as_ref().unwrap()["error"][1]
+                .as_str()
+                .unwrap()
+                .to_lowercase();
+            assert!(msg.contains(&fragment.to_lowercase()), "{kind}: {msg}");
+            assert_eq!(server.requests().len(), 1, "{kind}");
+        }
+    }
+
+    #[test]
+    fn verb_dry_run_builds_and_signs_but_sends_nothing() {
+        let server = FakeServer::start(responder(|_, req, _| {
+            vec![reply(req, ResponseCode::NoError)]
+        }));
+        let port = server.port.to_string();
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", &port),
+            ("dry_run", "true"),
+            ("include_raw", "true"),
+            ("tsig_key_name", "tsig-key.example"),
+            ("tsig_secret", KEY_B64),
+            ("adds", ADDS),
+            ("deletes", DELETES),
+            ("prerequisites", PREREQS),
+        ]);
+        assert_eq!(run.status.exit_code(), 0, "{:?}", run.json);
+        let json = run.json.unwrap();
+        assert_eq!(json["summary"]["dry_run"], true);
+        assert!(json["summary"].get("rcode").is_none());
+        assert!(json["summary"].get("server_used").is_none());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(server.requests().is_empty(), "dry run must not send");
+
+        // The built message is reported and is TSIG-signed.
+        let wire = hex::decode(json["raw"]["request_hex"].as_str().unwrap()).unwrap();
+        server_verify_request(&wire);
+        let (m, _) = parse_request(&wire);
+        assert_eq!(m.answers().len(), 5);
+        assert_eq!(m.name_servers().len(), 12);
+
+        // Bad record data is reported in a dry run.
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("dry_run", "true"),
+            (
+                "adds",
+                r#"[{"name":"a.example.com","rtype":"SRV","ttl":60,"data":{"priority":70000,"weight":0,"port":1,"target":"x.example.com"}}]"#,
+            ),
+        ]);
+        assert_eq!(run.status.exit_code(), 1);
+        assert_eq!(error_code(&run), DNS_ZONE_UPDATE_INVALID_ADD_RECORD);
+        assert!(
+            run.json.unwrap()["error"][1]
+                .as_str()
+                .unwrap()
+                .contains("out of range")
+        );
+    }
+
+    #[test]
+    fn verb_retries_after_timeout_then_reports_timeout() {
+        // Drops the first two requests, answers the third.
+        let server = FakeServer::start(responder(|_, req, n| {
+            if n < 2 {
+                vec![]
+            } else {
+                vec![reply(req, ResponseCode::NoError)]
+            }
+        }));
+        let port = server.port.to_string();
+        let base = [
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", port.as_str()),
+            ("use_tcp", "false"),
+            ("timeout_ms", "200"),
+        ];
+        let mut args = base.to_vec();
+        args.push(("retries", "2"));
+        let run = run_verb(&args);
+        assert_eq!(run.status.exit_code(), 0, "{:?}", run.json);
+        assert_eq!(server.requests().len(), 3);
+
+        // Never answers: retries + 1 attempts, then a timeout error.
+        let silent = FakeServer::start(responder(|_, _, _| vec![]));
+        let port = silent.port.to_string();
+        let started = Instant::now();
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", &port),
+            ("use_tcp", "false"),
+            ("timeout_ms", "200"),
+            ("retries", "1"),
+        ]);
+        let elapsed = started.elapsed();
+        assert_eq!(run.status.exit_code(), 1);
+        assert_eq!(error_code(&run), DNS_ZONE_UPDATE_TIMEOUT);
+        assert_eq!(silent.requests().len(), 2);
+        assert!(elapsed >= Duration::from_millis(400) && elapsed < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn verb_ignores_udp_reply_with_wrong_id_and_rejects_it_over_tcp() {
+        let server = FakeServer::start(responder(|t, req, _| {
+            let good = reply(req, ResponseCode::NoError);
+            let mut bad = reply(req, ResponseCode::Refused);
+            bad[0] ^= 0xFF;
+            match t {
+                Transport::Udp => vec![bad, good],
+                Transport::Tcp => vec![bad],
+            }
+        }));
+        let port = server.port.to_string();
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", &port),
+            ("use_tcp", "false"),
+        ]);
+        assert_eq!(run.status.exit_code(), 0, "{:?}", run.json);
+        assert_eq!(run.json.unwrap()["summary"]["rcode"], "NOERROR");
+
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", "127.0.0.1"),
+            ("port", &port),
+            ("retries", "0"),
+        ]);
+        assert_eq!(run.status.exit_code(), 1);
+        assert_eq!(error_code(&run), DNS_ZONE_UPDATE_NETWORK_ERROR);
+    }
+
+    #[test]
+    fn verb_tries_next_server_after_transport_failure() {
+        let silent = FakeServer::start(responder(|_, _, _| vec![]));
+        let good = FakeServer::start(responder(|_, req, _| {
+            vec![reply(req, ResponseCode::NoError)]
+        }));
+        let servers = format!(r#"["127.0.0.1:{}","127.0.0.1:{}"]"#, silent.port, good.port);
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", &servers),
+            ("use_tcp", "false"),
+            ("timeout_ms", "150"),
+            ("retries", "0"),
+        ]);
+        assert_eq!(run.status.exit_code(), 0, "{:?}", run.json);
+        let json = run.json.unwrap();
+        assert_eq!(
+            json["summary"]["server_used"],
+            format!("127.0.0.1:{}", good.port)
+        );
+        assert_eq!(json["warnings"].as_array().unwrap().len(), 1);
+
+        // Both silent: all servers failed.
+        let silent2 = FakeServer::start(responder(|_, _, _| vec![]));
+        let servers = format!(
+            r#"["127.0.0.1:{}","127.0.0.1:{}"]"#,
+            silent.port, silent2.port
+        );
+        let run = run_verb(&[
+            ("zone", "example.com"),
+            ("servers", &servers),
+            ("use_tcp", "false"),
+            ("timeout_ms", "150"),
+            ("retries", "0"),
+        ]);
+        assert_eq!(run.status.exit_code(), 1);
+        assert_eq!(error_code(&run), DNS_ZONE_UPDATE_ALL_SERVERS_FAILED);
+    }
+
+    #[test]
+    fn verb_zone_serial_at_least_queries_soa_first() {
+        // serial 5 on the server; 4294967290 + 11 wraps to 5 (RFC 1982)
+        let server = FakeServer::start(responder(|_, req, _| {
+            if is_update(req) {
+                vec![reply(req, ResponseCode::NoError)]
+            } else {
+                vec![soa_reply(req, 5)]
+            }
+        }));
+        let port = server.port.to_string();
+        for (required, ok) in [
+            ("5", true),
+            ("4294967290", true),
+            ("6", false),
+            ("2147483653", false),
+        ] {
+            let before = server.requests().len();
+            let prereq = format!(
+                r#"[{{"kind":"zone_serial_at_least","serial":{}}}]"#,
+                required
+            );
+            let run = run_verb(&[
+                ("zone", "example.com"),
+                ("servers", "127.0.0.1"),
+                ("port", &port),
+                ("prerequisites", &prereq),
+            ]);
+            let reqs = server.requests()[before..].to_vec();
+            let (soa_query, _) = parse_request(&reqs[0].1);
+            assert_eq!(soa_query.op_code(), OpCode::Query);
+            assert_eq!(soa_query.queries()[0].query_type(), ProtoRecordType::SOA);
+            if ok {
+                assert_eq!(run.status.exit_code(), 0, "{required}: {:?}", run.json);
+                assert_eq!(reqs.len(), 2);
+                let (update, _) = parse_request(&reqs[1].1);
+                assert_eq!(update.op_code(), OpCode::Update);
+                // zone_serial_at_least is not sent as an RFC 2136 prerequisite
+                assert!(update.answers().is_empty());
+            } else {
+                assert_eq!(run.status.exit_code(), 1, "{required}");
+                assert_eq!(error_code(&run), DNS_ZONE_UPDATE_PRECONDITION_FAILED);
+                assert_eq!(reqs.len(), 1, "no UPDATE after a failed serial check");
+            }
+        }
+    }
+
+    #[test]
+    fn verb_rejects_invalid_input() {
+        // Argument errors: no JSON, [code] on stderr, exit 1
+        let cases: [(&[(&str, &str)], &str); 5] = [
+            (&[], DNS_ZONE_UPDATE_INVALID_ZONE),
+            (
+                &[("zone", "example.com"), ("port", "0")],
+                DNS_ZONE_UPDATE_INVALID_PORT,
+            ),
+            (
+                &[
+                    ("zone", "example.com"),
+                    (
+                        "adds",
+                        r#"[{"name":"a.example.com","rtype":"BOGUS","ttl":1,"data":{}}]"#,
+                    ),
+                ],
+                DNS_ZONE_UPDATE_INVALID_RECORD_TYPE,
+            ),
+            (
+                &[("zone", "example.com"), ("tsig_key_name", "k")],
+                DNS_ZONE_UPDATE_INVALID_TSIG_CONFIG,
+            ),
+            (
+                &[
+                    ("zone", "example.com"),
+                    ("max_changes", "1"),
+                    (
+                        "deletes",
+                        r#"[{"name":"a.example.com","delete_all":true},{"name":"b.example.com","delete_all":true}]"#,
+                    ),
+                ],
+                DNS_ZONE_UPDATE_INVALID_MAX_CHANGES,
+            ),
+        ];
+        for (args, code) in cases {
+            let run = run_verb(args);
+            assert_eq!(run.status.exit_code(), 1, "{code}");
+            assert!(run.json.is_none(), "{code}");
+            assert!(
+                run.stderr.contains(&format!("[{}]", code)),
+                "{code}: {}",
+                run.stderr
+            );
+        }
+
+        // Validation errors: JSON with ok=false, exit 1, nothing sent
+        let server = FakeServer::start(responder(|_, req, _| {
+            vec![reply(req, ResponseCode::NoError)]
+        }));
+        let port = server.port.to_string();
+        let cases: [(&str, &str, &str); 6] = [
+            (
+                "adds",
+                r#"[{"name":"a.example.com","rtype":"ANY","ttl":1,"data":{}}]"#,
+                DNS_ZONE_UPDATE_INVALID_RECORD_TYPE,
+            ),
+            (
+                "adds",
+                r#"[{"name":"a.example.com","rtype":"A","ttl":1,"data":{"address":"not-an-ip"}}]"#,
+                DNS_ZONE_UPDATE_INVALID_ADD_RECORD,
+            ),
+            (
+                "adds",
+                r#"[{"name":"a.example.com","rtype":"CAA","ttl":1,"data":{"tag":"bad tag","value":"x"}}]"#,
+                DNS_ZONE_UPDATE_INVALID_ADD_RECORD,
+            ),
+            (
+                "deletes",
+                r#"[{"name":"a.example.com","rtype":"MX","data":{"preference":10}}]"#,
+                DNS_ZONE_UPDATE_INVALID_DELETE_SPEC,
+            ),
+            (
+                "prerequisites",
+                r#"[{"kind":"record_not_exists","name":"a.example.com","rtype":"A","data":{"address":"192.0.2.1"}}]"#,
+                DNS_ZONE_UPDATE_INVALID_PREREQUISITE,
+            ),
+            (
+                "tsig_algorithm",
+                "hmac-md5",
+                DNS_ZONE_UPDATE_UNSUPPORTED_TSIG_ALGORITHM,
+            ),
+        ];
+        for (key, value, code) in cases {
+            let run = run_verb(&[
+                ("zone", "example.com"),
+                ("servers", "127.0.0.1"),
+                ("port", &port),
+                ("tsig_key_name", "tsig-key.example"),
+                ("tsig_secret", KEY_B64),
+                (key, value),
+            ]);
+            assert_eq!(run.status.exit_code(), 1, "{code}");
+            assert_eq!(run.json.as_ref().unwrap()["ok"], false);
+            assert_eq!(error_code(&run), code, "{value}");
+        }
+        assert!(server.requests().is_empty());
+    }
+
+    // ---------- known-answer and helper tests ----------
+
+    // Captured from BIND's `nsupdate -y <alg>:tsig-key.example:<KEY_B64>`
+    // sending "prereq nxrrset www.example.com A", "update delete
+    // old.example.com A 192.0.2.9", "update add www.example.com 300 A
+    // 203.0.113.10" for zone example.com.
+    const NSUPDATE_CAPTURES: [(&str, &str); 4] = [
+        (
+            "hmac-sha1",
+            "3a4e28000001000100020001076578616d706c6503636f6d000006000103777777c00c000100fe000000000000036f6c64c00c000100fe000000000004c0000209c01d000100010000012c0004cb00710a08747369672d6b6579076578616d706c650000fa00ff00000000002f09686d61632d736861310000006aef1369012c0014cdec7a61b1e8fe21bbdc25861d12007d79c26e583a4e00000000",
+        ),
+        (
+            "hmac-sha256",
+            "34d128000001000100020001076578616d706c6503636f6d000006000103777777c00c000100fe000000000000036f6c64c00c000100fe000000000004c0000209c01d000100010000012c0004cb00710a08747369672d6b6579076578616d706c650000fa00ff00000000003d0b686d61632d7368613235360000006aef1369012c00204691c31ce88b40ef4266ef575a3e947b4bd88142cf472f132b27d15360e097ba34d100000000",
+        ),
+        (
+            "hmac-sha384",
+            "6d8728000001000100020001076578616d706c6503636f6d000006000103777777c00c000100fe000000000000036f6c64c00c000100fe000000000004c0000209c01d000100010000012c0004cb00710a08747369672d6b6579076578616d706c650000fa00ff00000000004d0b686d61632d7368613338340000006aef1369012c00307e0a6b5da6f29b61e70fc79111da5e0f7869cffe38a5e09f5317ba4c31642688ddfd0641bd6fc356150683f8b9c8719c6d8700000000",
+        ),
+        (
+            "hmac-sha512",
+            "b3ce28000001000100020001076578616d706c6503636f6d000006000103777777c00c000100fe000000000000036f6c64c00c000100fe000000000004c0000209c01d000100010000012c0004cb00710a08747369672d6b6579076578616d706c650000fa00ff00000000005d0b686d61632d7368613531320000006aef1369012c00403b84c56f6001dafb7104281a1877672829f48cca59fbaa307ace662c5c1165097bf2755753d0724c8cc53b6e7b432f0e005ebf5d0b0c09e217b996ec3425081bb3ce00000000",
+        ),
+    ];
+
+    // dnspython 2.9 `make_response` to the hmac-sha256 capture above, signed
+    // with the same key at time 0x6aef1387.
+    const DNSPYTHON_SHA256_REPLY: &str = "34d1a8000001000000000001076578616d706c6503636f6d000006000108747369672d6b6579076578616d706c650000fa00ff00000000003d0b686d61632d7368613235360000006aef1387012c00203e2ddfeef2158ce227b0e8b248f79fdbf09779795da6586ac2acb1299626887434d100000000";
+
+    fn test_key(alg: &str) -> TsigKey {
+        TsigKey {
+            name: Name::from_ascii("tsig-key.example.").unwrap(),
+            algorithm: TsigAlgorithm::from_option(alg).unwrap(),
+            secret: general_purpose::STANDARD.decode(KEY_B64).unwrap(),
+        }
+    }
+
+    #[test]
+    fn tsig_signing_matches_nsupdate_byte_for_byte() {
+        for (alg, hex_wire) in NSUPDATE_CAPTURES {
+            let captured = hex::decode(hex_wire).unwrap();
+            let (unsigned, tsig) = split_trailing_tsig(&captured).unwrap();
+            let tsig = tsig.unwrap();
+            let mut ours = unsigned.clone();
+            let mac = tsig_sign(&mut ours, &test_key(alg), tsig.time_signed);
+            assert_eq!(mac, tsig.mac, "{alg}");
+            assert_eq!(ours, captured, "{alg}");
+        }
+    }
+
+    #[test]
+    fn tsig_reply_verification_matches_dnspython() {
+        let request = hex::decode(NSUPDATE_CAPTURES[1].1).unwrap();
+        let request_mac = split_trailing_tsig(&request).unwrap().1.unwrap().mac;
+        let reply = hex::decode(DNSPYTHON_SHA256_REPLY).unwrap();
+        let key = test_key("hmac-sha256");
+        let (stripped, tsig) = split_trailing_tsig(&reply).unwrap();
+        let tsig = tsig.unwrap();
+        let signed_at = 0x6aef1387;
+        assert_eq!(tsig.time_signed, signed_at);
+        assert_eq!(
+            verify_response_tsig(&stripped, &tsig, &key, &request_mac, signed_at),
+            Ok(())
+        );
+        assert_eq!(
+            verify_response_tsig(&stripped, &tsig, &key, &request_mac, signed_at + 300),
+            Ok(())
+        );
+        // Outside the fudge window
+        assert!(
+            verify_response_tsig(&stripped, &tsig, &key, &request_mac, signed_at + 301)
+                .unwrap_err()
+                .contains("fudge")
+        );
+        // Wrong request MAC, tampered reply, wrong key
+        let mut other_mac = request_mac.clone();
+        other_mac[0] ^= 1;
+        assert!(verify_response_tsig(&stripped, &tsig, &key, &other_mac, signed_at).is_err());
+        let mut tampered = stripped.clone();
+        tampered[3] |= 0x05;
+        assert!(verify_response_tsig(&tampered, &tsig, &key, &request_mac, signed_at).is_err());
+        let mut wrong_key = key.clone();
+        wrong_key.secret[0] ^= 1;
+        assert!(
+            verify_response_tsig(&stripped, &tsig, &wrong_key, &request_mac, signed_at).is_err()
+        );
+        // Truncated MAC: 16 of 32 octets is allowed, 8 is not
+        let mut truncated = tsig.clone();
+        truncated.mac.truncate(16);
+        assert_eq!(
+            verify_response_tsig(&stripped, &truncated, &key, &request_mac, signed_at),
+            Ok(())
+        );
+        truncated.mac.truncate(8);
+        assert!(
+            verify_response_tsig(&stripped, &truncated, &key, &request_mac, signed_at).is_err()
+        );
+    }
+
+    #[test]
+    fn built_message_matches_nsupdate_structure() {
+        let opts = DnsZoneUpdateOptions::from_args(
+            &[
+                ("zone", "example.com"),
+                ("prerequisites", r#"[{"kind":"record_not_exists","name":"www.example.com","rtype":"A"}]"#),
+                ("deletes", r#"[{"name":"old.example.com","rtype":"A","data":{"address":"192.0.2.9"}}]"#),
+                ("adds", r#"[{"name":"www.example.com","rtype":"A","ttl":300,"data":{"address":"203.0.113.10"}}]"#),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        )
+        .unwrap();
+        let mut message = build_update_message(&opts).unwrap();
+        let ours = finalize_request(&mut message, None).unwrap().wire;
+        let captured = hex::decode(NSUPDATE_CAPTURES[1].1).unwrap();
+        let (mut theirs, _) = split_trailing_tsig(&captured).unwrap();
+        // Same message apart from the random ID
+        theirs[0..2].copy_from_slice(&ours[0..2]);
+        assert_eq!(ours, theirs);
+    }
+
+    #[test]
+    fn serial_arithmetic_follows_rfc1982() {
+        assert!(serial_at_least(10, 10));
+        assert!(serial_at_least(11, 10));
+        assert!(!serial_at_least(9, 10));
+        assert!(serial_at_least(5, u32::MAX - 5)); // wrapped forward
+        assert!(!serial_at_least(u32::MAX - 5, 5));
+        assert!(!serial_at_least(1 << 31, 0)); // incomparable
+        assert!(!serial_at_least(0, 1 << 31));
+        assert!(serial_at_least((1 << 31) - 1, 0));
     }
 }

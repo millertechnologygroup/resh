@@ -212,9 +212,9 @@ This section supersedes the test counts and "Still open" list in the
   - Unsupported by design in this release: encrypted ZIP creation, git sync
     merge/rebase (fast-forward only), secret encryption at rest and
     `rotate`, ssh `tunnel`/`keys.list`/`key.add`, backup `schedule`
-    installation, pkg restore version pinning/rollback, dns `zone.update`
-    (simulated) and TSIG, cert encrypted keys, `proc limits.set` on
-    other processes. (cert CMS signatures were added after v1.0.6-beta.)
+    installation, pkg restore version pinning/rollback, dns `zone.fetch`
+    TSIG, cert encrypted keys, `proc limits.set` on other processes. (dns
+    `zone.update` and cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are base64-encoded, not encrypted. Since Stage 4
     the profile file is written owner-only (0600).
   - No dry-run mode for svc, proc, file writes, cache/db writes, mq, ssh
@@ -636,12 +636,13 @@ typed structs:
 
 ### Network
 
-- **dns `zone.update` is simulated.**
-  - `attempt_zone_update` (`src/handles/network/dnsh.rs:5796-5820`) sleeps
-    and returns `NoError`.
-  - `build_update_message` is never called, so TSIG signing (also a stub) is
-    never reached.
-  - The response still reports `tsig_used` (`:5366`).
+- **dns `zone.update` limits.**
+  - Sends a real RFC 2136 UPDATE (TSIG-signed when a key is given), but it is
+    verified only against local fake servers, BIND's `nsupdate` request
+    encoding and dnspython's TSIG, not against a live BIND or Knot server.
+  - `zone_serial_at_least` is a separate SOA query before the update, not
+    atomic with it.
+  - No EDNS: UDP messages over 512 bytes are sent over TCP instead.
 - **dns resolver and options.**
   - With no `servers=`, lookups use `ResolverConfig::default()` (fixed public
     resolvers) instead of the system resolver (`:2715`).

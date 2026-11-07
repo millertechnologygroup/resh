@@ -184,7 +184,7 @@ Each handle's page under [docs/](docs/) lists its registered verbs, arguments, r
 - ✅ `ssh://` - Remote commands and file upload/download through the system `ssh` client; `tunnel`, `keys.list` and `key.add` are stubs (dry run only)
 - ✅ `http://` - HTTP client (get, head, headers, options, preflight, json, post, put, patch, delete)
 - ✅ `net://` - Network diagnostics (interfaces, routes, ping, tcp_check, scan, dns)
-- ✅ `dns://` - DNS lookup, resolve, trace and zone transfer (`zone.fetch`); `zone.update` is simulated and sends nothing
+- ✅ `dns://` - DNS lookup, resolve, trace, zone transfer (`zone.fetch`) and RFC 2136 dynamic update (`zone.update`, optional TSIG)
 - ✅ `mail://` - Email over SMTP (send, send_template, attachments, test, config); `send` has no dry run (use `send_template ... dry_run=true` to preview)
 
 ### Security & Secrets ✅
@@ -264,7 +264,7 @@ Planned milestones are intentions, not commitments. See [ROADMAP.md](ROADMAP.md)
 - ⏱️ Production hardening and polish (v1.0 stable)
 
 **Beta limitations:**
-- ⚠️ Some verbs are stubs or simulated (for example `ssh tunnel`, `dns zone.update`, `secret rotate`); each handle page says so
+- ⚠️ Some verbs are stubs or simulated (for example `ssh tunnel`, `secret rotate`); each handle page says so
 - ⚠️ The default test suite passes, but integrations (systemd, real root, SMTP/SSH/DNS servers, brew) are not verified live; see [docs/known_issues.md](docs/known_issues.md)
 - ⚠️ Fixes involving root, real devices or remote servers were tested with unit tests and dry runs, not against live systems
 - ⚠️ Performance not yet optimized
