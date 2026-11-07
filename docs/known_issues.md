@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned ( event,
+  `<handle>.invalid_argument`. Handles not yet aligned (event,
   log, proc, svc, cron, firewall, user, pkg, system, cert, backup,
   plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
