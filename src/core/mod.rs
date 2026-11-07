@@ -24,9 +24,30 @@ pub fn dispatch_stage(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<Status> {
+    use status::exit;
+
     // Each stage has its own time; an earlier deadline must not end this one.
     process::clear_limit();
-    let mut parsed = parse::parse_stage(stage_str)?;
+    let mut parsed = match parse::parse_stage(stage_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return Ok(Status::coded(
+                exit::USAGE,
+                "resh.invalid_stage",
+                e.to_string(),
+            ));
+        }
+    };
+    // The handle name that prefixes error codes raised here, before the
+    // handle itself reports anything.
+    let scheme = parsed
+        .target
+        .split("://")
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let known = reg.list_schemes().iter().any(|s| *s == scheme);
+    let invalid_argument = format!("{scheme}.invalid_argument");
 
     // Add CLI arguments to parsed arguments
     for arg in cli_args {
@@ -45,10 +66,12 @@ pub fn dispatch_stage(
         } else {
             // Any other bare word used to be dropped silently, so a
             // misspelled `dry-run` ran the real change.
-            return Ok(Status::err(
-                2,
-                format!("argument {arg:?} is not key=value; nothing was done"),
-            ));
+            let msg = format!("argument {arg:?} is not key=value; nothing was done");
+            return Ok(if known {
+                Status::coded(exit::USAGE, &invalid_argument, msg)
+            } else {
+                Status::coded(exit::USAGE, "resh.invalid_argument", msg)
+            });
         }
     }
 
@@ -57,11 +80,41 @@ pub fn dispatch_stage(
         stdout,
         stderr,
     };
-    let h = reg.resolve(&parsed.target)?;
+    let h = match reg.resolve(&parsed.target) {
+        Ok(h) => h,
+        // An unknown scheme, or a target the handle cannot accept.
+        Err(e) if !known => {
+            return Ok(Status::coded(
+                exit::USAGE,
+                "resh.unknown_handle",
+                format!("{e}. Run `resh --list-schemas` to list the available handles."),
+            ));
+        }
+        Err(e) => {
+            return Ok(Status::coded(
+                exit::USAGE,
+                &format!("{scheme}.invalid_target"),
+                format!("{e:#}"),
+            ));
+        }
+    };
     if let Some(refusal) = dry_run_refusal(h.as_ref(), &parsed.target, &parsed.verb, &parsed.args) {
-        return Ok(Status::err(2, refusal));
+        return Ok(Status::coded(exit::USAGE, &invalid_argument, refusal));
     }
-    h.call(&parsed.verb, &parsed.args, &mut io)
+    match h.call(&parsed.verb, &parsed.args, &mut io) {
+        Ok(status) => Ok(status),
+        // A tool lost to its deadline is reported by the caller.
+        Err(e) if process::has_lost() => Err(e),
+        // A handle error that escaped as a Rust error still gets a code. It
+        // is written here because the handle may already have written
+        // warnings, and then the caller would not print the reason.
+        Err(e) => {
+            let code = format!("{scheme}.failed");
+            let msg = format!("{e:#}");
+            let _ = writeln!(io.stderr, "{}", status::error_line(&code, &msg));
+            Ok(Status::coded(exit::FAILED, &code, msg))
+        }
+    }
 }
 
 /// A dry-run request must never perform the real change. Returns the reason

@@ -271,10 +271,14 @@ fn every_handle_help_renders_from_cli() {
 }
 
 #[test]
-fn unknown_handle_and_verb_errors_unchanged() {
+fn unknown_handle_and_verb_errors() {
+    // An unknown handle is a usage error with the shared error format.
     let (code, _, err) = run(&["invalidhandle://x.status"]);
-    assert_eq!(code, 1);
-    assert!(err.contains("Unknown scheme: invalidhandle"));
+    assert_eq!(code, 2);
+    assert!(
+        err.starts_with("Error: [resh.unknown_handle] Unknown scheme: invalidhandle"),
+        "{err}"
+    );
 
     let (code, _, err) = run(&["svc://resh-help-test.invalidverb"]);
     assert_eq!(code, 1);

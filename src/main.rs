@@ -277,8 +277,19 @@ fn main() -> Result<()> {
             }
             core::process::Stopped::StillRunning => "could not be stopped and may still be running",
         };
-        eprintln!("Error: outcome unknown: {} {state}", lost.tool);
-        std::process::exit(124);
+        let scheme = final_stage
+            .split("://")
+            .next()
+            .unwrap_or("resh")
+            .to_ascii_lowercase();
+        eprintln!(
+            "{}",
+            core::status::error_line(
+                &format!("{scheme}.timeout"),
+                &format!("outcome unknown: {} {state}", lost.tool)
+            )
+        );
+        std::process::exit(core::status::exit::TIMEOUT);
     }
 
     if !status.ok {
