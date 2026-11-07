@@ -183,6 +183,12 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   refused. `hooks.enable`/`hooks.disable` persist in `_hooks.json` and refuse
   unknown hooks. No state directory is an error (`event.store_unavailable`)
   instead of a silent per-process in-memory bus.
+- Hooks are real and off by default: `log` appends each event as a JSON line
+  to `<state>/resh/events/hooks/log/<topic>.log`, `fs` keeps the topic's
+  latest event in `hooks/fs/<topic>.json`, and `mq` puts the event data on
+  the mq queue named after the topic. A hook failure is a warning in the
+  emit result (`hooks: [{name, ok, warning}]`), never a failed emit. The
+  `proc` hook was removed; old `_hooks.json` files migrate silently.
 
 ### log
 
@@ -653,10 +659,6 @@ These were found during the fixes, or are Medium items that were not fixed:
   `timeout_ms` is enforced the same way. (Git rejected `timeout_ms` at that
   stage; it is now enforced, see Unreleased: a stalled SSH server or a long
   local libgit2 call is reported as outcome unknown, exit 124.)
-- **Event hooks:** the built-in hook notes go to stderr, so JSON on stdout
-  stays valid (Stage 2). `list-topics` lists the real store and
-  `hooks.enable`/`hooks.disable` persist and refuse unknown names
-  (Unreleased). The hooks are still simulations that only print notes.
 - **cert:**
   - `chain.info` is simplified.
   - Encrypted private keys are not supported. CMS signatures (`sign
@@ -975,8 +977,8 @@ typed structs:
 
 ### Data and system
 
-- **event.** The built-in hooks (`fs`, `log`, `mq`, `proc`) are simulations
-  that only print notes on stderr.
+- **event.** Hook log files and mq queues filled by the hooks are never
+  trimmed (by design; read or delete them).
 - **cert.**
   - `info` always reports a public key algorithm of "Unknown", empty
     extensions, and `is_ca: false`.
