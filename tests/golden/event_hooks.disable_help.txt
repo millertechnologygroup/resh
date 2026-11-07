@@ -1,0 +1,15 @@
+Handle: event
+Verb: hooks.disable
+Definition: Disables one of the built-in hooks fs, log, mq, or proc for this and
+  every later resh command of the user, recording it in the event store.
+
+Usage:
+  resh event://.hooks.disable name=fs|log|mq|proc
+
+Example:
+  resh event://.hooks.disable name=mq
+
+Example Output:
+  {"changed":true,"disabled":true,"hook":"mq"}
+
+  changed is false if the hook was already disabled.

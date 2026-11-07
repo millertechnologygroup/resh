@@ -1,0 +1,48 @@
+Handle: event
+Verb: emit
+Definition: Appends an event with a JSON payload to a topic's file in the event
+  store and prints the stored event as a JSON object.
+
+Usage:
+  resh event://.emit topic=<topic> data=<json> [source=<name>]
+    [key=<key>] [correlation_id=<id>] [causation_id=<id>]
+    [tags=<json-array>] [priority=low|normal|high]
+    [mode=fire_and_forget|wait_for_persist] [ttl_ms=<n>]
+    [summarize=true|false] [schema_version=<v>] [format=json|text]
+    [timeout_ms=<n>]
+
+Example:
+  resh event://.emit topic=jobs.backup.completed 'data={"status":"success"}'
+
+Example Output:
+  {
+    "error": null,
+    "event": {
+      "backend": "state_file",
+      "causation_id": null,
+      "correlation_id": null,
+      "data": {
+        "status": "success"
+      },
+      "id": "evt_1792166019757_224a64d890cb",
+      "key": null,
+      "mode": "fire_and_forget",
+      "mode_used": "fire_and_forget",
+      "priority": "normal",
+      "schema_version": null,
+      "source": null,
+      "summary": null,
+      "tags": [],
+      "timestamp_unix_ms": 1792166019757,
+      "topic": "jobs.backup.completed",
+      "ttl_ms": null
+    },
+    "ok": true,
+    "timestamp_unix_ms": 1792166019757,
+    "warnings": []
+  }
+
+  The topic must not contain the wildcards * or ?. mode=wait_for_persist
+  syncs the file to disk before the reply. subscribe skips an event once
+  its ttl_ms has passed. timeout_ms (default 30000, 0 = no limit) bounds
+  the wait for the store lock; when it passes nothing is written.

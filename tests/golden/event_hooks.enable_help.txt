@@ -1,0 +1,15 @@
+Handle: event
+Verb: hooks.enable
+Definition: Enables one of the built-in hooks fs, log, mq, or proc for this and
+  every later resh command of the user.
+
+Usage:
+  resh event://.hooks.enable name=fs|log|mq|proc
+
+Example:
+  resh event://.hooks.enable name=mq
+
+Example Output:
+  {"changed":true,"enabled":true,"hook":"mq"}
+
+  changed is false if the hook was already enabled.

@@ -1,0 +1,74 @@
+Handle: event
+Verb: subscribe
+Definition: Reads stored events whose topic matches a pattern (with * and ?
+  wildcards) from an offset, optionally as a consumer group, waiting for new
+  events or following the topics, and prints them as one JSON object or, with
+  follow=true, one JSON line per event.
+
+Usage:
+  resh event://.subscribe topic=<pattern>
+    [offset=latest|earliest|next|<n>] [limit=<n>] [group_id=<id>]
+    [consumer_id=<id>] [auto_commit=true|false]
+    [manual_commit_offset=<n>] [wait=true|false] [wait_timeout_ms=<n>]
+    [follow=true|false] [max_events=<n>] [timeout_ms=<n>]
+    [match_tags=<json-array>] [match_correlation_id=<id>]
+    [match_source=<name>] [max_latency_ms=<n>]
+    [include_data=true|false] [include_summary=true|false]
+    [include_raw=true|false] [format=json|text]
+
+Example:
+  resh --json-pretty event://.subscribe 'topic=jobs.*' offset=earliest
+
+Example Output:
+  {
+    "committed": false,
+    "committed_offset": null,
+    "consumer_id": null,
+    "effective_offset": "earliest",
+    "error": null,
+    "events": [
+      {
+        "backend": "state_file",
+        "causation_id": null,
+        "correlation_id": null,
+        "data": {
+          "status": "success"
+        },
+        "id": "evt_1792166019757_224a64d890cb",
+        "key": null,
+        "mode": "fire_and_forget",
+        "mode_used": "fire_and_forget",
+        "offset": "0",
+        "priority": "normal",
+        "raw": null,
+        "schema_version": null,
+        "source": null,
+        "summary": null,
+        "tags": [],
+        "timestamp_unix_ms": 1792166019757,
+        "topic": "jobs.backup.completed",
+        "ttl_ms": null
+      }
+    ],
+    "events_returned": 1,
+    "group_id": null,
+    "high_watermark": "1",
+    "next_offset": "1",
+    "offset_end": "0",
+    "offset_start": "0",
+    "ok": true,
+    "timed_out": false,
+    "timestamp_unix_ms": 1792166019771,
+    "topic": "jobs.*",
+    "warnings": []
+  }
+
+  Shown with --json-pretty. Offsets index the matching events in the
+  order they were stored; limit (default 100) caps the events returned.
+  With group_id, offset=next resumes after the group's committed offset
+  and the read and commit are atomic, so consumers of one group never get
+  the same event. wait=true waits for an event until wait_timeout_ms
+  (default 30000) or timeout_ms passes. follow=true prints each event as a
+  JSON line as it arrives, until max_events or timeout_ms (default: no
+  limit). Without wait or follow, timeout_ms defaults to 30000. Enabled
+  hooks print notes on stderr.

@@ -1,0 +1,34 @@
+Handle: event
+
+Description:
+  The event handle appends structured events to a local event store, one JSON
+  Lines file per topic under the user's state directory (normally
+  ~/.local/state/resh/events), and reads them back by topic pattern with offsets
+  and consumer groups. Events emitted by one resh command are read by any later
+  or concurrently running resh command of the same user. The stage has no
+  target, so the verb follows a dot directly, as in event://.emit.
+
+Available Verbs:
+  list-topics     Lists the topics in the event store with their event counts
+                  and newest event time, and optionally the payload fields of
+                  the latest event, as a JSON object.
+  subscribe       Reads stored events whose topic matches a pattern (with * and
+                  ? wildcards) from an offset, optionally as a consumer group,
+                  waiting for new events or following the topics, and prints
+                  them as one JSON object or, with follow=true, one JSON line
+                  per event.
+  emit            Appends an event with a JSON payload to a topic's file in the
+                  event store and prints the stored event as a JSON object.
+  hooks.list      Lists the built-in hooks that are enabled and those disabled
+                  with hooks.disable, as a JSON object.
+  hooks.enable    Enables one of the built-in hooks fs, log, mq, or proc for
+                  this and every later resh command of the user.
+  hooks.disable   Disables one of the built-in hooks fs, log, mq, or proc for
+                  this and every later resh command of the user, recording it in
+                  the event store.
+
+Usage:
+  resh event://.<verb> [key=value ...]
+
+For help with a specific verb:
+  resh event <verb> --help

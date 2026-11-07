@@ -1,0 +1,26 @@
+Handle: event
+Verb: hooks.list
+Definition: Lists the built-in hooks that are enabled and those disabled with
+  hooks.disable, as a JSON object.
+
+Usage:
+  resh event://.hooks.list
+
+Example:
+  resh --json-pretty event://.hooks.list
+
+Example Output:
+  {
+    "disabled": [],
+    "global_hooks": [
+      "fs",
+      "log",
+      "mq",
+      "proc"
+    ],
+    "instance_hooks": [],
+    "total": 4
+  }
+
+  Shown with --json-pretty. Without it the object is one line. The hooks
+  only print notes on stderr; they do not forward events.

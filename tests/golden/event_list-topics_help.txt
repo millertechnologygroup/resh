@@ -1,0 +1,70 @@
+Handle: event
+Verb: list-topics
+Definition: Lists the topics in the event store with their event counts and
+  newest event time, and optionally the payload fields of the latest event, as a
+  JSON object.
+
+Usage:
+  resh event://.list-topics [prefix=<text>] [match=<text>]
+    [sources=event] [limit=<n>] [include_hidden=true|false]
+    [include_stats=true|false] [include_schema=true|false]
+    [format=json|text] [timeout_ms=<n>]
+
+Example:
+  resh --json-pretty event://.list-topics prefix=jobs. include_stats=true
+
+Example Output:
+  {
+    "error": null,
+    "filters": {
+      "include_hidden": false,
+      "include_schema": false,
+      "include_stats": true,
+      "limit": 1000,
+      "match": null,
+      "prefix": "jobs.",
+      "sources": [
+        "event"
+      ]
+    },
+    "ok": true,
+    "timestamp_unix_ms": 1792166019775,
+    "topics": [
+      {
+        "backends": [
+          {
+            "handle": "event",
+            "id": "event:jobs.backup.completed",
+            "type": "event"
+          }
+        ],
+        "category": "jobs",
+        "description": null,
+        "display_name": "jobs.backup.completed",
+        "first_seen_unix_ms": 1792166019757,
+        "is_hidden": false,
+        "name": "jobs.backup.completed",
+        "origin": null,
+        "schema": null,
+        "sources": [
+          "event"
+        ],
+        "stats": {
+          "approx_message_count": 1,
+          "last_event_unix_ms": 1792166019757,
+          "partitions": null,
+          "replication_factor": null,
+          "throughput_per_minute": null
+        },
+        "tags": []
+      }
+    ],
+    "topics_returned": 1,
+    "topics_total": 1,
+    "truncated": false,
+    "warnings": []
+  }
+
+  Shown with --json-pretty. Topics starting with _ are hidden unless
+  include_hidden=true. match is a case-insensitive substring. Expired
+  events (ttl_ms) are not counted. timeout_ms defaults to 30000.
