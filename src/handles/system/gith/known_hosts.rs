@@ -158,6 +158,41 @@ impl KnownHosts {
             .filter(move |e| host_matches(&e.host, name))
     }
 
+    /// The keys a server for `host:port` may present: the plain entries for
+    /// the host whose key is not also listed under `@revoked`, as
+    /// `(key type, base64 key blob)`, in file order.
+    pub fn accepted_keys(&self, host: &str, port: u16) -> Vec<(String, String)> {
+        let name = lookup_name(host, port);
+        let entries: Vec<&Entry> = self.entries_for(&name).collect();
+        let revoked = |e: &Entry| {
+            entries
+                .iter()
+                .any(|r| r.marker == Marker::Revoked && r.blob == e.blob)
+        };
+        let mut keys: Vec<(String, String)> = Vec::new();
+        for e in &entries {
+            if e.marker == Marker::None && !revoked(e) {
+                let key = (e.key_type.clone(), STANDARD.encode(&e.blob));
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        keys
+    }
+
+    /// The distinct key types of [`Self::accepted_keys`], sorted.
+    pub fn accepted_types(&self, host: &str, port: u16) -> Vec<String> {
+        let mut types: Vec<String> = self
+            .accepted_keys(host, port)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        types.sort_unstable();
+        types.dedup();
+        types
+    }
+
     /// Checks, before connecting, that the host has at least one plain key
     /// entry to verify against.
     pub fn preflight(&self, host: &str, port: u16) -> Result<(), String> {
@@ -226,6 +261,23 @@ impl KnownHosts {
         let mut types: Vec<&str> = plain.iter().map(|e| e.key_type.as_str()).collect();
         types.sort_unstable();
         types.dedup();
+        let presented_type = key.type_name();
+        if !types.contains(&presented_type.as_str()) {
+            // A different key type, not a different key: the file lacks
+            // the key type the server presented.
+            return Err(format!(
+                "the SSH server for '{}' presented a {} host key ({}), but '{}' lists only {} \
+                 key(s) for it. Add the host's {} key to the file (for example with \
+                 ssh-keyscan -t {})",
+                name,
+                presented_type,
+                key.describe(),
+                self.path.display(),
+                types.join(", "),
+                presented_type,
+                presented_type
+            ));
+        }
         Err(format!(
             "the host key presented by '{}' ({}) does not match the key(s) recorded for it in \
              '{}' (recorded key types: {}). The host key may have changed, or the connection \
@@ -456,7 +508,31 @@ mod tests {
         let k = kh(&format!("h {ED} {}\n", b64(ED, b"same")));
         // Same data under another type is a different key.
         let err = k.verify("h", 22, &key(RSA, b"same")).unwrap_err();
-        assert!(err.contains("recorded key types: ssh-ed25519"), "{err}");
+        assert!(err.contains("presented a ssh-rsa host key"), "{err}");
+        assert!(err.contains("lists only ssh-ed25519 key(s)"), "{err}");
+        assert!(err.contains("ssh-keyscan -t ssh-rsa"), "{err}");
+    }
+
+    #[test]
+    fn accepted_keys_exclude_revoked_and_other_hosts() {
+        let k = kh(&format!(
+            "h {ED} {}\nh {RSA} {}\n@revoked h {RSA} {}\nother {ED} {}\n[h]:2222 {ED} {}\n",
+            b64(ED, b"a"),
+            b64(RSA, b"b"),
+            b64(RSA, b"b"),
+            b64(ED, b"c"),
+            b64(ED, b"d"),
+        ));
+        assert_eq!(
+            k.accepted_keys("h", 22),
+            vec![(ED.to_string(), b64(ED, b"a"))]
+        );
+        assert_eq!(k.accepted_types("H", 22), vec![ED.to_string()]);
+        assert_eq!(
+            k.accepted_keys("h", 2222),
+            vec![(ED.to_string(), b64(ED, b"d"))]
+        );
+        assert!(k.accepted_keys("nowhere", 22).is_empty());
     }
 
     #[test]

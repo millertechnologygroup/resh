@@ -1,17 +1,21 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono;
 use git2::{
-    BranchType, Commit, CredentialType, FetchOptions, Index, Oid, RemoteCallbacks, Repository,
-    Signature, Status as GitStatus, Time,
+    BranchType, Commit, FetchOptions, Index, Oid, RemoteCallbacks, Repository, Signature,
+    Status as GitStatus, Time,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use url::Url;
 
+mod args;
 mod known_hosts;
+mod net;
+#[cfg(test)]
+mod verb_tests;
 
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
@@ -21,12 +25,14 @@ use crate::core::{
 
 /// Metadata for `resh git --help` and `resh git <verb> --help`.
 static GIT_HELP: HandleHelp = HandleHelp {
-    description: "The git handle works with local Git repositories through libgit2, covering \
+    description: "The git handle works with Git repositories through libgit2, covering \
         status queries, branches, tags, diffs, commits, merges, rebases, and remote clone, \
-        pull, push, and sync. The URL host is a free-form alias, such as git://main, that \
-        labels the output and selects a registered credential profile, while the repository \
-        directory is always given with the path argument. Boolean, numeric, and list \
-        options take text values such as true, 5000, or a,b.",
+        pull, push, and sync, in the directory given with path (the URL host, such as \
+        git://main, is a free-form alias that labels the output). Unknown arguments are \
+        refused, and boolean, numeric, and list options take text values such as true, \
+        5000, or a,b. Every verb takes timeout_ms (clone, pull, push, and sync default to \
+        600000 ms, the other verbs have no limit), and the exit status is 0 on success, \
+        1 on failure, 2 for invalid arguments, and 124 on timeout.",
     usage: "resh git://<alias>.<verb> path=<repo-dir> [key=value ...]",
     verbs: &[
         VerbHelp {
@@ -37,7 +43,7 @@ static GIT_HELP: HandleHelp = HandleHelp {
                 usage: "resh git://<alias>.status path=<repo-dir>\n  \
                     [include_untracked=true|false] [include_ignored=true|false]\n  \
                     [include_staged=true|false] [include_branch=true|false]\n  \
-                    [include_remote=true|false]",
+                    [include_remote=true|false] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.status path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -89,7 +95,7 @@ Shown with --json-pretty."#,
                 usage: "resh git://<alias>.status_summary path=<repo-dir> [remote=<name>]\n  \
                     [branch=<name>] [include_untracked=true|false]\n  \
                     [include_ignored=true|false] [include_remote=true|false]\n  \
-                    [compute_diffstats=true|false] [max_files=<n>]",
+                    [compute_diffstats=true|false] [max_files=<n>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.status_summary path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -150,7 +156,7 @@ Shown for a branch without an upstream with --json-pretty."#,
                 usage: "resh git://<alias>.status_short path=<repo-dir> [branch=<name>]\n  \
                     [remote=<name>] [include_remote=true|false]\n  \
                     [include_dirty=true|false] [include_conflicts=true|false]\n  \
-                    [symbols=<json-object>]",
+                    [symbols=<json-object>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.status_short path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -182,8 +188,10 @@ The ahead, behind, conflict, and no-upstream markers are Unicode symbols."#,
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.diff path=<repo-dir> [mode=<mode>] [from=<rev>]\n  \
                     [to=<rev>] [paths=<p1,p2,...>] [unified=<n>]\n  \
-                    [ignore_whitespace=true|false] [detect_renames=true|false]\n  \
-                    [max_files=<n>] [max_hunks=<n>] [<option>=<value> ...]\n  \
+                    [ignore_whitespace=true|false] [ignore_whitespace_change=true|false]\n  \
+                    [ignore_whitespace_eol=true|false] [detect_renames=true|false]\n  \
+                    [rename_threshold=<0-100>] [binary=true|false] [max_files=<n>]\n  \
+                    [max_hunks=<n>] [timeout_ms=<ms>]\n  \
                     mode: workdir_vs_index (default), index_vs_head, head_vs_workdir,\n  \
                     commit_vs_commit, commit_vs_workdir, commit_vs_index",
                 example: "resh --json-pretty git://main.diff path=/srv/app mode=head_vs_workdir",
@@ -240,8 +248,9 @@ Shown with --json-pretty."##,
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.branch path=<repo-dir>\n  \
                     [action=list|create|delete|rename|checkout] [name=<branch>]\n  \
-                    [new_name=<branch>] [start_point=<rev>] [local_only=true|false]\n  \
-                    [remote_only=true|false] [all=true|false] [force=true|false]",
+                    [new_name=<branch>] [start_point=<rev>] [track=true|false]\n  \
+                    [remote=<name>] [local_only=true|false] [remote_only=true|false]\n  \
+                    [all=true|false] [force=true|false] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.branch path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -271,10 +280,11 @@ Shown for action=list with --json-pretty."#,
                 when no action is given.",
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.tag path=<repo-dir> [action=list|create|delete]\n  \
-                    [name=<tag>] [pattern=<glob>]\n  \
+                    [name=<tag>] [names=<t1,t2,...>] [pattern=<glob>]\n  \
                     [sort=name|version|taggerdate|committerdate]\n  \
                     [annotated=true|false] [message=<text>] [target=<rev>]\n  \
-                    [force=true|false] [author_name=<name>] [author_email=<email>]",
+                    [force=true|false] [author_name=<name>] [author_email=<email>]\n  \
+                    [timestamp=<iso8601|unix-seconds>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.tag path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -313,7 +323,7 @@ Shown for action=list with --json-pretty."#,
                     [amend=true|false] [no_edit=true|false] [signoff=true|false]\n  \
                     [author_name=<name>] [author_email=<email>]\n  \
                     [committer_name=<name>] [committer_email=<email>]\n  \
-                    [timestamp=<iso8601>]",
+                    [timestamp=<iso8601|unix-seconds>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.commit path=/srv/app 'message=Fix typo'",
                 example_output: Some(
                     r#"{
@@ -356,7 +366,7 @@ Shown with --json-pretty. staged_files counts only files staged by this call."#,
                     [author_email=<email>] [committer_name=<name>]\n  \
                     [committer_email=<email>] [ff_only=true|false] [no_ff=true|false]\n  \
                     [squash=true|false] [allow_uncommitted=true|false]\n  \
-                    [abort_on_conflict=true|false]",
+                    [abort_on_conflict=true|false] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.merge path=/srv/app source=feature",
                 example_output: Some(
                     r#"{
@@ -390,9 +400,9 @@ Shown for a fast-forward merge with --json-pretty."#,
                     [operation=start|continue|abort] [branch=<branch>]\n  \
                     [author_name=<name>] [author_email=<email>]\n  \
                     [committer_name=<name>] [committer_email=<email>]\n  \
-                    [ff_only=true|false] [preserve_merges=true|false]\n  \
-                    [autosquash=true|false] [allow_uncommitted=true|false]\n  \
-                    [abort_on_conflict=true|false]",
+                    [ff_only=true|false] [preserve_merges=false] [autosquash=false]\n  \
+                    [allow_uncommitted=true|false] [abort_on_conflict=true|false]\n  \
+                    [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.rebase path=/srv/app upstream=main",
                 example_output: Some(
                     r#"{
@@ -425,9 +435,9 @@ operation=continue or operation=abort."#,
             definition: "Clones a remote repository into a new or empty local directory.",
             detail: Some(VerbDetail {
                 usage: "resh git://<alias>.clone url=<repo-url> path=<dir> [branch=<name>]\n  \
-                    [depth=<n>] [recursive=true|false] [ssh_key=<file>]\n  \
+                    [recursive=true|false] [ssh_key=<file>]\n  \
                     [known_hosts_path=<file>] [username=<user>] [password=<pass>]\n  \
-                    [token=<token>]",
+                    [token=<token>] [timeout_ms=<ms>]",
                 example: "resh git://main.clone url=https://example.com/app.git path=/srv/app",
                 example_output: Some(
                     r#"{
@@ -451,7 +461,7 @@ operation=continue or operation=abort."#,
                 usage: "resh git://<alias>.pull path=<repo-dir> [remote=<name>]\n  \
                     [branch=<name>] [ff_only=true|false] [prune=true|false]\n  \
                     [ssh_key=<file>] [known_hosts_path=<file>] [username=<user>]\n  \
-                    [password=<pass>] [token=<token>]",
+                    [password=<pass>] [token=<token>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.pull path=/srv/app remote=origin",
                 example_output: Some(
                     r#"{
@@ -483,7 +493,7 @@ reports status up_to_date."#,
                     [force=true|false] [ff_only=true|false]\n  \
                     [set_upstream=true|false] [ssh_key=<file>]\n  \
                     [known_hosts_path=<file>] [username=<user>] [password=<pass>]\n  \
-                    [token=<token>]",
+                    [token=<token>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.push path=/srv/app branch=main",
                 example_output: Some(
                     r#"{
@@ -518,7 +528,7 @@ Shown with --json-pretty."#,
                     [push_tags=true|false] [force_push=true|false]\n  \
                     [allow_uncommitted=true|false] [stash_uncommitted=true|false]\n  \
                     [abort_on_conflict=true|false] [dry_run=true|false]\n  \
-                    [known_hosts_path=<file>]",
+                    [known_hosts_path=<file>] [timeout_ms=<ms>]",
                 example: "resh --json-pretty git://main.sync path=/srv/app pull_strategy=rebase",
                 example_output: None,
             }),
@@ -526,134 +536,10 @@ Shown with --json-pretty."#,
     ],
 };
 
-/// Parses one CLI argument value (usually a string such as "true" or "5000")
-/// into a typed value, accepting already-typed JSON values too.
-fn lenient_arg<T: serde::de::DeserializeOwned>(key: &str, value: &Value) -> Result<T, String> {
-    crate::core::lenient::from_value(value.clone())
-        .map_err(|e| format!("invalid {} value: {}", key, e))
-}
-
 /// Git handle implementation
 #[derive(Debug)]
 pub struct GitHandle {
     alias: String,
-}
-
-/// Git connection profile for authentication
-#[derive(Debug, Clone)]
-pub struct GitConnectionProfile {
-    pub ssh_key_path: Option<PathBuf>,
-    /// OpenSSH known_hosts file that SSH remotes must match (strict
-    /// host-key checking); ignored for non-SSH remotes.
-    pub known_hosts_path: Option<PathBuf>,
-    pub username: Option<String>,
-    pub password: Option<String>,
-    pub token: Option<String>,
-}
-
-/// Strict SSH host-key enforcement for one remote operation, installed by
-/// [`install_host_key_check`] when `known_hosts_path` is set and the remote
-/// uses SSH.
-struct HostKeyGuard {
-    host: String,
-    known_hosts_path: String,
-    /// The reason the certificate callback refused the server, if it did.
-    failure: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-}
-
-impl HostKeyGuard {
-    /// The host-key refusal recorded by the callback, if any. Checked when a
-    /// remote operation fails, so the refusal is reported as
-    /// `git.host_key_verification_failed` instead of a generic failure.
-    fn failure(&self) -> Option<GitError> {
-        let reason = self.failure.lock().ok()?.clone()?;
-        Some(GitError::HostKeyVerificationFailed {
-            host: self.host.clone(),
-            known_hosts_path: self.known_hosts_path.clone(),
-            reason,
-        })
-    }
-}
-
-/// Makes the connection to `url` verify the server's SSH host key against
-/// `known_hosts_path`.
-///
-/// Returns `Ok(None)` (nothing installed, behavior unchanged) when no file is
-/// given or the URL does not use SSH: https, http, git and file remotes
-/// ignore the option. For an SSH URL the file is read and the host must have
-/// a plain key entry before any connection is attempted; then a
-/// `certificate_check` callback accepts the server only if its host key
-/// matches one of those entries and is not `@revoked`.
-fn install_host_key_check(
-    callbacks: &mut RemoteCallbacks<'_>,
-    known_hosts_path: Option<&str>,
-    url: &str,
-) -> Result<Option<HostKeyGuard>, GitError> {
-    let Some(path) = known_hosts_path else {
-        return Ok(None);
-    };
-    let Some((host, port)) = known_hosts::ssh_endpoint(url) else {
-        log::debug!("known_hosts_path ignored: '{}' is not an SSH remote", url);
-        return Ok(None);
-    };
-    let refuse = |reason: String| GitError::HostKeyVerificationFailed {
-        host: known_hosts::lookup_name(&host, port),
-        known_hosts_path: path.to_string(),
-        reason,
-    };
-    let file = known_hosts::KnownHosts::load(Path::new(path)).map_err(refuse)?;
-    if file.skipped() > 0 {
-        log::warn!(
-            "known_hosts file '{}': skipped {} malformed or unsupported line(s)",
-            path,
-            file.skipped()
-        );
-    }
-    file.preflight(&host, port).map_err(refuse)?;
-
-    let failure = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let slot = failure.clone();
-    let url_host = host.clone();
-    callbacks.certificate_check(move |cert, hostname| {
-        // Only SSH host keys are checked; a TLS certificate keeps libgit2's
-        // own validation.
-        let Some(hostkey) = cert.as_hostkey() else {
-            return Ok(git2::CertificateCheckStatus::CertificatePassthrough);
-        };
-        let key_type = match hostkey.hostkey_type() {
-            Some(git2::cert::SshHostKeyType::Unknown) | None => None,
-            Some(t) => Some(t.name().to_string()),
-        };
-        let presented = known_hosts::PresentedKey {
-            key_type,
-            blob: hostkey.hostkey().map(<[u8]>::to_vec),
-            sha256: hostkey.hash_sha256().copied(),
-        };
-        let checked_host = if hostname.is_empty() {
-            url_host.as_str()
-        } else {
-            hostname
-        };
-        match file.verify(checked_host, port, &presented) {
-            Ok(()) => Ok(git2::CertificateCheckStatus::CertificateOk),
-            Err(reason) => {
-                let message = format!("SSH host key verification failed: {}", reason);
-                if let Ok(mut s) = slot.lock() {
-                    *s = Some(reason);
-                }
-                Err(git2::Error::new(
-                    git2::ErrorCode::Certificate,
-                    git2::ErrorClass::Ssh,
-                    message,
-                ))
-            }
-        }
-    });
-    Ok(Some(HostKeyGuard {
-        host: known_hosts::lookup_name(&host, port),
-        known_hosts_path: path.to_string(),
-        failure,
-    }))
 }
 
 /// Clone configuration structure
@@ -1316,11 +1202,13 @@ pub struct SyncConfig {
     pub ff_only: Option<bool>,
     pub allow_uncommitted: Option<bool>,
     pub stash_uncommitted: Option<bool>,
+    /// Accepted and type-checked; sync only fast-forwards, which cannot
+    /// conflict, so it changes nothing.
+    #[allow(dead_code)]
     pub abort_on_conflict: Option<bool>,
     pub push: Option<bool>,
     pub push_tags: Option<bool>,
     pub force_push: Option<bool>,
-    pub set_upstream: Option<bool>,
     pub dry_run: Option<bool>,
     pub known_hosts_path: Option<String>,
     pub timeout_ms: Option<u64>,
@@ -1343,8 +1231,23 @@ pub struct StatusSummaryConfig {
 /// Git-specific error types
 #[derive(Error, Debug)]
 pub enum GitError {
-    #[error("connection not found: alias '{alias}' is not configured")]
-    ConnectionNotFound { alias: String },
+    /// The verb is not one of the git handle's verbs.
+    #[error("{message}")]
+    InvalidVerb { message: String },
+
+    /// `timeout_ms` passed before the verb finished. `still_running` is
+    /// true when the operation could not be stopped; otherwise it stopped
+    /// at the deadline.
+    #[error("{verb} timed out after {timeout_ms} ms; {}", if *still_running {
+        "the operation could not be stopped and its outcome is unknown"
+    } else {
+        "the operation was stopped; check the repository before retrying"
+    })]
+    Timeout {
+        verb: String,
+        timeout_ms: u64,
+        still_running: bool,
+    },
 
     /// The SSH server's host key could not be verified against the
     /// `known_hosts_path` file (unknown host, changed or revoked key,
@@ -1365,14 +1268,8 @@ pub enum GitError {
     #[error("authentication failed: {message}")]
     CloneAuthFailed { message: String },
 
-    #[error("clone operation timed out after {timeout_ms}ms")]
-    CloneTimeout { timeout_ms: u32 },
-
     #[error("clone target directory is not empty: {path}")]
     CloneTargetNotEmpty { path: String },
-
-    #[error("unsupported git backend")]
-    CloneUnsupportedBackend,
 
     // Pull-specific errors
     #[error("invalid pull config: {message}")]
@@ -1402,12 +1299,6 @@ pub enum GitError {
     #[error("non-fast-forward pull refused with ff_only=true")]
     PullNonFastForward,
 
-    #[error("merge conflicts detected during pull")]
-    PullConflict,
-
-    #[error("pull operation timed out after {timeout_ms}ms")]
-    PullTimeout { timeout_ms: u64 },
-
     #[error("pull operation failed: {message}")]
     PullFailed { message: String },
 
@@ -1433,15 +1324,9 @@ pub enum GitError {
     #[error("push operation failed: {message}")]
     PushFailed { message: String },
 
-    #[error("push operation timed out after {timeout_ms}ms")]
-    PushTimeout { timeout_ms: u64 },
-
     // Status-specific errors
     #[error("invalid status config: {message}")]
     InvalidStatusConfig { message: String },
-
-    #[error("status operation timed out after {timeout_ms}ms")]
-    StatusTimeout { timeout_ms: u64 },
 
     #[error("status operation failed: {message}")]
     StatusFailed { message: String },
@@ -1452,9 +1337,6 @@ pub enum GitError {
 
     #[error("status_short branch not found: {branch}")]
     StatusShortBranchNotFound { branch: String },
-
-    #[error("status_short operation timed out after {timeout_ms}ms")]
-    StatusShortTimeout { timeout_ms: u64 },
 
     #[error("status_short operation failed: {message}")]
     StatusShortFailed { message: String },
@@ -1493,9 +1375,6 @@ pub enum GitError {
     #[error("branch checkout failed: {message}")]
     BranchCheckoutFailed { message: String },
 
-    #[error("branch operation timed out after {timeout_ms}ms")]
-    BranchTimeout { timeout_ms: u64 },
-
     #[error("branch operation failed: {message}")]
     BranchFailed { message: String },
 
@@ -1518,9 +1397,6 @@ pub enum GitError {
     #[error("commit operation failed: {message}")]
     CommitFailed { message: String },
 
-    #[error("commit operation timed out after {timeout_ms}ms")]
-    CommitTimeout { timeout_ms: u64 },
-
     // Diff-specific errors
     #[error("invalid diff config: {message}")]
     InvalidDiffConfig { message: String },
@@ -1533,9 +1409,6 @@ pub enum GitError {
 
     #[error("diff operation failed: {message}")]
     DiffFailed { message: String },
-
-    #[error("diff operation timed out after {timeout_ms}ms")]
-    DiffTimeout { timeout_ms: u64 },
 
     // Tag-specific errors
     #[error("invalid tag config: {message}")]
@@ -1561,9 +1434,6 @@ pub enum GitError {
 
     #[error("tag create operation failed: {message}")]
     TagCreateFailed { message: String },
-
-    #[error("tag operation timed out after {timeout_ms}ms")]
-    TagTimeout { timeout_ms: u64 },
 
     #[error("tag operation failed: {message}")]
     TagFailed { message: String },
@@ -1598,9 +1468,6 @@ pub enum GitError {
 
     #[error("merge operation failed: {message}")]
     MergeFailed { message: String },
-
-    #[error("merge operation timed out after {timeout_ms}ms")]
-    MergeTimeout { timeout_ms: u64 },
 
     // Rebase-specific errors
     #[error("invalid rebase config: {message}")]
@@ -1642,9 +1509,6 @@ pub enum GitError {
     #[error("rebase operation failed: {message}")]
     RebaseFailed { message: String },
 
-    #[error("rebase operation timed out after {timeout_ms}ms")]
-    RebaseTimeout { timeout_ms: u64 },
-
     // Sync-specific errors
     #[error("invalid sync config: {message}")]
     InvalidSyncConfig { message: String },
@@ -1658,9 +1522,6 @@ pub enum GitError {
     #[error("sync remote not found: {remote}")]
     SyncRemoteNotFound { remote: String },
 
-    #[error("sync upstream not found for branch")]
-    SyncUpstreamNotFound,
-
     #[error("dirty working tree prevents sync")]
     SyncDirtyWorktree,
 
@@ -1670,9 +1531,6 @@ pub enum GitError {
     #[error("sync pull failed: {message}")]
     SyncPullFailed { message: String },
 
-    #[error("sync conflicts detected")]
-    SyncConflict,
-
     #[error("sync push rejected: {message}")]
     SyncPushRejected { message: String },
 
@@ -1681,9 +1539,6 @@ pub enum GitError {
 
     #[error("sync stash apply conflicts detected")]
     SyncStashApplyConflict,
-
-    #[error("sync operation timed out after {timeout_ms}ms")]
-    SyncTimeout { timeout_ms: u64 },
 
     #[error("sync operation failed: {message}")]
     SyncFailed { message: String },
@@ -1695,19 +1550,185 @@ pub enum GitError {
     #[error("status summary branch not found: {name}")]
     StatusSummaryBranchNotFound { name: String },
 
-    #[error("status summary operation timed out after {timeout_ms}ms")]
-    StatusSummaryTimeout { timeout_ms: u64 },
-
     #[error("status summary operation failed: {message}")]
     StatusSummaryFailed { message: String },
 }
 
+impl GitError {
+    /// The generic failure of `verb` (exit status 1).
+    pub fn failed_for(verb: &str, message: String) -> GitError {
+        match verb {
+            "clone" => GitError::CloneFailed { message },
+            "pull" => GitError::PullFailed { message },
+            "push" => GitError::PushFailed { message },
+            "status" => GitError::StatusFailed { message },
+            "status_short" => GitError::StatusShortFailed { message },
+            "status_summary" => GitError::StatusSummaryFailed { message },
+            "branch" => GitError::BranchFailed { message },
+            "commit" => GitError::CommitFailed { message },
+            "diff" => GitError::DiffFailed { message },
+            "tag" => GitError::TagFailed { message },
+            "merge" => GitError::MergeFailed { message },
+            "rebase" => GitError::RebaseFailed { message },
+            _ => GitError::SyncFailed { message },
+        }
+    }
+
+    /// The invalid-arguments error of `verb` (exit status 2).
+    pub fn invalid_for(verb: &str, message: String) -> GitError {
+        match verb {
+            "clone" => GitError::InvalidCloneConfig { message },
+            "pull" => GitError::InvalidPullConfig { message },
+            "push" => GitError::InvalidPushConfig { message },
+            "status" => GitError::InvalidStatusConfig { message },
+            "status_short" => GitError::InvalidStatusShortConfig { message },
+            "status_summary" => GitError::InvalidStatusSummaryConfig { message },
+            "branch" => GitError::InvalidBranchConfig { message },
+            "commit" => GitError::InvalidCommitConfig { message },
+            "diff" => GitError::InvalidDiffConfig { message },
+            "tag" => GitError::InvalidTagConfig { message },
+            "merge" => GitError::InvalidMergeConfig { message },
+            "rebase" => GitError::InvalidRebaseConfig { message },
+            _ => GitError::InvalidSyncConfig { message },
+        }
+    }
+
+    /// The process exit status for this error: 2 for invalid arguments
+    /// (nothing was done), 124 for a timeout, 1 for every other failure.
+    pub fn exit_code(&self) -> i32 {
+        let code = self.code();
+        if code.ends_with("_timeout") {
+            124
+        } else if code.starts_with("git.invalid_")
+            || code == "git.sync_invalid_config"
+            || code.ends_with("_unsupported")
+        {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// The error code, such as `git.repository_not_found`.
+    pub fn code(&self) -> String {
+        let code = match self {
+            GitError::Timeout { verb, .. } => return format!("git.{verb}_timeout"),
+            GitError::InvalidVerb { .. } => "git.invalid_verb",
+            GitError::HostKeyVerificationFailed { .. } => "git.host_key_verification_failed",
+            GitError::InvalidCloneConfig { .. } => "git.invalid_clone_config",
+            GitError::CloneFailed { .. } => "git.clone_failed",
+            GitError::CloneAuthFailed { .. } => "git.clone_auth_failed",
+            GitError::CloneTargetNotEmpty { .. } => "git.clone_target_not_empty",
+            GitError::InvalidPullConfig { .. } => "git.invalid_pull_config",
+            GitError::RepositoryNotFound { .. } => "git.repository_not_found",
+            GitError::RemoteNotFound { .. } => "git.remote_not_found",
+            GitError::PullRemoteBranchNotFound { .. } => "git.pull_remote_branch_not_found",
+            GitError::PullDetachedHead => "git.pull_detached_head",
+            GitError::PullFetchFailed { .. } => "git.pull_fetch_failed",
+            GitError::PullAuthFailed { .. } => "git.pull_auth_failed",
+            GitError::PullDirtyWorktree => "git.pull_dirty_worktree",
+            GitError::PullNonFastForward => "git.pull_non_fast_forward",
+            GitError::PullFailed { .. } => "git.pull_failed",
+            GitError::InvalidPushConfig { .. } => "git.invalid_push_config",
+            GitError::PushDetachedHead => "git.push_detached_head",
+            GitError::PushLocalBranchNotFound { .. } => "git.push_local_branch_not_found",
+            GitError::PushNonFastForward => "git.push_non_fast_forward",
+            GitError::PushAuthFailed { .. } => "git.push_auth_failed",
+            GitError::PushRejected { .. } => "git.push_rejected",
+            GitError::PushFailed { .. } => "git.push_failed",
+            GitError::InvalidStatusConfig { .. } => "git.invalid_status_config",
+            GitError::StatusFailed { .. } => "git.status_failed",
+            GitError::InvalidBranchConfig { .. } => "git.invalid_branch_config",
+            GitError::BranchNotFound { .. } => "git.branch_not_found",
+            GitError::BranchAlreadyExists { .. } => "git.branch_already_exists",
+            GitError::BranchStartpointNotFound { .. } => "git.branch_startpoint_not_found",
+            GitError::BranchDeleteCurrent { .. } => "git.branch_delete_current",
+            GitError::BranchDeleteUnmerged { .. } => "git.branch_delete_unmerged",
+            GitError::BranchDeleteFailed { .. } => "git.branch_delete_failed",
+            GitError::BranchRenameFailed { .. } => "git.branch_rename_failed",
+            GitError::BranchSetUpstreamFailed { .. } => "git.branch_set_upstream_failed",
+            GitError::BranchCheckoutConflict => "git.branch_checkout_conflict",
+            GitError::BranchCheckoutFailed { .. } => "git.branch_checkout_failed",
+            GitError::BranchFailed { .. } => "git.branch_failed",
+            GitError::InvalidCommitConfig { .. } => "git.invalid_commit_config",
+            GitError::CommitIdentityMissing => "git.commit_identity_missing",
+            GitError::CommitNothingToCommit { .. } => "git.commit_nothing_to_commit",
+            GitError::CommitAmendWithoutHead => "git.commit_amend_without_head",
+            GitError::CommitAmendFailed { .. } => "git.commit_amend_failed",
+            GitError::CommitFailed { .. } => "git.commit_failed",
+            GitError::InvalidDiffConfig { .. } => "git.invalid_diff_config",
+            GitError::DiffRefNotFound { .. } => "git.diff_ref_not_found",
+            GitError::DiffHeadNotFound => "git.diff_head_not_found",
+            GitError::DiffFailed { .. } => "git.diff_failed",
+            GitError::InvalidTagConfig { .. } => "git.invalid_tag_config",
+            GitError::TagTargetNotFound { .. } => "git.tag_target_not_found",
+            GitError::TagIdentityMissing => "git.tag_identity_missing",
+            GitError::TagAlreadyExists { .. } => "git.tag_already_exists",
+            GitError::TagNotFound { .. } => "git.tag_not_found",
+            GitError::TagDeleteFailed { .. } => "git.tag_delete_failed",
+            GitError::TagListFailed { .. } => "git.tag_list_failed",
+            GitError::TagCreateFailed { .. } => "git.tag_create_failed",
+            GitError::TagFailed { .. } => "git.tag_failed",
+            GitError::InvalidMergeConfig { .. } => "git.invalid_merge_config",
+            GitError::MergeDetachedHead => "git.merge_detached_head",
+            GitError::MergeSourceNotFound(..) => "git.merge_source_not_found",
+            GitError::MergeSourceNotCommit(..) => "git.merge_source_not_commit",
+            GitError::MergeTargetNotFound(..) => "git.merge_target_not_found",
+            GitError::MergeDirtyWorktree => "git.merge_dirty_worktree",
+            GitError::MergeNonFastForward => "git.merge_non_fast_forward",
+            GitError::MergeIdentityMissing => "git.merge_identity_missing",
+            GitError::MergeConflict => "git.merge_conflict",
+            GitError::MergeFailed { .. } => "git.merge_failed",
+            GitError::InvalidRebaseConfig { .. } => "git.invalid_rebase_config",
+            GitError::RebaseInProgress => "git.rebase_in_progress",
+            GitError::RebaseNotInProgress => "git.rebase_not_in_progress",
+            GitError::RebaseDetachedHead => "git.rebase_detached_head",
+            GitError::RebaseBranchNotFound { .. } => "git.rebase_branch_not_found",
+            GitError::RebaseUpstreamNotFound { .. } => "git.rebase_upstream_not_found",
+            GitError::RebaseUpstreamNotCommit { .. } => "git.rebase_upstream_not_commit",
+            GitError::RebaseNonFastForward => "git.rebase_non_fast_forward",
+            GitError::RebaseDirtyWorktree => "git.rebase_dirty_worktree",
+            GitError::RebaseIdentityMissing => "git.rebase_identity_missing",
+            GitError::RebaseConflict => "git.rebase_conflict",
+            GitError::RebasePreserveMergesUnsupported => "git.rebase_preserve_merges_unsupported",
+            GitError::RebaseFailed { .. } => "git.rebase_failed",
+            GitError::InvalidSyncConfig { .. } => "git.sync_invalid_config",
+            GitError::SyncDetachedHead => "git.sync_detached_head",
+            GitError::SyncBranchNotFound { .. } => "git.sync_branch_not_found",
+            GitError::SyncRemoteNotFound { .. } => "git.sync_remote_not_found",
+            GitError::SyncDirtyWorktree => "git.sync_dirty_worktree",
+            GitError::SyncNonFastForward => "git.sync_non_fast_forward",
+            GitError::SyncPullFailed { .. } => "git.sync_pull_failed",
+            GitError::SyncPushRejected { .. } => "git.sync_push_rejected",
+            GitError::SyncPushFailed { .. } => "git.sync_push_failed",
+            GitError::SyncStashApplyConflict => "git.sync_stash_apply_conflict",
+            GitError::SyncFailed { .. } => "git.sync_failed",
+            // Status Summary error codes
+            GitError::InvalidStatusSummaryConfig { .. } => "git.invalid_status_summary_config",
+            GitError::StatusSummaryBranchNotFound { .. } => "git.status_summary_branch_not_found",
+            GitError::StatusSummaryFailed { .. } => "git.status_summary_failed",
+            // Status short error codes
+            GitError::InvalidStatusShortConfig { .. } => "git.invalid_status_short_config",
+            GitError::StatusShortBranchNotFound { .. } => "git.status_short_branch_not_found",
+            GitError::StatusShortFailed { .. } => "git.status_short_failed",
+        };
+        code.to_string()
+    }
+}
+
 impl From<GitError> for crate::core::status::ShellError {
     fn from(err: GitError) -> Self {
+        let code = err.code();
         let details = match &err {
-            GitError::ConnectionNotFound { alias } => {
-                json!({ "alias": alias })
-            }
+            GitError::InvalidVerb { .. } => json!({}),
+            GitError::Timeout {
+                timeout_ms,
+                still_running,
+                ..
+            } => json!({
+                "timeout_ms": timeout_ms,
+                "outcome": if *still_running { "unknown" } else { "stopped" },
+            }),
             GitError::HostKeyVerificationFailed {
                 host,
                 known_hosts_path,
@@ -1718,13 +1739,9 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::InvalidCloneConfig { .. } => json!({}),
             GitError::CloneFailed { .. } => json!({}),
             GitError::CloneAuthFailed { .. } => json!({}),
-            GitError::CloneTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::CloneTargetNotEmpty { path } => {
                 json!({ "path": path })
             }
-            GitError::CloneUnsupportedBackend => json!({}),
             GitError::InvalidPullConfig { .. } => json!({}),
             GitError::RepositoryNotFound { path } => {
                 json!({ "path": path })
@@ -1740,10 +1757,6 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::PullAuthFailed { .. } => json!({}),
             GitError::PullDirtyWorktree => json!({}),
             GitError::PullNonFastForward => json!({}),
-            GitError::PullConflict => json!({}),
-            GitError::PullTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::PullFailed { .. } => json!({}),
             GitError::InvalidPushConfig { .. } => json!({}),
             GitError::PushDetachedHead => json!({}),
@@ -1754,13 +1767,7 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::PushAuthFailed { .. } => json!({}),
             GitError::PushRejected { .. } => json!({}),
             GitError::PushFailed { .. } => json!({}),
-            GitError::PushTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::InvalidStatusConfig { .. } => json!({}),
-            GitError::StatusTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::StatusFailed { .. } => json!({}),
             GitError::InvalidBranchConfig { .. } => json!({}),
             GitError::BranchNotFound { name } => {
@@ -1783,9 +1790,6 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::BranchSetUpstreamFailed { .. } => json!({}),
             GitError::BranchCheckoutConflict => json!({}),
             GitError::BranchCheckoutFailed { .. } => json!({}),
-            GitError::BranchTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::BranchFailed { .. } => json!({}),
             GitError::InvalidCommitConfig { .. } => json!({}),
             GitError::CommitIdentityMissing => json!({}),
@@ -1795,18 +1799,12 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::CommitAmendWithoutHead => json!({}),
             GitError::CommitAmendFailed { .. } => json!({}),
             GitError::CommitFailed { .. } => json!({}),
-            GitError::CommitTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::InvalidDiffConfig { .. } => json!({}),
             GitError::DiffRefNotFound { reference } => {
                 json!({ "reference": reference })
             }
             GitError::DiffHeadNotFound => json!({}),
             GitError::DiffFailed { .. } => json!({}),
-            GitError::DiffTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::InvalidTagConfig { .. } => json!({}),
             GitError::TagTargetNotFound { target } => {
                 json!({ "target": target })
@@ -1821,9 +1819,6 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::TagDeleteFailed { .. } => json!({}),
             GitError::TagListFailed { .. } => json!({}),
             GitError::TagCreateFailed { .. } => json!({}),
-            GitError::TagTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::TagFailed { .. } => json!({}),
             GitError::InvalidMergeConfig { .. } => json!({}),
             GitError::MergeDetachedHead => json!({}),
@@ -1841,9 +1836,6 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::MergeIdentityMissing => json!({}),
             GitError::MergeConflict => json!({}),
             GitError::MergeFailed { .. } => json!({}),
-            GitError::MergeTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::InvalidRebaseConfig { .. } => json!({}),
             GitError::RebaseInProgress => json!({}),
             GitError::RebaseNotInProgress => json!({}),
@@ -1863,9 +1855,6 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::RebaseConflict => json!({}),
             GitError::RebasePreserveMergesUnsupported => json!({}),
             GitError::RebaseFailed { .. } => json!({}),
-            GitError::RebaseTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::InvalidSyncConfig { .. } => json!({}),
             GitError::SyncDetachedHead => json!({}),
             GitError::SyncBranchNotFound { branch } => {
@@ -1874,25 +1863,17 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::SyncRemoteNotFound { remote } => {
                 json!({ "remote": remote })
             }
-            GitError::SyncUpstreamNotFound => json!({}),
             GitError::SyncDirtyWorktree => json!({}),
             GitError::SyncNonFastForward => json!({}),
             GitError::SyncPullFailed { .. } => json!({}),
-            GitError::SyncConflict => json!({}),
             GitError::SyncPushRejected { .. } => json!({}),
             GitError::SyncPushFailed { .. } => json!({}),
             GitError::SyncStashApplyConflict => json!({}),
-            GitError::SyncTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::SyncFailed { .. } => json!({}),
             // Status Summary error details
             GitError::InvalidStatusSummaryConfig { .. } => json!({}),
             GitError::StatusSummaryBranchNotFound { name } => {
                 json!({ "name": name })
-            }
-            GitError::StatusSummaryTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
             }
             GitError::StatusSummaryFailed { .. } => json!({}),
             // Status short error details
@@ -1900,131 +1881,10 @@ impl From<GitError> for crate::core::status::ShellError {
             GitError::StatusShortBranchNotFound { branch } => {
                 json!({ "branch": branch })
             }
-            GitError::StatusShortTimeout { timeout_ms } => {
-                json!({ "timeout_ms": timeout_ms })
-            }
             GitError::StatusShortFailed { .. } => json!({}),
         };
 
-        let code = match err {
-            GitError::ConnectionNotFound { .. } => "git.connection_not_found",
-            GitError::HostKeyVerificationFailed { .. } => "git.host_key_verification_failed",
-            GitError::InvalidCloneConfig { .. } => "git.invalid_clone_config",
-            GitError::CloneFailed { .. } => "git.clone_failed",
-            GitError::CloneAuthFailed { .. } => "git.clone_auth_failed",
-            GitError::CloneTimeout { .. } => "git.clone_timeout",
-            GitError::CloneTargetNotEmpty { .. } => "git.clone_target_not_empty",
-            GitError::CloneUnsupportedBackend => "git.clone_unsupported_backend",
-            GitError::InvalidPullConfig { .. } => "git.invalid_pull_config",
-            GitError::RepositoryNotFound { .. } => "git.repository_not_found",
-            GitError::RemoteNotFound { .. } => "git.remote_not_found",
-            GitError::PullRemoteBranchNotFound { .. } => "git.pull_remote_branch_not_found",
-            GitError::PullDetachedHead => "git.pull_detached_head",
-            GitError::PullFetchFailed { .. } => "git.pull_fetch_failed",
-            GitError::PullAuthFailed { .. } => "git.pull_auth_failed",
-            GitError::PullDirtyWorktree => "git.pull_dirty_worktree",
-            GitError::PullNonFastForward => "git.pull_non_fast_forward",
-            GitError::PullConflict => "git.pull_conflict",
-            GitError::PullTimeout { .. } => "git.pull_timeout",
-            GitError::PullFailed { .. } => "git.pull_failed",
-            GitError::InvalidPushConfig { .. } => "git.invalid_push_config",
-            GitError::PushDetachedHead => "git.push_detached_head",
-            GitError::PushLocalBranchNotFound { .. } => "git.push_local_branch_not_found",
-            GitError::PushNonFastForward => "git.push_non_fast_forward",
-            GitError::PushAuthFailed { .. } => "git.push_auth_failed",
-            GitError::PushRejected { .. } => "git.push_rejected",
-            GitError::PushFailed { .. } => "git.push_failed",
-            GitError::PushTimeout { .. } => "git.push_timeout",
-            GitError::InvalidStatusConfig { .. } => "git.invalid_status_config",
-            GitError::StatusTimeout { .. } => "git.status_timeout",
-            GitError::StatusFailed { .. } => "git.status_failed",
-            GitError::InvalidBranchConfig { .. } => "git.invalid_branch_config",
-            GitError::BranchNotFound { .. } => "git.branch_not_found",
-            GitError::BranchAlreadyExists { .. } => "git.branch_already_exists",
-            GitError::BranchStartpointNotFound { .. } => "git.branch_startpoint_not_found",
-            GitError::BranchDeleteCurrent { .. } => "git.branch_delete_current",
-            GitError::BranchDeleteUnmerged { .. } => "git.branch_delete_unmerged",
-            GitError::BranchDeleteFailed { .. } => "git.branch_delete_failed",
-            GitError::BranchRenameFailed { .. } => "git.branch_rename_failed",
-            GitError::BranchSetUpstreamFailed { .. } => "git.branch_set_upstream_failed",
-            GitError::BranchCheckoutConflict => "git.branch_checkout_conflict",
-            GitError::BranchCheckoutFailed { .. } => "git.branch_checkout_failed",
-            GitError::BranchTimeout { .. } => "git.branch_timeout",
-            GitError::BranchFailed { .. } => "git.branch_failed",
-            GitError::InvalidCommitConfig { .. } => "git.invalid_commit_config",
-            GitError::CommitIdentityMissing => "git.commit_identity_missing",
-            GitError::CommitNothingToCommit { .. } => "git.commit_nothing_to_commit",
-            GitError::CommitAmendWithoutHead => "git.commit_amend_without_head",
-            GitError::CommitAmendFailed { .. } => "git.commit_amend_failed",
-            GitError::CommitFailed { .. } => "git.commit_failed",
-            GitError::CommitTimeout { .. } => "git.commit_timeout",
-            GitError::InvalidDiffConfig { .. } => "git.invalid_diff_config",
-            GitError::DiffRefNotFound { .. } => "git.diff_ref_not_found",
-            GitError::DiffHeadNotFound => "git.diff_head_not_found",
-            GitError::DiffFailed { .. } => "git.diff_failed",
-            GitError::DiffTimeout { .. } => "git.diff_timeout",
-            GitError::InvalidTagConfig { .. } => "git.invalid_tag_config",
-            GitError::TagTargetNotFound { .. } => "git.tag_target_not_found",
-            GitError::TagIdentityMissing => "git.tag_identity_missing",
-            GitError::TagAlreadyExists { .. } => "git.tag_already_exists",
-            GitError::TagNotFound { .. } => "git.tag_not_found",
-            GitError::TagDeleteFailed { .. } => "git.tag_delete_failed",
-            GitError::TagListFailed { .. } => "git.tag_list_failed",
-            GitError::TagCreateFailed { .. } => "git.tag_create_failed",
-            GitError::TagTimeout { .. } => "git.tag_timeout",
-            GitError::TagFailed { .. } => "git.tag_failed",
-            GitError::InvalidMergeConfig { .. } => "git.invalid_merge_config",
-            GitError::MergeDetachedHead => "git.merge_detached_head",
-            GitError::MergeSourceNotFound(..) => "git.merge_source_not_found",
-            GitError::MergeSourceNotCommit(..) => "git.merge_source_not_commit",
-            GitError::MergeTargetNotFound(..) => "git.merge_target_not_found",
-            GitError::MergeDirtyWorktree => "git.merge_dirty_worktree",
-            GitError::MergeNonFastForward => "git.merge_non_fast_forward",
-            GitError::MergeIdentityMissing => "git.merge_identity_missing",
-            GitError::MergeConflict => "git.merge_conflict",
-            GitError::MergeFailed { .. } => "git.merge_failed",
-            GitError::MergeTimeout { .. } => "git.merge_timeout",
-            GitError::InvalidRebaseConfig { .. } => "git.invalid_rebase_config",
-            GitError::RebaseInProgress => "git.rebase_in_progress",
-            GitError::RebaseNotInProgress => "git.rebase_not_in_progress",
-            GitError::RebaseDetachedHead => "git.rebase_detached_head",
-            GitError::RebaseBranchNotFound { .. } => "git.rebase_branch_not_found",
-            GitError::RebaseUpstreamNotFound { .. } => "git.rebase_upstream_not_found",
-            GitError::RebaseUpstreamNotCommit { .. } => "git.rebase_upstream_not_commit",
-            GitError::RebaseNonFastForward => "git.rebase_non_fast_forward",
-            GitError::RebaseDirtyWorktree => "git.rebase_dirty_worktree",
-            GitError::RebaseIdentityMissing => "git.rebase_identity_missing",
-            GitError::RebaseConflict => "git.rebase_conflict",
-            GitError::RebasePreserveMergesUnsupported => "git.rebase_preserve_merges_unsupported",
-            GitError::RebaseFailed { .. } => "git.rebase_failed",
-            GitError::RebaseTimeout { .. } => "git.rebase_timeout",
-            GitError::InvalidSyncConfig { .. } => "git.sync_invalid_config",
-            GitError::SyncDetachedHead => "git.sync_detached_head",
-            GitError::SyncBranchNotFound { .. } => "git.sync_branch_not_found",
-            GitError::SyncRemoteNotFound { .. } => "git.sync_remote_not_found",
-            GitError::SyncUpstreamNotFound => "git.sync_upstream_not_found",
-            GitError::SyncDirtyWorktree => "git.sync_dirty_worktree",
-            GitError::SyncNonFastForward => "git.sync_non_fast_forward",
-            GitError::SyncPullFailed { .. } => "git.sync_pull_failed",
-            GitError::SyncConflict => "git.sync_conflict",
-            GitError::SyncPushRejected { .. } => "git.sync_push_rejected",
-            GitError::SyncPushFailed { .. } => "git.sync_push_failed",
-            GitError::SyncStashApplyConflict => "git.sync_stash_apply_conflict",
-            GitError::SyncTimeout { .. } => "git.sync_timeout",
-            GitError::SyncFailed { .. } => "git.sync_failed",
-            // Status Summary error codes
-            GitError::InvalidStatusSummaryConfig { .. } => "git.invalid_status_summary_config",
-            GitError::StatusSummaryBranchNotFound { .. } => "git.status_summary_branch_not_found",
-            GitError::StatusSummaryTimeout { .. } => "git.status_summary_timeout",
-            GitError::StatusSummaryFailed { .. } => "git.status_summary_failed",
-            // Status short error codes
-            GitError::InvalidStatusShortConfig { .. } => "git.invalid_status_short_config",
-            GitError::StatusShortBranchNotFound { .. } => "git.status_short_branch_not_found",
-            GitError::StatusShortTimeout { .. } => "git.status_short_timeout",
-            GitError::StatusShortFailed { .. } => "git.status_short_failed",
-        };
-
-        crate::core::status::ShellError::new(code, &err.to_string(), details)
+        crate::core::status::ShellError::new(&code, &err.to_string(), details)
     }
 }
 
@@ -2036,12 +1896,6 @@ impl From<git2::Error> for GitError {
         }
     }
 }
-
-/// Git connection registry for managing configured aliases
-type GitConnectionRegistry = std::sync::LazyLock<dashmap::DashMap<String, GitConnectionProfile>>;
-
-static GIT_CONNECTIONS: GitConnectionRegistry =
-    std::sync::LazyLock::new(|| dashmap::DashMap::new());
 
 /// Verbs registered by the git handle (shared by `Handle::verbs` and the
 /// in-URL help forms).
@@ -2103,238 +1957,98 @@ impl GitHandle {
         Ok(GitHandle { alias })
     }
 
+    /// Runs one verb with already-checked arguments. The deadline, if any,
+    /// is the calling thread's ([`net::set_deadline`]).
+    pub async fn run_verb(&self, verb: &str, args: Value) -> Result<Value, GitError> {
+        match verb {
+            "clone" => self.clone(args).await,
+            "pull" => self.pull(args).await,
+            "push" => self.push(args).await,
+            "status" => self.status(args).await,
+            "branch" => self.branch(args).await,
+            "commit" => self.commit(args).await,
+            "diff" => self.diff(args).await,
+            "tag" => self.tag(args).await,
+            "merge" => self.merge(args).await,
+            "rebase" => self.rebase(args).await,
+            "sync" => self.sync(args).await,
+            "status_summary" => self.status_summary(args).await,
+            "status_short" => self.status_short(args).await,
+            other => Err(GitError::invalid_for(
+                other,
+                format!("unknown verb for git://: {other}"),
+            )),
+        }
+    }
+
     /// Clone verb implementation
     pub async fn clone(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git clone operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_clone_config(args)?;
         self.validate_clone_config(&config)?;
-
-        // Load connection profile
-        let profile = self.load_connection_profile()?;
-
-        // Execute clone operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(30000);
-        let timeout_duration = Duration::from_millis(timeout_ms as u64);
-
-        let result =
-            tokio::time::timeout(timeout_duration, self.execute_clone(&config, &profile)).await;
-
-        match result {
-            Ok(clone_result) => clone_result,
-            Err(_) => Err(GitError::CloneTimeout { timeout_ms }),
-        }
+        self.execute_clone(&config).await
     }
 
     /// Pull verb implementation
     pub async fn pull(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git pull operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_pull_config(args)?;
         self.validate_pull_config(&config)?;
-
-        // Load connection profile
-        let profile = self.load_connection_profile()?;
-
-        // Execute pull operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(30000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result =
-            tokio::time::timeout(timeout_duration, self.execute_pull(&config, &profile)).await;
-
-        match result {
-            Ok(pull_result) => pull_result,
-            Err(_) => Err(GitError::PullTimeout { timeout_ms }),
-        }
+        self.execute_pull(&config).await
     }
 
     /// Push verb implementation
     pub async fn push(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git push operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_push_config(args)?;
         self.validate_push_config(&config)?;
-
-        // Load connection profile
-        let profile = self.load_connection_profile()?;
-
-        // Execute push operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(30000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result =
-            tokio::time::timeout(timeout_duration, self.execute_push(&config, &profile)).await;
-
-        match result {
-            Ok(push_result) => push_result,
-            Err(_) => Err(GitError::PushTimeout { timeout_ms }),
-        }
+        self.execute_push(&config).await
     }
 
     /// Status verb implementation
     pub async fn status(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git status operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_status_config(args)?;
         self.validate_status_config(&config)?;
-
-        // Load connection profile (for consistency, though status doesn't need credentials)
-        let _profile = self.load_connection_profile()?;
-
-        // Execute status operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(5000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result = tokio::time::timeout(timeout_duration, self.execute_status(&config)).await;
-
-        match result {
-            Ok(status_result) => status_result,
-            Err(_) => Err(GitError::StatusTimeout { timeout_ms }),
-        }
+        self.execute_status(&config).await
     }
 
     /// Branch verb implementation
     pub async fn branch(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git branch operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_branch_config(args)?;
         self.validate_branch_config(&config)?;
-
-        // Branch operations are local git operations and don't need authentication
-        // No need to load connection profile for branch operations
-
-        // Execute branch operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(5000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result = tokio::time::timeout(timeout_duration, self.execute_branch(&config)).await;
-
-        match result {
-            Ok(branch_result) => branch_result,
-            Err(_) => Err(GitError::BranchTimeout { timeout_ms }),
-        }
+        self.execute_branch(&config).await
     }
 
     /// Commit verb implementation
     pub async fn commit(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git commit operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_commit_config(args)?;
         self.validate_commit_config(&config)?;
-
-        // Load connection profile (for author identity fallbacks)
-        let profile = self.load_connection_profile()?;
-
-        // Execute commit operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(5000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result =
-            tokio::time::timeout(timeout_duration, self.execute_commit(&config, &profile)).await;
-
-        match result {
-            Ok(commit_result) => commit_result,
-            Err(_) => Err(GitError::CommitTimeout { timeout_ms }),
-        }
+        self.execute_commit(&config).await
     }
 
     /// Diff verb implementation
     pub async fn diff(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git diff operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_diff_config(args)?;
         self.validate_diff_config(&config)?;
-
-        // Execute diff operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(5000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result = tokio::time::timeout(timeout_duration, self.execute_diff(&config)).await;
-
-        match result {
-            Ok(diff_result) => diff_result,
-            Err(_) => Err(GitError::DiffTimeout { timeout_ms }),
-        }
+        self.execute_diff(&config).await
     }
 
     /// Tag verb implementation
     pub async fn tag(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git tag operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_tag_config(args)?;
         self.validate_tag_config(&config)?;
-
-        // Load connection profile for identity defaults
-        let profile = self.load_connection_profile()?;
-
-        // Execute tag operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(5000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result =
-            tokio::time::timeout(timeout_duration, self.execute_tag(&config, &profile)).await;
-
-        match result {
-            Ok(tag_result) => tag_result,
-            Err(_) => Err(GitError::TagTimeout { timeout_ms }),
-        }
+        self.execute_tag(&config).await
     }
 
     /// Merge verb implementation
     pub async fn merge(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git merge operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_merge_config(args)?;
         self.validate_merge_config(&config)?;
-
-        // Load connection profile for identity defaults
-        let profile = self.load_connection_profile()?;
-
-        // Execute merge operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(10000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result =
-            tokio::time::timeout(timeout_duration, self.execute_merge(&config, &profile)).await;
-
-        match result {
-            Ok(merge_result) => merge_result,
-            Err(_) => Err(GitError::MergeTimeout { timeout_ms }),
-        }
+        self.execute_merge(&config).await
     }
 
     /// Rebase verb implementation
     pub async fn rebase(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git rebase operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_rebase_config(args)?;
         self.validate_rebase_config(&config)?;
-
-        // Load connection profile for identity defaults
-        let profile = self.load_connection_profile()?;
-
-        // Execute rebase operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(10000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result =
-            tokio::time::timeout(timeout_duration, self.execute_rebase(&config, &profile)).await;
-
-        match result {
-            Ok(rebase_result) => rebase_result,
-            Err(_) => Err(GitError::RebaseTimeout { timeout_ms }),
-        }
+        self.execute_rebase(&config).await
     }
 
     /// Parse clone configuration from arguments
@@ -2391,14 +2105,10 @@ impl GitHandle {
             }
         }
 
-        // Check URL format
-        if !config.url.starts_with("http://")
-            && !config.url.starts_with("https://")
-            && !config.url.starts_with("git@")
-            && !config.url.starts_with("ssh://")
-        {
+        check_clone_url(&config.url).map_err(|message| GitError::InvalidCloneConfig { message })?;
+        if config.path.starts_with('-') {
             return Err(GitError::InvalidCloneConfig {
-                message: "url must start with http://, https://, git@, or ssh://".to_string(),
+                message: format!("path {:?} must not start with '-'", config.path),
             });
         }
 
@@ -2669,20 +2379,68 @@ impl GitHandle {
         // Get action (default to List if not provided)
         let action = config.action.as_ref().unwrap_or(&BranchAction::List);
 
-        // Validate list action flags
+        // Options that only some actions use are refused for the others,
+        // instead of being silently ignored.
+        let (action_name, used): (&str, &[&str]) = match action {
+            BranchAction::List => ("list", &["local_only", "remote_only", "all"]),
+            BranchAction::Create => (
+                "create",
+                &["name", "start_point", "track", "remote", "force"],
+            ),
+            BranchAction::Delete => ("delete", &["name", "force"]),
+            BranchAction::Rename => ("rename", &["name", "new_name", "force"]),
+            BranchAction::Checkout => ("checkout", &["name", "force"]),
+        };
+        let given = [
+            ("name", config.name.is_some()),
+            ("new_name", config.new_name.is_some()),
+            ("start_point", config.start_point.is_some()),
+            ("track", config.track.is_some()),
+            ("remote", config.remote.is_some()),
+            ("local_only", config.local_only.is_some()),
+            ("remote_only", config.remote_only.is_some()),
+            ("all", config.all.is_some()),
+            ("force", config.force.is_some()),
+        ];
+        if let Some((key, _)) = given.iter().find(|(k, set)| *set && !used.contains(k)) {
+            return Err(GitError::InvalidBranchConfig {
+                message: format!(
+                    "{key} does not apply to action={action_name} (it uses: {})",
+                    used.join(", ")
+                ),
+            });
+        }
+        if config.remote.is_some() && config.track != Some(true) {
+            return Err(GitError::InvalidBranchConfig {
+                message: "remote is only used with track=true".to_string(),
+            });
+        }
+
+        if matches!(action, BranchAction::Create | BranchAction::Rename) {
+            let new = if matches!(action, BranchAction::Create) {
+                &config.name
+            } else {
+                &config.new_name
+            };
+            if let Some(n) = new.as_deref().filter(|n| !n.is_empty()) {
+                if n.starts_with('-') || !git2::Branch::name_is_valid(n).unwrap_or(false) {
+                    return Err(GitError::InvalidBranchConfig {
+                        message: format!("invalid branch name {n:?}"),
+                    });
+                }
+            }
+        }
+
+        // List flags: at most one of all, local_only and remote_only may be
+        // true; with none, local branches are listed.
         if matches!(action, BranchAction::List) {
-            let local_only = config.local_only.unwrap_or(true);
-            let remote_only = config.remote_only.unwrap_or(false);
-            let all = config.all.unwrap_or(false);
-
-            // Exactly one of the following must be true:
-            // all == true, OR (local_only == true and remote_only == false), OR (remote_only == true and local_only == false)
-            let valid_combination =
-                all || (local_only && !remote_only) || (remote_only && !local_only);
-
-            if !valid_combination {
+            let set = [config.all, config.local_only, config.remote_only]
+                .iter()
+                .filter(|f| **f == Some(true))
+                .count();
+            if set > 1 {
                 return Err(GitError::InvalidBranchConfig {
-                    message: "invalid list flags combination: exactly one of 'all=true', 'local_only=true', or 'remote_only=true' must be set".to_string(),
+                    message: "invalid list flags combination: set at most one of all=true, local_only=true or remote_only=true".to_string(),
                 });
             }
         }
@@ -2751,360 +2509,43 @@ impl GitHandle {
 
     /// Parse commit configuration from arguments
     fn parse_commit_config(&self, args: Value) -> Result<CommitConfig, GitError> {
-        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidCommitConfig {
-            message: format!("failed to parse commit config: {}", e),
-        })
+        let mut config: CommitConfig =
+            crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidCommitConfig {
+                message: format!("invalid commit arguments: {}", e),
+            })?;
+        // A CLI value is always text: digits are Unix seconds.
+        if let Some(CommitTimestamp::Iso8601(text)) = &config.timestamp {
+            if let Ok(secs) = text.trim().parse::<u64>() {
+                config.timestamp = Some(CommitTimestamp::UnixSeconds(secs));
+            }
+        }
+        Ok(config)
     }
 
     /// Parse diff configuration from arguments
     fn parse_diff_config(&self, args: Value) -> Result<DiffConfig, GitError> {
-        // Handle both direct JSON and CLI string arguments
-        if let Some(args_obj) = args.as_object() {
-            let mut config = DiffConfig {
-                path: String::new(),
-                mode: None,
-                from: None,
-                to: None,
-                paths: None,
-                unified: None,
-                ignore_whitespace: None,
-                ignore_whitespace_change: None,
-                ignore_whitespace_eol: None,
-                detect_renames: None,
-                rename_threshold: None,
-                binary: None,
-                max_files: None,
-                max_hunks: None,
-                timeout_ms: None,
-            };
-
-            for (key, value) in args_obj {
-                match key.as_str() {
-                    "path" => {
-                        config.path = value.as_str().unwrap_or("").to_string();
-                    }
-                    "mode" => {
-                        if let Some(mode_str) = value.as_str() {
-                            let mode = match mode_str {
-                                "workdir_vs_index" => DiffMode::WorkdirVsIndex,
-                                "index_vs_head" => DiffMode::IndexVsHead,
-                                "head_vs_workdir" => DiffMode::HeadVsWorkdir,
-                                "commit_vs_commit" => DiffMode::CommitVsCommit,
-                                "commit_vs_workdir" => DiffMode::CommitVsWorkdir,
-                                "commit_vs_index" => DiffMode::CommitVsIndex,
-                                _ => {
-                                    return Err(GitError::InvalidDiffConfig {
-                                        message: format!("invalid mode: {}", mode_str),
-                                    });
-                                }
-                            };
-                            config.mode = Some(mode);
-                        }
-                    }
-                    "from" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.from = Some(val_str.to_string());
-                        }
-                    }
-                    "to" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.to = Some(val_str.to_string());
-                        }
-                    }
-                    "unified" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.unified =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!("invalid unified value: {}", val_str),
-                                })?);
-                        } else if let Some(val_num) = value.as_i64() {
-                            config.unified = Some(val_num as i32);
-                        }
-                    }
-                    "ignore_whitespace" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.ignore_whitespace =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!(
-                                        "invalid ignore_whitespace value: {}",
-                                        val_str
-                                    ),
-                                })?);
-                        } else if let Some(val_bool) = value.as_bool() {
-                            config.ignore_whitespace = Some(val_bool);
-                        }
-                    }
-                    "ignore_whitespace_change" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.ignore_whitespace_change =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!(
-                                        "invalid ignore_whitespace_change value: {}",
-                                        val_str
-                                    ),
-                                })?);
-                        } else if let Some(val_bool) = value.as_bool() {
-                            config.ignore_whitespace_change = Some(val_bool);
-                        }
-                    }
-                    "ignore_whitespace_eol" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.ignore_whitespace_eol =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!(
-                                        "invalid ignore_whitespace_eol value: {}",
-                                        val_str
-                                    ),
-                                })?);
-                        } else if let Some(val_bool) = value.as_bool() {
-                            config.ignore_whitespace_eol = Some(val_bool);
-                        }
-                    }
-                    "detect_renames" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.detect_renames =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!("invalid detect_renames value: {}", val_str),
-                                })?);
-                        } else if let Some(val_bool) = value.as_bool() {
-                            config.detect_renames = Some(val_bool);
-                        }
-                    }
-                    "rename_threshold" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.rename_threshold =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!("invalid rename_threshold value: {}", val_str),
-                                })?);
-                        } else if let Some(val_num) = value.as_u64() {
-                            config.rename_threshold = Some(val_num as u8);
-                        }
-                    }
-                    "binary" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.binary =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!("invalid binary value: {}", val_str),
-                                })?);
-                        } else if let Some(val_bool) = value.as_bool() {
-                            config.binary = Some(val_bool);
-                        }
-                    }
-                    "max_files" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.max_files =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!("invalid max_files value: {}", val_str),
-                                })?);
-                        } else if let Some(val_num) = value.as_u64() {
-                            config.max_files = Some(val_num as u32);
-                        }
-                    }
-                    "max_hunks" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.max_hunks =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!("invalid max_hunks value: {}", val_str),
-                                })?);
-                        } else if let Some(val_num) = value.as_u64() {
-                            config.max_hunks = Some(val_num as u32);
-                        }
-                    }
-                    "paths" => {
-                        if let Some(val_str) = value.as_str() {
-                            // A JSON array string or a comma-separated list
-                            let paths: Vec<String> = lenient_arg(key, value).map_err(|_| {
-                                GitError::InvalidDiffConfig {
-                                    message: format!("invalid paths value: {}", val_str),
-                                }
-                            })?;
-                            config.paths = Some(paths);
-                        } else if let Some(val_arr) = value.as_array() {
-                            let mut paths = Vec::new();
-                            for path_val in val_arr {
-                                if let Some(path_str) = path_val.as_str() {
-                                    paths.push(path_str.to_string());
-                                }
-                            }
-                            config.paths = Some(paths);
-                        }
-                    }
-                    "timeout_ms" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.timeout_ms =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidDiffConfig {
-                                    message: format!("invalid timeout_ms value: {}", val_str),
-                                })?);
-                        } else if let Some(val_num) = value.as_u64() {
-                            config.timeout_ms = Some(val_num);
-                        }
-                    }
-                    _ => {
-                        log::warn!("Unknown diff config parameter: {}", key);
-                    }
-                }
-            }
-
-            Ok(config)
-        } else {
-            // Fallback to direct deserialization for backwards compatibility
-            crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidDiffConfig {
-                message: format!("failed to parse diff config: {}", e),
-            })
-        }
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidDiffConfig {
+            message: format!("invalid diff arguments: {}", e),
+        })
     }
 
     /// Parse tag configuration from arguments
     fn parse_tag_config(&self, args: Value) -> Result<TagConfig, GitError> {
-        // Handle both direct JSON and CLI string arguments
-        if let Some(args_obj) = args.as_object() {
-            let mut config = TagConfig {
-                path: String::new(),
-                action: None,
-                name: None,
-                names: None,
-                pattern: None,
-                sort: None,
-                annotated: None,
-                message: None,
-                target: None,
-                force: None,
-                author_name: None,
-                author_email: None,
-                timestamp: None,
-                timeout_ms: None,
-            };
-
-            for (key, value) in args_obj {
-                match key.as_str() {
-                    "path" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.path = val_str.to_string();
-                        }
-                    }
-                    "action" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.action = Some(match val_str {
-                                "list" => TagAction::List,
-                                "create" => TagAction::Create,
-                                "delete" => TagAction::Delete,
-                                _ => {
-                                    return Err(GitError::InvalidTagConfig {
-                                        message: format!("invalid action: {}", val_str),
-                                    });
-                                }
-                            });
-                        }
-                    }
-                    "name" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.name = Some(val_str.to_string());
-                        }
-                    }
-                    "names" => {
-                        if let Some(arr) = value.as_array() {
-                            let names: Result<Vec<_>, _> = arr
-                                .iter()
-                                .map(|v| {
-                                    v.as_str().ok_or_else(|| GitError::InvalidTagConfig {
-                                        message: "names array must contain strings".to_string(),
-                                    })
-                                })
-                                .collect::<Result<Vec<_>, _>>()
-                                .map(|vec| vec.into_iter().map(String::from).collect());
-                            config.names = Some(names?);
-                        }
-                    }
-                    "pattern" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.pattern = Some(val_str.to_string());
-                        }
-                    }
-                    "sort" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.sort = Some(match val_str {
-                                "name" => TagSort::Name,
-                                "version" => TagSort::Version,
-                                "taggerdate" => TagSort::TaggerDate,
-                                "committerdate" => TagSort::CommitterDate,
-                                _ => {
-                                    return Err(GitError::InvalidTagConfig {
-                                        message: format!("invalid sort: {}", val_str),
-                                    });
-                                }
-                            });
-                        }
-                    }
-                    "annotated" => {
-                        if let Some(val_bool) = value.as_bool() {
-                            config.annotated = Some(val_bool);
-                        } else if let Some(val_str) = value.as_str() {
-                            config.annotated =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidTagConfig {
-                                    message: format!("invalid annotated value: {}", val_str),
-                                })?);
-                        }
-                    }
-                    "message" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.message = Some(val_str.to_string());
-                        }
-                    }
-                    "target" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.target = Some(val_str.to_string());
-                        }
-                    }
-                    "force" => {
-                        if let Some(val_bool) = value.as_bool() {
-                            config.force = Some(val_bool);
-                        } else if let Some(val_str) = value.as_str() {
-                            config.force =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidTagConfig {
-                                    message: format!("invalid force value: {}", val_str),
-                                })?);
-                        }
-                    }
-                    "author_name" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.author_name = Some(val_str.to_string());
-                        }
-                    }
-                    "author_email" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.author_email = Some(val_str.to_string());
-                        }
-                    }
-                    "timestamp" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.timestamp = Some(TagTimestamp::Iso8601(val_str.to_string()));
-                        } else if let Some(val_num) = value.as_u64() {
-                            config.timestamp = Some(TagTimestamp::UnixSeconds(val_num));
-                        }
-                    }
-                    "timeout_ms" => {
-                        if let Some(val_str) = value.as_str() {
-                            config.timeout_ms =
-                                Some(val_str.parse().map_err(|_| GitError::InvalidTagConfig {
-                                    message: format!("invalid timeout_ms value: {}", val_str),
-                                })?);
-                        } else if let Some(val_num) = value.as_u64() {
-                            config.timeout_ms = Some(val_num);
-                        }
-                    }
-                    _ => {
-                        log::warn!("Unknown tag config parameter: {}", key);
-                    }
-                }
-            }
-
-            Ok(config)
-        } else {
-            // Fallback to direct deserialization for backwards compatibility
+        let mut config: TagConfig =
             crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidTagConfig {
-                message: format!("failed to parse tag config: {}", e),
-            })
+                message: format!("invalid tag arguments: {}", e),
+            })?;
+        // A CLI value is always text: digits are Unix seconds.
+        if let Some(TagTimestamp::Iso8601(text)) = &config.timestamp {
+            if let Ok(secs) = text.trim().parse::<u64>() {
+                config.timestamp = Some(TagTimestamp::UnixSeconds(secs));
+            } else if chrono::DateTime::parse_from_rfc3339(text).is_err() {
+                return Err(GitError::InvalidTagConfig {
+                    message: format!("invalid ISO8601 timestamp: {}", text),
+                });
+            }
         }
+        Ok(config)
     }
 
     /// Validate tag configuration
@@ -3125,6 +2566,62 @@ impl GitHandle {
         }
 
         let action = config.action.as_ref().unwrap_or(&TagAction::List);
+
+        // Options that only some actions use are refused for the others.
+        let annotated = config.annotated.unwrap_or(false);
+        let (action_name, used): (&str, Vec<&str>) = match action {
+            TagAction::List => ("list", vec!["pattern", "sort"]),
+            TagAction::Create if annotated => (
+                "create",
+                vec![
+                    "name",
+                    "annotated",
+                    "message",
+                    "target",
+                    "force",
+                    "author_name",
+                    "author_email",
+                    "timestamp",
+                ],
+            ),
+            TagAction::Create => ("create", vec!["name", "annotated", "target", "force"]),
+            TagAction::Delete => ("delete", vec!["name", "names"]),
+        };
+        let given = [
+            ("name", config.name.is_some()),
+            ("names", config.names.is_some()),
+            ("pattern", config.pattern.is_some()),
+            ("sort", config.sort.is_some()),
+            ("annotated", config.annotated.is_some()),
+            ("message", config.message.is_some()),
+            ("target", config.target.is_some()),
+            ("force", config.force.is_some()),
+            ("author_name", config.author_name.is_some()),
+            ("author_email", config.author_email.is_some()),
+            ("timestamp", config.timestamp.is_some()),
+        ];
+        if let Some((key, _)) = given.iter().find(|(k, set)| *set && !used.contains(k)) {
+            let why = if matches!(action, TagAction::Create) {
+                " (message, author_name, author_email and timestamp need annotated=true)"
+            } else {
+                ""
+            };
+            return Err(GitError::InvalidTagConfig {
+                message: format!(
+                    "{key} does not apply to action={action_name}{why}; it uses: {}",
+                    used.join(", ")
+                ),
+            });
+        }
+        for name in config.name.iter().chain(config.names.iter().flatten()) {
+            if name.starts_with('-')
+                || !git2::Reference::is_valid_name(&format!("refs/tags/{name}"))
+            {
+                return Err(GitError::InvalidTagConfig {
+                    message: format!("invalid tag name {name:?}"),
+                });
+            }
+        }
 
         match action {
             TagAction::List => {
@@ -3170,116 +2667,9 @@ impl GitHandle {
 
     /// Parse merge configuration from arguments
     fn parse_merge_config(&self, args: Value) -> Result<MergeConfig, GitError> {
-        // Handle both direct JSON and CLI string arguments
-        if let Some(args_obj) = args.as_object() {
-            let mut config = MergeConfig {
-                path: String::new(),
-                source: String::new(),
-                target: None,
-                ff_only: None,
-                no_ff: None,
-                squash: None,
-                commit_message: None,
-                author_name: None,
-                author_email: None,
-                committer_name: None,
-                committer_email: None,
-                allow_uncommitted: None,
-                abort_on_conflict: None,
-                timeout_ms: None,
-            };
-
-            for (key, value) in args_obj {
-                match key.as_str() {
-                    "path" => {
-                        if let Some(path_str) = value.as_str() {
-                            config.path = path_str.to_string();
-                        }
-                    }
-                    "source" => {
-                        if let Some(source_str) = value.as_str() {
-                            config.source = source_str.to_string();
-                        }
-                    }
-                    "target" => {
-                        if let Some(target_str) = value.as_str() {
-                            config.target = Some(target_str.to_string());
-                        }
-                    }
-                    "ff_only" => {
-                        config.ff_only = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
-                        );
-                    }
-                    "no_ff" => {
-                        config.no_ff = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
-                        );
-                    }
-                    "squash" => {
-                        config.squash = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
-                        );
-                    }
-                    "commit_message" => {
-                        if let Some(message_str) = value.as_str() {
-                            config.commit_message = Some(message_str.to_string());
-                        }
-                    }
-                    "author_name" => {
-                        if let Some(author_str) = value.as_str() {
-                            config.author_name = Some(author_str.to_string());
-                        }
-                    }
-                    "author_email" => {
-                        if let Some(email_str) = value.as_str() {
-                            config.author_email = Some(email_str.to_string());
-                        }
-                    }
-                    "committer_name" => {
-                        if let Some(committer_str) = value.as_str() {
-                            config.committer_name = Some(committer_str.to_string());
-                        }
-                    }
-                    "committer_email" => {
-                        if let Some(email_str) = value.as_str() {
-                            config.committer_email = Some(email_str.to_string());
-                        }
-                    }
-                    "allow_uncommitted" => {
-                        config.allow_uncommitted = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
-                        );
-                    }
-                    "abort_on_conflict" => {
-                        config.abort_on_conflict = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
-                        );
-                    }
-                    "timeout_ms" => {
-                        config.timeout_ms = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidMergeConfig { message })?,
-                        );
-                    }
-                    _ => {
-                        log::debug!("Unknown merge config key: {}", key);
-                    }
-                }
-            }
-
-            Ok(config)
-        } else {
-            // Try to parse as direct JSON
-            crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidMergeConfig {
-                message: format!("failed to parse merge config: {}", e),
-            })
-        }
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidMergeConfig {
+            message: format!("invalid merge arguments: {}", e),
+        })
     }
 
     /// Validate merge configuration
@@ -3363,121 +2753,9 @@ impl GitHandle {
 
     /// Parse rebase configuration from arguments
     fn parse_rebase_config(&self, args: Value) -> Result<RebaseConfig, GitError> {
-        // Handle both direct JSON and CLI string arguments
-        if let Some(args_obj) = args.as_object() {
-            let mut config = RebaseConfig {
-                path: String::new(),
-                operation: None,
-                branch: None,
-                upstream: None,
-                ff_only: None,
-                preserve_merges: None,
-                autosquash: None,
-                allow_uncommitted: None,
-                abort_on_conflict: None,
-                author_name: None,
-                author_email: None,
-                committer_name: None,
-                committer_email: None,
-                timeout_ms: None,
-            };
-
-            for (key, value) in args_obj {
-                match key.as_str() {
-                    "path" => {
-                        if let Some(path_str) = value.as_str() {
-                            config.path = path_str.to_string();
-                        }
-                    }
-                    "operation" => {
-                        if let Some(op_str) = value.as_str() {
-                            match op_str.to_lowercase().as_str() {
-                                "start" => config.operation = Some(RebaseOperation::Start),
-                                "continue" => config.operation = Some(RebaseOperation::Continue),
-                                "abort" => config.operation = Some(RebaseOperation::Abort),
-                                _ => log::debug!("Unknown rebase operation: {}", op_str),
-                            }
-                        }
-                    }
-                    "branch" => {
-                        if let Some(branch_str) = value.as_str() {
-                            config.branch = Some(branch_str.to_string());
-                        }
-                    }
-                    "upstream" => {
-                        if let Some(upstream_str) = value.as_str() {
-                            config.upstream = Some(upstream_str.to_string());
-                        }
-                    }
-                    "ff_only" => {
-                        config.ff_only = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
-                        );
-                    }
-                    "preserve_merges" => {
-                        config.preserve_merges = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
-                        );
-                    }
-                    "autosquash" => {
-                        config.autosquash = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
-                        );
-                    }
-                    "allow_uncommitted" => {
-                        config.allow_uncommitted = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
-                        );
-                    }
-                    "abort_on_conflict" => {
-                        config.abort_on_conflict = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
-                        );
-                    }
-                    "author_name" => {
-                        if let Some(author_str) = value.as_str() {
-                            config.author_name = Some(author_str.to_string());
-                        }
-                    }
-                    "author_email" => {
-                        if let Some(email_str) = value.as_str() {
-                            config.author_email = Some(email_str.to_string());
-                        }
-                    }
-                    "committer_name" => {
-                        if let Some(committer_str) = value.as_str() {
-                            config.committer_name = Some(committer_str.to_string());
-                        }
-                    }
-                    "committer_email" => {
-                        if let Some(email_str) = value.as_str() {
-                            config.committer_email = Some(email_str.to_string());
-                        }
-                    }
-                    "timeout_ms" => {
-                        config.timeout_ms = Some(
-                            lenient_arg(key, value)
-                                .map_err(|message| GitError::InvalidRebaseConfig { message })?,
-                        );
-                    }
-                    _ => {
-                        log::debug!("Unknown rebase config key: {}", key);
-                    }
-                }
-            }
-
-            Ok(config)
-        } else {
-            // Try to parse as direct JSON
-            crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidRebaseConfig {
-                message: format!("failed to parse rebase config: {}", e),
-            })
-        }
+        crate::core::lenient::from_value(args).map_err(|e| GitError::InvalidRebaseConfig {
+            message: format!("invalid rebase arguments: {}", e),
+        })
     }
 
     /// Validate rebase configuration
@@ -3556,24 +2834,38 @@ impl GitHandle {
             }
         }
 
-        // Validate mutually exclusive options
-        if config.ff_only == Some(true) && config.preserve_merges == Some(true) {
+        if config.author_name.is_some() != config.author_email.is_some() {
             return Err(GitError::InvalidRebaseConfig {
-                message: "ff_only and preserve_merges are mutually exclusive".to_string(),
+                message: "author_name and author_email must be given together".to_string(),
             });
         }
 
-        // Warn about unsupported advanced features
+        // libgit2 can neither keep merge commits nor reorder fixup!/squash!
+        // commits; asking for either is refused instead of performing a
+        // plain rebase the caller did not ask for.
         if config.preserve_merges == Some(true) {
-            log::warn!(
-                "preserve_merges option is not fully supported by git2, falling back to normal rebase"
-            );
+            return Err(GitError::RebasePreserveMergesUnsupported);
+        }
+        if config.autosquash == Some(true) {
+            return Err(GitError::InvalidRebaseConfig {
+                message: "autosquash=true is not supported (libgit2 cannot reorder fixup!/squash! commits); rebase without it".to_string(),
+            });
         }
 
-        if config.autosquash == Some(true) {
-            log::warn!(
-                "autosquash option is not fully supported by git2, falling back to normal rebase"
-            );
+        // operation=continue and operation=abort act on the rebase in
+        // progress: the start options do not apply.
+        if !matches!(operation, RebaseOperation::Start) {
+            let given = [
+                ("upstream", config.upstream.is_some()),
+                ("branch", config.branch.is_some()),
+                ("ff_only", config.ff_only.is_some()),
+                ("allow_uncommitted", config.allow_uncommitted.is_some()),
+            ];
+            if let Some((key, _)) = given.iter().find(|(_, set)| *set) {
+                return Err(GitError::InvalidRebaseConfig {
+                    message: format!("{key} only applies to operation=start"),
+                });
+            }
         }
 
         Ok(())
@@ -3924,14 +3216,12 @@ impl GitHandle {
         &self,
         repo: &Repository,
         config: &CommitConfig,
-        profile: &GitConnectionProfile,
     ) -> Result<(String, String), GitError> {
         // Priority: config fields -> alias profile -> git config
 
         let name = config
             .author_name
             .clone()
-            .or_else(|| profile.username.clone())
             .or_else(|| self.get_git_config_value(repo, "user.name"))
             .ok_or(GitError::CommitIdentityMissing)?;
 
@@ -3949,7 +3239,6 @@ impl GitHandle {
         &self,
         repo: &Repository,
         config: &CommitConfig,
-        profile: &GitConnectionProfile,
         author: &(String, String),
     ) -> Result<(String, String), GitError> {
         // Priority: config fields -> author identity
@@ -3958,7 +3247,6 @@ impl GitHandle {
             .committer_name
             .clone()
             .or_else(|| config.author_name.clone())
-            .or_else(|| profile.username.clone())
             .or_else(|| self.get_git_config_value(repo, "user.name"))
             .unwrap_or_else(|| author.0.clone());
 
@@ -4060,108 +3348,57 @@ impl GitHandle {
         Ok(final_message)
     }
 
-    /// Load connection profile for the alias
-    fn load_connection_profile(&self) -> Result<GitConnectionProfile, GitError> {
-        // Check if connection is registered
-        if let Some(profile) = GIT_CONNECTIONS.get(&self.alias) {
-            return Ok(profile.clone());
-        }
-
-        // For local operations like commit, status, branch - return a default profile
-        // This allows these operations to work without explicit connection configuration
-        Ok(GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        })
-    }
-
     /// Execute the actual clone operation
-    async fn execute_clone(
-        &self,
-        config: &CloneConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Value, GitError> {
+    async fn execute_clone(&self, config: &CloneConfig) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
 
-        // Check if target directory exists and is not empty
-        if path.exists()
-            && path
-                .read_dir()
-                .map_err(|e| GitError::CloneFailed {
-                    message: format!("failed to check target directory: {}", e),
-                })?
-                .next()
-                .is_some()
-        {
-            return Err(GitError::CloneTargetNotEmpty {
-                path: config.path.clone(),
-            });
-        }
-
-        // Create parent directories if needed
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| GitError::CloneFailed {
-                message: format!("failed to create parent directories: {}", e),
-            })?;
-        }
-
-        // Setup authentication callbacks
-        let mut fetch_options = FetchOptions::new();
-        let mut callbacks = RemoteCallbacks::new();
-
-        self.setup_authentication_callbacks(&mut callbacks, config, profile)?;
-        let known_hosts_path = config.known_hosts_path.clone().or_else(|| {
-            profile
-                .known_hosts_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-        });
-        let host_key_guard =
-            install_host_key_check(&mut callbacks, known_hosts_path.as_deref(), &config.url)?;
-        fetch_options.remote_callbacks(callbacks);
-
-        // Configure clone options
-        let mut builder = git2::build::RepoBuilder::new();
-        builder.fetch_options(fetch_options);
-
-        if let Some(branch) = &config.branch {
-            builder.branch(branch);
-        }
-
-        if let Some(depth) = config.depth {
-            // Git2 doesn't directly support shallow clones, but we can set fetch options
-            // This is a limitation of libgit2
-            log::warn!(
-                "Shallow clone depth={} requested but not fully supported by libgit2",
-                depth
-            );
-        }
-
-        // Execute the clone
-        let repo = builder.clone(&config.url, path).map_err(|e| {
-            if let Some(err) = host_key_guard.as_ref().and_then(HostKeyGuard::failure) {
-                return err;
+        // The target must be missing or an empty directory.
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(GitError::InvalidCloneConfig {
+                    message: format!("path '{}' is a symbolic link", config.path),
+                });
             }
-            let message = format!("git clone failed: {}", e);
-            if e.to_string().contains("authentication") {
-                GitError::CloneAuthFailed { message }
-            } else {
-                GitError::CloneFailed { message }
+            Ok(meta) if !meta.is_dir() => {
+                return Err(GitError::CloneTargetNotEmpty {
+                    path: config.path.clone(),
+                });
             }
+            Ok(_) => {
+                let mut entries = path.read_dir().map_err(|e| GitError::CloneFailed {
+                    message: format!("cannot read target directory '{}': {}", config.path, e),
+                })?;
+                if entries.next().is_some() {
+                    return Err(GitError::CloneTargetNotEmpty {
+                        path: config.path.clone(),
+                    });
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(GitError::CloneFailed {
+                    message: format!("cannot inspect target '{}': {}", config.path, e),
+                });
+            }
+        }
+
+        // Parent directories created here are removed again if the clone
+        // fails; libgit2 removes the clone directory itself.
+        let created = create_missing_parents(path).map_err(|e| GitError::CloneFailed {
+            message: format!("failed to create parent directories: {}", e),
         })?;
 
-        // Handle recursive submodules
-        if config.recursive.unwrap_or(false) {
-            self.update_submodules(&repo)?;
+        let result = self.clone_into(config, path);
+        if result.is_err() {
+            for dir in created.iter().rev() {
+                let _ = std::fs::remove_dir(dir);
+            }
         }
+        let repo = result?;
 
         // Validate the result
         self.validate_clone_result(&repo, path)?;
 
-        // Return success result
         let result = CloneResult {
             backend: "git".to_string(),
             alias: self.alias.clone(),
@@ -4174,582 +3411,426 @@ impl GitHandle {
         };
 
         log::info!("Successfully cloned {} to {}", config.url, config.path);
-        Ok(serde_json::to_value(result).unwrap())
+        Ok(json!(result))
+    }
+
+    /// Runs the libgit2 clone (and submodule update) for `config`.
+    fn clone_into(&self, config: &CloneConfig, path: &Path) -> Result<Repository, GitError> {
+        let creds = net::Credentials {
+            ssh_key: config.ssh_key.clone(),
+            username: config.username.clone(),
+            password: config.password.clone(),
+            token: config.token.clone(),
+        };
+        let policy = net::HostKeyPolicy::new(config.known_hosts_path.as_deref());
+        let mut callbacks = RemoteCallbacks::new();
+        creds.install(&mut callbacks);
+        policy.install(&mut callbacks);
+        let mut fetch_options = FetchOptions::new();
+        fetch_options.remote_callbacks(callbacks);
+
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(fetch_options);
+        if let Some(branch) = &config.branch {
+            builder.branch(branch);
+        }
+        // libgit2 creates the remote with the URL rewritten by
+        // url.<base>.insteadOf from the configuration; host-key checking is
+        // decided on that URL, before anything connects.
+        let prepare = policy.clone();
+        builder.remote_create(move |repo, name, url| {
+            let remote = repo.remote(name, url)?;
+            let effective = remote.url().unwrap_or(url).to_string();
+            prepare.prepare(&effective).map_err(|e| {
+                git2::Error::new(
+                    git2::ErrorCode::Certificate,
+                    git2::ErrorClass::Ssh,
+                    e.to_string(),
+                )
+            })?;
+            Ok(remote)
+        });
+
+        let cloned = {
+            let _timeouts = net::apply_server_timeouts(&config.url);
+            builder.clone(&config.url, path)
+        };
+        let repo = cloned.map_err(|e| {
+            if let Some(err) = policy.explain(&e) {
+                return err;
+            }
+            let message = format!("git clone failed: {}", e.message());
+            if net::is_auth_error(&e) {
+                GitError::CloneAuthFailed { message }
+            } else {
+                GitError::CloneFailed { message }
+            }
+        })?;
+
+        if config.recursive.unwrap_or(false) {
+            self.update_submodules(&repo, config, &policy)?;
+        }
+        Ok(repo)
+    }
+
+    /// Initializes and clones every submodule of `repo`, recursively, with
+    /// the clone's credentials and host-key policy.
+    fn update_submodules(
+        &self,
+        repo: &Repository,
+        config: &CloneConfig,
+        policy: &net::HostKeyPolicy,
+    ) -> Result<(), GitError> {
+        let failed = |e: git2::Error| GitError::CloneFailed {
+            message: format!("submodule update failed: {}", e.message()),
+        };
+        for mut sm in repo.submodules().map_err(failed)? {
+            let url = sm.url().unwrap_or_default().to_string();
+            policy.prepare(&url)?;
+            let creds = net::Credentials {
+                ssh_key: config.ssh_key.clone(),
+                username: config.username.clone(),
+                password: config.password.clone(),
+                token: config.token.clone(),
+            };
+            let mut callbacks = RemoteCallbacks::new();
+            creds.install(&mut callbacks);
+            policy.install(&mut callbacks);
+            let mut fetch_options = FetchOptions::new();
+            fetch_options.remote_callbacks(callbacks);
+            let mut opts = git2::SubmoduleUpdateOptions::new();
+            opts.fetch(fetch_options);
+            let updated = {
+                let _timeouts = net::apply_server_timeouts(&url);
+                sm.update(true, Some(&mut opts))
+            };
+            updated.map_err(|e| {
+                policy.explain(&e).unwrap_or_else(|| GitError::CloneFailed {
+                    message: format!(
+                        "submodule '{}' update failed: {}",
+                        sm.name().unwrap_or("?"),
+                        e.message()
+                    ),
+                })
+            })?;
+            let sub = sm.open().map_err(failed)?;
+            self.update_submodules(&sub, config, policy)?;
+        }
+        Ok(())
+    }
+
+    /// Validate that the clone was successful
+    fn validate_clone_result(&self, repo: &Repository, path: &Path) -> Result<(), GitError> {
+        if !path.exists() {
+            return Err(GitError::CloneFailed {
+                message: "clone target directory does not exist".to_string(),
+            });
+        }
+        // An empty remote clones to an unborn HEAD, which is a valid clone.
+        match repo.head() {
+            Ok(_) => Ok(()),
+            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => Ok(()),
+            Err(e) => Err(GitError::CloneFailed {
+                message: format!("cloned repository HEAD does not resolve: {}", e),
+            }),
+        }
     }
 
     /// Execute the actual pull operation
-    async fn execute_pull(
-        &self,
-        config: &PullConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Value, GitError> {
+    async fn execute_pull(&self, config: &PullConfig) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
-
-        // Open the existing repository
-        let repo = Repository::open(path).map_err(|e| {
-            if e.code() == git2::ErrorCode::NotFound {
-                GitError::RepositoryNotFound {
-                    path: config.path.clone(),
-                }
-            } else {
-                GitError::PullFailed {
-                    message: format!("failed to open repository: {}", e),
-                }
-            }
+        let repo = open_repo(path, &config.path, |message| GitError::PullFailed {
+            message,
         })?;
 
         // Determine the target branch
         let target_branch = if let Some(ref branch) = config.branch {
             branch.clone()
         } else {
-            // Get current branch from HEAD
             let head = repo.head().map_err(|e| GitError::PullFailed {
-                message: format!("failed to get HEAD: {}", e),
+                message: format!(
+                    "cannot read HEAD ({}); give the branch to pull with branch=",
+                    e.message()
+                ),
             })?;
-
             if !head.is_branch() {
                 return Err(GitError::PullDetachedHead);
             }
-
-            head.shorthand().unwrap_or("main").to_string()
+            head.shorthand()
+                .ok_or_else(|| GitError::PullFailed {
+                    message: "the current branch name is not valid UTF-8".to_string(),
+                })?
+                .to_string()
         };
 
-        // Resolve remote name
         let remote_name = config.remote.as_deref().unwrap_or("origin");
-
-        // Verify remote exists
-        let mut remote = repo
-            .find_remote(remote_name)
-            .map_err(|_| GitError::RemoteNotFound {
-                remote: remote_name.to_string(),
-            })?;
-
-        // Setup authentication callbacks for fetch
-        let mut fetch_options = FetchOptions::new();
-        let mut callbacks = RemoteCallbacks::new();
-
-        self.setup_pull_authentication_callbacks(&mut callbacks, config, profile)?;
-        let known_hosts_path = config.known_hosts_path.clone().or_else(|| {
-            profile
-                .known_hosts_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-        });
-        let remote_url = remote.url().unwrap_or_default().to_string();
-        let host_key_guard =
-            install_host_key_check(&mut callbacks, known_hosts_path.as_deref(), &remote_url)?;
-        fetch_options.remote_callbacks(callbacks);
-
-        // Configure fetch options
-        if config.prune.unwrap_or(false) {
-            // Enable pruning of remote-tracking branches
-            // This is handled by the fetch refspec
+        let local_ref_name = format!("refs/heads/{}", target_branch);
+        if repo.find_reference(&local_ref_name).is_err() {
+            return Err(GitError::PullFailed {
+                message: format!("local branch '{}' not found", target_branch),
+            });
         }
 
-        // Fetch from remote
-        log::debug!(
-            "Fetching from remote '{}' for branch '{}'",
+        let creds = net::Credentials {
+            ssh_key: config.ssh_key.clone(),
+            username: config.username.clone(),
+            password: config.password.clone(),
+            token: config.token.clone(),
+        };
+        fetch_remote(
+            &repo,
             remote_name,
-            target_branch
-        );
-
-        let refspecs = remote
-            .fetch_refspecs()
-            .map_err(|e| GitError::PullFetchFailed {
-                message: format!("failed to get refspecs: {}", e),
-            })?;
-
-        // Convert StringArray to Vec<&str> for fetch
-        let refspecs_vec: Vec<&str> = refspecs.iter().flatten().collect();
-
-        remote
-            .fetch(&refspecs_vec, Some(&mut fetch_options), None)
-            .map_err(|e| {
-                if let Some(err) = host_key_guard.as_ref().and_then(HostKeyGuard::failure) {
-                    return err;
-                }
-                let message = format!("fetch failed: {}", e);
-                if e.to_string().contains("authentication") {
+            &creds,
+            config.known_hosts_path.as_deref(),
+            config.prune.unwrap_or(false),
+            |message, auth| {
+                if auth {
                     GitError::PullAuthFailed { message }
                 } else {
                     GitError::PullFetchFailed { message }
                 }
-            })?;
+            },
+        )?;
 
         // Find the local and remote tracking branch references
-        let local_ref_name = format!("refs/heads/{}", target_branch);
         let remote_ref_name = format!("refs/remotes/{}/{}", remote_name, target_branch);
-
-        let local_ref = repo
+        let local_oid = repo
             .find_reference(&local_ref_name)
-            .map_err(|_| GitError::PullFailed {
+            .ok()
+            .and_then(|r| r.target())
+            .ok_or_else(|| GitError::PullFailed {
                 message: format!("local branch '{}' not found", target_branch),
             })?;
-
-        let remote_ref = repo.find_reference(&remote_ref_name).map_err(|_| {
-            GitError::PullRemoteBranchNotFound {
+        let remote_oid = repo
+            .find_reference(&remote_ref_name)
+            .ok()
+            .and_then(|r| r.target())
+            .ok_or_else(|| GitError::PullRemoteBranchNotFound {
                 branch: format!("{}/{}", remote_name, target_branch),
-            }
-        })?;
+            })?;
 
-        let local_oid = local_ref.target().ok_or_else(|| GitError::PullFailed {
-            message: "local reference has no target".to_string(),
-        })?;
-
-        let remote_oid = remote_ref.target().ok_or_else(|| GitError::PullFailed {
-            message: "remote reference has no target".to_string(),
-        })?;
-
-        // Check if already up-to-date
-        if local_oid == remote_oid {
-            log::info!("Repository at {} is already up-to-date", config.path);
-            let result = PullResult {
+        let ff_only = config.ff_only.unwrap_or(false);
+        let report = |status: &str, ahead: usize, behind: usize| {
+            json!(PullResult {
                 backend: "git".to_string(),
                 alias: self.alias.clone(),
                 path: config.path.clone(),
                 remote: remote_name.to_string(),
-                branch: target_branch,
-                status: "up_to_date".to_string(),
-                rebase: config.rebase.unwrap_or(false),
-                ff_only: config.ff_only.unwrap_or(false),
-                ahead_by: Some(0),
-                behind_by: Some(0),
-                commits_fetched: Some(0),
-            };
-            return Ok(serde_json::to_value(result).unwrap());
-        }
+                branch: target_branch.clone(),
+                status: status.to_string(),
+                rebase: false,
+                ff_only,
+                ahead_by: Some(ahead),
+                behind_by: Some(behind),
+                commits_fetched: Some(if status == "updated" { behind } else { 0 }),
+            })
+        };
 
-        // Compute ahead/behind counts
+        if local_oid == remote_oid {
+            return Ok(report("up_to_date", 0, 0));
+        }
         let (ahead, behind) = repo
             .graph_ahead_behind(local_oid, remote_oid)
             .map_err(|e| GitError::PullFailed {
                 message: format!("failed to compute ahead/behind: {}", e),
             })?;
-
-        log::debug!("Local is {} ahead, {} behind remote", ahead, behind);
-
-        // Check working directory status if needed
-        if config.ff_only.unwrap_or(false) && ahead > 0 && behind > 0 {
-            // Non-fast-forward case with ff_only
-            return Err(GitError::PullNonFastForward);
-        }
-
-        // Determine merge strategy
         if behind == 0 {
-            // Already ahead or equal, no need to pull
-            let result = PullResult {
-                backend: "git".to_string(),
-                alias: self.alias.clone(),
-                path: config.path.clone(),
-                remote: remote_name.to_string(),
-                branch: target_branch,
-                status: "up_to_date".to_string(),
-                rebase: config.rebase.unwrap_or(false),
-                ff_only: config.ff_only.unwrap_or(false),
-                ahead_by: Some(ahead),
-                behind_by: Some(0),
-                commits_fetched: Some(0),
-            };
-            return Ok(serde_json::to_value(result).unwrap());
+            return Ok(report("up_to_date", ahead, 0));
         }
-
-        // Perform the merge/rebase
-        if ahead == 0 {
-            // Fast-forward case
-            self.do_fast_forward(&repo, &local_ref, remote_oid, &target_branch)?;
-        } else if config.rebase.unwrap_or(false) {
-            // Rebase case
+        if ahead > 0 {
+            if ff_only {
+                return Err(GitError::PullNonFastForward);
+            }
             return Err(GitError::PullFailed {
-                message: "rebase operation not yet implemented".to_string(),
-            });
-        } else {
-            // Merge case
-            return Err(GitError::PullFailed {
-                message: "merge operation not yet implemented".to_string(),
+                message: format!(
+                    "merge operation not yet implemented: '{target_branch}' and \
+                     '{remote_name}/{target_branch}' have diverged and pull only fast-forwards. \
+                     Merge or rebase with the merge or rebase verb, then pull again"
+                ),
             });
         }
-
+        self.do_fast_forward(&repo, &local_ref_name, remote_oid, &target_branch)?;
         log::info!(
-            "Successfully pulled {} commits from {}/{}",
+            "Fast-forwarded {} by {} commit(s) from {}/{}",
+            target_branch,
             behind,
             remote_name,
             target_branch
         );
-
-        let result = PullResult {
-            backend: "git".to_string(),
-            alias: self.alias.clone(),
-            path: config.path.clone(),
-            remote: remote_name.to_string(),
-            branch: target_branch,
-            status: "updated".to_string(),
-            rebase: config.rebase.unwrap_or(false),
-            ff_only: config.ff_only.unwrap_or(false),
-            ahead_by: Some(ahead),
-            behind_by: Some(behind),
-            commits_fetched: Some(behind),
-        };
-
-        Ok(serde_json::to_value(result).unwrap())
+        Ok(report("updated", 0, behind))
     }
 
-    /// Setup authentication callbacks for pull operations
-    fn setup_pull_authentication_callbacks(
-        &self,
-        callbacks: &mut RemoteCallbacks,
-        config: &PullConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<(), GitError> {
-        // Clone all auth values for the closure
-        let ssh_key_clone = config.ssh_key.clone().or_else(|| {
-            profile
-                .ssh_key_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-        });
-        let username_clone = config.username.clone().or_else(|| profile.username.clone());
-        let password_clone = config.password.clone().or_else(|| profile.password.clone());
-        let token_clone = config.token.clone().or_else(|| profile.token.clone());
-
-        callbacks.credentials(move |_url, username_from_url, allowed_types| {
-            log::debug!(
-                "Git authentication requested for pull, allowed_types: {:?}",
-                allowed_types
-            );
-
-            if allowed_types.contains(CredentialType::SSH_KEY) {
-                if let Some(ref key_path) = ssh_key_clone {
-                    let username = username_from_url.unwrap_or("git");
-                    return git2::Cred::ssh_key(
-                        username,
-                        None, // public key path - let git2 figure it out
-                        Path::new(key_path),
-                        None, // passphrase
-                    );
-                }
-            }
-
-            if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
-                if let (Some(user), Some(pass)) = (&username_clone, &password_clone) {
-                    return git2::Cred::userpass_plaintext(user, pass);
-                }
-                if let Some(ref token) = token_clone {
-                    // Use token as password with empty username for HTTPS
-                    return git2::Cred::userpass_plaintext("", token);
-                }
-            }
-
-            if allowed_types.contains(CredentialType::DEFAULT) {
-                return git2::Cred::default();
-            }
-
-            Err(git2::Error::from_str("no authentication method available"))
-        });
-
-        Ok(())
-    }
-
-    /// Perform a fast-forward merge
+    /// Fast-forwards `local_ref_name` to `remote_oid`. When it is the
+    /// checked-out branch, the working tree is updated first with a safe
+    /// checkout, so local changes are never overwritten: a change that the
+    /// update would touch fails with `git.pull_dirty_worktree` and nothing
+    /// moves.
     fn do_fast_forward(
         &self,
         repo: &Repository,
-        local_ref: &git2::Reference,
+        local_ref_name: &str,
         remote_oid: git2::Oid,
         branch_name: &str,
     ) -> Result<(), GitError> {
-        // Update the local branch reference to point to the remote commit
-        let mut local_ref_mut = repo
-            .find_reference(&local_ref.name().unwrap())
-            .map_err(|e| GitError::PullFailed {
-                message: format!("failed to find local reference: {}", e),
-            })?;
-
-        local_ref_mut
-            .set_target(remote_oid, &format!("fast-forward to {}", remote_oid))
-            .map_err(|e| GitError::PullFailed {
-                message: format!("failed to update local branch: {}", e),
-            })?;
-
-        // Update HEAD if we're on this branch
-        let head = repo.head().map_err(|e| GitError::PullFailed {
-            message: format!("failed to get HEAD: {}", e),
-        })?;
-
-        if head.is_branch() && head.shorthand() == Some(branch_name) {
-            // Checkout the new commit to update working tree
+        let failed = |what: &str, e: git2::Error| GitError::PullFailed {
+            message: format!("{what}: {}", e.message()),
+        };
+        let on_branch = repo
+            .head()
+            .map(|h| h.is_branch() && h.shorthand() == Some(branch_name))
+            .unwrap_or(false);
+        if on_branch {
             let commit = repo
                 .find_commit(remote_oid)
-                .map_err(|e| GitError::PullFailed {
-                    message: format!("failed to find commit: {}", e),
-                })?;
-
-            let tree = commit.tree().map_err(|e| GitError::PullFailed {
-                message: format!("failed to get tree: {}", e),
-            })?;
-
-            repo.checkout_tree(
-                tree.as_object(),
-                Some(
-                    git2::build::CheckoutBuilder::new().force(), // Force checkout to update working tree
-                ),
-            )
-            .map_err(|e| GitError::PullFailed {
-                message: format!("failed to checkout tree: {}", e),
-            })?;
-
-            // Update HEAD to point to new commit
-            repo.set_head(&format!("refs/heads/{}", branch_name))
-                .map_err(|e| GitError::PullFailed {
-                    message: format!("failed to update HEAD: {}", e),
+                .map_err(|e| failed("failed to find commit", e))?;
+            let mut checkout = git2::build::CheckoutBuilder::new();
+            checkout.safe();
+            repo.checkout_tree(commit.as_object(), Some(&mut checkout))
+                .map_err(|e| {
+                    if e.code() == git2::ErrorCode::Conflict {
+                        GitError::PullDirtyWorktree
+                    } else {
+                        failed("failed to update the working tree", e)
+                    }
                 })?;
         }
-
-        Ok(())
-    }
-
-    /// Setup authentication callbacks based on configuration
-    fn setup_authentication_callbacks(
-        &self,
-        callbacks: &mut RemoteCallbacks,
-        config: &CloneConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<(), GitError> {
-        // Clone all auth values for the closure
-        let ssh_key_clone = config.ssh_key.clone().or_else(|| {
-            profile
-                .ssh_key_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-        });
-        let username_clone = config.username.clone().or_else(|| profile.username.clone());
-        let password_clone = config.password.clone().or_else(|| profile.password.clone());
-        let token_clone = config.token.clone().or_else(|| profile.token.clone());
-
-        callbacks.credentials(move |_url, username_from_url, allowed_types| {
-            log::debug!(
-                "Git authentication requested, allowed_types: {:?}",
-                allowed_types
-            );
-
-            if allowed_types.contains(CredentialType::SSH_KEY) {
-                if let Some(ref key_path) = ssh_key_clone {
-                    let username = username_from_url.unwrap_or("git");
-                    return git2::Cred::ssh_key(
-                        username,
-                        None, // public key path - let git2 figure it out
-                        Path::new(key_path),
-                        None, // passphrase
-                    );
-                }
-            }
-
-            if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
-                if let (Some(user), Some(pass)) = (&username_clone, &password_clone) {
-                    return git2::Cred::userpass_plaintext(user, pass);
-                }
-                if let Some(ref token) = token_clone {
-                    // Use token as password with empty username for HTTPS
-                    return git2::Cred::userpass_plaintext("", token);
-                }
-            }
-
-            if allowed_types.contains(CredentialType::DEFAULT) {
-                return git2::Cred::default();
-            }
-
-            Err(git2::Error::from_str("no authentication method available"))
-        });
-
-        Ok(())
-    }
-
-    /// Update submodules recursively
-    fn update_submodules(&self, _repo: &Repository) -> Result<(), GitError> {
-        // Submodule handling is complex in git2 and would require significant additional code
-        // For now, we'll log a warning and continue
-        log::warn!("Recursive submodule cloning not yet implemented");
-        Ok(())
-    }
-
-    /// Validate that the clone was successful
-    fn validate_clone_result(&self, repo: &Repository, path: &Path) -> Result<(), GitError> {
-        // Check that repository exists at path
-        if !path.exists() {
-            return Err(GitError::CloneFailed {
-                message: "clone target directory does not exist".to_string(),
-            });
-        }
-
-        // Check that HEAD resolves
-        repo.head().map_err(|e| GitError::CloneFailed {
-            message: format!("cloned repository HEAD does not resolve: {}", e),
-        })?;
-
+        let mut local = repo
+            .find_reference(local_ref_name)
+            .map_err(|e| failed("failed to find local branch", e))?;
+        local
+            .set_target(remote_oid, &format!("pull: fast-forward to {}", remote_oid))
+            .map_err(|e| failed("failed to update local branch", e))?;
         Ok(())
     }
 
     /// Execute the actual push operation
-    async fn execute_push(
-        &self,
-        config: &PushConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Value, GitError> {
+    async fn execute_push(&self, config: &PushConfig) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
-
-        // Open the existing repository
-        let repo = Repository::open(path).map_err(|e| {
-            if e.code() == git2::ErrorCode::NotFound {
-                GitError::RepositoryNotFound {
-                    path: config.path.clone(),
-                }
-            } else {
-                GitError::PushFailed {
-                    message: format!("failed to open repository: {}", e),
-                }
-            }
+        let repo = open_repo(path, &config.path, |message| GitError::PushFailed {
+            message,
         })?;
 
-        // Resolve remote name
         let remote_name = config.remote.as_deref().unwrap_or("origin");
-
-        // Verify remote exists
         let mut remote = repo
             .find_remote(remote_name)
             .map_err(|_| GitError::RemoteNotFound {
                 remote: remote_name.to_string(),
             })?;
 
-        // Resolve branches to push
         let branches_to_push = self.resolve_push_branches(&repo, config)?;
 
-        // Compute ahead/behind counts for each branch (for ff_only check and reporting)
+        // Ahead/behind counts against the remote-tracking branches, for the
+        // ff_only check and the report.
         let mut branch_statuses = Vec::new();
         for branch_name in &branches_to_push {
             let (ahead_by, behind_by) =
                 self.compute_ahead_behind(&repo, branch_name, remote_name)?;
-
-            // Check ff_only constraints
             if config.ff_only.unwrap_or(false) && behind_by > 0 {
                 return Err(GitError::PushNonFastForward);
             }
-
             branch_statuses.push((branch_name.clone(), ahead_by, behind_by));
         }
 
-        // Setup authentication callbacks for push
+        let creds = net::Credentials {
+            ssh_key: config.ssh_key.clone(),
+            username: config.username.clone(),
+            password: config.password.clone(),
+            token: config.token.clone(),
+        };
+        let policy = net::HostKeyPolicy::new(config.known_hosts_path.as_deref());
+        let rejections = net::PushRejections::default();
         let mut callbacks = RemoteCallbacks::new();
-        self.setup_push_authentication_callbacks(&mut callbacks, config, profile)?;
-        let known_hosts_path = config.known_hosts_path.clone().or_else(|| {
-            profile
-                .known_hosts_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-        });
-        let remote_url = remote
+        creds.install(&mut callbacks);
+        policy.install(&mut callbacks);
+        rejections.install(&mut callbacks);
+        // The push URL after url.<base>.pushInsteadOf / insteadOf rewriting
+        // (libgit2 applies both when it reads the remote).
+        let push_url = remote
             .pushurl()
             .or_else(|| remote.url())
             .unwrap_or_default()
             .to_string();
-        let host_key_guard =
-            install_host_key_check(&mut callbacks, known_hosts_path.as_deref(), &remote_url)?;
+        policy.prepare(&push_url)?;
 
-        // Build refspecs for branches
-        let mut refspecs = Vec::new();
         let force = config.force.unwrap_or(false);
-
-        for branch_name in &branches_to_push {
-            let refspec = if force {
-                format!("+refs/heads/{}:refs/heads/{}", branch_name, branch_name)
-            } else {
-                format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name)
-            };
-            refspecs.push(refspec);
+        let mut refspecs: Vec<String> = branches_to_push
+            .iter()
+            .map(|b| {
+                format!(
+                    "{}refs/heads/{b}:refs/heads/{b}",
+                    if force { "+" } else { "" }
+                )
+            })
+            .collect();
+        let tags_pushed = config.tags.unwrap_or(false);
+        if tags_pushed {
+            // Every local tag, by name: libgit2 does not expand wildcards
+            // in push refspecs.
+            let tags = repo.tag_names(None).map_err(|e| GitError::PushFailed {
+                message: format!("failed to list tags: {}", e.message()),
+            })?;
+            for tag in tags.iter().flatten() {
+                refspecs.push(format!(
+                    "{}refs/tags/{tag}:refs/tags/{tag}",
+                    if force { "+" } else { "" }
+                ));
+            }
         }
+        let refspec_strs: Vec<&str> = refspecs.iter().map(String::as_str).collect();
 
-        // Add tags refspec if requested
-        let tags_pushed = if config.tags.unwrap_or(false) {
-            let tag_refspec = if force {
-                "+refs/tags/*:refs/tags/*".to_string()
-            } else {
-                "refs/tags/*:refs/tags/*".to_string()
-            };
-            refspecs.push(tag_refspec);
-            true
-        } else {
-            false
-        };
-
-        // Convert refspecs to string slices
-        let refspec_strs: Vec<&str> = refspecs.iter().map(|s| s.as_str()).collect();
-
-        // Setup push options
         let mut push_options = git2::PushOptions::new();
         push_options.remote_callbacks(callbacks);
-
-        // Perform the push
-        log::debug!(
-            "Pushing {} branches and tags={} to remote '{}'",
-            branches_to_push.len(),
-            tags_pushed,
-            remote_name
-        );
-
+        let _timeouts = net::apply_server_timeouts(&push_url);
         remote
             .push(&refspec_strs, Some(&mut push_options))
             .map_err(|e| {
-                if let Some(err) = host_key_guard.as_ref().and_then(HostKeyGuard::failure) {
+                if let Some(err) = policy.explain(&e) {
                     return err;
                 }
-                let message = format!("push failed: {}", e);
-                if e.to_string().contains("authentication") {
+                let message = format!("push failed: {}", e.message());
+                if net::is_auth_error(&e) {
                     GitError::PushAuthFailed { message }
-                } else if e.to_string().contains("non-fast-forward")
-                    || e.to_string().contains("rejected")
+                } else if e.code() == git2::ErrorCode::NotFastForward
+                    || e.message().contains("non-fast-forward")
+                    || e.message().contains("not present locally")
+                    || e.message().contains("rejected")
                 {
                     GitError::PushRejected { message }
                 } else {
                     GitError::PushFailed { message }
                 }
             })?;
+        if let Some(message) = rejections.message() {
+            return Err(GitError::PushRejected { message });
+        }
 
-        // Set upstream if requested
         if config.set_upstream.unwrap_or(false) {
             self.set_upstream_branches(&repo, &branches_to_push, remote_name)?;
         }
 
-        // Build result with status for each branch
-        let mut result_branches = Vec::new();
-        for (branch_name, ahead_by, behind_by) in branch_statuses {
-            let status = if ahead_by == 0 {
-                "up_to_date".to_string()
-            } else {
-                "pushed".to_string()
-            };
-
-            result_branches.push(PushBranchStatus {
-                name: branch_name,
-                status,
+        let branches = branch_statuses
+            .into_iter()
+            .map(|(name, ahead_by, behind_by)| PushBranchStatus {
+                name,
+                status: if ahead_by == 0 && behind_by == 0 {
+                    "up_to_date".to_string()
+                } else {
+                    "pushed".to_string()
+                },
                 ahead_by,
                 behind_by,
-            });
-        }
+            })
+            .collect::<Vec<_>>();
 
-        log::info!(
-            "Successfully pushed {} branches to {}",
-            result_branches.len(),
-            remote_name
-        );
-
-        let result = PushResult {
+        log::info!("Pushed {} branch(es) to {}", branches.len(), remote_name);
+        Ok(json!(PushResult {
             backend: "git".to_string(),
             alias: self.alias.clone(),
             path: config.path.clone(),
             remote: remote_name.to_string(),
-            branches: result_branches,
+            branches,
             tags_pushed,
-        };
-
-        Ok(serde_json::to_value(result).unwrap())
+        }))
     }
 
     /// Execute the actual status operation
@@ -4829,11 +3910,7 @@ impl GitHandle {
     }
 
     /// Execute the actual commit operation
-    async fn execute_commit(
-        &self,
-        config: &CommitConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Value, GitError> {
+    async fn execute_commit(&self, config: &CommitConfig) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
 
         // Open the repository
@@ -4859,17 +3936,17 @@ impl GitHandle {
         // Stage files based on config
         let staged_files = self.stage_commit_files(&repo, config)?;
 
-        // Check if there are changes to commit
+        // Check if there are changes to commit (amend may only reword)
         let allow_empty = config.allow_empty.unwrap_or(false);
-        if !self.has_changes_to_commit(&repo, allow_empty)? {
+        if !config.amend.unwrap_or(false) && !self.has_changes_to_commit(&repo, allow_empty)? {
             return Err(GitError::CommitNothingToCommit {
                 path: config.path.clone(),
             });
         }
 
         // Resolve author and committer identity
-        let author = self.resolve_commit_author(&repo, config, profile)?;
-        let committer = self.resolve_commit_committer(&repo, config, profile, &author)?;
+        let author = self.resolve_commit_author(&repo, config)?;
+        let committer = self.resolve_commit_committer(&repo, config, &author)?;
 
         // Build final commit message
         let message = self.build_commit_message(&repo, config, &author)?;
@@ -5033,11 +4110,7 @@ impl GitHandle {
     }
 
     /// Execute tag operations (list, create, delete)
-    async fn execute_tag(
-        &self,
-        config: &TagConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Value, GitError> {
+    async fn execute_tag(&self, config: &TagConfig) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
 
         // Open the repository
@@ -5057,7 +4130,7 @@ impl GitHandle {
 
         match action {
             TagAction::List => self.list_tags(&repo, config).await,
-            TagAction::Create => self.create_tag(&repo, config, profile).await,
+            TagAction::Create => self.create_tag(&repo, config).await,
             TagAction::Delete => self.delete_tags(&repo, config).await,
         }
     }
@@ -5107,12 +4180,7 @@ impl GitHandle {
     }
 
     /// Create tag operation
-    async fn create_tag(
-        &self,
-        repo: &Repository,
-        config: &TagConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Value, GitError> {
+    async fn create_tag(&self, repo: &Repository, config: &TagConfig) -> Result<Value, GitError> {
         let name = config.name.as_ref().unwrap(); // Already validated
         let default_target = "HEAD".to_string();
         let target_str = config.target.as_ref().unwrap_or(&default_target);
@@ -5136,7 +4204,7 @@ impl GitHandle {
         let _tag_oid = if annotated {
             // Create annotated tag
             let message = config.message.as_ref().unwrap(); // Already validated
-            let tagger = self.resolve_tag_identity(config, profile, repo)?;
+            let tagger = self.resolve_tag_identity(config, repo)?;
 
             repo.tag(name, &target, &tagger, message, force)
                 .map_err(|e| GitError::TagCreateFailed {
@@ -5354,12 +4422,9 @@ impl GitHandle {
     fn resolve_tag_identity(
         &self,
         config: &TagConfig,
-        profile: &GitConnectionProfile,
         repo: &Repository,
     ) -> Result<Signature<'_>, GitError> {
         let name = if let Some(name) = &config.author_name {
-            name.clone()
-        } else if let Some(name) = &profile.username {
             name.clone()
         } else {
             // Try to get from git config
@@ -5382,7 +4447,7 @@ impl GitHandle {
                 TagTimestamp::Iso8601(iso_str) => {
                     // Parse ISO8601 timestamp
                     chrono::DateTime::parse_from_rfc3339(iso_str)
-                        .map(|dt| Time::new(dt.timestamp(), 0))
+                        .map(|dt| Time::new(dt.timestamp(), dt.offset().local_minus_utc() / 60))
                         .map_err(|_| GitError::InvalidTagConfig {
                             message: format!("invalid ISO8601 timestamp: {}", iso_str),
                         })?
@@ -5739,19 +4804,16 @@ impl GitHandle {
                 message: format!("failed to get HEAD commit: {}", e),
             })?;
 
-        // Keep the same parents as the original commit
-        let parents: Vec<Commit> = head_commit.parents().collect();
-        let parent_refs: Vec<&Commit> = parents.iter().collect();
-
-        // Create amended commit
-        let commit_oid = repo
-            .commit(
+        // Replace HEAD's commit: same parents, new tree, message and
+        // identities; HEAD's branch moves to the new commit.
+        let commit_oid = head_commit
+            .amend(
                 Some("HEAD"),
-                author,
-                committer,
-                message,
-                &tree,
-                &parent_refs,
+                Some(author),
+                Some(committer),
+                None,
+                Some(message),
+                Some(&tree),
             )
             .map_err(|e| GitError::CommitAmendFailed {
                 message: format!("failed to amend commit: {}", e),
@@ -5810,9 +4872,9 @@ impl GitHandle {
     ) -> Result<Value, GitError> {
         use git2::BranchType;
 
-        let _local_only = config.local_only.unwrap_or(true);
         let remote_only = config.remote_only.unwrap_or(false);
-        let all = config.all.unwrap_or(false);
+        // local_only=false alone means "not only local": list everything.
+        let all = config.all.unwrap_or(false) || (config.local_only == Some(false) && !remote_only);
 
         let mut branches = Vec::new();
 
@@ -5866,31 +4928,52 @@ impl GitHandle {
         repo: &Repository,
         config: &BranchConfig,
     ) -> Result<Value, GitError> {
-        let name = config.name.as_ref().unwrap();
+        let name = config.name.as_deref().unwrap_or_default();
         let start_point = config.start_point.as_deref().unwrap_or("HEAD");
+        let force = config.force.unwrap_or(false);
 
-        // Check if branch already exists
-        if repo.find_branch(name, git2::BranchType::Local).is_ok() {
-            return Err(GitError::BranchAlreadyExists { name: name.clone() });
+        // force=true replaces an existing branch, except the checked-out one.
+        if let Ok(existing) = repo.find_branch(name, git2::BranchType::Local) {
+            if !force {
+                return Err(GitError::BranchAlreadyExists {
+                    name: name.to_string(),
+                });
+            }
+            if existing.is_head() {
+                return Err(GitError::BranchFailed {
+                    message: format!("cannot replace '{name}': it is the checked-out branch"),
+                });
+            }
         }
 
         // Resolve start point to a commit
         let target_commit = self.resolve_start_point(repo, start_point)?;
 
-        // Create the branch
+        // With track=true the upstream must exist before anything changes.
+        let remote_name = config.remote.as_deref().unwrap_or("origin");
+        if config.track.unwrap_or(false) {
+            let upstream = format!("refs/remotes/{}/{}", remote_name, name);
+            if repo.find_reference(&upstream).is_err() {
+                return Err(GitError::BranchSetUpstreamFailed {
+                    message: format!(
+                        "remote-tracking branch '{remote_name}/{name}' does not exist (fetch it first)"
+                    ),
+                });
+            }
+        }
+
         let mut branch =
-            repo.branch(name, &target_commit, false)
+            repo.branch(name, &target_commit, force)
                 .map_err(|e| GitError::BranchFailed {
-                    message: format!("failed to create branch '{}': {}", name, e),
+                    message: format!("failed to create branch '{}': {}", name, e.message()),
                 })?;
 
-        // Set upstream tracking if requested
         let tracked_remote = if config.track.unwrap_or(false) {
-            let remote_name = config.remote.as_deref().unwrap_or("origin");
             match self.set_branch_upstream(&mut branch, remote_name, name) {
                 Ok(upstream) => Some(upstream),
                 Err(e) => {
-                    log::warn!("Failed to set upstream tracking: {}", e);
+                    // Leave nothing half-done.
+                    let _ = branch.delete();
                     return Err(e);
                 }
             }
@@ -5930,15 +5013,37 @@ impl GitHandle {
             .find_branch(name, git2::BranchType::Local)
             .map_err(|_| GitError::BranchNotFound { name: name.clone() })?;
 
-        // Check if it's the current branch
-        if branch.is_head() && !config.force.unwrap_or(false) {
+        // The checked-out branch is never deleted, even with force=true.
+        if branch.is_head() {
             return Err(GitError::BranchDeleteCurrent { name: name.clone() });
         }
 
-        // Check if branch is merged (simplified check - we could make this more sophisticated)
+        // Without force, the branch must be merged: into its upstream when
+        // it has one, otherwise into HEAD (as `git branch -d` does).
         if !config.force.unwrap_or(false) {
-            // For safety, we skip the unmerged check for now and rely on force flag
-            // A full implementation would check if the branch is merged into its upstream or main
+            if let Some(tip) = branch.get().target() {
+                let base = branch
+                    .upstream()
+                    .ok()
+                    .and_then(|u| u.get().target())
+                    .or_else(|| repo.head().ok().and_then(|h| h.target()));
+                let merged = match base {
+                    Some(base) => {
+                        base == tip
+                            || repo.graph_descendant_of(base, tip).map_err(|e| {
+                                GitError::BranchDeleteFailed {
+                                    message: format!(
+                                        "cannot check whether '{name}' is merged: {e}"
+                                    ),
+                                }
+                            })?
+                    }
+                    None => false,
+                };
+                if !merged {
+                    return Err(GitError::BranchDeleteUnmerged { name: name.clone() });
+                }
+            }
         }
 
         // Delete the branch
@@ -6037,46 +5142,40 @@ impl GitHandle {
         let was_current = branch.is_head();
 
         if !was_current {
-            // Check working directory status if force is not set
-            if !config.force.unwrap_or(false) {
-                let statuses = repo
-                    .statuses(None)
+            // Update the working tree first: a safe checkout refuses to
+            // overwrite local changes (force=true discards them), and HEAD
+            // only moves once the tree is in place.
+            let target =
+                branch
+                    .get()
+                    .peel_to_commit()
                     .map_err(|e| GitError::BranchCheckoutFailed {
-                        message: format!("failed to check repository status: {}", e),
+                        message: format!("cannot read the tip of '{}': {}", name, e.message()),
                     })?;
-
-                // Check for uncommitted changes that would conflict
-                let has_changes = statuses.iter().any(|entry| {
-                    let flags = entry.status();
-                    flags.is_wt_modified() || flags.is_wt_deleted() || flags.is_wt_new()
-                });
-
-                if has_changes {
-                    return Err(GitError::BranchCheckoutConflict);
-                }
-            }
-
-            // Get the branch reference
-            let branch_ref = branch.get();
-
-            // Set HEAD to point to the branch
-            repo.set_head(branch_ref.name().unwrap()).map_err(|e| {
-                GitError::BranchCheckoutFailed {
-                    message: format!("failed to set HEAD: {}", e),
-                }
-            })?;
-
-            // Update working directory
-            let mut checkout_opts = git2::build::CheckoutBuilder::default();
+            let mut checkout_opts = git2::build::CheckoutBuilder::new();
             if config.force.unwrap_or(false) {
                 checkout_opts.force();
+            } else {
+                checkout_opts.safe();
             }
-
-            repo.checkout_head(Some(&mut checkout_opts)).map_err(|e| {
-                GitError::BranchCheckoutFailed {
-                    message: format!("failed to checkout working directory: {}", e),
-                }
-            })?;
+            repo.checkout_tree(target.as_object(), Some(&mut checkout_opts))
+                .map_err(|e| {
+                    if e.code() == git2::ErrorCode::Conflict {
+                        GitError::BranchCheckoutConflict
+                    } else {
+                        GitError::BranchCheckoutFailed {
+                            message: format!(
+                                "failed to check out the working tree: {}",
+                                e.message()
+                            ),
+                        }
+                    }
+                })?;
+            let ref_name = format!("refs/heads/{}", name);
+            repo.set_head(&ref_name)
+                .map_err(|e| GitError::BranchCheckoutFailed {
+                    message: format!("failed to set HEAD: {}", e.message()),
+                })?;
         }
 
         let branch_data = json!({
@@ -6255,83 +5354,27 @@ impl GitHandle {
         Ok((ahead, behind))
     }
 
-    /// Setup authentication callbacks for push operations
-    fn setup_push_authentication_callbacks(
-        &self,
-        callbacks: &mut RemoteCallbacks,
-        config: &PushConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<(), GitError> {
-        // Clone all auth values for the closure
-        let ssh_key_clone = config.ssh_key.clone().or_else(|| {
-            profile
-                .ssh_key_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-        });
-        let username_clone = config.username.clone().or_else(|| profile.username.clone());
-        let password_clone = config.password.clone().or_else(|| profile.password.clone());
-        let token_clone = config.token.clone().or_else(|| profile.token.clone());
-
-        callbacks.credentials(move |_url, username_from_url, allowed_types| {
-            log::debug!(
-                "Git authentication requested for push, allowed_types: {:?}",
-                allowed_types
-            );
-
-            if allowed_types.contains(CredentialType::SSH_KEY) {
-                if let Some(ref key_path) = ssh_key_clone {
-                    let username = username_from_url.unwrap_or("git");
-                    return git2::Cred::ssh_key(
-                        username,
-                        None, // public key path - let git2 figure it out
-                        Path::new(key_path),
-                        None, // passphrase
-                    );
-                }
-            }
-
-            if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) {
-                if let (Some(user), Some(pass)) = (&username_clone, &password_clone) {
-                    return git2::Cred::userpass_plaintext(user, pass);
-                }
-                if let Some(ref token) = token_clone {
-                    // Use token as password with empty username for HTTPS
-                    return git2::Cred::userpass_plaintext("", token);
-                }
-            }
-
-            if allowed_types.contains(CredentialType::DEFAULT) {
-                return git2::Cred::default();
-            }
-
-            Err(git2::Error::from_str("no authentication method available"))
-        });
-
-        Ok(())
-    }
-
-    /// Set upstream configuration for branches
+    /// Sets `<remote>/<branch>` as the upstream of each pushed branch.
     fn set_upstream_branches(
         &self,
-        _repo: &Repository,
+        repo: &Repository,
         branches: &[String],
         remote_name: &str,
     ) -> Result<(), GitError> {
         for branch_name in branches {
-            // This is a simplified implementation - in a real implementation you'd use
-            // git2's config API to set branch.<name>.remote and branch.<name>.merge
-            log::debug!(
-                "Setting upstream for branch '{}' to '{}/{}'",
-                branch_name,
-                remote_name,
-                branch_name
-            );
-
-            // For now, just log - proper implementation would use:
-            // let mut config = repo.config()?;
-            // config.set_str(&format!("branch.{}.remote", branch_name), remote_name)?;
-            // config.set_str(&format!("branch.{}.merge", branch_name), &format!("refs/heads/{}", branch_name))?;
+            let upstream = format!("{}/{}", remote_name, branch_name);
+            let mut branch = repo
+                .find_branch(branch_name, BranchType::Local)
+                .and_then(|mut b| b.set_upstream(Some(&upstream)).map(|()| b))
+                .map_err(|e| GitError::PushFailed {
+                    message: format!(
+                        "the push succeeded, but setting the upstream of '{}' to '{}' failed: {}",
+                        branch_name,
+                        upstream,
+                        e.message()
+                    ),
+                })?;
+            let _ = &mut branch;
         }
         Ok(())
     }
@@ -6584,18 +5627,8 @@ impl GitHandle {
         })
     }
 
-    /// Register a git connection profile
-    #[allow(dead_code)]
-    pub fn register_connection(alias: String, profile: GitConnectionProfile) {
-        GIT_CONNECTIONS.insert(alias, profile);
-    }
-
     /// Execute merge operation
-    async fn execute_merge(
-        &self,
-        config: &MergeConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Value, GitError> {
+    async fn execute_merge(&self, config: &MergeConfig) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
 
         // Open the repository
@@ -6688,13 +5721,7 @@ impl GitHandle {
 
             if squash {
                 return self
-                    .perform_squash_merge(
-                        &repo,
-                        &source_commit,
-                        config,
-                        profile,
-                        &target_branch_name,
-                    )
+                    .perform_squash_merge(&repo, &source_commit, config, &target_branch_name)
                     .await;
             } else {
                 return self
@@ -6702,7 +5729,6 @@ impl GitHandle {
                         &repo,
                         &source_commit,
                         config,
-                        profile,
                         &target_branch_name,
                         head_commit_oid,
                         abort_on_conflict,
@@ -6717,11 +5743,7 @@ impl GitHandle {
     }
 
     /// Execute rebase operation
-    async fn execute_rebase(
-        &self,
-        config: &RebaseConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Value, GitError> {
+    async fn execute_rebase(&self, config: &RebaseConfig) -> Result<Value, GitError> {
         let path = Path::new(&config.path);
 
         // Open the repository
@@ -6747,13 +5769,13 @@ impl GitHandle {
                 if rebase_in_progress {
                     return Err(GitError::RebaseInProgress);
                 }
-                self.execute_rebase_start(&repo, config, profile).await
+                self.execute_rebase_start(&repo, config).await
             }
             RebaseOperation::Continue => {
                 if !rebase_in_progress {
                     return Err(GitError::RebaseNotInProgress);
                 }
-                self.execute_rebase_continue(&repo, config, profile).await
+                self.execute_rebase_continue(&repo, config).await
             }
             RebaseOperation::Abort => {
                 if !rebase_in_progress {
@@ -6803,28 +5825,18 @@ impl GitHandle {
         &self,
         repo: &Repository,
         config: &RebaseConfig,
-        profile: &GitConnectionProfile,
     ) -> Result<Value, GitError> {
-        // Handle advanced features with warnings
-        if config.preserve_merges.unwrap_or(false) {
-            log::warn!(
-                "preserve_merges option requested but not supported by git2 library, proceeding with standard rebase"
-            );
-        }
-
-        if config.autosquash.unwrap_or(false) {
-            log::warn!(
-                "autosquash option requested but not supported by git2 library, proceeding with standard rebase"
-            );
-        }
-
+        let rebase_author = self.resolve_rebase_author(config)?;
         // Resolve branch (source) and upstream
         let (branch_name, branch_commit) = self.resolve_rebase_branch(repo, config)?;
         let upstream_commit = self.resolve_rebase_upstream(repo, config)?;
 
         // Check for clean working tree if required
         if !config.allow_uncommitted.unwrap_or(false) {
-            self.check_working_tree_clean(repo)?;
+            self.check_working_tree_clean(repo).map_err(|e| match e {
+                GitError::MergeDirtyWorktree => GitError::RebaseDirtyWorktree,
+                other => other,
+            })?;
         }
 
         // Check for fast-forward scenario
@@ -6898,12 +5910,12 @@ impl GitHandle {
                     }
 
                     // Commit the rebased changes
-                    let committer_sig = self.resolve_rebase_committer_signature(config, profile)?;
-                    rebase.commit(None, &committer_sig, None).map_err(|e| {
-                        GitError::RebaseFailed {
+                    let committer_sig = self.resolve_rebase_committer_signature(repo, config)?;
+                    rebase
+                        .commit(rebase_author.as_ref(), &committer_sig, None)
+                        .map_err(|e| GitError::RebaseFailed {
                             message: format!("failed to commit during rebase: {}", e),
-                        }
-                    })?;
+                        })?;
 
                     commits_rebased += 1;
                 }
@@ -6920,7 +5932,7 @@ impl GitHandle {
         }
 
         // Finish the rebase
-        let committer_sig = self.resolve_rebase_committer_signature(config, profile)?;
+        let committer_sig = self.resolve_rebase_committer_signature(repo, config)?;
         rebase
             .finish(Some(&committer_sig))
             .map_err(|e| GitError::RebaseFailed {
@@ -6959,10 +5971,10 @@ impl GitHandle {
         &self,
         repo: &Repository,
         config: &RebaseConfig,
-        profile: &GitConnectionProfile,
     ) -> Result<Value, GitError> {
         let abort_on_conflict = config.abort_on_conflict.unwrap_or(true);
-        let committer_sig = self.resolve_rebase_committer_signature(config, profile)?;
+        let committer_sig = self.resolve_rebase_committer_signature(repo, config)?;
+        let rebase_author = self.resolve_rebase_author(config)?;
 
         // Open the existing rebase - git2 can resume from rebase state files
         let mut rebase = repo
@@ -7004,11 +6016,11 @@ impl GitHandle {
                     }
 
                     // Commit the rebased changes
-                    rebase.commit(None, &committer_sig, None).map_err(|e| {
-                        GitError::RebaseFailed {
+                    rebase
+                        .commit(rebase_author.as_ref(), &committer_sig, None)
+                        .map_err(|e| GitError::RebaseFailed {
                             message: format!("failed to commit during rebase continue: {}", e),
-                        }
-                    })?;
+                        })?;
 
                     commits_rebased += 1;
                 }
@@ -7162,23 +6174,18 @@ impl GitHandle {
         config: &RebaseConfig,
         branch_name: &str,
     ) -> Result<Value, GitError> {
-        // Check if branch can be fast-forwarded to upstream
-        let upstream_annotated = repo
-            .find_annotated_commit(upstream_commit.id())
-            .map_err(|e| GitError::RebaseFailed {
-                message: format!(
-                    "failed to create annotated commit for merge analysis: {}",
-                    e
-                ),
-            })?;
-
-        let merge_analysis =
-            repo.merge_analysis(&[&upstream_annotated])
+        // Compare the branch (not HEAD) with the upstream.
+        let descends = |a: Oid, b: Oid| {
+            repo.graph_descendant_of(a, b)
                 .map_err(|e| GitError::RebaseFailed {
-                    message: format!("merge analysis failed: {}", e),
-                })?;
+                    message: format!("cannot compare '{branch_name}' with the upstream: {e}"),
+                })
+        };
+        let (b, u) = (branch_commit.id(), upstream_commit.id());
+        let up_to_date = b == u || descends(b, u)?;
+        let fast_forward = !up_to_date && descends(u, b)?;
 
-        if merge_analysis.0.is_up_to_date() {
+        if up_to_date {
             Ok(json!({
                 "backend": "git",
                 "alias": self.alias,
@@ -7198,22 +6205,36 @@ impl GitHandle {
                     "new_base": branch_commit.id().to_string()
                 }
             }))
-        } else if merge_analysis.0.is_fast_forward() {
-            // Perform fast-forward
-            let mut reference = repo.head().map_err(|e| GitError::RebaseFailed {
-                message: format!("failed to get HEAD reference: {}", e),
-            })?;
-
+        } else if fast_forward {
+            // Update the working tree first with a safe checkout (local
+            // changes are never overwritten), then move the branch.
+            let mut checkout = git2::build::CheckoutBuilder::new();
+            checkout.safe();
+            repo.checkout_tree(upstream_commit.as_object(), Some(&mut checkout))
+                .map_err(|e| {
+                    if e.code() == git2::ErrorCode::Conflict {
+                        GitError::RebaseDirtyWorktree
+                    } else {
+                        GitError::RebaseFailed {
+                            message: format!("failed to checkout after fast-forward: {}", e),
+                        }
+                    }
+                })?;
+            let ref_name = format!("refs/heads/{branch_name}");
+            let mut reference =
+                repo.find_reference(&ref_name)
+                    .map_err(|e| GitError::RebaseFailed {
+                        message: format!("failed to find '{branch_name}': {}", e),
+                    })?;
             reference
                 .set_target(upstream_commit.id(), "Fast-forward rebase")
                 .map_err(|e| GitError::RebaseFailed {
-                    message: format!("failed to fast-forward HEAD: {}", e),
+                    message: format!("failed to fast-forward '{branch_name}': {}", e),
                 })?;
-
-            // Update working directory
-            repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            // As git rebase does, the rebased branch ends up checked out.
+            repo.set_head(&ref_name)
                 .map_err(|e| GitError::RebaseFailed {
-                    message: format!("failed to checkout after fast-forward: {}", e),
+                    message: format!("failed to check out '{branch_name}': {}", e),
                 })?;
 
             Ok(json!({
@@ -7243,33 +6264,31 @@ impl GitHandle {
     /// Resolve committer signature for rebase operations
     fn resolve_rebase_committer_signature(
         &self,
+        repo: &Repository,
         config: &RebaseConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Signature<'_>, GitError> {
-        // Get environment variables for fallback identity
-        let git_committer_name = std::env::var("GIT_COMMITTER_NAME").ok();
-        let git_committer_email = std::env::var("GIT_COMMITTER_EMAIL").ok();
-        let user_name = std::env::var("USER").ok();
-        let user_email = std::env::var("EMAIL").ok();
+    ) -> Result<Signature<'static>, GitError> {
+        let (name, email) = identity(
+            repo,
+            config.committer_name.as_deref(),
+            config.committer_email.as_deref(),
+            "COMMITTER",
+        )
+        .ok_or(GitError::RebaseIdentityMissing)?;
+        Signature::now(&name, &email).map_err(|_| GitError::RebaseIdentityMissing)
+    }
 
-        // Resolve committer identity
-        let committer_name = config
-            .committer_name
-            .as_ref()
-            .or(profile.username.as_ref())
-            .or(git_committer_name.as_ref())
-            .or(user_name.as_ref())
-            .ok_or(GitError::RebaseIdentityMissing)?;
-
-        let committer_email = config
-            .committer_email
-            .as_ref()
-            .or(git_committer_email.as_ref())
-            .or(user_email.as_ref())
-            .ok_or(GitError::RebaseIdentityMissing)?;
-
-        Signature::now(committer_name, committer_email)
-            .map_err(|_e| GitError::RebaseIdentityMissing)
+    /// The author given with author_name and author_email, which then
+    /// replaces the author of every rebased commit; None keeps the authors.
+    fn resolve_rebase_author(
+        &self,
+        config: &RebaseConfig,
+    ) -> Result<Option<Signature<'static>>, GitError> {
+        match (&config.author_name, &config.author_email) {
+            (Some(n), Some(e)) => Signature::now(n, e)
+                .map(Some)
+                .map_err(|_| GitError::RebaseIdentityMissing),
+            _ => Ok(None),
+        }
     }
 
     /// Resolve target branch for merge
@@ -7367,17 +6386,24 @@ impl GitHandle {
         config: &MergeConfig,
         target_branch_name: &str,
     ) -> Result<Value, GitError> {
-        // Update HEAD to point to source commit
+        // Update the working tree first with a safe checkout (local changes
+        // are never overwritten), then move the branch.
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.safe();
+        repo.checkout_tree(source_commit.as_object(), Some(&mut checkout))
+            .map_err(|e| {
+                if e.code() == git2::ErrorCode::Conflict {
+                    GitError::MergeDirtyWorktree
+                } else {
+                    GitError::MergeFailed {
+                        message: format!("failed to update working tree: {}", e),
+                    }
+                }
+            })?;
         let refname = format!("refs/heads/{}", target_branch_name);
         repo.reference(&refname, source_commit.id(), true, "fast-forward merge")
             .map_err(|e| GitError::MergeFailed {
                 message: format!("failed to update branch reference: {}", e),
-            })?;
-
-        // Update working tree
-        repo.checkout_head(None)
-            .map_err(|e| GitError::MergeFailed {
-                message: format!("failed to update working tree: {}", e),
             })?;
 
         Ok(json!({
@@ -7405,7 +6431,6 @@ impl GitHandle {
         repo: &Repository,
         source_commit: &Commit<'_>,
         config: &MergeConfig,
-        profile: &GitConnectionProfile,
         target_branch_name: &str,
     ) -> Result<Value, GitError> {
         // Get current HEAD commit
@@ -7453,7 +6478,7 @@ impl GitHandle {
             message: format!("failed to find tree: {}", e),
         })?;
 
-        let (author_sig, committer_sig) = self.resolve_merge_identity(config, profile)?;
+        let (author_sig, committer_sig) = self.resolve_merge_identity(repo, config)?;
 
         let default_message = format!(
             "Squash merge '{}' into '{}'",
@@ -7507,7 +6532,6 @@ impl GitHandle {
         repo: &Repository,
         source_commit: &Commit<'_>,
         config: &MergeConfig,
-        profile: &GitConnectionProfile,
         target_branch_name: &str,
         _head_commit_oid: Oid,
         abort_on_conflict: bool,
@@ -7556,7 +6580,7 @@ impl GitHandle {
             message: format!("failed to find tree: {}", e),
         })?;
 
-        let (author_sig, committer_sig) = self.resolve_merge_identity(config, profile)?;
+        let (author_sig, committer_sig) = self.resolve_merge_identity(repo, config)?;
 
         let default_message = format!(
             "Merge branch '{}' into '{}'",
@@ -7607,44 +6631,25 @@ impl GitHandle {
     /// Resolve merge identity (author and committer)
     fn resolve_merge_identity(
         &self,
+        repo: &Repository,
         config: &MergeConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<(Signature<'_>, Signature<'_>), GitError> {
-        // Get environment variables
-        let git_author_name = std::env::var("GIT_AUTHOR_NAME").ok();
-        let user_name = std::env::var("USER").ok();
-        let git_author_email = std::env::var("GIT_AUTHOR_EMAIL").ok();
-        let user_email = std::env::var("EMAIL").ok();
-
-        // Resolve author identity
-        let author_name = config
-            .author_name
-            .as_ref()
-            .or(profile.username.as_ref())
-            .or(git_author_name.as_ref())
-            .or(user_name.as_ref())
-            .ok_or(GitError::MergeIdentityMissing)?;
-
-        let author_email = config
-            .author_email
-            .as_ref()
-            .or(git_author_email.as_ref())
-            .or(user_email.as_ref())
-            .ok_or(GitError::MergeIdentityMissing)?;
-
-        // Resolve committer identity
-        let committer_name = config.committer_name.as_ref().unwrap_or(author_name);
-
-        let committer_email = config.committer_email.as_ref().unwrap_or(author_email);
-
-        let now = Time::new(chrono::Utc::now().timestamp(), 0);
-
-        let author_sig = Signature::new(author_name, author_email, &now)
+    ) -> Result<(Signature<'static>, Signature<'static>), GitError> {
+        let (author_name, author_email) = identity(
+            repo,
+            config.author_name.as_deref(),
+            config.author_email.as_deref(),
+            "AUTHOR",
+        )
+        .ok_or(GitError::MergeIdentityMissing)?;
+        let committer_name = config.committer_name.clone().unwrap_or(author_name.clone());
+        let committer_email = config
+            .committer_email
+            .clone()
+            .unwrap_or(author_email.clone());
+        let author_sig = Signature::now(&author_name, &author_email)
             .map_err(|_| GitError::MergeIdentityMissing)?;
-
-        let committer_sig = Signature::new(committer_name, committer_email, &now)
+        let committer_sig = Signature::now(&committer_name, &committer_email)
             .map_err(|_| GitError::MergeIdentityMissing)?;
-
         Ok((author_sig, committer_sig))
     }
 
@@ -7676,26 +6681,9 @@ impl GitHandle {
 
     /// Sync verb implementation - orchestrates pull + integration + push
     pub async fn sync(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git sync operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_sync_config(args)?;
         self.validate_sync_config(&config)?;
-
-        // Load connection profile
-        let profile = self.load_connection_profile()?;
-
-        // Execute sync operation with timeout
-        let timeout_ms = config.timeout_ms.unwrap_or(60000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result =
-            tokio::time::timeout(timeout_duration, self.execute_sync(&config, &profile)).await;
-
-        match result {
-            Ok(sync_result) => sync_result,
-            Err(_) => Err(GitError::SyncTimeout { timeout_ms }),
-        }
+        self.execute_sync(&config).await
     }
 
     /// Parse sync configuration from arguments
@@ -7827,27 +6815,21 @@ impl GitHandle {
     }
 
     /// Execute the sync operation
-    async fn execute_sync(
-        &self,
-        config: &SyncConfig,
-        profile: &GitConnectionProfile,
-    ) -> Result<Value, GitError> {
+    async fn execute_sync(&self, config: &SyncConfig) -> Result<Value, GitError> {
         log::info!("Starting sync operation for path: {}", config.path);
 
-        // known_hosts_path given to sync applies to both its fetch and push.
-        let mut effective_profile = profile.clone();
-        if let Some(ref kh) = config.known_hosts_path {
-            effective_profile.known_hosts_path = Some(PathBuf::from(kh));
+        let mut repo = open_repo(Path::new(&config.path), &config.path, |message| {
+            GitError::SyncFailed { message }
+        })?;
+        if repo.is_bare() {
+            return Err(GitError::SyncFailed {
+                message: format!(
+                    "'{}' is a bare repository; sync needs a working tree",
+                    config.path
+                ),
+            });
         }
-        let profile = &effective_profile;
 
-        // Open repository
-        let mut repo =
-            Repository::open(&config.path).map_err(|_e| GitError::RepositoryNotFound {
-                path: config.path.clone(),
-            })?;
-
-        // Set defaults
         let remote_name = config
             .remote
             .clone()
@@ -7855,88 +6837,75 @@ impl GitHandle {
         let pull_strategy = config.pull_strategy.clone().unwrap_or_default();
         let allow_uncommitted = config.allow_uncommitted.unwrap_or(false);
         let stash_uncommitted = config.stash_uncommitted.unwrap_or(false);
-        // sync integrates by fast-forward only (see sync_fetch), so no
-        // merge conflict can arise; the option is accepted for compatibility.
-        let _abort_on_conflict = config.abort_on_conflict.unwrap_or(true);
         let push = config.push.unwrap_or(true);
         let push_tags = config.push_tags.unwrap_or(false);
         let force_push = config.force_push.unwrap_or(false);
-        let set_upstream = config.set_upstream.unwrap_or(true);
         let dry_run = config.dry_run.unwrap_or(false);
-        let _ff_only = config.ff_only.unwrap_or(false);
 
-        // Resolve branches first
-        let (local_branch, remote_branch) = {
-            // Determine local branch
-            let local_branch = if let Some(ref branch) = config.branch {
-                // Explicit branch specified
-                let branch_ref = format!("refs/heads/{}", branch);
-                if repo.find_reference(&branch_ref).is_err() {
+        // sync works on the checked-out branch.
+        let current = match repo.head() {
+            Ok(head) if head.is_branch() => head.shorthand().map(str::to_string),
+            Ok(_) => None,
+            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => {
+                return Err(GitError::SyncFailed {
+                    message: "the current branch has no commits yet".to_string(),
+                });
+            }
+            Err(_) => None,
+        };
+        let local_branch = match (&config.branch, current) {
+            (Some(branch), current) => {
+                if repo.find_branch(branch, BranchType::Local).is_err() {
                     return Err(GitError::SyncBranchNotFound {
                         branch: branch.clone(),
                     });
                 }
-
-                // Check if we need to checkout this branch
-                let head = repo.head().map_err(|_| GitError::SyncDetachedHead)?;
-                if head.shorthand() != Some(branch) {
-                    // Would need to checkout - for now, require being on the right branch
-                    return Err(GitError::SyncBranchNotFound {
-                        branch: format!("not currently on branch '{}'", branch),
+                if current.as_deref() != Some(branch.as_str()) {
+                    return Err(GitError::SyncFailed {
+                        message: format!(
+                            "branch '{branch}' is not checked out; sync works on the current \
+                             branch, so check it out first (for example with the branch verb, \
+                             action=checkout)"
+                        ),
                     });
                 }
-
                 branch.clone()
-            } else {
-                // Use current branch
-                let head = repo.head().map_err(|_| GitError::SyncDetachedHead)?;
-                match head.shorthand() {
-                    Some(branch_name) => branch_name.to_string(),
-                    None => return Err(GitError::SyncDetachedHead),
-                }
-            };
-
-            // Determine remote branch
-            let remote_branch = config
-                .remote_branch
-                .clone()
-                .unwrap_or_else(|| local_branch.clone());
-
-            // The fetch/fast-forward step integrates `<remote>/<branch>` into
-            // the same-named local branch; a different remote branch would
-            // be integrated into the wrong local branch.
-            if remote_branch != local_branch {
-                return Err(GitError::InvalidSyncConfig {
-                    message: format!(
-                        "remote_branch '{}' differs from the local branch '{}'; git sync only supports syncing a branch with the same-named remote branch",
-                        remote_branch, local_branch
-                    ),
-                });
             }
-
-            (local_branch, remote_branch)
+            (None, Some(current)) => current,
+            (None, None) => return Err(GitError::SyncDetachedHead),
         };
 
-        // Check working tree cleanliness and handle stash
-        let stash_ref = if !dry_run {
-            self.handle_sync_worktree(&mut repo, allow_uncommitted, stash_uncommitted)?
-        } else {
-            None
-        };
+        // The fetch/fast-forward step integrates `<remote>/<branch>` into the
+        // same-named local branch; a different remote branch would be
+        // integrated into the wrong local branch.
+        let remote_branch = config
+            .remote_branch
+            .clone()
+            .unwrap_or_else(|| local_branch.clone());
+        if remote_branch != local_branch {
+            return Err(GitError::InvalidSyncConfig {
+                message: format!(
+                    "remote_branch '{}' differs from the local branch '{}'; git sync only supports syncing a branch with the same-named remote branch",
+                    remote_branch, local_branch
+                ),
+            });
+        }
 
-        // Perform the sync operation
+        if repo.find_remote(&remote_name).is_err() {
+            return Err(GitError::SyncRemoteNotFound {
+                remote: remote_name.clone(),
+            });
+        }
+
         if dry_run {
-            // For dry-run, analyze what would happen
             let actions = self.analyze_sync_actions(
-                &repo,
                 &remote_name,
                 &local_branch,
                 &remote_branch,
                 &pull_strategy,
                 push,
                 push_tags,
-            )?;
-
+            );
             return Ok(json!({
                 "backend": "git",
                 "alias": self.alias,
@@ -7952,24 +6921,32 @@ impl GitHandle {
             }));
         }
 
+        // Check working tree cleanliness and stash if asked to.
+        let stashed = self.handle_sync_worktree(&mut repo, allow_uncommitted, stash_uncommitted)?;
+
         // Fetch and integrate, then push. Nothing is pushed unless the
         // integration really completed.
+        let known_hosts = config.known_hosts_path.as_deref();
         let outcome: Result<(Value, Option<Value>), GitError> = async {
             let fetched = self
-                .sync_fetch(&repo, &remote_name, &local_branch, &pull_strategy, profile)
+                .sync_fetch(
+                    &config.path,
+                    &remote_name,
+                    &local_branch,
+                    &pull_strategy,
+                    known_hosts,
+                )
                 .await?;
             let integration = sync_integration_report(&fetched, &pull_strategy);
             let pushed = if push {
                 Some(
                     self.sync_push(
-                        &repo,
+                        &config.path,
                         &remote_name,
                         &local_branch,
-                        &remote_branch,
                         push_tags,
                         force_push,
-                        set_upstream,
-                        profile,
+                        known_hosts,
                     )
                     .await?,
                 )
@@ -7980,22 +6957,20 @@ impl GitHandle {
         }
         .await;
 
-        let (integration, push_result) = match outcome {
-            Ok(v) => v,
-            Err(e) => {
-                // Give back the user's uncommitted changes before failing.
-                if let Some(stash_oid) = stash_ref {
-                    let _ = self.sync_restore_stash(&mut repo, stash_oid);
+        // Give back the user's uncommitted changes, also when the sync failed.
+        let stash_conflicts = if stashed {
+            match (self.sync_restore_stash(&mut repo), &outcome) {
+                (Ok(conflicts), _) => conflicts,
+                (Err(e), Ok(_)) => return Err(e),
+                (Err(e), Err(_)) => {
+                    log::warn!("restoring the stashed changes failed: {e}");
+                    true
                 }
-                return Err(e);
             }
+        } else {
+            false
         };
-
-        // Restore stash if needed
-        let mut stash_conflicts = false;
-        if let Some(stash_oid) = stash_ref {
-            stash_conflicts = self.sync_restore_stash(&mut repo, stash_oid)?;
-        }
+        let (integration, push_result) = outcome?;
 
         let push_info = push_result.unwrap_or_else(|| {
             json!({
@@ -8018,125 +6993,81 @@ impl GitHandle {
             "integration": integration,
             "push_result": push_info,
             "stash": {
-                "used": stash_ref.is_some(),
+                "used": stashed,
                 "conflicts_on_apply": stash_conflicts
             }
         }))
     }
 
-    /// Resolve local and remote branch names for sync
-    #[allow(dead_code)]
-    fn resolve_sync_branches(
-        &self,
-        repo: &Repository,
-        config: &SyncConfig,
-    ) -> Result<(String, String), GitError> {
-        // Determine local branch
-        let local_branch = if let Some(ref branch) = config.branch {
-            // Explicit branch specified
-            let branch_ref = format!("refs/heads/{}", branch);
-            if repo.find_reference(&branch_ref).is_err() {
-                return Err(GitError::SyncBranchNotFound {
-                    branch: branch.clone(),
-                });
-            }
-
-            // Check if we need to checkout this branch
-            let head = repo.head().map_err(|_| GitError::SyncDetachedHead)?;
-            if head.shorthand() != Some(branch) {
-                // Would need to checkout - for now, require being on the right branch
-                return Err(GitError::SyncBranchNotFound {
-                    branch: format!("not currently on branch '{}'", branch),
-                });
-            }
-
-            branch.clone()
-        } else {
-            // Use current branch
-            let head = repo.head().map_err(|_| GitError::SyncDetachedHead)?;
-            match head.shorthand() {
-                Some(branch_name) => branch_name.to_string(),
-                None => return Err(GitError::SyncDetachedHead),
-            }
-        };
-
-        // Determine remote branch
-        let remote_branch = config
-            .remote_branch
-            .clone()
-            .unwrap_or_else(|| local_branch.clone());
-
-        Ok((local_branch, remote_branch))
-    }
-
-    /// Handle working tree cleanliness and stashing
+    /// Checks the working tree before sync. Returns true when the changes
+    /// were stashed (to be popped back afterwards).
     fn handle_sync_worktree(
         &self,
         repo: &mut Repository,
         allow_uncommitted: bool,
         stash_uncommitted: bool,
-    ) -> Result<Option<Oid>, GitError> {
-        // Check if working tree is dirty
+    ) -> Result<bool, GitError> {
         let is_dirty = {
             let statuses = repo.statuses(None).map_err(|e| GitError::SyncFailed {
                 message: format!("failed to get repository status: {}", e),
             })?;
-
             statuses.iter().any(|entry| {
                 let status = entry.status();
                 status.is_wt_modified()
                     || status.is_wt_new()
+                    || status.is_wt_deleted()
+                    || status.is_wt_renamed()
+                    || status.is_wt_typechange()
                     || status.is_index_modified()
                     || status.is_index_new()
+                    || status.is_index_deleted()
+                    || status.is_index_renamed()
+                    || status.is_index_typechange()
             })
-        }; // statuses is dropped here
-
-        if is_dirty {
-            if allow_uncommitted {
-                // Proceed as-is
-                Ok(None)
-            } else if stash_uncommitted {
-                // Create stash
-                let sig = repo.signature().map_err(|e| GitError::SyncFailed {
-                    message: format!("failed to get signature for stash: {}", e),
-                })?;
-
-                let stash_oid = repo
-                    .stash_save(&sig, "sync auto-stash", Some(git2::StashFlags::DEFAULT))
-                    .map_err(|e| GitError::SyncFailed {
-                        message: format!("failed to create stash: {}", e),
-                    })?;
-
-                Ok(Some(stash_oid))
-            } else {
-                Err(GitError::SyncDirtyWorktree)
-            }
-        } else {
-            Ok(None)
+        };
+        if !is_dirty || allow_uncommitted && !stash_uncommitted {
+            return Ok(false);
         }
+        if !stash_uncommitted {
+            return Err(GitError::SyncDirtyWorktree);
+        }
+        let sig = repo
+            .signature()
+            .or_else(|_| Signature::now("resh", "resh@localhost"))
+            .map_err(|e| GitError::SyncFailed {
+                message: format!("failed to create a signature for the stash: {}", e),
+            })?;
+        repo.stash_save(
+            &sig,
+            "resh sync auto-stash",
+            Some(git2::StashFlags::INCLUDE_UNTRACKED),
+        )
+        .map_err(|e| GitError::SyncFailed {
+            message: format!("failed to stash the uncommitted changes: {}", e),
+        })?;
+        Ok(true)
     }
 
-    /// Analyze what sync would do (for dry-run)
+    /// Describes what sync would do (for dry-run).
     fn analyze_sync_actions(
         &self,
-        _repo: &Repository,
         remote: &str,
         local_branch: &str,
         remote_branch: &str,
         pull_strategy: &PullStrategy,
         push: bool,
         push_tags: bool,
-    ) -> Result<Vec<String>, GitError> {
-        let mut actions = Vec::new();
-
-        actions.push(format!("Would fetch from {}/{}", remote, remote_branch));
-
-        // Integration is fast-forward only, whatever the pull_strategy
-        actions.push(format!(
-            "Would fast-forward '{}' to '{}/{}' if behind; diverged history fails without pushing (pull_strategy={})",
-            local_branch, remote, remote_branch, pull_strategy_name(pull_strategy)
-        ));
-
+    ) -> Vec<String> {
+        let mut actions = vec![
+            format!("Would fetch from {}/{}", remote, remote_branch),
+            format!(
+                "Would fast-forward '{}' to '{}/{}' if behind; diverged history fails without pushing (pull_strategy={})",
+                local_branch,
+                remote,
+                remote_branch,
+                pull_strategy_name(pull_strategy)
+            ),
+        ];
         if push {
             actions.push(format!(
                 "Would push '{}' to {}/{}",
@@ -8146,8 +7077,7 @@ impl GitHandle {
                 actions.push("Would push tags".to_string());
             }
         }
-
-        Ok(actions)
+        actions
     }
 
     /// Fetches `<remote>/<branch>` and fast-forwards the local branch when
@@ -8159,25 +7089,21 @@ impl GitHandle {
     /// pull_strategy, instead of reporting an integration that never ran.
     async fn sync_fetch(
         &self,
-        repo: &Repository,
+        path: &str,
         remote: &str,
         branch: &str,
         pull_strategy: &PullStrategy,
-        profile: &GitConnectionProfile,
+        known_hosts_path: Option<&str>,
     ) -> Result<Value, GitError> {
-        let pull_value = json!({
-            "path": repo.workdir().unwrap().to_string_lossy(),
+        let mut pull_value = json!({
+            "path": path,
             "remote": remote,
             "branch": branch,
-            "rebase": false,
             "ff_only": true,
-            "ssh_key": profile.ssh_key_path.as_ref().map(|p| p.to_string_lossy().to_string()),
-            "known_hosts_path": profile.known_hosts_path.as_ref().map(|p| p.to_string_lossy().to_string()),
-            "username": profile.username,
-            "password": profile.password,
-            "token": profile.token,
-            "timeout_ms": 30000
         });
+        if let Some(kh) = known_hosts_path {
+            pull_value["known_hosts_path"] = json!(kh);
+        }
 
         self.pull(pull_value).await.map_err(|e| match e {
             GitError::PullNonFastForward => match pull_strategy {
@@ -8191,43 +7117,41 @@ impl GitHandle {
                     ),
                 },
             },
+            GitError::PullDirtyWorktree => GitError::SyncDirtyWorktree,
+            GitError::RemoteNotFound { remote } => GitError::SyncRemoteNotFound { remote },
             e @ GitError::HostKeyVerificationFailed { .. } => e,
-            other => GitError::SyncPullFailed { message: format!("fetch failed: {}", other) },
+            other => GitError::SyncPullFailed {
+                message: other.to_string(),
+            },
         })
     }
 
-    /// Push changes to remote
+    /// Pushes the branch (and tags when asked).
     async fn sync_push(
         &self,
-        repo: &Repository,
+        path: &str,
         remote: &str,
         local_branch: &str,
-        _remote_branch: &str,
         push_tags: bool,
         force_push: bool,
-        _set_upstream: bool,
-        profile: &GitConnectionProfile,
+        known_hosts_path: Option<&str>,
     ) -> Result<Value, GitError> {
-        // Create a push request using JSON values
-        let push_value = json!({
-            "path": repo.workdir().unwrap().to_string_lossy(),
+        let mut push_value = json!({
+            "path": path,
             "remote": remote,
             "branch": local_branch,
             "tags": push_tags,
             "force": force_push,
-            "ssh_key": profile.ssh_key_path.as_ref().map(|p| p.to_string_lossy().to_string()),
-            "known_hosts_path": profile.known_hosts_path.as_ref().map(|p| p.to_string_lossy().to_string()),
-            "username": profile.username,
-            "password": profile.password,
-            "token": profile.token,
-            "timeout_ms": 30000
         });
+        if let Some(kh) = known_hosts_path {
+            push_value["known_hosts_path"] = json!(kh);
+        }
 
         self.push(push_value).await.map_err(|e| match e {
             GitError::PushRejected { message } => GitError::SyncPushRejected { message },
             e @ GitError::HostKeyVerificationFailed { .. } => e,
-            _ => GitError::SyncPushFailed {
-                message: format!("push failed: {}", e),
+            other => GitError::SyncPushFailed {
+                message: other.to_string(),
             },
         })?;
 
@@ -8239,19 +7163,15 @@ impl GitHandle {
         }))
     }
 
-    /// Restore stash after sync
-    fn sync_restore_stash(&self, repo: &mut Repository, _stash_oid: Oid) -> Result<bool, GitError> {
-        let result = repo.stash_pop(0, None);
-
-        match result {
-            Ok(_) => Ok(false), // No conflicts
+    /// Pops the sync auto-stash. Returns true when it could not be applied
+    /// cleanly (the stash is then kept, as `git stash pop` does).
+    fn sync_restore_stash(&self, repo: &mut Repository) -> Result<bool, GitError> {
+        match repo.stash_pop(0, None) {
+            Ok(()) => Ok(false),
+            Err(e) if e.code() == git2::ErrorCode::Conflict => Ok(true),
             Err(e) => {
-                // Check if it's a conflict error
-                if e.code() == git2::ErrorCode::Conflict {
-                    Ok(true) // Conflicts detected
-                } else {
-                    Err(GitError::SyncStashApplyConflict)
-                }
+                log::warn!("stash pop failed: {e}");
+                Err(GitError::SyncStashApplyConflict)
             }
         }
     }
@@ -8417,17 +7337,29 @@ impl GitHandle {
         let upstream_ref = self.resolve_upstream_ref(repo, branch_name, config_remote)?;
 
         if let Some((upstream_name, upstream_oid)) = upstream_ref {
-            let local_oid = git2::Oid::from_str(head_commit_oid.unwrap()).map_err(|e| {
-                GitError::StatusSummaryFailed {
-                    message: format!("invalid head commit OID: {}", e),
+            let (ahead_by, behind_by) = match head_commit_oid {
+                Some(oid) => {
+                    let local_oid =
+                        git2::Oid::from_str(oid).map_err(|e| GitError::StatusSummaryFailed {
+                            message: format!("invalid head commit OID: {}", e),
+                        })?;
+                    repo.graph_ahead_behind(local_oid, upstream_oid)
+                        .map_err(|e| GitError::StatusSummaryFailed {
+                            message: format!("failed to compute ahead/behind: {}", e),
+                        })?
                 }
-            })?;
-
-            let (ahead_by, behind_by) =
-                repo.graph_ahead_behind(local_oid, upstream_oid)
-                    .map_err(|e| GitError::StatusSummaryFailed {
-                        message: format!("failed to compute ahead/behind: {}", e),
+                // An unborn branch is behind by every upstream commit.
+                None => {
+                    let mut walk = repo.revwalk().map_err(|e| GitError::StatusSummaryFailed {
+                        message: format!("failed to walk the upstream history: {}", e),
                     })?;
+                    walk.push(upstream_oid)
+                        .map_err(|e| GitError::StatusSummaryFailed {
+                            message: format!("failed to walk the upstream history: {}", e),
+                        })?;
+                    (0, walk.count())
+                }
+            };
 
             let sync_state = match (ahead_by, behind_by) {
                 (0, 0) => "in_sync",
@@ -8726,42 +7658,16 @@ impl GitHandle {
 
     /// Status summary verb implementation - provides comprehensive repository state analysis
     pub async fn status_summary(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git status summary operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_status_summary_config(args)?;
-
-        // Execute with timeout
-        let timeout_duration = Duration::from_millis(config.timeout_ms.unwrap_or(5000));
-
-        tokio::time::timeout(timeout_duration, async {
-            self.execute_status_summary(&config).await
-        })
-        .await
-        .map_err(|_| GitError::StatusSummaryTimeout {
-            timeout_ms: config.timeout_ms.unwrap_or(5000),
-        })?
+        self.validate_status_summary_config(&config)?;
+        self.execute_status_summary(&config).await
     }
 
     /// Status short verb implementation - single compact string for shell prompts
     pub async fn status_short(&self, args: Value) -> Result<Value, GitError> {
-        log::debug!("Git status_short operation for alias: {}", self.alias);
-
-        // Parse and validate configuration
         let config = self.parse_status_short_config(args)?;
         self.validate_status_short_config(&config)?;
-
-        // Execute with timeout (default 1000ms for PS1 use)
-        let timeout_ms = config.timeout_ms.unwrap_or(1000);
-        let timeout_duration = Duration::from_millis(timeout_ms);
-
-        let result =
-            tokio::time::timeout(timeout_duration, self.execute_status_short(&config)).await;
-
-        match result {
-            Ok(status_result) => status_result,
-            Err(_) => Err(GitError::StatusShortTimeout { timeout_ms }),
-        }
+        self.execute_status_short(&config).await
     }
 
     /// Parse status_short configuration from arguments
@@ -9129,323 +8035,267 @@ impl Handle for GitHandle {
             return Ok(Status::success());
         }
 
-        // Git operations run as blocking libgit2 calls, which the locked
-        // git2 version gives no way to interrupt, so a requested timeout
-        // cannot be enforced. Refuse it instead of silently ignoring it.
-        if args.contains_key("timeout_ms") {
-            let reason = format!(
-                "git {}: timeout_ms is not supported: git operations cannot be interrupted, so the timeout would be ignored",
-                verb
-            );
-            writeln!(io.stderr, "Error: {}", reason)?;
-            return Ok(Status::err(2, reason));
-        }
-
-        match verb {
-            "clone" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize clone arguments")?;
-
-                // For now, we need to handle async in sync context
-                // This is a limitation we'll need to address with the registry design
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.clone(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
+        let result = self.dispatch(verb, args);
+        match result {
+            Ok(value) => {
+                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&value)?)?;
+                io.stdout.flush()?;
+                Ok(Status::success())
             }
-            "pull" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize pull arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.pull(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
+            Err(err) => {
+                let code = err.code();
+                let message = err.to_string();
+                writeln!(
+                    io.stderr,
+                    "{}",
+                    crate::core::status::error_line(&code, &message)
+                )?;
+                Ok(Status::coded(err.exit_code(), &code, message))
             }
-            "push" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize push arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.push(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "status" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize status arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.status(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "branch" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize branch arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.branch(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "commit" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize commit arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.commit(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "diff" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize diff arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.diff(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "tag" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize tag arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.tag(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "merge" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize merge arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.merge(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "rebase" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize rebase arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.rebase(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "sync" => {
-                // Convert Args to Value for async processing
-                let args_value =
-                    serde_json::to_value(args).context("failed to serialize sync arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.sync(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "status_summary" => {
-                // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize status_summary arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.status_summary(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            "status_short" => {
-                // Convert Args to Value for async processing
-                let args_value = serde_json::to_value(args)
-                    .context("failed to serialize status_short arguments")?;
-
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create tokio runtime")?;
-
-                let result = runtime.block_on(async { self.status_short(args_value).await });
-
-                match result {
-                    Ok(value) => {
-                        println!("{}", serde_json::to_string_pretty(&value)?);
-                        Ok(Status::success())
-                    }
-                    Err(git_err) => {
-                        let shell_err: crate::core::status::ShellError = git_err.into();
-                        Err(shell_err.into())
-                    }
-                }
-            }
-            _ => anyhow::bail!("unknown verb for git://: {}", verb),
         }
     }
+}
+
+/// Time a stopped operation gets to wind down after its deadline before it
+/// is reported as still running.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+
+impl GitHandle {
+    /// Checks the arguments of `verb` and runs it on a worker thread under
+    /// its deadline (`timeout_ms`, or the network default for clone, pull,
+    /// push and sync).
+    fn dispatch(&self, verb: &str, args: &Args) -> Result<Value, GitError> {
+        if args::options_for(verb).is_none() {
+            let hint = args::suggest(verb, GIT_VERBS)
+                .map(|s| format!(" (did you mean {s:?}?)"))
+                .unwrap_or_default();
+            return Err(GitError::InvalidVerb {
+                message: format!(
+                    "unknown verb {verb:?} for git://{hint}; verbs: {}",
+                    GIT_VERBS.join(", ")
+                ),
+            });
+        }
+        args::check_known(verb, &mut args.keys().map(String::as_str))
+            .map_err(|m| GitError::invalid_for(verb, m))?;
+        let timeout_ms = args::timeout_ms(args.get("timeout_ms").map(String::as_str))
+            .map_err(|m| GitError::invalid_for(verb, m))?;
+        let limit = timeout_ms.map(Duration::from_millis).or_else(|| {
+            args::NETWORK_VERBS
+                .contains(&verb)
+                .then_some(args::NETWORK_DEFAULT_TIMEOUT)
+        });
+        let args_value = serde_json::to_value(args)
+            .map_err(|e| GitError::invalid_for(verb, format!("cannot read arguments: {e}")))?;
+
+        let started = Instant::now();
+        let deadline = limit.map(|l| started + l);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = GitHandle {
+            alias: self.alias.clone(),
+        };
+        let verb_name = verb.to_string();
+        std::thread::Builder::new()
+            .name(format!("git-{verb}"))
+            .spawn(move || {
+                net::set_deadline(deadline);
+                let result = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt.block_on(worker.run_verb(&verb_name, args_value)),
+                    Err(e) => Err(GitError::failed_for(
+                        &verb_name,
+                        format!("cannot start the operation: {e}"),
+                    )),
+                };
+                let _ = tx.send(result);
+            })
+            .map_err(|e| GitError::failed_for(verb, format!("cannot start the operation: {e}")))?;
+
+        let timed_out = |still_running: bool| GitError::Timeout {
+            verb: verb.to_string(),
+            timeout_ms: limit.map_or(0, |l| l.as_millis() as u64),
+            still_running,
+        };
+        let result = match deadline {
+            None => rx.recv().map_err(|_| {
+                GitError::failed_for(verb, "the operation ended unexpectedly".to_string())
+            })?,
+            Some(d) => {
+                let wait = d.saturating_duration_since(Instant::now()) + STOP_GRACE;
+                match rx.recv_timeout(wait) {
+                    Ok(r) => r,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        return Err(timed_out(true));
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(GitError::failed_for(
+                            verb,
+                            "the operation ended unexpectedly".to_string(),
+                        ));
+                    }
+                }
+            }
+        };
+        match result {
+            // A failure once the deadline has passed is the deadline's doing:
+            // the callbacks and libgit2's timeouts stop the operation there.
+            Err(e) if deadline.is_some_and(|d| Instant::now() >= d) && e.exit_code() != 2 => {
+                log::debug!("git {verb} stopped at its deadline: {e}");
+                Err(timed_out(false))
+            }
+            other => other,
+        }
+    }
+}
+
+/// A name and email for a new commit: the arguments first, then
+/// `GIT_<role>_NAME` / `GIT_<role>_EMAIL`, then `user.name` / `user.email`
+/// from the repository configuration (which includes the global one).
+fn identity(
+    repo: &Repository,
+    name: Option<&str>,
+    email: Option<&str>,
+    role: &str,
+) -> Option<(String, String)> {
+    let cfg = repo.config().ok();
+    let from_cfg = |key: &str| cfg.as_ref().and_then(|c| c.get_string(key).ok());
+    let name = name
+        .map(str::to_string)
+        .or_else(|| std::env::var(format!("GIT_{role}_NAME")).ok())
+        .or_else(|| from_cfg("user.name"))?;
+    let email = email
+        .map(str::to_string)
+        .or_else(|| std::env::var(format!("GIT_{role}_EMAIL")).ok())
+        .or_else(|| from_cfg("user.email"))?;
+    Some((name, email))
+}
+
+/// URL schemes `clone` accepts.
+const CLONE_SCHEMES: &[&str] = &["https", "http", "ssh", "git+ssh", "ssh+git", "git", "file"];
+
+/// Checks a clone URL: a URL with a supported scheme, the scp-like
+/// `[user@]host:path` SSH form, or the path of an existing local
+/// directory. Anything else is refused before anything is created.
+fn check_clone_url(url: &str) -> Result<(), String> {
+    if url.starts_with('-') {
+        return Err(format!("url {url:?} must not start with '-'"));
+    }
+    if url.chars().any(char::is_control) {
+        return Err(format!("url {url:?} contains a control character"));
+    }
+    if let Some(idx) = url.find("://") {
+        let scheme = url[..idx].to_ascii_lowercase();
+        if !CLONE_SCHEMES.contains(&scheme.as_str()) {
+            return Err(format!(
+                "unsupported url scheme '{scheme}'; supported: {}, scp-like user@host:path, or a \
+                 local repository path",
+                CLONE_SCHEMES
+                    .iter()
+                    .map(|s| format!("{s}://"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if url.len() == idx + 3 {
+            return Err(format!("url {url:?} has nothing after '://'"));
+        }
+        return Ok(());
+    }
+    if known_hosts::ssh_endpoint(url).is_some() {
+        return Ok(());
+    }
+    if Path::new(url).is_dir() {
+        return Ok(());
+    }
+    Err(format!(
+        "url {url:?} is neither a supported URL nor an existing local repository directory"
+    ))
+}
+
+/// Opens the repository at `path`: `git.repository_not_found` when there
+/// is none, otherwise `failed(message)`.
+fn open_repo(
+    path: &Path,
+    display: &str,
+    failed: impl Fn(String) -> GitError,
+) -> Result<Repository, GitError> {
+    Repository::open(path).map_err(|e| {
+        if e.code() == git2::ErrorCode::NotFound {
+            GitError::RepositoryNotFound {
+                path: display.to_string(),
+            }
+        } else {
+            failed(format!("failed to open repository: {}", e.message()))
+        }
+    })
+}
+
+/// Creates the missing ancestors of `path` (not `path` itself) and returns
+/// the directories it created, outermost first.
+fn create_missing_parents(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut missing = Vec::new();
+    let mut cur = path.parent();
+    while let Some(dir) = cur {
+        if dir.as_os_str().is_empty() || dir.exists() {
+            break;
+        }
+        missing.push(dir.to_path_buf());
+        cur = dir.parent();
+    }
+    missing.reverse();
+    for dir in &missing {
+        std::fs::create_dir(dir)?;
+    }
+    Ok(missing)
+}
+
+/// Fetches `remote_name` with its configured refspecs, under the calling
+/// thread's deadline, with `creds` and strict host-key checking when
+/// `known_hosts_path` is given. Errors are built with `fail(message,
+/// is_auth)`, except host-key refusals and a missing remote.
+fn fetch_remote(
+    repo: &Repository,
+    remote_name: &str,
+    creds: &net::Credentials,
+    known_hosts_path: Option<&str>,
+    prune: bool,
+    fail: impl Fn(String, bool) -> GitError,
+) -> Result<(), GitError> {
+    let mut remote = repo
+        .find_remote(remote_name)
+        .map_err(|_| GitError::RemoteNotFound {
+            remote: remote_name.to_string(),
+        })?;
+    let policy = net::HostKeyPolicy::new(known_hosts_path);
+    let mut callbacks = RemoteCallbacks::new();
+    creds.install(&mut callbacks);
+    policy.install(&mut callbacks);
+    // The fetch URL after url.<base>.insteadOf rewriting (libgit2 applies it
+    // when it reads the remote).
+    policy.prepare(remote.url().unwrap_or_default())?;
+    let mut fetch_options = FetchOptions::new();
+    fetch_options.remote_callbacks(callbacks);
+    if prune {
+        fetch_options.prune(git2::FetchPrune::On);
+    }
+    let refspecs = remote
+        .fetch_refspecs()
+        .map_err(|e| fail(format!("failed to read refspecs: {}", e.message()), false))?;
+    let refspecs: Vec<String> = refspecs.iter().flatten().map(str::to_string).collect();
+    let _timeouts = net::apply_server_timeouts(remote.url().unwrap_or_default());
+    remote
+        .fetch(&refspecs, Some(&mut fetch_options), None)
+        .map_err(|e| {
+            if let Some(err) = policy.explain(&e) {
+                return err;
+            }
+            fail(
+                format!("fetch failed: {}", e.message()),
+                net::is_auth_error(&e),
+            )
+        })
 }
 
 /// Register git:// scheme with the registry
@@ -9456,21 +8306,9 @@ pub fn register(reg: &mut crate::core::Registry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use tempfile::TempDir;
 
     // Helper to create test arguments
-    #[allow(dead_code)]
-    fn create_test_args() -> HashMap<String, String> {
-        let mut args = HashMap::new();
-        args.insert(
-            "url".to_string(),
-            "https://github.com/test/repo.git".to_string(),
-        );
-        args.insert("path".to_string(), "/tmp/test_repo".to_string());
-        args
-    }
-
     #[test]
     fn test_git_handle_from_url() {
         let url = Url::parse("git://main").unwrap();
@@ -9654,41 +8492,6 @@ mod tests {
     }
 
     #[test]
-    fn test_connection_not_found() {
-        // An unregistered alias is not an error: local verbs (status,
-        // commit, branch, ...) run without a connection profile. It must
-        // get an empty profile and never another alias's credentials.
-        GitHandle::register_connection(
-            "registered_with_secrets".to_string(),
-            GitConnectionProfile {
-                ssh_key_path: Some(PathBuf::from("/nonexistent/id_ed25519")),
-                known_hosts_path: None,
-                username: Some("user".to_string()),
-                password: Some("secret".to_string()),
-                token: Some("token".to_string()),
-            },
-        );
-
-        let handle = GitHandle {
-            alias: "nonexistent".to_string(),
-        };
-        let profile = handle
-            .load_connection_profile()
-            .expect("unregistered alias gets the default profile");
-        assert!(profile.ssh_key_path.is_none());
-        assert!(profile.known_hosts_path.is_none());
-        assert!(profile.username.is_none());
-        assert!(profile.password.is_none());
-        assert!(profile.token.is_none());
-
-        let handle = GitHandle {
-            alias: "registered_with_secrets".to_string(),
-        };
-        let profile = handle.load_connection_profile().unwrap();
-        assert_eq!(profile.token.as_deref(), Some("token"));
-    }
-
-    #[test]
     fn test_auth_validation_single_methods() {
         let handle = GitHandle {
             alias: "test".to_string(),
@@ -9743,123 +8546,6 @@ mod tests {
         assert!(handle.validate_clone_config(&config).is_ok());
     }
 
-    #[tokio::test]
-    async fn test_clone_target_directory_check() {
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-
-        // Create a temporary directory with a file in it
-        let temp_dir = TempDir::new().unwrap();
-        let target_path = temp_dir.path().join("existing");
-        std::fs::create_dir(&target_path).unwrap();
-        std::fs::write(target_path.join("file.txt"), "content").unwrap();
-
-        let config = CloneConfig {
-            url: "https://github.com/test/repo.git".to_string(),
-            path: target_path.to_string_lossy().to_string(),
-            branch: None,
-            depth: None,
-            recursive: None,
-            ssh_key: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-            timeout_ms: None,
-        };
-
-        let profile = GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        };
-
-        let result = handle.execute_clone(&config, &profile).await;
-        assert!(matches!(result, Err(GitError::CloneTargetNotEmpty { .. })));
-    }
-
-    // Integration tests - these will be skipped if environment variables are not set
-    #[tokio::test]
-    #[ignore = "needs a real remote: set TEST_GIT_CLONE_HTTPS_URL and run with --ignored"]
-    async fn test_https_public_repo_integration() {
-        let url = std::env::var("TEST_GIT_CLONE_HTTPS_URL");
-        if url.is_err() {
-            return; // Skip test if environment variable not set
-        }
-
-        let temp_dir = TempDir::new().unwrap();
-        let target_path = temp_dir.path().join("cloned_repo");
-
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-
-        // Register a default connection profile
-        let profile = GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        };
-        GitHandle::register_connection("test".to_string(), profile);
-
-        let config = CloneConfig {
-            url: url.unwrap(),
-            path: target_path.to_string_lossy().to_string(),
-            branch: Some("main".to_string()),
-            depth: None,
-            recursive: Some(false),
-            ssh_key: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-            timeout_ms: Some(30000),
-        };
-
-        let profile = handle.load_connection_profile().unwrap();
-        let result = handle.execute_clone(&config, &profile).await;
-
-        if result.is_ok() {
-            assert!(target_path.exists());
-            assert!(target_path.join(".git").exists());
-        } else {
-            // Log the error but don't fail the test - network issues are common
-            eprintln!("Clone failed (network issue?): {:?}", result);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_timeout_functionality() {
-        // Hermetic: no network and no fixed /tmp path. A git timeout cannot
-        // be enforced (libgit2 calls are blocking), so the CLI refuses
-        // timeout_ms (see timeout_rejection_tests); here the clone itself
-        // must fail promptly and leave nothing behind.
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-        let tmp = TempDir::new().unwrap();
-        let missing_source = tmp.path().join("no-such-repo");
-        let target = tmp.path().join("clone");
-
-        let args = json!({
-            "url": format!("file://{}", missing_source.display()),
-            "path": target.to_string_lossy(),
-            "timeout_ms": 100
-        });
-
-        let start = std::time::Instant::now();
-        let result = handle.clone(args).await;
-        assert!(result.is_err(), "Expected clone failure, got: {:?}", result);
-        assert!(start.elapsed() < Duration::from_secs(10));
-        assert!(!target.join(".git").exists());
-    }
-
-    // Pull validation tests
     #[test]
     fn test_pull_config_validation() {
         let handle = GitHandle {
@@ -10093,153 +8779,6 @@ mod tests {
         assert!(matches!(result, Err(GitError::RepositoryNotFound { .. })));
     }
 
-    #[tokio::test]
-    async fn test_pull_repository_not_found() {
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-
-        // Register a connection profile
-        let profile = GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        };
-        GitHandle::register_connection("test".to_string(), profile);
-
-        let config = PullConfig {
-            path: "/nonexistent/path".to_string(),
-            remote: None,
-            branch: None,
-            rebase: None,
-            ff_only: None,
-            depth: None,
-            prune: None,
-            ssh_key: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-            timeout_ms: None,
-        };
-
-        let profile = handle.load_connection_profile().unwrap();
-        let result = handle.execute_pull(&config, &profile).await;
-        assert!(matches!(result, Err(GitError::RepositoryNotFound { .. })));
-    }
-
-    #[tokio::test]
-    async fn test_pull_timeout() {
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-
-        // Register a connection profile
-        let profile = GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        };
-        GitHandle::register_connection("test".to_string(), profile);
-
-        let args = json!({
-            "path": "/nonexistent/path",
-            "timeout_ms": 1  // Very short timeout
-        });
-
-        let result = handle.pull(args).await;
-        // Should timeout since operation will fail/timeout before completion
-        assert!(result.is_err());
-    }
-
-    // Integration tests for pull - these will be skipped if environment variables are not set
-    #[tokio::test]
-    #[ignore = "needs a real remote: set TEST_GIT_PULL_HTTPS_URL/TEST_GIT_PULL_TEMP_DIR and run with --ignored"]
-    async fn test_pull_https_integration() {
-        let url = std::env::var("TEST_GIT_PULL_HTTPS_URL");
-        let temp_base = std::env::var("TEST_GIT_PULL_TEMP_DIR");
-        if url.is_err() || temp_base.is_err() {
-            return; // Skip test if environment variables not set
-        }
-
-        let temp_dir = TempDir::new().unwrap();
-        let clone_path = temp_dir.path().join("cloned_repo");
-
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-
-        // Register a default connection profile
-        let profile = GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        };
-        GitHandle::register_connection("test".to_string(), profile.clone());
-
-        // First clone the repository
-        let clone_config = CloneConfig {
-            url: url.unwrap(),
-            path: clone_path.to_string_lossy().to_string(),
-            branch: Some("main".to_string()),
-            depth: None,
-            recursive: Some(false),
-            ssh_key: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-            timeout_ms: Some(30000),
-        };
-
-        let clone_result = handle.execute_clone(&clone_config, &profile).await;
-        if clone_result.is_err() {
-            // Skip test if clone fails - likely network issue
-            eprintln!("Clone failed, skipping pull test: {:?}", clone_result);
-            return;
-        }
-
-        // Now test pull on the cloned repository
-        let pull_config = PullConfig {
-            path: clone_path.to_string_lossy().to_string(),
-            remote: Some("origin".to_string()),
-            branch: Some("main".to_string()),
-            rebase: Some(false),
-            ff_only: Some(false),
-            depth: None,
-            prune: Some(false),
-            ssh_key: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-            timeout_ms: Some(30000),
-        };
-
-        let pull_result = handle.execute_pull(&pull_config, &profile).await;
-
-        if pull_result.is_ok() {
-            let result_value = pull_result.unwrap();
-            let result: PullResult = serde_json::from_value(result_value).unwrap();
-            assert_eq!(result.backend, "git");
-            assert_eq!(result.alias, "test");
-            assert_eq!(result.remote, "origin");
-            assert_eq!(result.branch, "main");
-            // Status should be "up_to_date" since we just cloned
-            assert_eq!(result.status, "up_to_date");
-        } else {
-            // Log the error but don't fail the test - network issues are common
-            eprintln!("Pull failed (network issue?): {:?}", pull_result);
-        }
-    }
-
-    // Push validation tests
     #[test]
     fn test_push_config_validation() {
         let handle = GitHandle {
@@ -10505,157 +9044,6 @@ mod tests {
         assert!(matches!(result, Err(GitError::RepositoryNotFound { .. })));
     }
 
-    #[tokio::test]
-    async fn test_push_repository_not_found() {
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-
-        // Register a connection profile
-        let profile = GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        };
-        GitHandle::register_connection("test".to_string(), profile);
-
-        let config = PushConfig {
-            path: "/nonexistent/path".to_string(),
-            remote: None,
-            branch: None,
-            branches: None,
-            tags: None,
-            force: None,
-            ff_only: None,
-            set_upstream: None,
-            ssh_key: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-            timeout_ms: None,
-        };
-
-        let profile = handle.load_connection_profile().unwrap();
-        let result = handle.execute_push(&config, &profile).await;
-        assert!(matches!(result, Err(GitError::RepositoryNotFound { .. })));
-    }
-
-    #[tokio::test]
-    async fn test_push_timeout() {
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-
-        // Register a connection profile
-        let profile = GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        };
-        GitHandle::register_connection("test".to_string(), profile);
-
-        let args = json!({
-            "path": "/nonexistent/path",
-            "timeout_ms": 1  // Very short timeout
-        });
-
-        let result = handle.push(args).await;
-        // Should timeout since operation will fail/timeout before completion
-        assert!(result.is_err());
-    }
-
-    // Integration tests for push - these will be skipped if environment variables are not set
-    #[tokio::test]
-    #[ignore = "performs a real git push to TEST_GIT_PUSH_HTTPS_URL; run only against a disposable remote with --ignored"]
-    async fn test_push_https_integration() {
-        let url = std::env::var("TEST_GIT_PUSH_HTTPS_URL");
-        let temp_base = std::env::var("TEST_GIT_PUSH_TEMP_DIR");
-        if url.is_err() || temp_base.is_err() {
-            return; // Skip test if environment variables not set
-        }
-
-        let temp_dir = TempDir::new().unwrap();
-        let clone_path = temp_dir.path().join("cloned_repo");
-
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-
-        // Register a default connection profile
-        let profile = GitConnectionProfile {
-            ssh_key_path: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-        };
-        GitHandle::register_connection("test".to_string(), profile.clone());
-
-        // First clone the repository
-        let clone_config = CloneConfig {
-            url: url.unwrap(),
-            path: clone_path.to_string_lossy().to_string(),
-            branch: Some("main".to_string()),
-            depth: None,
-            recursive: Some(false),
-            ssh_key: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-            timeout_ms: Some(30000),
-        };
-
-        let clone_result = handle.execute_clone(&clone_config, &profile).await;
-        if clone_result.is_err() {
-            // Skip test if clone fails - likely network issue
-            eprintln!("Clone failed, skipping push test: {:?}", clone_result);
-            return;
-        }
-
-        // Now test push on the cloned repository (should be up-to-date)
-        let push_config = PushConfig {
-            path: clone_path.to_string_lossy().to_string(),
-            remote: Some("origin".to_string()),
-            branch: Some("main".to_string()),
-            branches: None,
-            tags: Some(false),
-            force: Some(false),
-            ff_only: Some(false),
-            set_upstream: Some(false),
-            ssh_key: None,
-            known_hosts_path: None,
-            username: None,
-            password: None,
-            token: None,
-            timeout_ms: Some(30000),
-        };
-
-        let push_result = handle.execute_push(&push_config, &profile).await;
-
-        if push_result.is_ok() {
-            let result_value = push_result.unwrap();
-            let result: PushResult = serde_json::from_value(result_value).unwrap();
-            assert_eq!(result.backend, "git");
-            assert_eq!(result.alias, "test");
-            assert_eq!(result.remote, "origin");
-            assert_eq!(result.branches.len(), 1);
-            assert_eq!(result.branches[0].name, "main");
-            // Status should be "up_to_date" since we just cloned
-            assert_eq!(result.branches[0].status, "up_to_date");
-            assert_eq!(result.tags_pushed, false);
-        } else {
-            // Log the error but don't fail the test - network issues are common
-            eprintln!("Push failed (network issue?): {:?}", push_result);
-        }
-    }
-
-    // Status operation tests
     #[test]
     fn test_parse_status_config() {
         let handle = GitHandle {
@@ -10948,427 +9336,6 @@ mod tests {
 
     // Integration tests with real git repositories
     #[test]
-    fn test_status_integration_clean_repo() {
-        // Create a temporary directory and initialize a git repo
-        let temp_dir = TempDir::new().unwrap();
-        let repo_path = temp_dir.path();
-
-        // Initialize git repository
-        let repo = Repository::init(repo_path).unwrap();
-
-        // Configure git user (required for commits)
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "Test User").unwrap();
-        config.set_str("user.email", "test@example.com").unwrap();
-
-        // Create and commit an initial file
-        let file_path = repo_path.join("README.md");
-        std::fs::write(&file_path, "# Test Repository\nThis is a test.\n").unwrap();
-
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("README.md")).unwrap();
-        index.write().unwrap();
-
-        let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "Initial commit",
-            &tree,
-            &[],
-        )
-        .unwrap();
-
-        // Create GitHandle and test status
-        GitHandle::register_connection(
-            "test".to_string(),
-            GitConnectionProfile {
-                ssh_key_path: None,
-                known_hosts_path: None,
-                username: None,
-                password: None,
-                token: None,
-            },
-        );
-
-        let handle = GitHandle {
-            alias: "test".to_string(),
-        };
-        let config = StatusConfig {
-            path: repo_path.to_string_lossy().to_string(),
-            include_ignored: Some(false),
-            include_untracked: Some(true),
-            include_staged: Some(true),
-            include_branch: Some(true),
-            include_remote: Some(false), // No remote configured
-            timeout_ms: Some(5000),
-        };
-
-        // Test that validation passes
-        handle.validate_status_config(&config).unwrap();
-
-        // Test status execution
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let result = rt
-            .block_on(async { handle.execute_status(&config).await })
-            .unwrap();
-
-        let status_result: StatusResult = serde_json::from_value(result).unwrap();
-
-        // Verify basic structure
-        assert_eq!(status_result.backend, "git");
-        assert_eq!(status_result.alias, "test");
-        assert!(status_result.working_tree.clean);
-        assert!(status_result.working_tree.staged.is_empty());
-        assert!(status_result.working_tree.unstaged.is_empty());
-        assert!(status_result.working_tree.untracked.is_empty());
-        assert!(status_result.working_tree.conflicts.is_empty());
-
-        // Branch should not be detached and should be on main/master
-        if let Some(branch) = status_result.branch {
-            assert!(!branch.detached);
-            assert!(branch.name.is_some());
-            let branch_name = branch.name.unwrap();
-            assert!(branch_name == "main" || branch_name == "master");
-            assert!(branch.upstream.is_none()); // No remote configured
-        }
-
-        // No in-progress operations
-        assert!(!status_result.in_progress.merge);
-        assert!(!status_result.in_progress.rebase);
-        assert!(!status_result.in_progress.cherry_pick);
-        assert!(!status_result.in_progress.revert);
-        assert!(!status_result.in_progress.bisect);
-    }
-
-    #[test]
-    fn test_status_integration_with_changes() {
-        // Create a temporary directory and initialize a git repo with changes
-        let temp_dir = TempDir::new().unwrap();
-        let repo_path = temp_dir.path();
-
-        // Initialize git repository
-        let repo = Repository::init(repo_path).unwrap();
-
-        // Configure git user
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "Test User").unwrap();
-        config.set_str("user.email", "test@example.com").unwrap();
-
-        // Create and commit an initial file
-        let readme_path = repo_path.join("README.md");
-        std::fs::write(&readme_path, "# Test Repository\nThis is a test.\n").unwrap();
-
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("README.md")).unwrap();
-        index.write().unwrap();
-
-        let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "Initial commit",
-            &tree,
-            &[],
-        )
-        .unwrap();
-
-        // Create various types of changes
-
-        // 1. Modify existing file (unstaged)
-        std::fs::write(
-            &readme_path,
-            "# Test Repository\nThis is a modified test.\nNew line added.\n",
-        )
-        .unwrap();
-
-        // 2. Create new file and stage it
-        let new_file_path = repo_path.join("new_file.txt");
-        std::fs::write(&new_file_path, "This is a new file").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("new_file.txt")).unwrap();
-        index.write().unwrap();
-
-        // 3. Create untracked file
-        let untracked_path = repo_path.join("untracked.log");
-        std::fs::write(&untracked_path, "Some log content").unwrap();
-
-        // 4. Create gitignore and ignored file
-        let gitignore_path = repo_path.join(".gitignore");
-        std::fs::write(&gitignore_path, "*.tmp\ntarget/\n").unwrap();
-        let ignored_path = repo_path.join("test.tmp");
-        std::fs::write(&ignored_path, "Temporary file").unwrap();
-
-        // Test status with all flags enabled
-        GitHandle::register_connection(
-            "test2".to_string(),
-            GitConnectionProfile {
-                ssh_key_path: None,
-                known_hosts_path: None,
-                username: None,
-                password: None,
-                token: None,
-            },
-        );
-
-        let handle = GitHandle {
-            alias: "test2".to_string(),
-        };
-        let config = StatusConfig {
-            path: repo_path.to_string_lossy().to_string(),
-            include_ignored: Some(true),
-            include_untracked: Some(true),
-            include_staged: Some(true),
-            include_branch: Some(true),
-            include_remote: Some(false),
-            timeout_ms: Some(5000),
-        };
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let result = rt
-            .block_on(async { handle.execute_status(&config).await })
-            .unwrap();
-
-        let status_result: StatusResult = serde_json::from_value(result).unwrap();
-
-        // Verify the working tree is not clean
-        assert!(!status_result.working_tree.clean);
-
-        // Check that we have staged changes (new_file.txt)
-        assert!(!status_result.working_tree.staged.is_empty());
-        let staged_files: Vec<_> = status_result
-            .working_tree
-            .staged
-            .iter()
-            .map(|f| &f.path)
-            .collect();
-        assert!(staged_files.contains(&&"new_file.txt".to_string()));
-
-        // Check that we have unstaged changes (README.md)
-        assert!(!status_result.working_tree.unstaged.is_empty());
-        let unstaged_files: Vec<_> = status_result
-            .working_tree
-            .unstaged
-            .iter()
-            .map(|f| &f.path)
-            .collect();
-        assert!(unstaged_files.contains(&&"README.md".to_string()));
-
-        // Check that we have untracked files
-        assert!(!status_result.working_tree.untracked.is_empty());
-        let untracked_files: Vec<_> = status_result
-            .working_tree
-            .untracked
-            .iter()
-            .map(|f| &f.path)
-            .collect();
-        assert!(
-            untracked_files.contains(&&"untracked.log".to_string())
-                || untracked_files.contains(&&".gitignore".to_string())
-        );
-
-        // Check that we have ignored files (if include_ignored is true)
-        let ignored_files: Vec<_> = status_result
-            .working_tree
-            .ignored
-            .iter()
-            .map(|f| &f.path)
-            .collect();
-        // The ignored file might or might not be detected depending on git2 behavior
-        println!("Ignored files detected: {:?}", ignored_files);
-
-        // Verify no conflicts
-        assert!(status_result.working_tree.conflicts.is_empty());
-    }
-
-    #[test]
-    fn test_status_integration_detached_head() {
-        // Create a temporary directory and initialize a git repo
-        let temp_dir = TempDir::new().unwrap();
-        let repo_path = temp_dir.path();
-
-        // Initialize git repository
-        let repo = Repository::init(repo_path).unwrap();
-
-        // Configure git user
-        let mut config = repo.config().unwrap();
-        config.set_str("user.name", "Test User").unwrap();
-        config.set_str("user.email", "test@example.com").unwrap();
-
-        // Create and commit initial files
-        let file1_path = repo_path.join("file1.txt");
-        std::fs::write(&file1_path, "Content 1").unwrap();
-
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("file1.txt")).unwrap();
-        index.write().unwrap();
-
-        let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-
-        let commit1 = repo
-            .commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                "First commit",
-                &tree,
-                &[],
-            )
-            .unwrap();
-
-        // Create second commit
-        let file2_path = repo_path.join("file2.txt");
-        std::fs::write(&file2_path, "Content 2").unwrap();
-
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("file2.txt")).unwrap();
-        index.write().unwrap();
-
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let first_commit = repo.find_commit(commit1).unwrap();
-
-        let _commit2 = repo
-            .commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                "Second commit",
-                &tree,
-                &[&first_commit],
-            )
-            .unwrap();
-
-        // Checkout the first commit (detached HEAD), as `git checkout <sha>`
-        // does: update the index and working tree first, then move HEAD.
-        // Moving HEAD first would leave file2.txt staged as a new file.
-        let first_commit_obj = repo.find_commit(commit1).unwrap();
-        repo.checkout_tree(first_commit_obj.as_object(), None)
-            .unwrap();
-        repo.set_head_detached(commit1).unwrap();
-        assert!(!repo_path.join("file2.txt").exists());
-
-        // Test status in detached HEAD state
-        GitHandle::register_connection(
-            "test3".to_string(),
-            GitConnectionProfile {
-                ssh_key_path: None,
-                known_hosts_path: None,
-                username: None,
-                password: None,
-                token: None,
-            },
-        );
-
-        let handle = GitHandle {
-            alias: "test3".to_string(),
-        };
-        let config = StatusConfig {
-            path: repo_path.to_string_lossy().to_string(),
-            include_ignored: Some(false),
-            include_untracked: Some(true),
-            include_staged: Some(true),
-            include_branch: Some(true),
-            include_remote: Some(false),
-            timeout_ms: Some(5000),
-        };
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let result = rt
-            .block_on(async { handle.execute_status(&config).await })
-            .unwrap();
-
-        let status_result: StatusResult = serde_json::from_value(result).unwrap();
-
-        // Verify detached HEAD state
-        if let Some(branch) = status_result.branch {
-            assert!(branch.detached);
-            assert!(branch.name.is_none());
-            assert_eq!(branch.head, commit1.to_string());
-            assert!(branch.upstream.is_none());
-        } else {
-            panic!("Expected branch information");
-        }
-
-        // Working tree should be clean in this case
-        assert!(status_result.working_tree.clean);
-    }
-
-    #[test]
-    fn test_status_timeout() {
-        GitHandle::register_connection(
-            "timeout_test".to_string(),
-            GitConnectionProfile {
-                ssh_key_path: None,
-                known_hosts_path: None,
-                username: None,
-                password: None,
-                token: None,
-            },
-        );
-
-        let handle = GitHandle {
-            alias: "timeout_test".to_string(),
-        };
-
-        // Use a very small timeout to trigger timeout
-        let config = StatusConfig {
-            path: "/tmp".to_string(), // This exists but is not a git repo
-            include_ignored: Some(false),
-            include_untracked: Some(true),
-            include_staged: Some(true),
-            include_branch: Some(true),
-            include_remote: Some(false),
-            timeout_ms: Some(1), // 1ms timeout - should be too fast
-        };
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        // This might timeout or might fail due to invalid repo - either is acceptable for this test
-        let result =
-            rt.block_on(async { handle.status(serde_json::to_value(config).unwrap()).await });
-
-        // We expect either a timeout error or repository not found error
-        match result {
-            Err(GitError::StatusTimeout { timeout_ms: 1 }) => {
-                // This is what we're testing for
-            }
-            Err(GitError::RepositoryNotFound { .. }) => {
-                // This is also acceptable since /tmp is not a git repo
-            }
-            other => {
-                println!("Unexpected result: {:?}", other);
-                // Don't fail the test as timing can be unpredictable in CI environments
-            }
-        }
-    }
-
-    #[test]
     fn test_branch_config_parsing() {
         let handle = GitHandle {
             alias: "test".to_string(),
@@ -11448,8 +9415,8 @@ mod tests {
             local_only: Some(true),
             remote_only: Some(true), // Invalid: both local_only and remote_only
             all: Some(false),
-            force: Some(false),
-            track: Some(false),
+            force: None,
+            track: None,
             remote: None,
             timeout_ms: Some(5000),
         };
@@ -11469,11 +9436,11 @@ mod tests {
             name: None, // Missing required name
             new_name: None,
             start_point: None,
-            local_only: Some(false),
-            remote_only: Some(false),
-            all: Some(false),
+            local_only: None,
+            remote_only: None,
+            all: None,
             force: Some(false),
-            track: Some(false),
+            track: None,
             remote: None,
             timeout_ms: Some(5000),
         };
@@ -11493,11 +9460,11 @@ mod tests {
             name: Some("old".to_string()),
             new_name: None, // Missing required new_name
             start_point: None,
-            local_only: Some(false),
-            remote_only: Some(false),
-            all: Some(false),
+            local_only: None,
+            remote_only: None,
+            all: None,
             force: Some(false),
-            track: Some(false),
+            track: None,
             remote: None,
             timeout_ms: Some(5000),
         };
@@ -11517,11 +9484,11 @@ mod tests {
             name: Some("same".to_string()),
             new_name: Some("same".to_string()), // Same as name
             start_point: None,
-            local_only: Some(false),
-            remote_only: Some(false),
-            all: Some(false),
+            local_only: None,
+            remote_only: None,
+            all: None,
             force: Some(false),
-            track: Some(false),
+            track: None,
             remote: None,
             timeout_ms: Some(5000),
         };
@@ -11597,18 +9564,8 @@ mod tests {
 
         // Test missing path
         let args = json!({});
-        let result = handle.parse_tag_config(args);
-        assert!(result.is_ok()); // Path will be empty string, validated later
-
-        let config = result.unwrap();
-        let validation = handle.validate_tag_config(&config);
-        assert!(validation.is_err());
-        assert!(
-            validation
-                .unwrap_err()
-                .to_string()
-                .contains("path is required")
-        );
+        let err = handle.parse_tag_config(args).unwrap_err();
+        assert!(err.to_string().contains("missing field `path`"), "{err}");
 
         // Test timeout_ms = 0
         let args = json!({
@@ -11632,7 +9589,12 @@ mod tests {
         });
         let result = handle.parse_tag_config(args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid action"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unknown variant `invalid`")
+        );
     }
 
     #[test]
@@ -11860,7 +9822,6 @@ mod tests {
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(false),
-            set_upstream: Some(true),
             dry_run: Some(false),
             known_hosts_path: None,
             timeout_ms: Some(60000),
@@ -11889,7 +9850,6 @@ mod tests {
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(false),
-            set_upstream: Some(true),
             dry_run: Some(false),
             known_hosts_path: None,
             timeout_ms: Some(0),
@@ -11913,7 +9873,6 @@ mod tests {
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(false),
-            set_upstream: Some(true),
             dry_run: Some(false),
             known_hosts_path: None,
             timeout_ms: Some(60000),
@@ -11937,7 +9896,6 @@ mod tests {
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(false),
-            set_upstream: Some(true),
             dry_run: Some(false),
             known_hosts_path: None,
             timeout_ms: Some(60000),
@@ -11961,7 +9919,6 @@ mod tests {
             push: Some(true),
             push_tags: Some(false),
             force_push: Some(true),
-            set_upstream: Some(true),
             dry_run: Some(false),
             known_hosts_path: None,
             timeout_ms: Some(60000),
@@ -12047,7 +10004,11 @@ mod tests {
         let shell_error: crate::core::status::ShellError = sync_error.into();
         assert_eq!(shell_error.code, "git.sync_dirty_worktree");
 
-        let sync_error = GitError::SyncTimeout { timeout_ms: 60000 };
+        let sync_error = GitError::Timeout {
+            verb: "sync".into(),
+            timeout_ms: 60000,
+            still_running: false,
+        };
         let shell_error: crate::core::status::ShellError = sync_error.into();
         assert_eq!(shell_error.code, "git.sync_timeout");
         assert_eq!(shell_error.details["timeout_ms"], 60000);
@@ -12350,7 +10311,11 @@ mod tests {
         assert_eq!(shell_error.code, "git.status_summary_branch_not_found");
         assert_eq!(shell_error.details["name"], "feature-branch");
 
-        let error = GitError::StatusSummaryTimeout { timeout_ms: 5000 };
+        let error = GitError::Timeout {
+            verb: "status_summary".into(),
+            timeout_ms: 5000,
+            still_running: true,
+        };
         let shell_error: crate::core::status::ShellError = error.into();
         assert_eq!(shell_error.code, "git.status_summary_timeout");
         assert_eq!(shell_error.details["timeout_ms"], 5000);
@@ -12600,7 +10565,11 @@ mod tests {
         assert_eq!(shell_error.code, "git.status_short_branch_not_found");
         assert_eq!(shell_error.details["branch"], "feature-branch");
 
-        let error = GitError::StatusShortTimeout { timeout_ms: 1000 };
+        let error = GitError::Timeout {
+            verb: "status_short".into(),
+            timeout_ms: 1000,
+            still_running: false,
+        };
         let shell_error: crate::core::status::ShellError = error.into();
         assert_eq!(shell_error.code, "git.status_short_timeout");
         assert_eq!(shell_error.details["timeout_ms"], 1000);
@@ -13098,84 +11067,6 @@ mod sync_correctness_tests {
 /// blocking libgit2 call it would bound cannot be interrupted. Runs against
 /// a temporary local repository only.
 #[cfg(test)]
-mod timeout_rejection_tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    fn run(verb: &str, pairs: &[(&str, &str)]) -> (Status, String, String) {
-        let h = GitHandle {
-            alias: "timeout_rejection".to_string(),
-        };
-        let args: Args = pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        let mut i: &[u8] = &[];
-        let (mut o, mut e) = (Vec::new(), Vec::new());
-        let status = {
-            let mut io = IoStreams {
-                stdin: &mut i,
-                stdout: &mut o,
-                stderr: &mut e,
-            };
-            h.call(verb, &args, &mut io).unwrap()
-        };
-        (
-            status,
-            String::from_utf8_lossy(&o).into_owned(),
-            String::from_utf8_lossy(&e).into_owned(),
-        )
-    }
-
-    #[test]
-    fn explicit_timeout_is_rejected_before_anything_runs() {
-        let dir = TempDir::new().unwrap();
-        let repo = Repository::init(dir.path()).unwrap();
-        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-        let tree = repo
-            .find_tree(repo.index().unwrap().write_tree().unwrap())
-            .unwrap();
-        let head = repo
-            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-            .unwrap();
-        let path = dir.path().to_string_lossy().to_string();
-
-        for verb in [
-            "status",
-            "status_short",
-            "branch",
-            "commit",
-            "clone",
-            "pull",
-            "push",
-            "sync",
-        ] {
-            let (status, out, err) = run(verb, &[("path", &path), ("timeout_ms", "5000")]);
-            assert!(!status.ok, "{verb} accepted timeout_ms");
-            assert_eq!(status.exit_code(), 2, "{verb}");
-            assert!(err.contains("timeout_ms is not supported"), "{verb}: {err}");
-            assert!(out.is_empty(), "{verb} produced output: {out}");
-        }
-        // Nothing was done to the repository (no commit, no branch).
-        assert_eq!(
-            repo.head().unwrap().target(),
-            Some(head),
-            "repository was modified"
-        );
-        assert_eq!(repo.branches(None).unwrap().count(), 1);
-
-        // Without timeout_ms the verb still runs normally.
-        let (status, _, err) = run("status", &[("path", &path)]);
-        assert!(status.ok, "{err}");
-    }
-}
-
-/// `known_hosts_path` through the verb dispatch, as a user invokes it:
-/// argument validation, strict refusal for SSH remotes (missing, unreadable
-/// or non-matching file, checked before any connection is made) and that the
-/// option is ignored for file and https remotes. No SSH server is needed:
-/// SSH remotes point at 127.0.0.1 port 1, where nothing listens.
-#[cfg(test)]
 mod known_hosts_dispatch_tests {
     use super::*;
     use git2::RepositoryInitOptions;
@@ -13202,12 +11093,17 @@ mod known_hosts_dispatch_tests {
             stdout: &mut o,
             stderr: &mut e,
         };
-        h.call(verb, &args, &mut io).map_err(|err| {
-            let shell = err
-                .downcast_ref::<crate::core::status::ShellError>()
-                .unwrap_or_else(|| panic!("{verb}: not a ShellError: {err:#}"));
-            (shell.code.clone(), shell.message.clone())
-        })
+        let st = h
+            .call(verb, &args, &mut io)
+            .unwrap_or_else(|e| panic!("{verb}: {e:#}"));
+        if st.ok {
+            return Ok(st);
+        }
+        // Failures are reported as `[<code>] <message>`.
+        let reason = st.reason.clone().unwrap_or_default();
+        let rest = reason.strip_prefix('[').expect("coded failure");
+        let (code, msg) = rest.split_once("] ").expect("coded failure");
+        Err((code.to_string(), msg.to_string()))
     }
 
     fn commit(repo: &Repository, file: &str) {
@@ -13454,32 +11350,5 @@ mod known_hosts_dispatch_tests {
         .unwrap_err();
         assert_eq!(code, "git.clone_failed", "{msg}");
         assert!(!msg.contains("known_hosts"), "{msg}");
-    }
-
-    #[test]
-    fn registered_profile_known_hosts_path_is_enforced() {
-        let f = fixture(Some(UNREACHABLE_SSH));
-        GitHandle::register_connection(
-            "kh-profile".to_string(),
-            GitConnectionProfile {
-                ssh_key_path: None,
-                known_hosts_path: Some(PathBuf::from(f.path("no-such-known_hosts"))),
-                username: None,
-                password: None,
-                token: None,
-            },
-        );
-        let (code, msg) = call("kh-profile", "pull", &[("path", &f.work_str())]).unwrap_err();
-        assert_eq!(code, "git.host_key_verification_failed", "{msg}");
-        // An argument overrides the profile.
-        let kh = f.path("known_hosts");
-        std::fs::write(&kh, format!("[127.0.0.1]:1 ssh-ed25519 {ED25519_BLOB}\n")).unwrap();
-        let (code, msg) = call(
-            "kh-profile",
-            "pull",
-            &[("path", &f.work_str()), ("known_hosts_path", &kh)],
-        )
-        .unwrap_err();
-        assert_eq!(code, "git.pull_fetch_failed", "{msg}");
     }
 }
