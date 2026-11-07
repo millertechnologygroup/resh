@@ -5,7 +5,7 @@ use resh::core::parse::parse_stage;
 use resh::{Registry, handles};
 
 fn resh() -> Command {
-    Command::cargo_bin("resh").unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("resh")
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {

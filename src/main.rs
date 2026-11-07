@@ -1,5 +1,4 @@
-mod core;
-mod handles;
+use resh::{core, handles};
 
 use anyhow::Result;
 use clap::Parser;

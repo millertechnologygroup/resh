@@ -1,10 +1,8 @@
 use anyhow::{Result, anyhow};
 use chrono::Utc;
-use serde_json::{Value, json};
-use std::collections::HashMap;
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use super::model::*;
 use crate::core::registry::Args;
@@ -211,6 +209,7 @@ pub struct SelectionHelper;
 
 impl SelectionHelper {
     /// Sort plugins deterministically
+    #[allow(dead_code)]
     pub fn sort_plugins(plugins: &mut Vec<PluginInfo>) {
         plugins.sort_by(|a, b| {
             // Sort by name first, then by version

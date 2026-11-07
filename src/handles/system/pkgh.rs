@@ -4,7 +4,6 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::process::Stdio;
 use std::time::Duration;
 use thiserror::Error;
@@ -560,6 +559,7 @@ pub enum PkgError {
     #[error("Package not found for removal: {0}")]
     RemoveNotFound(String),
     #[error("Package not installed: {0}")]
+    #[allow(dead_code)]
     RemoveNotInstalled(String),
     #[error("Remove dependency failure: {0}")]
     RemoveDependencyFailure(String),
@@ -590,6 +590,7 @@ pub enum PkgError {
     #[error("Upgrade check failed: {0}")]
     UpgradeCheckFailed(String),
     #[error("Upgrade permission denied: {0}")]
+    #[allow(dead_code)]
     UpgradePermissionDenied(String),
     #[error("Upgrade timeout")]
     UpgradeTimeout,
@@ -603,6 +604,7 @@ pub enum PkgError {
     #[error("Info query failed: {0}")]
     InfoQueryFailed(String),
     #[error("Info partial failure: {0}")]
+    #[allow(dead_code)]
     InfoPartialFailure(String),
     // Search errors
     #[error("Invalid search configuration: {0}")]
@@ -626,6 +628,7 @@ pub enum PkgError {
     #[error("Snapshot failed: {0}")]
     SnapshotFailed(String),
     #[error("Snapshot scope unsupported: {0}")]
+    #[allow(dead_code)]
     SnapshotScopeUnsupported(String),
     // Restore errors
     #[error("Invalid restore configuration: {0}")]
@@ -643,6 +646,7 @@ pub enum PkgError {
     #[error("Downgrade not supported: {0}")]
     RestoreDowngradeNotSupported(String),
     #[error("Repository not available: {0}")]
+    #[allow(dead_code)]
     RestoreRepoNotAvailable(String),
 }
 
@@ -696,6 +700,7 @@ pub enum ManagerKind {
 pub struct PackageSpec {
     pub name: String,
     pub version: Option<String>,
+    #[allow(dead_code)]
     pub source: Option<String>,
 }
 
@@ -816,6 +821,7 @@ pub struct InfoConfig {
     #[serde(default)]
     pub include_files: bool,
     #[serde(default = "default_true")]
+    #[allow(dead_code)]
     pub include_repo: bool,
     #[serde(default = "default_info_timeout")]
     pub timeout_ms: u64,
@@ -887,6 +893,7 @@ pub struct SearchResult {
     pub score: f64,
 }
 
+#[allow(dead_code)]
 fn default_score() -> f64 {
     1.0
 }
@@ -1033,6 +1040,7 @@ pub struct ListInstalledConfig {
     pub filter: Option<String>,
     pub prefix: Option<String>,
     #[serde(default = "default_true")]
+    #[allow(dead_code)]
     pub include_versions: bool,
     #[serde(default = "default_true")]
     pub include_repo: bool,
@@ -1075,6 +1083,7 @@ pub struct SnapshotConfig {
     #[serde(default = "default_snapshot_format")]
     pub format: SnapshotFormat,
     #[serde(default = "default_true")]
+    #[allow(dead_code)]
     pub inline: bool,
     #[serde(default = "default_snapshot_timeout")]
     pub timeout_ms: u64,
@@ -1146,10 +1155,12 @@ pub struct RestoreConfig {
     #[serde(default = "default_missing_policy")]
     pub on_missing_package: MissingPolicy,
     #[serde(default = "default_repo_policy")]
+    #[allow(dead_code)]
     pub on_repo_mismatch: RepoPolicy,
     #[serde(default = "default_platform_policy")]
     pub on_platform_mismatch: PlatformPolicy,
     #[serde(default = "default_true")]
+    #[allow(dead_code)]
     pub include_dependencies: bool,
     #[serde(default)]
     pub dry_run: bool,
@@ -2942,7 +2953,6 @@ impl PkgHandle {
         manager: &ManagerKind,
     ) -> Result<Value, PkgError> {
         let mut commands = Vec::new();
-        let mut available_updates = Vec::new();
 
         // Add refresh index command if requested
         if config.refresh_index {
@@ -2950,7 +2960,7 @@ impl PkgHandle {
         }
 
         // Get available upgrades
-        available_updates = self.get_available_upgrades(config, manager).await?;
+        let available_updates = self.get_available_upgrades(config, manager).await?;
 
         if !config.check_only && config.dry_run {
             // Add upgrade commands for dry-run
@@ -3065,7 +3075,6 @@ impl PkgHandle {
                     }
                 }
                 Err(e) => {
-                    summary.failed = available_updates.len() as u32;
                     for update in &available_updates {
                         results.push(UpdateResult {
                             name: update.name.clone(),
@@ -3142,7 +3151,6 @@ impl PkgHandle {
                     }
                 }
                 Err(e) => {
-                    summary.failed = available_upgrades.len() as u32;
                     for upgrade in &available_upgrades {
                         results.push(UpgradeResult {
                             name: upgrade.name.clone(),
@@ -3361,7 +3369,7 @@ impl PkgHandle {
         &self,
         config: &UpdateConfig,
         manager: &ManagerKind,
-        available_updates: &[AvailableUpdate],
+        _available_updates: &[AvailableUpdate],
     ) -> Result<CmdLine, PkgError> {
         let mut cmd = match manager {
             ManagerKind::Apt => {
@@ -7239,8 +7247,8 @@ impl PkgHandle {
 
         // Fallback: try reading yumdb files directly
         // YUM stores package metadata in /var/lib/yum/yumdb/
-        if let Ok(entries) = tokio::fs::read_dir("/var/lib/yum/yumdb").await {
-            let mut packages = std::collections::HashSet::new();
+        if let Ok(_entries) = tokio::fs::read_dir("/var/lib/yum/yumdb").await {
+            let packages = std::collections::HashSet::new();
             // This is a simplified approach - full implementation would recursively search
             // For now, return empty set if yumdb command fails
             return Ok(packages);
@@ -10753,7 +10761,7 @@ mod tests {
             "detect_os_name_and_version should not error"
         );
 
-        let (os_name, os_version) = result.unwrap();
+        let (os_name, _os_version) = result.unwrap();
 
         // On Linux, we should at least get an OS name
         #[cfg(target_os = "linux")]

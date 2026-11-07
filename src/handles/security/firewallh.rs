@@ -30,20 +30,35 @@ const FIREWALL_STATUS_METRICS_ERROR: &str = "firewall.status_metrics_error";
 const FIREWALL_STATUS_INTERNAL_ERROR: &str = "firewall.status_internal_error";
 
 // Enable operation error codes
+#[allow(dead_code)]
 const FIREWALL_ENABLE_INVALID_BACKEND: &str = "firewall.enable_invalid_backend";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_INVALID_FAMILY: &str = "firewall.enable_invalid_family";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_INVALID_SOURCE_FORMAT: &str = "firewall.enable_invalid_source_format";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_PATH_REQUIRED: &str = "firewall.enable_path_required";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_PATH_NOT_FOUND: &str = "firewall.enable_path_not_found";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_NO_BACKEND_AVAILABLE: &str = "firewall.enable_no_backend_available";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_BACKEND_UNAVAILABLE: &str = "firewall.enable_backend_unavailable";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_ALREADY_ENABLED: &str = "firewall.enable_already_enabled";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_FIREWALLD_START_FAILED: &str = "firewall.enable_firewalld_start_failed";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_COMMAND_FAILED: &str = "firewall.enable_command_failed";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_TIMEOUT: &str = "firewall.enable_timeout";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_SERIALIZE_ERROR: &str = "firewall.enable_serialize_error";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_FORMAT_MISMATCH: &str = "firewall.enable_format_mismatch";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_BACKEND_NATIVE_MISSING: &str = "firewall.enable_backend_native_missing";
+#[allow(dead_code)]
 const FIREWALL_ENABLE_INTERNAL_ERROR: &str = "firewall.enable_internal_error";
 
 // Disable operation error codes
@@ -7153,7 +7168,7 @@ impl FirewallHandle {
                 response.actions.push(command.to_string());
 
                 if !opts.dry_run && !opts.validate_only {
-                    let (exit_code, stdout, stderr) =
+                    let (exit_code, _stdout, stderr) =
                         run_command_with_timeout("ufw", &["reload"], opts.timeout_ms).await?;
 
                     if exit_code != 0 {
@@ -7192,7 +7207,7 @@ impl FirewallHandle {
                 response.actions.push(command.to_string());
 
                 if !opts.dry_run && !opts.validate_only {
-                    let (exit_code, stdout, stderr) =
+                    let (exit_code, _stdout, stderr) =
                         run_command_with_timeout("firewall-cmd", &["--reload"], opts.timeout_ms)
                             .await?;
 
@@ -7306,7 +7321,7 @@ impl FirewallHandle {
 
     fn detect_source_format(&self, path: &str) -> Result<RulesReloadSourceFormat> {
         // Try to read the file and detect format
-        let content = fs::read_to_string(path).map_err(|e| FirewallError::ReloadPathNotFound {
+        let content = fs::read_to_string(path).map_err(|_e| FirewallError::ReloadPathNotFound {
             path: path.to_string(),
         })?;
 
@@ -8818,7 +8833,7 @@ impl FirewallHandle {
         // Execute enable
         actions.push("ufw --force enable".to_string());
 
-        let (exit_code, stdout, stderr) =
+        let (exit_code, _stdout, stderr) =
             run_command_with_timeout("ufw", &["--force", "enable"], opts.timeout_ms).await?;
 
         if exit_code != 0 {

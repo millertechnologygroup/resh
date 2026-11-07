@@ -198,6 +198,7 @@ impl Drop for Active {
     }
 }
 
+#[allow(dead_code)]
 fn other_tools(group: libc::pid_t) -> Vec<libc::pid_t> {
     let mut others = ACTIVE.lock().map(|a| a.clone()).unwrap_or_default();
     others.retain(|other| *other != group);

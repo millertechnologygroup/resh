@@ -6802,7 +6802,7 @@ impl CertHandle {
     }
 
     fn create_csr(&self, opts: &CsrCreateOptions) -> Result<Value> {
-        let mut warnings: Vec<String> = Vec::new();
+        let warnings: Vec<String> = Vec::new();
 
         // Check if target exists and handle overwrite
         if !opts.overwrite {
@@ -7607,7 +7607,7 @@ impl CertHandle {
         &self,
         opts: &CertSignOptions,
         signer_key: &SignerKey,
-        signer_cert: Option<&Certificate>,
+        _signer_cert: Option<&Certificate>,
         response: &mut CertSignResponse,
     ) -> Result<()> {
         // Get the data to sign
@@ -7790,7 +7790,7 @@ impl CertHandle {
         }
         */
 
-        if let Ok(key_str) = std::str::from_utf8(&key_data) {
+        if let Ok(_key_str) = std::str::from_utf8(&key_data) {
             // Ed25519SigningKey::from_pkcs8_pem also has trait bounds issues, comment out for now
             /*
             if let Ok(ed25519_key) = Ed25519SigningKey::from_pkcs8_pem(key_str) {
@@ -7888,7 +7888,7 @@ impl CertHandle {
         );
     }
 
-    fn decrypt_rsa_pkcs1_der(&self, encrypted_der: &[u8], passphrase: &str) -> Result<Vec<u8>> {
+    fn decrypt_rsa_pkcs1_der(&self, _encrypted_der: &[u8], _passphrase: &str) -> Result<Vec<u8>> {
         // This is a simplified implementation for encrypted RSA PKCS#1 keys
         // In practice, this would need to parse the encryption parameters from the PEM header
         // and use the appropriate decryption algorithm (DES-CBC, AES-CBC, etc.)
@@ -7960,8 +7960,8 @@ impl CertHandle {
                 let signature = rsa_key.sign_with_rng(&mut rng, padding, &hash)?;
                 Ok(signature)
             }
-            (SignerKey::Rsa(rsa_key), SignatureAlgorithm::RsaPkcs1Sha256) => {
-                let hash = sha2::Sha256::digest(data);
+            (SignerKey::Rsa(_rsa_key), SignatureAlgorithm::RsaPkcs1Sha256) => {
+                let _hash = sha2::Sha256::digest(data);
                 // Note: PKCS1v15Sign may need different trait imports for AssociatedOid
                 // For now, use a simpler approach or different padding
                 bail!("RSA PKCS1 signature creation not fully implemented due to trait bounds");
@@ -7973,8 +7973,8 @@ impl CertHandle {
                 let signature = rsa_key.sign_with_rng(&mut rng, padding, &hash)?;
                 Ok(signature)
             }
-            (SignerKey::Rsa(rsa_key), SignatureAlgorithm::RsaPkcs1Sha384) => {
-                let hash = sha2::Sha384::digest(data);
+            (SignerKey::Rsa(_rsa_key), SignatureAlgorithm::RsaPkcs1Sha384) => {
+                let _hash = sha2::Sha384::digest(data);
                 // Note: PKCS1v15Sign may need different trait imports for AssociatedOid
                 // For now, use a simpler approach or different padding
                 bail!(
@@ -8016,6 +8016,7 @@ impl CertHandle {
         }
     }
 
+    #[allow(dead_code)]
     fn create_cms_signature(
         &self,
         _data: &[u8],
@@ -9323,6 +9324,7 @@ impl CertHandle {
         None
     }
 
+    #[allow(dead_code)]
     fn certificates_match(&self, der1: &[u8], der2: &[u8]) -> bool {
         // Simple comparison by DER bytes
         der1 == der2
@@ -12296,7 +12298,7 @@ mod tests {
         // Test with regular path (no cert:// prefix)
         let handle = create_test_handle(&csr_file_path.to_string_lossy());
 
-        let mut opts = CsrCreateOptions {
+        let opts = CsrCreateOptions {
             key_strategy: CsrKeyStrategy::Generate,
             existing_key_path: None,
             existing_key_passphrase: None,
@@ -12973,7 +12975,7 @@ mod tests {
         fs::write(&key_path, pkcs8_der.as_bytes())?;
 
         // Test loading
-        let (key_pair, key_info) =
+        let (_key_pair, key_info) =
             handle.load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
         // Verify key_info
@@ -13008,7 +13010,7 @@ mod tests {
         fs::write(&key_path, pkcs8_pem.as_bytes())?;
 
         // Test loading
-        let (key_pair, key_info) =
+        let (_key_pair, key_info) =
             handle.load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
         // Verify key_info
@@ -13036,7 +13038,7 @@ mod tests {
         fs::write(&key_path, pkcs1_pem.as_bytes())?;
 
         // Test loading
-        let (key_pair, key_info) =
+        let (_key_pair, key_info) =
             handle.load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
         // Verify key_info
@@ -13064,7 +13066,7 @@ mod tests {
         fs::write(&key_path, pkcs8_der.as_bytes())?;
 
         // Test loading
-        let (key_pair, key_info) =
+        let (_key_pair, key_info) =
             handle.load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
         // Verify key_info
@@ -13093,7 +13095,7 @@ mod tests {
         fs::write(&key_path, pkcs8_pem.as_bytes())?;
 
         // Test loading
-        let (key_pair, key_info) =
+        let (_key_pair, key_info) =
             handle.load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
         // Verify key_info
@@ -13121,7 +13123,7 @@ mod tests {
         fs::write(&key_path, sec1_pem.as_bytes())?;
 
         // Test loading
-        let (key_pair, key_info) =
+        let (_key_pair, key_info) =
             handle.load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
         // Verify key_info
@@ -13149,7 +13151,7 @@ mod tests {
         fs::write(&key_path, pkcs8_der.as_bytes())?;
 
         // Test loading
-        let (key_pair, key_info) =
+        let (_key_pair, key_info) =
             handle.load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
         // Verify key_info
@@ -13178,7 +13180,7 @@ mod tests {
         fs::write(&key_path, pkcs8_pem.as_bytes())?;
 
         // Test loading
-        let (key_pair, key_info) =
+        let (_key_pair, key_info) =
             handle.load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
         // Verify key_info
@@ -13206,7 +13208,7 @@ mod tests {
         fs::write(&key_path, sec1_pem.as_bytes())?;
 
         // Test loading
-        let (key_pair, key_info) =
+        let (_key_pair, key_info) =
             handle.load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
         // Verify key_info
@@ -13333,7 +13335,7 @@ mod tests {
             fs::write(&key_path, &key_data)?;
 
             // Load key
-            let (key_pair, key_info) = handle
+            let (_key_pair, key_info) = handle
                 .load_existing_key_for_csr(&format!("file://{}", key_path.display()), None)?;
 
             // Verify we can generate a CSR

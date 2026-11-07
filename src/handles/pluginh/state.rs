@@ -35,6 +35,7 @@ pub struct SetEnabledOptions {
     pub force: bool,
     pub timeout_ms: u64,
     pub dry_run: bool,
+    #[allow(dead_code)]
     pub reason: String,
 }
 
@@ -69,7 +70,7 @@ impl PluginStateManager {
         enabled: bool,
         opts: SetEnabledOptions,
     ) -> Result<Envelope> {
-        let start_time = std::time::Instant::now();
+        let _start_time = std::time::Instant::now();
         let mut actions = Vec::new();
 
         let op = if enabled {
@@ -566,13 +567,13 @@ impl PluginStateManager {
     fn build_success_envelope(
         &self,
         op: &str,
-        target: &str,
+        _target: &str,
         opts: &SetEnabledOptions,
         actions: Vec<Action>,
         installed_metadata: &super::plugin::types::InstalledPlugin,
         enabled: bool,
         was_enabled: bool,
-        changed: bool,
+        _changed: bool,
     ) -> Envelope {
         let target_info = TargetInfo {
             name: installed_metadata.plugin_id.clone(),

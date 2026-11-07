@@ -3,7 +3,6 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use url::Url;
@@ -16,7 +15,7 @@ use crate::core::{
 
 use crate::handles::pluginh::available::{
     ActionRecord, ArgsHelper, AvailableInfoArgs, AvailableInfoEnvelope, AvailableInfoErrorCode,
-    AvailableInfoResult, EnvelopeHelper, ErrorInfo, IndexManager, PluginSelector,
+    AvailableInfoResult, EnvelopeHelper, IndexManager, PluginSelector,
 };
 use crate::handles::pluginh::{
     ExecutionEngine, Mode, PluginOpArgs, PluginStateManager, RequestedVersion, Scope,
@@ -1581,6 +1580,7 @@ struct SearchResult {
 
 /// Catalog source information
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 struct CatalogSourceInfo {
     id: String,
     mode: String, // "online", "offline", "cache"
@@ -2789,7 +2789,7 @@ fn execute_installed_list(target: &str, args: InstalledListArgs) -> serde_json::
 
 /// Get all installed plugins from the plugin store
 fn get_all_installed_plugins(
-    store: &crate::handles::pluginh::plugin::store::PluginStore,
+    _store: &crate::handles::pluginh::plugin::store::PluginStore,
 ) -> Result<
     std::collections::HashMap<String, crate::handles::pluginh::plugin::types::InstalledPlugin>,
 > {
@@ -3331,7 +3331,7 @@ mod tests {
     use crate::core::registry::{Args, IoStreams};
     use std::collections::HashMap;
     use std::io::Cursor;
-    use tempfile::TempDir;
+
     use url::Url;
 
     fn create_test_handle(plugin_id: &str) -> PluginHandle {
@@ -3876,7 +3876,7 @@ mod tests {
 
     #[test]
     fn test_filter_and_sort_plugins_deterministic_ordering() {
-        let mut plugins = vec![
+        let plugins = vec![
             PluginRecord {
                 id: "resh.kubernetes".to_string(),
                 name: "Kubernetes Handle".to_string(),

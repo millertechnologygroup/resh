@@ -13,7 +13,6 @@ use crate::core::{
     registry::{Args, Handle, IoStreams},
     status::Status,
 };
-use std::io::Write;
 
 pub fn register(reg: &mut crate::core::Registry) {
     reg.register_scheme("log", |u| Ok(Box::new(LogHandle::from_url(u)?)));

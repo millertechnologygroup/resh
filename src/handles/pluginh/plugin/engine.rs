@@ -10,9 +10,9 @@ use super::store::{
     sanitized_mode,
 };
 use super::types::{
-    Action, ArgsInfo, ArtifactCandidate, ArtifactInfo, Envelope, Mode, PathInfo, PlanDecision,
-    PluginOpArgs, PluginResult, SourceSpec, StructuredError, TargetInfo, VerifyMode, action_types,
-    error_code_to_numeric, error_codes,
+    Action, ArgsInfo, ArtifactCandidate, Envelope, Mode, PlanDecision, PluginOpArgs, PluginResult,
+    SourceSpec, StructuredError, TargetInfo, VerifyMode, action_types, error_code_to_numeric,
+    error_codes,
 };
 
 /// Integrity rule for a resolved artifact (SEC-07).
@@ -49,6 +49,7 @@ pub struct ExecutionEngine {
 
 impl ExecutionEngine {
     /// Create an execution engine that uses the given plugin store.
+    #[allow(dead_code)]
     pub fn with_store(timeout_ms: u64, store: PluginStore) -> Result<Self> {
         Ok(Self {
             registry_client: RegistryClient::new(timeout_ms)?,
@@ -69,8 +70,8 @@ impl ExecutionEngine {
 
     /// Run plugin operation according to specification
     pub fn run_plugin_op(&mut self, args: PluginOpArgs) -> Envelope {
-        let start_time = Instant::now();
-        let started_at = Utc::now().to_rfc3339();
+        let _start_time = Instant::now();
+        let _started_at = Utc::now().to_rfc3339();
 
         let op = match args.mode {
             Mode::Install => "plugin.install".to_string(),
@@ -80,16 +81,16 @@ impl ExecutionEngine {
             Mode::Disable => "plugin.disable".to_string(),
         };
 
-        let target = format!("plugin://{}", args.plugin_id);
+        let _target = format!("plugin://{}", args.plugin_id);
 
         // Execute the operation
         let execution_result = self.execute_operation(&args);
 
-        let finished_at = Utc::now().to_rfc3339();
+        let _finished_at = Utc::now().to_rfc3339();
 
         // Build envelope based on result
         match execution_result {
-            Ok((changed, result, actions, installed_metadata)) => {
+            Ok((_changed, result, actions, installed_metadata)) => {
                 let (target_info, args_info) =
                     self.build_envelope_metadata(&args, installed_metadata.as_ref());
 
@@ -1044,6 +1045,7 @@ impl ExecutionEngine {
     }
 
     /// Check if error is retryable
+    #[allow(dead_code)]
     fn is_retryable_error(&self, error_code: &str) -> bool {
         matches!(
             error_code,
@@ -1064,7 +1066,7 @@ impl ExecutionEngine {
         args: &PluginOpArgs,
         installed: Option<&super::types::InstalledPlugin>,
     ) -> (TargetInfo, ArgsInfo) {
-        let store = &self.store;
+        let _store = &self.store;
         let install_root = PluginStore::default_plugins_dir()
             .unwrap_or_else(|_| PathBuf::from("/tmp/resh-plugins"));
 
@@ -1296,7 +1298,7 @@ impl ExecutionEngine {
     /// Check if plugin is currently in use
     fn is_plugin_in_use(
         &self,
-        plugin_id: &str,
+        _plugin_id: &str,
         installed: &super::types::InstalledPlugin,
     ) -> Result<bool> {
         // Check if binary is running (best effort)
@@ -1376,7 +1378,7 @@ impl ExecutionEngine {
     /// Step 5: Remove binary
     fn remove_binary(
         &mut self,
-        args: &PluginOpArgs,
+        _args: &PluginOpArgs,
         installed: &super::types::InstalledPlugin,
         actions: &mut Vec<Action>,
     ) -> Result<()> {
@@ -1519,7 +1521,7 @@ impl ExecutionEngine {
     /// Execute enable operation with deterministic action ordering
     fn execute_enable(
         &mut self,
-        args: &PluginOpArgs,
+        _args: &PluginOpArgs,
         _actions: &mut Vec<Action>,
     ) -> Result<(bool, PluginResult, Option<super::types::InstalledPlugin>)> {
         // This method is just a stub for the main execute_operation flow
@@ -1528,10 +1530,10 @@ impl ExecutionEngine {
     }
 
     /// Run enable operation and return enable-specific envelope
+    #[allow(dead_code)]
     pub fn run_enable_operation(&mut self, args: PluginOpArgs) -> super::types::EnableEnvelope {
         use super::types::{
-            EnableAction, EnableEnvelope, EnableError, EnableResult, EnableTargetInfo,
-            action_types, error_codes,
+            EnableEnvelope, EnableResult, EnableTargetInfo, action_types, error_codes,
         };
 
         let mut actions = Vec::new();
@@ -1791,9 +1793,7 @@ impl ExecutionEngine {
         error_code: &str,
         message: &str,
     ) -> super::types::EnableEnvelope {
-        use super::types::{
-            EnableEnvelope, EnableError, EnableResult, EnableTargetInfo, error_code_to_numeric,
-        };
+        use super::types::{EnableEnvelope, EnableError, EnableResult, EnableTargetInfo};
 
         let scope = match &args.source {
             super::types::SourceSpec::Registry { url } if url == "system" => "system",

@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -21,6 +20,7 @@ pub struct Envelope {
 
 /// Enable-specific envelope structure that matches specification exactly
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct EnableEnvelope {
     pub op: String,
     pub target: EnableTargetInfo,
@@ -48,6 +48,7 @@ pub struct TargetInfo {
 
 /// Target information for enable operations  
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct EnableTargetInfo {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,6 +82,7 @@ pub struct Action {
 
 /// Action performed during enable operation (matches spec format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct EnableAction {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +114,7 @@ pub struct PluginResult {
 
 /// Enable-specific result structure that matches specification exactly
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct EnableResult {
     pub enabled: bool,
     pub was_enabled: bool,
@@ -121,6 +124,7 @@ pub struct EnableResult {
 
 /// Artifact information
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ArtifactInfo {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,6 +135,7 @@ pub struct ArtifactInfo {
 
 /// Path information for installed plugin
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct PathInfo {
     pub root: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,6 +152,7 @@ pub struct StructuredError {
 
 /// Enable-specific error structure that matches specification exactly
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct EnableError {
     pub code: String,
     pub message: String,
@@ -231,7 +237,9 @@ pub enum Mode {
     Install,
     Update,
     Remove,
+    #[allow(dead_code)]
     Enable,
+    #[allow(dead_code)]
     Disable,
 }
 
@@ -350,43 +358,57 @@ pub struct ArtifactCandidate {
 pub mod action_types {
     pub const RESOLVE: &str = "resolve";
     pub const CHECK_INSTALLED: &str = "check_installed";
+    #[allow(dead_code)]
     pub const CHECK_IN_USE: &str = "check_in_use";
     pub const DOWNLOAD: &str = "download";
     pub const VERIFY: &str = "verify";
     pub const EXTRACT: &str = "extract";
     pub const INSTALL: &str = "install";
     pub const ACTIVATE: &str = "activate";
+    #[allow(dead_code)]
     pub const REMOVE_MANIFEST: &str = "remove_manifest";
+    #[allow(dead_code)]
     pub const REMOVE_BIN: &str = "remove_bin";
+    #[allow(dead_code)]
     pub const REMOVE_SUPPORT_FILES: &str = "remove_support_files";
+    #[allow(dead_code)]
     pub const PURGE_STATE: &str = "purge_state";
+    #[allow(dead_code)]
     pub const SYNC_REGISTRY: &str = "sync_registry";
     pub const CLEANUP: &str = "cleanup";
     pub const ROLLBACK: &str = "rollback";
     // Enable-specific action types
+    #[allow(dead_code)]
     pub const LOAD_MANIFEST: &str = "load_manifest";
+    #[allow(dead_code)]
     pub const VALIDATE_ENTRYPOINT: &str = "validate_entrypoint";
+    #[allow(dead_code)]
     pub const LOAD_ENABLED_REGISTRY: &str = "load_enabled_registry";
+    #[allow(dead_code)]
     pub const WRITE_ENABLED_REGISTRY: &str = "write_enabled_registry";
 }
 
 /// Enabled plugin registry structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct EnabledRegistry {
     pub enabled: Vec<EnabledPlugin>,
 }
 
 impl EnabledRegistry {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             enabled: Vec::new(),
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_enabled(&self, plugin_id: &str) -> bool {
         self.enabled.iter().any(|p| p.id == plugin_id)
     }
 
+    #[allow(dead_code)]
     pub fn get_enabled_version(&self, plugin_id: &str) -> Option<&str> {
         self.enabled
             .iter()
@@ -410,6 +432,7 @@ impl EnabledRegistry {
         true
     }
 
+    #[allow(dead_code)]
     pub fn disable_plugin(&mut self, plugin_id: &str) -> bool {
         let initial_len = self.enabled.len();
         self.enabled.retain(|p| p.id != plugin_id);
@@ -419,6 +442,7 @@ impl EnabledRegistry {
 
 /// Individual enabled plugin entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct EnabledPlugin {
     pub id: String,
     pub version: String,

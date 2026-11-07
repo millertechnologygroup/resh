@@ -17,11 +17,13 @@ use libc::{LOCK_EX, LOCK_NB, LOCK_UN, flock};
 use std::os::unix::fs::PermissionsExt;
 
 /// Simple cleanup guard for temporary files
+#[allow(dead_code)]
 struct TempFileCleanup {
     path: PathBuf,
 }
 
 impl TempFileCleanup {
+    #[allow(dead_code)]
     fn new(path: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
@@ -37,6 +39,7 @@ impl Drop for TempFileCleanup {
 
 // Results structures for structured JSON output
 #[derive(serde::Serialize)]
+#[allow(dead_code)]
 pub struct WriteResult {
     pub written: bool,
     pub mode: String,
@@ -46,6 +49,7 @@ pub struct WriteResult {
 }
 
 #[derive(serde::Serialize)]
+#[allow(dead_code)]
 pub struct AppendResult {
     pub appended: bool,
     pub mode: String,
@@ -55,6 +59,7 @@ pub struct AppendResult {
 }
 
 #[derive(serde::Serialize)]
+#[allow(dead_code)]
 pub struct VerifyResult {
     pub path: String,
     pub verified: bool,
@@ -66,12 +71,14 @@ pub struct VerifyResult {
 }
 
 // Configuration for atomic operations
+#[allow(dead_code)]
 pub struct AtomicWriteOptions {
     pub atomic: bool,
     pub mode: Option<u32>,
     pub fsync: bool,
 }
 
+#[allow(dead_code)]
 pub struct AtomicAppendOptions {
     pub atomic: bool,
     pub ensure_newline: bool,
@@ -99,6 +106,7 @@ impl Default for AtomicAppendOptions {
 }
 
 /// Generates a unique temporary filename in the same directory as the target
+#[allow(dead_code)]
 fn generate_temp_path(target: &Path) -> Result<PathBuf> {
     let filename = target
         .file_name()
@@ -151,6 +159,7 @@ fn generate_temp_path(target: &Path) -> Result<PathBuf> {
 }
 
 /// Check available disk space
+#[allow(dead_code)]
 fn check_disk_space(path: &Path, required_bytes: u64) -> Result<()> {
     // Basic implementation - in production, you'd want more sophisticated checking
     if let Some(parent) = path.parent() {
@@ -165,6 +174,7 @@ fn check_disk_space(path: &Path, required_bytes: u64) -> Result<()> {
 }
 
 /// Safely sync file data to disk
+#[allow(dead_code)]
 fn sync_file(file: &mut File, fsync: bool) -> Result<()> {
     if fsync {
         file.flush()?;
@@ -175,6 +185,7 @@ fn sync_file(file: &mut File, fsync: bool) -> Result<()> {
 }
 
 /// Atomic write operation using temporary file + rename
+#[allow(dead_code)]
 pub fn atomic_write<P: AsRef<Path>>(
     path: P,
     data: &[u8],
@@ -259,12 +270,14 @@ pub fn atomic_write<P: AsRef<Path>>(
 
 /// Advisory file locking wrapper (Unix only)
 #[cfg(unix)]
+#[allow(dead_code)]
 struct FileLock {
     file: File,
 }
 
 #[cfg(unix)]
 impl FileLock {
+    #[allow(dead_code)]
     fn try_lock(path: &Path) -> Result<Self> {
         let file = OpenOptions::new()
             .create(true)
@@ -303,6 +316,7 @@ impl Drop for FileLock {
 }
 
 /// Atomic append operation with file locking
+#[allow(dead_code)]
 pub fn atomic_append<P: AsRef<Path>>(
     path: P,
     data: &[u8],
@@ -383,6 +397,7 @@ pub fn atomic_append<P: AsRef<Path>>(
 }
 
 /// Parse hash string in format "algorithm:digest"
+#[allow(dead_code)]
 fn parse_hash(hash_str: &str) -> Result<(String, String)> {
     if let Some((algorithm, digest)) = hash_str.split_once(':') {
         Ok((algorithm.to_lowercase(), digest.to_string()))
@@ -392,6 +407,7 @@ fn parse_hash(hash_str: &str) -> Result<(String, String)> {
 }
 
 /// Calculate file hash using specified algorithm
+#[allow(dead_code)]
 pub fn calculate_file_hash<P: AsRef<Path>>(path: P, algorithm: &str) -> Result<String> {
     let path = path.as_ref();
     let mut file =
@@ -449,6 +465,7 @@ pub fn calculate_file_hash<P: AsRef<Path>>(path: P, algorithm: &str) -> Result<S
 }
 
 /// Hash verification
+#[allow(dead_code)]
 pub fn verify_hash<P: AsRef<Path>>(path: P, hash_str: &str) -> Result<VerifyResult> {
     let path = path.as_ref();
     let timestamp = Utc::now().to_rfc3339();
@@ -487,6 +504,7 @@ pub fn verify_hash<P: AsRef<Path>>(path: P, hash_str: &str) -> Result<VerifyResu
 }
 
 /// Verify file against JSON manifest
+#[allow(dead_code)]
 pub fn verify_manifest<P: AsRef<Path>, M: AsRef<Path>>(
     file_path: P,
     manifest_path: M,
@@ -528,6 +546,7 @@ pub fn verify_manifest<P: AsRef<Path>, M: AsRef<Path>>(
 }
 
 /// Signature verification using Ed25519
+#[allow(dead_code)]
 pub fn verify_signature<P: AsRef<Path>>(
     file_path: P,
     sig_path: &str,
@@ -643,6 +662,7 @@ pub fn verify_signature<P: AsRef<Path>>(
 }
 
 /// Recursive directory verification
+#[allow(dead_code)]
 pub fn verify_recursive<P: AsRef<Path>>(base_path: P) -> Result<Vec<VerifyResult>> {
     let base_path = base_path.as_ref();
     let mut results = Vec::new();

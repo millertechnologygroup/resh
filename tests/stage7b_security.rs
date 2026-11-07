@@ -4,7 +4,6 @@
 //! temporary directory. Fixtures are built in memory and stay small: an
 //! oversized header declares gigabytes but carries 2 MiB.
 
-use assert_cmd::Command;
 use serde_json::Value;
 use std::io::Write;
 use std::path::Path;

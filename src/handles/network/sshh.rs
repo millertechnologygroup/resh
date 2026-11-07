@@ -5484,7 +5484,7 @@ impl SshHandle {
     }
 
     /// Extract bit length from key blob (for RSA, DSA, ECDSA)
-    pub fn extract_key_bits(type_raw: &str, blob_bytes: &[u8]) -> Option<u32> {
+    pub fn extract_key_bits(type_raw: &str, _blob_bytes: &[u8]) -> Option<u32> {
         // For ECDSA, we can infer from the curve name
         if type_raw.contains("nistp256") {
             return Some(256);
@@ -6630,10 +6630,10 @@ impl SshHandle {
     /// Execute the SSH tunnel
     fn execute_tunnel(
         &self,
-        options: &SshTunnelOptions,
-        host: &str,
-        port: u16,
-        username: &str,
+        _options: &SshTunnelOptions,
+        _host: &str,
+        _port: u16,
+        _username: &str,
     ) -> Result<(SshTunnelStats, String)> {
         // This is a placeholder implementation that would use openssh crate or spawn ssh process
         // For now, return a mock result indicating the tunnel would run
@@ -7209,6 +7209,7 @@ impl SshHandle {
 
     /// Check if key blob already exists in file content
     /// Returns (duplicate_found, indices_of_duplicates)
+    #[allow(dead_code)]
     fn find_duplicate_keys(&self, key_blob: &[u8], file_lines: &[String]) -> (bool, Vec<usize>) {
         let mut duplicate_indices = Vec::new();
 
@@ -7260,6 +7261,7 @@ impl SshHandle {
     }
 
     /// Parse permission mode string (e.g., "0600") to u32
+    #[allow(dead_code)]
     fn parse_mode(mode_str: &str) -> Result<u32, SshError> {
         u32::from_str_radix(mode_str.trim_start_matches("0o").trim_start_matches('0'), 8)
             .map_err(|e| SshError::InternalError(format!("Invalid mode string: {}", e)))
@@ -7571,7 +7573,7 @@ impl SshHandle {
         };
 
         // Load and validate public key
-        let (key_line, type_raw, key_blob, comment, fingerprint) =
+        let (_key_line, type_raw, _key_blob, comment, fingerprint) =
             match self.load_public_key(&options) {
                 Ok(line) => match self.validate_public_key(&line) {
                     Ok((t, blob, c, fp)) => (line, t, blob, c, fp),

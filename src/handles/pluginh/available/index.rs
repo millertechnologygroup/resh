@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use chrono::Utc;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -360,7 +359,9 @@ pub struct IndexSourceConfig {
 /// Raw index data format as received from network
 #[derive(Debug, Clone, Deserialize)]
 struct RawIndexData {
+    #[allow(dead_code)]
     pub version: u32,
+    #[allow(dead_code)]
     pub generated_at: String,
     pub plugins: Vec<RawPluginData>,
 }

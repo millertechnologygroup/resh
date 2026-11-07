@@ -428,6 +428,7 @@ fn help_request(args: &Args) -> Option<Option<String>> {
 // ===========================================================================
 
 #[derive(Debug, Error)]
+#[allow(dead_code)] // several error variants are not produced yet
 pub enum SystemError {
     #[error("invalid scope: {0}")]
     InvalidScope(String),
@@ -1800,6 +1801,7 @@ impl SystemProvider for RealSystemProvider {
 
 #[derive(Debug)]
 pub struct SystemHandle {
+    #[allow(dead_code)]
     alias: String,
 }
 
@@ -2706,7 +2708,7 @@ impl SystemHandle {
         &self,
         mounts: Vec<(String, String, String)>,
         opts: &SystemDiskOptions,
-        warnings: &mut Vec<String>,
+        _warnings: &mut Vec<String>,
     ) -> Vec<(String, String, String)> {
         let mut filtered = Vec::new();
 
@@ -3989,7 +3991,7 @@ impl SystemHandle {
         provider: &dyn SystemProvider,
         warnings: &mut Vec<String>,
     ) -> SystemMemoryCgroupMetrics {
-        let mut unified = None;
+        let unified;
         let mut memory_limit_bytes = None;
         let mut memory_usage_bytes = None;
         let mut swap_limit_bytes = None;
@@ -6581,8 +6583,6 @@ pub fn register(reg: &mut crate::core::Registry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
-    use std::collections::HashMap;
 
     /// Mock SystemProvider for testing
     struct MockSystemProvider {

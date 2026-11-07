@@ -2,9 +2,6 @@ use anyhow::{Context, Result, bail};
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Write};
 use std::path::{Component, PathBuf};
 use tera::{Context as TeraContext, Tera};
 use url::Url;
@@ -669,7 +666,7 @@ impl TemplateHandle {
             Err(e) => {
                 let template_info = self.create_template_info(args, None);
 
-                let mut result = ValidationResult {
+                let result = ValidationResult {
                     ok: false,
                     template: template_info,
                     strict,
@@ -1094,7 +1091,7 @@ impl TemplateHandle {
         })
     }
 
-    fn load_test_cases(&self, args: &Args, template_name: &str) -> Result<Vec<TemplateTestCase>> {
+    fn load_test_cases(&self, args: &Args, _template_name: &str) -> Result<Vec<TemplateTestCase>> {
         // Priority: 1. inline cases, 2. cases_file, 3. default test file
         if let Some(cases_json) = args.get("cases") {
             let cases: Vec<TemplateTestCase> = serde_json::from_str(cases_json)
@@ -1335,6 +1332,7 @@ impl Handle for TemplateHandle {
 mod tests {
     use super::*;
     use anyhow::Result;
+    use std::collections::HashMap;
     use std::fs::File;
     use std::io::Cursor;
     use std::io::Write;

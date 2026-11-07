@@ -2,8 +2,7 @@ use anyhow::{Context, Result, bail};
 use base64::engine::Engine;
 use dashmap::DashMap;
 use serde_json::{Value, json};
-use sqlx::{Column, MySql, Pool, Postgres, Row, Sqlite, TypeInfo, ValueRef};
-use std::io::Write;
+use sqlx::{Column, MySql, Pool, Postgres, Row, Sqlite, TypeInfo};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use url::Url;
@@ -4206,7 +4205,7 @@ fn row_to_json_sqlite(row: &sqlx::sqlite::SqliteRow) -> Result<Value, DbError> {
 /// Helper functions to convert single column values by index
 fn convert_postgres_value(row: &sqlx::postgres::PgRow, col_index: usize) -> Value {
     let column = &row.columns()[col_index];
-    let column_name = column.name();
+    let _column_name = column.name();
     let type_info = column.type_info();
 
     match type_info.name() {
@@ -4465,7 +4464,7 @@ async fn describe_table_postgres(
     table_name: &str,
 ) -> Result<Value, DbError> {
     // First, check if table exists and get basic info
-    let table_info_sql = if let Some(ref schema) = config.schema {
+    let table_info_sql = if config.schema.is_some() {
         r#"
         SELECT table_schema, table_name, table_type
         FROM information_schema.tables
@@ -7721,8 +7720,10 @@ mod tests {
         assert_eq!(result["attempts"], 1);
 
         // Should have measurable latency
-        let latency = result["latency_ms"].as_u64().unwrap();
-        assert!(latency >= 0);
+        assert!(
+            result["latency_ms"].as_u64().is_some(),
+            "latency_ms should be a non-negative integer"
+        );
     }
 
     #[tokio::test]
@@ -7753,8 +7754,10 @@ mod tests {
         assert_eq!(result["attempts"], 1);
 
         // Should have measurable latency
-        let latency = result["latency_ms"].as_u64().unwrap();
-        assert!(latency >= 0);
+        assert!(
+            result["latency_ms"].as_u64().is_some(),
+            "latency_ms should be a non-negative integer"
+        );
     }
 
     #[tokio::test]
@@ -7784,7 +7787,7 @@ mod tests {
         assert!(connect_result.is_ok(), "Failed to connect to SQLite");
 
         // Test multiple ping calls to ensure consistency
-        for i in 1..=3 {
+        for _i in 1..=3 {
             let ping_args = json!({
                 "timeout_ms": 1000,
                 "detailed": true
@@ -7800,8 +7803,10 @@ mod tests {
                     assert_eq!(result["attempts"], 1);
 
                     // Should have measurable latency
-                    let latency = result["latency_ms"].as_u64().unwrap();
-                    assert!(latency >= 0);
+                    assert!(
+                        result["latency_ms"].as_u64().is_some(),
+                        "latency_ms should be a non-negative integer"
+                    );
                 }
                 Err(e) => {
                     // If connection is lost, that's acceptable for this test
@@ -7849,8 +7854,10 @@ mod tests {
         if status == "ok" {
             assert_eq!(result["attempts"], 1);
             // Should have very low latency
-            let latency = result["latency_ms"].as_u64().unwrap();
-            assert!(latency >= 0);
+            assert!(
+                result["latency_ms"].as_u64().is_some(),
+                "latency_ms should be a non-negative integer"
+            );
         } else {
             // If it timed out
             assert_eq!(result["attempts"], 1);
@@ -8232,9 +8239,9 @@ mod tests {
 
         #[test]
         fn test_transaction_handle_creation() {
-            let driver = DbDriver::Sqlite;
-            let alias = "test".to_string();
-            let tx_id = "test-tx-123".to_string();
+            let _driver = DbDriver::Sqlite;
+            let _alias = "test".to_string();
+            let _tx_id = "test-tx-123".to_string();
 
             // We can't actually create a real transaction here without a database connection,
             // so this test is limited to the structure validation

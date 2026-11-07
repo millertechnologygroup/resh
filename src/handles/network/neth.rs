@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, bail};
 use if_addrs;
 use serde_json::json;
-use std::io::Write;
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
@@ -1126,6 +1125,7 @@ impl NetHandle {
     }
 
     // Keep legacy parsing functions for backwards compatibility with other functions
+    #[allow(dead_code)]
     fn parse_count(&self, args: &Args) -> Result<u32> {
         let count_str = args.get("count").map(String::as_str).unwrap_or("4");
         let count: u32 = count_str
@@ -1139,6 +1139,7 @@ impl NetHandle {
         Ok(count)
     }
 
+    #[allow(dead_code)]
     fn parse_timeout_ms(&self, args: &Args) -> Result<u64> {
         let timeout_str = args.get("timeout_ms").map(String::as_str).unwrap_or("2000");
         let timeout_ms: u64 = timeout_str
@@ -1152,6 +1153,7 @@ impl NetHandle {
         Ok(timeout_ms)
     }
 
+    #[allow(dead_code)]
     fn parse_ipv(&self, args: &Args) -> Result<String> {
         if let Some(ipv_str) = args.get("ipv") {
             match ipv_str.as_str() {
@@ -1164,6 +1166,7 @@ impl NetHandle {
         }
     }
 
+    #[allow(dead_code)]
     fn parse_size(&self, args: &Args) -> Result<Option<u32>> {
         if let Some(size_str) = args.get("size") {
             let size: u32 = size_str
@@ -1861,9 +1864,6 @@ impl NetHandle {
 
         #[cfg(target_os = "linux")]
         {
-            use std::collections::HashMap;
-            use std::fs;
-
             // Parse arguments
             let family = args.get("family").map(|s| s.as_str()).unwrap_or("ipv4");
             let _table_filter = args.get("table"); // For future use if needed
@@ -1936,9 +1936,6 @@ impl NetHandle {
 
     #[cfg(target_os = "linux")]
     fn get_ipv4_routes(&self) -> Result<Vec<serde_json::Value>> {
-        use std::net::Ipv4Addr;
-        use std::str::FromStr;
-
         // Try ip command first (preferred)
         if let Ok(ip_path) = which::which("ip") {
             match self.try_ip_command_ipv4(&ip_path) {
@@ -2126,8 +2123,6 @@ impl NetHandle {
     #[cfg(target_os = "linux")]
     fn parse_proc_net_route(&self) -> Result<Vec<serde_json::Value>> {
         use std::fs;
-        use std::net::Ipv4Addr;
-        use std::str::FromStr;
 
         let contents =
             fs::read_to_string("/proc/net/route").context("Failed to read /proc/net/route")?;
@@ -2494,11 +2489,13 @@ fn list_interfaces(args: &Args, io: &mut IoStreams) -> Result<Status> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum AddressFamily {
     IPv4,
     IPv6,
 }
 
+#[allow(dead_code)]
 fn parse_bool_arg(args: &Args, key: &str) -> Option<bool> {
     args.get(key).and_then(|v| match v.to_lowercase().as_str() {
         "true" | "1" | "yes" => Some(true),
@@ -2533,6 +2530,7 @@ fn build_flags(is_up: bool, is_loopback: bool) -> Vec<String> {
     flags
 }
 
+#[allow(dead_code)]
 fn ipv4_netmask_from_prefix(prefix_len: u8) -> String {
     let mask = if prefix_len == 0 {
         0u32

@@ -270,7 +270,7 @@ pub fn parse_stage(s: &str) -> Result<ParsedStage> {
                     }
                     if let Some((k, v)) = kv.split_once('=') {
                         let key = k.trim().to_string();
-                        let mut value = v.trim();
+                        let value = v.trim();
 
                         // Don't strip quotes from JSON arrays or objects for mail args
                         if value.starts_with('[') && value.ends_with(']') {

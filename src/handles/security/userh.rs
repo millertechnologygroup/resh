@@ -7,13 +7,13 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt;
+#[cfg(not(test))]
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use url::Url;
 
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
-use base64;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bcrypt;
 use std::num::NonZeroU32;
 
@@ -1495,7 +1495,7 @@ impl PasswordHasher {
                     UserError::InternalError(format!("Failed to generate salt: {}", e))
                 })?;
 
-                let salt_b64 = base64::encode(&salt);
+                let salt_b64 = BASE64.encode(&salt);
                 let iterations = NonZeroU32::new(100_000).unwrap(); // Strong default
 
                 let mut hash = [0u8; 64]; // SHA-512 output size
@@ -1507,7 +1507,7 @@ impl PasswordHasher {
                     &mut hash,
                 );
 
-                let hash_b64 = base64::encode(&hash);
+                let hash_b64 = BASE64.encode(&hash);
                 Ok(format!(
                     "$pbkdf2-sha512${}${}${}",
                     iterations.get(),
@@ -1522,7 +1522,7 @@ impl PasswordHasher {
                     UserError::InternalError(format!("Failed to generate salt: {}", e))
                 })?;
 
-                let salt_b64 = base64::encode(&salt);
+                let salt_b64 = BASE64.encode(&salt);
                 // Use 4096 iterations for the PBKDF2 substitute to approximate bcrypt strength
                 let iterations = NonZeroU32::new(4096).unwrap();
 
@@ -1535,7 +1535,7 @@ impl PasswordHasher {
                     &mut hash,
                 );
 
-                let hash_b64 = base64::encode(&hash);
+                let hash_b64 = BASE64.encode(&hash);
                 Ok(format!(
                     "$pbkdf2-bcrypt${}${}${}",
                     iterations.get(),
@@ -1550,7 +1550,7 @@ impl PasswordHasher {
                     UserError::InternalError(format!("Failed to generate salt: {}", e))
                 })?;
 
-                let salt_b64 = base64::encode(&salt);
+                let salt_b64 = BASE64.encode(&salt);
                 let iterations = NonZeroU32::new(100_000).unwrap();
 
                 let mut hash = [0u8; 64];
@@ -1562,7 +1562,7 @@ impl PasswordHasher {
                     &mut hash,
                 );
 
-                let hash_b64 = base64::encode(&hash);
+                let hash_b64 = BASE64.encode(&hash);
                 Ok(format!(
                     "$pbkdf2-argon2${}${}${}",
                     iterations.get(),
@@ -1633,12 +1633,12 @@ impl PasswordHasher {
             Err(_) => return Ok(false),
         };
 
-        let salt = match base64::decode(salt_b64) {
+        let salt = match BASE64.decode(salt_b64) {
             Ok(s) => s,
             Err(_) => return Ok(false),
         };
 
-        let expected_hash = match base64::decode(expected_hash_b64) {
+        let expected_hash = match BASE64.decode(expected_hash_b64) {
             Ok(h) => h,
             Err(_) => return Ok(false),
         };
@@ -2794,7 +2794,7 @@ impl MockBackend {
         }
     }
 
-    pub fn with_existing_user(mut self, username: &str, uid: u32, primary_group: &str) -> Self {
+    pub fn with_existing_user(self, username: &str, uid: u32, primary_group: &str) -> Self {
         let user = UserInfo {
             username: username.to_string(),
             uid,
@@ -2825,7 +2825,7 @@ impl MockBackend {
         self
     }
 
-    pub fn with_existing_group(mut self, group_name: &str, gid: u32) -> Self {
+    pub fn with_existing_group(self, group_name: &str, gid: u32) -> Self {
         let group = GroupInfo {
             name: group_name.to_string(),
             gid,
@@ -2839,7 +2839,7 @@ impl MockBackend {
         self
     }
 
-    pub fn with_existing_membership(mut self, username: &str, group_name: &str) -> Self {
+    pub fn with_existing_membership(self, username: &str, group_name: &str) -> Self {
         self.memberships
             .lock()
             .unwrap()
@@ -2849,7 +2849,7 @@ impl MockBackend {
         self
     }
 
-    pub fn with_password(mut self, username: &str, password_hash: &str) -> Self {
+    pub fn with_password(self, username: &str, password_hash: &str) -> Self {
         self.password_hashes
             .lock()
             .unwrap()
@@ -2857,7 +2857,7 @@ impl MockBackend {
         self
     }
 
-    pub fn with_locked_user(mut self, username: &str, locked: bool) -> Self {
+    pub fn with_locked_user(self, username: &str, locked: bool) -> Self {
         self.locked_status
             .lock()
             .unwrap()
@@ -5088,7 +5088,7 @@ impl UserHandle {
         let mut warnings = Vec::new();
 
         // Perform the lookup
-        let (user_record, lookup_method) = if let Some(username) = &query_username {
+        let (user_record, _lookup_method) = if let Some(username) = &query_username {
             // Primary lookup by username
             match backend.lookup_user(username) {
                 Ok(record) => (record, "username"),
@@ -7006,7 +7006,7 @@ mod tests {
             path: "alice".to_string(),
         };
 
-        let backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
+        let _backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
 
         let options = UserPasswdOptions {
             backend: UserBackend::Mock,
@@ -7145,14 +7145,14 @@ mod tests {
 
     #[test]
     fn test_lock_normal_user_initially_unlocked() {
-        let handle = UserHandle {
+        let _handle = UserHandle {
             alias: "test".to_string(),
         };
-        let target = UserTarget {
+        let _target = UserTarget {
             path: "alice".to_string(),
         };
 
-        let options = UserLockOptions {
+        let _options = UserLockOptions {
             backend: UserBackend::Mock,
             username: Some("alice".to_string()),
             ..Default::default()
@@ -7160,7 +7160,7 @@ mod tests {
 
         // Create a mock backend with an existing user
         // Since we're testing the high-level API, we use the public lock method
-        let backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
+        let _backend = MockBackend::new().with_existing_user("alice", 1001, "alice");
 
         // Instead of calling the private method, we need to test the full integration
         // For unit testing, let's create a separate test that directly tests the backend
@@ -8007,10 +8007,10 @@ mod tests {
 
     #[test]
     fn test_unlock_locked_user() {
-        let handle = UserHandle {
+        let _handle = UserHandle {
             alias: "test".to_string(),
         };
-        let target = UserTarget {
+        let _target = UserTarget {
             path: "alice".to_string(),
         };
 

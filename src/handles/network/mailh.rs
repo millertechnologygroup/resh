@@ -1944,7 +1944,7 @@ fn handle_set_action(opts: &MailConfigOptions) -> Result<ConfigActionResult> {
     let mut profiles = load_profiles()?;
 
     // Find existing profile or create new one
-    let mut existing_profile = profiles.iter().find(|p| p.name == *profile_name).cloned();
+    let existing_profile = profiles.iter().find(|p| p.name == *profile_name).cloned();
 
     let mut profile = if let Some(ref existing) = existing_profile {
         existing.clone()
@@ -2254,7 +2254,7 @@ pub fn send_template(opts: MailSendTemplateOptions) -> Result<MailSendTemplateRe
         opts.version.as_deref(),
     ) {
         Ok(template) => template,
-        Err(e) => {
+        Err(_e) => {
             let message = format!(
                 "Mail template '{}' (locale={:?}, version={:?}) was not found.",
                 opts.template, opts.locale, opts.version
@@ -3568,6 +3568,7 @@ enum MailValidationError {
     #[error("Invalid timeout: {0}")]
     InvalidTimeout(String),
     #[error("Invalid retry configuration: {0}")]
+    #[allow(dead_code)]
     InvalidRetryConfig(String),
     #[error("Attachment not found: {0}")]
     AttachmentMissing(String),

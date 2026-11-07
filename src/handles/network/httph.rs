@@ -4,7 +4,6 @@ use reqwest::Method;
 use reqwest::blocking::Client;
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::Write;
 use std::time::Duration;
 use url::Url;
 
@@ -1387,6 +1386,7 @@ impl HttpHandle {
         }
     }
 
+    #[allow(dead_code)]
     fn verb_to_method(verb: &str) -> Result<Method> {
         match verb {
             "get" => Ok(Method::GET),
@@ -1399,6 +1399,7 @@ impl HttpHandle {
         }
     }
 
+    #[allow(dead_code)]
     fn execute_request(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let method = Self::verb_to_method(verb)?;
 

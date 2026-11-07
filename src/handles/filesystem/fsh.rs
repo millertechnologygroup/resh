@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::Stdio;
@@ -2536,7 +2535,7 @@ impl FsHandle {
 
         // Validate env map if provided
         if let Some(ref env) = config.env {
-            for (key, value) in env {
+            for (key, _value) in env {
                 if key.is_empty() {
                     return Err(FsError::InvalidUnmountConfig(
                         "environment variable keys cannot be empty".to_string(),
@@ -2701,7 +2700,7 @@ impl FsHandle {
         unmount_order: &[ExistingMount],
     ) -> Result<Value, anyhow::Error> {
         let mut unmounted = Vec::new();
-        let mut skipped = Vec::new();
+        let skipped = Vec::new();
         let mut errors = Vec::new();
 
         for mount in unmount_order {
@@ -2882,7 +2881,6 @@ impl FsHandle {
                 FsError::ListMountsUnsupported => "fs.list_mounts_unsupported",
                 FsError::ListMountsTimeout => "fs.list_mounts_timeout",
                 FsError::ListMountsFailed(_) => "fs.list_mounts_failed",
-                _ => "fs.unknown_error",
             }
         } else {
             "fs.unknown_error"
@@ -3599,7 +3597,7 @@ impl FsHandle {
 
         // Validate env is string->string map if present
         if let Some(env) = &config.env {
-            for (key, value) in env {
+            for (key, _value) in env {
                 if key.is_empty() {
                     return Err(FsError::InvalidQuotaConfig(
                         "Environment variable key cannot be empty".to_string(),
@@ -5937,7 +5935,7 @@ impl FsHandle {
     fn validate_filesystem_support(
         &self,
         fstype: &str,
-        config: &FsResizeConfig,
+        _config: &FsResizeConfig,
     ) -> Result<(), anyhow::Error> {
         match fstype {
             "ext3" | "ext4" | "xfs" | "btrfs" => Ok(()),
@@ -6264,7 +6262,7 @@ impl FsHandle {
         &self,
         fs_info: &ResizeFilesystemInfo,
         target_size: u64,
-        config: &FsResizeConfig,
+        _config: &FsResizeConfig,
     ) -> Result<ResizeAction, anyhow::Error> {
         match fs_info.fstype.as_str() {
             "ext3" | "ext4" => self.resize_ext_filesystem(fs_info, target_size).await,
@@ -9537,7 +9535,7 @@ mod tests {
             aggressiveness: CheckAggressiveness::Aggressive,
             ..Default::default()
         };
-        let (tool, args) = handle.build_fsck_command(&config, &fs_info).unwrap();
+        let (_tool, args) = handle.build_fsck_command(&config, &fs_info).unwrap();
         assert!(args.contains(&"-f".to_string()));
     }
 
@@ -9584,7 +9582,7 @@ mod tests {
             mounted: true,
             readonly: false,
         };
-        let (tool, args) = handle
+        let (_tool, args) = handle
             .build_xfs_repair_command(&config, &fs_info_mounted)
             .unwrap();
         assert!(args.contains(&"-n".to_string())); // Should fallback to check
@@ -9651,7 +9649,7 @@ mod tests {
             btrfs_allow_offline_check: true,
             ..Default::default()
         };
-        let (tool, args) = handle
+        let (_tool, args) = handle
             .build_btrfs_command(&config, &fs_info_unmounted)
             .unwrap();
         assert!(args.contains(&"--repair".to_string()));

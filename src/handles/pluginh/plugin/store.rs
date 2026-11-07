@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, anyhow};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
@@ -169,6 +168,7 @@ impl PluginStore {
     }
 
     /// Create plugin store with custom directory
+    #[allow(dead_code)]
     pub fn with_dir<P: AsRef<Path>>(plugins_dir: P) -> Result<Self> {
         let plugins_dir = plugins_dir.as_ref().to_path_buf();
         fs::create_dir_all(&plugins_dir)
@@ -283,6 +283,7 @@ impl PluginStore {
     }
 
     /// Check if plugin is installed
+    #[allow(dead_code)]
     pub fn is_installed(&self, plugin_id: &str) -> bool {
         self.current_link(plugin_id).exists()
     }
@@ -602,6 +603,7 @@ impl PluginStore {
     }
 
     /// Get binary path for currently installed plugin
+    #[allow(dead_code)]
     pub fn get_current_binary_path(&self, plugin_id: &str) -> Result<Option<PathBuf>> {
         if let Some(metadata) = self.get_installed_metadata(plugin_id)? {
             if let Some(bin_path) = metadata.bin_path {
@@ -744,6 +746,7 @@ impl PluginStore {
     }
 
     /// Get enabled registry file path for scope
+    #[allow(dead_code)]
     pub fn enabled_registry_path(&self, scope: &str) -> Result<PathBuf> {
         match scope {
             "user" => {
@@ -820,12 +823,14 @@ impl PluginStore {
     }
 
     /// Check if a plugin is enabled in the registry
+    #[allow(dead_code)]
     pub fn is_plugin_enabled(&self, plugin_id: &str, scope: &str) -> Result<bool> {
         let registry = self.load_enabled_registry(scope)?;
         Ok(registry.is_enabled(plugin_id))
     }
 
     /// Get the enabled version of a plugin
+    #[allow(dead_code)]
     pub fn get_enabled_version(&self, plugin_id: &str, scope: &str) -> Result<Option<String>> {
         let registry = self.load_enabled_registry(scope)?;
         Ok(registry
@@ -842,7 +847,7 @@ mod tests {
     #[test]
     fn test_plugin_store_creation() {
         let temp_dir = TempDir::new().unwrap();
-        let store = PluginStore::with_dir(temp_dir.path()).unwrap();
+        let _store = PluginStore::with_dir(temp_dir.path()).unwrap();
         assert!(temp_dir.path().exists());
     }
 

@@ -522,6 +522,7 @@ pub struct RetentionPolicy {
 
 /// Verification check result per specification
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct VerificationCheck {
     pub name: String,
     pub ok: bool,
@@ -530,6 +531,7 @@ pub struct VerificationCheck {
 
 /// Schedule configuration per specification
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ScheduleConfig {
     pub when: String,
     pub enabled: bool,

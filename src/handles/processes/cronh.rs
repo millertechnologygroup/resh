@@ -287,6 +287,7 @@ nothing is changed; at least one selector is required."#,
 
 #[derive(Debug)]
 pub struct CronHandle {
+    #[allow(dead_code)]
     alias: String,
     provider: Box<dyn CronProvider + Send + Sync>,
 }
@@ -1416,6 +1417,7 @@ pub trait CronProvider: std::fmt::Debug + Send + Sync {
     fn read_system_crontab(&self) -> Result<String>;
     fn read_cron_d_files(&self) -> Result<Vec<(String, String)>>; // (filename, content)
     fn read_file(&self, path: &str) -> Result<String>;
+    #[allow(dead_code)]
     fn get_current_user(&self) -> String;
     fn get_current_time(&self) -> DateTime<Utc>;
 
@@ -3237,6 +3239,7 @@ pub struct CronListOptions {
     pub match_source: Option<String>,
     pub include_next_run: bool,
     pub now_unix: Option<i64>,
+    #[allow(dead_code)]
     pub timezone: Option<String>,
     pub max_entries: u32,
     pub sort_by: String,
@@ -3340,7 +3343,9 @@ pub struct CronAddOptions {
     pub env: Option<HashMap<String, String>>,
 
     pub include_next_run: bool,
+    #[allow(dead_code)]
     pub now_unix: Option<i64>,
+    #[allow(dead_code)]
     pub timezone: Option<String>,
 
     pub format: OutputFormat,
@@ -3427,6 +3432,7 @@ pub struct CronRmOptions {
     pub command: Option<String>,
     pub match_command: Option<String>,
     pub match_comment: Option<String>,
+    #[allow(dead_code)]
     pub cron_file: Option<String>,
 
     pub unit_name: Option<String>,
@@ -3512,6 +3518,7 @@ pub struct CronEnableOptions {
     pub command: Option<String>,
     pub match_command: Option<String>,
     pub match_comment: Option<String>,
+    #[allow(dead_code)]
     pub cron_file: Option<String>,
 
     // systemd selectors
@@ -3702,6 +3709,7 @@ pub trait CronEditor: std::fmt::Debug + Send + Sync {
     fn read_system_file(&self, path: &str) -> Result<String>;
     fn write_system_file(&self, path: &str, content: &str) -> Result<()>;
     fn file_exists(&self, path: &str) -> bool;
+    #[allow(dead_code)]
     fn create_directory(&self, path: &str) -> Result<()>;
 }
 
@@ -3712,6 +3720,7 @@ pub trait SystemdEditor: std::fmt::Debug + Send + Sync {
     fn systemctl_is_available(&self, user_mode: bool) -> bool;
     fn list_timers(&self, user_mode: bool) -> Result<Vec<String>>;
     fn get_unit_dir(&self, user_mode: bool) -> Result<String>;
+    #[allow(dead_code)]
     fn file_exists(&self, path: &str) -> bool;
     fn create_directory(&self, path: &str) -> Result<()>;
 }

@@ -3,26 +3,16 @@ use base64::{Engine as _, engine::general_purpose};
 use rand::seq::SliceRandom;
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use trust_dns_client::client::{AsyncClient, Client};
-use trust_dns_client::tcp::TcpClientConnection;
-use trust_dns_client::udp::UdpClientConnection;
-use trust_dns_proto::TokioTime;
 use trust_dns_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
-use trust_dns_proto::rr::rdata::{A, AAAA, CAA, CNAME, MX, NS, PTR, SOA, SRV, TXT};
+use trust_dns_proto::rr::rdata::{A, AAAA, CNAME, MX, TXT};
 use trust_dns_proto::rr::{
     RData as ProtoRData, Record as ProtoRecord, RecordType as ProtoRecordType,
 };
-use trust_dns_proto::tcp::TcpClientStream;
-use trust_dns_proto::udp::UdpClientStream;
-use trust_dns_proto::xfer::{DnsRequest, DnsRequestOptions};
 use trust_dns_resolver::error::ResolveErrorKind;
-use trust_dns_resolver::proto::rr::{
-    DNSClass, Name, RData, Record, RecordType as TrustDnsRecordType,
-};
+use trust_dns_resolver::proto::rr::{DNSClass, Name, RData, RecordType as TrustDnsRecordType};
 use trust_dns_resolver::{
     TokioAsyncResolver,
     config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
@@ -2736,7 +2726,6 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
         };
 
         // Try to query the current NS set
-        let mut hop_result: Option<DnsTraceHop> = None;
         let mut query_succeeded = false;
 
         for (ns_name, ns_ip) in &current_ns_ips {
@@ -2864,7 +2853,6 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                     // Handle different RCODE outcomes
                     if lookup_response.response.rcode == "NOERROR" {
                         query_succeeded = true;
-                        hop_result = Some(hop.clone());
                         hops.push(hop);
 
                         // Update NS set for next iteration if not final
@@ -2944,7 +2932,6 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                             DNS_TRACE_NXDOMAIN.to_string(),
                             "The domain name does not exist (NXDOMAIN).".to_string(),
                         ));
-                        hop_result = Some(hop);
                         query_succeeded = true;
                         break;
                     } else if lookup_response.response.rcode == "SERVFAIL" {
@@ -2957,7 +2944,6 @@ pub async fn perform_dns_trace(opts: DnsTraceOptions) -> Result<DnsTraceResponse
                             DNS_TRACE_RCODE_ERROR.to_string(),
                             format!("DNS error: {}", lookup_response.response.rcode),
                         ));
-                        hop_result = Some(hop);
                         query_succeeded = true;
                         break;
                     }
@@ -5249,6 +5235,7 @@ async fn attempt_zone_update(opts: &DnsZoneUpdateOptions, server: &str) -> Resul
 }
 
 // Build DNS UPDATE message from options
+#[allow(dead_code)]
 fn build_update_message(opts: &DnsZoneUpdateOptions) -> Result<Message> {
     let zone_name = normalize_zone_name(&opts.zone);
     let zone_name = Name::from_str(&zone_name)?;
@@ -5296,6 +5283,7 @@ fn build_update_message(opts: &DnsZoneUpdateOptions) -> Result<Message> {
 }
 
 // Build prerequisite record
+#[allow(dead_code)]
 fn build_prerequisite_record(
     prereq: &ZoneUpdatePrerequisite,
     _zone_name: &Name,
@@ -5373,6 +5361,7 @@ fn build_prerequisite_record(
 }
 
 // Build delete records
+#[allow(dead_code)]
 fn build_delete_records(delete: &ZoneUpdateDelete) -> Result<Vec<ProtoRecord>> {
     let mut records = Vec::new();
     let name = Name::from_str(&normalize_dns_name(&delete.name))?;
@@ -5411,6 +5400,7 @@ fn build_delete_records(delete: &ZoneUpdateDelete) -> Result<Vec<ProtoRecord>> {
 }
 
 // Build add record
+#[allow(dead_code)]
 fn build_add_record(add: &ZoneUpdateAdd) -> Result<ProtoRecord> {
     let name = Name::from_str(&normalize_dns_name(&add.name))?;
     let rdata = build_proto_rdata(&add.rtype, &add.data.json)?;
@@ -5419,6 +5409,7 @@ fn build_add_record(add: &ZoneUpdateAdd) -> Result<ProtoRecord> {
 }
 
 // Build protocol RData from JSON
+#[allow(dead_code)]
 fn build_proto_rdata(rtype: &str, data: &Value) -> Result<ProtoRData> {
     match rtype.to_uppercase().as_str() {
         "A" => {
@@ -5481,6 +5472,7 @@ fn build_proto_rdata(rtype: &str, data: &Value) -> Result<ProtoRData> {
 }
 
 // Convert string record type to protocol record type
+#[allow(dead_code)]
 fn string_to_proto_record_type(rtype: &str) -> Result<ProtoRecordType> {
     match rtype.to_uppercase().as_str() {
         "A" => Ok(ProtoRecordType::A),
@@ -5498,6 +5490,7 @@ fn string_to_proto_record_type(rtype: &str) -> Result<ProtoRecordType> {
 }
 
 // Normalize DNS name to FQDN with trailing dot
+#[allow(dead_code)]
 fn normalize_dns_name(name: &str) -> String {
     if name.ends_with('.') {
         name.to_string()
@@ -5507,6 +5500,7 @@ fn normalize_dns_name(name: &str) -> String {
 }
 
 // Apply TSIG authentication to message (simplified implementation)
+#[allow(dead_code)]
 fn apply_tsig_to_message(
     _message: &mut Message,
     key_name: &str,

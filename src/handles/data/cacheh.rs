@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use base64::prelude::*;
 use dashmap::DashMap;
 use serde_json::{Value, json};
-use std::io::Write;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use url::Url;
@@ -2097,8 +2096,6 @@ impl CacheHandle {
         only_if_not_exists: bool,
         only_if_exists: bool,
     ) -> Result<bool, CacheError> {
-        use redis::AsyncCommands;
-
         let mut conn = conn.clone();
 
         // Build SET command manually using the raw command interface
@@ -2260,8 +2257,6 @@ impl CacheHandle {
         key: &str,
         config: &IncrConfig,
     ) -> Result<(i64, bool), CacheError> {
-        use redis::AsyncCommands;
-
         let mut conn = conn.clone();
 
         // Use Lua script for atomic incr with initial value support
@@ -2604,8 +2599,6 @@ impl CacheHandle {
         conn: &redis::aio::ConnectionManager,
         config: &KeysConfig,
     ) -> Result<Value, CacheError> {
-        use redis::AsyncCommands;
-
         let mut conn = conn.clone();
         let match_pattern = config.get_effective_pattern();
 
@@ -2661,16 +2654,16 @@ impl CacheHandle {
         config: &KeysConfig,
     ) -> Result<Value, CacheError> {
         const MAX_MEMCACHED_KEYS_PER_CALL: u64 = 1000;
-        let effective_limit = std::cmp::min(config.limit, MAX_MEMCACHED_KEYS_PER_CALL);
+        let _effective_limit = std::cmp::min(config.limit, MAX_MEMCACHED_KEYS_PER_CALL);
 
-        let client = client.clone();
-        let pattern = config.pattern.clone();
-        let namespace = config.namespace.clone();
+        let _client = client.clone();
+        let _pattern = config.pattern.clone();
+        let _namespace = config.namespace.clone();
         let cursor = config.cursor.clone();
 
         let result = tokio::task::spawn_blocking(move || -> Result<Value, CacheError> {
             // Parse cursor to get slab info
-            let (start_slab_idx, start_offset) = Self::parse_memcached_cursor(&cursor);
+            let (_start_slab_idx, _start_offset) = Self::parse_memcached_cursor(&cursor);
 
             // For this implementation, we'll use a simplified approach
             // In a real implementation, you would:
@@ -2705,6 +2698,7 @@ impl CacheHandle {
     }
 
     /// Create memcached cursor (placeholder implementation)
+    #[allow(dead_code)]
     fn create_memcached_cursor(slab_idx: u32, offset: u32) -> Option<String> {
         if slab_idx == 0 && offset == 0 {
             None // End of iteration
@@ -2715,6 +2709,7 @@ impl CacheHandle {
     }
 
     /// Match pattern against key using simple glob semantics
+    #[allow(dead_code)]
     fn glob_match(pattern: &str, key: &str) -> bool {
         // Simple pattern matching - in production would use proper glob library
         if pattern == "*" {
@@ -3986,7 +3981,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_redis_keys_basic_pattern_scan() {
-            let redis_url = match skip_if_no_redis() {
+            let _redis_url = match skip_if_no_redis() {
                 Some(url) => url,
                 None => {
                     println!("Skipping Redis test: TEST_REDIS_URL not set");
@@ -4595,7 +4590,7 @@ mod tests {
         /// Test memcached_get signature and error handling
         #[tokio::test]
         async fn test_memcached_get_error_handling() {
-            let handle = CacheHandle {
+            let _handle = CacheHandle {
                 backend: CacheBackend::Memcached,
                 alias: "test".to_string(),
             };
@@ -4628,7 +4623,7 @@ mod tests {
         /// Test memcached_get_many signature and batch handling
         #[tokio::test]
         async fn test_memcached_get_many_batch_logic() {
-            let handle = CacheHandle {
+            let _handle = CacheHandle {
                 backend: CacheBackend::Memcached,
                 alias: "test".to_string(),
             };
@@ -4667,10 +4662,9 @@ mod tests {
             assert!(result.is_err());
 
             // Verify we can convert JoinError to our error type
-            if let Err(e) = result {
-                let error_message = format!("Memcached GET task panicked: {}", e);
-                assert!(error_message.contains("panicked"));
-            }
+            let Err(e) = result;
+            let error_message = format!("Memcached GET task panicked: {}", e);
+            assert!(error_message.contains("panicked"));
         }
 
         /// Test successful spawn_blocking operation
@@ -4740,7 +4734,6 @@ mod tests {
     // Unit tests for memcached_set_single async implementation
     #[cfg(test)]
     mod memcached_set_tests {
-        use super::*;
 
         /// Test TTL conversion from milliseconds to seconds
         #[test]
@@ -5210,7 +5203,6 @@ mod tests {
     // Unit tests for namespace behavior
     #[cfg(test)]
     mod namespace_tests {
-        use super::*;
 
         /// Test effective pattern construction with namespace
         #[test]
@@ -5677,7 +5669,7 @@ mod tests {
         /// Test error message clarity
         #[test]
         fn test_error_message_clarity() {
-            let error = CacheError::KeysUnsupported;
+            let _error = CacheError::KeysUnsupported;
             let message = "Keys operation unsupported for this backend";
 
             // Error message should be clear about why it's not supported

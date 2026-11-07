@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, anyhow};
 use reqwest::blocking::Client;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -75,6 +74,7 @@ pub fn require_https(url: &str) -> Result<Url> {
 /// Registry client for fetching and parsing plugin metadata
 pub struct RegistryClient {
     http_client: Client,
+    #[allow(dead_code)]
     timeout: Duration,
 }
 
@@ -387,15 +387,18 @@ impl RegistryClient {
 }
 
 /// Default registry configuration
+#[allow(dead_code)]
 pub struct DefaultRegistry;
 
 impl DefaultRegistry {
     /// Get default registry URL
+    #[allow(dead_code)]
     pub fn url() -> &'static str {
         "https://plugins.reshshell.dev"
     }
 
     /// Get default timeout in milliseconds
+    #[allow(dead_code)]
     pub fn timeout_ms() -> u64 {
         300000 // 5 minutes
     }

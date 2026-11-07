@@ -4866,7 +4866,7 @@ pub fn add_archive(opts: ArchiveAddOptions) -> Result<ArchiveAddResponse> {
     };
 
     // Get original archive size
-    let archive_size_before = archive_path.metadata()?.len();
+    let _archive_size_before = archive_path.metadata()?.len();
 
     // Perform the add operation based on format
     let add_result = match (&final_format, &final_compression) {
@@ -7219,7 +7219,7 @@ fn map_add_validation_error(err: &anyhow::Error) -> String {
 
 pub fn remove_archive(opts: ArchiveRemoveOptions) -> Result<ArchiveRemoveResponse> {
     let mut response = ArchiveRemoveResponse::new(&opts);
-    let start_time = Instant::now();
+    let _start_time = Instant::now();
 
     // Validate archive exists if required
     let archive_path = Path::new(&opts.archive);

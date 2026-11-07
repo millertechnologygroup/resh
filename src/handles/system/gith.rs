@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use chrono;
 use git2::{
-    BranchType, Commit, Cred, CredentialType, FetchOptions, Index, Oid, RemoteCallbacks,
-    Repository, Signature, Status as GitStatus, Time,
+    BranchType, Commit, CredentialType, FetchOptions, Index, Oid, RemoteCallbacks, Repository,
+    Signature, Status as GitStatus, Time,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -538,6 +538,7 @@ pub struct GitHandle {
 #[derive(Debug, Clone)]
 pub struct GitConnectionProfile {
     pub ssh_key_path: Option<PathBuf>,
+    #[allow(dead_code)]
     pub known_hosts_path: Option<PathBuf>,
     pub username: Option<String>,
     pub password: Option<String>,
@@ -1105,6 +1106,7 @@ pub struct MergeConfig {
 
 /// Merge result structure
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct MergeResult {
     pub backend: String,
     pub alias: String,
@@ -3824,7 +3826,7 @@ impl GitHandle {
         name: &str,
         email: &str,
         config: &CommitConfig,
-    ) -> Result<Signature, GitError> {
+    ) -> Result<Signature<'_>, GitError> {
         match &config.timestamp {
             Some(CommitTimestamp::Iso8601(iso)) => {
                 let dt = chrono::DateTime::parse_from_rfc3339(iso).map_err(|e| {
@@ -5123,8 +5125,6 @@ impl GitHandle {
 
     /// Compare version strings for semantic version sorting
     fn compare_versions(&self, a: &str, b: &str) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
-
         // Extract numeric parts from version strings
         let extract_version_parts = |s: &str| -> Vec<u32> {
             // Remove common prefixes like 'v' and extract numbers
@@ -5160,7 +5160,7 @@ impl GitHandle {
         config: &TagConfig,
         profile: &GitConnectionProfile,
         repo: &Repository,
-    ) -> Result<Signature, GitError> {
+    ) -> Result<Signature<'_>, GitError> {
         let name = if let Some(name) = &config.author_name {
             name.clone()
         } else if let Some(name) = &profile.username {
@@ -5276,7 +5276,7 @@ impl GitHandle {
         let mut truncated = false;
 
         // Process each file in the diff
-        let num_deltas = diff.deltas().count();
+        let _num_deltas = diff.deltas().count();
         for (delta_idx, delta) in diff.deltas().enumerate() {
             if file_count >= max_files {
                 truncated = true;
@@ -5612,9 +5612,9 @@ impl GitHandle {
         repo: &Repository,
         config: &BranchConfig,
     ) -> Result<Value, GitError> {
-        use git2::{Branch, BranchType};
+        use git2::BranchType;
 
-        let local_only = config.local_only.unwrap_or(true);
+        let _local_only = config.local_only.unwrap_or(true);
         let remote_only = config.remote_only.unwrap_or(false);
         let all = config.all.unwrap_or(false);
 
@@ -6118,7 +6118,7 @@ impl GitHandle {
     /// Set upstream configuration for branches
     fn set_upstream_branches(
         &self,
-        repo: &Repository,
+        _repo: &Repository,
         branches: &[String],
         remote_name: &str,
     ) -> Result<(), GitError> {
@@ -6389,6 +6389,7 @@ impl GitHandle {
     }
 
     /// Register a git connection profile
+    #[allow(dead_code)]
     pub fn register_connection(alias: String, profile: GitConnectionProfile) {
         GIT_CONNECTIONS.insert(alias, profile);
     }
@@ -7048,7 +7049,7 @@ impl GitHandle {
         &self,
         config: &RebaseConfig,
         profile: &GitConnectionProfile,
-    ) -> Result<Signature, GitError> {
+    ) -> Result<Signature<'_>, GitError> {
         // Get environment variables for fallback identity
         let git_committer_name = std::env::var("GIT_COMMITTER_NAME").ok();
         let git_committer_email = std::env::var("GIT_COMMITTER_EMAIL").ok();
@@ -7412,7 +7413,7 @@ impl GitHandle {
         &self,
         config: &MergeConfig,
         profile: &GitConnectionProfile,
-    ) -> Result<(Signature, Signature), GitError> {
+    ) -> Result<(Signature<'_>, Signature<'_>), GitError> {
         // Get environment variables
         let git_author_name = std::env::var("GIT_AUTHOR_NAME").ok();
         let user_name = std::env::var("USER").ok();
@@ -7815,6 +7816,7 @@ impl GitHandle {
     }
 
     /// Resolve local and remote branch names for sync
+    #[allow(dead_code)]
     fn resolve_sync_branches(
         &self,
         repo: &Repository,
@@ -8393,12 +8395,12 @@ impl GitHandle {
     fn compute_recommendations(
         &self,
         summary: &Value,
-        sync_state: &str,
-        working_tree: &Value,
+        _sync_state: &str,
+        _working_tree: &Value,
     ) -> Result<Value, GitError> {
         let state = summary["state"].as_str().unwrap_or("unknown");
-        let blocked_by_conflicts = summary["blocked_by_conflicts"].as_bool().unwrap_or(false);
-        let has_uncommitted_changes = summary["has_uncommitted_changes"]
+        let _blocked_by_conflicts = summary["blocked_by_conflicts"].as_bool().unwrap_or(false);
+        let _has_uncommitted_changes = summary["has_uncommitted_changes"]
             .as_bool()
             .unwrap_or(false);
 
@@ -8464,7 +8466,8 @@ impl GitHandle {
         let working_tree = self.compute_working_tree_status(&repo, config)?;
 
         // Get upstream and sync info if requested
-        let (upstream, sync_state, ahead_by, behind_by) = if config.include_remote.unwrap_or(true) {
+        let (upstream, sync_state, _ahead_by, _behind_by) = if config.include_remote.unwrap_or(true)
+        {
             self.compute_upstream_status(
                 &repo,
                 &branch_name,
@@ -9244,6 +9247,7 @@ mod tests {
     use tempfile::TempDir;
 
     // Helper to create test arguments
+    #[allow(dead_code)]
     fn create_test_args() -> HashMap<String, String> {
         let mut args = HashMap::new();
         args.insert(
@@ -9316,7 +9320,7 @@ mod tests {
         ));
 
         // Empty path
-        let mut config = CloneConfig {
+        let config = CloneConfig {
             url: "https://github.com/test/repo.git".to_string(),
             path: "".to_string(),
             branch: None,
@@ -9334,7 +9338,7 @@ mod tests {
         ));
 
         // Invalid depth
-        let mut config = CloneConfig {
+        let config = CloneConfig {
             url: "https://github.com/test/repo.git".to_string(),
             path: "/tmp/test".to_string(),
             branch: None,
@@ -9352,7 +9356,7 @@ mod tests {
         ));
 
         // Invalid timeout
-        let mut config = CloneConfig {
+        let config = CloneConfig {
             url: "https://github.com/test/repo.git".to_string(),
             path: "/tmp/test".to_string(),
             branch: None,
@@ -9370,7 +9374,7 @@ mod tests {
         ));
 
         // Multiple auth methods
-        let mut config = CloneConfig {
+        let config = CloneConfig {
             url: "https://github.com/test/repo.git".to_string(),
             path: "/tmp/test".to_string(),
             branch: None,
@@ -9388,7 +9392,7 @@ mod tests {
         ));
 
         // Invalid URL protocol
-        let mut config = CloneConfig {
+        let config = CloneConfig {
             url: "ftp://invalid.git".to_string(),
             path: "/tmp/test".to_string(),
             branch: None,
@@ -9666,7 +9670,7 @@ mod tests {
         ));
 
         // Invalid timeout
-        let mut config = PullConfig {
+        let config = PullConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: None,
@@ -9686,7 +9690,7 @@ mod tests {
         ));
 
         // Invalid depth
-        let mut config = PullConfig {
+        let config = PullConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: None,
@@ -9706,7 +9710,7 @@ mod tests {
         ));
 
         // Empty remote string
-        let mut config = PullConfig {
+        let config = PullConfig {
             path: "/tmp/test".to_string(),
             remote: Some("".to_string()),
             branch: None,
@@ -9726,7 +9730,7 @@ mod tests {
         ));
 
         // Empty branch string
-        let mut config = PullConfig {
+        let config = PullConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: Some("".to_string()),
@@ -9746,7 +9750,7 @@ mod tests {
         ));
 
         // Multiple auth methods
-        let mut config = PullConfig {
+        let config = PullConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: None,
@@ -10035,7 +10039,7 @@ mod tests {
         ));
 
         // Invalid timeout
-        let mut config = PushConfig {
+        let config = PushConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: None,
@@ -10056,7 +10060,7 @@ mod tests {
         ));
 
         // Both branch and branches provided
-        let mut config = PushConfig {
+        let config = PushConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: Some("main".to_string()),
@@ -10077,7 +10081,7 @@ mod tests {
         ));
 
         // Empty branches array
-        let mut config = PushConfig {
+        let config = PushConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: None,
@@ -10098,7 +10102,7 @@ mod tests {
         ));
 
         // force and ff_only both true
-        let mut config = PushConfig {
+        let config = PushConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: None,
@@ -10119,7 +10123,7 @@ mod tests {
         ));
 
         // Empty remote string
-        let mut config = PushConfig {
+        let config = PushConfig {
             path: "/tmp/test".to_string(),
             remote: Some("".to_string()),
             branch: None,
@@ -10140,7 +10144,7 @@ mod tests {
         ));
 
         // Multiple auth methods
-        let mut config = PushConfig {
+        let config = PushConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: None,
@@ -10993,7 +10997,7 @@ mod tests {
         let tree = repo.find_tree(tree_id).unwrap();
         let first_commit = repo.find_commit(commit1).unwrap();
 
-        let commit2 = repo
+        let _commit2 = repo
             .commit(
                 Some("HEAD"),
                 &signature,
@@ -11622,7 +11626,7 @@ mod tests {
         ));
 
         // Zero timeout
-        let mut config = SyncConfig {
+        let config = SyncConfig {
             path: "/tmp/test".to_string(),
             remote: Some("origin".to_string()),
             branch: Some("main".to_string()),
@@ -11645,7 +11649,7 @@ mod tests {
         ));
 
         // Empty remote
-        let mut config = SyncConfig {
+        let config = SyncConfig {
             path: "/tmp/test".to_string(),
             remote: Some("".to_string()),
             branch: Some("main".to_string()),
@@ -11668,7 +11672,7 @@ mod tests {
         ));
 
         // Empty branch
-        let mut config = SyncConfig {
+        let config = SyncConfig {
             path: "/tmp/test".to_string(),
             remote: Some("origin".to_string()),
             branch: Some("".to_string()),
@@ -11691,7 +11695,7 @@ mod tests {
         ));
 
         // Contradictory force_push and ff_only
-        let mut config = SyncConfig {
+        let config = SyncConfig {
             path: "/tmp/test".to_string(),
             remote: Some("origin".to_string()),
             branch: Some("main".to_string()),
@@ -11825,7 +11829,7 @@ mod tests {
         ));
 
         // Zero timeout
-        let mut config = StatusSummaryConfig {
+        let config = StatusSummaryConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: None,
@@ -11842,7 +11846,7 @@ mod tests {
         ));
 
         // Zero max_files
-        let mut config = StatusSummaryConfig {
+        let config = StatusSummaryConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: None,
@@ -11859,7 +11863,7 @@ mod tests {
         ));
 
         // Empty branch string
-        let mut config = StatusSummaryConfig {
+        let config = StatusSummaryConfig {
             path: "/tmp/test".to_string(),
             remote: None,
             branch: Some("".to_string()),
@@ -11876,7 +11880,7 @@ mod tests {
         ));
 
         // Empty remote string
-        let mut config = StatusSummaryConfig {
+        let config = StatusSummaryConfig {
             path: "/tmp/test".to_string(),
             remote: Some("".to_string()),
             branch: None,
@@ -12132,7 +12136,7 @@ mod tests {
         ));
 
         // Zero timeout
-        let mut config = StatusShortConfig {
+        let config = StatusShortConfig {
             path: "/tmp/test".to_string(),
             branch: None,
             remote: None,
@@ -12148,7 +12152,7 @@ mod tests {
         ));
 
         // Empty branch string
-        let mut config = StatusShortConfig {
+        let config = StatusShortConfig {
             path: "/tmp/test".to_string(),
             branch: Some("".to_string()),
             remote: None,
@@ -12164,7 +12168,7 @@ mod tests {
         ));
 
         // Empty remote string
-        let mut config = StatusShortConfig {
+        let config = StatusShortConfig {
             path: "/tmp/test".to_string(),
             branch: None,
             remote: Some("".to_string()),
