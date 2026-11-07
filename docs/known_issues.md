@@ -3,7 +3,33 @@
 These issues were found while writing the per-verb `--help` metadata, and each
 one was then checked against the code by a separate read-only review.
 
-## Unreleased: cron and pkg options that were accepted but ignored
+## Unreleased (after v1.0.6-beta)
+
+Fixes and behavior changes since v1.0.6-beta, grouped by handle.
+
+### archive
+
+- archive: every verb refuses unknown arguments and malformed values (exit 2,
+  did-you-mean); exit codes are 0/1/2/124 (timeout_ms is enforced); invalid
+  max_*_bytes on extract exits 2; glob patterns are shell-style (* and ? do
+  not cross '/', ** does); the tar header-data limit is reported as
+  archive.<verb>_archive_read_error (list now prints a JSON report for it),
+  and extract size limits as extract_max_size_exceeded /
+  extract_max_file_size_exceeded instead of extract_archive_read_error; test
+  fails when max_entries is exceeded; add stores uid/gid 0 unless
+  preserve_owner=true; extract follow_symlinks=true is refused; the remove
+  backup is <archive>.<suffix> (leading dot optional) and is a copy;
+  add/remove do not rewrite when nothing changes; create can write tar.xz and
+  tar.zst.
+
+### file
+
+- `file`: strict arguments (exit 2, did-you-mean), coded errors, exit 124
+  timeouts, copy preserve_times and rename atomic implemented, renames that
+  never lose an existing destination, recursive chown that never follows
+  links, find skips hidden directories and uses shell-style globs.
+
+### cron and pkg
 
 These options were parsed and then ignored. Each one now does what its name
 and help define, or is refused with an error where nothing defines it. Unit
@@ -22,8 +48,13 @@ tests drive each verb through the handle (`option_tests` in `cronh.rs` and
 - **cron `list timezone=`** was ignored. It is now the zone used for
   next-run times of entries without their own `CRON_TZ`.
 - **cron next-run times** ignored `now_unix` and always counted from the
-  current time. `list now_unix=` and `add now_unix=` (which was also ignored)
-  are now the reference time. A malformed `add now_unix` is refused.
+  current time, and were computed in UTC. `list now_unix=` and `add now_unix=`
+  (which was also ignored) are now the reference time (Unix seconds
+  0-253402300799). A malformed or out-of-range value is refused. Without
+  `timezone=`, next runs use the host's local zone (TZ, else the zone
+  /etc/localtime links to, else a matching /etc/timezone). If no name is
+  found, the current offset is used and a warning says so. The zone used is
+  reported as `next_run_timezone`.
 - **cron `rm cron_file=` and `enable cron_file=`** were ignored, so the verbs
   acted on the crontabs chosen by `scope`. They now act on that file only,
   with the same restriction as `disable` (`/etc/crontab` or
@@ -37,9 +68,16 @@ tests drive each verb through the handle (`option_tests` in `cronh.rs` and
 - **pkg package `source`** (install and remove) was silently ignored. No
   manager defines it, so a request that sets it is now refused before
   anything runs.
-- **Still open:** `pkg snapshot` accepts an `inline` key (default true) that
-  nothing reads. No help text, doc or test defines what it should do, so it
-  is unchanged.
+- **pkg `snapshot inline`** was accepted and ignored. It is removed: a
+  request with `inline` is refused before anything runs (exit 2).
+- **pkg apt repository** (snapshot, restore `on_repo_mismatch`) recorded the
+  `apt-cache policy` priority (`500`) instead of the installed version's
+  suite/component (`noble/main`). It now records the suite/component, or none
+  for a package known only from `/var/lib/dpkg/status`. apt lockfiles from
+  earlier releases report every package as a repository mismatch; take a new
+  snapshot.
+- **Exit codes:** cron time-zone usage errors and pkg `snapshot inline` exit
+  2; other cron/pkg errors exit 1 until aligned with 0/1/2/124 (batch 4).
 
 ## v1.0.6-beta security release (2026-11-03)
 
@@ -118,11 +156,6 @@ Limitations that remain in v1.0.5-beta:
   advisories listed in `.cargo/audit.toml`, each with its assessment, and it
   still reports warnings for unmaintained, unsound and yanked crates. None
   of these is removed by this release.
-- **`archive add` memory use.** `add` reads the data of every existing
-  member of the archive (tar or zip) into memory before rewriting it. Use it
-  only on archives whose size you know.
-- **Relative `fs mount` targets** only print a warning and are resolved from
-  the current directory. Pass absolute targets.
 - **Remote restic and borg dry runs** (`backup prune dry_run=true`) were not
   tested; see `backup.md` 4.5.
 - **Concurrent changes to the filesystem.** Archive extraction and other
@@ -255,12 +288,14 @@ This section supersedes the test counts and "Still open" list in the
     `zone.update` and cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are base64-encoded, not encrypted. Since Stage 4
     the profile file is written owner-only (0600).
-  - No dry-run mode for svc, proc, file writes, cache/db writes, mq, ssh
-    (except exec), mail send and backup restore; for these `dry_run=true` is
-    refused before anything runs; git `timeout_ms` is rejected; pkg and fs timeouts stop waiting
-    but do not kill the child process: it either keeps running and finishes
-    after the timeout is reported, or is killed by `SIGPIPE` part-way through
-    when it next writes output. Check package-manager or filesystem state
+  - No dry-run mode for svc, proc, file writes (except `file replace`),
+    cache/db writes, mq, ssh (except exec), mail send and backup restore; for
+    these `dry_run=true` is refused before anything runs; git `timeout_ms` is
+    rejected; `file` enforces `timeout_ms` on every verb whose work can be
+    long (exit 124) and refuses it on instant verbs; pkg timeouts stop
+    waiting but do not kill the child process: it either keeps running and
+    finishes after the timeout is reported, or is killed by `SIGPIPE`
+    part-way through when it next writes output. Check package-manager state
     after a timeout.
   - `net ping` exits 0 even when the host is unreachable; `http head`,
     `headers` and `json` exit 0 for 4xx/5xx statuses.
@@ -297,6 +332,12 @@ These **Medium** items were also fixed:
 - backup prune dry run and untagged restic snapshots.
 - plugin targets.
 - template strict mode.
+- config: `..` targets, ls recursion and prefixes, strict argument checking,
+  and get no longer creating directories.
+- template: `timeout_ms` is enforced, and validate reads `template=` and
+  `context_file`.
+- config: value files are 0600 and created directories 0700; template: macro
+  recursion is limited to 200 levels instead of overflowing the stack.
 - db `tls_mode` and `log_queries`.
 - cert info, fingerprints, generate and curves.
 - The firewall status text.
@@ -306,8 +347,7 @@ These **Medium** items were also fixed:
 Every other Medium entry below is still open.
 
 Not verified against real systems: the fixes involving root, network or real
-devices (firewall, user, ssh, cache/db servers, restic/borg repositories, fs
-resize/check) were tested through unit tests on the exact commands they
+devices (firewall, user, ssh, cache/db servers, restic/borg repositories) were tested through unit tests on the exact commands they
 build, plus dry runs. They have not been run against live systems.
 
 Test suite at that time: 1044 passed, 15 failed (all 15 were fixed in
@@ -519,10 +559,9 @@ print help instead of running.
 
 | Handle | Location |
 |---|---|
-| file | `src/handles/filesystem/fileh.rs:1757` (`from_url`), `:5005` (`call`) |
+| file | `src/handles/filesystem/fileh.rs` (`from_url`, `call`) |
 | cert | `src/handles/security/certh.rs:2488-2489` |
-| config | `src/handles/data/config.rs:1284-1285` |
-| snapshot | `src/handles/filesystem/snapshot.rs:1285`, `:2619` |
+| snapshot | `src/handles/filesystem/snapshot.rs` (`SnapshotHandle::from_url`, `Handle::call`; search `HELP_ALIASES`) |
 | svc | `src/handles/processes/svch.rs:2181-2183` |
 | proc | `src/handles/processes/proch.rs:2297` |
 | db | `src/handles/data/dbh.rs:1038-1039` |
@@ -594,13 +633,8 @@ CLI arguments are always strings (`Args = HashMap<String, String>`,
 `src/core/registry.rs:42`). Several handles deserialize them straight into
 typed structs:
 
-- **fs** (`src/handles/filesystem/fsh.rs`):
-  - `snapshot :3528`, `resize :6007`, `check :6811` and `list-mounts :7400`
-    fail on any bool, list or number option (`dry_run=true`,
-    `include_pseudo=true`, `allow_shrink`, `allow_repair`, `timeout_ms`).
-  - `quota` and `usage` silently ignore those options. `usage mode=paths`
-    always fails (`:5586`).
-  - Consequence: `resize` cannot shrink and `check` cannot repair.
+- **fs**: fixed; every option is parsed strictly and unknown arguments are
+  refused (exit 2).
 - **git** (`src/handles/system/gith.rs`):
   - `clone :2362`, `pull :2370`, `push :2378`, `status :2602`,
     `branch :2645`, `commit :2755`, `sync :7235`, `status_summary :7298` and
@@ -727,31 +761,10 @@ typed structs:
 
 ### Filesystem
 
-- **archive.**
-  - `.tgz` files are detected as uncompressed by the verbs that read
-    archives: list, test, extract, add and remove
-    (`src/handles/filesystem/archiveh.rs:626-636`). `info` works.
-  - tar and tar.gz `create` writes each file in a directory source more than
-    once (`:3401-3406, 3510-3516`).
-  - `create` reads `format` both as the archive format and as the output
-    format (`:1115, 1193`), so `format=json` or `format=text` is rejected.
-  - tar.xz, tar.zst, 7z, and `.gz` with format auto return "not yet
-    implemented" (`:3483-3489, 543`).
-- **fs.**
-  - `usage` fails the whole call (exit 32) if any one mount fails statvfs
-    (`fsh.rs:5626-5628, 5775`).
-  - `snapshot format=yaml` returns JSON (`:4068-4073`).
-  - `list-mounts` prints `DEBUG:` lines to stderr (`:7399, 7402`).
-- **file.**
-  - `copy preserve_times` is not implemented; it only prints a warning
-    (`fileh.rs:5226-5231`).
-  - The `rename atomic` option has no effect (`:4357-4362`).
-- **snapshot.**
-  - Snapshots made by `create` have no state or tags, so the `ls` `state=`
-    and `tag=` filters never match them (`snapshot.rs:1226-1235`).
-  - "Target not empty" exits with 3, not the documented 4 (`:2153`).
-  - `restore` by name picks the first match across all targets, in
-    filesystem order (`:2017-2041`).
+- **archive.** 7z is not supported, and raw .xz/.zst streams cannot be
+  created (archive.md 1 and 6). Rewriting a tar with add/remove drops PAX
+  extended attributes of kept entries; add/remove fail on zip archives whose
+  kept entries are encrypted.
 - **log.** `log://svc/<service>` is unreachable, because `from_url` always
   builds a file source (`src/handles/data/logh.rs:484-502`).
 
@@ -786,9 +799,6 @@ typed structs:
   - The `available.*` verbs need doubled targets such as
     `plugin://available.available.list` (`src/core/parse.rs:34, 82-158`;
     `pluginh.rs:572, 676`).
-- **template.** With `strict=false`, a missing variable is still reported
-  as a render error. Tera's display text doesn't contain "Variable"; that
-  wording is in the error's source chain (`templateh.rs:1063-1066`).
 
 ### Data and system
 
@@ -802,8 +812,6 @@ typed structs:
   - `list-topics` returns mock catalogs (`eventh.rs:1006+`).
   - `include_backends` and `summarize` are unused.
   - `hooks.disable` always reports success (`:3424-3437`).
-- **config.** `watch` with neither `key` nor `prefix` watches the whole
-  namespace, but the old help says one of them is required.
 - **cert.**
   - `info` always reports a public key algorithm of "Unknown", empty
     extensions, and `is_ca: false`.
@@ -887,8 +895,6 @@ constants, or generating them from the new metadata.
 - **db:** the sqlite tests share the global `CONNECTION_REGISTRY` and
   `TRANSACTION_REGISTRY` and clear them (`dbh.rs:7320` and others), so they
   race under the parallel test runner.
-- **template:** `validate_with_data_missing_variable_non_strict` fails
-  because of the `strict=false` bug under Automation.
 
 ### L5. Dead backup backend code
 

@@ -189,7 +189,7 @@ resh mq://tasks.put data=hello
 **Handles:** `file`, `archive`, `fs`, `snapshot` ([overview](Filesystem_Storage/overview.md))
 
 * `file`: read, write, inspect, hash, search, copy, move and delete files; permissions, extended attributes, tags.
-* `archive`: create, list, test, extract and modify tar, tar.gz, zip and gzip archives (tar.xz and tar.zst are read-only; no 7z; no password-protected archives).
+* `archive`: create, list, test, extract and modify tar, tar.gz, tar.xz, tar.zst, zip and gzip archives (no 7z; no password-protected archives).
 * `fs`: mounted filesystems: list, usage, quotas, mount/unmount, resize, check.
 * `snapshot`: full local copies of a file or directory, with diff, list and restore.
 

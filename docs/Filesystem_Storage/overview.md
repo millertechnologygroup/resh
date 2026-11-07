@@ -7,7 +7,7 @@ The Filesystem & Storage category has four handles:
 | Handle | Purpose | Details |
 | ------ | ------- | ------- |
 | `file://` | Read, write, inspect, hash, search, copy/move/delete files; permissions, extended attributes, tags | [file.md](file.md) |
-| `archive://` | Create, list, test, inspect, extract and modify tar, tar.gz, zip and gzip archives (tar.xz / tar.zst read-only) | [archive.md](archive.md) |
+| `archive://` | Create, list, test, inspect, extract and modify tar, tar.gz, tar.xz, tar.zst, zip and gzip archives | [archive.md](archive.md) |
 | `fs://` | Mounted filesystems: list, usage, mount table snapshot, quotas, mount/unmount, resize, check | [fs.md](fs.md) |
 | `snapshot://` | Full local copies of a file or directory, with diff, list and restore | [snapshot.md](snapshot.md) |
 
@@ -93,13 +93,12 @@ The handle pages list all limitations. The ones most likely to matter:
 
 * `file://...write` without `data=` reads standard input and truncates the
   file when standard input is empty.
-* `archive://` cannot create tar.xz, tar.zst or 7z archives, cannot read 7z
-  at all, and cannot create password-protected archives (`password=` is
-  always rejected).
-* `fs://...resize` rejects negative deltas; `all_subjects=true` for quotas
-  is not implemented.
-* `snapshot://` `ls` and `diff` need the absolute target path; an omitted
-  `from`/`to` in `diff` is an empty tree, not live; `ttl` is not enforced.
+* `archive://` cannot create 7z archives or raw .xz/.zst streams, cannot
+  read 7z at all, and cannot create password-protected archives (`password=`
+  is always rejected).
+* `snapshot://` `ttl` is enforced only when snapshots are accessed (`create`
+  and `ls` delete expired snapshots of their target; `diff` and `restore`
+  refuse them); nothing runs in the background.
 
 ---
 
