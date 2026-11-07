@@ -12,7 +12,8 @@
 //!   delivers and commits a batch, so consumers of one group never get the
 //!   same events;
 //! * `_offsets.json`: committed consumer-group offsets;
-//! * `_hooks.json`: the names of disabled hooks.
+//! * `_hooks.json`: hooks enabled or disabled with hooks.enable/disable;
+//! * `hooks/`: files written by the log and fs hooks (see `hooks`).
 //!
 //! Every lock wait is bounded by the caller's deadline. Writes never follow
 //! a symlink planted at the target path.
@@ -25,6 +26,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use super::hooks::{DEFAULT_ENABLED, HOOK_NAMES};
 use super::{EventEnvelope, Fail, topic_matches_pattern, valid_topic_name};
 use crate::core::secure_fs;
 
@@ -402,26 +404,32 @@ impl Store {
             .map_err(|e| store_error("write", &path, e))
     }
 
-    /// The names of disabled hooks.
-    pub(super) fn disabled_hooks(&self) -> Result<BTreeSet<String>, Fail> {
+    /// The hooks that are enabled, in run order: the defaults plus those
+    /// enabled with hooks.enable, minus those disabled with hooks.disable.
+    /// Names that are not built-in hooks (such as the removed `proc`) are
+    /// ignored.
+    pub(super) fn enabled_hooks(&self) -> Result<Vec<&'static str>, Fail> {
+        let state = self.hook_state()?;
+        Ok(HOOK_NAMES
+            .iter()
+            .copied()
+            .filter(|n| state.is_enabled(n))
+            .collect())
+    }
+
+    fn hook_state(&self) -> Result<HookState, Fail> {
         let path = self.path(HOOKS);
         let text = match fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(HookState::default()),
             Err(e) => return Err(store_error("read", &path, e)),
         };
-        #[derive(serde::Deserialize)]
-        struct HookState {
-            disabled: BTreeSet<String>,
-        }
-        serde_json::from_str::<HookState>(&text)
-            .map(|s| s.disabled)
-            .map_err(|e| {
-                Fail::corrupt(format!(
-                    "{} is not a valid hook state file ({e}); fix or remove it",
-                    path.display()
-                ))
-            })
+        serde_json::from_str::<HookState>(&text).map_err(|e| {
+            Fail::corrupt(format!(
+                "{} is not a valid hook state file ({e}); fix or remove it",
+                path.display()
+            ))
+        })
     }
 
     /// Enables or disables hook `name`; returns true if the state changed.
@@ -433,19 +441,40 @@ impl Store {
     ) -> Result<bool, Fail> {
         self.ensure_dir()?;
         let _lock = self.lock(STORE_LOCK, LockKind::Exclusive, deadline)?;
-        let mut disabled = self.disabled_hooks()?;
-        let changed = if enabled {
-            disabled.remove(name)
+        let mut state = self.hook_state()?;
+        let before = state.is_enabled(name);
+        // Only built-in hook names are kept (old files may name `proc`).
+        state.enabled.retain(|n| HOOK_NAMES.contains(&n.as_str()));
+        state.disabled.retain(|n| HOOK_NAMES.contains(&n.as_str()));
+        if enabled {
+            state.disabled.remove(name);
+            state.enabled.insert(name.to_string());
         } else {
-            disabled.insert(name.to_string())
-        };
-        if changed {
-            let path = self.path(HOOKS);
-            let text = serde_json::json!({ "disabled": disabled }).to_string();
-            secure_fs::write_private_file(&path, text.as_bytes(), true)
-                .map_err(|e| store_error("write", &path, e))?;
+            state.enabled.remove(name);
+            state.disabled.insert(name.to_string());
         }
-        Ok(changed)
+        let path = self.path(HOOKS);
+        let text =
+            serde_json::json!({ "enabled": state.enabled, "disabled": state.disabled }).to_string();
+        secure_fs::write_private_file(&path, text.as_bytes(), true)
+            .map_err(|e| store_error("write", &path, e))?;
+        Ok(before != enabled)
+    }
+}
+
+/// `_hooks.json`: hooks switched on or off relative to the defaults.
+#[derive(serde::Deserialize, Default)]
+struct HookState {
+    #[serde(default)]
+    enabled: BTreeSet<String>,
+    #[serde(default)]
+    disabled: BTreeSet<String>,
+}
+
+impl HookState {
+    fn is_enabled(&self, name: &str) -> bool {
+        !self.disabled.contains(name)
+            && (self.enabled.contains(name) || DEFAULT_ENABLED.contains(&name))
     }
 }
 

@@ -19,13 +19,12 @@ Available Verbs:
                   per event.
   emit            Appends an event with a JSON payload to a topic's file in the
                   event store and prints the stored event as a JSON object.
-  hooks.list      Lists the built-in hooks that are enabled and those disabled
-                  with hooks.disable, as a JSON object.
-  hooks.enable    Enables one of the built-in hooks fs, log, mq, or proc for
-                  this and every later resh command of the user.
-  hooks.disable   Disables one of the built-in hooks fs, log, mq, or proc for
-                  this and every later resh command of the user, recording it in
-                  the event store.
+  hooks.list      Lists the built-in hooks fs, log, and mq that are enabled and
+                  those that are disabled, as a JSON object.
+  hooks.enable    Enables one of the built-in hooks fs, log, or mq for this and
+                  every later emit of the user.
+  hooks.disable   Disables one of the built-in hooks fs, log, or mq for this and
+                  every later emit of the user, recording it in the event store.
 
 Usage:
   resh event://.<verb> [key=value ...]

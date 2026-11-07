@@ -37,6 +37,7 @@ Example Output:
       "topic": "jobs.backup.completed",
       "ttl_ms": null
     },
+    "hooks": [],
     "ok": true,
     "timestamp_unix_ms": 1792166019757,
     "warnings": []
@@ -45,4 +46,6 @@ Example Output:
   The topic must not contain the wildcards * or ?. mode=wait_for_persist
   syncs the file to disk before the reply. subscribe skips an event once
   its ttl_ms has passed. timeout_ms (default 30000, 0 = no limit) bounds
-  the wait for the store lock; when it passes nothing is written.
+  the wait for the store lock (when it passes nothing is written) and the
+  hooks. hooks lists each enabled hook as {"name","ok","warning"}; a hook
+  that fails adds a warning but never fails the emit.

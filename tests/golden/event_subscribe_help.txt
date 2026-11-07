@@ -70,5 +70,4 @@ Example Output:
   the same event. wait=true waits for an event until wait_timeout_ms
   (default 30000) or timeout_ms passes. follow=true prints each event as a
   JSON line as it arrives, until max_events or timeout_ms (default: no
-  limit). Without wait or follow, timeout_ms defaults to 30000. Enabled
-  hooks print notes on stderr.
+  limit). Without wait or follow, timeout_ms defaults to 30000.

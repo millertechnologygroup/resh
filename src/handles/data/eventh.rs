@@ -11,6 +11,7 @@
 //! `list-topics` also print their JSON result with `"ok": false` and an
 //! `"error": {"code", "message"}` object.
 
+mod hooks;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -18,9 +19,7 @@ mod tests;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use url::Url;
 use uuid::Uuid;
@@ -30,147 +29,9 @@ use crate::core::{
     registry::{Args, Handle, IoStreams},
     status::{Status, exit},
 };
+use hooks::{HOOK_NAMES, REMOVED_HOOKS};
 pub use store::Store;
 use store::{LockKind, OFFSETS_LOCK};
-
-// ===========================================================================
-// Hooks
-// ===========================================================================
-
-/// A hook called after a successful `emit` or `subscribe`. Hooks write
-/// notes to stderr only, so the JSON on stdout stays parseable.
-pub trait EventHook: Send + Sync {
-    /// Called after an event was stored.
-    fn on_emit(&self, event: &EventEnvelope, out: &mut dyn Write) -> std::io::Result<()>;
-
-    /// Called after `subscribe` delivered a batch of `events_returned` events
-    /// for `topic` (the pattern).
-    fn on_subscribe(
-        &self,
-        topic: &str,
-        events_returned: usize,
-        out: &mut dyn Write,
-    ) -> std::io::Result<()>;
-
-    /// The hook name.
-    fn name(&self) -> &str;
-}
-
-/// The value of the first tag of `event` that starts with `prefix`.
-fn tag_value<'a>(event: &'a EventEnvelope, prefix: &str) -> Option<&'a str> {
-    event.tags.iter().find_map(|t| t.strip_prefix(prefix))
-}
-
-/// Simulated message-queue forwarding: notes events tagged `mq:<topic>`.
-pub struct MQHook;
-
-impl EventHook for MQHook {
-    fn on_emit(&self, event: &EventEnvelope, out: &mut dyn Write) -> std::io::Result<()> {
-        if let Some(topic) = tag_value(event, "mq:") {
-            writeln!(
-                out,
-                "MQ Hook: Would forward event {} to MQ topic: {}",
-                event.id, topic
-            )?;
-        }
-        Ok(())
-    }
-
-    fn on_subscribe(&self, _topic: &str, n: usize, out: &mut dyn Write) -> std::io::Result<()> {
-        writeln!(out, "MQ hook processed subscription with {n} events")
-    }
-
-    fn name(&self) -> &str {
-        "mq"
-    }
-}
-
-/// Simulated log forwarding: notes events tagged `log:<path>`.
-pub struct LogHook;
-
-impl EventHook for LogHook {
-    fn on_emit(&self, event: &EventEnvelope, out: &mut dyn Write) -> std::io::Result<()> {
-        if let Some(path) = tag_value(event, "log:") {
-            writeln!(
-                out,
-                "Log Hook: Event {}: {} -> {}",
-                event.id, event.topic, path
-            )?;
-        }
-        Ok(())
-    }
-
-    fn on_subscribe(&self, topic: &str, n: usize, out: &mut dyn Write) -> std::io::Result<()> {
-        writeln!(out, "Log hook: subscription to {topic} returned {n} events")
-    }
-
-    fn name(&self) -> &str {
-        "log"
-    }
-}
-
-/// Simulated process actions: notes events tagged `proc:<action>`.
-pub struct ProcHook;
-
-impl EventHook for ProcHook {
-    fn on_emit(&self, event: &EventEnvelope, out: &mut dyn Write) -> std::io::Result<()> {
-        if let Some(action) = tag_value(event, "proc:") {
-            writeln!(
-                out,
-                "Process Hook: Action requested: {} for event {}",
-                action, event.id
-            )?;
-        }
-        Ok(())
-    }
-
-    fn on_subscribe(&self, topic: &str, _n: usize, out: &mut dyn Write) -> std::io::Result<()> {
-        if topic.starts_with("proc.") {
-            writeln!(out, "Process monitoring subscription: {topic}")?;
-        }
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "proc"
-    }
-}
-
-/// Simulated filesystem watching: notes events tagged `fs:<path>`.
-pub struct FsWatchHook;
-
-impl EventHook for FsWatchHook {
-    fn on_emit(&self, event: &EventEnvelope, out: &mut dyn Write) -> std::io::Result<()> {
-        if let Some(path) = tag_value(event, "fs:") {
-            writeln!(out, "FS Hook: Filesystem event for path: {path}")?;
-        }
-        Ok(())
-    }
-
-    fn on_subscribe(&self, topic: &str, _n: usize, out: &mut dyn Write) -> std::io::Result<()> {
-        if topic.starts_with("fs.") {
-            writeln!(out, "Filesystem watch subscription: {topic}")?;
-        }
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "fs"
-    }
-}
-
-/// Names of the built-in hooks, sorted (the order they run in).
-const HOOK_NAMES: &[&str] = &["fs", "log", "mq", "proc"];
-
-fn builtin_hook(name: &str) -> Option<Arc<dyn EventHook>> {
-    Some(match name {
-        "fs" => Arc::new(FsWatchHook),
-        "log" => Arc::new(LogHook),
-        "mq" => Arc::new(MQHook),
-        "proc" => Arc::new(ProcHook),
-        _ => return None,
-    })
-}
 
 /// How long hooks.enable and hooks.disable wait for the store lock.
 const HOOK_LOCK_WAIT: Duration = Duration::from_secs(10);
@@ -331,8 +192,7 @@ and the read and commit are atomic, so consumers of one group never get
 the same event. wait=true waits for an event until wait_timeout_ms
 (default 30000) or timeout_ms passes. follow=true prints each event as a
 JSON line as it arrives, until max_events or timeout_ms (default: no
-limit). Without wait or follow, timeout_ms defaults to 30000. Enabled
-hooks print notes on stderr."#,
+limit). Without wait or follow, timeout_ms defaults to 30000."#,
                 ),
             }),
         },
@@ -372,6 +232,7 @@ hooks print notes on stderr."#,
     "topic": "jobs.backup.completed",
     "ttl_ms": null
   },
+  "hooks": [],
   "ok": true,
   "timestamp_unix_ms": 1792166019757,
   "warnings": []
@@ -380,41 +241,46 @@ hooks print notes on stderr."#,
 The topic must not contain the wildcards * or ?. mode=wait_for_persist
 syncs the file to disk before the reply. subscribe skips an event once
 its ttl_ms has passed. timeout_ms (default 30000, 0 = no limit) bounds
-the wait for the store lock; when it passes nothing is written."#,
+the wait for the store lock (when it passes nothing is written) and the
+hooks. hooks lists each enabled hook as {"name","ok","warning"}; a hook
+that fails adds a warning but never fails the emit."#,
                 ),
             }),
         },
         VerbHelp {
             name: "hooks.list",
-            definition: "Lists the built-in hooks that are enabled and those disabled with \
-                hooks.disable, as a JSON object.",
+            definition: "Lists the built-in hooks fs, log, and mq that are enabled and those \
+                that are disabled, as a JSON object.",
             detail: Some(VerbDetail {
                 usage: "resh event://.hooks.list",
                 example: "resh --json-pretty event://.hooks.list",
                 example_output: Some(
                     r#"{
-  "disabled": [],
-  "global_hooks": [
+  "disabled": [
     "fs",
     "log",
-    "mq",
-    "proc"
+    "mq"
   ],
+  "global_hooks": [],
   "instance_hooks": [],
-  "total": 4
+  "total": 0
 }
 
-Shown with --json-pretty. Without it the object is one line. The hooks
-only print notes on stderr; they do not forward events."#,
+Shown with --json-pretty. global_hooks lists the enabled hooks; all are
+disabled until enabled with hooks.enable. After emit stores an event,
+log appends it as a JSON line to <store>/hooks/log/<topic>.log, fs
+replaces <store>/hooks/fs/<topic>.json with it, and mq puts its data on
+the mq queue named after the topic (<store> is the event store,
+normally ~/.local/state/resh/events)."#,
                 ),
             }),
         },
         VerbHelp {
             name: "hooks.enable",
-            definition: "Enables one of the built-in hooks fs, log, mq, or proc for this and \
-                every later resh command of the user.",
+            definition: "Enables one of the built-in hooks fs, log, or mq for this and every \
+                later emit of the user.",
             detail: Some(VerbDetail {
-                usage: "resh event://.hooks.enable name=fs|log|mq|proc",
+                usage: "resh event://.hooks.enable name=fs|log|mq",
                 example: "resh event://.hooks.enable name=mq",
                 example_output: Some(
                     r#"{"changed":true,"enabled":true,"hook":"mq"}
@@ -425,10 +291,10 @@ changed is false if the hook was already enabled."#,
         },
         VerbHelp {
             name: "hooks.disable",
-            definition: "Disables one of the built-in hooks fs, log, mq, or proc for this \
-                and every later resh command of the user, recording it in the event store.",
+            definition: "Disables one of the built-in hooks fs, log, or mq for this and every \
+                later emit of the user, recording it in the event store.",
             detail: Some(VerbDetail {
-                usage: "resh event://.hooks.disable name=fs|log|mq|proc",
+                usage: "resh event://.hooks.disable name=fs|log|mq",
                 example: "resh event://.hooks.disable name=mq",
                 example_output: Some(
                     r#"{"changed":true,"disabled":true,"hook":"mq"}
@@ -1383,8 +1249,6 @@ pub struct EventHandle {
     store: Option<Store>,
     /// Set when the URL names a target; the handle has none.
     target_error: Option<String>,
-    /// Hooks registered on this handle object (library use).
-    instance_hooks: Mutex<BTreeMap<String, Arc<dyn EventHook>>>,
 }
 
 impl EventHandle {
@@ -1393,7 +1257,6 @@ impl EventHandle {
         Self {
             store: Some(store),
             target_error: None,
-            instance_hooks: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -1411,29 +1274,7 @@ impl EventHandle {
         Ok(Self {
             store: Store::default_base().map(Store::new),
             target_error,
-            instance_hooks: Mutex::new(BTreeMap::new()),
         })
-    }
-
-    /// Registers a hook on this handle object only.
-    pub fn register_hook(&self, hook: Arc<dyn EventHook>) {
-        if let Ok(mut h) = self.instance_hooks.lock() {
-            h.insert(hook.name().to_string(), hook);
-        }
-    }
-
-    /// Removes a hook registered with [`register_hook`](Self::register_hook).
-    pub fn remove_hook(&self, name: &str) {
-        if let Ok(mut h) = self.instance_hooks.lock() {
-            h.remove(name);
-        }
-    }
-
-    fn instance_hook_names(&self) -> Vec<String> {
-        self.instance_hooks
-            .lock()
-            .map(|h| h.keys().cloned().collect())
-            .unwrap_or_default()
     }
 
     fn store(&self) -> Result<&Store, Fail> {
@@ -1443,28 +1284,6 @@ impl EventHandle {
                  XDG_STATE_HOME); nothing was done",
             )
         })
-    }
-
-    /// The hooks to run: the enabled built-in hooks, then this handle's
-    /// own. An unreadable hook state file runs every built-in hook, with a
-    /// warning.
-    fn active_hooks(&self, store: &Store, warnings: &mut Vec<String>) -> Vec<Arc<dyn EventHook>> {
-        let disabled = match store.disabled_hooks() {
-            Ok(d) => d,
-            Err(e) => {
-                warnings.push(format!("{}; all built-in hooks ran", e.message));
-                Default::default()
-            }
-        };
-        let mut hooks: Vec<Arc<dyn EventHook>> = HOOK_NAMES
-            .iter()
-            .filter(|n| !disabled.contains(**n))
-            .filter_map(|n| builtin_hook(n))
-            .collect();
-        if let Ok(h) = self.instance_hooks.lock() {
-            hooks.extend(h.values().cloned());
-        }
-        hooks
     }
 
     /// Writes the approved help for `help`, `--help`, `-h`, `--help=<verb>`
@@ -1492,12 +1311,14 @@ impl EventHandle {
 
     // ------------------------------------------------------------- emit --
 
-    /// Stores the event described by `opts`; returns it with any warnings.
+    /// Stores the event described by `opts` and runs the enabled hooks;
+    /// returns the event, the hook reports and any warnings. A hook failure
+    /// is a warning (also printed on `warn_out`), never a failed emit.
     fn emit(
         &self,
         opts: &EmitOpts,
-        hook_out: &mut dyn Write,
-    ) -> Result<(EventEnvelope, Vec<String>), Fail> {
+        warn_out: &mut dyn Write,
+    ) -> Result<(EventEnvelope, Vec<hooks::HookReport>, Vec<String>), Fail> {
         let store = self.store()?;
         let started = Instant::now();
         let now = now_unix_ms();
@@ -1527,37 +1348,48 @@ impl EventHandle {
             raw: None,
             seq: None,
         };
-        store.append(
-            &mut evt,
-            opts.wait_for_persist,
-            deadline_after(started, opts.timeout_ms),
-        )?;
+        let deadline = deadline_after(started, opts.timeout_ms);
+        store.append(&mut evt, opts.wait_for_persist, deadline)?;
         let mut warnings = Vec::new();
-        for hook in self.active_hooks(store, &mut warnings) {
-            let _ = hook.on_emit(&evt, hook_out);
+        let enabled = match store.enabled_hooks() {
+            Ok(e) => e,
+            Err(f) => {
+                warnings.push(format!("hooks did not run: {}", f.message));
+                Vec::new()
+            }
+        };
+        let reports = hooks::run(store, &enabled, &evt, deadline);
+        for r in &reports {
+            if let Some(w) = &r.warning {
+                warnings.push(format!("{} hook: {w}", r.name));
+            }
         }
-        Ok((evt, warnings))
+        for w in &warnings {
+            let _ = writeln!(warn_out, "Warning: {w}");
+        }
+        Ok((evt, reports, warnings))
     }
 
     fn handle_emit(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let result = parse_emit(args).and_then(|opts| {
-            let (evt, warnings) = self.emit(&opts, io.stderr)?;
-            Ok((opts.format, evt, warnings))
+            let (evt, reports, warnings) = self.emit(&opts, io.stderr)?;
+            Ok((opts.format, evt, reports, warnings))
         });
         match result {
-            Ok((OutputFormat::Json, evt, warnings)) => {
+            Ok((OutputFormat::Json, evt, reports, warnings)) => {
                 let out = json!({
                     "ok": true,
                     "timestamp_unix_ms": evt.timestamp_unix_ms,
                     "event": evt.emit_json(),
+                    "hooks": reports.iter().map(hooks::HookReport::json).collect::<Vec<_>>(),
                     "error": null,
                     "warnings": warnings,
                 });
                 writeln!(io.stdout, "{}", serde_json::to_string_pretty(&out)?)?;
                 Ok(Status::ok())
             }
-            Ok((OutputFormat::Text, evt, warnings)) => {
-                write!(io.stdout, "{}", emit_text(&evt, &warnings)?)?;
+            Ok((OutputFormat::Text, evt, reports, warnings)) => {
+                write!(io.stdout, "{}", emit_text(&evt, &reports, &warnings)?)?;
                 Ok(Status::ok())
             }
             Err(f) => {
@@ -1566,6 +1398,7 @@ impl EventHandle {
                         "ok": false,
                         "timestamp_unix_ms": now_unix_ms(),
                         "event": null,
+                        "hooks": [],
                         "error": f.json(),
                         "warnings": [],
                     });
@@ -1726,10 +1559,6 @@ impl EventHandle {
         let mut cursor = None;
         let mut printed: u64 = 0;
         let mut last_fp: Option<store::Fingerprint> = None;
-        let hooks = self.active_hooks(store, &mut warnings);
-        for w in warnings.drain(..) {
-            let _ = writeln!(io.stderr, "Warning: {w}");
-        }
         loop {
             if deadline.is_some_and(|d| Instant::now() >= d) {
                 return Ok(());
@@ -1777,11 +1606,6 @@ impl EventHandle {
                 };
                 for w in warnings.drain(..) {
                     let _ = writeln!(io.stderr, "Warning: {w}");
-                }
-                if !batch.events.is_empty() {
-                    for hook in &hooks {
-                        let _ = hook.on_subscribe(&opts.topic, batch.events.len(), io.stderr);
-                    }
                 }
                 printed += batch.events.len() as u64;
                 if opts.max_events > 0 && printed >= opts.max_events {
@@ -1851,13 +1675,8 @@ impl EventHandle {
             Ok(r) => r,
             Err(f) => return self.subscribe_failure(args, Some(&opts), &f, io),
         };
-        let mut warnings = result.warnings;
+        let warnings = result.warnings;
         let n = result.batch.events.len();
-        if let Ok(store) = self.store() {
-            for hook in self.active_hooks(store, &mut warnings) {
-                let _ = hook.on_subscribe(&opts.topic, n, io.stderr);
-            }
-        }
         let first = result.batch.events.first().and_then(|e| e.offset.clone());
         let last = result.batch.events.last().and_then(|e| e.offset.clone());
         let mut out = base;
@@ -2034,43 +1853,38 @@ impl EventHandle {
     // ------------------------------------------------------------ hooks --
 
     fn hooks_list(&self) -> Result<Value, Fail> {
-        let disabled = self.store()?.disabled_hooks()?;
-        let enabled: Vec<&str> = HOOK_NAMES
-            .iter()
-            .copied()
-            .filter(|n| !disabled.contains(*n))
-            .collect();
-        let instance = self.instance_hook_names();
-        // Names in the file that are not built-in hooks are not listed.
+        let enabled = self.store()?.enabled_hooks()?;
         let disabled: Vec<&str> = HOOK_NAMES
             .iter()
             .copied()
-            .filter(|n| disabled.contains(*n))
+            .filter(|n| !enabled.contains(n))
             .collect();
         Ok(json!({
             "global_hooks": enabled,
-            "instance_hooks": instance,
+            "instance_hooks": [],
             "disabled": disabled,
-            "total": enabled.len() + instance.len(),
+            "total": enabled.len(),
         }))
     }
 
     fn hook_name(args: &Args) -> Result<&str, Fail> {
         let name = args
             .get("name")
-            .ok_or_else(|| Fail::missing("name=<hook> is required (fs, log, mq or proc)"))?;
+            .ok_or_else(|| Fail::missing("name=<hook> is required (fs, log or mq)"))?;
         if HOOK_NAMES.contains(&name.as_str()) {
             return Ok(name);
         }
+        let note = if REMOVED_HOOKS.contains(&name.as_str()) {
+            "; the proc hook was removed".to_string()
+        } else {
+            suggest(name, HOOK_NAMES)
+                .map(|s| format!("; did you mean `{s}`?"))
+                .unwrap_or_default()
+        };
         Err(Fail::new(
             exit::USAGE,
             "event.unknown_hook",
-            format!(
-                "unknown hook {name:?}{} (built-in hooks: fs, log, mq, proc)",
-                suggest(name, HOOK_NAMES)
-                    .map(|s| format!("; did you mean `{s}`?"))
-                    .unwrap_or_default()
-            ),
+            format!("unknown hook {name:?}{note} (built-in hooks: fs, log, mq)"),
         ))
     }
 
@@ -2107,7 +1921,11 @@ impl EventHandle {
 // Text output
 // ===========================================================================
 
-fn emit_text(evt: &EventEnvelope, warnings: &[String]) -> Result<String> {
+fn emit_text(
+    evt: &EventEnvelope,
+    reports: &[hooks::HookReport],
+    warnings: &[String],
+) -> Result<String> {
     let mut s = String::new();
     s.push_str("Event Emitted\n=============\n\n");
     s.push_str(&format!("ID        : {}\n", evt.id));
@@ -2133,6 +1951,16 @@ fn emit_text(evt: &EventEnvelope, warnings: &[String]) -> Result<String> {
     s.push_str("\nData:\n");
     for line in serde_json::to_string_pretty(&evt.data)?.lines() {
         s.push_str(&format!("  {line}\n"));
+    }
+    if !reports.is_empty() {
+        s.push_str("\nHooks:\n");
+        for r in reports {
+            s.push_str(&format!(
+                "  {}: {}\n",
+                r.name,
+                if r.ok { "ok" } else { "failed (see warnings)" }
+            ));
+        }
     }
     push_warnings(&mut s, warnings.iter().map(String::as_str));
     Ok(s)

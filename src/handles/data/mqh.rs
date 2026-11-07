@@ -429,6 +429,33 @@ impl QueueLock {
     }
 }
 
+/// Puts `data` on queue `name` in the mq store at `root` (normally
+/// `<state dir>/resh/mq`) through the same code path as `mq://<name>.put`,
+/// waiting for the queue lock until `deadline`. Used by the event handle's
+/// mq hook. The error is `[mq.<code>] <message>`.
+pub(crate) fn put_data(
+    root: &Path,
+    name: &str,
+    data: &str,
+    deadline: Option<Instant>,
+) -> std::result::Result<(), String> {
+    validate_name(name)?;
+    let h = MQHandle {
+        name: name.to_string(),
+        root: Some(root.to_path_buf()),
+    };
+    let mut args = Args::new();
+    args.insert("data".to_string(), data.to_string());
+    let (mut stdin, mut out, mut err) = (io::empty(), io::sink(), io::sink());
+    let mut streams = IoStreams {
+        stdin: &mut stdin,
+        stdout: &mut out,
+        stderr: &mut err,
+    };
+    h.put(&args, deadline, &mut streams)
+        .map_err(|f| format!("[{}] {}", f.code, f.message))
+}
+
 // ---------------------------------------------------------------------------
 // The handle
 // ---------------------------------------------------------------------------

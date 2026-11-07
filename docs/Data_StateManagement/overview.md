@@ -125,7 +125,7 @@ Verbs: `connect`, `ping`, `query`, `tables`, `schema`, `exec`, `transaction`. Pa
 
 ### 4.4 Events (`event`)
 
-Verbs: `emit`, `subscribe`, `list-topics`, `hooks.list`, `hooks.enable`, `hooks.disable`. Events persist as JSON Lines files in the state directory. `list-topics` lists the real store; hook enable/disable state persists; the built-in hooks only print notes to stderr. See [event.md](event.md).
+Verbs: `emit`, `subscribe`, `list-topics`, `hooks.list`, `hooks.enable`, `hooks.disable`. Events persist as JSON Lines files in the state directory. `list-topics` lists the real store. The built-in hooks (off by default; enable state persists) append each event to a log file, keep the latest event per topic in a file, and put event data on the `mq` queue named after the topic. See [event.md](event.md).
 
 ### 4.5 Logs (`log`)
 

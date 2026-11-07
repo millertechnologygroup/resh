@@ -1,7 +1,7 @@
 Handle: event
 Verb: hooks.list
-Definition: Lists the built-in hooks that are enabled and those disabled with
-  hooks.disable, as a JSON object.
+Definition: Lists the built-in hooks fs, log, and mq that are enabled and those
+  that are disabled, as a JSON object.
 
 Usage:
   resh event://.hooks.list
@@ -11,16 +11,19 @@ Example:
 
 Example Output:
   {
-    "disabled": [],
-    "global_hooks": [
+    "disabled": [
       "fs",
       "log",
-      "mq",
-      "proc"
+      "mq"
     ],
+    "global_hooks": [],
     "instance_hooks": [],
-    "total": 4
+    "total": 0
   }
 
-  Shown with --json-pretty. Without it the object is one line. The hooks
-  only print notes on stderr; they do not forward events.
+  Shown with --json-pretty. global_hooks lists the enabled hooks; all are
+  disabled until enabled with hooks.enable. After emit stores an event,
+  log appends it as a JSON line to <store>/hooks/log/<topic>.log, fs
+  replaces <store>/hooks/fs/<topic>.json with it, and mq puts its data on
+  the mq queue named after the topic (<store> is the event store,
+  normally ~/.local/state/resh/events).

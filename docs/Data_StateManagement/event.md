@@ -24,7 +24,9 @@ $XDG_STATE_HOME/resh/events/          (default ~/.local/state/resh/events/)
   _store.lock                         store lock; holds the last sequence number
   _offsets.lock                       consumer-group lock
   _offsets.json                       committed consumer-group offsets
-  _hooks.json                         disabled hooks
+  _hooks.json                         hooks enabled or disabled with hooks.enable/disable
+  hooks/log/<topic>.log               written by the log hook
+  hooks/fs/<topic>.json               written by the fs hook
 ```
 
 The directory is created with mode 0700 and every file with mode 0600. Reading verbs never create the directory. If there is no state directory (neither `HOME` nor `XDG_STATE_HOME` can be resolved), every verb fails with `event.store_unavailable` (exit 1); there is no in-memory or `/tmp` fallback.
@@ -58,8 +60,8 @@ The directory is created with mode 0700 and every file with mode 0600. Reading v
 | `subscribe`     | Read stored events whose topic matches a pattern, wait for them or follow |
 | `list-topics`   | List the topics in the store with counts and payload fields               |
 | `hooks.list`    | List enabled and disabled hooks                                           |
-| `hooks.enable`  | Enable a built-in hook for this and later commands                        |
-| `hooks.disable` | Disable a built-in hook for this and later commands                       |
+| `hooks.enable`  | Enable a built-in hook (`fs`, `log`, `mq`) for later emits                |
+| `hooks.disable` | Disable a built-in hook for later emits                                   |
 
 ### 3.2 Example commands
 
@@ -68,7 +70,7 @@ resh event://.emit topic=jobs.backup.completed 'data={"status":"success"}'
 resh event://.subscribe 'topic=jobs.*' offset=earliest
 resh event://.subscribe topic=jobs.work offset=next group_id=workers limit=10
 resh event://.subscribe 'topic=jobs.*' follow=true
-resh event://.hooks.disable name=mq
+resh event://.hooks.enable name=mq
 ```
 
 ### 3.3 emit output
@@ -94,11 +96,14 @@ resh event://.hooks.disable name=mq
     "topic": "jobs.backup.completed",
     "ttl_ms": null
   },
+  "hooks": [],
   "ok": true,
   "timestamp_unix_ms": 1792166019757,
   "warnings": []
 }
 ```
+
+`hooks` has one `{"name", "ok", "warning"}` entry per enabled hook (section 4.4).
 
 Failure output (stdout), with `Error: [event.invalid_data] ...` on stderr and exit code 2:
 
@@ -109,6 +114,7 @@ Failure output (stdout), with `Error: [event.invalid_data] ...` on stderr and ex
     "message": "data is not valid JSON (expected value at line 1 column 1); quote text as JSON, for example 'data=\"text\"'"
   },
   "event": null,
+  "hooks": [],
   "ok": false,
   "timestamp_unix_ms": 1792760903628,
   "warnings": []
@@ -136,7 +142,7 @@ Every failure carries one of these codes, printed as `Error: [event.<code>] <mes
 | `event.invalid_data`      | 2    | `data` is not valid JSON |
 | `event.invalid_tags`      | 2    | `tags` or `match_tags` is not a JSON array of strings, or a tag is empty, longer than 64 characters or not printable ASCII |
 | `event.invalid_target`    | 2    | The URL has a target, as in `event://jobs.emit` |
-| `event.unknown_hook`      | 2    | `hooks.enable`/`hooks.disable` with a name other than `fs`, `log`, `mq`, `proc` |
+| `event.unknown_hook`      | 2    | `hooks.enable`/`hooks.disable` with a name other than `fs`, `log`, `mq` (including the removed `proc`) |
 | `event.unknown_verb`      | 2    | The verb is not one of the six verbs |
 | `event.store_unavailable` | 1    | There is no state directory, the store path is not a directory, or it cannot be created |
 | `event.store_error`       | 1    | A store file cannot be opened, read, locked or written, or a symlink or other non-regular file is at a path the handle writes |
@@ -146,7 +152,7 @@ Every failure carries one of these codes, printed as `Error: [event.<code>] <mes
 
 `dry_run=true` is refused (exit 2) by resh before the handle runs; no event verb has a dry-run mode.
 
-**Change note (breaking, after v1.0.6-beta):** the old codes (`event.emit_invalid_data`, `event.emit_invalid_topic`, `event.emit_internal_error`, `event.subscribe_offset_next_requires_group`, `event.subscribe_backend_error`, `event.list_topics_invalid_source` and the others) were replaced by the codes above. Invalid arguments now exit 2 instead of 1. Unknown arguments, `tags` that are not a JSON array (they were taken as one tag), unreadable booleans (they were taken as `false`) and the option combinations listed above are refused instead of ignored. `list-topics` lists the real store instead of sample catalogues, and `hooks.list` lists the hooks in a fixed order and adds `disabled`.
+**Change note (breaking, after v1.0.6-beta):** the old codes (`event.emit_invalid_data`, `event.emit_invalid_topic`, `event.emit_internal_error`, `event.subscribe_offset_next_requires_group`, `event.subscribe_backend_error`, `event.list_topics_invalid_source` and the others) were replaced by the codes above. Invalid arguments now exit 2 instead of 1. Unknown arguments, `tags` that are not a JSON array (they were taken as one tag), unreadable booleans (they were taken as `false`) and the option combinations listed above are refused instead of ignored. `list-topics` lists the real store instead of sample catalogues, `hooks.list` lists the hooks in a fixed order and adds `disabled`, and `emit` output adds `hooks`. The hooks are real and off by default (section 4.4); the `proc` hook was removed.
 
 ---
 
@@ -252,21 +258,31 @@ resh --json-pretty event://.list-topics prefix=jobs. include_stats=true
 
 ### 4.4 Hooks
 
-Four built-in hooks (`fs`, `log`, `mq`, `proc`) run after every successful `emit` and `subscribe`, in that order. **They are simulations**: they do not forward events, write logs, signal processes or watch files. They only print notes to stderr, for example:
+Three built-in hooks act on every event that `emit` stores, while they are enabled. **They are off by default**; enable each one with `hooks.enable`. The state is kept in `_hooks.json` and applies to every later `resh` command of the user.
 
-* on `subscribe`: `Log hook: subscription to jobs.* returned 1 events` and `MQ hook processed subscription with 1 events` (`proc` and `fs` add a line for topics starting with `proc.` or `fs.`); with `follow=true` once per printed batch;
-* on `emit` with a tag such as `mq:orders`: `MQ Hook: Would forward event <id> to MQ topic: orders` (similarly `log:`, `proc:` and `fs:` tags).
+| Hook  | What it does after an event is stored |
+| ----- | ------------------------------------- |
+| `fs`  | Replaces `<store>/hooks/fs/<topic>.json` with the event (the stored record, one JSON object including its sequence number `seq`). The file always holds the topic's latest event: under parallel emits a slower one never replaces a newer event. The file is written to a temporary file and renamed into place. |
+| `log` | Appends the event as one JSON line to `<store>/hooks/log/<topic>.log`. Read it with `resh log:///<path>.tail`, for example `resh log:///home/alice/.local/state/resh/events/hooks/log/jobs.done.log.tail lines=10`. |
+| `mq`  | Puts the event's `data` (as compact JSON text) on the `mq` queue named after the topic, through the mq handle's own `put`, so `resh mq://<topic>.get` returns it. A topic that is not a valid queue name (for example one containing `:` or starting with `.`) is skipped with a warning. |
 
-stdout is not affected, so the JSON output stays parseable.
+`<store>` is the event store directory (section 1). The hooks run in the order `fs`, `log`, `mq`, after the event was stored. Directories they create are 0700 and files 0600; a symlink or other non-regular file at a path a hook writes is refused, never followed.
 
-* `hooks.list` prints `global_hooks` (the enabled built-in hooks), `disabled` (the disabled ones), `instance_hooks` (always empty from the command line) and `total` (the number of enabled hooks).
-* `hooks.disable name=fs|log|mq|proc` disables the hook for every later `resh` command of the user, by recording it in `_hooks.json`. `hooks.enable name=...` enables it again. Both print `changed: false` if the hook was already in that state. Any other name fails with `event.unknown_hook` (exit 2).
-* If `_hooks.json` is not valid, `hooks.list`, `hooks.enable` and `hooks.disable` fail with `event.store_corrupt`; `emit` and `subscribe` still work, run every hook and add a warning.
+A hook never fails the emit. `emit` prints one entry per enabled hook in `hooks`: `{"name": "log", "ok": true, "warning": null}`, or `ok: false` with the reason in `warning`. The warning is also added to `warnings` and printed on stderr as `Warning: <hook> hook: <reason>`. `timeout_ms` bounds the hooks too: a hook that would start after it passed, or the `fs` and `mq` lock waits, are skipped with a warning.
+
+* `hooks.list` prints `global_hooks` (the enabled hooks), `disabled` (the disabled ones), `instance_hooks` (always empty) and `total` (the number of enabled hooks).
+* `hooks.enable name=fs|log|mq` and `hooks.disable name=fs|log|mq` print `changed: false` if the hook was already in that state. Any other name fails with `event.unknown_hook` (exit 2), including `proc`.
+* If `_hooks.json` is not valid, `hooks.list`, `hooks.enable` and `hooks.disable` fail with `event.store_corrupt`; `emit` still stores the event, runs no hook and adds a warning.
 * `hooks.enable` and `hooks.disable` wait at most 10 seconds for the store lock (`event.timeout`). The hook verbs do not take `timeout_ms`.
+* `subscribe` runs no hooks.
 
 ```bash
-resh event://.hooks.disable name=mq
+resh event://.hooks.enable name=mq
+resh event://.emit topic=orders 'data={"id":42}'
+resh mq://orders.get
 ```
+
+**Change note:** earlier versions had four hooks (`fs`, `log`, `mq`, `proc`) that were all on and only printed notes such as `MQ Hook: Would forward event ...` on stderr (on `emit` and `subscribe`). The hooks now do real work and are off by default; `proc` was removed. Old `_hooks.json` files are still read; `proc` entries in them are ignored and dropped on the next change.
 
 ### 4.5 Topic and tag rules
 
@@ -289,7 +305,7 @@ resh event://.hooks.disable name=mq
 
 ## 5. Limitations
 
-* Hooks are simulations that only write notes to stderr.
+* The hooks write files and queue messages but never delete them: hook log files and mq queues grow until you remove or read them.
 * `ttl_ms` hides expired events from `subscribe` and `list-topics`, but nothing deletes them: topic files grow until you delete them.
 * Offsets are indexes into the matching events. Deleting or editing a topic file, or emitting events with a resh version older than this one while newer ones run, can shift them.
 * `subscribe wait=true` and `follow=true` notice new events by checking the topic files every 100 ms.

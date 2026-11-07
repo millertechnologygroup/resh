@@ -335,7 +335,6 @@ fn emit_store_failures() {
     let h = EventHandle {
         store: None,
         target_error: None,
-        instance_hooks: Mutex::new(BTreeMap::new()),
     };
     call(&h, "emit", &[("topic", "t"), ("data", "1")]).fails(1, "event.store_unavailable");
 
@@ -382,36 +381,6 @@ fn emit_times_out_waiting_for_the_store_lock() {
     drop(lock);
     emit(&h, "t", "1");
 }
-
-#[test]
-fn emit_runs_enabled_hooks_on_stderr() {
-    let dir = TempDir::new().unwrap();
-    let h = handle(&dir);
-    let o = emit_with(
-        &h,
-        &[
-            ("topic", "t"),
-            ("data", "1"),
-            (
-                "tags",
-                r#"["mq:orders","log:/var/log/x","proc:restart","fs:/srv"]"#,
-            ),
-        ],
-    );
-    assert_eq!(o.code, 0);
-    let id = o.json()["event"]["id"].as_str().unwrap().to_string();
-    assert_eq!(
-        o.stderr,
-        format!(
-            "FS Hook: Filesystem event for path: /srv\n\
-             Log Hook: Event {id}: t -> /var/log/x\n\
-             MQ Hook: Would forward event {id} to MQ topic: orders\n\
-             Process Hook: Action requested: restart for event {id}\n"
-        )
-    );
-}
-
-// --- subscribe ----------------------------------------------------------------
 
 #[test]
 fn subscribe_reads_by_offset_and_pattern() {
@@ -995,7 +964,6 @@ fn subscribe_store_failures() {
     let h = EventHandle {
         store: None,
         target_error: None,
-        instance_hooks: Mutex::new(BTreeMap::new()),
     };
     call(&h, "subscribe", &[("topic", "t")]).fails(1, "event.store_unavailable");
 }
@@ -1037,32 +1005,6 @@ fn group_consumers_in_parallel_never_share_an_event() {
         .collect();
     all.sort();
     assert_eq!(all, (0..60).collect::<Vec<_>>());
-}
-
-#[test]
-fn subscribe_runs_hooks_and_honors_disabled_ones() {
-    let dir = TempDir::new().unwrap();
-    let h = handle(&dir);
-    emit(&h, "proc.x", "1");
-    let o = call(
-        &h,
-        "subscribe",
-        &[("topic", "proc.*"), ("offset", "earliest")],
-    );
-    assert_eq!(
-        o.stderr,
-        "Log hook: subscription to proc.* returned 1 events\n\
-         MQ hook processed subscription with 1 events\n\
-         Process monitoring subscription: proc.*\n"
-    );
-    call(&h, "hooks.disable", &[("name", "log")]);
-    call(&h, "hooks.disable", &[("name", "proc")]);
-    let o = call(
-        &h,
-        "subscribe",
-        &[("topic", "proc.*"), ("offset", "earliest")],
-    );
-    assert_eq!(o.stderr, "MQ hook processed subscription with 1 events\n");
 }
 
 // --- list-topics --------------------------------------------------------------
@@ -1200,80 +1142,297 @@ fn list_topics_errors() {
     let h = EventHandle {
         store: None,
         target_error: None,
-        instance_hooks: Mutex::new(BTreeMap::new()),
     };
     call(&h, "list-topics", &[]).fails(1, "event.store_unavailable");
 }
 
 // --- hooks --------------------------------------------------------------------
 
+fn enable(h: &EventHandle, name: &str) {
+    let o = call(h, "hooks.enable", &[("name", name)]);
+    assert_eq!(o.code, 0, "{}", o.reason);
+}
+
+fn hooks_of(o: &Out) -> Value {
+    o.json()["hooks"].clone()
+}
+
+fn mq_messages(dir: &TempDir, queue: &str) -> Vec<String> {
+    let q = dir.path().join("state").join("resh").join("mq").join(queue);
+    let mut names: Vec<PathBuf> = fs::read_dir(&q)
+        .map(|rd| {
+            rd.map(|e| e.unwrap().path())
+                .filter(|p| p.extension().is_some_and(|x| x == "msg"))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap())
+        .collect()
+}
+
 #[test]
-fn hooks_enable_and_disable_persist_across_handles() {
+fn hooks_are_off_by_default_and_persist_across_handles() {
     let dir = TempDir::new().unwrap();
     let h = handle(&dir);
     let o = call(&h, "hooks.list", &[]);
-    assert_eq!(o.code, 0);
     assert_eq!(
         o.stdout,
-        "{\"disabled\":[],\"global_hooks\":[\"fs\",\"log\",\"mq\",\"proc\"],\"instance_hooks\":[],\"total\":4}\n"
+        "{\"disabled\":[\"fs\",\"log\",\"mq\"],\"global_hooks\":[],\"instance_hooks\":[],\"total\":0}\n"
     );
     assert!(!base(&dir).exists(), "hooks.list creates nothing");
+    // Without enabled hooks emit runs none and writes nothing else.
+    let o = emit_with(&h, &[("topic", "t"), ("data", "1")]);
+    assert_eq!(hooks_of(&o), json!([]));
+    assert_eq!(o.stderr, "");
+    assert!(!base(&dir).join("hooks").exists());
+    assert!(mq_messages(&dir, "t").is_empty());
 
-    let o = call(&h, "hooks.disable", &[("name", "mq")]);
+    let o = call(&h, "hooks.enable", &[("name", "mq")]);
     assert_eq!(
         o.stdout,
-        "{\"changed\":true,\"disabled\":true,\"hook\":\"mq\"}\n"
+        "{\"changed\":true,\"enabled\":true,\"hook\":\"mq\"}\n"
     );
-    let o = call(&handle(&dir), "hooks.disable", &[("name", "mq")]);
+    let o = call(&handle(&dir), "hooks.enable", &[("name", "mq")]);
     assert_eq!(
         o.stdout,
-        "{\"changed\":false,\"disabled\":true,\"hook\":\"mq\"}\n"
+        "{\"changed\":false,\"enabled\":true,\"hook\":\"mq\"}\n"
     );
     assert_eq!(mode(&base(&dir).join("_hooks.json")), 0o600);
 
     // A later handle (a later resh command) sees the state.
     let later = handle(&dir);
     let v = call(&later, "hooks.list", &[]).json();
-    assert_eq!(v["global_hooks"], json!(["fs", "log", "proc"]));
-    assert_eq!(v["disabled"], json!(["mq"]));
-    assert_eq!(v["total"], 3);
-    let o = emit_with(
-        &later,
-        &[("topic", "t"), ("data", "1"), ("tags", r#"["mq:x"]"#)],
-    );
-    assert_eq!(o.stderr, "");
+    assert_eq!(v["global_hooks"], json!(["mq"]));
+    assert_eq!(v["disabled"], json!(["fs", "log"]));
+    assert_eq!(v["total"], 1);
 
-    let o = call(&later, "hooks.enable", &[("name", "mq")]);
+    let o = call(&later, "hooks.disable", &[("name", "mq")]);
     assert_eq!(
         o.stdout,
-        "{\"changed\":true,\"enabled\":true,\"hook\":\"mq\"}\n"
+        "{\"changed\":true,\"disabled\":true,\"hook\":\"mq\"}\n"
     );
-    let o = call(&later, "hooks.enable", &[("name", "mq")]);
+    let o = call(&later, "hooks.disable", &[("name", "mq")]);
     assert_eq!(
         o.stdout,
-        "{\"changed\":false,\"enabled\":true,\"hook\":\"mq\"}\n"
+        "{\"changed\":false,\"disabled\":true,\"hook\":\"mq\"}\n"
     );
-    let o = emit_with(
-        &handle(&dir),
-        &[("topic", "t"), ("data", "1"), ("tags", r#"["mq:x"]"#)],
+    assert_eq!(call(&later, "hooks.list", &[]).json()["total"], 0);
+}
+
+#[test]
+fn old_hook_state_files_are_migrated_silently() {
+    let dir = TempDir::new().unwrap();
+    fs::create_dir_all(base(&dir)).unwrap();
+    fs::write(
+        base(&dir).join("_hooks.json"),
+        r#"{"disabled":["proc","mq"]}"#,
+    )
+    .unwrap();
+    let h = handle(&dir);
+    let v = call(&h, "hooks.list", &[]).json();
+    assert_eq!(v["global_hooks"], json!([]));
+    assert_eq!(v["disabled"], json!(["fs", "log", "mq"]));
+    enable(&h, "fs");
+    let state: Value =
+        serde_json::from_str(&fs::read_to_string(base(&dir).join("_hooks.json")).unwrap()).unwrap();
+    assert_eq!(state, json!({"enabled": ["fs"], "disabled": ["mq"]}));
+}
+
+#[test]
+fn log_hook_appends_each_event_as_a_json_line() {
+    let dir = TempDir::new().unwrap();
+    let h = handle(&dir);
+    enable(&h, "log");
+    let o = emit_with(&h, &[("topic", "jobs.done"), ("data", r#"{"n":1}"#)]);
+    assert_eq!(o.code, 0);
+    assert_eq!(
+        hooks_of(&o),
+        json!([{"name": "log", "ok": true, "warning": null}])
+    );
+    assert_eq!(o.json()["warnings"], json!([]));
+    emit(&h, "jobs.done", r#"{"n":2}"#);
+    let path = hooks::log_path(&Store::new(base(&dir)), "jobs.done");
+    let text = fs::read_to_string(&path).unwrap();
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[1]["data"], json!({"n": 2}));
+    assert_eq!(lines[1]["seq"], 2);
+    assert_eq!(mode(&path), 0o600);
+    assert_eq!(mode(&base(&dir).join("hooks")), 0o700);
+    assert_eq!(mode(path.parent().unwrap()), 0o700);
+}
+
+#[test]
+fn fs_hook_keeps_the_latest_event_per_topic() {
+    let dir = TempDir::new().unwrap();
+    let h = handle(&dir);
+    enable(&h, "fs");
+    for n in 1..=3 {
+        let o = emit_with(&h, &[("topic", "state.x"), ("data", &n.to_string())]);
+        assert_eq!(
+            hooks_of(&o),
+            json!([{"name": "fs", "ok": true, "warning": null}])
+        );
+    }
+    let path = hooks::fs_path(&Store::new(base(&dir)), "state.x");
+    let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(v["data"], 3);
+    assert_eq!(v["topic"], "state.x");
+    assert_eq!(mode(&path), 0o600);
+}
+
+#[test]
+fn mq_hook_queues_the_data_on_the_topic_queue() {
+    let dir = TempDir::new().unwrap();
+    let h = handle(&dir);
+    enable(&h, "mq");
+    let o = emit_with(&h, &[("topic", "orders.new"), ("data", r#"{"id": 7}"#)]);
+    assert_eq!(
+        hooks_of(&o),
+        json!([{"name": "mq", "ok": true, "warning": null}])
+    );
+    assert_eq!(mq_messages(&dir, "orders.new"), [r#"{"id":7}"#]);
+
+    // A topic that is not a valid queue name is skipped with a warning.
+    let o = emit_with(&h, &[("topic", "a:b"), ("data", "1")]);
+    assert_eq!(o.code, 0);
+    let r = &hooks_of(&o)[0];
+    assert_eq!(r["ok"], false);
+    assert!(
+        r["warning"]
+            .as_str()
+            .unwrap()
+            .contains("invalid queue name"),
+        "{r}"
     );
     assert!(
-        o.stderr.starts_with("MQ Hook: Would forward"),
+        o.stderr.starts_with("Warning: mq hook: not forwarded"),
         "{}",
         o.stderr
     );
+    assert_eq!(o.json()["warnings"].as_array().unwrap().len(), 1);
+}
 
-    // Instance hooks registered on a handle object are listed too.
-    later.register_hook(Arc::new(LogHook));
-    assert_eq!(
-        call(&later, "hooks.list", &[]).json()["instance_hooks"],
-        json!(["log"])
+#[test]
+fn hook_failures_are_warnings_and_symlinks_are_refused() {
+    let dir = TempDir::new().unwrap();
+    let h = handle(&dir);
+    for name in ["fs", "log", "mq"] {
+        enable(&h, name);
+    }
+    let victim = dir.path().join("victim");
+    fs::write(&victim, "keep").unwrap();
+    fs::create_dir_all(base(&dir).join("hooks").join("log")).unwrap();
+    std::os::unix::fs::symlink(&victim, base(&dir).join("hooks/log/t.log")).unwrap();
+    std::os::unix::fs::symlink(dir.path(), base(&dir).join("hooks/fs")).unwrap();
+    let o = emit_with(&h, &[("topic", "t"), ("data", "1")]);
+    assert_eq!(o.code, 0, "{}", o.reason);
+    let r = hooks_of(&o);
+    assert_eq!(r[0]["name"], "fs");
+    assert_eq!(r[0]["ok"], false);
+    assert!(r[0]["warning"].as_str().unwrap().contains("symlink"), "{r}");
+    assert_eq!(r[1]["name"], "log");
+    assert_eq!(r[1]["ok"], false);
+    assert!(r[1]["warning"].as_str().unwrap().contains("symlink"), "{r}");
+    assert_eq!(r[2], json!({"name": "mq", "ok": true, "warning": null}));
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+    assert!(!dir.path().join("t.json").exists());
+    // The event itself was stored.
+    let s = sub(&h, &[("topic", "t"), ("offset", "earliest")]);
+    assert_eq!(s["events_returned"], 1);
+}
+
+#[test]
+fn hooks_respect_timeout_ms() {
+    let dir = TempDir::new().unwrap();
+    let h = handle(&dir);
+    enable(&h, "fs");
+    emit(&h, "t", "0");
+    let lock = hold_lock_at(&base(&dir).join("hooks").join("fs").join(".lock"));
+    let started = Instant::now();
+    let o = emit_with(&h, &[("topic", "t"), ("data", "1"), ("timeout_ms", "300")]);
+    assert_eq!(o.code, 0);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let r = &hooks_of(&o)[0];
+    assert_eq!(r["ok"], false);
+    assert!(
+        r["warning"].as_str().unwrap().contains("timeout_ms passed"),
+        "{r}"
     );
-    later.remove_hook("log");
-    assert_eq!(
-        call(&later, "hooks.list", &[]).json()["instance_hooks"],
-        json!([])
-    );
+    drop(lock);
+}
+
+fn hold_lock_at(path: &Path) -> fs::File {
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    use std::os::fd::AsRawFd;
+    // SAFETY: flock on a file descriptor owned by `f`.
+    assert_eq!(unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) }, 0);
+    f
+}
+
+#[test]
+fn hooks_under_parallel_emits_keep_every_event() {
+    let dir = TempDir::new().unwrap();
+    let h = handle(&dir);
+    for name in ["fs", "log", "mq"] {
+        enable(&h, name);
+    }
+    let threads: Vec<_> = (0..4)
+        .map(|t| {
+            let path = base(&dir);
+            std::thread::spawn(move || {
+                let h = EventHandle::new(Store::new(path));
+                for i in 0..10 {
+                    let o = emit_with(&h, &[("topic", "par"), ("data", &(t * 10 + i).to_string())]);
+                    assert!(
+                        hooks_of(&o)
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .all(|r| r["ok"] == true),
+                        "{}",
+                        o.stdout
+                    );
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let store = Store::new(base(&dir));
+    let log = fs::read_to_string(hooks::log_path(&store, "par")).unwrap();
+    let mut seen: Vec<i64> = log
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<Value>(l).unwrap()["data"]
+                .as_i64()
+                .unwrap()
+        })
+        .collect();
+    seen.sort();
+    assert_eq!(seen, (0..40).collect::<Vec<_>>());
+    let latest: Value =
+        serde_json::from_str(&fs::read_to_string(hooks::fs_path(&store, "par")).unwrap()).unwrap();
+    assert_eq!(latest["seq"], 40);
+    let mut queued: Vec<i64> = mq_messages(&dir, "par")
+        .iter()
+        .map(|m| m.parse().unwrap())
+        .collect();
+    queued.sort();
+    assert_eq!(queued, (0..40).collect::<Vec<_>>());
 }
 
 #[test]
@@ -1285,6 +1444,13 @@ fn hooks_errors() {
         o.fails(2, "event.unknown_hook");
         assert!(o.reason.contains("did you mean `mq`?"), "{}", o.reason);
         assert_eq!(o.stdout, "");
+        let o = call(&h, verb, &[("name", "proc")]);
+        o.fails(2, "event.unknown_hook");
+        assert!(
+            o.reason.contains("the proc hook was removed"),
+            "{}",
+            o.reason
+        );
         call(&h, verb, &[]).fails(2, "event.missing_argument");
         call(&h, verb, &[("name", "mq"), ("timeout_ms", "5")]).fails(2, "event.invalid_argument");
         call(&h, verb, &[("nmae", "mq")]).fails(2, "event.invalid_argument");
@@ -1299,18 +1465,14 @@ fn hooks_errors() {
     call(&h, "hooks.list", &[("name", "mq")]).fails(2, "event.invalid_argument");
     assert!(files(&dir).is_empty());
 
-    // A corrupt state file: list and changes fail, emit still runs every
-    // hook with a warning.
+    // A corrupt state file: list and changes fail; emit still stores the
+    // event, runs no hook and warns.
     fs::create_dir_all(base(&dir)).unwrap();
     fs::write(base(&dir).join("_hooks.json"), "[").unwrap();
     call(&h, "hooks.list", &[]).fails(1, "event.store_corrupt");
     call(&h, "hooks.disable", &[("name", "fs")]).fails(1, "event.store_corrupt");
-    let o = emit_with(
-        &h,
-        &[("topic", "t"), ("data", "1"), ("tags", r#"["mq:x"]"#)],
-    );
+    let o = emit_with(&h, &[("topic", "t"), ("data", "1")]);
     assert_eq!(o.code, 0);
-    assert!(o.stderr.contains("MQ Hook"));
     assert!(
         o.json()["warnings"][0]
             .as_str()
@@ -1318,6 +1480,11 @@ fn hooks_errors() {
             .contains("not a valid hook state file"),
         "{}",
         o.stdout
+    );
+    assert!(
+        o.stderr.starts_with("Warning: hooks did not run"),
+        "{}",
+        o.stderr
     );
 
     // A symlink at the state file is not written through.
@@ -1327,13 +1494,11 @@ fn hooks_errors() {
     std::os::unix::fs::symlink(&victim, base(&dir).join("_hooks.json")).unwrap();
     call(&h, "hooks.disable", &[("name", "fs")]).fails(1, "event.store_error");
     assert_eq!(fs::read_to_string(&victim).unwrap(), r#"{"disabled":[]}"#);
-
-    // The store lock is waited for at most a bounded time.
     fs::remove_file(base(&dir).join("_hooks.json")).unwrap();
+
     let h = EventHandle {
         store: None,
         target_error: None,
-        instance_hooks: Mutex::new(BTreeMap::new()),
     };
     call(&h, "hooks.list", &[]).fails(1, "event.store_unavailable");
     call(&h, "hooks.enable", &[("name", "fs")]).fails(1, "event.store_unavailable");

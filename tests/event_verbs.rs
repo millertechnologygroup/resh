@@ -104,11 +104,7 @@ fn an_event_emitted_by_one_command_is_read_by_a_later_one() {
     let v = json_of(&out);
     assert_eq!(v["events"][0]["id"], evt["id"]);
     assert_eq!(datas(&v), [json!({"status": "success"})]);
-    // The hooks print their notes on stderr only.
-    assert!(
-        err.contains("MQ hook processed subscription with 1 events"),
-        "{err}"
-    );
+    assert_eq!(err, "", "no hook runs by default");
 
     use std::os::unix::fs::PermissionsExt;
     let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
@@ -447,41 +443,103 @@ fn list_topics_lists_what_was_emitted() {
 #[test]
 fn hooks_state_carries_over_to_later_commands() {
     let tmp = TempDir::new().unwrap();
-    let (code, out, _) = run(tmp.path(), &["event://.hooks.disable", "name=mq"]);
+    let (code, out, _) = run(tmp.path(), &["event://.hooks.enable", "name=log"]);
     assert_eq!(
         (code, out.as_str()),
-        (0, "{\"changed\":true,\"disabled\":true,\"hook\":\"mq\"}\n")
+        (0, "{\"changed\":true,\"enabled\":true,\"hook\":\"log\"}\n")
     );
     let (_, out, _) = run(tmp.path(), &["event://.hooks.list"]);
-    assert_eq!(json_of(&out)["disabled"], json!(["mq"]));
-    let (code, _, err) = run(
-        tmp.path(),
-        &[
-            "event://.emit",
-            "topic=t",
-            "data=1",
-            r#"tags=["mq:orders"]"#,
-        ],
-    );
+    assert_eq!(json_of(&out)["global_hooks"], json!(["log"]));
+    let (code, out, err) = run(tmp.path(), &["event://.emit", "topic=t", "data=1"]);
     assert_eq!((code, err.as_str()), (0, ""));
-    let (_, _, err) = run(tmp.path(), &["event://.subscribe", "topic=t"]);
-    assert!(!err.contains("MQ hook"), "{err}");
-    assert!(err.contains("Log hook"), "{err}");
-    let (code, out, _) = run(tmp.path(), &["event://.hooks.enable", "name=mq"]);
+    assert_eq!(
+        json_of(&out)["hooks"],
+        json!([{"name": "log", "ok": true, "warning": null}])
+    );
+    let (code, out, _) = run(tmp.path(), &["event://.hooks.disable", "name=log"]);
     assert_eq!(
         (code, out.as_str()),
-        (0, "{\"changed\":true,\"enabled\":true,\"hook\":\"mq\"}\n")
+        (0, "{\"changed\":true,\"disabled\":true,\"hook\":\"log\"}\n")
     );
-    let (_, _, err) = run(
+    let (_, out, _) = run(tmp.path(), &["event://.emit", "topic=t", "data=2"]);
+    assert_eq!(json_of(&out)["hooks"], json!([]));
+    let log = store(tmp.path()).join("hooks/log/t.log");
+    assert_eq!(std::fs::read_to_string(log).unwrap().lines().count(), 1);
+
+    let (code, _, err) = run(tmp.path(), &["event://.hooks.enable", "name=proc"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("the proc hook was removed"), "{err}");
+}
+
+#[test]
+fn mq_hook_message_is_read_with_mq_get() {
+    let tmp = TempDir::new().unwrap();
+    run(tmp.path(), &["event://.hooks.enable", "name=mq"]);
+    let (code, out, err) = run(
         tmp.path(),
-        &[
-            "event://.emit",
-            "topic=t",
-            "data=1",
-            r#"tags=["mq:orders"]"#,
-        ],
+        &["event://.emit", "topic=orders", r#"data={"id":42}"#],
     );
-    assert!(err.starts_with("MQ Hook: Would forward event"), "{err}");
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(json_of(&out)["hooks"][0]["ok"], true);
+    let (code, out, err) = run(tmp.path(), &["mq://orders.get"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out, r#"{"id":42}"#);
+    let (code, _, _) = run(tmp.path(), &["mq://orders.get"]);
+    assert_eq!(code, 1, "the queue held exactly one message");
+}
+
+#[test]
+fn log_hook_file_is_read_with_log_tail() {
+    let tmp = TempDir::new().unwrap();
+    run(tmp.path(), &["event://.hooks.enable", "name=log"]);
+    for n in 1..=3 {
+        emit(tmp.path(), "jobs.done", &n.to_string());
+    }
+    let path = store(tmp.path()).join("hooks/log/jobs.done.log");
+    let (code, out, err) = run(
+        tmp.path(),
+        &[&format!("log://{}.tail", path.display()), "lines=2"],
+    );
+    assert_eq!(code, 0, "{err}");
+    let datas: Vec<Value> = out.lines().map(|l| json_of(l)["data"].clone()).collect();
+    assert_eq!(datas, [json!(2), json!(3)]);
+}
+
+#[test]
+fn fs_hook_holds_the_latest_event_under_parallel_emits() {
+    let tmp = TempDir::new().unwrap();
+    run(tmp.path(), &["event://.hooks.enable", "name=fs"]);
+    run(tmp.path(), &["event://.hooks.enable", "name=log"]);
+    let threads: Vec<_> = (0..4)
+        .map(|t| {
+            let dir = tmp.path().to_path_buf();
+            std::thread::spawn(move || {
+                for i in 0..5 {
+                    let (code, out, err) = run(
+                        &dir,
+                        &["event://.emit", "topic=par", &format!("data={}", t * 5 + i)],
+                    );
+                    assert_eq!(code, 0, "{err}");
+                    assert!(
+                        json_of(&out)["hooks"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .all(|h| h["ok"] == true),
+                        "{out}"
+                    );
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let latest =
+        json_of(&std::fs::read_to_string(store(tmp.path()).join("hooks/fs/par.json")).unwrap());
+    assert_eq!(latest["seq"], 20);
+    let log = std::fs::read_to_string(store(tmp.path()).join("hooks/log/par.log")).unwrap();
+    assert_eq!(log.lines().count(), 20);
 }
 
 // --- help ----------------------------------------------------------------------
@@ -738,8 +796,8 @@ fn help_examples_run_and_match_their_documented_output() {
         assert_eq!(code, 0, "{verb}: {err}");
         same_shape(&help_example_output(verb), &json_of(&out), verb);
     }
-    // hooks.disable then hooks.enable, as documented.
-    for verb in ["hooks.disable", "hooks.enable"] {
+    // hooks.enable then hooks.disable, as documented.
+    for verb in ["hooks.enable", "hooks.disable"] {
         let args = help_example_args(verb);
         let (code, out, _) = run(
             tmp.path(),

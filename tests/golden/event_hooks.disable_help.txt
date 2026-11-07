@@ -1,10 +1,10 @@
 Handle: event
 Verb: hooks.disable
-Definition: Disables one of the built-in hooks fs, log, mq, or proc for this and
-  every later resh command of the user, recording it in the event store.
+Definition: Disables one of the built-in hooks fs, log, or mq for this and every
+  later emit of the user, recording it in the event store.
 
 Usage:
-  resh event://.hooks.disable name=fs|log|mq|proc
+  resh event://.hooks.disable name=fs|log|mq
 
 Example:
   resh event://.hooks.disable name=mq

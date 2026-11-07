@@ -1,10 +1,10 @@
 Handle: event
 Verb: hooks.enable
-Definition: Enables one of the built-in hooks fs, log, mq, or proc for this and
-  every later resh command of the user.
+Definition: Enables one of the built-in hooks fs, log, or mq for this and every
+  later emit of the user.
 
 Usage:
-  resh event://.hooks.enable name=fs|log|mq|proc
+  resh event://.hooks.enable name=fs|log|mq
 
 Example:
   resh event://.hooks.enable name=mq
