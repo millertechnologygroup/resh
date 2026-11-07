@@ -7,6 +7,7 @@ Usage:
   resh https://<host>/<path>.head [accept=json|text|bytes]
     [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]
     [follow_redirects=true|false] [allow_insecure=true|false]
+    [ca_file=<pem>]
 
 Example:
   resh https://example.com/index.html.head

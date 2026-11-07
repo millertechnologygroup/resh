@@ -239,6 +239,11 @@ impl TlsServer {
         format!("https://127.0.0.1:{}{path}", self.port)
     }
 
+    /// The server's self-signed certificate, usable as `ca_file=`.
+    fn cert_path(&self) -> String {
+        self._dir.path().join("cert.pem").display().to_string()
+    }
+
     /// The request the server received.
     fn request(mut self) -> String {
         self.request.take().unwrap().join().unwrap()
@@ -676,6 +681,70 @@ fn https_allow_insecure_false_still_verifies() {
     assert_eq!(r.code, 1, "{}", r.err);
 }
 
+#[test]
+fn https_ca_file_trusts_the_server_certificate_for_every_verb() {
+    for verb in VERBS {
+        let Some(server) = TlsServer::start(Some(with_len(
+            "200 OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("Connection", "close"),
+            ],
+            if verb == "head" {
+                b""
+            } else {
+                br#"{"tls":true}"#
+            },
+        ))) else {
+            return;
+        };
+        let mut args = vec![
+            server.url(&format!("/secure.{verb}")),
+            format!("ca_file={}", server.cert_path()),
+        ];
+        if ["post", "put", "patch", "delete"].contains(&verb) {
+            args.push("body=payload".into());
+        }
+        if verb == "preflight" {
+            args.push("origin=https://example.org".into());
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let r = run(&args);
+        // The request went through verified TLS (no connection failure);
+        // preflight may still report the missing CORS headers.
+        assert!(!r.err.contains("connection_failed"), "{verb}: {}", r.err);
+        if verb != "preflight" {
+            assert_eq!(r.code, 0, "{verb}: {}", r.err);
+        }
+    }
+}
+
+#[test]
+fn https_ca_file_refusals() {
+    let dir = tempfile::tempdir().unwrap();
+    let not_pem = dir.path().join("not.pem");
+    std::fs::write(&not_pem, "hello").unwrap();
+    let not_pem = format!("ca_file={}", not_pem.display());
+    for args in [
+        vec!["https://127.0.0.1:1/x.get", not_pem.as_str()],
+        vec!["https://127.0.0.1:1/x.get", "ca_file=/nonexistent/ca.pem"],
+        vec!["http://127.0.0.1:1/x.get", "ca_file=/etc/hostname"],
+        vec![
+            "https://127.0.0.1:1/x.get",
+            "ca_file=/nonexistent/ca.pem",
+            "allow_insecure=true",
+        ],
+    ] {
+        let r = run(&args);
+        assert_eq!(r.code, 2, "{args:?}: {}", r.err);
+        assert!(
+            r.err.starts_with("Error: [http.invalid_argument] "),
+            "{args:?}: {}",
+            r.err
+        );
+    }
+}
+
 // --- --json-pretty ---------------------------------------------------------------------
 
 #[test]
@@ -741,6 +810,7 @@ fn options(verb: &str) -> Vec<&'static str> {
         "timeout_ms",
         "follow_redirects",
         "allow_insecure",
+        "ca_file",
     ]);
     v.sort();
     v

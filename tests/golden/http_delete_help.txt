@@ -8,6 +8,7 @@ Usage:
     [content_type=<type>] [accept=text|json|bytes] [query=<k=v&...>]
     [headers=<Name:value;...>] [timeout_ms=<ms>]
     [follow_redirects=true|false] [allow_insecure=true|false]
+    [ca_file=<pem>]
 
 Example:
   resh http://api.example.com/v1/users/42.delete accept=json

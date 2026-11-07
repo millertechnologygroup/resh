@@ -70,6 +70,7 @@ Every verb accepts these:
 | `timeout_ms`       | Whole-request deadline in milliseconds (connect, send and reading the whole response body). A positive integer; anything else is refused (exit 2). Defaults: 5000 for `preflight`; 30000 for `put`, `patch` and `delete`; 10000 for the others. |
 | `follow_redirects` | `true` (default) follows up to 10 redirects; `false` returns the redirect response itself. |
 | `allow_insecure`   | `true` **disables TLS certificate and host name verification** for an `https://` URL. Default `false`. No effect on `http://`. Use it only against hosts you control. |
+| `ca_file`          | PEM file of CA certificates to trust for this stage, **in addition to** the built-in public roots (webpki roots); verification stays on. Use it for servers with a certificate from a private CA. `https://` URLs only: refused (exit 2) on an `http://` URL, together with `allow_insecure=true`, and when the file cannot be read or holds no valid PEM certificate. |
 
 Booleans accept `true|false|1|0|yes|no|on|off`; anything else is refused
 (exit 2).
@@ -262,7 +263,7 @@ same `http.` codes.
 | ---- | ---- | ------- |
 | `http.unknown_verb` | 2 | The verb is not one of the ten above. |
 | `http.unknown_argument` | 2 | An argument the verb does not take, including `dry_run`. The message suggests the closest accepted name. |
-| `http.invalid_argument` | 2 | A bad value: malformed `headers`, `timeout_ms` or boolean; unknown `accept` or `method`; `body` with `body_file`; empty `body_file`; `body` with a `json` method that sends no body; invalid `origin`, `request_headers` or `content_type`; a URL the client cannot use. |
+| `http.invalid_argument` | 2 | A bad value: malformed `headers`, `timeout_ms` or boolean; unknown `accept` or `method`; `body` with `body_file`; empty `body_file`; `body` with a `json` method that sends no body; invalid `origin`, `request_headers` or `content_type`; a URL the client cannot use; `ca_file` on an `http://` URL, with `allow_insecure=true`, or naming a file that cannot be read or holds no valid PEM certificate. |
 | `http.body_file_unreadable` | 1 | `body_file` could not be read; nothing was sent. |
 | `http.client_failed` | 1 | The HTTP client (TLS backend) could not be set up. |
 | `http.connection_failed` | 1 | Connecting failed: refused, unreachable, DNS, TLS (untrusted certificate, wrong host name, not TLS), or a proxy that refused the tunnel. The message ends with the underlying cause. |
@@ -276,9 +277,10 @@ same `http.` codes.
 
 * TLS verification is on by default for every verb. `allow_insecure=true`
   turns it off for that stage.
-* There is no option to add a CA bundle or client certificate: a server whose
-  certificate does not chain to a public root (webpki roots) can only be
-  reached with `allow_insecure=true`.
+* A server whose certificate does not chain to a public root (webpki roots)
+  is reached with `ca_file=<pem>` naming its CA, with verification still on.
+  `allow_insecure=true` is the insecure alternative and cannot be combined
+  with `ca_file`. There is no option for a client certificate.
 * Request headers given with `headers=` (for example `Authorization:Bearer
   ...`) appear in the process list and shell history. Prefer a short-lived
   token.

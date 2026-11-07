@@ -54,7 +54,8 @@ macro_rules! http_handle_help {
                             $scheme,
                             "://<host>/<path>.get [accept=text|json|bytes]\n",
                             "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!(
                             "resh ",
@@ -96,7 +97,8 @@ the response body as is."#,
                             $scheme,
                             "://<host>/<path>.head [accept=json|text|bytes]\n",
                             "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!("resh ", $scheme, "://example.com/index.html.head"),
                         example_output: Some(concat!(
@@ -128,7 +130,8 @@ Shown with --json-pretty."#
                             $scheme,
                             "://<host>/<path>.headers [method=<method>]\n",
                             "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!("resh ", $scheme, "://example.com.headers method=HEAD"),
                         example_output: Some(concat!(
@@ -162,7 +165,8 @@ Shown with --json-pretty."#
                             $scheme,
                             "://<host>/<path>.options [include_body=true|false]\n",
                             "  [query=<k=v&...>] [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!("resh ", $scheme, "://api.example.com/v1/users.options"),
                         example_output: Some(concat!(
@@ -201,7 +205,8 @@ added as the body field."#
                             "://<host>/<path>.preflight [origin=<origin>]\n",
                             "  [method=<method>] [request_headers=<name,...>] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!(
                             "resh ",
@@ -254,7 +259,8 @@ Shown with --json-pretty."#
                             "://<host>/<path>.json [method=<method>] [body=<data>]\n",
                             "  [content_type=<type>] [accept=json|text|bytes] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!("resh ", $scheme, "://api.example.com/v1/users/42.json"),
                         example_output: Some(concat!(
@@ -294,7 +300,8 @@ accept=bytes reports type bytes with a base64 field."#
                             "://<host>/<path>.post [body=<data> | body_file=<path>]\n",
                             "  [content_type=<type>] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!(
                             "resh ",
@@ -319,7 +326,8 @@ The response body is printed exactly as the server sent it."#,
                             "://<host>/<path>.put [body=<data> | body_file=<path>]\n",
                             "  [content_type=<type>] [accept=text|json|bytes] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!(
                             "resh ",
@@ -344,7 +352,8 @@ Shown for the default accept=text, which prints the response body."#,
                             "://<host>/<path>.patch [body=<data> | body_file=<path>]\n",
                             "  [content_type=<type>] [accept=bytes|text|json] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!(
                             "resh ",
@@ -369,7 +378,8 @@ Shown for the default accept=bytes, which prints the response body."#,
                             "://<host>/<path>.delete [body=<data> | body_file=<path>]\n",
                             "  [content_type=<type>] [accept=text|json|bytes] [query=<k=v&...>]\n",
                             "  [headers=<Name:value;...>] [timeout_ms=<ms>]\n",
-                            "  [follow_redirects=true|false] [allow_insecure=true|false]"
+                            "  [follow_redirects=true|false] [allow_insecure=true|false]\n",
+                            "  [ca_file=<pem>]"
                         ),
                         example: concat!(
                             "resh ",
@@ -399,12 +409,13 @@ static HTTP_HELP: HandleHelp = http_handle_help!("http");
 static HTTPS_HELP: HandleHelp = http_handle_help!("https");
 
 /// Options every verb accepts.
-const COMMON_ARGS: [&str; 5] = [
+const COMMON_ARGS: [&str; 6] = [
     "query",
     "headers",
     "timeout_ms",
     "follow_redirects",
     "allow_insecure",
+    "ca_file",
 ];
 
 /// The arguments each verb accepts, besides `COMMON_ARGS`. Help usage lists
@@ -476,6 +487,29 @@ const REDIRECT_FAILED: &str = "http.redirect_failed";
 const REQUEST_FAILED: &str = "http.request_failed";
 const STATUS_ERROR: &str = "http.status_error";
 const INVALID_JSON_RESPONSE: &str = "http.invalid_json_response";
+
+/// The certificates of the PEM file `path` (`ca_file=`): an error when it
+/// cannot be read or holds no valid certificate.
+fn load_ca_file(path: &str) -> std::result::Result<Vec<reqwest::Certificate>, String> {
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject;
+    if path.trim().is_empty() {
+        return Err("the path is empty".into());
+    }
+    let ders = CertificateDer::pem_file_iter(path)
+        .map_err(|e| format!("cannot read {path}: {e}"))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| format!("bad certificate in {path}: {e}"))?;
+    if ders.is_empty() {
+        return Err(format!("no PEM certificate in {path}"));
+    }
+    ders.iter()
+        .map(|d| {
+            reqwest::Certificate::from_der(d.as_ref())
+                .map_err(|e| format!("bad certificate in {path}: {e}"))
+        })
+        .collect()
+}
 
 /// Usage error (exit 2): an invalid argument value; nothing was sent.
 fn usage(msg: impl AsRef<str>) -> Status {
@@ -847,11 +881,26 @@ impl HttpHandle {
         let timeout = Duration::from_millis(timeout_ms);
         let follow = bool_opt(args, "follow_redirects", true)?;
         let insecure = bool_opt(args, "allow_insecure", false)?;
+        let extra_cas = match args.get("ca_file") {
+            None => Vec::new(),
+            Some(_) if self.url.scheme() != "https" => {
+                return Err(usage(
+                    "ca_file applies to https:// URLs only; this URL is not verified with TLS",
+                ));
+            }
+            Some(_) if insecure => {
+                return Err(usage(
+                    "ca_file cannot be combined with allow_insecure=true: one adds a trusted \
+                     CA, the other turns verification off",
+                ));
+            }
+            Some(f) => load_ca_file(f).map_err(|e| usage(format!("invalid ca_file: {e}")))?,
+        };
         let headers = match args.get("headers") {
             None => HeaderMap::new(),
             Some(h) => parse_headers(h).map_err(|e| usage(format!("invalid headers: {e}")))?,
         };
-        let client = Self::build_client(timeout, follow, insecure).map_err(|e| {
+        let client = Self::build_client(timeout, follow, insecure, extra_cas).map_err(|e| {
             Status::coded(
                 exit::FAILED,
                 CLIENT_FAILED,
@@ -869,9 +918,19 @@ impl HttpHandle {
 
     /// A client with a whole-request `timeout` (connect, send and reading
     /// the body), redirects followed (up to 10) unless `follow` is false, and
-    /// certificate checks disabled only when `insecure` is set.
-    fn build_client(timeout: Duration, follow: bool, insecure: bool) -> reqwest::Result<Client> {
-        Client::builder()
+    /// certificate checks disabled only when `insecure` is set. `extra_cas`
+    /// (`ca_file=`) are trusted in addition to the built-in roots.
+    fn build_client(
+        timeout: Duration,
+        follow: bool,
+        insecure: bool,
+        extra_cas: Vec<reqwest::Certificate>,
+    ) -> reqwest::Result<Client> {
+        let mut builder = Client::builder();
+        for cert in extra_cas {
+            builder = builder.add_root_certificate(cert);
+        }
+        builder
             .timeout(timeout)
             .connect_timeout(timeout)
             .redirect(if follow {

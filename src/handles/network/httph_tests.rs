@@ -1108,8 +1108,8 @@ fn allow_insecure_parses_strictly() {
         assert_eq!(err.exit_code(), 2);
         assert!(err.reason.unwrap().contains("allow_insecure"));
     }
-    assert!(HttpHandle::build_client(t, true, true).is_ok());
-    assert!(HttpHandle::build_client(t, false, false).is_ok());
+    assert!(HttpHandle::build_client(t, true, true, Vec::new()).is_ok());
+    assert!(HttpHandle::build_client(t, false, false, Vec::new()).is_ok());
 }
 
 // --- help ---------------------------------------------------------------------------
@@ -1277,5 +1277,180 @@ fn every_error_code_is_valid_documented_and_reachable() {
             reached.contains(&code) || code == "http.client_failed",
             "{code} untested"
         );
+    }
+}
+
+// --- ca_file -------------------------------------------------------------------------
+
+/// A CA (PEM) and a server certificate and key for `sans`, signed by it.
+fn tls_certs(sans: &[&str]) -> (String, Vec<u8>, Vec<u8>) {
+    let mut ca_params = rcgen::CertificateParams::new(vec![]);
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "resh test CA");
+    let ca = rcgen::Certificate::from_params(ca_params).unwrap();
+    let leaf = rcgen::Certificate::from_params(rcgen::CertificateParams::new(
+        sans.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+    ))
+    .unwrap();
+    (
+        ca.serialize_pem().unwrap(),
+        leaf.serialize_der_with_signer(&ca).unwrap(),
+        leaf.serialize_private_key_der(),
+    )
+}
+
+/// An HTTPS server on 127.0.0.1 with a certificate for `sans` from a
+/// private CA; answers every request with 200, a JSON body and permissive
+/// CORS headers. Returns the port and the CA PEM.
+fn https_server(sans: &[&str]) -> (u16, String) {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    let (ca_pem, leaf, key) = tls_certs(sans);
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = Arc::new(
+        rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(leaf)],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
+            )
+            .unwrap(),
+    );
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let config = Arc::clone(&config);
+            std::thread::spawn(move || {
+                s.set_read_timeout(Some(Duration::from_secs(3))).ok();
+                let conn = rustls::ServerConnection::new(config).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, s);
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match tls.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => return,
+                    }
+                }
+                let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+                let len = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0u8; len];
+                if tls.read_exact(&mut body).is_err() {
+                    return;
+                }
+                let resp = http_response(
+                    "200 OK",
+                    &[
+                        ("Content-Type", "application/json"),
+                        ("Access-Control-Allow-Origin", "*"),
+                        (
+                            "Access-Control-Allow-Methods",
+                            "GET, POST, PUT, PATCH, DELETE",
+                        ),
+                        ("Access-Control-Allow-Headers", "*"),
+                        ("Allow", "GET, POST"),
+                        ("Connection", "close"),
+                    ],
+                    br#"{"ok":true}"#,
+                );
+                tls.write_all(&resp).ok();
+                tls.flush().ok();
+                tls.conn.send_close_notify();
+                tls.flush().ok();
+            });
+        }
+    });
+    (port, ca_pem)
+}
+
+#[test]
+fn ca_file_trusts_a_private_ca_for_every_verb() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, ca) = https_server(&["127.0.0.1", "localhost"]);
+    let ca_path = dir.path().join("ca.pem");
+    std::fs::write(&ca_path, &ca).unwrap();
+    let (other_ca, _, _) = tls_certs(&["x"]);
+    let other_path = dir.path().join("other.pem");
+    std::fs::write(&other_path, &other_ca).unwrap();
+    let ca_arg = ca_path.to_str().unwrap();
+    for host in ["127.0.0.1", "localhost"] {
+        let u = format!("https://{host}:{port}/x");
+        for verb in ALL_VERBS {
+            let mut a = vec![("ca_file", ca_arg), ("timeout_ms", "5000")];
+            if verb == "preflight" {
+                a.push(("origin", "https://example.org"));
+            }
+            let o = call(&u, verb, &a);
+            assert_eq!(o.code(), 0, "{verb} {host}: {} {}", o.reason(), o.text());
+            // allow_insecure=false is compatible with ca_file.
+            if verb == "get" {
+                a.push(("allow_insecure", "false"));
+                assert_eq!(call(&u, verb, &a).code(), 0);
+            }
+        }
+    }
+    // Verification stays on: no ca_file, or another CA, fails (exit 1).
+    let u = format!("https://127.0.0.1:{port}/x");
+    for a in [
+        vec![("timeout_ms", "5000")],
+        vec![
+            ("timeout_ms", "5000"),
+            ("ca_file", other_path.to_str().unwrap()),
+        ],
+    ] {
+        let o = call(&u, "get", &a);
+        assert_eq!(o.code(), 1, "{}", o.reason());
+        assert_eq!(error_code(&o), "http.connection_failed", "{}", o.reason());
+    }
+}
+
+#[test]
+fn ca_file_refusals_exit_2_before_sending() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ca, _, _) = tls_certs(&["127.0.0.1"]);
+    let ca_path = dir.path().join("ca.pem");
+    std::fs::write(&ca_path, &ca).unwrap();
+    let not_pem = dir.path().join("not.pem");
+    std::fs::write(&not_pem, "hello\n").unwrap();
+    let bad_pem = dir.path().join("bad.pem");
+    std::fs::write(
+        &bad_pem,
+        "-----BEGIN CERTIFICATE-----\nnot base64!\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+    let missing = dir.path().join("missing.pem");
+    let ca_arg = ca_path.to_str().unwrap();
+    // Nothing listens here: a refusal must come before any connection.
+    let port = closed_port();
+    for verb in ALL_VERBS {
+        let https = format!("https://127.0.0.1:{port}/x");
+        let o = call(
+            &https,
+            verb,
+            &[("ca_file", ca_arg), ("allow_insecure", "true")],
+        );
+        assert_code(&o, 2, "allow_insecure");
+        assert_eq!(error_code(&o), "http.invalid_argument");
+        let http = format!("http://127.0.0.1:{port}/x");
+        let o = call(&http, verb, &[("ca_file", ca_arg)]);
+        assert_code(&o, 2, "https:// URLs only");
+        for f in [
+            missing.to_str().unwrap(),
+            not_pem.to_str().unwrap(),
+            bad_pem.to_str().unwrap(),
+            "",
+        ] {
+            let o = call(&https, verb, &[("ca_file", f)]);
+            assert_code(&o, 2, "invalid ca_file");
+            assert_eq!(error_code(&o), "http.invalid_argument");
+        }
     }
 }
