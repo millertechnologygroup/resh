@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (db, mq, event,
+  `<handle>.invalid_argument`. Handles not yet aligned (mq, event,
   log, proc, svc, cron, firewall, user, pkg, system, cert, backup,
   plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
@@ -89,15 +89,48 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
 - Values are text: `key=123`, `namespace=2024`, `cursor=17` work, and
   `value=` is stored exactly as typed (`encode=json` validates and stores
   compact JSON).
-- `rediss://` and `ca_file=` are refused (`cache.tls_unsupported`): this
-  build has no TLS for cache servers.
+- `rediss://` works: TLS (rustls) with certificate-chain and host-name
+  verification against SSL_CERT_FILE or the system CA bundle;
+  `ca_file=<pem>` adds a private CA for the call (refused for redis://,
+  Unix sockets and memcached). There is no option to skip verification
+  (a `#insecure` URL fragment is refused). TLS failures are
+  `cache.tls_failed`. Client certificates and memcached TLS are not
+  supported.
 - Memcached uses resh's own text-protocol client (keys cannot inject
   commands): `keys` works (LRU crawler metadump, memcached 1.4.31+);
   `exists`/`ttl` no longer report missing keys as present; `incr` no longer
   overwrites non-numeric values and applies `ttl_ms` on every call; TTLs
   round up to whole seconds (500 ms no longer means "never expires").
-- Redis `incr` values are exact 64-bit integers. redis 0.25.5 clears the
-  future-incompatibility warning; the `memcache` crate is no longer used.
+- Redis `incr` values are exact 64-bit integers. The redis crate moved from
+  0.25 to 1.8.0 (TLS through rustls; clears its future-incompatibility
+  warning; tokio is now 1.54); the `memcache` crate is no longer used.
+
+### db
+
+- Every verb refuses unknown arguments and invalid values before connecting
+  (exit 2, `db.invalid_argument`), exits 0/1/2/124 and reports
+  `Error: [db.<code>]` with a JSON error object. DSNs and passwords never
+  appear in output.
+- `timeout_ms` covers connecting and the work; at the deadline the running
+  statement is cancelled on the server (PostgreSQL `pg_cancel_backend`,
+  MySQL/MariaDB `KILL QUERY`, SQLite interrupt), exit 124. A timed-out
+  transaction commits nothing.
+- `ca_file=<pem>` trusts a private CA (implies `verify_full`). `prefer` (the
+  default), `allow` and `require` do not check certificates and are
+  documented as insecure. `log_queries=true` writes each statement to stderr.
+- Breaking: each verb uses one connection; pool options, `tx_id` and
+  `transaction action=begin|commit|rollback` are refused; `connect` reports
+  server version, database, user and `tls`; `db.connection_not_found` is now
+  `db.dsn_missing`; `sql=` must be one statement.
+- `query` streams rows; NUMERIC/DECIMAL are exact strings; unsupported types
+  fail with `db.unsupported_column_type` instead of null. `schema` fills
+  indexes, foreign keys, unique constraints, checks and triggers. Table and
+  schema names are always bound (MySQL `tables` was injectable). MySQL
+  `isolation=` and `read_only=` work.
+- Remaining limits: `tls_mode=verify_ca` also checks the host name (sqlx
+  0.8.6 with rustls 0.23; fails closed); PostgreSQL binds strings as `text`,
+  so placeholders need casts; MySQL shows binary-collation text and binary
+  data alike (UTF-8 as text, else base64).
 
 ### http and https
 
@@ -684,7 +717,7 @@ print help instead of running.
 | snapshot | `src/handles/filesystem/snapshot.rs` (`SnapshotHandle::from_url`, `Handle::call`; search `HELP_ALIASES`) |
 | svc | `src/handles/processes/svch.rs:2181-2183` |
 | proc | `src/handles/processes/proch.rs:2297` |
-| db | `src/handles/data/dbh.rs:1038-1039` |
+| db | `src/handles/data/dbh/mod.rs` (`DbHandle::help_topic`)` |
 | system | `src/handles/system/systemh.rs:2858` (checks `input`) |
 | plugin | `src/core/parse.rs:88`; `src/handles/automation/pluginh.rs:1224` |
 | parser | `src/core/parse.rs:272` (only a fallback when no verb is split off) |
@@ -872,12 +905,6 @@ typed structs:
 
 ### Data and system
 
-- **db.**
-  - `tls_mode` and `log_queries` are validated but never applied
-    (`dbh.rs:1185-1253, 1348-1386`).
-  - The help lists `allow` as a TLS mode, but the validator rejects it.
-  - The PostgreSQL and MySQL `schema` index, foreign key and constraint lists
-    are always empty (`:4226-4245, 4342-4355`).
 - **event.**
   - `list-topics` returns mock catalogs (`eventh.rs:1006+`).
   - `include_backends` and `summarize` are unused.
