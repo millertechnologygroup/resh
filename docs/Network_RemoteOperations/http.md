@@ -55,8 +55,8 @@ parameters with `query=` (see below) rather than inside the URL.
 Every verb treats the HTTP status the same way: a 2xx response exits 0. A 3xx
 response exits 0 only with `follow_redirects=false` (the redirect is then the
 answer asked for). Any other status exits 1: the body or JSON is still printed
-to stdout, and `Error: HTTP <code> <reason>` (for example
-`Error: HTTP 404 Not Found`) goes to stderr. The JSON verbs also report the
+to stdout, and `Error: [http.status_error] HTTP <code> <reason>` (for
+example `Error: [http.status_error] HTTP 404 Not Found`) goes to stderr. The JSON verbs also report the
 status in their output.
 
 ## 4. Common arguments
@@ -150,10 +150,9 @@ resh https://example.com.headers method=HEAD follow_redirects=false
 (case-insensitive, default GET); no body is sent. Output:
 `{"url", "status", "status_text", "headers"}` with header values as arrays.
 An unsupported method or malformed `headers` prints
-`{"url", "error": {"kind": "invalid_argument", "message"}}` and exits 2. A
-request failure prints the same shape with `kind` `network`, `timeout`
-(exit 124), `redirect`, `invalid_url` (exit 2) or `other`, and exits 1
-unless noted.
+`{"url", "error": {"code": "http.invalid_argument", "message"}}` and exits
+2. A request failure prints the same shape with the failure's code (section
+6) and its exit code.
 
 ### options
 
@@ -178,8 +177,8 @@ These win over the same headers in `headers=`. Output: `url`, `method`,
 `status`, `ok`, `cors` (`allowed_origins`, `allowed_methods`,
 `allowed_headers`, `exposed_headers`, `allow_credentials`,
 `max_age_seconds`) and `raw_headers`. On a request failure it prints the
-same shape with `ok: false`, `status: null`, `cors: null` and an `error`
-message, and exits 1 (124 for a timeout).
+same shape with `ok: false`, `status: null`, `cors: null` and
+`"error": {"code", "message"}`, and exits 1 (124 for a timeout).
 
 ### json
 
@@ -199,7 +198,8 @@ another method it is refused (exit 2). No `Accept` header is added. Output:
 `accept=json` (default) gives `type: "json"` when the body parses, otherwise
 `type: "text"`. `accept=text` always gives text; `accept=bytes` gives
 `{"type": "bytes", "base64": "..."}`. A request failure prints an envelope
-with `status: 0` and an `error` message, and exits 1 (124 for a timeout).
+with `status: 0` and `"error": {"code", "message"}`, and exits 1 (124 for a
+timeout).
 
 ### post
 
@@ -246,19 +246,31 @@ that is not JSON is wrapped as `{"status": {"code", "ok"}, "body": "..."}`).
 
 * 0: the response status is a success (2xx, or 3xx with
   `follow_redirects=false`).
-* 1: any other HTTP status; a connection, TLS, proxy or redirect failure
-  (including a redirect loop); a response that ends early; an unreadable
-  `body_file`; `patch accept=json` with a body that is not JSON.
-* 2: invalid usage, nothing was sent: an unknown argument or verb, `dry_run`,
-  a malformed `headers`, `timeout_ms` or boolean, an unknown `accept` or
-  `method`, `body` with `body_file`, `body` with a `json` method that sends no
-  body, an invalid `origin`, `request_headers` or `content_type`.
+* 1: the request failed (see the codes below).
+* 2: invalid usage; nothing was sent.
 * 124: the request did not finish within `timeout_ms`. The server may have
   received and acted on it.
 
-The reason is printed on stderr as `Error: <reason>`, for example
-`Error: HTTP 404 Not Found`, `Error: Connection failed: Connection refused
-(os error 111)`, `Error: Request timed out after 300 ms`.
+A failure is printed on stderr as `Error: [<code>] <message>`, for example
+`Error: [http.status_error] HTTP 404 Not Found` or
+`Error: [http.timeout] Request timed out after 300 ms`. `headers`, `json` and
+`preflight` also put `"error": {"code", "message"}` in their JSON output for
+argument (headers only) and request failures. The `https` handle uses the
+same `http.` codes.
+
+| Code | Exit | Meaning |
+| ---- | ---- | ------- |
+| `http.unknown_verb` | 2 | The verb is not one of the ten above. |
+| `http.unknown_argument` | 2 | An argument the verb does not take, including `dry_run`. The message suggests the closest accepted name. |
+| `http.invalid_argument` | 2 | A bad value: malformed `headers`, `timeout_ms` or boolean; unknown `accept` or `method`; `body` with `body_file`; empty `body_file`; `body` with a `json` method that sends no body; invalid `origin`, `request_headers` or `content_type`; a URL the client cannot use. |
+| `http.body_file_unreadable` | 1 | `body_file` could not be read; nothing was sent. |
+| `http.client_failed` | 1 | The HTTP client (TLS backend) could not be set up. |
+| `http.connection_failed` | 1 | Connecting failed: refused, unreachable, DNS, TLS (untrusted certificate, wrong host name, not TLS), or a proxy that refused the tunnel. The message ends with the underlying cause. |
+| `http.timeout` | 124 | `timeout_ms` passed before the response body was complete. |
+| `http.redirect_failed` | 1 | More than 10 redirects (for example a loop). |
+| `http.request_failed` | 1 | Any other transfer failure, such as a response that ends before its declared length. |
+| `http.status_error` | 1 | The server answered with a failure status (see section 3); the output is still printed. |
+| `http.invalid_json_response` | 1 | `patch accept=json` got a 2xx body that is not JSON. |
 
 ## 7. Security notes
 

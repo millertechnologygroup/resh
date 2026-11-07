@@ -358,25 +358,21 @@ fn connection_refused_exits_1_for_every_verb() {
     // The JSON verbs still print their documented error shapes.
     let j = call(&u, "json", &[]).json();
     assert_eq!(j["status"], 0);
+    assert_eq!(j["error"]["code"], "http.connection_failed");
     assert!(
-        j["error"]
+        j["error"]["message"]
             .as_str()
             .unwrap()
             .starts_with("Connection failed")
     );
     let h = call(&u, "headers", &[]).json();
-    assert_eq!(h["error"]["kind"], "network");
+    assert_eq!(h["error"]["code"], "http.connection_failed");
     let p = call(&u, "preflight", &[]).json();
     assert_eq!(
         (p["ok"].clone(), p["status"].clone()),
         (json!(false), json!(null))
     );
-    assert!(
-        p["error"]
-            .as_str()
-            .unwrap()
-            .starts_with("Connection failed")
-    );
+    assert_eq!(p["error"]["code"], "http.connection_failed");
 }
 
 #[test]
@@ -392,14 +388,12 @@ fn a_server_that_never_answers_times_out_with_124_for_every_verb() {
         );
     }
     assert_eq!(
-        call(&u, "headers", &[("timeout_ms", "200")]).json()["error"]["kind"],
-        "timeout"
+        call(&u, "headers", &[("timeout_ms", "200")]).json()["error"]["code"],
+        "http.timeout"
     );
-    assert!(
-        call(&u, "json", &[("timeout_ms", "200")]).json()["error"]
-            .as_str()
-            .unwrap()
-            .contains("timed out")
+    assert_eq!(
+        call(&u, "json", &[("timeout_ms", "200")]).json()["error"],
+        json!({"code": "http.timeout", "message": "Request timed out after 200 ms"})
     );
 }
 
@@ -750,11 +744,11 @@ fn headers_reports_argument_errors_as_json_with_exit_2() {
     let o = call(u, "headers", &[("method", "TRACE")]);
     assert_code(&o, 2, "Unsupported method");
     let j = o.json();
-    assert_eq!(j["error"]["kind"], "invalid_argument");
+    assert_eq!(j["error"]["code"], "http.invalid_argument");
     assert_eq!(j["url"], u);
     let o = call(u, "headers", &[("headers", "oops")]);
     assert_code(&o, 2, "invalid headers");
-    assert_eq!(o.json()["error"]["kind"], "invalid_argument");
+    assert_eq!(o.json()["error"]["code"], "http.invalid_argument");
 }
 
 // --- options -------------------------------------------------------------------
@@ -1150,4 +1144,138 @@ fn in_url_help_renders_approved_help() {
 fn non_help_verbs_are_not_help() {
     assert!(help_output("http://my-httpd/", "get", &[]).is_none());
     assert!(help_output("http://x/pre-hotfix", "headers", &[]).is_none());
+}
+
+// --- error codes ---------------------------------------------------------------
+
+/// The `[http.<code>]` at the start of a failure reason.
+fn error_code(o: &Out) -> String {
+    let r = o.reason();
+    r.strip_prefix('[')
+        .and_then(|r| r.split_once(']'))
+        .map(|(c, _)| c.to_string())
+        .unwrap_or_else(|| panic!("reason without a code: {r:?}"))
+}
+
+/// A server that promises 50 body bytes, sends 5 and closes.
+fn truncating_server() -> u16 {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut s in l.incoming().flatten() {
+            let _ = read_request(&mut s);
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\nshort");
+        }
+    });
+    port
+}
+
+#[test]
+fn every_error_code_is_valid_documented_and_reachable() {
+    let doc = include_str!("../../../docs/Network_RemoteOperations/http.md");
+    for code in ERROR_CODES {
+        assert!(crate::core::status::is_valid_error_code(code), "{code}");
+        assert!(
+            doc.contains(&format!("`{code}`")),
+            "{code} is not documented"
+        );
+    }
+
+    let server = Server::run();
+    let u = url(&server, "/x");
+    let (bad_status, _) = raw_server(|_| http_response("404 Not Found", &[], b"x"));
+    let (loop_port, _) = raw_server(|_| http_response("302 Found", &[("Location", "/loop")], b""));
+    let (not_json, _) = raw_server(|_| http_response("200 OK", &[], b"plain"));
+    let local = |port: u16, path: &str| format!("http://127.0.0.1:{port}{path}");
+    let cases: Vec<(String, &str, Vec<(&str, &str)>, i32, &str)> = vec![
+        (u.clone(), "fetch", vec![], 2, "http.unknown_verb"),
+        (
+            u.clone(),
+            "get",
+            vec![("bogus", "1")],
+            2,
+            "http.unknown_argument",
+        ),
+        (
+            u.clone(),
+            "get",
+            vec![("dry_run", "true")],
+            2,
+            "http.unknown_argument",
+        ),
+        (
+            u.clone(),
+            "get",
+            vec![("accept", "xml")],
+            2,
+            "http.invalid_argument",
+        ),
+        (
+            u.clone(),
+            "post",
+            vec![("body_file", "/nonexistent/resh-http")],
+            1,
+            "http.body_file_unreadable",
+        ),
+        (
+            local(closed_port(), "/"),
+            "get",
+            vec![],
+            1,
+            "http.connection_failed",
+        ),
+        (
+            local(silent_server(), "/"),
+            "get",
+            vec![("timeout_ms", "200")],
+            124,
+            "http.timeout",
+        ),
+        (
+            local(loop_port, "/loop"),
+            "get",
+            vec![],
+            1,
+            "http.redirect_failed",
+        ),
+        (
+            local(truncating_server(), "/"),
+            "get",
+            vec![],
+            1,
+            "http.request_failed",
+        ),
+        (
+            local(bad_status, "/"),
+            "get",
+            vec![],
+            1,
+            "http.status_error",
+        ),
+        (
+            local(not_json, "/"),
+            "patch",
+            vec![("accept", "json")],
+            1,
+            "http.invalid_json_response",
+        ),
+    ];
+    let mut reached = Vec::new();
+    for (u, verb, pairs, exit, code) in &cases {
+        let o = call(u, verb, pairs);
+        assert_eq!(
+            (o.code(), error_code(&o)),
+            (*exit, code.to_string()),
+            "{verb} {pairs:?}"
+        );
+        reached.push(*code);
+    }
+    // Building the client fails only if the TLS backend cannot start, which
+    // a test cannot cause.
+    for code in ERROR_CODES {
+        assert!(
+            reached.contains(&code) || code == "http.client_failed",
+            "{code} untested"
+        );
+    }
 }

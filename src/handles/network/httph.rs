@@ -15,7 +15,7 @@ use url::Url;
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{Status, error_json, exit},
 };
 
 pub fn register(reg: &mut crate::core::Registry) {
@@ -447,9 +447,39 @@ fn default_timeout_ms(verb: &str) -> u64 {
 /// them from the URL and body.
 const DROPPED_HEADERS: [&str; 4] = ["host", "content-length", "connection", "transfer-encoding"];
 
-/// Usage error (exit 2): nothing was sent.
-fn usage(msg: impl Into<String>) -> Status {
-    Status::err(2, msg)
+/// Every error code the handle reports (on stderr as
+/// `Error: [<code>] <message>`, and as `"error": {"code", "message"}` in the
+/// JSON of `headers`, `json` and `preflight`). Both schemes use the `http.`
+/// prefix; docs/Network_RemoteOperations/http.md documents each code.
+#[cfg(test)]
+pub(crate) const ERROR_CODES: [&str; 11] = [
+    UNKNOWN_VERB,
+    UNKNOWN_ARGUMENT,
+    INVALID_ARGUMENT,
+    BODY_FILE_UNREADABLE,
+    CLIENT_FAILED,
+    CONNECTION_FAILED,
+    TIMEOUT,
+    REDIRECT_FAILED,
+    REQUEST_FAILED,
+    STATUS_ERROR,
+    INVALID_JSON_RESPONSE,
+];
+const UNKNOWN_VERB: &str = "http.unknown_verb";
+const UNKNOWN_ARGUMENT: &str = "http.unknown_argument";
+const INVALID_ARGUMENT: &str = "http.invalid_argument";
+const BODY_FILE_UNREADABLE: &str = "http.body_file_unreadable";
+const CLIENT_FAILED: &str = "http.client_failed";
+const CONNECTION_FAILED: &str = "http.connection_failed";
+const TIMEOUT: &str = "http.timeout";
+const REDIRECT_FAILED: &str = "http.redirect_failed";
+const REQUEST_FAILED: &str = "http.request_failed";
+const STATUS_ERROR: &str = "http.status_error";
+const INVALID_JSON_RESPONSE: &str = "http.invalid_json_response";
+
+/// Usage error (exit 2): an invalid argument value; nothing was sent.
+fn usage(msg: impl AsRef<str>) -> Status {
+    Status::coded(exit::USAGE, INVALID_ARGUMENT, msg)
 }
 
 /// The accepted argument closest to `bad` (edit distance at most 2, or a
@@ -485,16 +515,20 @@ fn check_args(scheme: &str, verb: &str, specific: &[&str], args: &Args) -> Optio
     keys.sort();
     let bad = keys.into_iter().find(|k| !allowed.contains(&k.as_str()))?;
     if bad == "dry_run" {
-        return Some(usage(format!(
-            "{scheme} {verb} does not support dry_run; nothing was sent"
-        )));
+        return Some(Status::coded(
+            exit::USAGE,
+            UNKNOWN_ARGUMENT,
+            format!("{scheme} {verb} does not support dry_run; nothing was sent"),
+        ));
     }
     let hint = suggest(bad, &allowed)
         .map(|s| format!(" (did you mean `{s}`?)"))
         .unwrap_or_default();
-    Some(usage(format!(
-        "unknown argument for {scheme} {verb}: {bad}{hint}"
-    )))
+    Some(Status::coded(
+        exit::USAGE,
+        UNKNOWN_ARGUMENT,
+        format!("unknown argument for {scheme} {verb}: {bad}{hint}"),
+    ))
 }
 
 /// A boolean argument (`true|false|1|0|yes|no|on|off`); anything else is a
@@ -604,11 +638,10 @@ fn http_outcome(status: StatusCode, follow: bool) -> Status {
     if status.is_success() || (status.is_redirection() && !follow) {
         Status::ok()
     } else {
-        Status::err(
-            1,
-            format!("HTTP {} {}", status.as_u16(), reason_of(status))
-                .trim_end()
-                .to_string(),
+        Status::coded(
+            exit::FAILED,
+            STATUS_ERROR,
+            format!("HTTP {} {}", status.as_u16(), reason_of(status)).trim_end(),
         )
     }
 }
@@ -627,8 +660,8 @@ fn root_cause(e: &(dyn std::error::Error + 'static)) -> String {
 /// timeout (the server may have acted on the request), 2 for a request
 /// that could not be built (nothing was sent), 1 otherwise.
 struct Failure {
-    code: i32,
-    kind: &'static str,
+    exit: i32,
+    code: &'static str,
     message: String,
 }
 
@@ -636,39 +669,43 @@ impl Failure {
     fn from_reqwest(e: &reqwest::Error, timeout: Duration) -> Self {
         if e.is_timeout() {
             Failure {
-                code: 124,
-                kind: "timeout",
+                exit: exit::TIMEOUT,
+                code: TIMEOUT,
                 message: format!("Request timed out after {} ms", timeout.as_millis()),
             }
         } else if e.is_builder() {
             Failure {
-                code: 2,
-                kind: "invalid_url",
+                exit: exit::USAGE,
+                code: INVALID_ARGUMENT,
                 message: format!("Invalid URL or request: {}", root_cause(e)),
             }
         } else if e.is_redirect() {
             Failure {
-                code: 1,
-                kind: "redirect",
+                exit: exit::FAILED,
+                code: REDIRECT_FAILED,
                 message: format!("Redirect failed: {}", root_cause(e)),
             }
         } else if e.is_connect() {
             Failure {
-                code: 1,
-                kind: "network",
+                exit: exit::FAILED,
+                code: CONNECTION_FAILED,
                 message: format!("Connection failed: {}", root_cause(e)),
             }
         } else {
             Failure {
-                code: 1,
-                kind: "other",
+                exit: exit::FAILED,
+                code: REQUEST_FAILED,
                 message: format!("Request failed: {}", root_cause(e)),
             }
         }
     }
 
     fn status(&self) -> Status {
-        Status::err(self.code, self.message.clone())
+        Status::coded(self.exit, self.code, &self.message)
+    }
+
+    fn json(&self) -> serde_json::Value {
+        error_json(self.code, &self.message)
     }
 }
 
@@ -716,9 +753,13 @@ fn body_source(args: &Args) -> std::result::Result<Option<Vec<u8>>, Status> {
         )),
         (Some(b), None) => Ok(Some(b.as_bytes().to_vec())),
         (None, Some(path)) if path.is_empty() => Err(usage("body_file is empty")),
-        (None, Some(path)) => std::fs::read(path)
-            .map(Some)
-            .map_err(|e| Status::err(1, format!("failed to read body_file '{path}': {e}"))),
+        (None, Some(path)) => std::fs::read(path).map(Some).map_err(|e| {
+            Status::coded(
+                exit::FAILED,
+                BODY_FILE_UNREADABLE,
+                format!("failed to read body_file '{path}': {e}"),
+            )
+        }),
         (None, None) => Ok(None),
     }
 }
@@ -810,8 +851,13 @@ impl HttpHandle {
             None => HeaderMap::new(),
             Some(h) => parse_headers(h).map_err(|e| usage(format!("invalid headers: {e}")))?,
         };
-        let client = Self::build_client(timeout, follow, insecure)
-            .map_err(|e| Status::err(1, format!("Failed to create HTTP client: {e}")))?;
+        let client = Self::build_client(timeout, follow, insecure).map_err(|e| {
+            Status::coded(
+                exit::FAILED,
+                CLIENT_FAILED,
+                format!("Failed to create HTTP client: {e}"),
+            )
+        })?;
         Ok(Prepared {
             client,
             url: self.request_url(args),
@@ -912,19 +958,15 @@ impl HttpHandle {
 
     /// `headers` reports its own argument and network errors as JSON.
     fn verb_headers(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        let error_json = |kind: &str, message: &str| {
-            json!({
-                "url": self.url.as_str(),
-                "error": { "kind": kind, "message": message },
-            })
-        };
+        let error_out =
+            |error: serde_json::Value| json!({ "url": self.url.as_str(), "error": error });
         let method = match method_arg(args) {
             Ok(m) => m,
             Err(msg) => {
                 write!(
                     io.stdout,
                     "{}",
-                    serde_json::to_string(&error_json("invalid_argument", &msg))?
+                    serde_json::to_string(&error_out(error_json(INVALID_ARGUMENT, &msg)))?
                 )?;
                 return Ok(usage(msg));
             }
@@ -932,12 +974,13 @@ impl HttpHandle {
         let p = match self.prepare("headers", args) {
             Ok(p) => p,
             Err(s) => {
-                let msg = s.reason.clone().unwrap_or_default();
-                if msg.starts_with("invalid headers") {
+                // Malformed headers are reported in the JSON too.
+                if let Some(e) = args.get("headers").and_then(|h| parse_headers(h).err()) {
+                    let msg = format!("invalid headers: {e}");
                     write!(
                         io.stdout,
                         "{}",
-                        serde_json::to_string(&error_json("invalid_argument", &msg))?
+                        serde_json::to_string(&error_out(error_json(INVALID_ARGUMENT, &msg)))?
                     )?;
                 }
                 return Ok(s);
@@ -949,7 +992,7 @@ impl HttpHandle {
                 write!(
                     io.stdout,
                     "{}",
-                    serde_json::to_string(&error_json(f.kind, &f.message))?
+                    serde_json::to_string(&error_out(f.json()))?
                 )?;
                 return Ok(f.status());
             }
@@ -1056,7 +1099,7 @@ impl HttpHandle {
                     "url": p.url.as_str(),
                     "method": "OPTIONS",
                     "ok": false,
-                    "error": f.message,
+                    "error": f.json(),
                     "status": null,
                     "cors": null,
                     "raw_headers": {},
@@ -1144,7 +1187,7 @@ impl HttpHandle {
                 "status_text": "",
                 "headers": {},
                 "body": { "type": "text", "value": "" },
-                "error": f.message,
+                "error": f.json(),
             })
         };
         let resp = match p.send(rb) {
@@ -1279,8 +1322,9 @@ impl HttpHandle {
                 // A failed status is the more useful error; show its body.
                 Err(_) if !outcome.ok => io.stdout.write_all(&body)?,
                 Err(_) => {
-                    return Ok(Status::err(
-                        1,
+                    return Ok(Status::coded(
+                        exit::FAILED,
+                        INVALID_JSON_RESPONSE,
                         "response body is not valid JSON (accept=json)",
                     ));
                 }
@@ -1349,10 +1393,14 @@ impl Handle for HttpHandle {
         }
         let scheme = self.url.scheme();
         let Some(specific) = verb_args(verb) else {
-            return Ok(usage(format!(
-                "unknown verb for {scheme}://: {verb} (verbs: get, head, headers, options, \
-                 preflight, json, post, put, patch, delete)"
-            )));
+            return Ok(Status::coded(
+                exit::USAGE,
+                UNKNOWN_VERB,
+                format!(
+                    "unknown verb for {scheme}://: {verb} (verbs: get, head, headers, options, \
+                     preflight, json, post, put, patch, delete)"
+                ),
+            ));
         };
         if let Some(refusal) = check_args(scheme, verb, specific, args) {
             return Ok(refusal);

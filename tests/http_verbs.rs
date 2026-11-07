@@ -460,7 +460,10 @@ fn error_statuses_exit_1_with_the_reason_on_stderr_for_every_verb() {
     for verb in VERBS {
         let r = run(&[&format!("http://127.0.0.1:{port}/x.{verb}")]);
         assert_eq!(r.code, 1, "{verb}");
-        assert_eq!(r.err, "Error: HTTP 503 Service Unavailable\n", "{verb}");
+        assert_eq!(
+            r.err, "Error: [http.status_error] HTTP 503 Service Unavailable\n",
+            "{verb}"
+        );
     }
 }
 
@@ -472,7 +475,8 @@ fn network_failures_exit_1_and_timeouts_exit_124() {
         let r = run(&[&format!("http://127.0.0.1:{refused}/x.{verb}")]);
         assert_eq!(r.code, 1, "{verb}: {}", r.err);
         assert!(
-            r.err.starts_with("Error: Connection failed"),
+            r.err
+                .starts_with("Error: [http.connection_failed] Connection failed"),
             "{verb}: {}",
             r.err
         );
@@ -482,7 +486,10 @@ fn network_failures_exit_1_and_timeouts_exit_124() {
             "timeout_ms=300",
         ]);
         assert_eq!(r.code, 124, "{verb}: {}", r.err);
-        assert_eq!(r.err, "Error: Request timed out after 300 ms\n", "{verb}");
+        assert_eq!(
+            r.err, "Error: [http.timeout] Request timed out after 300 ms\n",
+            "{verb}"
+        );
         assert!(start.elapsed() < Duration::from_secs(5));
     }
 }
@@ -503,7 +510,13 @@ fn usage_errors_exit_2_and_send_nothing() {
         ] {
             let r = run(&[&stage, bad]);
             assert_eq!(r.code, 2, "{verb} {bad}: {}", r.err);
-            assert!(r.err.starts_with("Error: "), "{verb} {bad}: {}", r.err);
+            // dry_run=true is refused by the dispatcher, the rest by http.
+            let prefix = if bad == "dry_run=true" {
+                "Error: "
+            } else {
+                "Error: [http."
+            };
+            assert!(r.err.starts_with(prefix), "{verb} {bad}: {}", r.err);
         }
     }
     let r = run(&[&format!("{base}.get"), "acept=json"]);
@@ -590,7 +603,8 @@ fn https_rejects_an_untrusted_certificate_for_every_verb() {
         let r = run(&[&server.url(&format!("/x.{verb}"))]);
         assert_eq!(r.code, 1, "{verb}: {}", r.err);
         assert!(
-            r.err.starts_with("Error: Connection failed"),
+            r.err
+                .starts_with("Error: [http.connection_failed] Connection failed"),
             "{verb}: {}",
             r.err
         );
