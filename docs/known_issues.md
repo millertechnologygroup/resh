@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (cache, db, mq, event,
+  `<handle>.invalid_argument`. Handles not yet aligned (db, mq, event,
   log, proc, svc, cron, firewall, user, pkg, system, cert, backup,
   plugin) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
@@ -67,6 +67,26 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   boolean spellings; `value=` with `from_env=`, or an empty value, is
   refused (exit 2); the JSON `error` is an object.
 - `?help` and `?help=<verb>` in a stage URL show help (all handles).
+
+### cache
+
+- Every verb refuses unknown arguments and invalid values (exit 2,
+  `cache.invalid_argument`) before contacting the server, and exits
+  0/1/2/124 with `Error: [cache.<code>]`; the JSON error is
+  `{"alias","backend","error":{"code","message"}}`. Per-verb codes
+  (`cache.get_timeout`, ...) are replaced by the set documented in cache.md.
+- Values are text: `key=123`, `namespace=2024`, `cursor=17` work, and
+  `value=` is stored exactly as typed (`encode=json` validates and stores
+  compact JSON).
+- `rediss://` and `ca_file=` are refused (`cache.tls_unsupported`): this
+  build has no TLS for cache servers.
+- Memcached uses resh's own text-protocol client (keys cannot inject
+  commands): `keys` works (LRU crawler metadump, memcached 1.4.31+);
+  `exists`/`ttl` no longer report missing keys as present; `incr` no longer
+  overwrites non-numeric values and applies `ttl_ms` on every call; TTLs
+  round up to whole seconds (500 ms no longer means "never expires").
+- Redis `incr` values are exact 64-bit integers. redis 0.25.5 clears the
+  future-incompatibility warning; the `memcache` crate is no longer used.
 
 ### http and https
 
@@ -526,10 +546,6 @@ These were found during the fixes, or are Medium items that were not fixed:
 - **Event hooks:** the built-in hook notes now go to stderr, so JSON on
   stdout stays valid (Stage 2). `list-topics` still returns mock catalogs,
   and `hooks.disable` still always reports success.
-- **cache key parsing:** a numeric key such as `key=123` is rejected as a
-  missing key.
-- **cache test speed:** the existing cache tests try `127.0.0.1:11211` with
-  no timeout, so they are slow when memcached isn't running.
 - **cert:**
   - `chain.info` is simplified.
   - Encrypted private keys are not supported. CMS signatures (`sign
@@ -774,9 +790,8 @@ typed structs:
 
 ### H11. Connection-based handles cannot be used across separate commands
 
-- **cache:** `connect` is a stub (`src/handles/data/cacheh.rs:1728-1742`)
-  that never writes `CONNECTION_REGISTRY`. Every other verb therefore returns
-  `cache.connection_not_found`.
+- **cache:** fixed. Connections last one process; every verb connects on demand
+  with url=, and connect is a connectivity check.
 - **db:** the connection and transaction registries exist only in memory
   (`dbh.rs:779, 961`).
   - `tables`, `schema`, `ping` and `transaction` always fail from a fresh CLI

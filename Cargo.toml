@@ -62,8 +62,6 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "mysql", "sqlite", "chrono"] }
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
-# default "tls" feature links OpenSSL; memcache TLS is not used
-memcache = { version = "0.17", default-features = false }
 dashmap = "6"
 log = "0.4"
 git2 = { version = "0.18", features = ["ssh"] }
@@ -125,8 +123,6 @@ which = "6"
 dns-e2e = []
 # End-to-end tests that run inside throwaway Docker containers (never on the host).
 e2e-docker = []
-redis-integration-tests = []
-memcached-integration-tests = []
 pkg-dnf-integration = []
 pkg-yum-integration = []
 pkg-pacman-integration = []
