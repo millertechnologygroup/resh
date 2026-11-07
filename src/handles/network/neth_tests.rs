@@ -1085,6 +1085,48 @@ fn tls_handle(url: &str, ca_pem: &str, dir: &Path) -> NetHandle {
 }
 
 #[test]
+fn tcp_check_ca_file_adds_a_private_ca() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, ca) = tls_server(&["127.0.0.1"]);
+    let right = dir.path().join("right.pem");
+    std::fs::write(&right, &ca).unwrap();
+    let (other_ca, _, _) = certs(&["x"]);
+    let other = dir.path().join("other.pem");
+    std::fs::write(&other, &other_ca).unwrap();
+    // The base trust (system bundle stand-in) does not know the server's CA.
+    let base_dir = tempfile::tempdir().unwrap();
+    let h = tls_handle(
+        &format!("net://127.0.0.1:{port}"),
+        &other_ca,
+        base_dir.path(),
+    );
+    let r = right.to_str().unwrap();
+    let o = call_on(&h, "tcp_check", &[("expect_tls", "true"), ("ca_file", r)]);
+    assert_eq!(code(&o), 0, "{}", o.stdout);
+    assert_eq!(o.json["tls_checked"], true);
+    // Without it, or with another CA, verification fails.
+    let o = call_on(&h, "tcp_check", &[("expect_tls", "true")]);
+    assert_fail(&o, 1, "tls_failed");
+    let o = call_on(
+        &h,
+        "tcp_check",
+        &[("expect_tls", "true"), ("ca_file", other.to_str().unwrap())],
+    );
+    assert_fail(&o, 1, "tls_failed");
+    // Refusals (exit 2), before connecting.
+    let o = call_on(&h, "tcp_check", &[("ca_file", r)]);
+    assert_fail(&o, 2, "invalid_argument");
+    assert!(o.stdout.contains("only used with expect_tls=true"));
+    let missing = dir.path().join("missing.pem");
+    let empty = dir.path().join("empty.pem");
+    std::fs::write(&empty, "not a certificate\n").unwrap();
+    for f in [missing.to_str().unwrap(), empty.to_str().unwrap(), ""] {
+        let o = call_on(&h, "tcp_check", &[("expect_tls", "true"), ("ca_file", f)]);
+        assert_fail(&o, 2, "invalid_argument");
+    }
+}
+
+#[test]
 fn tcp_check_expect_tls() {
     let dir = tempfile::tempdir().unwrap();
     let (port, ca) = tls_server(&["127.0.0.1", "localhost"]);

@@ -23,7 +23,14 @@ fn options_for(verb: &str) -> &'static [&'static str] {
         "route.list" => &["family", "table", "timeout_ms"],
         "dns" => &["type", "server", "port", "timeout_ms"],
         "ping" => &["count", "timeout_ms", "port", "family", "raw"],
-        "tcp_check" => &["port", "timeout_ms", "retries", "backoff_ms", "expect_tls"],
+        "tcp_check" => &[
+            "port",
+            "timeout_ms",
+            "retries",
+            "backoff_ms",
+            "expect_tls",
+            "ca_file",
+        ],
         "scan" => &["ports", "timeout_ms", "concurrency", "host", "protocol"],
         _ => unreachable!(),
     }
@@ -504,6 +511,18 @@ fn tcp_check_expect_tls_uses_ssl_cert_file() {
     let r = resh_env(&[&url, "expect_tls=true"], &[("SSL_CERT_FILE", ca_env)]);
     assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
     assert_eq!(r.json["tls_checked"], true);
+    // ca_file= adds the private CA to the system bundle for one call.
+    let ca_arg = format!("ca_file={ca_env}");
+    let r = resh(&[&url, "expect_tls=true", &ca_arg]);
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    let r = resh(&[&url, "expect_tls=true"]);
+    assert_fail(&r, 1, "net.tls_failed");
+    assert_fail(&resh(&[&url, &ca_arg]), 2, "net.invalid_argument");
+    assert_fail(
+        &resh(&[&url, "expect_tls=true", "ca_file=/nonexistent/ca.pem"]),
+        2,
+        "net.invalid_argument",
+    );
     // 127.0.0.1 is not a name in the certificate.
     let r = resh_env(
         &[

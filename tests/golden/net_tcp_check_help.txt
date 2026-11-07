@@ -6,6 +6,7 @@ Definition: Tests whether a TCP connection to the URL host and port succeeds,
 Usage:
   resh net://<host>:<port>.tcp_check [port=<n>] [timeout_ms=<ms>]
     [retries=<n>] [backoff_ms=<ms>] [expect_tls=true|false]
+    [ca_file=<pem>]
 
 Example:
   resh net://192.0.2.10:22.tcp_check retries=3

@@ -185,6 +185,7 @@ How it works:
 resh net://192.0.2.10:22.tcp_check
 resh net://db.example.com:5432.tcp_check timeout_ms=1000 retries=3 backoff_ms=500
 resh net://example.com.tcp_check port=443 expect_tls=true
+resh net://intranet.example:443.tcp_check expect_tls=true ca_file=/etc/pki/private-ca.pem
 ```
 
 | Argument     | Default | Notes |
@@ -194,6 +195,7 @@ resh net://example.com.tcp_check port=443 expect_tls=true
 | `retries`    | `1`     | **Total** number of attempts (not extra attempts), 1-1000. |
 | `backoff_ms` | `0`     | Pause between attempts. |
 | `expect_tls` | `false` | `true` also completes a TLS handshake and verifies the certificate chain and the host name (or IP address) against the CA bundle. |
+| `ca_file`    | (none)  | PEM file of extra CA certificates to trust for this call, added to the CA bundle; verification stays on. Only with `expect_tls=true`. A missing or unreadable file, or one without a PEM certificate, is refused (exit 2) before connecting. |
 
 The whole check takes at most `retries` x (`timeout_ms` + `backoff_ms`). Each
 attempt resolves the host and tries its addresses in turn until one
@@ -203,7 +205,8 @@ With `expect_tls=true`, the trusted CAs are read from the file named by the
 `SSL_CERT_FILE` environment variable, else from the system bundle
 (`/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
 `/etc/ssl/ca-bundle.pem`, `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`
-or `/etc/ssl/cert.pem`). TLS 1.2 and 1.3 are supported. A server that does
+or `/etc/ssl/cert.pem`), plus the certificates of `ca_file=` when given (with
+no system bundle, `ca_file` alone is the trust). TLS 1.2 and 1.3 are supported. A server that does
 not speak TLS, presents a certificate for another name, or one signed by an
 untrusted CA fails the check (`net.tls_failed`).
 
@@ -279,7 +282,7 @@ failures the object is `{"verb", "error"}` (plus `query`/`rtype` for `dns`,
 
 | Code | Exit | When |
 | ---- | ---- | ---- |
-| `net.invalid_argument` | 2 | Unknown argument, invalid value, missing host or port, `port` without `server` (dns), PTR for a name, unknown verb. |
+| `net.invalid_argument` | 2 | Unknown argument, invalid value, missing host or port, `port` without `server` (dns), `ca_file` without `expect_tls=true` or not a readable PEM certificate file, PTR for a name, unknown verb. |
 | `net.lookup_failed` | 1 | `dns`: the lookup failed (no such name, no record of that type, server error). |
 | `net.resolve_failed` | 1 | `ping`, `tcp_check`: the host name does not resolve. |
 | `net.timeout` | 124 | `dns`, `ping`, `route.list`, `tcp_check`: the time limit was reached. |
@@ -301,5 +304,5 @@ failures the object is `{"verb", "error"}` (plus `query`/`rtype` for `dns`,
   bytes are not retried over TCP.
 * `scan` and `tcp_check` use TCP only; there is no UDP scan.
 * `tcp_check expect_tls=true` has no option to skip certificate
-  verification or to choose the CA bundle other than `SSL_CERT_FILE`.
+  verification.
 * Linux only.

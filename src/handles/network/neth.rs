@@ -182,7 +182,8 @@ that was tried."#,
                 optionally with a TLS handshake and retries, and reports the result as JSON.",
             detail: Some(VerbDetail {
                 usage: "resh net://<host>:<port>.tcp_check [port=<n>] [timeout_ms=<ms>]\n  \
-                    [retries=<n>] [backoff_ms=<ms>] [expect_tls=true|false]",
+                    [retries=<n>] [backoff_ms=<ms>] [expect_tls=true|false]\n  \
+                    [ca_file=<pem>]",
                 example: "resh net://192.0.2.10:22.tcp_check retries=3",
                 example_output: Some(
                     r#"{
@@ -248,7 +249,14 @@ const LIST_ARGS: &[&str] = &["family", "up"];
 const ROUTE_LIST_ARGS: &[&str] = &["family", "table", "timeout_ms"];
 const DNS_ARGS: &[&str] = &["type", "server", "port", "timeout_ms"];
 const PING_ARGS: &[&str] = &["count", "timeout_ms", "port", "family", "raw"];
-const TCP_CHECK_ARGS: &[&str] = &["port", "timeout_ms", "retries", "backoff_ms", "expect_tls"];
+const TCP_CHECK_ARGS: &[&str] = &[
+    "port",
+    "timeout_ms",
+    "retries",
+    "backoff_ms",
+    "expect_tls",
+    "ca_file",
+];
 const SCAN_ARGS: &[&str] = &["ports", "timeout_ms", "concurrency", "host", "protocol"];
 
 /// The largest accepted `timeout_ms` / `backoff_ms` (24 hours).
@@ -1332,9 +1340,22 @@ impl NetHandle {
             let retries = u64_arg(args, "retries", 1, 1, 1000)? as u32;
             let backoff_ms = u64_arg(args, "backoff_ms", 0, 0, MAX_MS)?;
             let expect_tls = bool_arg(args, "expect_tls", false)?;
-            Ok::<_, Fail>((host, port, timeout_ms, retries, backoff_ms, expect_tls))
+            let extra_cas = match args.get("ca_file") {
+                None => Vec::new(),
+                Some(_) if !expect_tls => {
+                    return Err(Fail::invalid("ca_file is only used with expect_tls=true"));
+                }
+                Some(f) if f.trim().is_empty() => {
+                    return Err(Fail::invalid("ca_file is empty"));
+                }
+                Some(f) => tls::load_pem(Path::new(f))
+                    .map_err(|e| Fail::invalid(format!("invalid ca_file: {e}")))?,
+            };
+            Ok::<_, Fail>((
+                host, port, timeout_ms, retries, backoff_ms, expect_tls, extra_cas,
+            ))
         })();
-        let (host, port, timeout_ms, retries, backoff_ms, expect_tls) = match parsed {
+        let (host, port, timeout_ms, retries, backoff_ms, expect_tls, extra_cas) = match parsed {
             Ok(p) => p,
             Err(fail) => return report(io, "tcp_check", fail, &[]),
         };
@@ -1344,7 +1365,7 @@ impl NetHandle {
                 .ca_file
                 .clone()
                 .or_else(|| std::env::var_os("SSL_CERT_FILE").map(PathBuf::from));
-            match tls::client_config(ca.as_deref()) {
+            match tls::client_config(ca.as_deref(), &extra_cas) {
                 Ok(c) => Some(c),
                 Err(e) => {
                     let fail = Fail::new(1, "tls_failed", e);
@@ -1473,29 +1494,54 @@ mod tls {
         "/etc/ssl/cert.pem",
     ];
 
-    /// A client configuration trusting the CAs in `ca_file`, or in the
-    /// system bundle when it is `None`.
-    pub fn client_config(ca_file: Option<&Path>) -> Result<Arc<ClientConfig>, String> {
-        let path = match ca_file {
-            Some(p) => p.to_path_buf(),
+    /// The certificates of the PEM file `path`; an error when it cannot be
+    /// read or holds no certificate.
+    pub fn load_pem(path: &Path) -> Result<Vec<CertificateDer<'static>>, String> {
+        let certs = CertificateDer::pem_file_iter(path)
+            .map_err(|e| format!("cannot read CA bundle {}: {e}", path.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("bad certificate in {}: {e}", path.display()))?;
+        if certs.is_empty() {
+            return Err(format!("no PEM certificate in {}", path.display()));
+        }
+        Ok(certs)
+    }
+
+    /// A client configuration trusting the CAs in `base` (the system bundle
+    /// when it is `None`) plus `extra` (`ca_file=`).
+    pub fn client_config(
+        base: Option<&Path>,
+        extra: &[CertificateDer<'static>],
+    ) -> Result<Arc<ClientConfig>, String> {
+        let path = match base {
+            Some(p) => Some(p.to_path_buf()),
             None => SYSTEM_BUNDLES
                 .iter()
                 .map(Path::new)
                 .find(|p| p.is_file())
-                .ok_or("no CA bundle found (set SSL_CERT_FILE)")?
-                .to_path_buf(),
+                .map(Path::to_path_buf),
         };
         let mut roots = RootCertStore::empty();
-        let certs = CertificateDer::pem_file_iter(&path)
-            .map_err(|e| format!("cannot read CA bundle {}: {e}", path.display()))?;
-        for cert in certs {
-            let cert = cert.map_err(|e| format!("bad certificate in {}: {e}", path.display()))?;
-            // A certificate the verifier cannot use is skipped, as other
-            // TLS clients do with system bundles.
-            roots.add(cert).ok();
+        match path {
+            Some(path) => {
+                for cert in load_pem(&path)? {
+                    // A certificate the verifier cannot use is skipped, as
+                    // other TLS clients do with system bundles.
+                    roots.add(cert).ok();
+                }
+            }
+            None if extra.is_empty() => {
+                return Err("no CA bundle found (set SSL_CERT_FILE or pass ca_file=)".into());
+            }
+            None => {}
+        }
+        for cert in extra {
+            roots
+                .add(cert.clone())
+                .map_err(|e| format!("unusable certificate in ca_file: {e}"))?;
         }
         if roots.is_empty() {
-            return Err(format!("no usable CA certificate in {}", path.display()));
+            return Err("no usable CA certificate in the CA bundle".to_string());
         }
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let config = ClientConfig::builder_with_provider(provider)
