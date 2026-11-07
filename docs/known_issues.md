@@ -66,6 +66,13 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   Breaking: env writes exit 2 (`secret.read_only`); `redact` takes the shared
   boolean spellings; `value=` with `from_env=`, or an empty value, is
   refused (exit 2); the JSON `error` is an object.
+- `set from_stdin=true` reads the secret from stdin (one trailing newline
+  removed; empty input refused); exactly one of `value=`, `from_env=`,
+  `from_stdin=true` is required.
+- `rotate expose_value=true` prints the new value once in the result
+  (sensitive; off by default).
+- vault `rm` soft-deletes the latest version (recoverable with Vault's
+  undelete); `destroy=true` deletes every version and the metadata.
 - `?help` and `?help=<verb>` in a stage URL show help (all handles).
 
 ### cache
