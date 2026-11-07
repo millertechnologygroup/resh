@@ -1,5 +1,5 @@
 //! Every file verb through the real `resh` binary: one success case and the
-//! main error paths (exit code and `Error: <CODE>:` on stderr). Each test
+//! main error paths (exit code and `Error: [file.<code>]` on stderr). Each test
 //! runs in its own temporary directory as the working directory.
 
 use serde_json::Value;
@@ -29,7 +29,7 @@ impl Run {
             self.out, self.err
         );
         assert!(
-            self.err.contains(&format!("Error: {code}: ")),
+            self.err.contains(&format!("Error: [{code}] ")),
             "expected {code}, stderr {:?}",
             self.err
         );
@@ -83,9 +83,9 @@ fn read() {
     let t = setup();
     let r = resh_in(t.path(), &["file://users.csv.read"]);
     assert_eq!(r.ok().out, "id,name\n1,alice\n2,bob\n");
-    resh_in(t.path(), &["file://missing.read"]).fails(1, "NOT_FOUND");
-    resh_in(t.path(), &["file://dir.read"]).fails(1, "IS_A_DIRECTORY");
-    resh_in(t.path(), &["file://users.csv.read", "x=1"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://missing.read"]).fails(1, "file.not_found");
+    resh_in(t.path(), &["file://dir.read"]).fails(1, "file.is_a_directory");
+    resh_in(t.path(), &["file://users.csv.read", "x=1"]).fails(2, "file.invalid_arg");
 }
 
 #[test]
@@ -97,8 +97,8 @@ fn exists_and_stat() {
     assert_eq!(v["exists"], false);
     let v = resh_in(t.path(), &["file://users.csv.stat"]).json();
     assert_eq!(v["file_type"], "file");
-    resh_in(t.path(), &["file://nope.stat"]).fails(1, "NOT_FOUND");
-    resh_in(t.path(), &["file://users.csv.stat", "nofollow=maybe"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://nope.stat"]).fails(1, "file.not_found");
+    resh_in(t.path(), &["file://users.csv.stat", "nofollow=maybe"]).fails(2, "file.invalid_arg");
 }
 
 #[test]
@@ -112,11 +112,11 @@ fn preview_summary_analyze_schema() {
     assert_eq!(v["classification"], "csv");
     let v = resh_in(t.path(), &["file://users.csv.schema", "max_rows=1"]).json();
     assert_eq!(v["detected"]["row_count_sampled"], 1);
-    resh_in(t.path(), &["file://users.csv.preview", "mode=hex"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://users.csv.summary", "max_bytes=0"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://dir.analyze"]).fails(1, "IS_A_DIRECTORY");
-    resh_in(t.path(), &["file://app.log.schema", "format=json"]).fails(1, "PARSE_ERROR");
-    resh_in(t.path(), &["file://nope.preview"]).fails(1, "NOT_FOUND");
+    resh_in(t.path(), &["file://users.csv.preview", "mode=hex"]).fails(2, "file.invalid_arg");
+    resh_in(t.path(), &["file://users.csv.summary", "max_bytes=0"]).fails(2, "file.invalid_arg");
+    resh_in(t.path(), &["file://dir.analyze"]).fails(1, "file.is_a_directory");
+    resh_in(t.path(), &["file://app.log.schema", "format=json"]).fails(1, "file.parse_error");
+    resh_in(t.path(), &["file://nope.preview"]).fails(1, "file.not_found");
 }
 
 #[test]
@@ -144,8 +144,8 @@ fn tail() {
         ],
     );
     assert_eq!(r.ok().out, "error two\n");
-    resh_in(t.path(), &["file://app.log.tail", "lines=1", "bytes=1"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://app.log.tail", "timeout_ms=soon"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://app.log.tail", "lines=1", "bytes=1"]).fails(2, "file.invalid_arg");
+    resh_in(t.path(), &["file://app.log.tail", "timeout_ms=soon"]).fails(2, "file.invalid_arg");
     assert_eq!(
         resh_in(
             t.path(),
@@ -155,7 +155,7 @@ fn tail() {
         .out,
         "error two\n"
     );
-    resh_in(t.path(), &["file://nope.tail"]).fails(1, "NOT_FOUND");
+    resh_in(t.path(), &["file://nope.tail"]).fails(1, "file.not_found");
 }
 
 #[test]
@@ -172,13 +172,13 @@ fn grep() {
     )
     .json();
     assert_eq!(v[0]["line"], 2);
-    resh_in(t.path(), &["file://app.log.grep", "pattern=zzz"]).fails(1, "NO_MATCH");
-    resh_in(t.path(), &["file://app.log.grep"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://app.log.grep", "pattern=zzz"]).fails(1, "file.no_match");
+    resh_in(t.path(), &["file://app.log.grep"]).fails(2, "file.invalid_arg");
     let r = resh_in(
         t.path(),
         &["file://app.log.grep", "pattern=x", "max_count=1"],
     );
-    r.fails(2, "INVALID_ARG");
+    r.fails(2, "file.invalid_arg");
     assert!(r.err.contains("did you mean max?"), "{}", r.err);
 }
 
@@ -188,8 +188,8 @@ fn find() {
     let v = resh_in(t.path(), &["file://./.find", "name=*.html", "type=file"]).json();
     assert_eq!(v.as_array().unwrap().len(), 1);
     assert!(v[0]["path"].as_str().unwrap().ends_with("/dir/x.html"));
-    resh_in(t.path(), &["file://dir.find", "type=pipe"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://nope.find"]).fails(1, "NOT_FOUND");
+    resh_in(t.path(), &["file://dir.find", "type=pipe"]).fails(2, "file.invalid_arg");
+    resh_in(t.path(), &["file://nope.find"]).fails(1, "file.not_found");
 }
 
 #[test]
@@ -209,8 +209,8 @@ fn watch() {
     assert_eq!(v["event"], "create");
     let r = resh_in(t.path(), &["file://dir.watch", "timeout_ms=200"]);
     assert_eq!(r.ok().out, "");
-    resh_in(t.path(), &["file://dir.watch", "events=open"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://nope.watch"]).fails(1, "NOT_FOUND");
+    resh_in(t.path(), &["file://dir.watch", "events=open"]).fails(2, "file.invalid_arg");
+    resh_in(t.path(), &["file://nope.watch"]).fails(1, "file.not_found");
 }
 
 #[test]
@@ -226,8 +226,8 @@ fn fixed_hashes() {
         let v = resh_in(t.path(), &[&format!("file://abc.{verb}")]).json();
         assert!(v["hash"].as_str().unwrap().starts_with(prefix), "{verb}");
         assert_eq!(v["size"], 3);
-        resh_in(t.path(), &[&format!("file://dir.{verb}")]).fails(1, "IS_A_DIRECTORY");
-        resh_in(t.path(), &[&format!("file://nope.{verb}")]).fails(1, "NOT_FOUND");
+        resh_in(t.path(), &[&format!("file://dir.{verb}")]).fails(1, "file.is_a_directory");
+        resh_in(t.path(), &[&format!("file://nope.{verb}")]).fails(1, "file.not_found");
     }
 }
 
@@ -237,7 +237,7 @@ fn hash_and_verify() {
     std::fs::write(t.path().join("abc"), "abc").unwrap();
     let v = resh_in(t.path(), &["file://abc.hash", "algo=blake3"]).json();
     assert!(v["hash_hex"].as_str().unwrap().starts_with("6437b3ac"));
-    resh_in(t.path(), &["file://abc.hash", "algo=crc"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://abc.hash", "algo=crc"]).fails(2, "file.invalid_arg");
     let sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     let v = resh_in(
         t.path(),
@@ -246,10 +246,10 @@ fn hash_and_verify() {
     .json();
     assert_eq!(v["verified"], true);
     let r = resh_in(t.path(), &["file://abc.verify", "size=4"]);
-    r.fails(1, "VERIFY_FAILED");
+    r.fails(1, "file.verify_failed");
     assert_eq!(r.json()["verified"], false);
-    resh_in(t.path(), &["file://abc.verify", "expected=xyz"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://nope.verify"]).fails(1, "NOT_FOUND");
+    resh_in(t.path(), &["file://abc.verify", "expected=xyz"]).fails(2, "file.invalid_arg");
+    resh_in(t.path(), &["file://nope.verify"]).fails(1, "file.not_found");
 }
 
 #[test]
@@ -280,26 +280,26 @@ fn write_and_append() {
         std::fs::read_to_string(t.path().join("piped.txt")).unwrap(),
         "from stdin"
     );
-    resh_in(t.path(), &["file://out.txt.write", "data=x", "mode=9"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://out.txt.write", "data=x", "mode=9"]).fails(2, "file.invalid_arg");
     resh_in(
         t.path(),
         &["file://new.txt.write", "data=x", "create=false"],
     )
-    .fails(1, "NOT_FOUND");
+    .fails(1, "file.not_found");
     resh_in(
         t.path(),
         &["file://new.txt.append", "data=x", "create=false"],
     )
-    .fails(1, "NOT_FOUND");
+    .fails(1, "file.not_found");
     assert!(!t.path().join("new.txt").exists());
-    resh_in(t.path(), &["file://dir.append", "data=x"]).fails(1, "IS_A_DIRECTORY");
+    resh_in(t.path(), &["file://dir.append", "data=x"]).fails(1, "file.is_a_directory");
     if !is_root() {
         let ro = t.path().join("ro");
         std::fs::create_dir(&ro).unwrap();
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
         let r = resh_in(t.path(), &["file://ro/f.write", "data=x"]);
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
-        r.fails(1, "PERMISSION_DENIED");
+        r.fails(1, "file.permission_denied");
     }
 }
 
@@ -335,13 +335,13 @@ fn replace() {
         "a\nW one\nb\nW two\n"
     );
     assert!(t.path().join("app.log.bak").exists());
-    resh_in(t.path(), &["file://app.log.replace", "pattern=a"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://app.log.replace", "pattern=a"]).fails(2, "file.invalid_arg");
     std::fs::write(t.path().join("bin"), b"\xff").unwrap();
     resh_in(
         t.path(),
         &["file://bin.replace", "pattern=a", "replacement=b"],
     )
-    .fails(1, "NOT_UTF8");
+    .fails(1, "file.not_utf8");
 }
 
 #[test]
@@ -357,15 +357,15 @@ fn copy() {
     );
     assert_eq!(r.ok().out, "");
     assert!(t.path().join("copy.csv").exists());
-    resh_in(t.path(), &["file://users.csv.copy", "to=copy.csv"]).fails(1, "ALREADY_EXISTS");
+    resh_in(t.path(), &["file://users.csv.copy", "to=copy.csv"]).fails(1, "file.already_exists");
     resh_in(
         t.path(),
         &["file://users.csv.copy", "to=copy.csv", "overwrite=true"],
     )
     .ok();
-    resh_in(t.path(), &["file://dir.copy", "to=d2"]).fails(1, "IS_A_DIRECTORY");
-    resh_in(t.path(), &["file://users.csv.copy", "to=no/x"]).fails(1, "NOT_FOUND");
-    resh_in(t.path(), &["file://users.csv.copy"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://dir.copy", "to=d2"]).fails(1, "file.is_a_directory");
+    resh_in(t.path(), &["file://users.csv.copy", "to=no/x"]).fails(1, "file.not_found");
+    resh_in(t.path(), &["file://users.csv.copy"]).fails(2, "file.invalid_arg");
 }
 
 #[test]
@@ -382,14 +382,14 @@ fn rename() {
     .json();
     assert_eq!(v["renamed"], true);
     assert!(t.path().join("a/b/u.csv").exists());
-    resh_in(t.path(), &["file://app.log.rename", "to=a/b/u.csv"]).fails(1, "ALREADY_EXISTS");
-    resh_in(t.path(), &["file://dir.rename", "to=dir/sub"]).fails(1, "REFUSED");
-    resh_in(t.path(), &["file://nope.rename", "to=x"]).fails(1, "NOT_FOUND");
+    resh_in(t.path(), &["file://app.log.rename", "to=a/b/u.csv"]).fails(1, "file.already_exists");
+    resh_in(t.path(), &["file://dir.rename", "to=dir/sub"]).fails(1, "file.refused");
+    resh_in(t.path(), &["file://nope.rename", "to=x"]).fails(1, "file.not_found");
     resh_in(
         t.path(),
         &["file://app.log.rename", "to=x", "atomic=perhaps"],
     )
-    .fails(2, "INVALID_ARG");
+    .fails(2, "file.invalid_arg");
 }
 
 #[test]
@@ -399,9 +399,9 @@ fn move_and_mv() {
     assert!(t.path().join("dir/users.csv").exists());
     resh_in(t.path(), &["file://dir/users.csv.mv", "to=back.csv"]).ok();
     assert!(t.path().join("back.csv").exists());
-    resh_in(t.path(), &["file://app.log.mv", "to=back.csv"]).fails(1, "ALREADY_EXISTS");
-    resh_in(t.path(), &["file://nope.move", "to=x"]).fails(1, "NOT_FOUND");
-    resh_in(t.path(), &["file://app.log.move"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://app.log.mv", "to=back.csv"]).fails(1, "file.already_exists");
+    resh_in(t.path(), &["file://nope.move", "to=x"]).fails(1, "file.not_found");
+    resh_in(t.path(), &["file://app.log.move"]).fails(2, "file.invalid_arg");
 }
 
 #[test]
@@ -409,11 +409,11 @@ fn delete_and_remove() {
     let t = setup();
     resh_in(t.path(), &["file://users.csv.delete"]).ok();
     assert!(!t.path().join("users.csv").exists());
-    resh_in(t.path(), &["file://dir.remove"]).fails(1, "IS_A_DIRECTORY");
+    resh_in(t.path(), &["file://dir.remove"]).fails(1, "file.is_a_directory");
     resh_in(t.path(), &["file://dir.remove", "recursive=true"]).ok();
-    resh_in(t.path(), &["file://nope.delete"]).fails(1, "NOT_FOUND");
+    resh_in(t.path(), &["file://nope.delete"]).fails(1, "file.not_found");
     resh_in(t.path(), &["file://nope.delete", "missing_ok=true"]).ok();
-    resh_in(t.path(), &["file://./.delete", "recursive=true"]).fails(1, "REFUSED");
+    resh_in(t.path(), &["file://./.delete", "recursive=true"]).fails(1, "file.refused");
     assert!(t.path().join("app.log").exists());
     let r = resh_in(t.path(), &["file://app.log.delete", "dry_run=true"]);
     assert_eq!(r.code, 2);
@@ -429,27 +429,28 @@ fn chmod_and_chown() {
         .permissions()
         .mode();
     assert_eq!(m & 0o777, 0o640);
-    resh_in(t.path(), &["file://app.log.chmod", "mode=8"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://nope.chmod", "mode=644"]).fails(1, "NOT_FOUND");
+    resh_in(t.path(), &["file://app.log.chmod", "mode=8"]).fails(2, "file.invalid_arg");
+    resh_in(t.path(), &["file://nope.chmod", "mode=644"]).fails(1, "file.not_found");
     let uid = nix::unistd::geteuid().as_raw().to_string();
     resh_in(
         t.path(),
         &["file://dir.chown", &format!("uid={uid}"), "recursive=true"],
     )
     .ok();
-    resh_in(t.path(), &["file://dir.chown"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://dir.chown", "user=no-such-user-resh"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://dir.chown"]).fails(2, "file.invalid_arg");
+    resh_in(t.path(), &["file://dir.chown", "user=no-such-user-resh"]).fails(2, "file.invalid_arg");
     if !is_root() {
-        resh_in(t.path(), &["file://app.log.chown", "uid=0"]).fails(1, "PERMISSION_DENIED");
+        resh_in(t.path(), &["file://app.log.chown", "uid=0"]).fails(1, "file.permission_denied");
     }
 }
 
 #[test]
 fn extended_attributes_and_tags() {
     let t = setup();
-    resh_in(t.path(), &["file://app.log.ea.get", "name=system.resh_x"]).fails(1, "UNSUPPORTED");
-    resh_in(t.path(), &["file://app.log.ea.get", "name=nonamespace"]).fails(2, "INVALID_ARG");
-    resh_in(t.path(), &["file://nope.tag.add", "name=a"]).fails(1, "NOT_FOUND");
+    resh_in(t.path(), &["file://app.log.ea.get", "name=system.resh_x"])
+        .fails(1, "file.unsupported");
+    resh_in(t.path(), &["file://app.log.ea.get", "name=nonamespace"]).fails(2, "file.invalid_arg");
+    resh_in(t.path(), &["file://nope.tag.add", "name=a"]).fails(1, "file.not_found");
     if !xattrs_supported(t.path()) {
         eprintln!("skipped: no user xattrs");
         return;
@@ -471,19 +472,19 @@ fn extended_attributes_and_tags() {
             "mode=create",
         ],
     )
-    .fails(1, "ALREADY_EXISTS");
-    resh_in(t.path(), &["file://app.log.ea.get", "name=user.none"]).fails(1, "ATTR_NOT_FOUND");
+    .fails(1, "file.already_exists");
+    resh_in(t.path(), &["file://app.log.ea.get", "name=user.none"]).fails(1, "file.attr_not_found");
     let v = resh_in(t.path(), &["file://app.log.tag.add", "name=B,a"]).json();
     assert_eq!(v["tags"], serde_json::json!(["a", "b"]));
     let v = resh_in(t.path(), &["file://app.log.tag.rm", "name=a"]).json();
     assert_eq!(v["tags"], serde_json::json!(["b"]));
-    resh_in(t.path(), &["file://app.log.tag.add", "name=bad tag"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://app.log.tag.add", "name=bad tag"]).fails(2, "file.invalid_arg");
 }
 
 #[test]
 fn unknown_verb() {
     let t = setup();
-    resh_in(t.path(), &["file://app.log.frobnicate"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://app.log.frobnicate"]).fails(2, "file.invalid_arg");
 }
 
 // --- timeouts and streaming ----------------------------------------------------
@@ -514,7 +515,7 @@ fn long_verbs_exit_124_at_the_deadline() {
         ],
     ] {
         let r = resh_in(t.path(), &args);
-        r.fails(124, "TIMEOUT");
+        r.fails(124, "file.timeout");
         assert!(r.err.contains("timed out after timeout_ms=1"), "{}", r.err);
     }
     assert!(!t.path().join("copy").exists());
@@ -524,7 +525,7 @@ fn long_verbs_exit_124_at_the_deadline() {
         .filter(|e| e.file_name().to_string_lossy().starts_with(".resh_"))
         .count();
     assert_eq!(leftovers, 0);
-    resh_in(t.path(), &["file://app.log.stat", "timeout_ms=100"]).fails(2, "INVALID_ARG");
+    resh_in(t.path(), &["file://app.log.stat", "timeout_ms=100"]).fails(2, "file.invalid_arg");
 }
 
 #[test]
@@ -551,7 +552,7 @@ fn write_from_slow_stdin_times_out_and_changes_nothing() {
     let out = child.wait_with_output().unwrap();
     feeder.join().unwrap();
     assert_eq!(out.status.code(), Some(124));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Error: TIMEOUT: "));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Error: [file.timeout] "));
     assert_eq!(
         std::fs::read_to_string(t.path().join("out")).unwrap(),
         "keep"

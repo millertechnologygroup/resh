@@ -43,7 +43,7 @@ Help: `resh file --help`, `resh file <verb> --help`, or the `help`/`h` verb.
 
 Every verb accepts exactly the arguments shown in its usage
 (`resh file <verb> --help` and the tables below). Anything else is refused
-before anything is done, with exit code 2, `INVALID_ARG` and a
+before anything is done, with exit code 2, `file.invalid_arg` and a
 "did you mean" hint for a likely typo. This includes `dry_run` (only
 `replace` has a dry-run mode) and `timeout_ms` on the instant verbs that do
 not take it (`exists`, `stat`, `chmod`, `ea.get`, `ea.set`, `tag.add`,
@@ -52,34 +52,42 @@ an unknown enum value, a malformed octal mode or digest) are refused the
 same way.
 
 Booleans accept `true/false`, `1/0`, `yes/no`, `on/off` (any case); any
-other value is `INVALID_ARG`. Numbers are non-negative integers; where a
+other value is `file.invalid_arg`. Numbers are non-negative integers; where a
 minimum applies it is given below.
 
 ### Errors and exit status
 
 0 on success, 1 when the operation failed, 2 for invalid usage (nothing
 was done), 124 when `timeout_ms` passed. Every failure prints
-`Error: <CODE>: <message>` on stderr:
+`Error: [file.<code>] <message>` on stderr, for example
+`Error: [file.not_found] read /tmp/x: No such file or directory (os error 2)`.
+JSON reports that carry a failure (the `verify` report) give it as
+`"error": {"code": "file.<code>", "message": "..."}`.
+
+Breaking change: earlier versions printed `Error: <CODE>: <message>` with
+upper-case codes (`NOT_FOUND`, `INVALID_ARG`, ...) and `verify` reported
+`"error"` as a string. Scripts matching those must use the codes below
+(`NOT_FOUND` is now `file.not_found`, and so on).
 
 | Code | Exit | Meaning |
 | ---- | ---- | ------- |
-| `INVALID_ARG` | 2 | Missing, unknown, malformed or conflicting argument, or unknown verb. Nothing was done. |
-| `NOT_FOUND` | 1 | The path, source, or destination parent does not exist (or a path component is not a directory). |
-| `ATTR_NOT_FOUND` | 1 | The extended attribute does not exist (`ea.get`, `ea.set mode=update`). |
-| `PERMISSION_DENIED` | 1 | The system refused the operation (EACCES/EPERM). |
-| `ALREADY_EXISTS` | 1 | The destination exists and `overwrite` is not set, or `ea.set mode=create` found the attribute. |
-| `IS_A_DIRECTORY` | 1 | The verb needs a file but the path is a directory, or `delete` of a directory without `recursive=true`. |
-| `NOT_A_FILE` | 1 | The path is a FIFO, socket or device where a regular file is needed (only `read` streams those). |
-| `NO_MATCH` | 1 | `grep` found no matching line. |
-| `VERIFY_FAILED` | 1 | `verify` found a different digest or size. |
-| `TOO_LARGE` | 1 | Hashing a file over 10 GiB. |
-| `NOT_UTF8` | 1 | `replace` on a file that is not UTF-8 text. |
-| `PARSE_ERROR` | 1 | `schema` with a forced `format=` that the sample does not parse as. |
-| `UNSUPPORTED` | 1 | The filesystem does not support the operation (for example extended attributes, or an attribute namespace). |
-| `REFUSED` | 1 | Refused for safety: deleting `/`, `.` or `..`; moving a directory into itself; appending through a symbolic link. |
-| `PARTIAL` | 1 | Part of the work was done; the message says what (for example `find` could not read some directories). |
-| `IO_ERROR` | 1 | Any other I/O failure. |
-| `TIMEOUT` | 124 | `timeout_ms` passed. The message says what was done; partial output files were removed. |
+| `file.invalid_arg` | 2 | Missing, unknown, malformed or conflicting argument, or unknown verb. Nothing was done. |
+| `file.not_found` | 1 | The path, source, or destination parent does not exist (or a path component is not a directory). |
+| `file.attr_not_found` | 1 | The extended attribute does not exist (`ea.get`, `ea.set mode=update`). |
+| `file.permission_denied` | 1 | The system refused the operation (EACCES/EPERM). |
+| `file.already_exists` | 1 | The destination exists and `overwrite` is not set, or `ea.set mode=create` found the attribute. |
+| `file.is_a_directory` | 1 | The verb needs a file but the path is a directory, or `delete` of a directory without `recursive=true`. |
+| `file.not_a_file` | 1 | The path is a FIFO, socket or device where a regular file is needed (only `read` streams those). |
+| `file.no_match` | 1 | `grep` found no matching line. |
+| `file.verify_failed` | 1 | `verify` found a different digest or size. |
+| `file.too_large` | 1 | Hashing a file over 10 GiB. |
+| `file.not_utf8` | 1 | `replace` on a file that is not UTF-8 text. |
+| `file.parse_error` | 1 | `schema` with a forced `format=` that the sample does not parse as. |
+| `file.unsupported` | 1 | The filesystem does not support the operation (for example extended attributes, or an attribute namespace). |
+| `file.refused` | 1 | Refused for safety: deleting `/`, `.` or `..`; moving a directory into itself; appending through a symbolic link. |
+| `file.partial` | 1 | Part of the work was done; the message says what (for example `find` could not read some directories). |
+| `file.io_error` | 1 | Any other I/O failure. |
+| `file.timeout` | 124 | `timeout_ms` passed. The message says what was done; partial output files were removed. |
 
 ### timeout_ms
 
@@ -88,17 +96,17 @@ The default is no limit (`0` also means no limit), except for `watch`.
 
 | Verbs | At the deadline |
 | ----- | --------------- |
-| `read` | Stops with `TIMEOUT` (exit 124); what was read so far was already printed. A FIFO or device is waited on no longer than the time left. |
-| `preview`, `summary`, `analyze`, `schema`, `tail` (without `follow`), `md5`, `sha1`, `sha256`, `sha512`, `hash` | `TIMEOUT`, nothing printed. |
-| `verify` | `TIMEOUT`; the JSON report has `verified:false` and the error. |
-| `grep` | `TIMEOUT`; matches found so far were printed (text format), the message gives the lines searched. |
-| `find` | `TIMEOUT`; the entries found so far are printed as the JSON array. |
-| `write`, `append` | `TIMEOUT` while reading standard input (checked between chunks); the file is not changed. With `data=` there is nothing to wait for. |
-| `replace` | `TIMEOUT` while reading the file; nothing is changed. |
-| `copy` | `TIMEOUT`; the partial copy is removed and the destination is unchanged. |
-| `rename`, `move`, `mv` | A same-filesystem rename is instant. Across filesystems, `TIMEOUT` removes the partial copy and leaves the source as it was (with `atomic=false` an existing destination was already removed, and the message says so). |
-| `delete`, `remove` | `TIMEOUT` during a recursive delete; the message says how many entries were deleted and the rest remains. |
-| `chown` | `TIMEOUT` during a recursive change; the message says how many entries were changed. |
+| `read` | Stops with `file.timeout` (exit 124); what was read so far was already printed. A FIFO or device is waited on no longer than the time left. |
+| `preview`, `summary`, `analyze`, `schema`, `tail` (without `follow`), `md5`, `sha1`, `sha256`, `sha512`, `hash` | `file.timeout`, nothing printed. |
+| `verify` | `file.timeout`; the JSON report has `verified:false` and the error. |
+| `grep` | `file.timeout`; matches found so far were printed (text format), the message gives the lines searched. |
+| `find` | `file.timeout`; the entries found so far are printed as the JSON array. |
+| `write`, `append` | `file.timeout` while reading standard input (checked between chunks); the file is not changed. With `data=` there is nothing to wait for. |
+| `replace` | `file.timeout` while reading the file; nothing is changed. |
+| `copy` | `file.timeout`; the partial copy is removed and the destination is unchanged. |
+| `rename`, `move`, `mv` | A same-filesystem rename is instant. Across filesystems, `file.timeout` removes the partial copy and leaves the source as it was (with `atomic=false` an existing destination was already removed, and the message says so). |
+| `delete`, `remove` | `file.timeout` during a recursive delete; the message says how many entries were deleted and the rest remains. |
+| `chown` | `file.timeout` during a recursive change; the message says how many entries were changed. |
 | `watch` | Default 30000. Reaching it is the normal end: exit 0. |
 | `tail follow=true` | How long to follow (default: until interrupted). Reaching it is the normal end: exit 0. |
 
@@ -135,18 +143,18 @@ resh --json-pretty file:///srv/data/users.csv.schema
 * `exists` reports `kind` `file`, `dir`, `symlink` (also for a dangling
   link), `other`, or `none` with `exists:false` when nothing is there.
 * `read` streams any readable file. `preview`, `summary`, `analyze`,
-  `schema`, `tail` and `grep` need a regular file (`NOT_A_FILE` otherwise,
+  `schema`, `tail` and `grep` need a regular file (`file.not_a_file` otherwise,
   since a FIFO or device could block forever).
 * `preview` cuts the sample at `max_bytes`, then at `max_lines` lines;
   `is_truncated` is true when the file is longer than the bytes read.
 * `schema` treats the first CSV/TSV line as the header and samples
   `max_rows` data rows after it. With `format=` the sample must parse as that
-  format, otherwise `PARSE_ERROR`.
+  format, otherwise `file.parse_error`.
 * `tail` counts lines, not newlines: a last line without a newline counts.
-  `lines` and `bytes` together are `INVALID_ARG`. With `follow=true` it then
+  `lines` and `bytes` together are `file.invalid_arg`. With `follow=true` it then
   prints data appended to the file; a file that shrinks (truncated or
   replaced) is read again from the start, and a file that disappears ends
-  the follow with `NOT_FOUND`.
+  the follow with `file.not_found`.
 
 ### 3.2 Searching
 
@@ -167,15 +175,15 @@ resh --json-pretty file:///srv/www.find name='*.html' type=file max_depth=3
   that are not valid UTF-8 are matched and shown lossily, and line numbers
   stay exact. `format=json` prints an array of
   `{"path","line","text","matched"}`; `before`, `after` and
-  `line_numbers` apply to text output only and are `INVALID_ARG` with
-  `format=json`. No match exits 1 with `NO_MATCH`.
+  `line_numbers` apply to text output only and are `file.invalid_arg` with
+  `format=json`. No match exits 1 with `file.no_match`.
 * `find` prints a JSON array of entries (`path` made absolute, `type`,
   `size`, `mode`, `mtime`, `is_hidden`, `depth`), starting with the root at
   depth 0, sorted by name. `include_hidden=false` (the default) skips
   dot-files and dot-directories and everything inside them; the root itself
   is always walked. `limit` caps the number of entries. Entries that cannot
   be read are reported as `Warning:` lines on stderr; the listing is still
-  printed and the command exits 1 with `PARTIAL`. A symlink loop (with
+  printed and the command exits 1 with `file.partial`. A symlink loop (with
   `follow_symlinks=true`) is only a warning.
 * `find name=` globs are shell-style: `*` and `?` never match `/`, `**`
   matches across directories, `[abc]` and `{a,b}` work. A pattern without
@@ -193,12 +201,12 @@ resh file://./incoming.watch max_events=1
 
 Arguments: `timeout_ms` (default 30000), `max_events` (default 1, min 1),
 `events=create,modify,remove,rename` (default all; other names are
-`INVALID_ARG`). `watch` stops at the first of the two limits, so by default
+`file.invalid_arg`). `watch` stops at the first of the two limits, so by default
 it returns after one event or 30 seconds. Each event is printed as one line
 of JSON (`event`, `path`, `kind`, `timestamp`) and counts toward
 `max_events`. A rename prints two `rename` lines, one for the old and one
 for the new name. The path is watched non-recursively; a missing path is
-`NOT_FOUND`.
+`file.not_found`.
 
 ### 3.4 Hashing and verification
 
@@ -209,16 +217,17 @@ for the new name. The path is watched non-recursively; a missing path is
 | `verify` | `algo` (default `sha256`), `expected=<hex>`, `expected_any=<hex>;<hex>...`, `size=<bytes>` | `sha256`, `sha512`, `sha1`, `md5`, `blake3` |
 
 Algorithm names are case-insensitive. An unsupported algorithm is
-`INVALID_ARG` (exit 2). Only regular files are hashed; files larger than
-10 GiB are refused with `TOO_LARGE`.
+`file.invalid_arg` (exit 2). Only regular files are hashed; files larger than
+10 GiB are refused with `file.too_large`.
 
 `verify` checks `expected` (or any of `expected_any`) and `size` when given;
 with neither it only computes the digest. Expected digests must be hex of
 the algorithm's length (spaces are ignored, case does not matter), otherwise
-`INVALID_ARG`. It prints a JSON report; on a mismatch `verified` is false
-and it exits 1 with `VERIFY_FAILED`. When the file cannot be hashed (missing,
+`file.invalid_arg`. It prints a JSON report; on a mismatch `verified` is false
+and it exits 1 with `file.verify_failed`. When the file cannot be hashed (missing,
 a directory, too large) the report has `verified:false` and the error in
-`error`, and the command fails with that error's code.
+`error` (`{"code": "file.<code>", "message": "..."}`; `null` otherwise), and
+the command fails with that error's code.
 
 ```bash
 resh --json-pretty file:///srv/data/users.csv.sha256
@@ -258,10 +267,10 @@ created. It prints `{"bytes":...,"path":...,"written":true}`.
 `{"appended":true,"bytes":...,"path":...}`. No newline is added. Missing
 parent directories are created when `create=true`. Writes never go through
 a symbolic link at the path: `write`, `copy` and `replace` replace the link
-itself, and `append` refuses it with `REFUSED`.
+itself, and `append` refuses it with `file.refused`.
 
-`create=false` makes a missing file `NOT_FOUND` (nothing is created). A
-directory is `IS_A_DIRECTORY`, a FIFO or device `NOT_A_FILE`.
+`create=false` makes a missing file `file.not_found` (nothing is created). A
+directory is `file.is_a_directory`, a FIFO or device `file.not_a_file`.
 
 **`write` and `append` without `data=` read standard input until EOF.**
 If standard input is empty (for example `< /dev/null`, or a non-interactive
@@ -272,7 +281,7 @@ success. Always pass `data=` unless you mean to pipe content in:
 printf 'line\n' | resh file:///tmp/out.txt.write
 ```
 
-`replace` reads a UTF-8 file (`NOT_UTF8` otherwise), replaces `pattern`
+`replace` reads a UTF-8 file (`file.not_utf8` otherwise), replaces `pattern`
 (literal text, or a regular expression with `regex=true`) at most `count`
 times (all by default), and rewrites the file atomically, keeping its
 permission bits. In `replacement`, `\n`, `\t` and `\\` are unescaped, and
@@ -306,13 +315,13 @@ resh file:///tmp/build.cache.delete recursive=true
   success.
 * `to=` may be absolute, relative (`backup/new.txt`) or a bare name
   (`to=new.txt`), which is relative to the working directory. A missing
-  parent directory is `NOT_FOUND` ("destination parent does not exist")
+  parent directory is `file.not_found` ("destination parent does not exist")
   unless `create_parents=true` (rename only).
 * `rename` and `move` refuse an existing destination unless
   `overwrite=true`. A file replaces a file atomically. When a directory is
   involved, the old destination is first renamed aside, put back if the
   rename fails, and removed afterwards, so a failed rename never loses it.
-  Moving a directory into itself is `REFUSED`.
+  Moving a directory into itself is `file.refused`.
 * Across filesystems the data is copied (files, directories, symlinks; with
   permission bits, times and, when permitted, ownership) and the source is
   then removed. With `atomic=true` (the default) the copy is made under a
@@ -320,10 +329,10 @@ resh file:///tmp/build.cache.delete recursive=true
   destination appears complete or not at all; with `atomic=false` it is
   copied directly to the destination (a partial copy is removed on
   failure). `rename` then reports `"cross_filesystem": true`. If the source
-  cannot be removed after the copy, the command fails with `PARTIAL`.
-  Special files (FIFOs, sockets, devices) cannot be copied (`NOT_A_FILE`).
-* `delete` refuses `/`, `.`, `..` and paths ending in `..` (`REFUSED`); a
-  directory needs `recursive=true` (`IS_A_DIRECTORY` otherwise). A symbolic
+  cannot be removed after the copy, the command fails with `file.partial`.
+  Special files (FIFOs, sockets, devices) cannot be copied (`file.not_a_file`).
+* `delete` refuses `/`, `.`, `..` and paths ending in `..` (`file.refused`); a
+  directory needs `recursive=true` (`file.is_a_directory` otherwise). A symbolic
   link is removed itself, never its target. `force=true` or
   `missing_ok=true` make a missing path succeed. If a recursive delete fails
   part way, the message says that part of the tree may already be deleted.
@@ -351,22 +360,22 @@ resh --json-pretty file:///srv/data/report.pdf.tag.add name=work,q3
   directory too; symbolic links inside the tree are changed themselves
   (never their targets, so nothing outside the tree changes). It stops at
   the first failure and the message says how many entries were already
-  changed. `user`/`uid` and `group`/`gid` together are `INVALID_ARG`, as are
+  changed. `user`/`uid` and `group`/`gid` together are `file.invalid_arg`, as are
   unknown user or group names. Changing ownership to another user needs
-  root (`PERMISSION_DENIED` otherwise).
+  root (`file.permission_denied` otherwise).
 * Attribute names need a namespace: `user.`, `trusted.`, `security.` or
   `system.` followed by a name. `ea.get` of a missing attribute is
-  `ATTR_NOT_FOUND` unless `allow_missing=true` (then `exists:false`,
+  `file.attr_not_found` unless `allow_missing=true` (then `exists:false`,
   `value:null`). Values that are not UTF-8 are base64 encoded and add
-  `"encoding":"base64"`. `ea.set mode=create` fails with `ALREADY_EXISTS`
-  when the attribute exists, `mode=update` with `ATTR_NOT_FOUND` when it does
+  `"encoding":"base64"`. `ea.set mode=create` fails with `file.already_exists`
+  when the attribute exists, `mode=update` with `file.attr_not_found` when it does
   not (checked atomically by the kernel). The output reports `previous` and
   `current`; `encoding` is that of the previous value.
 * Tags are lowercased, may use letters, digits, `_`, `-` and `.`, and are
   stored sorted, comma-separated, in the `user.resh.tags` extended
   attribute; `tag.add`/`tag.rm` print `{"path":...,"tags":[...]}`. Removing
   the last tag removes the attribute. At least one tag is required.
-* Extended attributes need a filesystem that supports them (`UNSUPPORTED`
+* Extended attributes need a filesystem that supports them (`file.unsupported`
   otherwise).
 
 ---

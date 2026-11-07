@@ -184,7 +184,7 @@ impl FileHandle {
                       size: Option<u64>,
                       hash_match: bool,
                       size_match: bool,
-                      error: Option<&str>| {
+                      error: Option<Value>| {
             json!({
                 "path": self.path.display().to_string(),
                 "algorithm": algo,
@@ -202,9 +202,8 @@ impl FileHandle {
         let (digest, size) = match hash_file(&self.path, algo, deadline) {
             Ok(r) => r,
             Err(e) => {
-                let st = super::common::status_of(&e);
-                let msg = st.reason.clone().unwrap_or_default();
-                emit(io, &report(None, None, false, false, Some(&msg)))?;
+                let err = super::common::error_json_of(&e);
+                emit(io, &report(None, None, false, false, Some(err)))?;
                 return Err(e);
             }
         };

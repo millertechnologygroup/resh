@@ -86,7 +86,7 @@ fn chown_by_an_unprivileged_user_is_permission_denied() {
     );
     assert!(out.contains("code=1"), "{out}");
     assert!(
-        out.contains("err=Error: PERMISSION_DENIED: chown /work/f"),
+        out.contains("err=Error: [file.permission_denied] chown /work/f"),
         "{out}"
     );
     assert!(out.contains("owner=1500"), "{out}");
@@ -132,7 +132,7 @@ fn trusted_attributes_work_as_root() {
     );
     assert!(out.contains(r#""value":"t1""#), "{out}");
     assert!(out.contains("code=1"), "{out}");
-    assert!(out.contains("err=Error: ALREADY_EXISTS"), "{out}");
+    assert!(out.contains("err=Error: [file.already_exists]"), "{out}");
 }
 
 #[test]
@@ -148,6 +148,6 @@ fn delete_refuses_the_root_directory_even_as_root() {
         "#,
     );
     assert!(out.contains("code=1"), "{out}");
-    assert!(out.contains("REFUSED"), "{out}");
+    assert!(out.contains("err=Error: [file.refused]"), "{out}");
     assert!(out.contains("intact=yes"), "{out}");
 }

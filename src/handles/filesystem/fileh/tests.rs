@@ -38,7 +38,7 @@ impl Out {
         assert!(!self.st.ok, "expected {code:?}, got success: {}", self.out);
         let reason = self.st.reason.clone().unwrap_or_default();
         assert!(
-            reason.starts_with(&format!("{}: ", code.name())),
+            reason.starts_with(&format!("[{}] ", code.name())),
             "expected {}, got {reason:?}",
             code.name()
         );
@@ -161,7 +161,16 @@ fn other_fs_dir(than: &Path) -> Option<TempDir> {
 fn every_failure_is_a_status_with_a_documented_code() {
     let docs = include_str!("../../../../docs/Filesystem_Storage/file.md");
     for c in Code::ALL {
-        assert!(docs.contains(c.name()), "{} is not documented", c.name());
+        assert!(
+            crate::core::status::is_valid_error_code(c.name()),
+            "{} is not a valid error code",
+            c.name()
+        );
+        assert!(
+            docs.contains(&format!("`{}`", c.name())),
+            "{} is not documented",
+            c.name()
+        );
         let expected = match c {
             Code::InvalidArg => 2,
             Code::Timeout => 124,
@@ -1396,7 +1405,8 @@ fn verify_errors() {
     o.fails(Code::NotFound);
     let v = o.json();
     assert_eq!(v["verified"], false);
-    assert!(v["error"].as_str().unwrap().starts_with("NOT_FOUND"));
+    assert_eq!(v["error"]["code"], "file.not_found", "{v}");
+    assert!(v["error"]["message"].is_string(), "{v}");
     call(d.path(), "verify", &[]).fails(Code::IsADirectory);
 }
 
@@ -2431,7 +2441,7 @@ fn reading_verbs_stop_at_the_deadline() {
     let o = call(&big, "verify", &[t]);
     times_out(&o, "no digest was produced");
     assert_eq!(o.json()["verified"], false);
-    assert!(o.json()["error"].as_str().unwrap().starts_with("TIMEOUT"));
+    assert_eq!(o.json()["error"]["code"], "file.timeout");
     // A generous deadline changes nothing.
     let small = file(&d, "small", "abc\n");
     call(&small, "sha256", &[("timeout_ms", "60000")]).ok();
@@ -2621,7 +2631,7 @@ fn summary_of_a_large_directory_honors_the_deadline() {
     }
     let o = call(d.path(), "summary", &[("timeout_ms", "1")]);
     // Counting 20000 entries usually outlasts 1 ms; either way the result
-    // is a clean success or a TIMEOUT that says how far it got.
+    // is a clean success or a file.timeout that says how far it got.
     if !o.st.ok {
         times_out(&o, "entries were counted");
     }

@@ -20,10 +20,10 @@ fn rfc3339(t: std::io::Result<std::time::SystemTime>) -> Option<String> {
     t.ok().map(|t| DateTime::<Utc>::from(t).to_rfc3339())
 }
 
-/// Opens `path` for reading its contents: a missing path is NOT_FOUND and a
-/// directory is IS_A_DIRECTORY. Verbs that sample or search a file need a
+/// Opens `path` for reading its contents: a missing path is `file.not_found` and a
+/// directory is `file.is_a_directory`. Verbs that sample or search a file need a
 /// regular file (a FIFO or device could block or never end): anything else
-/// is NOT_A_FILE. `read` streams any readable file.
+/// is `file.not_a_file`. `read` streams any readable file.
 pub(crate) fn open_for_read(path: &Path, verb: &str) -> Result<(File, fs::Metadata)> {
     let meta = fs::metadata(path).with_context(|| format!("{verb} {}", path.display()))?;
     if meta.is_dir() {
@@ -63,7 +63,7 @@ pub(crate) fn open_for_read(path: &Path, verb: &str) -> Result<(File, fs::Metada
     Ok((f, meta))
 }
 
-/// Reads at most `max` bytes from the start of `f`, failing with TIMEOUT
+/// Reads at most `max` bytes from the start of `f`, failing with `file.timeout`
 /// at the deadline.
 pub(crate) fn read_sample<R: Read>(
     f: R,
@@ -775,7 +775,7 @@ mod unit {
         assert_eq!(st.exit_code(), 124);
         let reason = st.reason.unwrap();
         assert!(
-            reason.starts_with("TIMEOUT: timed out after timeout_ms=150; "),
+            reason.starts_with("[file.timeout] timed out after timeout_ms=150; "),
             "{reason}"
         );
         assert!(reason.contains("bytes of f were read"), "{reason}");

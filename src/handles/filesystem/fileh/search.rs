@@ -312,7 +312,11 @@ impl FileHandle {
                 if errors == 1 { "y" } else { "ies" },
                 root.display()
             );
-            writeln!(io.stderr, "Error: {}: {msg}", Code::Partial.name())?;
+            writeln!(
+                io.stderr,
+                "{}",
+                crate::core::status::error_line(Code::Partial.name(), &msg)
+            )?;
             return Err(fail(Code::Partial, msg));
         }
         Ok(Status::ok())

@@ -1,11 +1,12 @@
 //! Error codes, argument parsing and small helpers shared by the file verbs.
 //!
-//! Every failure of a file verb is reported as `<CODE>: <message>` in the
-//! status reason, with an exit code that depends only on the code (see
-//! [`Code::exit`]). Verbs return `anyhow::Result`; [`status_of`] turns any
+//! Every failure of a file verb is reported on stderr in the project-wide
+//! form `Error: [file.<code>] <message>`, with an exit code that depends only
+//! on the code (see [`Code::exit`]). Verbs return `anyhow::Result`; [`status_of`] turns any
 //! error into that form, classifying I/O errors by their kind.
 
 use super::FILE_HELP;
+use crate::core::status::exit;
 use crate::core::{Args, Status};
 use percent_encoding::percent_decode_str;
 use std::fmt;
@@ -54,6 +55,8 @@ pub(crate) enum Code {
 }
 
 impl Code {
+    /// Every code the file handle can emit (each is documented in
+    /// docs/Filesystem_Storage/file.md).
     #[cfg(test)]
     pub(crate) const ALL: &'static [Code] = &[
         Code::InvalidArg,
@@ -77,23 +80,23 @@ impl Code {
 
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Code::InvalidArg => "INVALID_ARG",
-            Code::NotFound => "NOT_FOUND",
-            Code::AttrNotFound => "ATTR_NOT_FOUND",
-            Code::PermissionDenied => "PERMISSION_DENIED",
-            Code::AlreadyExists => "ALREADY_EXISTS",
-            Code::IsADirectory => "IS_A_DIRECTORY",
-            Code::NotAFile => "NOT_A_FILE",
-            Code::NoMatch => "NO_MATCH",
-            Code::VerifyFailed => "VERIFY_FAILED",
-            Code::TooLarge => "TOO_LARGE",
-            Code::NotUtf8 => "NOT_UTF8",
-            Code::ParseError => "PARSE_ERROR",
-            Code::Unsupported => "UNSUPPORTED",
-            Code::Refused => "REFUSED",
-            Code::Partial => "PARTIAL",
-            Code::IoError => "IO_ERROR",
-            Code::Timeout => "TIMEOUT",
+            Code::InvalidArg => "file.invalid_arg",
+            Code::NotFound => "file.not_found",
+            Code::AttrNotFound => "file.attr_not_found",
+            Code::PermissionDenied => "file.permission_denied",
+            Code::AlreadyExists => "file.already_exists",
+            Code::IsADirectory => "file.is_a_directory",
+            Code::NotAFile => "file.not_a_file",
+            Code::NoMatch => "file.no_match",
+            Code::VerifyFailed => "file.verify_failed",
+            Code::TooLarge => "file.too_large",
+            Code::NotUtf8 => "file.not_utf8",
+            Code::ParseError => "file.parse_error",
+            Code::Unsupported => "file.unsupported",
+            Code::Refused => "file.refused",
+            Code::Partial => "file.partial",
+            Code::IoError => "file.io_error",
+            Code::Timeout => "file.timeout",
         }
     }
 
@@ -101,9 +104,9 @@ impl Code {
     /// done), 124 for a timeout, 1 for every other operation failure.
     pub(crate) fn exit(self) -> i32 {
         match self {
-            Code::InvalidArg => 2,
-            Code::Timeout => 124,
-            _ => 1,
+            Code::InvalidArg => exit::USAGE,
+            Code::Timeout => exit::TIMEOUT,
+            _ => exit::FAILED,
         }
     }
 }
@@ -117,7 +120,7 @@ pub(crate) struct Fail {
 
 impl fmt::Display for Fail {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.code.name(), self.msg)
+        write!(f, "[{}] {}", self.code.name(), self.msg)
     }
 }
 
@@ -160,17 +163,29 @@ pub(crate) fn io_fail(what: impl fmt::Display, e: &std::io::Error) -> anyhow::Er
     fail(io_code(e), format!("{what}: {e}"))
 }
 
-/// Converts any verb error into the failed status the CLI reports.
-pub(crate) fn status_of(e: &anyhow::Error) -> Status {
+/// The code and message of any verb error, classifying I/O errors by kind.
+pub(crate) fn code_and_message(e: &anyhow::Error) -> (Code, String) {
     if let Some(f) = e.chain().find_map(|c| c.downcast_ref::<Fail>()) {
-        return Status::err(f.code.exit(), f.to_string());
+        return (f.code, f.msg.clone());
     }
     let code = e
         .chain()
         .find_map(|c| c.downcast_ref::<std::io::Error>())
         .map(io_code)
         .unwrap_or(Code::IoError);
-    Status::err(code.exit(), format!("{}: {:#}", code.name(), e))
+    (code, format!("{e:#}"))
+}
+
+/// Converts any verb error into the failed status the CLI reports.
+pub(crate) fn status_of(e: &anyhow::Error) -> Status {
+    let (code, msg) = code_and_message(e);
+    Status::coded(code.exit(), code.name(), msg)
+}
+
+/// The JSON error object (`{"code", "message"}`) for any verb error.
+pub(crate) fn error_json_of(e: &anyhow::Error) -> serde_json::Value {
+    let (code, msg) = code_and_message(e);
+    crate::core::status::error_json(code.name(), &msg)
 }
 
 /// The options a verb accepts: every `name=` in its help usage. The help
