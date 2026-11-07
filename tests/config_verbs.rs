@@ -58,7 +58,10 @@ fn get_errors() {
     let tmp = TempDir::new().unwrap();
     let (code, out, err) = run(tmp.path(), &["config://nope/k.get"]);
     assert_eq!((code, out.as_str()), (1, ""));
-    assert!(err.contains("Error: not found"), "{err}");
+    assert!(
+        err.contains("Error: [config.not_found] not found\n"),
+        "{err}"
+    );
     assert!(
         !store(tmp.path()).exists(),
         "get must not create directories"
@@ -68,7 +71,10 @@ fn get_errors() {
     std::fs::write(store(tmp.path()).join("app/bad.json"), "{").unwrap();
     let (code, _, err) = run(tmp.path(), &["config://app/bad.get"]);
     assert_eq!(code, 1);
-    assert!(err.contains("invalid json"), "{err}");
+    assert!(
+        err.contains("Error: [config.corrupt_value] invalid json"),
+        "{err}"
+    );
 
     let (code, _, err) = run(tmp.path(), &["config://app/bad.get", "timeout_ms=5"]);
     assert_eq!(code, 2);
@@ -329,15 +335,22 @@ fn io_errors_and_unknown_verbs_use_the_shared_exit_codes() {
     std::fs::create_dir_all(store(tmp.path()).join("app/dir.json")).unwrap();
     let (code, _, err) = run(tmp.path(), &["config://app/dir.get"]);
     assert_eq!(code, 1, "{err}");
-    assert!(err.contains("I/O error"), "{err}");
+    assert!(err.contains("Error: [config.io_error] I/O error"), "{err}");
     let (code, _, err) = run(tmp.path(), &["config://app/dir.set", "value=1"]);
     assert_eq!(code, 1, "{err}");
     let (code, _, err) = run(tmp.path(), &["config://app/k.delete"]);
     assert_eq!(code, 2, "{err}");
-    assert!(err.contains("unknown verb for config://: delete"), "{err}");
+    assert!(
+        err.contains("Error: [config.unknown_verb] unknown verb for config://: delete"),
+        "{err}"
+    );
     let (code, _, err) = run(tmp.path(), &["config://app/k.set", "valeu=1"]);
     assert_eq!(code, 2);
-    assert!(err.contains("did you mean `value`?"), "{err}");
+    assert!(
+        err.contains("Error: [config.invalid_argument] unknown argument")
+            && err.contains("did you mean `value`?"),
+        "{err}"
+    );
 }
 
 /// Each event is written as it happens (the stage output is streamed), so

@@ -28,7 +28,7 @@ resh config://[<namespace>/]<key>.<verb> [key=value ...]
 * `set` writes to a temporary file in the same directory, syncs it, and renames it into place, so a reader never sees a half-written value.
 * `get` prints the stored JSON text exactly as saved, with no envelope.
 * `set` prints nothing on success.
-* On failure resh prints `Error: <reason>` to stderr (for example `Error: not found`).
+* On failure resh prints `Error: [<code>] <reason>` to stderr (for example `Error: [config.not_found] not found`); the codes are listed in [3.5 Error codes](#35-error-codes).
 * There is no dry-run mode: `dry_run=true` is refused (exit 2) and nothing is done.
 * Every argument is checked before anything is read or written. An argument the verb does not take (including `timeout_ms` on `get`, `set` and `ls`), a boolean that is not one of `true/false`, `1/0`, `yes/no`, `on/off`, or a number that does not parse is refused with exit code 2 and no side effect.
 
@@ -132,7 +132,28 @@ These codes are set by the handle (verified in the source):
 | 1    | The operation failed: key not found; the stored file is not valid JSON; a file I/O error (reading a value, creating the key's directory, writing or renaming the value file, walking the directory for `ls`); `watch` cannot create or watch its directory |
 | 2    | Invalid usage, nothing was done: empty key; `set` without `value`; `set raw=true` with invalid JSON; an unknown argument (with a "did you mean" hint for a likely typo); `timeout_ms` on `get`/`set`/`ls`; an unreadable boolean; an invalid `limit`, `offset`, `pattern`, `timeout_ms` or `max_events`; `watch` with both `key` and `prefix`; a target with a `.` or `..` segment; `dry_run=true`; an unknown verb |
 
-The reason is printed on stderr as `Error: <reason>`.
+The reason is printed on stderr as `Error: [<code>] <reason>` (see 3.5).
+
+### 3.5 Error codes
+
+Every failure printed by the handle carries one of these codes, in the project-wide format `Error: [config.<code>] <message>`:
+
+| Code                          | Exit | Meaning |
+| ----------------------------- | ---- | ------- |
+| `config.not_found`            | 1    | `get`: the key has no stored value |
+| `config.corrupt_value`        | 1    | `get`: the stored file is not valid JSON |
+| `config.io_error`             | 1    | Reading a value, creating the key's directory, writing or renaming the value file, or walking the directory for `ls` failed |
+| `config.serialization_failed` | 1    | `ls`: the listing could not be encoded as JSON |
+| `config.watch_failed`         | 1    | `watch` cannot create or watch its directory |
+| `config.invalid_argument`     | 2    | An unknown argument (with a "did you mean" hint), `timeout_ms` on `get`/`set`/`ls`, an unreadable boolean, an invalid `limit`, `offset`, `pattern`, `timeout_ms` or `max_events`, or `watch` with both `key` and `prefix` |
+| `config.missing_argument`     | 2    | `set` without `value` |
+| `config.invalid_json`         | 2    | `set raw=true` with a value that is not valid JSON |
+| `config.invalid_target`       | 2    | An empty key for `get`/`set`, or a target with a `.` or `..` segment |
+| `config.unknown_verb`         | 2    | The verb is not `get`, `set`, `ls` or `watch` |
+
+`dry_run=true` is refused (exit 2) by resh before the handle runs, with a message saying the verb does not support dry_run.
+
+**Change note (breaking):** earlier versions printed `Error: <reason>` with no code (for example `Error: not found`, `Error: invalid json`). Scripts that matched those lines must match the `[config.<code>]` prefix instead; the exit codes are unchanged.
 
 ---
 

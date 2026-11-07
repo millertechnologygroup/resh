@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 use crate::core::{
     help::{self, HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
-    status::Status,
+    status::{Status, exit},
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -154,6 +154,21 @@ pub struct ConfigHandle {
     invalid_target: Option<String>,
 }
 
+/// Every error code the handle can emit (`Error: [<code>] <message>`); each
+/// is documented in docs/Data_StateManagement/config.md.
+pub const ERROR_CODES: &[&str] = &[
+    "config.not_found",
+    "config.corrupt_value",
+    "config.io_error",
+    "config.serialization_failed",
+    "config.watch_failed",
+    "config.invalid_argument",
+    "config.missing_argument",
+    "config.invalid_json",
+    "config.invalid_target",
+    "config.unknown_verb",
+];
+
 /// The arguments each verb accepts. Help usage lists exactly these, and
 /// anything else is refused before the verb acts.
 const GET_ARGS: &[&str] = &[];
@@ -182,13 +197,15 @@ fn check_args(verb: &str, allowed: &[&str], args: &Args) -> Option<Status> {
         .into_iter()
         .find(|k| k.as_str() != "dry_run" && !allowed.contains(&k.as_str()))?;
     if bad == "timeout_ms" {
-        return Some(Status::err(
-            2,
+        return Some(Status::coded(
+            exit::USAGE,
+            "config.invalid_argument",
             format!("config {verb} does not take timeout_ms; only watch has a time limit"),
         ));
     }
-    Some(Status::err(
-        2,
+    Some(Status::coded(
+        exit::USAGE,
+        "config.invalid_argument",
         format!(
             "unknown argument for config {verb}: {bad}{}",
             did_you_mean(bad, allowed)
@@ -233,7 +250,7 @@ fn did_you_mean(bad: &str, allowed: &[&str]) -> String {
 fn bool_arg(args: &Args, key: &str, default: bool) -> std::result::Result<bool, Status> {
     crate::core::lenient::bool_arg(args, key)
         .map(|v| v.unwrap_or(default))
-        .map_err(|e| Status::err(2, e.to_string()))
+        .map_err(|e| Status::coded(exit::USAGE, "config.invalid_argument", e.to_string()))
 }
 
 /// Reads a non-negative integer argument (exit 2 if it is not one).
@@ -241,8 +258,9 @@ fn u64_arg(args: &Args, key: &str) -> std::result::Result<u64, Status> {
     match args.get(key) {
         None => Ok(0),
         Some(v) => v.trim().parse::<u64>().map_err(|_| {
-            Status::err(
-                2,
+            Status::coded(
+                exit::USAGE,
+                "config.invalid_argument",
                 format!("invalid {key} value: {v:?} (expected a non-negative integer)"),
             )
         }),
@@ -397,9 +415,10 @@ impl ConfigHandle {
     fn verb_get(&self, _args: &Args, io: &mut IoStreams) -> Result<Status> {
         // Reject get on empty keys
         if self.key.is_empty() {
-            return Ok(Status::err(
-                2,
-                "Empty key not allowed for get operation".to_string(),
+            return Ok(Status::coded(
+                exit::USAGE,
+                "config.invalid_target",
+                "Empty key not allowed for get operation",
             ));
         }
 
@@ -407,10 +426,14 @@ impl ConfigHandle {
         let content = match fs::read_to_string(&self.file_path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Status::err(1, "not found".to_string()));
+                return Ok(Status::coded(exit::FAILED, "config.not_found", "not found"));
             }
             Err(e) => {
-                return Ok(Status::err(1, format!("I/O error: {}", e)));
+                return Ok(Status::coded(
+                    exit::FAILED,
+                    "config.io_error",
+                    format!("I/O error: {}", e),
+                ));
             }
         };
 
@@ -422,16 +445,21 @@ impl ConfigHandle {
                 Ok(Status::ok())
             }
             // The stored value is damaged: the operation failed.
-            Err(_) => Ok(Status::err(1, "invalid json".to_string())),
+            Err(_) => Ok(Status::coded(
+                exit::FAILED,
+                "config.corrupt_value",
+                "invalid json: the stored value is not valid JSON",
+            )),
         }
     }
 
     fn verb_set(&self, args: &Args, _io: &mut IoStreams) -> Result<Status> {
         // Reject set on empty keys
         if self.key.is_empty() {
-            return Ok(Status::err(
-                2,
-                "Empty key not allowed for set operation".to_string(),
+            return Ok(Status::coded(
+                exit::USAGE,
+                "config.invalid_target",
+                "Empty key not allowed for set operation",
             ));
         }
 
@@ -439,7 +467,11 @@ impl ConfigHandle {
         let value = match args.get("value") {
             Some(v) => v,
             None => {
-                return Ok(Status::err(2, "missing arg: value".to_string()));
+                return Ok(Status::coded(
+                    exit::USAGE,
+                    "config.missing_argument",
+                    "missing arg: value",
+                ));
             }
         };
 
@@ -455,7 +487,11 @@ impl ConfigHandle {
             match serde_json::from_str::<serde_json::Value>(value) {
                 Ok(v) => v,
                 Err(_) => {
-                    return Ok(Status::err(2, "invalid json".to_string()));
+                    return Ok(Status::coded(
+                        exit::USAGE,
+                        "config.invalid_json",
+                        "invalid json",
+                    ));
                 }
             }
         } else {
@@ -468,7 +504,11 @@ impl ConfigHandle {
 
         // Ensure parent directory exists
         if let Err(e) = self.ensure_base_config_dir() {
-            return Ok(Status::err(1, format!("I/O error: {:#}", e)));
+            return Ok(Status::coded(
+                exit::FAILED,
+                "config.io_error",
+                format!("I/O error: {:#}", e),
+            ));
         }
 
         // Perform atomic write using temporary file. The name is not a
@@ -494,8 +534,9 @@ impl ConfigHandle {
             });
         if let Err(e) = written {
             let _ = fs::remove_file(&temp_path);
-            return Ok(Status::err(
-                1,
+            return Ok(Status::coded(
+                exit::FAILED,
+                "config.io_error",
                 format!("I/O error: writing {}: {}", temp_path.display(), e),
             ));
         }
@@ -506,7 +547,11 @@ impl ConfigHandle {
             Err(e) => {
                 // Clean up temp file on error
                 let _ = fs::remove_file(&temp_path);
-                Ok(Status::err(1, format!("I/O error: {}", e)))
+                Ok(Status::coded(
+                    exit::FAILED,
+                    "config.io_error",
+                    format!("I/O error: {}", e),
+                ))
             }
         }
     }
@@ -523,7 +568,13 @@ impl ConfigHandle {
         let limit = if let Some(limit_str) = args.get("limit") {
             match limit_str.parse::<usize>() {
                 Ok(l) => Some(l),
-                Err(_) => return Ok(Status::err(2, "invalid limit value".to_string())),
+                Err(_) => {
+                    return Ok(Status::coded(
+                        exit::USAGE,
+                        "config.invalid_argument",
+                        "invalid limit value",
+                    ));
+                }
             }
         } else {
             None
@@ -531,7 +582,13 @@ impl ConfigHandle {
         let offset = if let Some(offset_str) = args.get("offset") {
             match offset_str.parse::<usize>() {
                 Ok(o) => o,
-                Err(_) => return Ok(Status::err(2, "invalid offset value".to_string())),
+                Err(_) => {
+                    return Ok(Status::coded(
+                        exit::USAGE,
+                        "config.invalid_argument",
+                        "invalid offset value",
+                    ));
+                }
             }
         } else {
             0
@@ -541,7 +598,13 @@ impl ConfigHandle {
         let glob_matcher = if let Some(ref pat) = pattern {
             match Glob::new(pat) {
                 Ok(glob) => Some(glob.compile_matcher()),
-                Err(_) => return Ok(Status::err(2, "invalid pattern".to_string())),
+                Err(_) => {
+                    return Ok(Status::coded(
+                        exit::USAGE,
+                        "config.invalid_argument",
+                        "invalid pattern",
+                    ));
+                }
             }
         } else {
             None
@@ -550,7 +613,13 @@ impl ConfigHandle {
         // List config entries
         let entries = match self.list_config_entries(recursive, glob_matcher.as_ref()) {
             Ok(entries) => entries,
-            Err(e) => return Ok(Status::err(1, format!("I/O error: {:#}", e))),
+            Err(e) => {
+                return Ok(Status::coded(
+                    exit::FAILED,
+                    "config.io_error",
+                    format!("I/O error: {:#}", e),
+                ));
+            }
         };
 
         // Sort entries by full_key for deterministic pagination
@@ -580,11 +649,11 @@ impl ConfigHandle {
                 write!(io.stdout, "{}", json).with_context(|| "Failed to write JSON to stdout")?;
                 Ok(Status::ok())
             }
-            Err(e) => {
-                write!(io.stderr, "Failed to serialize JSON: {}", e)
-                    .with_context(|| "Failed to write error to stderr")?;
-                Ok(Status::err(1, "JSON serialization failed".to_string()))
-            }
+            Err(e) => Ok(Status::coded(
+                exit::FAILED,
+                "config.serialization_failed",
+                format!("JSON serialization failed: {e}"),
+            )),
         }
     }
 
@@ -761,8 +830,11 @@ impl ConfigHandle {
 
         // Mutual exclusion check
         if key.is_some() && prefix.is_some() {
-            writeln!(io.stderr, "key and prefix cannot be used together")?;
-            return Ok(Status::err(2, "key and prefix cannot be used together"));
+            return Ok(Status::coded(
+                exit::USAGE,
+                "config.invalid_argument",
+                "key and prefix cannot be used together",
+            ));
         }
 
         // timeout_ms and max_events: 0 (the default) means no limit. A value
@@ -810,8 +882,11 @@ impl ConfigHandle {
         // Ensure watch directory exists
         if !watch_dir.exists() {
             if let Err(e) = create_private_dir(&watch_dir) {
-                writeln!(io.stderr, "Failed to create watch directory: {}", e)?;
-                return Ok(Status::err(1, format!("config watch failed: {}", e)));
+                return Ok(Status::coded(
+                    exit::FAILED,
+                    "config.watch_failed",
+                    format!("cannot create watch directory {}: {e}", watch_dir.display()),
+                ));
             }
         }
 
@@ -860,8 +935,11 @@ impl ConfigHandle {
         let _watcher = match watcher {
             Ok(w) => w,
             Err(e) => {
-                writeln!(io.stderr, "Failed to watch {}: {}", watch_dir.display(), e)?;
-                return Ok(Status::err(1, format!("config watch failed: {}", e)));
+                return Ok(Status::coded(
+                    exit::FAILED,
+                    "config.watch_failed",
+                    format!("cannot watch {}: {e}", watch_dir.display()),
+                ));
             }
         };
 
@@ -1130,8 +1208,9 @@ impl Handle for ConfigHandle {
         }
 
         let Some(allowed) = verb_args(verb) else {
-            return Ok(Status::err(
-                2,
+            return Ok(Status::coded(
+                exit::USAGE,
+                "config.unknown_verb",
                 format!("unknown verb for config://: {verb} (verbs: get, set, ls, watch)"),
             ));
         };
@@ -1139,7 +1218,7 @@ impl Handle for ConfigHandle {
             return Ok(refusal);
         }
         if let Some(reason) = &self.invalid_target {
-            return Ok(Status::err(2, reason.clone()));
+            return Ok(Status::coded(exit::USAGE, "config.invalid_target", reason));
         }
 
         match verb {
@@ -1147,8 +1226,9 @@ impl Handle for ConfigHandle {
             "set" => self.verb_set(args, io),
             "ls" => self.verb_ls(args, io),
             "watch" => self.verb_watch(args, io),
-            _ => Ok(Status::err(
-                2,
+            _ => Ok(Status::coded(
+                exit::USAGE,
+                "config.unknown_verb",
                 format!("unknown verb for config://: {verb}"),
             )),
         }
@@ -1158,6 +1238,29 @@ impl Handle for ConfigHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_error_code_is_valid_listed_and_documented() {
+        let docs = include_str!("../../../docs/Data_StateManagement/config.md");
+        for code in ERROR_CODES {
+            assert!(crate::core::status::is_valid_error_code(code), "{code}");
+            assert!(docs.contains(&format!("`{code}`")), "{code} not documented");
+        }
+        // Every code literal in this file is in ERROR_CODES.
+        let src = include_str!("config.rs");
+        for part in src.split("\"config.").skip(1) {
+            let name: String = part
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                .collect();
+            // `"config.rs"` and the like are file names, not codes.
+            let file_name = matches!(name.as_str(), "rs" | "md" | "json");
+            if part[name.len()..].starts_with('"') && !name.is_empty() && !file_name {
+                let code = format!("config.{name}");
+                assert!(ERROR_CODES.contains(&code.as_str()), "{code} not listed");
+            }
+        }
+    }
     use std::io::Cursor;
     use tempfile::TempDir;
 
@@ -1501,7 +1604,10 @@ mod tests {
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(!result.ok);
         assert_eq!(result.code, Some(2));
-        assert_eq!(result.reason, Some("invalid limit value".to_string()));
+        assert_eq!(
+            result.reason,
+            Some("[config.invalid_argument] invalid limit value".to_string())
+        );
     }
 
     #[test]
@@ -1524,7 +1630,10 @@ mod tests {
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(!result.ok);
         assert_eq!(result.code, Some(2));
-        assert_eq!(result.reason, Some("invalid offset value".to_string()));
+        assert_eq!(
+            result.reason,
+            Some("[config.invalid_argument] invalid offset value".to_string())
+        );
     }
 
     #[test]
@@ -1547,7 +1656,10 @@ mod tests {
         let result = handle.verb_ls(&args, &mut io).unwrap();
         assert!(!result.ok);
         assert_eq!(result.code, Some(2));
-        assert_eq!(result.reason, Some("invalid pattern".to_string()));
+        assert_eq!(
+            result.reason,
+            Some("[config.invalid_argument] invalid pattern".to_string())
+        );
     }
 
     // --- dispatch tests: every verb through Handle::call -------------------
@@ -1874,9 +1986,14 @@ mod tests {
     fn watch_argument_errors() {
         let dir = TempDir::new().unwrap();
         let h = at(&dir, "config://app/db");
-        let (s, _, err) = call(&h, "watch", &[("key", "a"), ("prefix", "b")]);
+        let (s, _, _) = call(&h, "watch", &[("key", "a"), ("prefix", "b")]);
         assert_err(&s, 2, "key and prefix cannot be used together");
-        assert!(err.contains("key and prefix"));
+        assert!(
+            s.reason
+                .as_deref()
+                .unwrap()
+                .starts_with("[config.invalid_argument] ")
+        );
         assert_err(
             &call(&h, "watch", &[("timeout_ms", "abc")]).0,
             2,
@@ -1910,7 +2027,7 @@ mod tests {
             "watch",
             &[("timeout_ms", "10")],
         );
-        assert_err(&s, 1, "config watch failed");
+        assert_err(&s, 1, "[config.watch_failed] cannot create watch directory");
     }
 
     #[test]
