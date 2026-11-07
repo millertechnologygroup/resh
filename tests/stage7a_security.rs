@@ -315,7 +315,8 @@ fn fs_mount_refuses_option_shaped_operands_before_running() {
                 cmd.arg("dry_run=true");
             }
             let r = run(&mut cmd);
-            assert_eq!(r.code, 1, "{args:?}: {}", r.stderr);
+            // Invalid usage: exit 2, nothing done.
+            assert_eq!(r.code, 2, "{args:?}: {}", r.stderr);
             assert!(
                 r.stderr.contains(&format!("{field} cannot start with '-'")),
                 "{}",

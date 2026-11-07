@@ -202,10 +202,15 @@ fn handle_help_matches_golden_and_lists_every_verb() {
     let mut verbs = VERBS.to_vec();
     verbs.sort();
     assert_eq!(listed_sorted, verbs);
-    // The help verb prints the same text.
+    // Every help spelling prints the same text.
     let (code, via_verb, _) = run(&["fs://local.help"]);
     assert_eq!(code, 0);
     assert_eq!(via_verb, out);
+    for form in [["fs", "-h"], ["fs", "help"], ["help", "fs"]] {
+        let (code, alias_out, _) = run(&form);
+        assert_eq!(code, 0, "{form:?}");
+        assert_eq!(alias_out, out, "{form:?}");
+    }
 }
 
 #[test]
@@ -262,9 +267,18 @@ fn every_verb_help_is_accurate() {
             assert!(options(verb).contains(&key), "{verb} example uses {key}");
         }
 
-        // The help verb prints the same text for this verb.
+        // Every help spelling prints the same text for this verb.
         let (_, via_verb, _) = run(&["fs://local.help", &format!("verb={verb}")]);
         assert_eq!(via_verb, out, "{verb}");
+        for form in [
+            vec!["fs", verb, "-h"],
+            vec!["fs", verb, "help"],
+            vec!["help", "fs", verb],
+        ] {
+            let (code, alias_out, _) = run(&form);
+            assert_eq!(code, 0, "{form:?}");
+            assert_eq!(alias_out, out, "{form:?}");
+        }
     }
 }
 
