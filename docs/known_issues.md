@@ -16,11 +16,27 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   `resh.unknown_handle`, `<handle>.invalid_target` and
   `<handle>.invalid_argument`. Handles not yet aligned (cache, db, mq, event,
   log, secret, proc, svc, cron, firewall, user, pkg, system, cert, backup,
-  plugin, ssh, git) still print their own formats until they are.
+  plugin, git) still print their own formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
   an unknown handle or verb is an error (exit 2) with a suggestion.
 - Stage output is streamed as it is written (`--json-pretty` still buffers).
 - `key=value` command-line values are passed exactly, without trimming.
+
+### ssh
+
+- Every verb refuses unknown arguments and invalid values (exit 2,
+  `ssh.invalid_argument`), takes `timeout_ms` (except `config.get`) and exits
+  0/1/2/124 with `ssh.*` error codes. `exec` exits 1 for a non-zero remote
+  exit; the remote code is in `result.exit_code`.
+- `tunnel`, `keys.list` and `key.add` are implemented. The `test` verb's
+  `sftp` and `hostkey` checks are real. `identity_data`,
+  `identity_passphrase`, `env` (exported remotely), `allocate_pty` and every
+  `test` timeout now work. A timed-out `exec` stops the remote command.
+- `config.get` uses OpenSSH's first-match rule and the URL host.
+- Remaining limits: the `identity_passphrase` helper needs OpenSSH 8.4+;
+  in `exec`'s cmd/powershell modes a timed-out remote command cannot be
+  stopped (a warning says so); `config.get` skips `Match exec`,
+  `localnetwork` and `tagged` blocks with a warning.
 
 ### http and https
 
@@ -340,7 +356,7 @@ This section supersedes the test counts and "Still open" list in the
   handle's page under `docs/`):
   - Unsupported by design in this release: encrypted ZIP creation, git sync
     merge/rebase (fast-forward only), secret encryption at rest and
-    `rotate`, ssh `tunnel`/`keys.list`/`key.add`, backup `schedule`
+    `rotate`, backup `schedule`
     installation, pkg restore version pinning/rollback, cert encrypted keys, `proc limits.set` on other processes. (dns
     `zone.update` and cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are kept in the OS keyring (Secret Service /
@@ -350,7 +366,7 @@ This section supersedes the test counts and "Still open" list in the
     warning, and moved to the keyring on the next config change. The macOS
     Keychain path is not tested.
   - No dry-run mode for svc, proc, file writes (except `file replace`),
-    cache/db writes, mq, ssh (except exec), mail send and backup restore; for
+    cache/db writes, mq, mail send and backup restore; for
     these `dry_run=true` is refused before anything runs; git `timeout_ms` is
     rejected; `file` enforces `timeout_ms` on every verb whose work can be
     long (exit 124) and refuses it on instant verbs; pkg timeouts stop
@@ -487,8 +503,6 @@ These were found during the fixes, or are Medium items that were not fixed:
     signature_format=cms_detached|cms_attached`) were added after
     v1.0.6-beta.
   - `csr.create` cannot put key usage into a CSR (an rcgen limitation).
-- **ssh `exec env=`:** sets variables on the local ssh process, not on the
-  remote host.
 - **backup `schedule`:** installs nothing.
 - **Pre-existing test failures (15):** all fixed. `archiveh::test_path_sanitization`
   in Stage 1; the 11 `userh` and 3 `gith` tests in Stage 3 (details in
@@ -760,17 +774,6 @@ typed structs:
   - Server discovery for `zone.fetch`/`zone.update` (no `servers=`) always
     asks the /etc/resolv.conf name servers on port 53.
 - **net list** ignores the URL host (`net://if` is the convention).
-- **ssh simulated or stubbed verbs** (`src/handles/network/sshh.rs`).
-  Updated 2026-10-23: `upload` and `download` perform real transfers
-  (fixed, C4). Still stubs: `tunnel`, `keys.list` and `key.add` fail with
-  `ssh.not_implemented` unless `dry_run`; in `test`, the `sftp` and
-  `hostkey` checks always fail.
-- **ssh `exec` with `cwd=`.**
-  - The SSH arguments are added twice (`:6318, 6329-6330`).
-  - For sh and bash, the `cd` is also applied twice (`:5722`).
-  - With password auth, `cwd` is dropped (`:6346`).
-- **ssh `config.get`.** A later matching entry overrides an earlier one
-  (`:8452, 8496`); OpenSSH uses the first match.
 
 ### Filesystem
 
