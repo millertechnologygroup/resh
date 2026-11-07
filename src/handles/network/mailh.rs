@@ -1627,11 +1627,8 @@ impl MailSendResponse {
                     output.push_str(&format!("Message-ID: {}\n", msg_id));
                 }
             } else {
-                output.push_str("Status  : failed\n\n");
+                output.push_str("Status    : failed\n\n");
             }
-        } else if let Some(result) = &self.result {
-            output.push_str(&format!("Attempts: {}\n", result.attempts));
-            output.push_str("Status  : failed\n\n");
         }
 
         if let Some((code, message)) = &self.error {
@@ -1836,7 +1833,7 @@ impl MailSendTemplateResponse {
                         output.push_str(&format!("Message-ID: {}\n", msg_id));
                     }
                 } else {
-                    output.push_str("Status  : failed\n\n");
+                    output.push_str("Status    : failed\n\n");
                 }
             }
         } else if self.ok
