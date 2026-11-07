@@ -1,0 +1,36 @@
+Handle: git
+Verb: merge
+Definition: Merges a source branch or commit into the current or target branch,
+  fast-forwarding when possible.
+
+Usage:
+  resh git://<alias>.merge path=<repo-dir> source=<rev>
+    [target=<branch>] [commit_message=<text>] [author_name=<name>]
+    [author_email=<email>] [committer_name=<name>]
+    [committer_email=<email>] [ff_only=true|false] [no_ff=true|false]
+    [squash=true|false] [allow_uncommitted=true|false]
+    [abort_on_conflict=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.merge path=/srv/app source=feature
+
+Example Output:
+  {
+    "action": "merge",
+    "alias": "main",
+    "backend": "git",
+    "commit": {
+      "message": null,
+      "oid": "9f3c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+    },
+    "ff_only": false,
+    "mode": "fast_forward",
+    "no_ff": false,
+    "path": "/srv/app",
+    "source": "feature",
+    "squash": false,
+    "status": "fast_forward",
+    "target": "main"
+  }
+
+  Shown for a fast-forward merge with --json-pretty.

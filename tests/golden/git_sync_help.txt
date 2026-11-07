@@ -1,0 +1,17 @@
+Handle: git
+Verb: sync
+Definition: Fetches from a remote, fast-forwards the current branch when it is
+  behind, and then pushes it, failing without pushing when the histories have
+  diverged (sync never rebases or merges).
+
+Usage:
+  resh git://<alias>.sync path=<repo-dir> [remote=<name>]
+    [branch=<name>] [remote_branch=<name>]
+    [pull_strategy=rebase|merge|ff_only] [push=true|false]
+    [push_tags=true|false] [force_push=true|false]
+    [allow_uncommitted=true|false] [stash_uncommitted=true|false]
+    [abort_on_conflict=true|false] [dry_run=true|false]
+    [known_hosts_path=<file>] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.sync path=/srv/app pull_strategy=rebase

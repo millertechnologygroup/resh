@@ -1,0 +1,62 @@
+Handle: git
+Verb: status_summary
+Definition: Summarizes repository state as file counts, a sync state, and a
+  recommended next action.
+
+Usage:
+  resh git://<alias>.status_summary path=<repo-dir> [remote=<name>]
+    [branch=<name>] [include_untracked=true|false]
+    [include_ignored=true|false] [include_remote=true|false]
+    [compute_diffstats=true|false] [max_files=<n>] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.status_summary path=/srv/app
+
+Example Output:
+  {
+    "action": "status_summary",
+    "alias": "main",
+    "backend": "git",
+    "branch": {
+      "detached": false,
+      "has_commits": true,
+      "head": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba",
+      "name": "main",
+      "upstream": null
+    },
+    "diffstats": null,
+    "path": "/srv/app",
+    "recommendation": {
+      "actions": [
+        "commit_changes",
+        "sync_with_remote"
+      ],
+      "description": "Commit your local changes and sync with remote.",
+      "primary_action": "commit"
+    },
+    "summary": {
+      "blocked_by_conflicts": false,
+      "can_commit": false,
+      "has_uncommitted_changes": true,
+      "needs_pull": false,
+      "needs_push": false,
+      "state": "local_changes_only"
+    },
+    "working_tree": {
+      "clean": false,
+      "conflicts_count": 0,
+      "ignored_count": 0,
+      "in_progress": {
+        "bisect": false,
+        "cherry_pick": false,
+        "merge": false,
+        "rebase": false,
+        "revert": false
+      },
+      "staged_count": 0,
+      "unstaged_count": 1,
+      "untracked_count": 1
+    }
+  }
+
+  Shown for a branch without an upstream with --json-pretty.

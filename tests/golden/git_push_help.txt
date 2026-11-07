@@ -1,0 +1,34 @@
+Handle: git
+Verb: push
+Definition: Pushes the named branch, or the current branch by default, to a
+  remote and reports each branch's ahead and behind counts.
+
+Usage:
+  resh git://<alias>.push path=<repo-dir> [remote=<name>]
+    [branch=<name>] [branches=<b1,b2,...>] [tags=true|false]
+    [force=true|false] [ff_only=true|false]
+    [set_upstream=true|false] [ssh_key=<file>]
+    [known_hosts_path=<file>] [username=<user>] [password=<pass>]
+    [token=<token>] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.push path=/srv/app branch=main
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "git",
+    "branches": [
+      {
+        "ahead_by": 2,
+        "behind_by": 0,
+        "name": "main",
+        "status": "pushed"
+      }
+    ],
+    "path": "/srv/app",
+    "remote": "origin",
+    "tags_pushed": false
+  }
+
+  Shown with --json-pretty.

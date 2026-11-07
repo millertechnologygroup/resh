@@ -1,0 +1,34 @@
+Handle: git
+Verb: status_short
+Definition: Builds a compact one-line status string for shell prompts from the
+  branch name, ahead and behind counts, and dirty and conflict markers.
+
+Usage:
+  resh git://<alias>.status_short path=<repo-dir> [branch=<name>]
+    [remote=<name>] [include_remote=true|false]
+    [include_dirty=true|false] [include_conflicts=true|false]
+    [symbols=<json-object>] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.status_short path=/srv/app
+
+Example Output:
+  {
+    "action": "status_short",
+    "alias": "main",
+    "backend": "git",
+    "components": {
+      "ahead": 0,
+      "behind": 0,
+      "branch": "main",
+      "clean": false,
+      "detached": false,
+      "has_conflicts": false,
+      "has_upstream": true
+    },
+    "path": "/srv/app",
+    "summary": "main*"
+  }
+
+  Shown for a modified branch level with its upstream, with --json-pretty.
+  The ahead, behind, conflict, and no-upstream markers are Unicode symbols.

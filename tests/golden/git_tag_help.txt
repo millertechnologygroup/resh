@@ -1,0 +1,40 @@
+Handle: git
+Verb: tag
+Definition: Lists, creates, or deletes tags, listing all tags sorted by name
+  when no action is given.
+
+Usage:
+  resh git://<alias>.tag path=<repo-dir> [action=list|create|delete]
+    [name=<tag>] [names=<t1,t2,...>] [pattern=<glob>]
+    [sort=name|version|taggerdate|committerdate]
+    [annotated=true|false] [message=<text>] [target=<rev>]
+    [force=true|false] [author_name=<name>] [author_email=<email>]
+    [timestamp=<iso8601|unix-seconds>] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.tag path=/srv/app
+
+Example Output:
+  {
+    "action": "list",
+    "alias": "main",
+    "backend": "git",
+    "count": 1,
+    "path": "/srv/app",
+    "pattern": null,
+    "sort": "name",
+    "tags": [
+      {
+        "annotated": false,
+        "message": null,
+        "name": "v1.0.0",
+        "tagger": null,
+        "target": {
+          "oid": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba",
+          "type": "commit"
+        }
+      }
+    ]
+  }
+
+  Shown for action=list with --json-pretty.

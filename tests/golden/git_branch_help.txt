@@ -1,0 +1,34 @@
+Handle: git
+Verb: branch
+Definition: Lists, creates, deletes, renames, or checks out branches, listing
+  local branches when no action is given.
+
+Usage:
+  resh git://<alias>.branch path=<repo-dir>
+    [action=list|create|delete|rename|checkout] [name=<branch>]
+    [new_name=<branch>] [start_point=<rev>] [track=true|false]
+    [remote=<name>] [local_only=true|false] [remote_only=true|false]
+    [all=true|false] [force=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.branch path=/srv/app
+
+Example Output:
+  {
+    "action": "list",
+    "alias": "main",
+    "backend": "git",
+    "branches": [
+      {
+        "full_ref": "refs/heads/main",
+        "head": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba",
+        "is_current": true,
+        "is_remote": false,
+        "name": "main",
+        "upstream": null
+      }
+    ],
+    "path": "/srv/app"
+  }
+
+  Shown for action=list with --json-pretty.

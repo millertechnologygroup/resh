@@ -1,0 +1,24 @@
+Handle: git
+Verb: clone
+Definition: Clones a remote repository into a new or empty local directory.
+
+Usage:
+  resh git://<alias>.clone url=<repo-url> path=<dir> [branch=<name>]
+    [recursive=true|false] [ssh_key=<file>]
+    [known_hosts_path=<file>] [username=<user>] [password=<pass>]
+    [token=<token>] [timeout_ms=<ms>]
+
+Example:
+  resh git://main.clone url=https://example.com/app.git path=/srv/app
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "git",
+    "branch": null,
+    "depth": null,
+    "path": "/srv/app",
+    "recursive": false,
+    "status": "cloned",
+    "url": "https://example.com/app.git"
+  }

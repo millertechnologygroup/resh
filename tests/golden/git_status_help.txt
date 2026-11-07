@@ -1,0 +1,53 @@
+Handle: git
+Verb: status
+Definition: Reports the current branch and upstream, the staged, unstaged,
+  untracked, and conflicted files, and any operation in progress.
+
+Usage:
+  resh git://<alias>.status path=<repo-dir>
+    [include_untracked=true|false] [include_ignored=true|false]
+    [include_staged=true|false] [include_branch=true|false]
+    [include_remote=true|false] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.status path=/srv/app
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "git",
+    "branch": {
+      "detached": false,
+      "head": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba",
+      "name": "main",
+      "upstream": null
+    },
+    "in_progress": {
+      "bisect": false,
+      "cherry_pick": false,
+      "merge": false,
+      "rebase": false,
+      "revert": false
+    },
+    "path": "/srv/app",
+    "working_tree": {
+      "clean": false,
+      "conflicts": [],
+      "ignored": [],
+      "staged": [],
+      "unstaged": [
+        {
+          "path": "README.md",
+          "status": "modified"
+        }
+      ],
+      "untracked": [
+        {
+          "path": "notes.txt",
+          "status": "untracked"
+        }
+      ]
+    }
+  }
+
+  Shown with --json-pretty.

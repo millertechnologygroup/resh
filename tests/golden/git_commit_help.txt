@@ -1,0 +1,44 @@
+Handle: git
+Verb: commit
+Definition: Creates a commit from the staged changes, first staging tracked
+  changes when all=true and the listed paths when paths is given.
+
+Usage:
+  resh git://<alias>.commit path=<repo-dir> message=<text>
+    [all=true|false] [paths=<p1,p2,...>] [allow_empty=true|false]
+    [amend=true|false] [no_edit=true|false] [signoff=true|false]
+    [author_name=<name>] [author_email=<email>]
+    [committer_name=<name>] [committer_email=<email>]
+    [timestamp=<iso8601|unix-seconds>] [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.commit path=/srv/app 'message=Fix typo'
+
+Example Output:
+  {
+    "action": "commit",
+    "alias": "main",
+    "backend": "git",
+    "commit": {
+      "allow_empty": false,
+      "amend": false,
+      "author": {
+        "email": "alice@example.com",
+        "name": "Alice"
+      },
+      "committer": {
+        "email": "alice@example.com",
+        "name": "Alice"
+      },
+      "message": "Fix typo",
+      "oid": "9f3c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+    },
+    "path": "/srv/app",
+    "stats": {
+      "deletions": null,
+      "insertions": null,
+      "staged_files": 0
+    }
+  }
+
+  Shown with --json-pretty. staged_files counts only files staged by this call.

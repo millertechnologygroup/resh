@@ -1,0 +1,51 @@
+Handle: git
+
+Description:
+  The git handle works with Git repositories through libgit2, covering status
+  queries, branches, tags, diffs, commits, merges, rebases, and remote clone,
+  pull, push, and sync, in the directory given with path (the URL host, such as
+  git://main, is a free-form alias that labels the output). Unknown arguments
+  are refused, and boolean, numeric, and list options take text values such as
+  true, 5000, or a,b. Every verb takes timeout_ms (clone, pull, push, and sync
+  default to 600000 ms, the other verbs have no limit), and the exit status is 0
+  on success, 1 on failure, 2 for invalid arguments, and 124 on timeout.
+
+Available Verbs:
+  status           Reports the current branch and upstream, the staged,
+                   unstaged, untracked, and conflicted files, and any operation
+                   in progress.
+  status_summary   Summarizes repository state as file counts, a sync state, and
+                   a recommended next action.
+  status_short     Builds a compact one-line status string for shell prompts
+                   from the branch name, ahead and behind counts, and dirty and
+                   conflict markers.
+  diff             Compares the working tree, index, HEAD, or commits and
+                   reports each changed file with its hunks and lines.
+  branch           Lists, creates, deletes, renames, or checks out branches,
+                   listing local branches when no action is given.
+  tag              Lists, creates, or deletes tags, listing all tags sorted by
+                   name when no action is given.
+  commit           Creates a commit from the staged changes, first staging
+                   tracked changes when all=true and the listed paths when paths
+                   is given.
+  merge            Merges a source branch or commit into the current or target
+                   branch, fast-forwarding when possible.
+  rebase           Rebases a branch onto an upstream revision, or continues or
+                   aborts a rebase in progress.
+  clone            Clones a remote repository into a new or empty local
+                   directory.
+  pull             Fetches from a remote and fast-forwards the local branch,
+                   returning an error when a merge or rebase would be needed,
+                   which is not implemented.
+  push             Pushes the named branch, or the current branch by default, to
+                   a remote and reports each branch's ahead and behind counts.
+  sync             Fetches from a remote, fast-forwards the current branch when
+                   it is behind, and then pushes it, failing without pushing
+                   when the histories have diverged (sync never rebases or
+                   merges).
+
+Usage:
+  resh git://<alias>.<verb> path=<repo-dir> [key=value ...]
+
+For help with a specific verb:
+  resh git <verb> --help

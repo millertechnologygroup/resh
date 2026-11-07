@@ -1,0 +1,40 @@
+Handle: git
+Verb: rebase
+Definition: Rebases a branch onto an upstream revision, or continues or aborts a
+  rebase in progress.
+
+Usage:
+  resh git://<alias>.rebase path=<repo-dir> upstream=<rev>
+    [operation=start|continue|abort] [branch=<branch>]
+    [author_name=<name>] [author_email=<email>]
+    [committer_name=<name>] [committer_email=<email>]
+    [ff_only=true|false] [preserve_merges=false] [autosquash=false]
+    [allow_uncommitted=true|false] [abort_on_conflict=true|false]
+    [timeout_ms=<ms>]
+
+Example:
+  resh --json-pretty git://main.rebase path=/srv/app upstream=main
+
+Example Output:
+  {
+    "action": "rebase",
+    "alias": "main",
+    "autosquash": false,
+    "backend": "git",
+    "branch": "feature",
+    "ff_only": false,
+    "mode": "normal",
+    "operation": "start",
+    "path": "/srv/app",
+    "preserve_merges": false,
+    "status": "rebased",
+    "summary": {
+      "commits_rebased": 2,
+      "new_base": "7a1d9e0c3b5f4a2e8d6c1b0a9f8e7d6c5b4a3f21",
+      "old_base": "e04b8198bc2515e2e86f9b4316f71f2e970c22ba"
+    },
+    "upstream": "main"
+  }
+
+  Shown for operation=start with --json-pretty. upstream is not required for
+  operation=continue or operation=abort.

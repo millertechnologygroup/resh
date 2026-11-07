@@ -1,0 +1,61 @@
+Handle: git
+Verb: diff
+Definition: Compares the working tree, index, HEAD, or commits and reports each
+  changed file with its hunks and lines.
+
+Usage:
+  resh git://<alias>.diff path=<repo-dir> [mode=<mode>] [from=<rev>]
+    [to=<rev>] [paths=<p1,p2,...>] [unified=<n>]
+    [ignore_whitespace=true|false] [ignore_whitespace_change=true|false]
+    [ignore_whitespace_eol=true|false] [detect_renames=true|false]
+    [rename_threshold=<0-100>] [binary=true|false] [max_files=<n>]
+    [max_hunks=<n>] [timeout_ms=<ms>]
+    mode: workdir_vs_index (default), index_vs_head, head_vs_workdir,
+    commit_vs_commit, commit_vs_workdir, commit_vs_index
+
+Example:
+  resh --json-pretty git://main.diff path=/srv/app mode=head_vs_workdir
+
+Example Output:
+  {
+    "alias": "main",
+    "backend": "git",
+    "files": [
+      {
+        "hunks": [
+          {
+            "lines": [
+              {
+                "content": "# app",
+                "type": "context"
+              },
+              {
+                "content": "Run make to build.",
+                "type": "add"
+              }
+            ],
+            "new_lines": 2,
+            "new_start": 1,
+            "old_lines": 1,
+            "old_start": 1
+          }
+        ],
+        "is_binary": false,
+        "new_path": "README.md",
+        "old_path": "README.md",
+        "status": "modified"
+      }
+    ],
+    "from": "HEAD",
+    "mode": "head_vs_workdir",
+    "path": "/srv/app",
+    "summary": {
+      "deletions": 0,
+      "files_changed": 1,
+      "insertions": 1,
+      "truncated": false
+    },
+    "to": "WORKDIR"
+  }
+
+  Shown with --json-pretty.
