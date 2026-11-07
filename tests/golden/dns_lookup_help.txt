@@ -1,0 +1,66 @@
+Handle: dns
+Verb: lookup
+Definition: Queries one DNS record type for a name and prints the answer,
+  authority and additional records as JSON or text.
+
+Usage:
+  resh dns://.lookup name=<name> [rtype=<type>] [servers=<ip,...>]
+    [port=<n>] [use_tcp=true|false] [timeout_ms=<ms>] [retries=<n>]
+    [dnssec=true|false] [follow_cname=true|false]
+    [include_authority=true|false] [include_additional=true|false]
+    [randomize_servers=true|false] [format=json|text]
+
+Example:
+  resh dns://.lookup name=example.com rtype=MX
+
+Example Output:
+  {
+    "additional": [
+      {
+        "class": "IN",
+        "data": {
+          "address": "192.0.2.25"
+        },
+        "name": "mail.example.com.",
+        "rtype": "A",
+        "ttl": 3600
+      }
+    ],
+    "answers": [
+      {
+        "class": "IN",
+        "data": {
+          "exchange": "mail.example.com.",
+          "preference": 10
+        },
+        "name": "example.com.",
+        "rtype": "MX",
+        "ttl": 3600
+      }
+    ],
+    "authority": [],
+    "error": null,
+    "ok": true,
+    "query": {
+      "dnssec": false,
+      "name": "example.com",
+      "port": 53,
+      "retries": 1,
+      "rtype": "MX",
+      "servers": [],
+      "timeout_ms": 2000,
+      "use_tcp": false
+    },
+    "response": {
+      "authoritative": false,
+      "dnssec_validated": null,
+      "rcode": "NOERROR",
+      "round_trip_time_ms": 24,
+      "server_used": "192.0.2.53",
+      "truncated": false
+    },
+    "timestamp_unix_ms": 1792142364512,
+    "warnings": []
+  }
+
+  Without servers the name servers in /etc/resolv.conf are asked.

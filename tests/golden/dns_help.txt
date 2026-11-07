@@ -1,0 +1,28 @@
+Handle: dns
+
+Description:
+  The dns handle sends DNS queries itself over UDP or TCP, covering record
+  lookups, host, mail, service, and reverse resolution, and delegation traces
+  from the root servers. It also transfers zones with AXFR or IXFR and sends RFC
+  2136 dynamic updates, both optionally TSIG-signed. The URL target is always
+  dns:// with an empty host, and the name and options are arguments, such as
+  dns://.lookup name=example.com.
+
+Available Verbs:
+  lookup        Queries one DNS record type for a name and prints the answer,
+                authority and additional records as JSON or text.
+  resolve       Resolves a host name to addresses after following CNAMEs, or
+                resolves mail, service, or reverse records depending on mode.
+  trace         Walks the delegation from the root servers (or root_servers) to
+                the name, following referrals, and reports every server asked.
+  zone.fetch    Transfers a zone with AXFR, or its changes since a serial with
+                IXFR, over TCP from the given or authoritative name servers.
+  zone.update   Sends an RFC 2136 dynamic DNS UPDATE (prerequisites, deletes and
+                adds) to the zone's server, optionally TSIG-signed, and reports
+                the server's RCODE.
+
+Usage:
+  resh dns://.<verb> [name=<name>|zone=<zone>] [key=value ...]
+
+For help with a specific verb:
+  resh dns <verb> --help

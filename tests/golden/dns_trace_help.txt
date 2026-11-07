@@ -1,0 +1,110 @@
+Handle: dns
+Verb: trace
+Definition: Walks the delegation from the root servers (or root_servers) to the
+  name, following referrals, and reports every server asked.
+
+Usage:
+  resh dns://.trace name=<name> [rtype=<type>] [root_servers=<ip,...>]
+    [prefer_ipv6=true|false] [port=<n>] [use_tcp=true|false]
+    [timeout_ms=<ms>] [retries=<n>] [dnssec=true|false] [max_depth=<n>]
+    [follow_cname=true|false] [include_additional=true|false]
+    [want_raw=true|false] [format=json|text]
+
+Example:
+  resh dns://.trace name=www.example.com rtype=A
+
+Example Output:
+  {
+    "error": null,
+    "ok": true,
+    "query": {
+      "dnssec": false,
+      "follow_cname": false,
+      "include_additional": true,
+      "max_depth": 15,
+      "name": "www.example.com",
+      "port": 53,
+      "prefer_ipv6": false,
+      "retries": 1,
+      "root_servers": [],
+      "rtype": "A",
+      "timeout_ms": 3000,
+      "use_tcp": false,
+      "want_raw": false
+    },
+    "timestamp_unix_ms": 1792142364512,
+    "trace": {
+      "cname_chain": [],
+      "depth": 3,
+      "final_answers": [
+        {
+          "data": {
+            "address": "192.0.2.10"
+          },
+          "name": "www.example.com.",
+          "rtype": "A",
+          "ttl": 300
+        }
+      ],
+      "final_authoritative": true,
+      "final_rcode": "NOERROR",
+      "hops": [
+        {
+          "additional": [
+            {
+              "data": {
+                "address": "192.0.2.1"
+              },
+              "name": "a.gtld-servers.net.",
+              "rtype": "A",
+              "ttl": 172800
+            }
+          ],
+          "answers": [],
+          "authoritative": false,
+          "authority": [
+            {
+              "data": {
+                "nsdname": "a.gtld-servers.net."
+              },
+              "name": "com.",
+              "rtype": "NS",
+              "ttl": 172800
+            }
+          ],
+          "dnssec": {
+            "ad_bit": false,
+            "do_bit": false,
+            "requested": false,
+            "validated": null
+          },
+          "hop_index": 1,
+          "ns_addresses": [
+            {
+              "family": "ipv4",
+              "ip": "192.0.2.1",
+              "name": "a.gtld-servers.net."
+            }
+          ],
+          "ns_names": [
+            "a.gtld-servers.net."
+          ],
+          "query_name": "www.example.com.",
+          "query_rtype": "A",
+          "raw": null,
+          "rcode": "NOERROR",
+          "rtt_ms": 12,
+          "server_ip": "198.41.0.4",
+          "server_name": "a.root-servers.net.",
+          "truncated": false,
+          "zone": "."
+        }
+      ],
+      "name": "www.example.com.",
+      "rtype": "A"
+    },
+    "warnings": []
+  }
+
+  The hops array is cut to the first (root) hop; the next hops ask the com.
+  and example.com. servers the referrals named.

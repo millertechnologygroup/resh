@@ -1,0 +1,73 @@
+Handle: dns
+Verb: zone.fetch
+Definition: Transfers a zone with AXFR, or its changes since a serial with IXFR,
+  over TCP from the given or authoritative name servers.
+
+Usage:
+  resh dns://.zone.fetch zone=<zone> [servers=<ip,...>] [port=<n>]
+    [transfer=AXFR|IXFR] [serial=<n>] [use_tcp=true]
+    [timeout_ms=<ms>] [retries=<n>] [dnssec=true|false]
+    [max_records=<n>] [prefer_ipv6=true|false]
+    [tsig_key_name=<name>] [tsig_secret=<base64>]
+    [tsig_algorithm=<alg>] [include_raw=true|false]
+    [format=json|text]
+
+Example:
+  resh dns://.zone.fetch zone=example.com servers=192.0.2.53
+
+Example Output:
+  {
+    "changes": null,
+    "error": null,
+    "ok": true,
+    "query": {
+      "dnssec": false,
+      "max_records": 1000000,
+      "port": 53,
+      "retries": 1,
+      "serial": null,
+      "servers": [
+        "192.0.2.53"
+      ],
+      "timeout_ms": 5000,
+      "transfer": "AXFR",
+      "tsig_algorithm": null,
+      "tsig_key_name": null,
+      "use_tcp": true,
+      "zone": "example.com"
+    },
+    "raw": null,
+    "timestamp_unix_ms": 1792142364512,
+    "warnings": [],
+    "zone": {
+      "name": "example.com.",
+      "record_count": 24,
+      "records": [
+        {
+          "class": "IN",
+          "data": {
+            "nsdname": "ns1.example.com."
+          },
+          "name": "example.com.",
+          "rtype": "NS",
+          "ttl": 3600
+        }
+      ],
+      "serial": 2026101601,
+      "server_used": "192.0.2.53",
+      "soa": {
+        "expire": 1209600,
+        "minimum": 3600,
+        "mname": "ns1.example.com.",
+        "refresh": 7200,
+        "retry": 3600,
+        "rname": "hostmaster.example.com.",
+        "serial": 2026101601
+      },
+      "transfer_requested": "AXFR",
+      "transfer_used": "AXFR"
+    }
+  }
+
+  The records array is cut to one entry. With transfer=IXFR an incremental
+  answer fills changes (old_serial, new_serial, deleted, added) instead.

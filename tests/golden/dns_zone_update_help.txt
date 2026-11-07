@@ -1,0 +1,53 @@
+Handle: dns
+Verb: zone.update
+Definition: Sends an RFC 2136 dynamic DNS UPDATE (prerequisites, deletes and
+  adds) to the zone's server, optionally TSIG-signed, and reports the server's
+  RCODE.
+
+Usage:
+  resh dns://.zone.update zone=<zone> [adds=<json>] [deletes=<json>]
+    [prerequisites=<json>] [max_changes=<n>] [servers=<server,...>]
+    [port=<n>] [use_tcp=true|false] [timeout_ms=<ms>] [retries=<n>]
+    [tsig_key_name=<name>] [tsig_secret=<base64>]
+    [tsig_algorithm=<alg>] [dry_run=true|false]
+    [include_raw=true|false] [format=json|text]
+
+Example:
+  resh dns://.zone.update zone=example.com servers=192.0.2.53 dry_run=true
+
+Example Output:
+  {
+    "details": {
+      "adds": [],
+      "deletes": [],
+      "prerequisites": []
+    },
+    "ok": true,
+    "query": {
+      "dry_run": true,
+      "max_changes": 1000,
+      "port": 53,
+      "retries": 1,
+      "servers": [
+        "192.0.2.53"
+      ],
+      "timeout_ms": 3000,
+      "tsig_algorithm": null,
+      "tsig_key_name": null,
+      "use_tcp": true,
+      "zone": "example.com"
+    },
+    "summary": {
+      "applied_adds": 0,
+      "applied_deletes": 0,
+      "dry_run": true,
+      "tsig_used": false,
+      "zone": "example.com."
+    },
+    "timestamp_unix_ms": 1792142364512,
+    "warnings": []
+  }
+
+  The adds argument is a JSON array of objects with name, rtype, ttl, and
+  data fields; data uses the same fields that lookup prints for that record
+  type. dry_run builds (and signs) the message but sends nothing.

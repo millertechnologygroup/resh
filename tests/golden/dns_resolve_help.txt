@@ -1,0 +1,60 @@
+Handle: dns
+Verb: resolve
+Definition: Resolves a host name to addresses after following CNAMEs, or
+  resolves mail, service, or reverse records depending on mode.
+
+Usage:
+  resh dns://.resolve name=<name> [mode=host|mail|service|reverse]
+    [family=any|ipv4|ipv6] [servers=<ip,...>] [port=<n>]
+    [use_tcp=true|false] [timeout_ms=<ms>] [retries=<n>]
+    [dnssec=true|false] [max_cname_depth=<n>] [follow_srv=true|false]
+    [validate_reverse=true|false] [want_raw=true|false]
+    [format=json|text]
+
+Example:
+  resh dns://.resolve name=example.com family=ipv4
+
+Example Output:
+  {
+    "error": null,
+    "ok": true,
+    "query": {
+      "dnssec": false,
+      "family": "ipv4",
+      "follow_srv": true,
+      "max_cname_depth": 8,
+      "mode": "host",
+      "name": "example.com",
+      "port": 53,
+      "retries": 1,
+      "servers": [],
+      "timeout_ms": 2000,
+      "use_tcp": false,
+      "validate_reverse": false,
+      "want_raw": false
+    },
+    "raw": null,
+    "resolution": {
+      "addresses": [
+        {
+          "family": "ipv4",
+          "ip": "192.0.2.10",
+          "ttl": 300
+        }
+      ],
+      "canonical_name": "example.com",
+      "family": "ipv4",
+      "forward_addresses": [],
+      "mode": "host",
+      "mx": [],
+      "ptr_name": null,
+      "round_trip_time_ms": 31,
+      "source_server": "192.0.2.53",
+      "srv": []
+    },
+    "timestamp_unix_ms": 1792142364512,
+    "warnings": []
+  }
+
+  Shown for mode=host. Other modes fill the mx, srv, or ptr_name and
+  forward_addresses fields.
