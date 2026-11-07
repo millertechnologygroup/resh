@@ -175,8 +175,8 @@ How it works:
   permitted`). It makes up to `count` TCP connects to `port` (host names and
   IPv4/IPv6 addresses are accepted; `family` selects the address family),
   each with a timeout of `max(200, timeout_ms / count)` ms, all within
-  `timeout_ms`. A connect that succeeds is a reply; a refused connection is
-  not. If the fallback cannot run at all (no address for the host), the
+  `timeout_ms`; each connect tries the host's addresses in turn. A connect
+  that succeeds is a reply; a refused connection is not. If the fallback cannot run at all (no address for the host), the
   verb fails with `net.ping_failed` (exit 1).
 
 ### tcp_check
