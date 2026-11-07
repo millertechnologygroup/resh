@@ -116,6 +116,8 @@ which = "6"
 
 [features]
 dns-e2e = []
+# End-to-end tests that run inside throwaway Docker containers (never on the host).
+e2e-docker = []
 redis-integration-tests = []
 memcached-integration-tests = []
 pkg-dnf-integration = []
