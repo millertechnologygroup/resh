@@ -46,7 +46,11 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   unexpected SSH connection is refused) and steers the SSH library to the
   key types the file lists; mismatches name the offered and listed types.
 - `clone` accepts `file://`, `git://` and local paths and `recursive=true`;
-  a failed clone removes what it created. `commit amend` works, `push`
+  a failed clone removes what it created. `pull` and `sync` merge or rebase
+  diverged history (sync rebases by default); on a conflict
+  `abort_on_conflict=true` (default) restores the exact previous state.
+  Shallow clones (`depth=`) work over network remotes. git2 0.21 / libgit2
+  1.9.7: RSA-only known_hosts files work (rsa-sha2-256/512). `commit amend` works, `push`
   reports server rejections, a fast-forward `merge` updates the working
   tree, `pull` no longer overwrites local changes, `sync` handles a detached
   HEAD and bare repositories.
@@ -411,8 +415,7 @@ This section supersedes the test counts and "Still open" list in the
     webpki-roots 1.0.10), plus bytes 1.11.1 and h2 0.4.16.
 - **Significant limitations that remain** (each is documented in its
   handle's page under `docs/`):
-  - Unsupported by design in this release: encrypted ZIP creation, git sync
-    merge/rebase (fast-forward only), backup `schedule`
+  - Unsupported by design in this release: encrypted ZIP creation, backup `schedule`
     installation, pkg restore version pinning/rollback, cert encrypted keys, `proc limits.set` on other processes. (dns
     `zone.update` and cert CMS signatures were added after v1.0.6-beta.)
   - SMTP profile passwords are kept in the OS keyring (Secret Service /
@@ -892,20 +895,13 @@ typed structs:
   - The old help shows `rules.list(backend=all)`, which `rules.list` rejects
     (`:74, 2163`).
 - **git.**
-  - `pull` with diverged branches fails: merge and rebase are not
-    implemented (`gith.rs:4217-4231`).
-  - `known_hosts_path` used to be stored in the connection profile but
-    never read, and could not be set from the command line. It is now an
-    argument of `clone`, `pull`, `push` and `sync` and enforces strict SSH
-    host-key checking (`git.host_key_verification_failed` on a missing or
-    unreadable file, an unlisted host, a changed key or a `@revoked` key);
-    it is ignored for https and file remotes. Remaining limits:
-    `@cert-authority` is not supported, and an RSA-only entry cannot be used
-    with current OpenSSH servers (libgit2 asks for legacy ssh-rsa). The check
-    follows insteadOf/pushInsteadOf rewrites and steers the SSH library to
-    the key types the file lists. See `git.md` 4.4.
-  - `clone depth=<n>` is refused: libgit2 1.7's shallow fetch is rejected by
-    current git servers ('expected SHA1 list').
+  - `known_hosts_path` enforces strict SSH host-key checking on the URL
+    libgit2 really connects to (after insteadOf/pushInsteadOf), steering the
+    SSH library to the key types the file lists. Remaining limit:
+    `@cert-authority` (CA-signed host keys) is not supported. See `git.md` 4.4.
+  - `clone depth=<n>` works over network remotes only; libgit2's local
+    transport cannot make shallow clones, so file:// URLs and local paths are
+    refused (exit 2).
 - **system.** `memory` input must list every option, because
   `SystemMemoryOptions` lacks `#[serde(default)]` (`systemh.rs:1929`).
   Trailing arguments such as `format=text` are ignored, since only
