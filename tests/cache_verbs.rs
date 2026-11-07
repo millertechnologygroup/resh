@@ -34,7 +34,7 @@ fn options_for(verb: &str) -> Vec<&'static str> {
         "incr" => vec!["key", "by", "initial", "ttl_ms", "namespace"],
         _ => unreachable!(),
     };
-    v.extend(["url", "connect_timeout_ms"]);
+    v.extend(["url", "ca_file", "connect_timeout_ms"]);
     if verb != "connect" {
         v.push("timeout_ms");
     }
@@ -159,10 +159,20 @@ fn dispatcher_and_target_errors() {
 fn connection_errors() {
     let r = resh(&["cache://redis/a.get", "key=k"]);
     assert_fail(&r, 2, "cache.connection_not_found");
-    let r = resh(&["cache://redis/a.connect", "url=rediss://127.0.0.1:6380"]);
-    assert_fail(&r, 2, "cache.tls_unsupported");
+    let r = resh(&[
+        "cache://redis/a.connect",
+        "url=rediss://127.0.0.1/#insecure",
+    ]);
+    assert_fail(&r, 2, "cache.invalid_argument");
+    let r = resh(&[
+        "cache://redis/a.connect",
+        "url=redis://127.0.0.1",
+        "ca_file=/etc/hostname",
+    ]);
+    assert_fail(&r, 2, "cache.invalid_argument");
     for url in [
         format!("url=redis://127.0.0.1:{}", closed_port()),
+        format!("url=rediss://127.0.0.1:{}", closed_port()),
         format!("url=memcache://127.0.0.1:{}", closed_port()),
     ] {
         let backend = if url.contains("redis") {
@@ -196,7 +206,7 @@ fn every_error_code_is_documented() {
     for code in [
         "invalid_argument",
         "invalid_target",
-        "tls_unsupported",
+        "tls_failed",
         "connection_not_found",
         "connect_failed",
         "connect_timeout",

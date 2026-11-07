@@ -113,7 +113,7 @@ Error: not found
 
 ### 4.1 Cache (`cache`)
 
-Verbs: `connect`, `get`, `exists`, `ttl`, `keys`, `set`, `incr`, `del`. Supports namespaces, TTLs, conditional writes and utf8/json/bytes encoding, and key listing on both backends (Redis `SCAN`, Memcached LRU crawler). Limitations include no TLS (`rediss://` is refused), no Memcached authentication and no Redis Cluster. See [cache.md](cache.md).
+Verbs: `connect`, `get`, `exists`, `ttl`, `keys`, `set`, `incr`, `del`. Supports namespaces, TTLs, conditional writes and utf8/json/bytes encoding, and key listing on both backends (Redis `SCAN`, Memcached LRU crawler). `rediss://` verifies the server certificate and host name, and `ca_file=` adds a private CA. Limitations include no Memcached TLS or authentication and no Redis Cluster. See [cache.md](cache.md).
 
 ### 4.2 Configuration (`config`)
 

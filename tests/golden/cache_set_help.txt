@@ -9,6 +9,7 @@ Usage:
     [namespace=<ns>] [ttl_ms=<ms>] [encode=utf8|bytes|json]
     [only_if_not_exists=true|false] [only_if_exists=true|false]
     [timeout_ms=<ms>] [connect_timeout_ms=<ms>]
+    [ca_file=<pem>]
 
 Example:
   resh cache://redis/main.set key=u1 value=alice ttl_ms=60000 url=redis://cache

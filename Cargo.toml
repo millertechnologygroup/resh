@@ -61,7 +61,8 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 # net tcp_check expect_tls (already in Cargo.lock through reqwest; ring provider)
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "mysql", "sqlite", "chrono"] }
-redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+# tokio-rustls-comp: rediss:// over the rustls 0.23 (ring) already in the tree
+redis = { version = "1.8", default-features = false, features = ["tokio-rustls-comp", "connection-manager", "script"] }
 dashmap = "6"
 log = "0.4"
 git2 = { version = "0.21", features = ["ssh", "https"] }

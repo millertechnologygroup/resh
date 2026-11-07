@@ -43,7 +43,8 @@ static CACHE_HELP: HandleHelp = HandleHelp {
                 and registers it under the alias for the rest of the resh process.",
             detail: Some(VerbDetail {
                 usage: "resh cache://<backend>/<alias>.connect url=<connection-url>\n  \
-                    [connect_timeout_ms=<ms>]",
+                    [connect_timeout_ms=<ms>]\n  \
+                    [ca_file=<pem>]",
                 example: "resh --json-pretty cache://redis/main.connect \
                     url=redis://localhost:6379/0",
                 example_output: Some(
@@ -54,9 +55,10 @@ static CACHE_HELP: HandleHelp = HandleHelp {
   "status": "connected"
 }
 
-Shown with --json-pretty. Redis takes redis://[:password@]host[:port][/db]
-or redis+unix:///path; Memcached takes memcache://host[:port]. TLS
-(rediss://) is not supported. connect_timeout_ms defaults to 5000."#,
+Shown with --json-pretty. Redis takes redis[s]://[:password@]host[:port]
+[/db] or redis+unix:///path; Memcached takes memcache://host[:port].
+rediss:// verifies the certificate and host name; ca_file=<pem> adds a
+private CA. connect_timeout_ms defaults to 5000."#,
                 ),
             }),
         },
@@ -67,7 +69,8 @@ or redis+unix:///path; Memcached takes memcache://host[:port]. TLS
             detail: Some(VerbDetail {
                 usage: "resh cache://<backend>/<alias>.get key=<key>|keys=<json-array>\n  \
                     url=<connection-url> [namespace=<ns>] [decode=utf8|bytes|json]\n  \
-                    [default=<value>] [timeout_ms=<ms>] [connect_timeout_ms=<ms>]",
+                    [default=<value>] [timeout_ms=<ms>] [connect_timeout_ms=<ms>]\n  \
+                    [ca_file=<pem>]",
                 example: "resh --json-pretty cache://redis/main.get key=user:42 url=redis://cache",
                 example_output: Some(
                     r#"{
@@ -89,7 +92,8 @@ and a results array of key, value, hit."#,
             detail: Some(VerbDetail {
                 usage: "resh cache://<backend>/<alias>.exists key=<key>|keys=<json-array>\n  \
                     url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]\n  \
-                    [connect_timeout_ms=<ms>]",
+                    [connect_timeout_ms=<ms>]\n  \
+                    [ca_file=<pem>]",
                 example: "resh --json-pretty cache://redis/main.exists key=user:42 url=redis://cache",
                 example_output: Some(
                     r#"{
@@ -111,7 +115,8 @@ and a total_exists count."#,
             detail: Some(VerbDetail {
                 usage: "resh cache://<backend>/<alias>.ttl key=<key>|keys=<json-array>\n  \
                     url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]\n  \
-                    [connect_timeout_ms=<ms>]",
+                    [connect_timeout_ms=<ms>]\n  \
+                    [ca_file=<pem>]",
                 example: "resh --json-pretty cache://redis/main.ttl key=session:1 url=redis://cache",
                 example_output: Some(
                     r#"{
@@ -137,7 +142,8 @@ false. With keys= the output has a results array and a found count."#,
             detail: Some(VerbDetail {
                 usage: "resh cache://<backend>/<alias>.keys url=<connection-url>\n  \
                     [pattern=<glob>] [namespace=<ns>] [cursor=<cursor>] [limit=<n>]\n  \
-                    [timeout_ms=<ms>] [connect_timeout_ms=<ms>]",
+                    [timeout_ms=<ms>] [connect_timeout_ms=<ms>]\n  \
+                    [ca_file=<pem>]",
                 example: "resh --json-pretty cache://redis/main.keys 'pattern=user:*' url=redis://cache",
                 example_output: Some(
                     r#"{
@@ -166,7 +172,8 @@ cursor to fetch the next page. On Redis, limit is a SCAN COUNT hint."#,
                     value=<value>|values=<json-array> url=<connection-url>\n  \
                     [namespace=<ns>] [ttl_ms=<ms>] [encode=utf8|bytes|json]\n  \
                     [only_if_not_exists=true|false] [only_if_exists=true|false]\n  \
-                    [timeout_ms=<ms>] [connect_timeout_ms=<ms>]",
+                    [timeout_ms=<ms>] [connect_timeout_ms=<ms>]\n  \
+                    [ca_file=<pem>]",
                 example: "resh cache://redis/main.set key=u1 value=alice ttl_ms=60000 \
                     url=redis://cache",
                 example_output: Some(
@@ -191,7 +198,8 @@ results array and a total_stored count."#,
             detail: Some(VerbDetail {
                 usage: "resh cache://<backend>/<alias>.incr key=<key> url=<connection-url>\n  \
                     [by=<n>] [initial=<n>] [ttl_ms=<ms>] [namespace=<ns>]\n  \
-                    [timeout_ms=<ms>] [connect_timeout_ms=<ms>]",
+                    [timeout_ms=<ms>] [connect_timeout_ms=<ms>]\n  \
+                    [ca_file=<pem>]",
                 example: "resh --json-pretty cache://redis/main.incr key=views by=5 url=redis://cache",
                 example_output: Some(
                     r#"{
@@ -213,7 +221,8 @@ at 0. ttl_ms sets the counter's expiry on every call."#,
             detail: Some(VerbDetail {
                 usage: "resh cache://<backend>/<alias>.del key=<key>|keys=<json-array>\n  \
                     url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]\n  \
-                    [connect_timeout_ms=<ms>]",
+                    [connect_timeout_ms=<ms>]\n  \
+                    [ca_file=<pem>]",
                 example: "resh --json-pretty cache://redis/main.del key=user:42 url=redis://cache",
                 example_output: Some(
                     r#"{
@@ -236,7 +245,7 @@ and a total_deleted count."#,
 /// Every error code `cache` reports (without the `cache.` prefix).
 pub(crate) const ERROR_CODES: &[&str] = &[
     "invalid_argument",
-    "tls_unsupported",
+    "tls_failed",
     "connection_not_found",
     "connect_failed",
     "connect_timeout",
@@ -286,12 +295,12 @@ impl Fail {
 // ------------------------------------------------------------ arguments --
 
 /// Arguments every verb except `connect` takes.
-const COMMON: &[&str] = &["url", "connect_timeout_ms", "timeout_ms"];
+const COMMON: &[&str] = &["url", "ca_file", "connect_timeout_ms", "timeout_ms"];
 
 /// Arguments `verb` takes, or `None` for an unknown verb.
 fn verb_args(verb: &str) -> Option<&'static [&'static str]> {
     Some(match verb {
-        "connect" => &["url", "connect_timeout_ms"],
+        "connect" => &["url", "ca_file", "connect_timeout_ms"],
         "get" => &["key", "keys", "namespace", "decode", "default"],
         "exists" | "ttl" | "del" => &["key", "keys", "namespace"],
         "keys" => &["pattern", "namespace", "cursor", "limit"],
@@ -346,14 +355,6 @@ fn check_args(verb: &str, args: &Args) -> Result<(), Fail> {
         if verb == "connect" && k == "timeout_ms" {
             return Err(Fail::invalid(
                 "timeout_ms is not accepted by connect: use connect_timeout_ms",
-            ));
-        }
-        if k == "ca_file" {
-            return Err(Fail::new(
-                2,
-                "tls_unsupported",
-                "ca_file is not accepted: this build of resh has no TLS support for cache \
-                 servers",
             ));
         }
         return Err(Fail::invalid(format!(
@@ -516,9 +517,56 @@ pub(crate) struct ConnUrl {
     pub endpoint: String,
     /// Memcached: the `host:port` to connect to.
     pub addr: Option<String>,
+    /// `rediss://`: TLS with certificate and host-name verification.
+    pub tls: bool,
+    /// `ca_file=`: extra trusted CA certificates (PEM) for this call.
+    pub ca_file: Option<CaFile>,
+}
+
+/// A checked `ca_file=`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CaFile {
+    pub path: String,
+    pub pem: Vec<u8>,
+}
+
+impl CaFile {
+    /// Reads `path`: it must hold at least one PEM certificate, and every
+    /// certificate in it must parse (exit 2 otherwise).
+    fn load(path: &str) -> Result<Self, Fail> {
+        use rustls::pki_types::{CertificateDer, pem::PemObject};
+        let pem = std::fs::read(path)
+            .map_err(|e| Fail::invalid(format!("cannot read ca_file {path}: {e}")))?;
+        let certs = CertificateDer::pem_slice_iter(&pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Fail::invalid(format!("bad certificate in ca_file {path}: {e}")))?;
+        if certs.is_empty() {
+            return Err(Fail::invalid(format!(
+                "ca_file {path} holds no PEM certificate"
+            )));
+        }
+        let mut store = rustls::RootCertStore::empty();
+        for c in certs {
+            store.add(c).map_err(|e| {
+                Fail::invalid(format!("unusable CA certificate in ca_file {path}: {e}"))
+            })?;
+        }
+        Ok(Self {
+            path: path.to_string(),
+            pem,
+        })
+    }
 }
 
 impl ConnUrl {
+    /// What identifies the connection: the URL and the extra CAs.
+    fn ident(&self) -> String {
+        match &self.ca_file {
+            Some(ca) => format!("{} ca_file={}", self.url, ca.path),
+            None => self.url.clone(),
+        }
+    }
+
     pub(crate) fn parse(backend: Backend, raw: &str) -> Result<Self, Fail> {
         if raw.trim().is_empty() {
             return Err(Fail::invalid("url cannot be empty"));
@@ -529,23 +577,23 @@ impl ConnUrl {
         let host = parsed.host_str().unwrap_or("").to_string();
         match backend {
             Backend::Redis => {
-                if scheme == "rediss" {
-                    return Err(Fail::new(
-                        2,
-                        "tls_unsupported",
-                        "rediss:// (TLS) is not supported by this build of resh; use \
-                         redis:// on a trusted network or redis+unix:// for a local socket",
-                    ));
-                }
-                if !matches!(scheme.as_str(), "redis" | "redis+unix" | "unix") {
+                if !matches!(scheme.as_str(), "redis" | "rediss" | "redis+unix" | "unix") {
                     return Err(Fail::invalid(format!(
                         "url scheme {scheme:?} is not valid for redis: use \
-                         redis://host[:port][/db] or redis+unix:///path"
+                         redis[s]://host[:port][/db] or redis+unix:///path"
                     )));
+                }
+                // `rediss://...#insecure` would ask the client to skip
+                // certificate checks; resh never does.
+                if parsed.fragment().is_some() {
+                    return Err(Fail::invalid(
+                        "redis url cannot have a #fragment (certificate verification \
+                         cannot be turned off)",
+                    ));
                 }
                 redis::Client::open(raw.trim())
                     .map_err(|e| Fail::invalid(format!("invalid redis url: {e}")))?;
-                let endpoint = if scheme == "redis" {
+                let endpoint = if scheme == "redis" || scheme == "rediss" {
                     if host.is_empty() {
                         return Err(Fail::invalid("redis url must include a host"));
                     }
@@ -557,6 +605,8 @@ impl ConnUrl {
                     url: raw.trim().to_string(),
                     endpoint,
                     addr: None,
+                    tls: scheme == "rediss",
+                    ca_file: None,
                 })
             }
             Backend::Memcached => {
@@ -592,6 +642,8 @@ impl ConnUrl {
                     url: raw.trim().to_string(),
                     endpoint: addr.clone(),
                     addr: Some(addr),
+                    tls: false,
+                    ca_file: None,
                 })
             }
         }
@@ -607,11 +659,23 @@ struct Common {
 
 impl Common {
     fn parse(backend: Backend, args: &Args) -> Result<Self, Fail> {
+        let mut url = args
+            .get("url")
+            .map(|u| ConnUrl::parse(backend, u))
+            .transpose()?;
+        if let Some(path) = args.get("ca_file") {
+            match url.as_mut() {
+                Some(u) if u.tls => u.ca_file = Some(CaFile::load(path)?),
+                _ => {
+                    return Err(Fail::invalid(
+                        "ca_file only applies to TLS connections: give it with a \
+                         rediss:// url",
+                    ));
+                }
+            }
+        }
         Ok(Self {
-            url: args
-                .get("url")
-                .map(|u| ConnUrl::parse(backend, u))
-                .transpose()?,
+            url,
             connect_timeout_ms: u64_arg(
                 args,
                 "connect_timeout_ms",
@@ -1042,6 +1106,65 @@ fn cache_runtime() -> Result<&'static tokio::runtime::Runtime> {
     Ok(RUNTIME.get_or_init(|| rt))
 }
 
+/// CA bundles of the common Linux distributions.
+const SYSTEM_BUNDLES: &[&str] = &[
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+    "/etc/ssl/cert.pem",
+];
+
+/// The CAs a TLS connection trusts, as PEM: the bundle named by
+/// `SSL_CERT_FILE`, else the system bundle, plus `ca_file`. Certificates
+/// the verifier cannot use are skipped, as other TLS clients do with system
+/// bundles.
+fn tls_roots(ca_file: Option<&CaFile>) -> Result<Vec<u8>, Fail> {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    let explicit = std::env::var_os("SSL_CERT_FILE").map(std::path::PathBuf::from);
+    let base = explicit.clone().or_else(|| {
+        SYSTEM_BUNDLES
+            .iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.is_file())
+    });
+    let mut out = String::new();
+    let mut add = |bytes: &[u8]| {
+        for cert in CertificateDer::pem_slice_iter(bytes).flatten() {
+            let mut probe = rustls::RootCertStore::empty();
+            if probe.add(cert.clone()).is_ok() {
+                out.push_str(&pem::encode(&pem::Pem::new("CERTIFICATE", cert.to_vec())));
+            }
+        }
+    };
+    if let Some(path) = &base {
+        match std::fs::read(path) {
+            Ok(bytes) => add(&bytes),
+            // An explicit SSL_CERT_FILE that cannot be read is an error.
+            Err(e) if explicit.is_some() => {
+                return Err(Fail::new(
+                    1,
+                    "tls_failed",
+                    format!("cannot read SSL_CERT_FILE {}: {e}", path.display()),
+                ));
+            }
+            Err(_) => {}
+        }
+    }
+    if let Some(ca) = ca_file {
+        add(&ca.pem);
+    }
+    if out.is_empty() {
+        return Err(Fail::new(
+            1,
+            "tls_failed",
+            "no trusted CA certificates: no system CA bundle was found; set SSL_CERT_FILE \
+             or pass ca_file=<pem>",
+        ));
+    }
+    Ok(out.into_bytes())
+}
+
 /// Opens and checks a connection (Redis `PING`, Memcached `version`)
 /// within `timeout_ms`.
 async fn open(backend: Backend, url: &ConnUrl, timeout_ms: u64) -> Result<Conn, Fail> {
@@ -1056,21 +1179,29 @@ async fn open(backend: Backend, url: &ConnUrl, timeout_ms: u64) -> Result<Conn, 
     };
     let client = match backend {
         Backend::Redis => {
-            let client = redis::Client::open(url.url.as_str())
-                .map_err(|e| Fail::invalid(format!("invalid redis url: {e}")))?;
+            let client = if url.tls {
+                let roots = tls_roots(url.ca_file.as_ref())?;
+                redis::Client::build_with_tls(
+                    url.url.as_str(),
+                    redis::TlsCertificates {
+                        client_tls: None,
+                        root_cert: Some(roots),
+                    },
+                )
+            } else {
+                redis::Client::open(url.url.as_str())
+            }
+            .map_err(|e| Fail::invalid(format!("invalid redis url: {e}")))?;
             let fut = async {
                 // Commands are bounded by timeout_ms, not by the client.
-                let mut manager = redis::aio::ConnectionManager::new_with_backoff_and_timeouts(
-                    client,
-                    2,
-                    100,
-                    0,
-                    Duration::from_secs(86_400),
-                    limit,
-                )
-                .await?;
+                let config = redis::aio::ConnectionManagerConfig::new()
+                    .set_number_of_retries(0)
+                    .set_connection_timeout(Some(limit))
+                    .set_response_timeout(None);
+                let mut manager =
+                    redis::aio::ConnectionManager::new_with_config(client, config).await?;
                 redis::cmd("PING")
-                    .query_async::<_, String>(&mut manager)
+                    .query_async::<String>(&mut manager)
                     .await?;
                 Ok::<_, redis::RedisError>(manager)
             };
@@ -1078,8 +1209,19 @@ async fn open(backend: Backend, url: &ConnUrl, timeout_ms: u64) -> Result<Conn, 
                 .await
                 .map_err(|_| timed_out())?
                 .map_err(|e| {
+                    let text = format!("{e:#}").to_ascii_lowercase();
                     if e.is_timeout() {
                         timed_out()
+                    } else if url.tls
+                        && ["certificate", "handshake", "tls"]
+                            .iter()
+                            .any(|w| text.contains(w))
+                    {
+                        Fail::new(
+                            1,
+                            "tls_failed",
+                            format!("TLS with redis at {endpoint} failed: {e}"),
+                        )
                     } else {
                         Fail::new(
                             1,
@@ -1113,7 +1255,7 @@ async fn open(backend: Backend, url: &ConnUrl, timeout_ms: u64) -> Result<Conn, 
         }
     };
     Ok(Conn {
-        url: url.url.clone(),
+        url: url.ident(),
         endpoint: url.endpoint.clone(),
         client,
     })
@@ -1238,7 +1380,7 @@ impl CacheHandle {
     async fn resolve(&self, common: &Common, fresh: bool) -> Result<Arc<Conn>, Fail> {
         let existing = registered(self.backend, &self.alias);
         let url = match (&common.url, existing) {
-            (Some(url), Some(c)) if !fresh && c.url == url.url => return Ok(c),
+            (Some(url), Some(c)) if !fresh && c.url == url.ident() => return Ok(c),
             (Some(url), _) => url,
             (None, Some(c)) => return Ok(c),
             (None, None) => {

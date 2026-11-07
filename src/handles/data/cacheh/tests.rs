@@ -329,7 +329,7 @@ fn unknown_arguments_are_refused_with_a_suggestion() {
         "get",
         &[("url", &url), ("key", "a"), ("ca_file", "/x")],
     );
-    fails(&o, 2, "tls_unsupported");
+    assert!(fails(&o, 2, "invalid_argument").contains("rediss://"));
     // dry_run=false is accepted (and the connection is then attempted).
     let o = mc(
         &alias(),
@@ -501,8 +501,17 @@ fn connection_urls_are_checked() {
             &[("url", url)],
         )
     };
-    fails(&redis("rediss://127.0.0.1:6380"), 2, "tls_unsupported");
-    for bad in ["http://x", "memcache://x", "", "not a url", "redis://"] {
+    let u = ConnUrl::parse(Backend::Redis, "rediss://cache.local").unwrap();
+    assert!(u.tls);
+    assert_eq!(u.endpoint, "cache.local:6379");
+    for bad in [
+        "http://x",
+        "memcache://x",
+        "",
+        "not a url",
+        "redis://",
+        "rediss://127.0.0.1/#insecure",
+    ] {
         fails(&redis(bad), 2, "invalid_argument");
     }
     let m = |url: &str| mc(&alias(), "connect", &[("url", url)]);
@@ -954,9 +963,9 @@ fn every_error_code_is_documented() {
 
 #[test]
 fn redis_errors_are_mapped() {
-    use redis::{ErrorKind, RedisError};
+    use redis::{ErrorKind, RedisError, ServerErrorKind};
     let e = RedisError::from((
-        ErrorKind::ResponseError,
+        ErrorKind::Server(ServerErrorKind::ResponseError),
         "An error was signalled by the server",
         "value is not an integer or out of range".to_string(),
     ));
@@ -967,9 +976,75 @@ fn redis_errors_are_mapped() {
     let e = RedisError::from(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "gone"));
     assert_eq!(redis_ops::redis_fail(e, "x", false).exit, 1);
     let e = RedisError::from((
-        ErrorKind::ResponseError,
+        ErrorKind::Server(ServerErrorKind::ResponseError),
         "An error was signalled by the server",
         "OOM".to_string(),
     ));
     assert_eq!(redis_ops::redis_fail(e, "x", true).code, "server_error");
+}
+
+#[test]
+fn ca_file_is_checked_and_added_to_the_trusted_cas() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = rcgen::generate_simple_self_signed(vec!["ca.test".to_string()]).unwrap();
+    let ca_path = dir.path().join("ca.pem");
+    std::fs::write(&ca_path, ca.serialize_pem().unwrap()).unwrap();
+    let empty = dir.path().join("empty.pem");
+    std::fs::write(&empty, "not a certificate\n").unwrap();
+    let ca_s = ca_path.to_str().unwrap();
+    let r = |url: &str, ca: &str| {
+        call_target(
+            &format!("cache://redis/{}", alias()),
+            "get",
+            &[("url", url), ("key", "k"), ("ca_file", ca)],
+        )
+    };
+    // Only for rediss://, and only a readable file of certificates.
+    assert!(fails(&r("redis://127.0.0.1", ca_s), 2, "invalid_argument").contains("rediss://"));
+    let o = mc(
+        &alias(),
+        "connect",
+        &[("url", "memcache://127.0.0.1"), ("ca_file", ca_s)],
+    );
+    fails(&o, 2, "invalid_argument");
+    let o = call_target(
+        &format!("cache://redis/{}", alias()),
+        "get",
+        &[("key", "k"), ("ca_file", ca_s)],
+    );
+    fails(&o, 2, "invalid_argument");
+    let missing = dir.path().join("missing.pem");
+    fails(
+        &r("rediss://127.0.0.1", missing.to_str().unwrap()),
+        2,
+        "invalid_argument",
+    );
+    assert!(
+        fails(
+            &r("rediss://127.0.0.1", empty.to_str().unwrap()),
+            2,
+            "invalid_argument"
+        )
+        .contains("no PEM certificate")
+    );
+    // A valid file is accepted; nothing listens, so the connection fails.
+    let url = format!("rediss://127.0.0.1:{}", closed_port());
+    fails(&r(&url, ca_s), 1, "connect_failed");
+    // The trusted set is the system bundle plus the file.
+    let loaded = CaFile::load(ca_s).unwrap();
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    let der = |pem: &[u8]| -> Vec<Vec<u8>> {
+        CertificateDer::pem_slice_iter(pem)
+            .map(|c| c.unwrap().to_vec())
+            .collect()
+    };
+    let roots = der(&tls_roots(Some(&loaded)).unwrap());
+    let mine = der(&loaded.pem);
+    assert!(roots.contains(&mine[0]), "ca_file missing from roots");
+    if SYSTEM_BUNDLES
+        .iter()
+        .any(|p| std::path::Path::new(p).is_file())
+    {
+        assert!(roots.len() > 1);
+    }
 }

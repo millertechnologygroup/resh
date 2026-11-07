@@ -1,6 +1,6 @@
 //! `cache://` against real servers in throwaway Docker containers (the
 //! official redis and memcached images), published on 127.0.0.1 only:
-//! every verb on both backends, Redis AUTH and Unix sockets, the help
+//! every verb on both backends, Redis AUTH, Unix sockets and TLS, the help
 //! examples, and a server that stops answering.
 //! Run with `cargo test --features e2e-docker --test cache_e2e_docker`.
 #![cfg(feature = "e2e-docker")]
@@ -594,4 +594,200 @@ fn help_examples_run_and_match_their_sample_output() {
             }
         }
     }
+}
+
+// ------------------------------------------------------------------ TLS --
+
+/// A CA and a server certificate for `san` (an IP address or a DNS name)
+/// signed by it: (ca, leaf PEM, leaf key PEM).
+fn ca_and_leaf(san: &str) -> (rcgen::Certificate, String, String) {
+    use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa, SanType};
+    let mut ca_params = CertificateParams::default();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "resh test CA");
+    let ca = Certificate::from_params(ca_params).unwrap();
+    let mut leaf_params = CertificateParams::default();
+    leaf_params
+        .distinguished_name
+        .push(DnType::CommonName, "redis");
+    leaf_params.subject_alt_names = vec![match san.parse::<std::net::IpAddr>() {
+        Ok(ip) => SanType::IpAddress(ip),
+        Err(_) => SanType::DnsName(san.to_string()),
+    }];
+    let leaf = Certificate::from_params(leaf_params).unwrap();
+    let leaf_pem = leaf.serialize_pem_with_signer(&ca).unwrap();
+    let key = leaf.serialize_private_key_pem();
+    (ca, leaf_pem, key)
+}
+
+/// A Redis that only speaks TLS, with this certificate and key.
+fn tls_redis(ca_pem: &str, leaf_pem: &str, key_pem: &str) -> Container {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    for (name, body) in [
+        ("ca.pem", ca_pem),
+        ("cert.pem", leaf_pem),
+        ("key.pem", key_pem),
+    ] {
+        let p = dir.path().join(name);
+        std::fs::write(&p, body).unwrap();
+        // The container user must read the key.
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mount = format!("{}:/tls:ro", dir.path().display());
+    let c = Container::start(
+        REDIS_IMAGE,
+        6379,
+        &["-v", &mount],
+        &[
+            "redis-server",
+            "--port",
+            "0",
+            "--tls-port",
+            "6379",
+            "--tls-cert-file",
+            "/tls/cert.pem",
+            "--tls-key-file",
+            "/tls/key.pem",
+            "--tls-ca-cert-file",
+            "/tls/ca.pem",
+            "--tls-auth-clients",
+            "no",
+        ],
+        Some(dir),
+    );
+    // In-container readiness probe only; resh never skips verification.
+    c.wait_ready(&["exec", &c.id, "redis-cli", "--tls", "--insecure", "ping"]);
+    c
+}
+
+fn resh_env(args: &[&str], env: &[(&str, &str)]) -> Run {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("resh");
+    cmd.env_remove("SSH_AUTH_SOCK").args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    Run {
+        code: out.status.code().unwrap_or(-1),
+        json: serde_json::from_str(&stdout).unwrap_or(Value::Null),
+        stdout,
+        stderr: String::from_utf8(out.stderr).unwrap(),
+    }
+}
+
+#[test]
+fn rediss_verifies_the_certificate_and_host_name() {
+    let (ca, leaf, key) = ca_and_leaf("127.0.0.1");
+    let ca_pem = ca.serialize_pem().unwrap();
+    let good = tls_redis(&ca_pem, &leaf, &key);
+    let files = TempDir::new().unwrap();
+    let ca_file = files.path().join("ca.pem");
+    std::fs::write(&ca_file, &ca_pem).unwrap();
+    let ca_arg = format!("ca_file={}", ca_file.display());
+    let url = format!("url=rediss://127.0.0.1:{}/0", good.port);
+
+    // The right CA: the verbs work over TLS.
+    let r = resh(&["cache://redis/t.connect", &url, &ca_arg]);
+    assert_eq!(ok(&r)["endpoint"], format!("127.0.0.1:{}", good.port));
+    ok(&resh(&[
+        "cache://redis/t.set",
+        "key=k",
+        "value=over tls",
+        &url,
+        &ca_arg,
+    ]));
+    let r = resh(&["cache://redis/t.get", "key=k", &url, &ca_arg]);
+    assert_eq!(ok(&r)["value"], "over tls");
+    let r = resh(&["cache://redis/t.incr", "key=n", &url, &ca_arg]);
+    assert_eq!(ok(&r)["value"], 1);
+    // SSL_CERT_FILE replaces the system bundle, as for other TLS clients.
+    let r = resh_env(
+        &["cache://redis/t.get", "key=k", &url],
+        &[("SSL_CERT_FILE", ca_file.to_str().unwrap())],
+    );
+    assert_eq!(ok(&r)["value"], "over tls");
+
+    // No ca_file: the system bundle does not trust the test CA.
+    fails(
+        &resh(&["cache://redis/t.get", "key=k", &url]),
+        1,
+        "cache.tls_failed",
+    );
+    // Another CA.
+    let (other, _, _) = ca_and_leaf("127.0.0.1");
+    let other_file = files.path().join("other.pem");
+    std::fs::write(&other_file, other.serialize_pem().unwrap()).unwrap();
+    let other_arg = format!("ca_file={}", other_file.display());
+    fails(
+        &resh(&["cache://redis/t.get", "key=k", &url, &other_arg]),
+        1,
+        "cache.tls_failed",
+    );
+    // No insecure escape hatch.
+    let insecure = format!("url=rediss://127.0.0.1:{}/0#insecure", good.port);
+    fails(
+        &resh(&["cache://redis/t.get", "key=k", &insecure]),
+        2,
+        "cache.invalid_argument",
+    );
+    // Plain redis:// to the TLS port does not get an answer.
+    let plain = format!("url=redis://127.0.0.1:{}/0", good.port);
+    let r = resh(&[
+        "cache://redis/t.get",
+        "key=k",
+        &plain,
+        "connect_timeout_ms=2000",
+    ]);
+    assert_ne!(r.code, 0, "{}", r.stdout);
+    // ca_file is refused for plain connections.
+    fails(
+        &resh(&["cache://redis/t.get", "key=k", &plain, &ca_arg]),
+        2,
+        "cache.invalid_argument",
+    );
+
+    // A certificate for another name, from the trusted CA.
+    let (ca2, leaf2, key2) = ca_and_leaf("redis.elsewhere.test");
+    let ca2_pem = ca2.serialize_pem().unwrap();
+    let wrong_name = tls_redis(&ca2_pem, &leaf2, &key2);
+    let ca2_file = files.path().join("ca2.pem");
+    std::fs::write(&ca2_file, &ca2_pem).unwrap();
+    let url2 = format!("url=rediss://127.0.0.1:{}/0", wrong_name.port);
+    let r = resh(&[
+        "cache://redis/t.get",
+        "key=k",
+        &url2,
+        &format!("ca_file={}", ca2_file.display()),
+    ]);
+    fails(&r, 1, "cache.tls_failed");
+    assert!(
+        r.stderr.to_lowercase().contains("certificate"),
+        "{}",
+        r.stderr
+    );
+
+    // rediss:// to a server without TLS: Redis waits for a command line
+    // that the TLS hello never completes, so the connection times out.
+    let plain_server = Container::redis(&[]);
+    let r = resh(&[
+        "cache://redis/t.get",
+        "key=k",
+        &format!("url=rediss://127.0.0.1:{}/0", plain_server.port),
+        &ca_arg,
+        "connect_timeout_ms=2000",
+    ]);
+    assert!(
+        matches!(
+            r.json["error"]["code"].as_str(),
+            Some("cache.tls_failed" | "cache.connect_timeout")
+        ),
+        "{}",
+        r.stdout
+    );
+    assert!(r.code == 1 || r.code == 124);
 }

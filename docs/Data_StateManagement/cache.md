@@ -41,6 +41,7 @@ stores the three characters `"x"`).
 | Argument             | Verbs                         | Default | Notes |
 | -------------------- | ----------------------------- | ------- | ----- |
 | `url`                | all                           |         | Connection URL (2.2). Required unless the alias is already connected in this process. |
+| `ca_file`            | all                           | none    | PEM file of extra CA certificates to trust for this call; only with a `rediss://` `url=` (2.3). |
 | `connect_timeout_ms` | all                           | `5000`  | Time allowed to connect and check the server (1-600000). |
 | `timeout_ms`         | all but `connect`             | `1000`  | Time allowed for the command itself (1-86400000). |
 | `key`                | all but `connect`, `keys`     |         | One key. |
@@ -51,14 +52,12 @@ stores the three characters `"x"`).
 
 | Backend     | `url=` forms | Default port |
 | ----------- | ------------ | ------------ |
-| `redis`     | `redis://[[user]:password@]host[:port][/db]`, `redis+unix:///path/to/socket[?db=N&pass=...]` (also `unix://`) | 6379 |
+| `redis`     | `redis://[[user]:password@]host[:port][/db]`, `rediss://...` (TLS, same form), `redis+unix:///path/to/socket[?db=N&pass=...]` (also `unix://`) | 6379 |
 | `memcached` | `memcache://host[:port]` (also `memcached://`) | 11211 |
 
-* **No TLS.** `rediss://` is refused with `cache.tls_unsupported` (exit 2):
-  this build of resh has no TLS support for cache servers, so it never sends
-  data unencrypted to a server you meant to reach over TLS. Use `redis://`
-  only on a trusted network, or a Unix socket. `ca_file=` is refused the
-  same way.
+* `rediss://` uses TLS (2.3). A `#fragment` (such as redis-rs's
+  `#insecure`) is refused (exit 2): certificate verification cannot be
+  turned off. Memcached has no TLS.
 * Memcached URLs cannot carry a user name, password, path or `?options`
   (exit 2): SASL authentication is not supported, and the old client options
   (`timeout`, `connect_timeout`, `protocol`, `tcp_nodelay`) are replaced by
@@ -70,7 +69,33 @@ stores the three characters `"x"`).
   field in the output never includes credentials. resh stores no
   connection settings or passwords.
 
-### 2.3 Examples
+### 2.3 TLS (`rediss://`)
+
+`rediss://` connects with TLS 1.2 or 1.3 (rustls) and verifies the server's
+certificate chain and its host name (or IP address, which must be in the
+certificate). The trusted CAs are the bundle named by the `SSL_CERT_FILE`
+environment variable, else the system bundle
+(`/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
+`/etc/ssl/ca-bundle.pem`, `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`
+or `/etc/ssl/cert.pem`), plus the certificates in `ca_file=<pem>` for that
+call:
+
+```bash
+resh cache://redis/main.get key=user:1 url=rediss://:secret@redis.internal:6380/0 ca_file=/etc/resh/redis-ca.pem
+```
+
+* `ca_file` adds CAs; it never replaces the bundle or turns verification
+  off. It is refused (exit 2, `cache.invalid_argument`) with a `redis://`,
+  `redis+unix://` or memcached URL, without `url=`, and when the file cannot
+  be read, holds no PEM certificate, or holds one that does not parse.
+* There is no option to skip verification. An untrusted certificate or a
+  host-name mismatch fails with `cache.tls_failed` (exit 1). A server that
+  does not speak TLS fails with `cache.tls_failed`, or with
+  `cache.connect_timeout` (exit 124) when it waits for more input, as Redis
+  does.
+* Client certificates (mutual TLS) are not supported.
+
+### 2.4 Examples
 
 ```bash
 resh --json-pretty cache://redis/main.connect url=redis://localhost:6379/0
@@ -256,7 +281,7 @@ On failure the handle prints
 | ---- | ---- | ------- |
 | `cache.invalid_argument` | 2 | Unknown argument, invalid value, invalid URL, a key memcached cannot take (empty, over 250 bytes, spaces or control characters), unknown verb. |
 | `cache.invalid_target` | 2 | The backend in the target is not `redis` or `memcached` (raised by the dispatcher). |
-| `cache.tls_unsupported` | 2 | `rediss://` or `ca_file=`: TLS is not supported. |
+| `cache.tls_failed` | 1 | The TLS handshake failed: untrusted certificate, host-name mismatch, no TLS on the server, or no trusted CA could be loaded. |
 | `cache.connection_not_found` | 2 | No `url=` and no connection for the alias in this process. |
 | `cache.connect_failed` | 1 | The connection was refused, the host was not found, authentication failed, or the server did not answer `PING`/`version` correctly. |
 | `cache.connect_timeout` | 124 | No connection within `connect_timeout_ms`. |
@@ -269,7 +294,8 @@ On failure the handle prints
 
 ## 6. Limitations
 
-* No TLS and no Memcached authentication (2.2).
+* No TLS for Memcached, no client certificates for Redis, and no Memcached
+  authentication (2.2, 2.3).
 * Connections last for one process (section 1); there are no stored
   connection profiles.
 * Redis Cluster is not supported (no `MOVED`/`ASK` redirects); use a single
@@ -287,7 +313,8 @@ the official `redis:7` and `memcached:1.6` images.
 
 ## 8. Implementation notes
 
-* Redis: the `redis` crate (async connection manager); multi-key verbs send
+* Redis: the `redis` crate 1.8 (async connection manager; TLS through rustls
+  with the ring provider, no OpenSSL); multi-key verbs send
   one pipeline.
 * Memcached: resh's own text-protocol client (`src/handles/data/cacheh/memcached.rs`),
   so every server reply (`STORED`/`NOT_STORED`, `DELETED`/`NOT_FOUND`,

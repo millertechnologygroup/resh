@@ -7,6 +7,7 @@ Usage:
   resh cache://<backend>/<alias>.keys url=<connection-url>
     [pattern=<glob>] [namespace=<ns>] [cursor=<cursor>] [limit=<n>]
     [timeout_ms=<ms>] [connect_timeout_ms=<ms>]
+    [ca_file=<pem>]
 
 Example:
   resh --json-pretty cache://redis/main.keys 'pattern=user:*' url=redis://cache

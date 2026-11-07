@@ -7,6 +7,7 @@ Usage:
   resh cache://<backend>/<alias>.ttl key=<key>|keys=<json-array>
     url=<connection-url> [namespace=<ns>] [timeout_ms=<ms>]
     [connect_timeout_ms=<ms>]
+    [ca_file=<pem>]
 
 Example:
   resh --json-pretty cache://redis/main.ttl key=session:1 url=redis://cache

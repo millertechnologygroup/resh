@@ -6,6 +6,7 @@ Definition: Opens a connection to the server at url, checks that it answers, and
 Usage:
   resh cache://<backend>/<alias>.connect url=<connection-url>
     [connect_timeout_ms=<ms>]
+    [ca_file=<pem>]
 
 Example:
   resh --json-pretty cache://redis/main.connect url=redis://localhost:6379/0
@@ -18,6 +19,7 @@ Example Output:
     "status": "connected"
   }
 
-  Shown with --json-pretty. Redis takes redis://[:password@]host[:port][/db]
-  or redis+unix:///path; Memcached takes memcache://host[:port]. TLS
-  (rediss://) is not supported. connect_timeout_ms defaults to 5000.
+  Shown with --json-pretty. Redis takes redis[s]://[:password@]host[:port]
+  [/db] or redis+unix:///path; Memcached takes memcache://host[:port].
+  rediss:// verifies the certificate and host name; ca_file=<pem> adds a
+  private CA. connect_timeout_ms defaults to 5000.
