@@ -285,7 +285,8 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   `unit_scope`, `persistent`, `accuracy_sec`, `random_delay_sec`,
   `service_user`, `service_working_dir`, `env`, `env_<KEY>`) select
   systemd, and both kinds together are refused (exit 2). With neither,
-  systemd is used when `systemctl` runs, as before.
+  systemd is used when systemd is the running init system (a `systemctl`
+  binary alone, as in many containers, no longer counts).
 - The systemd backend supports `@reboot` (`OnBootSec=0`; the timer is
   enabled but not started, so the job runs once at each boot) and schedules
   restricting both the day of month and the weekday (two `OnCalendar=`
@@ -439,18 +440,30 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   has `error.code` (the old `error.kind` is kept). Exit codes are 0/1/2/124:
   a backend failure now exits 1 (was the backend's own code) with that code
   in `error.details.exit_code`; a missing required argument exits 2 with an
-  envelope.
+  envelope. `list` and `verify` refuse `dry_run`.
 - `timeout_ms` is one deadline for the whole verb and stops the backend's
-  whole process tree (was: the direct child only); malformed values are
-  refused. A create stopped or failed removes its partial tar archive or
-  rsync directory.
+  whole process tree; malformed values are refused. A create stopped or
+  failed removes its partial tar archive or rsync directory.
 - Repositories, archives and restore destinations created by resh are
   owner-only (0700/0600); a second backup in the same second no longer
-  overwrites the first; a symlink `dest` is refused. Passwords reach
-  restic/borg only through their environment; `password=` warns on stderr.
+  overwrites the first; a symlink `dest` is refused.
+- `schedule` now installs the job: a systemd timer or crontab line added
+  with the cron handle's `add` (`scheduler=auto|cron|systemd`,
+  `dry_run=true` previews, `enabled=false` installs it disabled). An
+  identical job is reported as a duplicate; a different job of the same
+  profile is refused until removed (`remove_command` in the result).
+  `runner` and `definition_path` were removed. New code
+  `backup.schedule_failed`.
+- `restore dry_run=true` reports the destination and what would be restored
+  (files, bytes) from the backend's read-only listing; nothing is written.
+  `progress=true` on create and restore (restic, borg) streams one JSON line
+  per progress event before the envelope.
 - `restore include=` works for tar, rsync and borg; files and bytes restored
-  are counted. `verify snapshot_id=` checks one borg/tar/rsync snapshot;
-  `mode` is validated; `keep_*` must be at least 1.
+  are counted (restic via `restore --json`). `verify snapshot_id=` checks one
+  borg/tar/rsync snapshot (refused for restic). restic gets `--host` instead
+  of the deprecated `--hostname`. Passwords reach restic/borg only through
+  their environment; `password=` warns on stderr; `keep_*` must be at least
+  1.
 
 ### http and https
 
@@ -893,8 +906,8 @@ These were found during the fixes, or are Medium items that were not fixed:
   local libgit2 call is reported as outcome unknown, exit 124.)
 - **cert:** revocation (CRL/OCSP) is not checked; webpki does not accept a
   CA certificate as the end-entity of `verify`.
-- **backup `schedule`:** reports the job and its `cron://` install command
-  but installs nothing (see backup.md 4.6).
+- **backup `schedule`:** fixed; it installs the job through `cron://` (see
+  backup.md 4.6).
 - **Pre-existing test failures (15):** all fixed. `archiveh::test_path_sanitization`
   in Stage 1; the 11 `userh` and 3 `gith` tests in Stage 3 (details in
   `docs/reviews/resh-cli-stage3-build-test-security.md`). Tests that need a
@@ -1182,9 +1195,8 @@ typed structs:
 
 ### Automation
 
-- **backup.** `schedule` installs nothing (it reports the cron install
-  command); `restore` has no dry run; output is one envelope at the end, not
-  streamed events.
+- **backup.** Remote restic/borg repositories (including prune and restore
+  dry runs against them) are not tested.
 - **plugin.**
   - `enable` and `disable` cannot target a named plugin: `plugin://aws.enable`
     parses as verb `aws.enable`.
