@@ -28,16 +28,16 @@ The verb is the text after the last dot of the URL. A URL with no target still n
 
 ## 2. Things to Know Before Scripting
 
-* **Each `resh` command is a separate process that runs one stage.** Nothing held in memory survives between commands. `cache` connections, `db` pools and `db` transactions opened by one command are gone when it exits, so `cache` verbs take `url=` and `db` verbs take `dsn=` (or `DB_<ALIAS>_DSN`) every time. Only `config`, `event` and `mq` keep state, and they keep it on disk in the directories above.
+* **Each `resh` command is a separate process that runs one stage.** Nothing held in memory survives between commands. `cache` connections and the one `db` connection a command opens (with any transaction on it) are gone when it exits, so `cache` verbs take `url=` and `db` verbs take `dsn=` (or `DB_<ALIAS>_DSN`) every time. Only `config`, `event` and `mq` keep state, and they keep it on disk in the directories above.
 * **Output formats differ by handle.** There is no common response envelope:
   * `cache` prints a JSON object for the result, or `{"alias", "backend", "error": {"code", "message"}}` on failure (with `Error: [cache.<code>] ...` on stderr; exit 1, 2 for invalid usage, 124 for a timeout). `db` prints a JSON object for the result, or `{"error": {"code", "message", "details"}}` on failure.
-  * `event` prints a JSON object with `ok`, `error` and `warnings`.
+  * `event` prints a JSON object with `ok`, `error` and `warnings`; `subscribe follow=true` prints one JSON line per event.
   * `config get` prints the stored JSON value as is; `config ls` prints a JSON object; `config watch` prints one JSON object per line.
-  * `log tail` prints raw lines, or a JSON object with `mode=json`.
+  * `log tail` prints raw lines, or a JSON object with `mode=json` (one JSON object per line with `follow=true`).
   * `mq get`/`peek` print the message bytes; `mq len` prints a number. Failures print `Error: [mq.<code>] ...` on stderr (exit 1, 2 for invalid usage, 124 for a timeout).
-* **Exit codes:** 0 on success. On failure, the handle's own code if it sets one (for example `cache` and `mq` exit 2 for invalid usage and 124 for a timeout; `mq get` on an empty queue exits 1 with `mq.empty`), otherwise 1. resh prints `Error: <reason>` to stderr if the handle did not already write to stderr.
+* **Exit codes and errors** are the same for all six handles: 0 success, 1 failed (for example `mq get` on an empty queue, `mq.empty`, or `config get` of a missing key, `config.not_found`), 2 invalid usage (nothing was done), 124 timeout. Every failure prints `Error: [<handle>.<code>] <message>` on stderr, and JSON results carry `"error": {"code", "message"}`. Arguments are strict: unknown arguments and invalid values are refused with exit 2 before anything is read, written or connected. See [resh_overview.md 3.5](../resh_overview.md#35-shared-conventions).
 * `--json-pretty` (before the stage) re-indents JSON output.
-* Help: `resh <handle> --help` and `resh <handle> <verb> --help`.
+* Help: `resh <handle> --help` and `resh <handle> <verb> --help` (also `-h`, `help`, `resh help <handle> [verb]`).
 
 ---
 
@@ -104,7 +104,7 @@ Sample `db query` output (shown with `--json-pretty`):
 Sample `config get` failure (stderr, exit code 1):
 
 ```text
-Error: not found
+Error: [config.not_found] not found
 ```
 
 ---
@@ -117,15 +117,15 @@ Verbs: `connect`, `get`, `exists`, `ttl`, `keys`, `set`, `incr`, `del`. Supports
 
 ### 4.2 Configuration (`config`)
 
-Verbs: `get`, `ls`, `watch`, `set`. Values are JSON, written atomically. There is no delete verb. A namespace of `..` resolves one level above the config directory, so do not build config URLs from untrusted input. See [config.md](config.md).
+Verbs: `get`, `ls`, `watch`, `set`. Values are JSON, written atomically to owner-only (0600) files. There is no delete verb. A target with a `.` or `..` segment is refused (exit 2), so values always stay inside the config directory. See [config.md](config.md).
 
 ### 4.3 Database (`db`)
 
-Verbs: `connect`, `ping`, `query`, `tables`, `schema`, `exec`, `transaction`. Parameters are bound with `params=`. Multi-statement transactions run in one command with `transaction statements=[...]`. PostgreSQL `NUMERIC` columns cannot be decoded. See [db.md](db.md).
+Verbs: `connect`, `ping`, `query`, `tables`, `schema`, `exec`, `transaction`. Parameters are bound with `params=`; table and schema names are always bound too. Multi-statement transactions run in one command with `transaction statements=[...]`. `query` streams rows; exact decimals (PostgreSQL `NUMERIC`, MySQL `DECIMAL`) are strings with every digit, and a column of an unsupported type fails with `db.unsupported_column_type`. Remote servers use `tls_mode=verify_full` by default; `ca_file=` trusts a private CA. See [db.md](db.md).
 
 ### 4.4 Events (`event`)
 
-Verbs: `emit`, `subscribe`, `list-topics`, `hooks.list`, `hooks.enable`, `hooks.disable`. Events persist as JSON Lines files in the state directory. `list-topics` lists the real store. The built-in hooks (off by default; enable state persists) append each event to a log file, keep the latest event per topic in a file, and put each event (the whole stored JSON record) on the `mq` queue named after the topic. See [event.md](event.md).
+Verbs: `emit`, `subscribe`, `list-topics`, `hooks.list`, `hooks.enable`, `hooks.disable`. Events persist as JSON Lines files in the state directory, under a store lock, so concurrent resh processes are safe and consumers of one group never get the same event. `list-topics` lists the real store. The built-in hooks (off by default; enable state persists) append each event to a log file, keep the latest event per topic in a file, and put each event (the whole stored JSON record) on the `mq` queue named after the topic. See [event.md](event.md).
 
 ### 4.5 Logs (`log`)
 
@@ -147,19 +147,19 @@ Linux is the only supported and tested platform. The state and config directorie
 
 * Pass connection details (`url=`, `dsn=`) on every `cache` and `db` command. Prefer `DB_<ALIAS>_DSN` for database passwords, because command-line arguments are visible in the process list.
 * Check exit codes, and for JSON output check the handle's own success fields (`hit`, `stored`, `ok`, `status`).
-* Do not store secrets with `config`, `event` or `mq`; their files are plain text (`mq` files are owner-only, 0600). Use the `secret` handle.
+* Do not store secrets with `config`, `event` or `mq`; their files are plain text (`config` and `mq` files are owner-only, 0600). Use the `secret` handle.
 * Use `config watch`, `event subscribe wait=true` or `follow=true`, and `log tail` with limits (`timeout_ms`, `wait_timeout_ms`, `max_events`, `lines`) so scripts always end.
 
 ---
 
 ## 7. timeout_ms Summary
 
-| Handle   | Enforces `timeout_ms`                                    | Ignores `timeout_ms`                 |
+| Handle   | Enforces `timeout_ms`                                    | Does not take `timeout_ms`           |
 | -------- | -------------------------------------------------------- | ------------------------------------ |
 | `cache`  | `get`, `set`, `del`, `incr`, `exists`, `keys`, `ttl` (default 1000, 1-86400000; exit 124); every verb also takes `connect_timeout_ms` (default 5000) | `connect` (uses `connect_timeout_ms` only) |
 | `db`     | every verb: covers connecting and the work; at the deadline the statement is cancelled on the server (exit 124) | none (`connect_timeout_ms` and pool options are refused) |
-| `config` | `watch` (run time limit; default none)                   | `get`, `set`, `ls`                   |
-| `event`  | `emit`, `subscribe`, `list-topics` (default 30000; `follow=true` has no default and ends normally at the limit) | `hooks.list`, `hooks.enable`, `hooks.disable` |
+| `config` | `watch` (run time limit; default none; reaching it is a normal end, exit 0) | none (`get`, `set`, `ls` refuse it) |
+| `event`  | `emit`, `subscribe`, `list-topics` (default 30000; `follow=true` has no default and ends normally at the limit) | none (`hooks.list`, `hooks.enable`, `hooks.disable` refuse it) |
 | `log`    | `tail` (default 600000, exit 124; with `follow=true` there is no default and the limit is the follow duration, a normal end with exit 0) | none |
 | `mq`     | `put`, `get`, `purge` (wait for the queue lock, `get wait=true`'s wait for a message, and `purge`'s deletion; default no limit, 30000 for `get wait=true`; exit 124) | none (`len`, `peek`, `create` refuse it) |
 

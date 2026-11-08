@@ -52,7 +52,7 @@ resh system://.env.list
 * No system state is modified.
 * Sensitive environment values are masked by default.
 * Missing or unavailable metrics are reported as `available: false` or in `warnings` rather than failing the command.
-* Options are checked strictly: an unknown option or a bad value is refused (exit 2, `system.invalid_argument`) before anything is read; see `resh system <verb> --help`.
+* Options are checked strictly: an unknown option or a bad value is refused (exit 2, `system.invalid_argument`) before anything is read; see `resh system <verb> --help` (also `-h`, `help`, or `resh help system <verb>`). Exit codes and the error format follow the shared conventions in [resh_overview.md 3.5](../resh_overview.md#35-shared-conventions).
 
 ---
 
@@ -254,7 +254,8 @@ resh system://.disk include_io=true
 ## 6. Operational Best Practices
 
 * Check `ok` and `warnings` before using the values.
-* Use the percentage fields (`mem_used_pct`, `used_pct`) for threshold checks.
+* Use the percentage fields (`mem_used_pct`, `used_pct`) for threshold checks. `disk` `used_pct` is `df`'s Use% (used / (used + avail), rounded up); used / total is `used_of_total_pct`.
+* In containers, use the `cgroup` sections and `cpu`'s `system.cgroup_utilization_pct` for the container's own limits and usage.
 * Prefer `mem_available_bytes` over `mem_free_bytes`.
 * Use per-CPU load (`load_1m_per_cpu`) for scaling decisions.
 * Avoid writing environment variable values to logs; use `include_values=false` when only names are needed.

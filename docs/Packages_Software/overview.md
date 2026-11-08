@@ -14,8 +14,8 @@ Resource Shell (resh) is a resource-oriented command-line environment that model
 This domain provides:
 
 * Installation, update, removal, search and inspection of system packages
-* Snapshots of the installed package set as a lockfile
-* Git repository status, diffs, branches, tags, commits, merges, rebases, clone, pull, push and fast-forward sync
+* Snapshots of the installed package set as a lockfile, and restores to the locked versions
+* Git repository status, diffs, branches, tags, commits, merges, rebases, clone, pull, push and sync
 * JSON output for automation
 
 ### Resource-Oriented URI Model
@@ -45,7 +45,9 @@ resh git://main.clone url=https://github.com/org/project.git path=/srv/project
 | `pkg`  | `install`, `remove`, `update`, `upgrade`, `info`, `search`, `list_installed`, `snapshot`, `restore`, `apply_lock` (alias for `restore`) |
 | `git`  | `status`, `status_summary`, `status_short`, `diff`, `branch`, `tag`, `commit`, `merge`, `rebase`, `clone`, `pull`, `push`, `sync` |
 
-Built-in help: `resh pkg --help`, `resh git --help`, `resh <handle> <verb> --help`.
+Built-in help: `resh pkg --help`, `resh git --help`, `resh <handle> <verb> --help` (also `-h`, `help`, or `resh help <handle> [verb]`).
+
+Both handles follow the shared conventions in [resh_overview.md 3.5](../resh_overview.md#35-shared-conventions): strict arguments, exit codes 0/1/2/124 and the error line `Error: [<handle>.<code>] <message>`.
 
 ---
 
@@ -89,7 +91,7 @@ resh git://repo.clone url=https://github.com/example/project.git path=/srv/proje
 resh git://repo.commit path=/srv/project 'message=Fix configuration issue' all=true
 ```
 
-#### Pull Updates (fast-forward only)
+#### Pull Updates
 
 ```bash
 resh git://repo.pull path=/srv/project remote=origin
@@ -99,14 +101,14 @@ resh git://repo.pull path=/srv/project remote=origin
 
 ### 3.2 Execution Semantics
 
-* `pkg` runs the package manager directly with an argument vector (no shell) and validates package names, versions and architectures before running anything.
-* `git` uses libgit2 linked into resh; it does not run the `git` binary or Git credential helpers.
+* `pkg` runs the package manager directly with an argument vector (no shell) and validates package names, versions and architectures before running anything. It reads only `input=<json>`: any other argument, an unknown JSON key, a wrong type or an invalid value is refused (exit 2, `pkg.invalid_argument`), and an option the chosen manager cannot honor is refused (`pkg.unsupported_option`) instead of being ignored.
+* `git` uses libgit2 (1.9, through git2 0.21) linked into resh; it does not run the `git` binary or Git credential helpers. Every verb refuses unknown arguments and invalid values (exit 2).
 * Each `resh` invocation is a separate process; nothing is kept between invocations.
 
 ### 3.3 Timeouts
 
-* `pkg`: every verb enforces `timeout_ms` (a key inside the JSON). Defaults range from 5 s (`info`, `search`) to 15 min (`update`, `upgrade`); see [pkg.md](pkg.md).
-* `git`: `timeout_ms` is **rejected** with exit code 2 for every verb, because libgit2 calls cannot be interrupted. Git operations are not time-limited; use an external `timeout(1)` if needed.
+* `pkg`: every verb enforces `timeout_ms` (a key inside the JSON). Defaults range from 5 s (`info`, `search`) to 15 min (`update`, `upgrade`). At the deadline the package manager and everything it started are stopped and resh exits 124; [pkg.md](pkg.md) 3.3 lists what each manager may leave behind.
+* `git`: every verb accepts `timeout_ms` (default 10 min for `clone`, `pull`, `push` and `sync`, no limit for the others). At the deadline the verb fails with `git.<verb>_timeout` and exit 124; the message says whether the operation was stopped or its outcome is unknown (for example an SSH server that stalls inside the SSH library). See [git.md](git.md) 3.3.
 
 ### 3.4 Output
 
@@ -140,14 +142,14 @@ Both handles print one JSON object on success. Representative `pkg install` outp
 
 ### 3.5 Errors
 
-Errors are printed as one line on standard error and the exit code is 1 (git `timeout_ms` rejection: 2). There is no JSON error object. Examples:
+Errors are printed as one line on standard error, `Error: [<handle>.<code>] <message>`. Exit codes: 0 success, 1 the operation failed, 2 invalid usage (nothing was run), 124 timeout (outcome unknown). Examples:
 
 ```text
-Error: Invalid info configuration: Invalid JSON: missing field `manager` at line 1 column 18
-Error: git.repository_not_found: repository not found: /srv/project
+Error: [pkg.invalid_argument] ...
+Error: [git.repository_not_found] repository not found: /srv/project
 ```
 
-A `pkg` verb that changes packages exits 1 if any package operation failed (for example `pkg install: 1 of 2 package operations failed`), after printing its JSON result.
+A `pkg` verb that changes packages exits 1 with `pkg.partial_failure` if any package operation failed, after printing its JSON result; each failed package carries `"error": {"code", "message"}`. The codes are listed in [pkg.md](pkg.md) 3.6 and [git.md](git.md) 3.5.
 
 ---
 
@@ -173,7 +175,7 @@ A `pkg` verb that changes packages exits 1 if any package operation failed (for 
 ### 4.4 Network & Remote Operations
 
 * Downloading packages from the configured repositories
-* Cloning, pulling (fast-forward only), pushing, and fast-forward `sync`
+* Cloning (also shallow, with `depth=`, and recursive), pulling, pushing and `sync` over HTTPS, SSH (host keys checked against `known_hosts_path`), `git://`, `file://` and local paths
 
 ### 4.5 Packages & Software
 
@@ -182,14 +184,14 @@ A `pkg` verb that changes packages exits 1 if any package operation failed (for 
 * Install, update, upgrade and remove packages
 * Search the package index
 * Inspect installed versions
-* Snapshot the installed package set. `restore` reinstalls missing packages by name; it does **not** pin the locked versions (see [pkg.md](pkg.md)).
+* Snapshot the installed package set. `restore` installs, upgrades and downgrades to the locked versions (`mode: exact`, the default) or falls back to the repository version with a warning (`best_effort`); pacman and brew cannot install a given version (see [pkg.md](pkg.md) 3.4).
 
 **Git Capabilities**
 
-* Clone repositories (no shallow clone, no submodules)
-* Commit, branch, tag, diff
+* Clone repositories (shallow clones with `depth=` over network remotes; submodules with `recursive=true`)
+* Commit (also `amend`), branch, tag, diff
 * Explicit `merge` and `rebase` verbs
-* `pull` and `sync` fast-forward only; they never merge or rebase diverged branches
+* `pull` and `sync` merge or rebase diverged history (`sync` rebases by default); on a conflict `abort_on_conflict=true` (the default) restores the previous state
 
 ### 4.6 Security & Secrets
 
@@ -203,7 +205,7 @@ A `pkg` verb that changes packages exits 1 if any package operation failed (for 
 ## 5. Platform Support
 
 * Linux is the only supported platform for resh.
-* `pkg`: the apt, dnf, yum, pacman and apk backends were exercised in Linux test sandboxes; the brew backend exists in the code but was never executed in testing.
+* `pkg`: apt (Debian 13, Ubuntu 24.04), dnf (Fedora 42), yum (Rocky Linux 9), pacman (Arch Linux) and apk (Alpine) are tested end to end in throwaway Docker containers; the brew backend exists in the code but was never executed in testing.
 * `git`: uses the libgit2 built into resh; no `git` binary is required.
 
 ---
@@ -213,7 +215,7 @@ A `pkg` verb that changes packages exits 1 if any package operation failed (for 
 * Use `dry_run` (inside the `pkg` JSON) before changing packages.
 * Check the exit code and `summary.failed` after `pkg` changes.
 * Use `git status_summary` before destructive Git operations.
-* When `git sync` reports diverged history, rebase or merge explicitly, then sync again.
+* Set `timeout_ms` for Git network operations in automation, and `known_hosts_path` for SSH remotes.
 
 ### CI/CD Integration
 
@@ -221,7 +223,7 @@ Typical workflow:
 
 1. Install required dependencies via `pkg install`.
 2. Clone the repository via `git clone`.
-3. `git pull` (fast-forward) before build.
+3. `git pull` before build.
 4. Commit changes during automation workflows.
 5. Validate installed versions with `pkg list_installed` or `pkg info`.
 
@@ -253,4 +255,4 @@ Typical workflow:
 
 * Implemented in Rust.
 * `pkg` runs package managers as subprocesses with argument vectors; `git` uses libgit2 in-process.
-* Fixed verb sets with per-verb argument validation.
+* Fixed verb sets with one accepted-options list per verb.

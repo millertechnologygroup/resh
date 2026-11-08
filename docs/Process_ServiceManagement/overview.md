@@ -33,7 +33,7 @@ Most verbs print a JSON object. Exceptions: `svc ... .logs` prints plain log lin
 ```
 
 * **scheme**: `cron`, `proc` or `svc`
-* **target**: a label for `cron` (ignored; always the local host), a PID or `self` for `proc`, a service name for `svc`
+* **target**: a label for `cron` (ignored; always the local host), a PID for `proc` (or `self`, which only `nice.get` accepts), a service name for `svc`
 * **verb**: the operation, after the last dot (dotted verbs such as `nice.get` are recognized as a whole)
 * **options**: `key=value` words after the stage; quote values with spaces
 
@@ -55,25 +55,25 @@ resh svc://nginx.restart
   * `cron`: `list`, `add`, `rm`, `enable`, `disable`
   * `proc`: `signal`, `term`, `int`, `hup`, `kill`, `stop`, `cont`, `usr1`, `usr2`, `nice.get`, `nice.set`, `nice.inc`, `nice.dec`, `setPriority`, `limits.set`
   * `svc`: `status`, `is-enabled`, `start`, `stop`, `restart`, `reload`, `enable`, `disable`, `mask`, `unmask`, `wait`, `logs`, `scale`
-* Help for any handle or verb: `resh <handle> --help`, `resh <handle> <verb> --help`.
+* Help for any handle or verb: `resh <handle> --help`, `resh <handle> <verb> --help` (also `-h`, `help`, or `resh help <handle> [verb]`).
+* All three handles follow the shared conventions in [resh_overview.md 3.5](../resh_overview.md#35-shared-conventions): strict arguments, exit codes 0/1/2/124 and the error line `Error: [<handle>.<code>] <message>`.
 
 ### Safety
 
 * `cron` `add`, `rm`, `enable` and `disable` support `dry_run` (true/false/1/0/yes/no/on/off, or a bare `dry_run` word; any other value is an error).
 * `svc` and the `proc` signal and nice verbs have **no dry run**; they act immediately. `proc` `limits.set` has `dry_run`.
 * Input checks done before any action: `proc` PIDs must be 1 to 2147483647 (or `self`, which only `nice.get` accepts: no `proc` verb signals or changes the resh process itself), and every `proc` verb refuses unknown arguments and invalid values (exit 2, `proc.invalid_argument`); `svc` service names are rejected if they are empty or longer than 256 bytes, start with `-` or `.`, or contain anything but letters, digits, `_`, `.`, `@`, `-` and `\` (exit 2, `svc.invalid_target`). `svc` also refuses unknown arguments and invalid values (exit 2, `svc.invalid_argument`).
-* `cron` does not reject newlines in job fields; see the limitations in [cron.md](cron.md).
+* `cron` refuses unknown arguments, empty values, values with a line break or other control character, invalid values and options of the backend that does not run (exit 2, `cron.<verb>_invalid_argument`) before reading anything.
 
 ### Timeouts
 
 * Every `svc` verb takes `timeout_ms=<milliseconds>` (per-verb defaults in [svc.md](svc.md)); a deadline that passes exits with code 124. `stop` and `wait` also accept the older name `timeout`.
-* Every `proc` verb returns at once and refuses `timeout_ms` (exit 2). `cron` does not read `timeout_ms` yet.
+* Every `proc` verb returns at once and refuses `timeout_ms` (exit 2).
+* Every `cron` verb takes `timeout_ms` (default 60000) for the whole verb; a `crontab` or `systemctl` still running at the deadline is stopped and resh exits 124 (`cron.timeout`).
 
 ### Exit status
 
-* 0 on success; non-zero on failure, with `Error: <reason>` on stderr if the handle did not already write to stderr.
-* `cron`: every failure exits 1, and the JSON `ok` field always agrees with the exit status.
-* `proc` and `svc` follow the project-wide codes: 0, 1 failed, 2 invalid usage (nothing done), and for `svc` 124 (timeout or outcome unknown), with `Error: [<handle>.<code>] ...` on stderr and an `error` object in the JSON (for example `proc.not_found` when the process is gone). See each handle's document for the verified list.
+* All three handles use the project-wide codes: 0, 1 failed, 2 invalid usage (nothing done), and for `cron` and `svc` 124 (timeout or outcome unknown; no `proc` verb exits 124), with `Error: [<handle>.<code>] ...` on stderr and an `error` object in the JSON (for example `proc.not_found` when the process is gone). The `cron` JSON `ok` field always agrees with the exit status. See each handle's document for the verified list.
 
 ### Limited verbs
 
@@ -171,7 +171,7 @@ There is no common response envelope across these handles; each verb has its own
 ### Backend selection
 
 * `svc` uses systemd if `/run/systemd/system` exists or `systemctl` is on `PATH`, otherwise OpenRC if `rc-service` or `rc-status` is on `PATH`.
-* `cron add backend=auto` uses systemd timers whenever `systemctl --version` runs; pass `backend=cron` for a crontab line.
+* `cron add backend=auto` follows the options given: cron-only options (`scope`, `user`, `cron_file`) select cron, systemd-only options (`unit_name`, `unit_scope`, `persistent`, ...) select systemd, and both together are refused (exit 2). With neither, systemd timers are used when systemd is the running init system; pass `backend=cron` for a crontab line.
 
 ### State
 
@@ -216,7 +216,7 @@ Restart or reload services after package updates, enable newly installed service
 * Most `svc` changes, system crontabs and system units need root.
 * `proc` can signal or renice only processes you own unless you are root.
 * Do not put secrets in cron commands or environment values; they are stored in plain text.
-* Do not pass untrusted input as cron job fields (no newline validation).
+* Do not pass untrusted input as cron commands: line breaks and control characters are refused, but `command` is run as given.
 
 ### 4.8 System Information
 
@@ -290,6 +290,6 @@ Linux only. The code uses Unix-only system calls and Linux signal numbers, and n
 
 * Implemented in Rust under `src/handles/processes/` (`cronh.rs`, `proch.rs`, `svch.rs`).
 * `svc` talks to systemd over D-Bus (`zbus`) with `systemctl`/`journalctl` fallbacks, and shells out to OpenRC tools.
-* `proc` uses `libc` system calls directly.
+* `proc` uses `libc` system calls directly (`kill`, `getpriority`/`setpriority` per thread, `prlimit`).
 * `cron` shells out to `crontab` and `systemctl` and edits crontab and unit files.
-* Argument checking varies by verb; unknown argument names are generally ignored. See each handle's document.
+* Every verb checks its arguments against one accepted-options list before doing anything; unknown arguments are refused. See each handle's document.

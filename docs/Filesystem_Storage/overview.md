@@ -34,7 +34,8 @@ differs per handle:
 | `snapshot` | The target path (`create`, `diff`, `ls`) or the snapshot name (`restore`) | `snapshot:///srv/app.ls` |
 
 Help for any handle: `resh <handle> --help` and
-`resh <handle> <verb> --help`. Add `--json-pretty` before the stage for
+`resh <handle> <verb> --help` (also `-h`, `help`, or
+`resh help <handle> [verb]`). Add `--json-pretty` before the stage for
 indented JSON.
 
 Each `resh` invocation is a separate process. State persists only where a
@@ -43,10 +44,28 @@ handle writes it to disk: `snapshot://` stores its copies under
 
 ### Exit status and output
 
-Exit code 0 means success. On failure the exit code is the handle's code
-(see each handle page) or 1, and the reason is printed on stderr as
-`Error: <reason>`. There is no shared response envelope: each handle prints
-its own JSON shape (or raw content, for example `file://...read`).
+All four handles follow the shared conventions in
+[resh_overview.md 3.5](../resh_overview.md#35-shared-conventions): every
+verb refuses unknown arguments and invalid values before doing anything
+(exit 2, with a "did you mean" hint for a likely typo), and exits 0 on
+success, 1 when the operation failed, 2 for invalid usage and 124 when
+`timeout_ms` passed. Every failure prints `Error: [<handle>.<code>]
+<message>` on stderr; JSON reports carry `"error": {"code", "message"}`.
+There is no shared response envelope: each handle prints its own JSON
+shape (or raw content, for example `file://...read`). Glob arguments are
+shell-style (`*` and `?` do not cross `/`, `**` does), and no write
+follows a symbolic link planted at its target.
+
+### timeout_ms
+
+| Handle | `timeout_ms` |
+| ------ | ------------ |
+| `file` | Every verb whose work can take long (reading, hashing, searching, writing from stdin, copying, moving, recursive delete and chown); default no limit. `watch` (default 30000) and `tail follow=true` end normally at it (exit 0). `exists`, `stat`, `chmod`, `ea.*` and `tag.*` refuse it |
+| `archive` | Every verb; default no limit. `create`, `add` and `remove` leave no partial output |
+| `fs` | Every verb, for the whole operation; defaults from 3000 ms (`list-mounts`) to 600000 ms (`resize`, `check`). External tools are stopped at the deadline |
+| `snapshot` | Every verb; default no limit. Everything written so far is removed |
+
+See each handle page for the details.
 
 ---
 
@@ -99,6 +118,9 @@ The handle pages list all limitations. The ones most likely to matter:
 * `snapshot://` `ttl` is enforced only when snapshots are accessed (`create`
   and `ls` delete expired snapshots of their target; `diff` and `restore`
   refuse them); nothing runs in the background.
+* `fs://` `check mode=repair` needs an unmounted filesystem (a repair of a
+  mounted one is refused), and `mount` refuses a target that is a symbolic
+  link.
 
 ---
 

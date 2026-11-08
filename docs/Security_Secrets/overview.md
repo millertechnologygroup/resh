@@ -32,7 +32,9 @@ resh cert:///etc/ssl/certs/server.pem.info
 resh firewall://.status
 ```
 
-Help: `resh <handle> --help` and `resh <handle> <verb> --help`. The global flag `--json-pretty` goes before the stage.
+Help: `resh <handle> --help` and `resh <handle> <verb> --help` (also `-h`, `help`, or `resh help <handle> [verb]`). The global flag `--json-pretty` goes before the stage.
+
+All four handles follow the shared conventions in [resh_overview.md 3.5](../resh_overview.md#35-shared-conventions): strict arguments (an unknown argument, an option of another mode, or an invalid value is refused with exit 2 before anything is done), exit codes 0/1/2/124, and the error line `Error: [<handle>.<code>] <message>`.
 
 ### Registered verbs
 
@@ -53,7 +55,7 @@ resh user://alice.add shell=/bin/bash dry_run=true
 resh user://alice.groups
 resh user://alice.lock
 
-# Secrets (stored in plaintext; prefer from_env= over value=)
+# Secrets (values go to the OS keyring; prefer from_env= or from_stdin=true over value=)
 resh secret://local/db_password.set from_env=DB_PASSWORD
 resh secret://local/db_password.get redact=true
 resh secret://local/.ls
@@ -73,31 +75,31 @@ resh firewall://.rules.add proto=tcp dport=443 dry_run=true
 
 ### dry_run
 
-`dry_run` is supported by `user` (`add`, `delete`, `passwd`, `lock`, `unlock`) and `firewall` (`rules.add`, `rules.delete`, `rules.save`, `rules.reload`, `enable`, `disable`). It accepts `true/false/1/0/yes/no/on/off` (any case); a bare `dry_run` means `true`; any other value is an error and nothing runs. `secret` has no dry run: `dry_run=true` is refused (exit 2) and nothing is written. `cert` has no dry run (`dry_run` is ignored there).
+`dry_run` is supported by `user` (`add`, `delete`, `passwd`, `lock`, `unlock`) and `firewall` (`rules.add`, `rules.delete`, `rules.save`, `rules.reload`, `enable`, `disable`). It accepts `true/false/1/0/yes/no/on/off` (any case); a bare `dry_run` means `true`; any other value is an error and nothing runs. `secret` and `cert` have no dry run: `dry_run=true` is refused (exit 2) and nothing is written.
 
 ### Protections
 
-* **user:** `delete`, `lock`, and `unlock` refuse accounts with UID below 1000 (including root) unless `force=true`, `protect_system_users=false`, or a lower `min_uid_for_*`. `force` is parsed strictly and overrides these protections. See [user.md](user.md).
+* **user:** `delete`, `lock`, and `unlock` refuse accounts with UID below 1000 (including root) unless `force=true`, `protect_system_users=false`, or a lower `min_uid_for_*`; `passwd` refuses them (`user.protected_account`, exit 2) unless `force=true`. `force` overrides these protections. Passwords are hashed by resh (sha512-crypt or bcrypt on the system backend) and passed to `chpasswd -e` on stdin. A change without root is refused before any tool runs. See [user.md](user.md).
 * **firewall:** `enable`, `disable`, and file-based `rules.reload` on iptables/nftables write a 0600 backup to `/var/backups/firewall/` before any change and change nothing if the backup fails. ufw and firewalld take no backup (a warning says so). See [firewall.md](firewall.md).
-* **cert:** existing files are not overwritten unless `overwrite=true`; RSA keys below 2048 bits are rejected.
+* **cert:** existing files are not overwritten unless `overwrite=true`, and no output is written through a symbolic link; keys are written 0600. RSA keys below 2048 bits are rejected. Private keys can be passphrase-encrypted (PKCS#8, PBES2).
 * **secret:** `local` values are kept in the OS keyring, never in a file; the index file (`<state-dir>/resh/secrets/local.json`) holds only key names and keyring references (mode 0600 in a 0700 directory, written atomically, symlinks refused, writers locked). Without a keyring, writes are refused. See [secret.md](secret.md).
 
 ### Timeouts (`timeout_ms`)
 
 | Handle     | `timeout_ms`                                                                   |
 | ---------- | ------------------------------------------------------------------------------ |
-| `firewall` | One deadline for the whole verb; each backend command gets the time left and is stopped (with its children) at the deadline; exit 124 with a report of the steps applied and not applied |
-| `user`     | Ignored; system commands run with no deadline                                  |
+| `firewall` | Every verb: one deadline for the whole verb (default 30000 for `status` and `rules.*`, 60000 for `rules.reload`, `enable`, `disable`); each backend command gets the time left and is stopped (with its children) at the deadline; exit 124 with a report of the steps applied and not applied |
+| `user`     | `add`, `delete`, `passwd`, `lock`, `unlock` (default 60000; bounds every tool the verb runs; exit 124); `exists` and `groups` refuse it |
 | `secret`   | Enforced on `local` and `vault` (keystore lock, keyring calls, Vault requests, RSA generation; exit 124); refused on `env` |
-| `cert`     | Ignored (local work only)                                                      |
+| `cert`     | `generate`, `csr.create`, `sign`, `renew` (default 300000; at the deadline nothing is written, exit 124); `info`, `verify` and `chain.info` refuse it |
 
 ---
 
 ## 5. Output and Exit Codes
 
 * Output is a single JSON object per invocation (or text where a handle offers `format=text` / `format_output=text`). Field names are handle-specific; there is no shared envelope. See each handle's document and `--help` for real output.
-* Exit status is 0 on success. On failure it is the handle's code: always 1 for `user`; 1, 2 or 124 for `firewall` (1 failed, 2 invalid usage, 124 timeout; see [firewall.md](firewall.md)) and `secret` (1 failed, 2 invalid usage, 124 timeout; see [secret.md](secret.md)); 1-7 for `cert`, depending on the verb (see [cert.md](cert.md)).
-* Where errors go: `user` writes error JSON to stderr; `cert` writes it to stdout, and resh also prints `Error: <reason>` on stderr. `firewall` and `secret` print `Error: [<handle>.<code>] <message>` on stderr and a JSON object with `"error": {"code", "message"}` on stdout.
+* Exit status is the same for all four handles: 0 success, 1 the operation failed, 2 invalid usage (nothing was done), 124 timeout (the outcome may be unknown). The codes are listed in [user.md](user.md), [secret.md](secret.md), [cert.md](cert.md) and [firewall.md](firewall.md).
+* Every failure prints `Error: [<handle>.<code>] <message>` on stderr and, with JSON output, a JSON object with `"error": {"code", "message"}` on stdout (`user` and `cert` with `format=json`, the default).
 * Query verbs report absence as data, not failure: `user exists` and `secret get` for a missing name exit 0 with `exists: false`.
 
 ---
@@ -105,11 +107,11 @@ resh firewall://.rules.add proto=tcp dport=443 dry_run=true
 ## 6. Known Limitations
 
 * **`secret://local` needs an OS keyring** (a Secret Service provider on Linux); without one its verbs fail (exit 1) except `ls`. The plaintext store of earlier releases is still read, with a warning, and moved into the keyring by the next write. The macOS Keychain path is not tested.
-* **Secrets on the command line.** `secret ... value=`, `user ... new_password_plain=`, and similar arguments are visible in the process list and shell history. Only `secret set` offers alternatives (`from_stdin=true`, `from_env=`).
+* **Secrets on the command line.** `secret ... value=`, `user ... new_password_plain=`, the plain `cert` passphrase options, and similar arguments are visible in the process list and shell history. Use the alternatives: `secret set from_stdin=true` or `from_env=`; `user passwd new_password_env=` or `new_password_stdin=true`; `cert` `<name>_env=` or `<name>_stdin=true`. The plain `user` and `cert` forms print a warning every time.
 * **`secret get` prints the value** unless `redact=true`; `secret rotate` prints it only with `expose_value=true`.
-* **No encrypted private keys** in `cert`; `key_passphrase` is rejected. CMS signatures are not implemented. `chain.info` does not build chains; use `verify`.
-* **`user add`:** `create_home` and `password_hash` are ignored; `primary_group` is not validated.
-* **firewall:** no backups for ufw/firewalld; firewalld rules are added to the runtime configuration only.
+* **cert:** no revocation checking (CRL/OCSP); legacy `Proc-Type: 4,ENCRYPTED` keys, PBES1 and scrypt-encrypted keys are refused (convert them to PKCS#8); `csr.sign` is not reachable from the CLI (use `sign mode=csr`).
+* **secret vault:** token authentication and KV version 2 only.
+* **firewall:** no backups for ufw/firewalld; firewalld rules are added to the runtime configuration only; ufw refuses NAT and firewalld refuses `snat`.
 
 ---
 

@@ -26,7 +26,7 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 ## 2. Common Behavior
 
 * **JSON output.** Each verb prints one JSON object on stdout. The shape is specific to each handle (and, for `plugin`, to each verb group); there is no shared envelope across handles. See each page for real field names.
-* **Failure reporting.** On failure resh exits non-zero and prints `Error: <reason>` on stderr (unless the handle already wrote to stderr). Check `ok` in the JSON or the exit status.
+* **Shared conventions.** Strict arguments, exit codes 0/1/2/124, the error line `Error: [<handle>.<code>] <message>` with `"error": {"code", "message"}` in JSON, `timeout_ms` and owner-only files follow the rules in [resh_overview.md 3.5](../resh_overview.md#35-shared-conventions). Check the exit status (or `ok` in the JSON).
 * **Independent invocations.** Each `resh` command is a separate process. Nothing is kept between commands except what a handle writes to disk: backup repositories, the plugin store and state files (under the XDG data/state directories), and nothing at all for `template`.
 * **`--json-pretty`** before the stage pretty-prints the output.
 * **Platform.** Only Linux is supported and verified.
@@ -37,21 +37,21 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 | -------- | --------- |
 | backup   | Honored by `create`, `restore` (lists what would be restored), `prune` and `schedule` (cron add's dry run). `list` and `verify` refuse `dry_run` in any spelling (exit 2, `backup.invalid_argument`). An unrecognised value (such as `dry_run=maybe`) is refused |
 | plugin   | Honored by `install`, `update`, `rollback`, `remove`, `enable`, `disable`. Values other than true/false/1/0/yes/no/on/off are errors |
-| template | Not read (no verb writes anything) |
+| template | No verb has a dry run (rendering never writes files); `dry_run=true` is refused (exit 2) |
 
 ### timeout_ms
 
-| Handle   | Enforced | Accepted but not used | Notes |
+| Handle   | Enforced | Does not take it | Notes |
 | -------- | -------- | --------------------- | ----- |
 | backup   | every verb, as a deadline for the whole verb (backend runs and in-process tar/rsync work; `schedule` passes it to the cron handle) | none | At the deadline the backend's whole process tree is stopped and the verb fails with `backup.timeout`, exit 124. Malformed values are refused (exit 2) |
 | plugin   | `install`, `update`, `rollback`, `remove`, `available.search`, `available.info` (a deadline for the whole verb; exit 124) | none: `enable`, `disable`, `available.list`, `installed.list` and `keys.*` refuse it (exit 2) | 1 ms to 24 hours; any other value is an error (exit 2) |
-| template | none | all verbs ignore it | |
+| template | `render`, `validate`, `test` (the render runs on a worker thread; for `test` the limit covers the whole run) | none | Default 0 (no limit). At the deadline the verb fails with `template.timeout`, exit 124 |
 
 ---
 
 ## 3. Examples
 
-Backup (restic and borg also need a password source: `password_file=`, `password=`, or their usual environment variables; otherwise they fail with `backup.missing_password`, exit 2):
+Backup (restic and borg also need a password source: `password_file=`, `password=` (warns on stderr), or their usual environment variables; otherwise they fail with `backup.missing_password`, exit 2):
 
 ```bash
 resh backup://mydata.create src=/srv/app/data backend=tar repo_url=/srv/backups dry_run=true
@@ -63,7 +63,7 @@ resh backup://mydata.restore snapshot_id=backup_20261016_091244 dest=/srv/restor
 resh backup://mydata.schedule 'when=0 2 * * *' src=/srv/app/data backend=tar
 ```
 
-`schedule` only reports a definition; it installs no cron job or timer. Run the `create` command from cron or a systemd timer yourself.
+`schedule` installs the `create` command as a systemd timer or crontab line through the `cron` handle's `add` (`scheduler=auto|cron|systemd`; `dry_run=true` previews, `enabled=false` installs it disabled). An identical job is reported as a duplicate; a different job of the same profile is refused until it is removed.
 
 Plugins:
 
@@ -92,10 +92,11 @@ resh template://newsletter.html.test
 
 ### 4.1 backup://
 
-* The profile comes from the URL host (`backup://mydata` is profile `mydata`). It names the reported schedule path; nothing else.
+* The profile comes from the URL host (`backup://mydata` is profile `mydata`). It names the scheduled job (`schedule`); nothing else.
 * Backend: `backend=restic|borg|rsync|tar`, or the first of these found on `PATH`.
 * tar, rsync and borg require `repo_url` (there is no default repository; the former `/tmp` defaults were removed in v1.0.3-beta). restic without `repo_url` uses `RESTIC_REPOSITORY`.
-* Encryption, deduplication and remote repositories are whatever the chosen backend provides (restic and borg encrypt; tar and rsync do not).
+* Encryption, deduplication and remote repositories are whatever the chosen backend provides (restic and borg encrypt; tar and rsync do not). Repositories, archives and restore destinations created by resh are owner-only; passwords reach restic and borg only through their environment.
+* `restore dry_run=true` reports what would be restored; `progress=true` on `create` and `restore` (restic, borg) streams one JSON line per progress event before the result.
 
 ### 4.2 plugin://
 
@@ -114,17 +115,18 @@ See [plugin.md](plugin.md) for the full security rules and known limitations.
 ### 4.3 template://
 
 * Tera engine: variables, conditionals, loops, filters, comments. Templates are compiled one at a time, so `extends`/`include` of other files does not work.
-* Context: a JSON string (`context`) or a JSON file (`context_file`, `render` only).
+* Context: a JSON string (`context`) or a JSON file (`context_file`) for `render` and `validate`; `test` takes a context per case.
 * Output formats for `render`: `text`, `html`, `json`, `bytes` (base64).
-* `validate` reads the template text from `from=`, not `template=`.
+* Inline template text: `template=` (or the older `from=`; `validate` also accepts `inline=`).
 * Tera's `get_env` function can read the environment of the `resh` process; do not render untrusted templates.
+* Macro calls may nest at most 200 levels; deeper recursion fails the render (exit 1) instead of crashing resh.
 
 ---
 
 ## 5. Operational Notes
 
-* Use `dry_run=true` before `backup prune` and plugin changes; remember that `backup restore` has no dry run (it refuses `dry_run=true`).
+* Use `dry_run=true` before `backup prune`, `backup restore` and plugin changes.
 * Verify backups (`backup verify`) and test restores regularly.
-* Install plugins only from registries you trust, and pin versions with `version=`.
+* Install plugins only from registries you trust, trust their publisher keys explicitly (`plugin://keys.add`), and pin versions with `version=`.
 * Validate templates (`template validate`) before rendering them in pipelines.
 * Gate automation on `ok` or the exit status, not on text output.

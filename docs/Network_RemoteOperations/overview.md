@@ -7,13 +7,14 @@ local network:
 
 | Handle             | Purpose | Details |
 | ------------------ | ------- | ------- |
-| `dns://`           | DNS lookups, resolution, delegation traces, zone transfers (AXFR), RFC 2136 dynamic updates (`zone.update`, optional TSIG). | [dns.md](dns.md) |
+| `dns://`           | DNS lookups, resolution, delegation traces, zone transfers (AXFR and IXFR, optionally TSIG-signed), RFC 2136 dynamic updates (`zone.update`, optional TSIG), all sent by resh's own DNS client. | [dns.md](dns.md) |
 | `http://`, `https://` | HTTP requests (one handle serves both schemes). | [http.md](http.md) |
-| `mail://`          | Sending email over SMTP, built-in templates, SMTP checks, stored profiles. | [mail.md](mail.md) |
+| `mail://`          | Sending email over SMTP, built-in templates, real SMTP session checks, stored profiles (passwords in the OS keyring). | [mail.md](mail.md) |
 | `net://`           | Local interfaces and routes, ping, TCP checks, port scans, simple DNS queries. | [net.md](net.md) |
-| `ssh://`           | Remote commands and file copies through the system `ssh` client; client config inspection. Tunnels and key management are stubs. | [ssh.md](ssh.md) |
+| `ssh://`           | Remote commands, file copies, connection checks, port forwarding (`tunnel`) and remote public keys (`keys.list`, `key.add`) through the system `ssh` client; client config inspection. | [ssh.md](ssh.md) |
 
-Every handle has built-in help that matches the code:
+Every handle has built-in help that matches the code (also `-h`, `help`, or
+`resh help <handle> [verb]`):
 
 ```bash
 resh dns --help
@@ -65,16 +66,25 @@ documented in the handle pages and in `resh <handle> <verb> --help`:
   `delete` by default, and JSON for `head`, `headers`, `options`, `preflight`
   and `json`.
 
-Exit status: 0 on success; on failure the handle's code if it is 1-255,
-otherwise 1, with the reason on stderr (`Error: <reason>` when the handle did
-not already write to stderr). Notable cases, all verified in the code:
+All five handles follow the shared conventions in
+[resh_overview.md 3.5](../resh_overview.md#35-shared-conventions). Every
+verb refuses unknown arguments and invalid values (including `dry_run` on a
+verb without a dry run) before anything is sent, with exit 2 and a "did you
+mean" hint for a likely typo. Exit status: 0 success, 1 the operation
+failed, 2 invalid usage (nothing was sent), 124 timeout or outcome unknown.
+Every failure prints `Error: [<handle>.<code>] <message>` on stderr, and a
+JSON result carries `"error": {"code", "message"}`. Notable cases:
 
-* `http`: a non-2xx status exits 1 for most verbs, but `head`, `headers` and
-  `json` exit 0 for any HTTP status.
-* `net ping` exits 0 whenever the system `ping` ran, even if the host did not
-  answer; check `reachable`. `net tcp_check` exits 111 when the connection
-  fails.
-* `ssh exec` exits with the remote command's exit code.
+* `http`: every verb exits 0 for a 2xx status (and a 3xx with
+  `follow_redirects=false`) and 1 for any other status
+  (`http.status_error`); the body or JSON is still printed.
+* `net ping` exits 1 (`net.unreachable`) when no reply comes back, and
+  `net tcp_check` exits 1 (`net.connect_failed`) when the connection fails.
+* `ssh exec` exits 1 (`ssh.remote_exit_nonzero`) when the remote command
+  exits non-zero; the remote code is in `result.exit_code`.
+* Exit 124 means the outcome may be unknown: an `http` server may have
+  acted on the request, `mail send` may have delivered the message, and
+  `dns zone.update` may have been applied.
 
 Each `resh` invocation is a separate process. No connection, session, cache
 or SMTP transport is kept between invocations. The only state written to disk
@@ -83,45 +93,56 @@ by these handles is the mail profile file (see below) and files that
 
 ## 4. Timeouts
 
-`timeout_ms` is not handled uniformly. Summary (see each page for details):
+Every verb that waits on the network takes `timeout_ms`; verbs that do not
+wait refuse it (exit 2). A malformed or out-of-range value is refused
+(exit 2). Summary (see each page for details):
 
-| Handle | Enforces `timeout_ms` | Ignores it |
-| ------ | --------------------- | ---------- |
-| dns    | `lookup`, `resolve`, `trace` (per query), `zone.fetch` (connect and each read), `zone.update` (per attempt) | none |
-| http   | `get`, `post`, `put`, `delete`, `options`, `preflight`, `json`, `headers` | `head` (fixed 10 s), `patch` (fixed 30 s) |
-| mail   | `send`, `send_template` (SMTP transport), `test` only when a test message is sent | `config` |
-| net    | `dns`, `tcp_check` (per attempt), `scan` (per port); `ping` turns it into a per-reply wait in seconds | `list`, `route.list` |
-| ssh    | none: use `connect_timeout_ms`, `command_timeout_ms`, `transfer_timeout_ms` and the `test` timeouts | `timeout_ms` everywhere |
+| Handle | Enforces `timeout_ms` | Does not take it |
+| ------ | --------------------- | ---------------- |
+| dns    | `lookup`, `resolve` (per attempt, default 2000), `trace` (per attempt, default 3000), `zone.fetch` (connect, send and each read, default 5000), `zone.update` (per attempt, default 3000) | none |
+| http   | every verb: a deadline for the whole request, body included (default 5000 for `preflight`, 30000 for `put`, `patch` and `delete`, 10000 for the others) | none |
+| mail   | `send`, `send_template` (whole command, default 10000), `test` (default 10000) | `config` |
+| net    | `route.list` (default 5000), `dns` and `ping` (whole operation, default 3000), `tcp_check` (per attempt, default 3000), `scan` (per port, default 500) | `list` |
+| ssh    | every connecting verb: one deadline for all of its ssh runs (no default), combined with the verb's own limits (`command_timeout_ms`, `transfer_timeout_ms`, the `test` and `keys` timeouts; `tunnel_timeout_ms` and `idle_timeout_ms` end a tunnel normally, exit 0) | `config.get` |
 
-Some verbs reject `timeout_ms=0` or a non-numeric value; several `http` verbs
-silently fall back to their default instead.
+## 5. Limitations
 
-## 5. What is not implemented
+The handle pages list all limitations. The ones most likely to matter:
 
-These features are visible in arguments or help but do not do real work:
-
-* `dns zone.fetch`: TSIG options are validated but the transfer is never
-  signed.
-* `ssh tunnel`, `ssh keys.list`, `ssh key.add`: only `dry_run=true` succeeds;
-  without it they exit 1 and change nothing.
-* `ssh test`: the `sftp` and `hostkey` checks always fail.
-* `mail send`: has no dry-run mode; a `dry_run` request is refused (exit 2)
-  and nothing is sent. `mail test` does not contact the server unless it sends a test
-  message.
-* Stored mail profiles are never used for sending.
+* `dns`: `dnssec_validated` repeats the server's AD flag; resh does not
+  validate DNSSEC signatures itself. `zone.update` checks
+  `zone_serial_at_least` with a separate SOA query, not atomically.
+* `ssh`: `identity_passphrase` needs OpenSSH 8.4 or later; in `exec`'s
+  cmd/powershell modes a timed-out remote command cannot be stopped (a
+  warning says so); `config.get` skips `Match exec`, `localnetwork` and
+  `tagged` blocks with a warning.
+* `mail send` has no dry-run mode; a `dry_run` request is refused (exit 2)
+  and nothing is sent. Use `send_template ... dry_run=true` to preview a
+  message. Storing a profile password needs an OS keyring.
+* `http` holds the whole response body in memory, and `headers=` values
+  cannot contain `;`.
+* `net list` does not report prefix lengths.
 
 ## 6. Security summary
 
-* `http`: TLS certificates are verified. Only `put` honors
-  `allow_insecure=true`, which disables verification.
-* `mail`: `use_tls=none` sends credentials in clear text.
-  `tls_accept_invalid_certs` does not accept invalid certificates; in `test`
-  it allows a plain-text fallback. Stored SMTP passwords are base64-encoded,
-  **not encrypted**, in an owner-only (`0600`) file.
+* `http`: TLS certificates are verified by every verb. `ca_file=<pem>`
+  trusts a private CA with verification on; `allow_insecure=true` disables
+  verification for that stage (every verb) and cannot be combined with
+  `ca_file`.
+* `mail`: `use_tls=none` sends credentials in clear text. STARTTLS is
+  required in `starttls` mode and never falls back to plain text.
+  `tls_accept_invalid_certs=true` disables certificate verification and is
+  insecure; prefer `ca_file`. Stored SMTP passwords are kept in the OS
+  keyring; the owner-only (`0600`) profile file holds only a reference.
 * `ssh`: host keys are checked strictly by default (`known_hosts_mode` values
-  are `strict`, `accept-new`, `insecure`). Remote command arguments are not
-  safely quoted; never pass untrusted input. Passwords given on the command
-  line or in the URL are visible in the process list.
-* DNS queries without `servers=`/`server=` go to Google Public DNS, not the
-  system resolver.
+  are `strict`, `accept-new`, `insecure`; `test` also needs
+  `allow_insecure_hostkey=true` for `insecure`). Treat `command`,
+  `command_args`, `cwd`, `env` and `shell_mode` as code (see the quoting
+  rules in [ssh.md](ssh.md)). Passwords given on the command line or in the
+  URL are visible in the process list of `resh`; ssh gets them through the
+  environment.
+* `net tcp_check expect_tls=true` performs a verified TLS handshake;
+  `ca_file=` adds a private CA.
+* DNS queries without `servers=` go to the name servers in
+  `/etc/resolv.conf`; `trace` starts at the root servers.
 * Only probe or scan hosts you are authorized to test.
