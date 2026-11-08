@@ -4,7 +4,7 @@
 
 Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs and reports the results as JSON.
 
-The `backup://` handle creates, lists, restores, verifies and prunes backup snapshots by running an installed backup tool: `restic`, `borg`, `rsync` or `tar`. It also has a `schedule` verb, which only **reports** what to schedule: the backup command and the `cron://` command that would install it. It does not install a timer or cron job and does not write any file (see 4.6).
+The `backup://` handle creates, lists, restores, verifies and prunes backup snapshots by running an installed backup tool: `restic`, `borg`, `rsync` or `tar`. Its `schedule` verb installs a scheduled `create` as a systemd timer or crontab line through the `cron://` handle (see 4.6).
 
 The handle does not implement backups itself. Every operation runs the backend program (or, for some tar/rsync operations, reads the repository directory directly) and wraps the outcome in one JSON envelope.
 
@@ -30,7 +30,8 @@ The profile is only used in the reported schedule (the backup command, the cron 
 * **One envelope for every verb.** Success and failure both print the same JSON object on stdout (see 3.2). On failure resh also prints `Error: [backup.<code>] <message>` on stderr.
 * **Exit status.** 0 success; 1 the operation failed (backend error, missing program, I/O error, verification problems); 2 invalid usage, nothing was done; 124 timeout (the outcome is unknown).
 * **The backend does the work.** Capabilities such as encryption, deduplication and cloud storage are whatever the selected backend provides. The `capabilities` object in the result is a fixed description per backend, not a probe of the repository.
-* **Dry run.** `create` and `prune` have a dry-run mode. `restore`, `list`, `verify` and `schedule` have none, and refuse `dry_run` in any spelling (exit 2); nothing is restored.
+* **Dry run.** `create`, `restore`, `prune` and `schedule` have a dry-run mode. `list` and `verify` change nothing and refuse `dry_run` in any spelling (exit 2).
+* **Progress.** `create` and `restore` with `progress=true` (restic and borg) print one JSON line per backend progress event as it happens, then the envelope (see 4.8).
 * **Timeouts.** `timeout_ms` is the deadline of the whole verb (defaults in 4.7). At the deadline the backend and every process it started are stopped, and in-process work (tar/rsync listing, pruning, rsync verification) stops too; the verb fails with `backup.timeout` and exit 124. A `create` stopped this way removes its partial tar archive or rsync directory.
 * **Private files.** A tar or rsync repository directory that resh creates is owner-only (0700); tar archives are created 0600 and rsync snapshot directories 0700. A restore destination that resh creates is 0700. A snapshot is always created under a new name, so a second backup in the same second gets a `_2` suffix instead of overwriting the first, and nothing planted at the name is written through.
 * **Each invocation is independent.** Nothing persists between `resh` invocations except what the backend writes to the repository.
@@ -47,7 +48,7 @@ The profile is only used in the reported schedule (the backup command, the cron 
 | `repo_url`      | all                                     | Repository location. **Required for tar, rsync and borg.** restic receives it as `RESTIC_REPOSITORY`; without it, restic needs `RESTIC_REPOSITORY` or `RESTIC_REPOSITORY_FILE` in the environment (else exit 2). borg uses it as the repository path; tar and rsync use it as a local directory (a `file://` prefix is stripped). |
 | `password`      | create, list, restore, verify, prune    | restic/borg repository password, passed to the backend in its environment (`RESTIC_PASSWORD`, `BORG_PASSPHRASE`) and redacted in the output. It appears in the `resh` command line and shell history, so resh prints a warning on stderr each time; prefer `password_file` or the environment variables. |
 | `password_file` | create, list, restore, verify, schedule, prune | File holding the password. restic receives it as `RESTIC_PASSWORD_FILE`; for borg resh reads the file and passes the content as `BORG_PASSPHRASE`. The file must be readable, else `backup.password_file_unreadable` (exit 1) before anything runs. |
-| `timeout_ms`    | all except schedule                     | Deadline of the whole verb in milliseconds, an integer from 1 to 2592000000 (30 days). Anything else is refused (exit 2). |
+| `timeout_ms`    | all                                     | Deadline of the whole verb in milliseconds, an integer from 1 to 2592000000 (30 days). Anything else is refused (exit 2). |
 | `json_pretty`   | all                                     | `true` pretty-prints the envelope (same as the global `--json-pretty` flag). Booleans accept `true/false`, `1/0`, `yes/no`, `on/off`; anything else is refused. |
 
 **Password sources (restic and borg only).** restic and borg need a repository password from `password=`, `password_file=`, or their usual environment variables (`RESTIC_PASSWORD`, `RESTIC_PASSWORD_FILE`, `RESTIC_PASSWORD_COMMAND`; `BORG_PASSPHRASE`, `BORG_PASSCOMMAND`, `BORG_PASSPHRASE_FD`). With none of these, the verb fails with `backup.missing_password` (exit 2) before the backend is run. Giving both `password` and `password_file` is refused. A password never appears in a backend's argv. resh does not store repository passwords.
@@ -163,7 +164,8 @@ Example failure (restic with no password source), with `Error: [backup.missing_p
 | `backup.io` | `IO` | 1 | A repository or destination directory cannot be read, created or written; a tar/rsync prune could not remove some snapshots (`details` lists what was removed and the errors). |
 | `backup.parse` | `PARSE` | 1 | restic or borg `list` output is not the expected JSON. |
 | `backup.verify_failed` | `VERIFY_FAILED` | 1 | tar or rsync verification found problems; `details` has the findings. |
-| `backup.snapshot_not_found` | `NOT_FOUND` | 1 | `verify snapshot_id=` names a tar archive or rsync snapshot that is not in the repository. |
+| `backup.snapshot_not_found` | `NOT_FOUND` | 1 | `verify snapshot_id=` or a `restore` dry run names a tar archive or rsync snapshot that is not in the repository. |
+| `backup.schedule_failed` | `SCHEDULE_FAILED` | 1 | The cron handle could not install (or disable) the scheduled job, for example the requested scheduler is not available. `details.cron_error` has the cron handle's error object; a refused cron argument is `backup.invalid_argument` instead. |
 
 Before this release a backend failure exited with the backend's own exit code, a missing required argument printed only an error line (exit 1, no envelope), and refused values exited 1. Now usage errors exit 2 with an envelope, and a backend failure exits 1 with the backend's status in `error.details.exit_code`.
 
@@ -180,7 +182,7 @@ Since v1.0.4-beta every caller value that ends up on a backend command line is c
 
 The command lines are built so a value cannot change its role:
 
-* Option values are attached with `=` (`--exclude=<pattern>`, `--include=<pattern>`, `--tag=<tag>`, `--hostname=<label>`, `--target=<dest>`), so a value beginning with `-` stays a value.
+* Option values are attached with `=` (`--exclude=<pattern>`, `--include=<pattern>`, `--tag=<tag>`, `--host=<label>`, `--target=<dest>`), so a value beginning with `-` stays a value.
 * Positional values (sources, repository, snapshot, include patterns for tar and borg) follow a `--` separator.
 * tar always gets `--force-local`, so an archive path containing `:` is never treated as `host:file` on a remote host.
 * rsync gets relative paths with a `./` prefix, so a path such as `name:dir` is never treated as a remote location.
@@ -207,13 +209,14 @@ resh backup://db.create 'src=/etc;/home' backend=restic repo_url=/srv/restic pas
 | --------- | -------- | ------- |
 | `src`     | yes      | Source path(s), separated by `;` |
 | `tag`     | no       | Tags, separated by `;`. restic only: refused for the other backends (exit 2) |
-| `label`   | no       | For tar, rsync and borg, the snapshot name prefix (`<label>_<timestamp>`, characters other than letters, digits, `.`, `-`, `_` become `_`); for restic, the `--hostname` value (restic 0.18 prints a deprecation notice for it, kept in `backend_raw.stderr`) |
+| `label`   | no       | For tar, rsync and borg, the snapshot name prefix (`<label>_<timestamp>`, characters other than letters, digits, `.`, `-`, `_` become `_`); for restic, the `--host` value |
+| `progress` | no      | `true` streams progress events (restic and borg; refused for tar and rsync), see 4.8 |
 | `exclude` | no       | Exclude patterns, separated by `;`, in the backend's own pattern syntax |
 | `dry_run` | no       | `true` (or `1`/`yes`/`on`, or a bare `dry_run`) validates the arguments and reports the command without running it or creating anything (`result.dry_run_mode` is `plan`, `backend.simulated` is true). Any value other than a boolean spelling is refused |
 
 Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 1800000), `json_pretty`.
 
-Backend commands: `tar --force-local -czf <repo>/<name>.tar.gz ... -- <src>...`, `rsync -a --stats ... -- <src>... <repo>/<name>/`, `borg create --json --compression lz4 ... -- <repo>::<name> <src>...`, `restic backup ... --json -- <src>...`. The snapshot id is the archive or directory name for tar/rsync/borg (with a `_2`, `_3` ... suffix when the name is taken), and the restic snapshot id read from restic's output. For tar and rsync a missing repository directory is created 0700, the archive 0600 and the snapshot directory 0700. If the backup fails or is stopped at the deadline, the partial tar archive or rsync directory is removed (`error.details.partial_snapshot` and `partial_snapshot_removed`).
+Backend commands (with `progress=true` borg also gets `--progress --log-json`): `tar --force-local -czf <repo>/<name>.tar.gz ... -- <src>...`, `rsync -a --stats ... -- <src>... <repo>/<name>/`, `borg create --json --compression lz4 ... -- <repo>::<name> <src>...`, `restic backup ... --json -- <src>...`. The snapshot id is the archive or directory name for tar/rsync/borg (with a `_2`, `_3` ... suffix when the name is taken), and the restic snapshot id read from restic's output. For tar and rsync a missing repository directory is created 0700, the archive 0600 and the snapshot directory 0700. If the backup fails or is stopped at the deadline, the partial tar archive or rsync directory is removed (`error.details.partial_snapshot` and `partial_snapshot_removed`).
 
 The exit statuses restic 3, borg 1, rsync 24 and tar 1 mean the backup was written with a warning; they are reported as success with a warning.
 
@@ -237,9 +240,10 @@ The result has `snapshots` (each with `id`, `created_at`, `sources`, `tags`, and
 
 ### 4.3 restore
 
-Restores a snapshot into a destination directory.
+Restores a snapshot into a destination directory, or with `dry_run=true` reports what a restore would write.
 
 ```bash
+resh backup://db.restore snapshot_id=backup_20261016_091244 dest=/srv/restore backend=tar repo_url=/srv/backups dry_run=true
 resh backup://db.restore snapshot_id=backup_20261016_091244 dest=/srv/restore backend=tar repo_url=/srv/backups
 resh backup://db.restore snapshot_id=latest dest=/srv/restore backend=restic repo_url=/srv/restic password_file=/root/.restic-pass 'include=/etc/*.conf'
 ```
@@ -247,11 +251,15 @@ resh backup://db.restore snapshot_id=latest dest=/srv/restore backend=restic rep
 | Argument      | Required | Meaning |
 | ------------- | -------- | ------- |
 | `snapshot_id` | yes      | Snapshot id (tar: archive name without `.tar.gz`; rsync: directory name; borg: archive name; restic: snapshot id or `latest`) |
-| `dest`        | yes      | Destination directory. Created 0700 when missing. A `dest` that is a symbolic link or an existing non-directory is refused (exit 2) |
+| `dest`        | yes      | Destination directory. Created 0700 when missing. A `dest` that is a symbolic link or an existing non-directory is refused (exit 2), also in a dry run |
 | `include`     | no       | Only restore matching paths; patterns separated by `,` (see below) |
 | `exclude`     | no       | Do not restore matching paths; patterns separated by `;` |
+| `dry_run`     | no       | Report what would be restored; nothing is written (see below) |
+| `progress`    | no       | `true` streams progress events (restic and borg), see 4.8 |
 
 Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 1800000), `json_pretty`.
+
+Backend commands: `restic restore --json --target=<dest> ... -- <id>`, `borg extract --list ... -- <repo>::<id> [include...]` (in `dest`), `tar --force-local -v -xzf <archive> ... -C <dest>`, `rsync -a --stats ... -- <repo>/<id>/ <dest>`.
 
 `include` and `exclude` use each backend's own pattern rules:
 
@@ -260,9 +268,11 @@ Plus `backend`, `repo_url`, `password`, `password_file`, `timeout_ms` (default 1
 * rsync: rsync filter patterns relative to the snapshot (`*.conf`, `data/sub/`); with `include`, directories are traversed and those left empty are not created.
 * borg: include patterns are borg PATH arguments (path prefixes such as `etc/hosts`, or borg pattern syntax such as `sh:etc/*.conf`); exclude patterns are borg `--exclude` patterns.
 
-`restore` has **no dry run**: `dry_run` in any spelling is refused with `backup restore does not support dry_run` (exit 2) and nothing is restored. Existing files in `dest` are overwritten by the backend; restore into an empty directory when unsure.
+Existing files in `dest` are overwritten by the backend.
 
-The result's `restored` has `files_restored` and `bytes_restored`: the regular files written and their total size for tar and borg (from the extracted-member list), the regular files transferred and their size for rsync, and for restic the number of files and directories from restic's summary with `bytes_restored` null (restic reports only a rounded size). When a restore fails or is stopped, files already written stay in `dest` (`error.details.partial_restore_possible`).
+The result's `restored` has `files_restored` and `bytes_restored`: restic's own summary counts (restic counts files and directories), the regular files written and their total size for tar and borg (from the extracted-member list), and the regular files transferred and their size for rsync. When a restore fails or is stopped, files already written stay in `dest` (`error.details.partial_restore_possible`).
+
+**Dry run.** `dry_run=true` checks the arguments and the destination and runs the backend's read-only listing with the same include and exclude patterns: `restic restore --json --dry-run`, `borg list --json-lines`, `tar -tvzf`, `rsync --dry-run`. Nothing is written to `dest`, which is not created. A tar or rsync snapshot that does not exist gives `backup.snapshot_not_found`. The result has `dry_run_mode: "backend"`, `snapshot_id`, `destination` (`path`, `exists`, `would_create`, `empty`, `writable`) and `would_restore` (`files`, `bytes`: regular files and their size; restic's own counts). A non-empty or unwritable destination gives a warning. Like a prune dry run, restic takes a repository lock and reads its cache, and both restic and borg need the repository credentials.
 
 ### 4.4 verify
 
@@ -329,30 +339,32 @@ The result reports `pruned` (or `would_prune` in a dry run) with `snapshots_remo
 
 ### 4.6 schedule
 
-Reports what to schedule. **It does not install anything**: no systemd timer, no crontab entry, and no file is written, including the reported `definition_path`. Nothing runs, so it takes no `timeout_ms`.
+Installs a scheduled backup of the profile: the `resh backup://<profile>.create ...` command, run by a systemd timer or a crontab line. The job is added with the `cron://` handle's `add` verb (run in-process), so the scheduler choice, the schedule check, duplicate detection and the files written are exactly those of `cron add` (see `cron.md`). With `dry_run=true` cron add only reports what it would write.
 
 ```bash
-resh --json-pretty backup://db.schedule 'when=0 2 * * *' src=/etc backend=tar repo_url=/srv/backups
+resh --json-pretty backup://db.schedule 'when=0 2 * * *' src=/etc backend=tar repo_url=/srv/backups dry_run=true
+resh backup://db.schedule 'when=0 2 * * *' src=/etc backend=restic repo_url=/srv/restic password_file=/root/.restic-pass
 ```
 
 | Argument        | Required | Meaning |
 | --------------- | -------- | ------- |
-| `when`          | yes      | Five crontab fields or an `@` keyword (`@daily`, `@reboot`, ...), checked with the cron handle's parser; an invalid schedule is refused (exit 2) |
+| `when`          | yes      | Five crontab fields or an `@` keyword (`@daily`, `@reboot`, ...), checked by cron add; an invalid schedule is refused (`backup.invalid_argument`, `details.field` `when`, exit 2) |
 | `src`           | yes      | Source path(s) for the scheduled `create`, checked as in 3.3 |
 | `backend`       | no       | As for other verbs. A named backend that is not installed here gives a warning, not an error |
 | `repo_url`      | no       | Repository for the scheduled `create`; required for tar, rsync and borg |
-| `password_file` | no       | Password file for the scheduled `create` (restic and borg; refused for tar and rsync). `password=` is not accepted, so a password never ends up in a crontab |
-| `enabled`       | no       | `true` (default) or `false` |
+| `password_file` | no       | Password file for the scheduled `create` (restic and borg; refused for tar and rsync). `password=` is not accepted, so a password never ends up in a crontab or unit |
+| `enabled`       | no       | `true` (default). `false` installs the job and then disables it with cron `disable` |
+| `scheduler`     | no       | `auto` (default: a systemd timer when systemctl runs, else a crontab line), `cron` or `systemd`; cron add's `backend` |
+| `dry_run`       | no       | Report what would be installed; nothing is written |
+| `timeout_ms`    | no       | Passed to the cron handle, which bounds crontab and systemctl with it (cron's default 60000) |
 
-The result's `schedule` object has:
+The job's command is this resh executable's absolute path, `backup://<profile>.create`, `src`, `backend`, and `repo_url`/`password_file` when given. The cron job id is `resh-backup-<profile>` (`/` becomes `-`) and the cron label `backup-<profile>`. resh first runs cron add's own dry run (with `allow_duplicate=false`). If this exact job is already installed, the result has `duplicate: true` and nothing changes (for systemd, a timer of that name counts as installed). If a different job of the profile (another schedule or command) is installed, `schedule` fails with `backup.schedule_failed` and changes nothing; `details.remove_command` removes the old job, after which `schedule` can run again.
 
-* `command`: the `resh backup://<profile>.create ...` argv the job runs (`src`, `backend`, and `repo_url`/`password_file` when given);
-* `install_command`: the `resh cron://backup-<profile>.add schedule=<when> command=<command>` argv that installs the job with the cron handle (`command` shell-quoted); `null` when `enabled=false`;
-* `when`, `enabled`;
-* `runner`: `systemd` if `systemctl` is on `PATH`, else `cron` if `crontab` is, else `none` with a warning;
-* `definition_path`: `$HOME/resh-backup-<profile>.json` (not created; null when `HOME` is not set).
+The result's `schedule` object has `when`, `enabled`, `scheduler` (the cron backend used), `id`, `installed` (false in a dry run), `duplicate`, `command` (the job's argv), `job` and `preview` (cron add's job object and, in a dry run, the line or units it would write) and `remove_command` (the `resh cron://backup-<profile>.rm id=... backend=...` argv that removes the job). Cron's warnings are added to the envelope's warnings, and warnings say when the job will need a password or `RESTIC_REPOSITORY` in its environment.
 
-Warnings say when the scheduled job will need a password or `RESTIC_REPOSITORY` in its environment. The profile must consist of letters, digits, `-`, `_` and `/` to be scheduled.
+A cron argument the cron handle refuses is `backup.invalid_argument` (exit 2) with the cron error in `details.cron_error`; a failure to install or disable is `backup.schedule_failed` (exit 1; `details.installed` says whether a job was left installed when only the disable failed); a cron timeout is `backup.timeout`. The profile must consist of letters, digits, `-`, `_` and `/` to be scheduled.
+
+Before this release `schedule` installed nothing and only reported a `runner` and a `definition_path`; both fields are gone.
 
 ### 4.7 timeout_ms summary
 
@@ -365,9 +377,19 @@ Warnings say when the scheduled job will need a password or `RESTIC_REPOSITORY` 
 | list     | 10000 (10 s) | restic/borg run; tar/rsync directory read |
 | verify   | 3600000 (60 min) | restic/borg check; all tar archives together; the rsync read |
 | prune    | 3600000 (60 min) | restic/borg run; tar/rsync scan, size count and removal |
-| schedule | none (refused) | nothing runs |
+| schedule | cron's (60000) | crontab and systemctl, run by the cron handle |
 
 At the deadline the backend's whole process tree is stopped (SIGTERM, then SIGKILL) and the verb exits 124 with `backup.timeout`.
+
+### 4.8 progress
+
+`create` and `restore` accept `progress=true` (default `false`) for restic and borg; tar and rsync refuse it (exit 2). While the backend runs, each progress record it reports is printed at once as one JSON line, flushed per line, and the envelope follows as the last line:
+
+```json
+{"backend":"restic","event":"progress","handle":"backup","progress":{"message_type":"status","percent_done":0.5,"files_done":1,"total_files":3},"ts":"2026-11-08T13:07:14+00:00","verb":"create"}
+```
+
+`progress` is the backend's own record: restic's `--json` `status` messages, and borg's `--log-json` records of type `archive_progress`, `progress_percent` and `progress_message` (borg gets `--progress --log-json` for this). Read the output line by line and treat the line with `"handle":"backup"` and an `ok` field as the result. With `--json-pretty` the output is buffered until the end and, holding several JSON lines, printed unchanged, so use `progress` without it. The deadline and every failure behave as without `progress`.
 
 ---
 

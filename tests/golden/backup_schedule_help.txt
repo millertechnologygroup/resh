@@ -1,18 +1,19 @@
 Handle: backup
 Verb: schedule
-Definition: Reports the backup command for a schedule, the cron handle command
-  that installs it, and the detected scheduler, without installing a timer or
-  cron job or writing any file.
+Definition: Installs a scheduled create for the profile as a systemd timer or
+  crontab line through the cron handle, or reports what would be installed when
+  dry_run is true.
 
 Usage:
   resh backup://<profile>.schedule when=<cron> src=<path>[;<path>...]
     [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]
     [password_file=<path>] [enabled=true|false]
-    [json_pretty=true|false]
-    when: five crontab fields or an @ keyword
+    [scheduler=auto|cron|systemd] [dry_run=true|false]
+    [timeout_ms=<ms>] [json_pretty=true|false]
+    when: five crontab fields or an @ keyword (checked by cron add)
 
 Example:
-  resh backup://db.schedule when=@daily src=/etc backend=tar repo_url=/srv/b
+  resh backup://db.schedule when=@daily src=/e backend=tar repo_url=/b dry_run=1
 
 Example Output:
   {
@@ -23,8 +24,8 @@ Example Output:
       "simulated": false,
       "timeout_ms": 0
     },
-    "dry_run": false,
-    "duration_ms": 0,
+    "dry_run": true,
+    "duration_ms": 3,
     "events": [],
     "handle": "backup",
     "ok": true,
@@ -41,32 +42,41 @@ Example Output:
       },
       "schedule": {
         "command": [
-          "resh",
+          "/usr/local/bin/resh",
           "backup://db.create",
-          "src=/etc",
+          "src=/e",
           "backend=tar",
-          "repo_url=/srv/b"
+          "repo_url=/b"
         ],
-        "definition_path": "/home/alice/resh-backup-db.json",
+        "duplicate": false,
         "enabled": true,
-        "install_command": [
+        "id": "resh-backup-db",
+        "installed": false,
+        "job": {
+          "backend": "cron",
+          "id": "resh-backup-db",
+          "schedule": "@daily"
+        },
+        "preview": {},
+        "remove_command": [
           "resh",
-          "cron://backup-db.add",
-          "schedule=@daily",
-          "command=resh backup://db.create src=/etc backend=tar repo_url=/srv/b"
+          "cron://backup-db.rm",
+          "id=resh-backup-db",
+          "backend=cron"
         ],
-        "runner": "systemd",
+        "scheduler": "cron",
         "when": "@daily"
       }
     },
     "target": "backup://db",
     "ts": "2026-10-16T09:12:44.931277+00:00",
     "verb": "schedule",
-    "warnings": []
+    "warnings": [
+      "Dry run: nothing was installed"
+    ]
   }
 
-  Shown on a systemd host, indented as with --json-pretty. Nothing is
-  installed: run install_command to add the job with the cron handle.
-  runner is cron when only crontab is found, and none (with a warning)
-  when neither is found. definition_path is not created. enabled=false
-  reports install_command as null.
+  Shown shortened (job and preview are the cron handle's add result, with
+  the full crontab line or units) on a host without systemd. Without
+  dry_run the job is installed and installed is true; enabled=false then
+  disables it. Run remove_command to remove it.

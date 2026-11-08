@@ -31,8 +31,15 @@ struct R {
 }
 
 impl R {
+    /// The envelope: the last line (progress events come before it).
     fn json(&self) -> Value {
-        serde_json::from_str(self.out.trim()).unwrap_or_else(|e| panic!("{e}: {}", self.out))
+        let last = self.out.trim().lines().last().unwrap_or("");
+        let text = if self.out.trim().starts_with("{\n") {
+            self.out.trim()
+        } else {
+            last
+        };
+        serde_json::from_str(text).unwrap_or_else(|e| panic!("{e}: {}", self.out))
     }
 
     #[track_caller]
@@ -118,6 +125,8 @@ impl Fx {
         fs::create_dir(tmp.path().join("bin")).unwrap();
         let mut h = handle("backup://db");
         h.bin_dir = Some(tmp.path().join("bin"));
+        // Never the host's cron or systemd.
+        h.cron_provider = Some(std::sync::Arc::new(MockCron::default()));
         Fx { tmp, h }
     }
 
@@ -205,7 +214,7 @@ fn create_commands_argv() {
             "restic",
             "backup",
             "--tag=daily",
-            "--hostname=web01",
+            "--host=web01",
             "--exclude=*.tmp",
             "--json",
             "--",
@@ -261,6 +270,7 @@ fn list_restore_verify_prune_argv() {
         s(&[
             "restic",
             "restore",
+            "--json",
             "--target=/tmp/r",
             "--include=*.conf",
             "--exclude=*.tmp",
@@ -926,11 +936,7 @@ fn unknown_arguments_are_refused_with_a_suggestion() {
         let v = r.fails(Code::InvalidArgument);
         assert_eq!(v["error"]["details"]["field"], "tmeout_ms", "{verb}");
         let msg = v["error"]["message"].as_str().unwrap();
-        if verb == "schedule" {
-            assert!(!msg.contains("did you mean"), "{msg}");
-        } else {
-            assert!(msg.contains("did you mean timeout_ms?"), "{verb}: {msg}");
-        }
+        assert!(msg.contains("did you mean timeout_ms?"), "{verb}: {msg}");
     }
     // Verb-specific options are refused elsewhere.
     let r = f.run("list", &[("backend", "restic"), ("src", "/etc")]);
@@ -943,7 +949,7 @@ fn dry_run_is_refused_where_a_verb_has_none() {
     let f = Fx::new();
     f.fake("restic", "exit 0");
     let repo = f.p("repo");
-    for verb in ["list", "restore", "verify", "schedule"] {
+    for verb in ["list", "verify"] {
         for v in ["true", "false", "maybe"] {
             let r = f.run(
                 verb,
@@ -1003,8 +1009,27 @@ fn malformed_values_are_refused() {
         ("schedule", &[("when", "@daily")], "src"),
         (
             "schedule",
-            &[("src", "/etc"), ("when", "@daily"), ("timeout_ms", "5")],
+            &[("src", "/etc"), ("when", "@daily"), ("timeout_ms", "0")],
             "timeout_ms",
+        ),
+        (
+            "schedule",
+            &[
+                ("src", "/etc"),
+                ("when", "@daily"),
+                ("scheduler", "anacron"),
+            ],
+            "scheduler",
+        ),
+        (
+            "restore",
+            &[("snapshot_id", "x"), ("dest", "d"), ("dry_run", "maybe")],
+            "dry_run",
+        ),
+        (
+            "create",
+            &[("src", "/etc"), ("progress", "lots")],
+            "progress",
         ),
     ];
     for (verb, extra, field) in cases {
@@ -1585,6 +1610,7 @@ esac"#
             vec![
                 "restic".to_string(),
                 "restore".to_string(),
+                "--json".to_string(),
                 format!("--target={out}"),
                 "--include=*.conf".to_string(),
                 "--include=/etc/hosts".to_string(),
@@ -1795,11 +1821,118 @@ fn a_create_stopped_at_the_deadline_leaves_no_partial_snapshot() {
 // schedule
 // ===========================================================================
 
+/// A cron provider that records `add` and `disable` and changes nothing.
+/// The cron handle in front of it still checks every argument itself.
+#[derive(Debug, Default)]
+struct MockCron {
+    adds: std::sync::Mutex<Vec<crate::handles::processes::cronh::CronAddOptions>>,
+    disables: std::sync::Mutex<Vec<Option<String>>>,
+    /// Jobs `rm` reports as matching (another job of the profile).
+    existing: std::sync::atomic::AtomicU32,
+    /// `add` reports the job as already installed.
+    duplicate: std::sync::atomic::AtomicBool,
+}
+
+impl crate::handles::processes::cronh::CronProvider for MockCron {
+    fn list_cron_entries(
+        &self,
+        _: &crate::handles::processes::cronh::CronListOptions,
+    ) -> anyhow::Result<crate::handles::processes::cronh::CronListResponse> {
+        anyhow::bail!("not used")
+    }
+    fn add_cron_job(
+        &self,
+        o: &crate::handles::processes::cronh::CronAddOptions,
+    ) -> anyhow::Result<crate::handles::processes::cronh::CronAddResponse> {
+        use crate::handles::processes::cronh::*;
+        self.adds.lock().unwrap().push(o.clone());
+        let backend = if o.backend == "auto" {
+            "cron".to_string()
+        } else {
+            o.backend.clone()
+        };
+        Ok(CronAddResponse {
+            ok: true,
+            timestamp_unix_ms: 0,
+            backend_used: Some(backend.clone()),
+            dry_run: o.dry_run,
+            duplicate: self.duplicate.load(std::sync::atomic::Ordering::SeqCst),
+            job: Some(CronAddJobInfo {
+                id: o.id.clone(),
+                backend,
+                schedule: o.schedule.clone(),
+                command: o.command.clone(),
+                location: CronAddJobLocation {
+                    scope: "current".to_string(),
+                    file: None,
+                    user: Some("tester".to_string()),
+                    line_added: None,
+                    unit_name: None,
+                    timer_unit: None,
+                    service_unit: None,
+                    unit_dir: None,
+                },
+                next_run_unix: None,
+                next_run_iso8601: None,
+                next_run_timezone: None,
+            }),
+            preview: None,
+            error: None,
+            warnings: vec!["from cron".to_string()],
+        })
+    }
+    fn remove_cron_jobs(
+        &self,
+        o: &crate::handles::processes::cronh::CronRmOptions,
+    ) -> anyhow::Result<crate::handles::processes::cronh::CronRmResponse> {
+        use crate::handles::processes::cronh::*;
+        assert!(o.dry_run, "schedule only probes with rm");
+        Ok(CronRmResponse {
+            ok: true,
+            timestamp_unix_ms: 0,
+            dry_run: true,
+            backend: o.backend.clone(),
+            cron_modified_sources: vec![],
+            systemd_scopes_touched: vec![],
+            removed: CronRmRemovedSummary {
+                cron: vec![],
+                systemd: vec![],
+            },
+            matched_count: CronRmMatchedCount {
+                cron: self.existing.load(std::sync::atomic::Ordering::SeqCst),
+                systemd: 0,
+            },
+            error: None,
+            warnings: vec![],
+        })
+    }
+    fn enable_cron_jobs(
+        &self,
+        _: &crate::handles::processes::cronh::CronEnableOptions,
+    ) -> anyhow::Result<crate::handles::processes::cronh::CronEnableResponse> {
+        anyhow::bail!("not used")
+    }
+    fn disable_cron_jobs(
+        &self,
+        o: &crate::handles::processes::cronh::CronDisableOptions,
+    ) -> anyhow::Result<crate::handles::processes::cronh::CronDisableResponse> {
+        self.disables.lock().unwrap().push(o.id.clone());
+        anyhow::bail!("mock: disabling is not possible here")
+    }
+}
+
+/// A fixture whose `schedule` installs through `cron`.
+fn with_cron(f: &mut Fx) -> std::sync::Arc<MockCron> {
+    let cron = std::sync::Arc::new(MockCron::default());
+    f.h.cron_provider = Some(cron.clone());
+    cron
+}
+
 #[test]
-fn schedule_reports_the_command_and_installs_nothing() {
-    let f = Fx::new();
+fn schedule_installs_through_the_cron_handle() {
+    let mut f = Fx::new();
     f.real("tar");
-    f.fake("crontab", "exit 0");
+    let cron = with_cron(&mut f);
     let r = f.run(
         "schedule",
         &[
@@ -1807,71 +1940,115 @@ fn schedule_reports_the_command_and_installs_nothing() {
             ("src", "/etc;/srv/a b"),
             ("backend", "tar"),
             ("repo_url", "/srv/b"),
+            ("scheduler", "cron"),
+            ("timeout_ms", "5000"),
         ],
     );
     let v = r.ok();
     let sch = &v["result"]["schedule"];
-    assert_eq!(sch["runner"], "cron");
+    assert_eq!(sch["scheduler"], "cron");
+    assert_eq!(sch["installed"], true);
+    assert_eq!(sch["id"], "resh-backup-db");
     assert_eq!(
-        sch["command"],
+        sch["command"].as_array().unwrap()[1..],
         json!([
-            "resh",
             "backup://db.create",
             "src=/etc;/srv/a b",
             "backend=tar",
             "repo_url=/srv/b"
         ])
+        .as_array()
+        .unwrap()[..]
     );
     assert_eq!(
-        sch["install_command"],
+        sch["remove_command"],
         json!([
             "resh",
-            "cron://backup-db.add",
-            "schedule=0 2 * * *",
-            "command=resh backup://db.create 'src=/etc;/srv/a b' backend=tar repo_url=/srv/b"
+            "cron://backup-db.rm",
+            "id=resh-backup-db",
+            "backend=cron"
         ])
     );
-    assert_eq!(v["backend"]["command"], json!([]));
-    assert!(f.calls().is_empty(), "nothing ran");
-
-    // enabled=false: nothing to install.
-    let v = f
-        .run(
-            "schedule",
-            &[
-                ("when", "@daily"),
-                ("src", "/etc"),
-                ("backend", "tar"),
-                ("repo_url", "/srv/b"),
-                ("enabled", "no"),
-            ],
-        )
-        .ok();
-    assert_eq!(v["result"]["schedule"]["install_command"], Value::Null);
-    assert_eq!(v["result"]["schedule"]["enabled"], false);
-
-    // No scheduler on this host; restic without a password file warns.
-    let f = Fx::new();
-    f.fake("restic", "exit 0");
-    let v = f
-        .run(
-            "schedule",
-            &[
-                ("when", "@hourly"),
-                ("src", "/etc"),
-                ("backend", "restic"),
-                ("repo_url", "/r"),
-            ],
-        )
-        .ok();
-    assert_eq!(v["result"]["schedule"]["runner"], "none");
-    let w = v["warnings"].to_string();
+    assert_eq!(sch["job"]["id"], "resh-backup-db");
+    assert!(v["warnings"].to_string().contains("from cron"));
+    let adds = cron.adds.lock().unwrap();
+    assert_eq!(adds.len(), 2, "cron's dry run, then the add");
+    assert!(adds[0].dry_run);
+    assert!(!adds[0].allow_duplicate);
+    let add = &adds[1];
+    assert_eq!(add.schedule, "0 2 * * *");
+    assert_eq!(add.backend, "cron");
+    assert_eq!(add.id.as_deref(), Some("resh-backup-db"));
+    assert!(!add.dry_run);
     assert!(
-        w.contains("no password_file") && w.contains("No supported scheduler"),
-        "{w}"
+        add.command
+            .ends_with(" backup://db.create 'src=/etc;/srv/a b' backend=tar repo_url=/srv/b"),
+        "{}",
+        add.command
+    );
+    assert!(f.calls().is_empty(), "no backend ran");
+}
+
+#[test]
+fn schedule_dry_run_and_disabled_jobs() {
+    let mut f = Fx::new();
+    f.real("tar");
+    let cron = with_cron(&mut f);
+    let base = [
+        ("when", "@daily"),
+        ("src", "/etc"),
+        ("backend", "tar"),
+        ("repo_url", "/srv/b"),
+    ];
+    let mut kv = base.to_vec();
+    kv.push(("dry_run", "true"));
+    let v = f.run("schedule", &kv).ok();
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(v["result"]["schedule"]["installed"], false);
+    assert_eq!(cron.adds.lock().unwrap().len(), 1, "only cron's dry run");
+    assert!(cron.adds.lock().unwrap()[0].dry_run, "cron add got dry_run");
+
+    // enabled=false installs and then disables through cron; a failing
+    // disable is reported with the job left installed.
+    let mut kv = base.to_vec();
+    kv.push(("enabled", "false"));
+    let v = f.run("schedule", &kv).fails(Code::ScheduleFailed);
+    assert_eq!(v["error"]["details"]["installed"], true);
+    assert_eq!(
+        v["error"]["details"]["cron_error"]["code"],
+        "cron.disable_error"
+    );
+    assert_eq!(
+        cron.disables.lock().unwrap().as_slice(),
+        [Some("resh-backup-db".to_string())]
     );
 
-    // Usage errors.
+    // Already installed: nothing is added again.
+    cron.adds.lock().unwrap().clear();
+    cron.duplicate
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let v = f.run("schedule", &base).ok();
+    assert_eq!(v["result"]["schedule"]["duplicate"], true);
+    assert_eq!(cron.adds.lock().unwrap().len(), 1, "only cron's dry run");
+
+    // Another job of the profile is installed: refused, nothing added.
+    cron.adds.lock().unwrap().clear();
+    cron.duplicate
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    cron.existing.store(1, std::sync::atomic::Ordering::SeqCst);
+    let v = f.run("schedule", &base).fails(Code::ScheduleFailed);
+    assert_eq!(
+        v["error"]["details"]["remove_command"][1],
+        "cron://backup-db.rm"
+    );
+    assert_eq!(cron.adds.lock().unwrap().len(), 1, "only cron's dry run");
+}
+
+#[test]
+fn schedule_refusals() {
+    let mut f = Fx::new();
+    f.fake("restic", "exit 0");
+    let cron = with_cron(&mut f);
     for kv in [
         vec![
             ("when", "@daily"),
@@ -1887,17 +2064,30 @@ fn schedule_reports_the_command_and_installs_nothing() {
             ("repo_url", "/r"),
             ("password_file", "/p"),
         ],
-        vec![
-            ("when", "61 * * * *"),
-            ("src", "/etc"),
-            ("backend", "tar"),
-            ("repo_url", "/r"),
-        ],
     ] {
         f.run("schedule", &kv).fails(Code::InvalidArgument);
     }
+    // Schedules are checked by cron add itself: refused before the provider.
+    let v = f
+        .run(
+            "schedule",
+            &[
+                ("when", "61 * * * *"),
+                ("src", "/etc"),
+                ("backend", "restic"),
+                ("repo_url", "/r"),
+            ],
+        )
+        .fails(Code::InvalidArgument);
+    assert_eq!(v["error"]["details"]["field"], "when");
+    assert_eq!(
+        v["error"]["details"]["cron_error"]["code"],
+        "cron.add_invalid_schedule"
+    );
+    assert!(cron.adds.lock().unwrap().is_empty());
     let mut h = handle("backup://my%20db");
     h.bin_dir = Some(f.path().join("bin"));
+    h.cron_provider = Some(cron.clone());
     let r = run(
         &h,
         "schedule",
@@ -1909,6 +2099,19 @@ fn schedule_reports_the_command_and_installs_nothing() {
         ]),
     );
     r.fails(Code::InvalidArgument);
+    // restic without a password file warns that the job needs one.
+    let v = f
+        .run(
+            "schedule",
+            &[
+                ("when", "@hourly"),
+                ("src", "/etc"),
+                ("backend", "restic"),
+                ("repo_url", "/r"),
+            ],
+        )
+        .ok();
+    assert!(v["warnings"].to_string().contains("no password_file"));
 }
 
 // ===========================================================================
@@ -2027,42 +2230,6 @@ fn malformed_dry_run_is_refused_and_nothing_runs() {
     )
     .ok();
     assert_eq!(entries(), 1);
-}
-
-#[test]
-fn restore_refuses_dry_run_and_leaves_dest_untouched() {
-    let f = Fx::new();
-    f.real("tar");
-    let dest = f.path().join("dest");
-    fs::create_dir(&dest).unwrap();
-    fs::write(dest.join("keep.txt"), "original").unwrap();
-    let d = dest.to_str().unwrap();
-    let repo = f.p("repo");
-    for v in ["true", "1", "yes", "on", "maybe"] {
-        let r = f.run(
-            "restore",
-            &[
-                ("backend", "tar"),
-                ("repo_url", &repo),
-                ("snapshot_id", "x"),
-                ("dest", d),
-                ("dry_run", v),
-            ],
-        );
-        let e = r.fails(Code::InvalidArgument);
-        assert!(
-            e["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("does not support dry_run"),
-            "{e}"
-        );
-    }
-    assert_eq!(fs::read_dir(&dest).unwrap().count(), 1);
-    assert_eq!(
-        fs::read_to_string(dest.join("keep.txt")).unwrap(),
-        "original"
-    );
 }
 
 fn field(backend: BackendType, verb: &str, kv: &[(&str, &str)]) -> Option<&'static str> {
@@ -2248,4 +2415,392 @@ fn suggestions_are_for_likely_typos_only() {
     assert_eq!(suggest("timeout", &allowed), Some("timeout_ms"));
     assert_eq!(suggest("repourl", &allowed), Some("repo_url"));
     assert_eq!(suggest("zzzz", &allowed), None);
+}
+
+// ===========================================================================
+// restore dry run
+// ===========================================================================
+
+#[test]
+fn restore_dry_run_lists_what_would_be_restored_and_writes_nothing() {
+    let f = Fx::new();
+    f.real("tar");
+    f.real("gzip");
+    let src = source(&f);
+    let repo = f.p("repo");
+    let id = f
+        .run(
+            "create",
+            &[("src", &src), ("backend", "tar"), ("repo_url", &repo)],
+        )
+        .ok()["result"]["snapshot"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A missing destination is reported as would-be-created, not created.
+    let out = f.p("out");
+    let v = f
+        .run(
+            "restore",
+            &[
+                ("backend", "tar"),
+                ("repo_url", &repo),
+                ("snapshot_id", &id),
+                ("dest", &out),
+                ("dry_run", "true"),
+            ],
+        )
+        .ok();
+    assert!(!Path::new(&out).exists());
+    assert_eq!(v["dry_run"], true);
+    let r = &v["result"];
+    assert_eq!(r["dry_run_mode"], "backend");
+    assert_eq!(r["destination"]["would_create"], true);
+    assert_eq!(r["destination"]["writable"], true);
+    assert_eq!(r["would_restore"], json!({"files": 3, "bytes": 18}));
+    assert_eq!(v["backend"]["command"][1], "--force-local");
+    assert_eq!(v["backend"]["command"][2], "-tvzf");
+
+    // include narrows the plan; a non-empty dest warns and stays untouched.
+    let busy = f.path().join("busy");
+    fs::create_dir(&busy).unwrap();
+    fs::write(busy.join("keep.txt"), "original").unwrap();
+    let member = format!("{}/*.conf", src.trim_start_matches('/'));
+    let v = f
+        .run(
+            "restore",
+            &[
+                ("backend", "tar"),
+                ("repo_url", &repo),
+                ("snapshot_id", &id),
+                ("dest", busy.to_str().unwrap()),
+                ("include", &member),
+                ("dry_run", "1"),
+            ],
+        )
+        .ok();
+    assert_eq!(
+        v["result"]["would_restore"],
+        json!({"files": 1, "bytes": 5})
+    );
+    assert_eq!(v["result"]["destination"]["empty"], false);
+    assert!(v["warnings"].to_string().contains("not empty"));
+    assert_eq!(fs::read_dir(&busy).unwrap().count(), 1);
+    assert_eq!(
+        fs::read_to_string(busy.join("keep.txt")).unwrap(),
+        "original"
+    );
+
+    // A snapshot that does not exist.
+    f.run(
+        "restore",
+        &[
+            ("backend", "tar"),
+            ("repo_url", &repo),
+            ("snapshot_id", "nope"),
+            ("dest", &out),
+            ("dry_run", "true"),
+        ],
+    )
+    .fails(Code::SnapshotNotFound);
+    // A symlink destination is refused in a dry run too.
+    std::os::unix::fs::symlink(&busy, f.path().join("link")).unwrap();
+    f.run(
+        "restore",
+        &[
+            ("backend", "tar"),
+            ("repo_url", &repo),
+            ("snapshot_id", &id),
+            ("dest", &f.p("link")),
+            ("dry_run", "true"),
+        ],
+    )
+    .fails(Code::InvalidArgument);
+}
+
+#[test]
+fn restore_dry_run_for_rsync_restic_and_borg() {
+    let f = Fx::new();
+    if which::which("rsync").is_ok() {
+        f.real("rsync");
+        let src = source(&f);
+        let repo = f.p("rrepo");
+        let id = f
+            .run(
+                "create",
+                &[("src", &src), ("backend", "rsync"), ("repo_url", &repo)],
+            )
+            .ok()["result"]["snapshot"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let out = f.p("rout");
+        let v = f
+            .run(
+                "restore",
+                &[
+                    ("backend", "rsync"),
+                    ("repo_url", &repo),
+                    ("snapshot_id", &id),
+                    ("dest", &out),
+                    ("exclude", "*.txt"),
+                    ("dry_run", "true"),
+                ],
+            )
+            .ok();
+        assert_eq!(
+            v["result"]["would_restore"],
+            json!({"files": 2, "bytes": 12})
+        );
+        assert!(!Path::new(&out).exists(), "rsync --dry-run created dest");
+    }
+
+    f.fake(
+        "restic",
+        r#"echo '{"message_type":"summary","total_files":4,"files_restored":4,"total_bytes":18,"bytes_restored":18}'"#,
+    );
+    f.fake(
+        "borg",
+        r#"echo '{"type": "d", "path": "data", "size": 0}'
+echo '{"type": "-", "path": "data/a.conf", "size": 5}'
+echo '{"type": "-", "path": "data/sub/c.conf", "size": 7}'"#,
+    );
+    let out = f.p("out");
+    let v = f
+        .run(
+            "restore",
+            &[
+                ("backend", "restic"),
+                ("repo_url", "/r"),
+                ("password", "x"),
+                ("snapshot_id", "latest"),
+                ("dest", &out),
+                ("dry_run", "true"),
+            ],
+        )
+        .ok();
+    assert_eq!(
+        v["result"]["would_restore"],
+        json!({"files": 4, "bytes": 18})
+    );
+    let v = f
+        .run(
+            "restore",
+            &[
+                ("backend", "borg"),
+                ("repo_url", "/b"),
+                ("password", "x"),
+                ("snapshot_id", "a1"),
+                ("dest", &out),
+                ("include", "data"),
+                ("dry_run", "true"),
+            ],
+        )
+        .ok();
+    assert_eq!(
+        v["result"]["would_restore"],
+        json!({"files": 2, "bytes": 12})
+    );
+    assert!(!Path::new(&out).exists());
+    let calls = f.calls();
+    let n = calls.len();
+    assert_eq!(
+        calls[n - 2],
+        vec![
+            "restic".to_string(),
+            "restore".to_string(),
+            "--json".to_string(),
+            "--dry-run".to_string(),
+            format!("--target={out}"),
+            "--".to_string(),
+            "latest".to_string()
+        ]
+    );
+    assert_eq!(
+        calls[n - 1],
+        s(&["borg", "list", "--json-lines", "--", "/b::a1", "data"])
+    );
+}
+
+// ===========================================================================
+// progress
+// ===========================================================================
+
+#[test]
+fn progress_streams_backend_events_before_the_envelope() {
+    let f = Fx::new();
+    f.fake(
+        "restic",
+        r#"echo '{"message_type":"status","percent_done":0.5}'
+echo '{"message_type":"status","percent_done":1}'
+echo '{"message_type":"summary","snapshot_id":"abc","files_restored":3,"bytes_restored":18}'"#,
+    );
+    f.fake(
+        "borg",
+        r#"echo '{"type": "archive_progress", "nfiles": 1, "finished": false}' >&2
+echo '{"type": "log_message", "name": "borg.output.list", "message": "x"}' >&2
+echo '{"type": "progress_percent", "finished": true}' >&2
+echo '{"archive": {"name": "a1", "stats": {"original_size": 9}}}'"#,
+    );
+    let r = f.run(
+        "create",
+        &[
+            ("src", "/etc"),
+            ("backend", "restic"),
+            ("repo_url", "/r"),
+            ("password", "x"),
+            ("progress", "true"),
+        ],
+    );
+    let lines: Vec<Value> = r
+        .out
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 3, "{}", r.out);
+    assert_eq!(lines[0]["event"], "progress");
+    assert_eq!(lines[0]["verb"], "create");
+    assert_eq!(lines[0]["progress"]["percent_done"], 0.5);
+    assert_eq!(lines[2]["ok"], true);
+    assert_eq!(lines[2]["result"]["snapshot"]["id"], "abc");
+
+    let r = f.run(
+        "create",
+        &[
+            ("src", "/etc"),
+            ("backend", "borg"),
+            ("repo_url", "/b"),
+            ("password", "x"),
+            ("progress", "true"),
+        ],
+    );
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert_eq!(lines.len(), 3, "{}", r.out);
+    assert!(lines[0].contains("archive_progress") && lines[1].contains("progress_percent"));
+    let v = r.ok();
+    assert_eq!(v["result"]["snapshot"]["bytes_total"], 9);
+    let borg = f.calls().pop().unwrap();
+    assert_eq!(
+        &borg[..4],
+        &s(&["borg", "create", "--progress", "--log-json"])[..]
+    );
+
+    // restore streams too, and the summary still gives the counts.
+    let r = f.run(
+        "restore",
+        &[
+            ("backend", "restic"),
+            ("repo_url", "/r"),
+            ("password", "x"),
+            ("snapshot_id", "latest"),
+            ("dest", &f.p("out")),
+            ("progress", "true"),
+        ],
+    );
+    assert_eq!(r.out.lines().count(), 3, "{}", r.out);
+    let v = r.ok();
+    assert_eq!(v["result"]["restored"]["files_restored"], 3);
+    assert_eq!(v["result"]["restored"]["bytes_restored"], 18);
+
+    // Without progress nothing but the envelope is printed.
+    let r = f.run(
+        "create",
+        &[
+            ("src", "/etc"),
+            ("backend", "restic"),
+            ("repo_url", "/r"),
+            ("password", "x"),
+        ],
+    );
+    assert_eq!(r.out.lines().count(), 1);
+}
+
+#[test]
+fn progress_runs_stop_at_the_deadline() {
+    let f = Fx::new();
+    let pid_file = f.p("grandchild.pid");
+    f.fake(
+        "restic",
+        &format!(
+            "echo '{{\"message_type\":\"status\",\"percent_done\":0}}'; /bin/sleep 30 & echo $! > '{pid_file}'; wait"
+        ),
+    );
+    let start = Instant::now();
+    let r = f.run(
+        "create",
+        &[
+            ("src", "/etc"),
+            ("backend", "restic"),
+            ("repo_url", "/r"),
+            ("password", "x"),
+            ("progress", "true"),
+            ("timeout_ms", "500"),
+        ],
+    );
+    assert!(start.elapsed() < Duration::from_secs(10));
+    let first: Value = serde_json::from_str(r.out.lines().next().unwrap()).unwrap();
+    assert_eq!(first["event"], "progress", "{}", r.out);
+    r.fails(Code::Timeout);
+    let pid: i32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "grandchild still running"
+    );
+    let _ = process::take_lost();
+}
+
+#[test]
+fn progress_is_refused_for_local_backends() {
+    let f = Fx::new();
+    f.real("tar");
+    let r = f.run(
+        "create",
+        &[
+            ("src", "/etc"),
+            ("backend", "tar"),
+            ("repo_url", &f.p("r")),
+            ("progress", "true"),
+        ],
+    );
+    assert_eq!(
+        r.fails(Code::InvalidArgument)["error"]["details"]["field"],
+        "progress"
+    );
+    assert!(!f.path().join("r").exists());
+}
+
+#[test]
+fn dry_run_listing_parsers() {
+    let tar = "drwxr-xr-x root/root 0 2026-11-08 12:59 data/\n\
+               -rw-r--r-- root/root 7 2026-11-08 12:59 data/sub/c.conf\n\
+               -rw-r--r-- root/root 5 2026-11-08 12:59 data/a file.conf\n";
+    assert_eq!(parse_tar_listing(tar), (2, 12));
+    assert_eq!(
+        parse_borg_listing("{\"type\":\"-\",\"size\":4}\n{\"type\":\"d\",\"size\":0}\nnoise\n"),
+        (1, 4)
+    );
+    assert_eq!(
+        parse_restic_restore_summary(
+            "{\"message_type\":\"summary\",\"files_restored\":5,\"bytes_restored\":18}\n"
+        ),
+        (Some(5), Some(18))
+    );
+    assert_eq!(
+        borg_listed(
+            "",
+            "{\"type\":\"log_message\",\"name\":\"borg.output.list\",\"message\":\"a/b\"}\nplain\n"
+        ),
+        "a/b\nplain\n"
+    );
+    assert!(progress_event(&BackendType::Restic, true, "{\"message_type\":\"status\"}").is_some());
+    assert!(progress_event(&BackendType::Restic, false, "{\"message_type\":\"status\"}").is_none());
+    assert!(progress_event(&BackendType::Borg, false, "{\"type\":\"progress_percent\"}").is_some());
+    assert!(progress_event(&BackendType::Borg, false, "{\"type\":\"log_message\"}").is_none());
 }

@@ -296,7 +296,7 @@ fn backup_option_values_are_attached() {
     let call = f.calls_to("restic").pop().unwrap();
     assert!(call.contains(&"--exclude=-probe".to_string()), "{call:?}");
     assert!(call.contains(&"--tag=daily".to_string()), "{call:?}");
-    assert!(call.contains(&"--hostname=web01".to_string()), "{call:?}");
+    assert!(call.contains(&"--host=web01".to_string()), "{call:?}");
 }
 
 /// B2: restore refuses a snapshot id or destination that a backend would
@@ -340,7 +340,14 @@ fn backup_restore_passes_ids_and_destinations_as_positionals() {
     assert_eq!(r.code, 0, "{}", r.stdout);
     assert_eq!(
         f.calls_to("restic").pop().unwrap(),
-        s(&["restic", "restore", "--target=restore", "--", "4f2a"])
+        s(&[
+            "restic",
+            "restore",
+            "--json",
+            "--target=restore",
+            "--",
+            "4f2a"
+        ])
     );
 
     let r = run(f

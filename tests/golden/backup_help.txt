@@ -24,9 +24,9 @@ Available Verbs:
   prune      Removes snapshots outside the keep_daily, keep_weekly, and
              keep_monthly limits, or reports what would be removed when dry_run
              is true.
-  schedule   Reports the backup command for a schedule, the cron handle command
-             that installs it, and the detected scheduler, without installing a
-             timer or cron job or writing any file.
+  schedule   Installs a scheduled create for the profile as a systemd timer or
+             crontab line through the cron handle, or reports what would be
+             installed when dry_run is true.
 
 Usage:
   resh backup://<profile>.<verb>[(key=value,...)]

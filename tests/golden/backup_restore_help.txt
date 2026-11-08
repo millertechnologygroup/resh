@@ -7,8 +7,10 @@ Usage:
   resh backup://<profile>.restore snapshot_id=<id> dest=<path>
     [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]
     [password=<secret>|password_file=<path>] [include=<pattern>,...]
-    [exclude=<pattern>;...] [timeout_ms=<ms>] [json_pretty=true|false]
-    no dry run. timeout_ms default 1800000
+    [exclude=<pattern>;...] [dry_run=true|false]
+    [progress=true|false] [timeout_ms=<ms>] [json_pretty=true|false]
+    dry_run: lists what would be restored, writes nothing.
+    progress: restic and borg. timeout_ms default 1800000
 
 Example:
   resh backup://db.restore repo_url=/srv/r snapshot_id=4f2a9c1e dest=restore
@@ -19,6 +21,7 @@ Example Output:
       "command": [
         "restic",
         "restore",
+        "--json",
         "--target=restore",
         "--",
         "4f2a9c1e"
@@ -51,7 +54,7 @@ Example Output:
       },
       "destination": "restore",
       "restored": {
-        "bytes_restored": null,
+        "bytes_restored": 3172,
         "files_restored": 12,
         "success": true
       },
@@ -65,6 +68,7 @@ Example Output:
 
   Shown for restic, the first backend tried when backend is not given,
   indented as with --json-pretty, with RESTIC_PASSWORD_FILE set in the
-  environment. files_restored and bytes_restored count the regular files
-  written (restic reports files and directories and no exact size). A
-  missing dest is created owner-only (0700); a symlink dest is refused.
+  environment. The counts are restic's (files and directories) and the
+  regular files written for tar, rsync and borg. A missing dest is created
+  owner-only (0700); a symlink dest is refused. dry_run=true reports
+  destination and would_restore instead and writes nothing.

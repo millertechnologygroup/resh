@@ -222,6 +222,11 @@ r badpw  resh backup://db.list backend=restic repo_url=/repo/restic password_fil
 r slow   resh backup://db.create src=/usr $B timeout_ms=300
 sleep 1
 check leftover sh -c 'for p in /proc/[0-9]*; do cat $p/comm 2>/dev/null; done | grep -c "^restic$" || true'
+rm -f /repo/restic/locks/*
+r rdry   resh backup://db.restore $B snapshot_id=latest dest=/dry 'include=/data/*.conf' dry_run=true
+check drydest sh -c 'test -e /dry && echo exists || echo absent'
+check prog resh backup://db.create src=/data $B label=web01 progress=true
+check progr resh backup://db.restore $B snapshot_id=latest dest=/pout progress=true
 "#,
     );
     assert!(!c.raw.contains("INIT_FAILED"), "{}", c.raw);
@@ -270,6 +275,28 @@ check leftover sh -c 'for p in /proc/[0-9]*; do cat $p/comm 2>/dev/null; done | 
         slow.err
     );
     assert_eq!(c.check("leftover").trim(), "0", "restic still running");
+
+    let dry = c.ok("rdry");
+    assert_eq!(dry["result"]["dry_run_mode"], "backend");
+    assert_eq!(dry["result"]["would_restore"]["bytes"], 5, "{dry}");
+    assert_eq!(c.check("drydest").trim(), "absent");
+    for name in ["prog", "progr"] {
+        let lines = json_lines(c.check(name));
+        let last = lines.last().unwrap();
+        assert_eq!(last["ok"], true, "{name}: {}", c.check(name));
+        assert!(
+            lines[..lines.len() - 1]
+                .iter()
+                .all(|l| l["event"] == "progress" && l["progress"]["message_type"] == "status"),
+            "{name}: {}",
+            c.check(name)
+        );
+    }
+    let restored = json_lines(c.check("progr"));
+    assert_eq!(
+        restored.last().unwrap()["result"]["restored"]["bytes_restored"],
+        18
+    );
 }
 
 /// borg: init, create twice, list, verify (whole and one archive, with
@@ -302,6 +329,12 @@ r badpw  resh backup://db.list backend=borg repo_url=/repo/borg password_file=/b
 r slow   resh backup://db.create src=/usr $B timeout_ms=300
 sleep 1
 check leftover sh -c 'for p in /proc/[0-9]*; do cat $p/comm 2>/dev/null; done | grep -c "^borg" || true'
+borg break-lock /repo/borg >/dev/null 2>&1
+A2=$(resh backup://db.list $B | sed 's/.*"id":"\([^"]*\)".*/\1/')
+r rdry   resh backup://db.restore $B snapshot_id=$A2 dest=/dry include=data/sub dry_run=true
+check drydest sh -c 'test -e /dry && echo exists || echo absent'
+check prog resh backup://db.create src=/data $B label=p progress=true
+check progr resh backup://db.restore $B snapshot_id=$A2 dest=/pout progress=true
 "#,
     );
     assert!(!c.raw.contains("INIT_FAILED"), "{}", c.raw);
@@ -339,6 +372,132 @@ check leftover sh -c 'for p in /proc/[0-9]*; do cat $p/comm 2>/dev/null; done | 
     let slow = c.get("slow");
     assert_eq!(slow.code, 124, "{} {}", slow.json, slow.err);
     assert_eq!(c.check("leftover").trim(), "0", "borg still running");
+
+    let dry = c.ok("rdry");
+    assert_eq!(
+        dry["result"]["would_restore"],
+        serde_json::json!({"files": 1, "bytes": 7})
+    );
+    assert_eq!(c.check("drydest").trim(), "absent");
+    for name in ["prog", "progr"] {
+        let lines = json_lines(c.check(name));
+        assert!(
+            lines.len() >= 2,
+            "{name}: no progress events: {}",
+            c.check(name)
+        );
+        assert_eq!(
+            lines.last().unwrap()["ok"],
+            true,
+            "{name}: {}",
+            c.check(name)
+        );
+        assert!(
+            lines[..lines.len() - 1]
+                .iter()
+                .all(|l| l["event"] == "progress")
+        );
+    }
+    let restored = json_lines(c.check("progr"));
+    assert_eq!(
+        restored.last().unwrap()["result"]["restored"]["files_restored"],
+        3
+    );
+}
+
+/// The JSON lines of a captured output.
+fn json_lines(text: &str) -> Vec<Value> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+        .collect()
+}
+
+/// `schedule` installs a real crontab line with Debian's cron (through the
+/// cron handle), refuses a second job of the profile, and the installed
+/// command runs a backup.
+#[test]
+fn schedule_installs_a_working_crontab_job() {
+    const CRON_IMAGE: &str = "resh-cron-debian:1";
+    let have = Command::new("docker")
+        .args(["image", "inspect", CRON_IMAGE])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    if !have.success() {
+        let dockerfile = "FROM debian:13-slim\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive \
+             apt-get install -y --no-install-recommends cron && rm -rf /var/lib/apt/lists/* \
+             && useradd -m alice && useradd -m bob\n";
+        let mut child = Command::new("docker")
+            .args(["build", "-q", "-t", CRON_IMAGE, "-"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(dockerfile.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success(), "cannot build {CRON_IMAGE}");
+    }
+    let script = r#"
+S="src=/data backend=tar repo_url=/srv/b scheduler=cron"
+r dry  resh backup://db.schedule when=@daily $S dry_run=true
+check ct0 sh -c 'crontab -l 2>&1'
+r s1   resh backup://db.schedule when=@daily $S
+check ct1 crontab -l
+r s2   resh backup://db.schedule when=@daily $S
+r s3   resh backup://db.schedule when=@hourly $S
+check run sh -c "$(crontab -l | grep 'backup://db.create' | sed 's/^@daily //') >/dev/null; ls /srv/b"
+r rm   resh cron://backup-db.rm id=resh-backup-db backend=cron
+check ct2 crontab -l
+"#;
+    let out = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--network=none",
+            "-e",
+            "TZ=UTC",
+            "-v",
+            &format!("{}:/usr/local/bin/resh:ro", env!("CARGO_BIN_EXE_resh")),
+            CRON_IMAGE,
+            "sh",
+            "-c",
+        ])
+        .arg(format!("{PRELUDE}\n{script}"))
+        .output()
+        .unwrap();
+    let raw = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{raw}");
+    let c = Ctr::parse(raw);
+
+    let dry = c.ok("dry");
+    assert_eq!(dry["result"]["schedule"]["installed"], false);
+    assert_eq!(dry["result"]["schedule"]["scheduler"], "cron");
+    assert!(c.check("ct0").contains("no crontab"), "{}", c.check("ct0"));
+    let s1 = c.ok("s1");
+    assert_eq!(s1["result"]["schedule"]["installed"], true);
+    let ct1 = c.check("ct1");
+    assert!(ct1.contains("# job-id=resh-backup-db"), "{ct1}");
+    assert!(
+        ct1.contains(
+            "@daily /usr/local/bin/resh backup://db.create src=/data backend=tar repo_url=/srv/b"
+        ),
+        "{ct1}"
+    );
+    assert_eq!(c.ok("s2")["result"]["schedule"]["duplicate"], true);
+    c.fails("s3", 1, "backup.schedule_failed");
+    assert!(c.check("run").contains(".tar.gz"), "{}", c.check("run"));
+    let rm = c.get("rm");
+    assert_eq!(rm.code, 0, "{}", rm.err);
+    assert!(
+        !c.check("ct2").contains("backup://db.create"),
+        "{}",
+        c.check("ct2")
+    );
 }
 
 /// tar and rsync in the container, as root, with a restore diffed against

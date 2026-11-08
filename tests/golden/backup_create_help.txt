@@ -8,8 +8,9 @@ Usage:
     [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]
     [password=<secret>|password_file=<path>] [tag=<tag>;...]
     [label=<text>] [exclude=<pattern>;...] [dry_run=true|false]
-    [timeout_ms=<ms>] [json_pretty=true|false]
-    tag: restic only. timeout_ms default 1800000
+    [progress=true|false] [timeout_ms=<ms>] [json_pretty=true|false]
+    tag: restic only. progress: restic and borg; one JSON line per
+    progress event before the envelope. timeout_ms default 1800000
 
 Example:
   resh backup://db.create src=/etc backend=tar repo_url=/srv/backup dry_run=true

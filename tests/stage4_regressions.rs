@@ -125,10 +125,28 @@ fn mail_send_dry_run_is_refused_through_the_cli() {
     }
 }
 
-/// `backup restore` has no dry run; a dry-run request must not restore.
+/// `backup restore dry_run` (a bare `dry_run` word too) only reports what a
+/// restore would write; nothing is restored.
 #[test]
-fn backup_restore_dry_run_is_refused_through_the_cli() {
+fn backup_restore_dry_run_restores_nothing_through_the_cli() {
     let tmp = TempDir::new().unwrap();
+    std::fs::create_dir(tmp.path().join("data")).unwrap();
+    std::fs::write(tmp.path().join("data/a.txt"), "backed up").unwrap();
+    let created = resh(tmp.path())
+        .args([
+            "backup://t.create",
+            "backend=tar",
+            "repo_url=repo",
+            "src=data",
+        ])
+        .output()
+        .unwrap();
+    assert!(created.status.success());
+    let created: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let id = created["result"]["snapshot"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let dest = tmp.path().join("dest");
     std::fs::create_dir(&dest).unwrap();
     std::fs::write(dest.join("keep.txt"), "original").unwrap();
@@ -137,15 +155,25 @@ fn backup_restore_dry_run_is_refused_through_the_cli() {
             "backup://t.restore",
             "backend=tar",
             "repo_url=repo",
-            "snapshot_id=x",
+            &format!("snapshot_id={id}"),
             "dest=dest",
             "dry_run",
         ])
         .output()
         .unwrap();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("does not support dry_run"));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(plan["dry_run"], true);
+    assert_eq!(plan["result"]["would_restore"]["files"], 1);
     assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read_to_string(dest.join("keep.txt")).unwrap(),
+        "original"
+    );
 }
 
 /// security_only must never widen into a full upgrade: refused before any

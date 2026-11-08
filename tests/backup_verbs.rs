@@ -10,7 +10,7 @@
 
 mod common;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -22,7 +22,8 @@ const FAKE_RESTIC: &str = r#"case "$1" in
   backup) echo '{"message_type":"summary","data_added":10,"total_bytes_processed":20,"snapshot_id":"4f2a9c1e0011"}' ;;
   snapshots) echo '[{"short_id":"4f2a9c1e","time":"2026-10-16T02:00:04.118372+00:00","hostname":"web01","tags":["daily"],"paths":["/etc"]}]' ;;
   check) echo 'no errors were found' ;;
-  restore) echo 'Summary: Restored 12 files/dirs (3.1 KiB) in 0:00' ;;
+  restore) echo '{"message_type":"status","percent_done":0.5}'
+     echo '{"message_type":"summary","files_restored":12,"bytes_restored":3172}' ;;
   forget) echo '[{"keep":[{}],"remove":[{},{},{}]}]' ;;
 esac
 [ -n "$FAKE_SLEEP" ] && /bin/sleep "$FAKE_SLEEP"
@@ -33,6 +34,18 @@ const FAKE_BORG: &str = r#"case "$1" in
   list) echo '{"archives":[]}' ;;
 esac
 exit "${FAKE_EXIT:-0}""#;
+
+/// `crontab -l` prints $HOME/crontab ("no crontab" exit 1 when missing),
+/// `crontab -` replaces it.
+const FAKE_CRONTAB: &str = r#"#!/bin/sh
+[ "$1" = "-u" ] && shift 2
+case "$1" in
+  -l) [ -f "$HOME/crontab" ] || { echo "no crontab for tester" >&2; exit 1; }
+      /bin/cat "$HOME/crontab" ;;
+  -) /bin/cat > "$HOME/crontab" ;;
+  *) exit 1 ;;
+esac
+"#;
 
 struct Fixture {
     tmp: TempDir,
@@ -83,6 +96,10 @@ impl Fixture {
         std::fs::create_dir(f.bin()).unwrap();
         f.fake("restic", FAKE_RESTIC);
         f.fake("borg", FAKE_BORG);
+        // cron add's tools: a crontab kept in $HOME/crontab (not recording
+        // calls) and no systemctl on PATH, so `schedule` uses the crontab
+        // and nothing on the host is changed.
+        common::write_executable(&f.bin().join("crontab"), FAKE_CRONTAB);
         for tool in ["tar", "gzip", "rsync"] {
             if let Ok(p) = which::which(tool) {
                 std::os::unix::fs::symlink(p, f.bin().join(tool)).unwrap();
@@ -127,6 +144,7 @@ impl Fixture {
             .env_clear()
             .env("PATH", self.bin())
             .env("HOME", self.path())
+            .env("USER", "tester")
             .env("RESH_TEST_LOG", self.path().join("calls.log"))
             .env("RESTIC_PASSWORD_FILE", self.path().join("pw"))
             .env("BORG_PASSPHRASE", "fixture-only")
@@ -515,7 +533,7 @@ fn usage_errors_exit_2_and_run_nothing() {
             "src=/etc",
             "backend=tar",
             "repo_url=r",
-            "timeout_ms=5",
+            "timeout_ms=0",
         ],
         &[
             "backup://db.schedule",
@@ -656,27 +674,126 @@ fn plain_password_warns_and_never_reaches_argv() {
 }
 
 #[test]
-fn schedule_reports_without_installing() {
+fn schedule_installs_a_crontab_line_through_cron() {
     let f = Fixture::new();
-    f.fake("crontab", "exit 0");
-    let r = f.run(&[
+    let crontab = f.path().join("crontab");
+    let base = [
         "backup://db.schedule",
         "when=30 1 * * *",
         "src=/etc",
         "backend=restic",
         "repo_url=/srv/restic",
         "password_file=/root/.restic-pass",
-    ]);
-    let v = r.ok();
-    assert_eq!(v["result"]["schedule"]["runner"], "cron");
-    assert_eq!(
-        v["result"]["schedule"]["install_command"],
-        json!([
-            "resh",
-            "cron://backup-db.add",
-            "schedule=30 1 * * *",
-            "command=resh backup://db.create src=/etc backend=restic repo_url=/srv/restic password_file=/root/.restic-pass"
-        ])
+    ];
+    // Dry run: cron add's preview, nothing written.
+    let mut words = base.to_vec();
+    words.push("dry_run=true");
+    let v = f.run(&words).ok();
+    assert_eq!(v["result"]["schedule"]["installed"], false);
+    assert_eq!(v["result"]["schedule"]["scheduler"], "cron");
+    assert!(
+        v["result"]["schedule"]["preview"]["cron_line"]
+            .as_str()
+            .unwrap()
+            .contains("30 1 * * * "),
+        "{v}"
     );
-    assert!(f.calls().is_empty(), "crontab was not run");
+    assert!(!crontab.exists());
+
+    let v = f.run(&base).ok();
+    let sch = &v["result"]["schedule"];
+    assert_eq!(sch["installed"], true);
+    assert_eq!(sch["id"], "resh-backup-db");
+    let exe = env!("CARGO_BIN_EXE_resh");
+    let line = std::fs::read_to_string(&crontab).unwrap();
+    assert!(
+        line.contains(&format!(
+            "30 1 * * * {exe} backup://db.create src=/etc backend=restic repo_url=/srv/restic password_file=/root/.restic-pass"
+        )),
+        "{line}"
+    );
+    assert!(line.contains("job-id=resh-backup-db"), "{line}");
+    // The same schedule again changes nothing.
+    let v = f.run(&base).ok();
+    assert_eq!(v["result"]["schedule"]["duplicate"], true);
+    assert_eq!(std::fs::read_to_string(&crontab).unwrap(), line);
+
+    // remove_command removes it.
+    let rm: Vec<String> = sch["remove_command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(rm[0], "resh");
+    let rm: Vec<&str> = rm[1..].iter().map(String::as_str).collect();
+    let r = f.run(&rm);
+    assert_eq!(r.code, 0, "{} {}", r.stdout, r.stderr);
+    assert!(
+        !std::fs::read_to_string(&crontab)
+            .unwrap()
+            .contains("backup://db.create")
+    );
+
+    // enabled=false installs the line commented out.
+    let v = f
+        .run(&[
+            "backup://db.schedule",
+            "when=@daily",
+            "src=/etc",
+            "backend=tar",
+            "repo_url=/srv/b",
+            "enabled=false",
+        ])
+        .ok();
+    assert_eq!(v["result"]["schedule"]["enabled"], false);
+    let line = std::fs::read_to_string(&crontab).unwrap();
+    assert!(
+        line.contains(&format!("# @daily {exe} backup://db.create")),
+        "{line}"
+    );
+
+    // Scheduler unavailable: cron's refusal, as backup.schedule_failed.
+    let r = f.run(&[
+        "backup://db.schedule",
+        "when=@daily",
+        "src=/etc",
+        "backend=tar",
+        "repo_url=/srv/b",
+        "scheduler=systemd",
+    ]);
+    let v = r.fails(1, "backup.schedule_failed");
+    assert!(v["error"]["details"]["cron_error"]["code"].is_string());
+    assert!(f.calls().is_empty(), "no backend ran");
+}
+
+#[test]
+fn progress_events_are_streamed_before_the_envelope() {
+    let f = Fixture::new();
+    let r = f.run(&[
+        "backup://db.restore",
+        "backend=restic",
+        "repo_url=/srv/restic",
+        "snapshot_id=latest",
+        "dest=out",
+        "progress=true",
+    ]);
+    assert_eq!(r.code, 0, "{} {}", r.stdout, r.stderr);
+    let lines: Vec<Value> = r
+        .stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{}", r.stdout);
+    assert_eq!(lines[0]["event"], "progress");
+    assert_eq!(lines[0]["progress"]["percent_done"], 0.5);
+    assert_eq!(lines[1]["result"]["restored"]["bytes_restored"], 3172);
+    let r = f.run(&[
+        "backup://db.create",
+        "backend=tar",
+        "repo_url=r",
+        "src=/etc",
+        "progress=true",
+    ]);
+    r.fails(2, "backup.invalid_argument");
 }

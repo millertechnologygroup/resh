@@ -35,6 +35,10 @@ pub struct BackupHandle {
     /// Directory the backend programs are taken from instead of `PATH`
     /// (unit tests only; `None` in the binary).
     bin_dir: Option<PathBuf>,
+    /// The cron provider `schedule` installs jobs with (unit tests only;
+    /// `None` uses the host's cron or systemd).
+    #[cfg(test)]
+    cron_provider: Option<std::sync::Arc<dyn crate::handles::processes::cronh::CronProvider>>,
 }
 
 /// Backend capabilities for backup operations per specification
@@ -213,8 +217,9 @@ failing restic or borg check gives backup.backend_failed."#,
                     [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]\n  \
                     [password=<secret>|password_file=<path>] [tag=<tag>;...]\n  \
                     [label=<text>] [exclude=<pattern>;...] [dry_run=true|false]\n  \
-                    [timeout_ms=<ms>] [json_pretty=true|false]\n  \
-                    tag: restic only. timeout_ms default 1800000",
+                    [progress=true|false] [timeout_ms=<ms>] [json_pretty=true|false]\n  \
+                    tag: restic only. progress: restic and borg; one JSON line per\n  \
+                    progress event before the envelope. timeout_ms default 1800000",
                 example: "resh backup://db.create src=/etc backend=tar repo_url=/srv/backup \
                     dry_run=true",
                 example_output: Some(
@@ -287,8 +292,10 @@ repository is created owner-only (0700) and archives are written 0600."#,
                 usage: "resh backup://<profile>.restore snapshot_id=<id> dest=<path>\n  \
                     [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]\n  \
                     [password=<secret>|password_file=<path>] [include=<pattern>,...]\n  \
-                    [exclude=<pattern>;...] [timeout_ms=<ms>] [json_pretty=true|false]\n  \
-                    no dry run. timeout_ms default 1800000",
+                    [exclude=<pattern>;...] [dry_run=true|false]\n  \
+                    [progress=true|false] [timeout_ms=<ms>] [json_pretty=true|false]\n  \
+                    dry_run: lists what would be restored, writes nothing.\n  \
+                    progress: restic and borg. timeout_ms default 1800000",
                 example: "resh backup://db.restore repo_url=/srv/r \
                     snapshot_id=4f2a9c1e dest=restore",
                 example_output: Some(
@@ -297,6 +304,7 @@ repository is created owner-only (0700) and archives are written 0600."#,
     "command": [
       "restic",
       "restore",
+      "--json",
       "--target=restore",
       "--",
       "4f2a9c1e"
@@ -329,7 +337,7 @@ repository is created owner-only (0700) and archives are written 0600."#,
     },
     "destination": "restore",
     "restored": {
-      "bytes_restored": null,
+      "bytes_restored": 3172,
       "files_restored": 12,
       "success": true
     },
@@ -343,9 +351,10 @@ repository is created owner-only (0700) and archives are written 0600."#,
 
 Shown for restic, the first backend tried when backend is not given,
 indented as with --json-pretty, with RESTIC_PASSWORD_FILE set in the
-environment. files_restored and bytes_restored count the regular files
-written (restic reports files and directories and no exact size). A
-missing dest is created owner-only (0700); a symlink dest is refused."#,
+environment. The counts are restic's (files and directories) and the
+regular files written for tar, rsync and borg. A missing dest is created
+owner-only (0700); a symlink dest is refused. dry_run=true reports
+destination and would_restore instead and writes nothing."#,
                 ),
             }),
         },
@@ -428,17 +437,18 @@ directories by modification time (UTC days) and report bytes_freed."#,
         },
         VerbHelp {
             name: "schedule",
-            definition: "Reports the backup command for a schedule, the cron handle command \
-                that installs it, and the detected scheduler, without installing a timer or \
-                cron job or writing any file.",
+            definition: "Installs a scheduled create for the profile as a systemd timer or \
+                crontab line through the cron handle, or reports what would be installed \
+                when dry_run is true.",
             detail: Some(VerbDetail {
                 usage: "resh backup://<profile>.schedule when=<cron> src=<path>[;<path>...]\n  \
                     [backend=auto|restic|borg|rsync|tar] [repo_url=<repo>]\n  \
                     [password_file=<path>] [enabled=true|false]\n  \
-                    [json_pretty=true|false]\n  \
-                    when: five crontab fields or an @ keyword",
-                example: "resh backup://db.schedule when=@daily \
-                    src=/etc backend=tar repo_url=/srv/b",
+                    [scheduler=auto|cron|systemd] [dry_run=true|false]\n  \
+                    [timeout_ms=<ms>] [json_pretty=true|false]\n  \
+                    when: five crontab fields or an @ keyword (checked by cron add)",
+                example: "resh backup://db.schedule when=@daily src=/e backend=tar \
+                    repo_url=/b dry_run=1",
                 example_output: Some(
                     r#"{
   "backend": {
@@ -448,8 +458,8 @@ directories by modification time (UTC days) and report bytes_freed."#,
     "simulated": false,
     "timeout_ms": 0
   },
-  "dry_run": false,
-  "duration_ms": 0,
+  "dry_run": true,
+  "duration_ms": 3,
   "events": [],
   "handle": "backup",
   "ok": true,
@@ -466,35 +476,44 @@ directories by modification time (UTC days) and report bytes_freed."#,
     },
     "schedule": {
       "command": [
-        "resh",
+        "/usr/local/bin/resh",
         "backup://db.create",
-        "src=/etc",
+        "src=/e",
         "backend=tar",
-        "repo_url=/srv/b"
+        "repo_url=/b"
       ],
-      "definition_path": "/home/alice/resh-backup-db.json",
+      "duplicate": false,
       "enabled": true,
-      "install_command": [
+      "id": "resh-backup-db",
+      "installed": false,
+      "job": {
+        "backend": "cron",
+        "id": "resh-backup-db",
+        "schedule": "@daily"
+      },
+      "preview": {},
+      "remove_command": [
         "resh",
-        "cron://backup-db.add",
-        "schedule=@daily",
-        "command=resh backup://db.create src=/etc backend=tar repo_url=/srv/b"
+        "cron://backup-db.rm",
+        "id=resh-backup-db",
+        "backend=cron"
       ],
-      "runner": "systemd",
+      "scheduler": "cron",
       "when": "@daily"
     }
   },
   "target": "backup://db",
   "ts": "2026-10-16T09:12:44.931277+00:00",
   "verb": "schedule",
-  "warnings": []
+  "warnings": [
+    "Dry run: nothing was installed"
+  ]
 }
 
-Shown on a systemd host, indented as with --json-pretty. Nothing is
-installed: run install_command to add the job with the cron handle.
-runner is cron when only crontab is found, and none (with a warning)
-when neither is found. definition_path is not created. enabled=false
-reports install_command as null."#,
+Shown shortened (job and preview are the cron handle's add result, with
+the full crontab line or units) on a host without systemd. Without
+dry_run the job is installed and installed is true; enabled=false then
+disables it. Run remove_command to remove it."#,
                 ),
             }),
         },
@@ -640,11 +659,12 @@ pub(crate) enum Code {
     Parse,
     VerifyFailed,
     SnapshotNotFound,
+    ScheduleFailed,
 }
 
 impl Code {
     #[cfg(test)]
-    pub(crate) const ALL: [Code; 12] = [
+    pub(crate) const ALL: [Code; 13] = [
         Code::InvalidArgument,
         Code::UnknownVerb,
         Code::BackendNotFound,
@@ -657,6 +677,7 @@ impl Code {
         Code::Parse,
         Code::VerifyFailed,
         Code::SnapshotNotFound,
+        Code::ScheduleFailed,
     ];
 
     pub(crate) fn code(self) -> &'static str {
@@ -673,6 +694,7 @@ impl Code {
             Code::Parse => "backup.parse",
             Code::VerifyFailed => "backup.verify_failed",
             Code::SnapshotNotFound => "backup.snapshot_not_found",
+            Code::ScheduleFailed => "backup.schedule_failed",
         }
     }
 
@@ -688,6 +710,7 @@ impl Code {
             Code::Parse => "PARSE",
             Code::VerifyFailed => "VERIFY_FAILED",
             Code::SnapshotNotFound => "NOT_FOUND",
+            Code::ScheduleFailed => "SCHEDULE_FAILED",
         }
     }
 
@@ -749,9 +772,16 @@ const COMMON_ARGS: &[&str] = &[
 /// The arguments `verb` accepts, or None for an unknown verb.
 pub(crate) fn accepted_args(verb: &str) -> Option<Vec<&'static str>> {
     let own: &[&'static str] = match verb {
-        "create" => &["src", "tag", "label", "exclude", "dry_run"],
+        "create" => &["src", "tag", "label", "exclude", "dry_run", "progress"],
         "list" => &["tag"],
-        "restore" => &["snapshot_id", "dest", "include", "exclude"],
+        "restore" => &[
+            "snapshot_id",
+            "dest",
+            "include",
+            "exclude",
+            "dry_run",
+            "progress",
+        ],
         "verify" => &["mode", "snapshot_id"],
         "prune" => &["keep_daily", "keep_weekly", "keep_monthly", "dry_run"],
         "schedule" => {
@@ -762,6 +792,9 @@ pub(crate) fn accepted_args(verb: &str) -> Option<Vec<&'static str>> {
                 "repo_url",
                 "password_file",
                 "enabled",
+                "scheduler",
+                "dry_run",
+                "timeout_ms",
                 "json_pretty",
             ]);
         }
@@ -1155,7 +1188,7 @@ pub(crate) fn build_restic_create(
 ) -> CmdSpec {
     let mut c = restic_base(repo_url, "backup").args(repeat_flag("--tag", tags));
     if let Some(label) = label {
-        c = c.arg(format!("--hostname={}", label));
+        c = c.arg(format!("--host={}", label));
     }
     c.args(repeat_flag("--exclude", exclude))
         .arg("--json")
@@ -1208,6 +1241,7 @@ pub(crate) fn build_restic_restore(
     exclude: &[String],
 ) -> CmdSpec {
     restic_base(repo_url, "restore")
+        .arg("--json")
         .arg(format!("--target={}", dest))
         .args(repeat_flag("--include", include))
         .args(repeat_flag("--exclude", exclude))
@@ -1274,6 +1308,127 @@ pub(crate) fn build_rsync_restore(
     }
     c.arg("--")
         .args([rsync_local(snapshot_dir), rsync_local(dest)])
+}
+
+/// Restore dry run for tar: the members a restore would extract, with
+/// sizes (`tar -tv`), under the same include and exclude patterns.
+pub(crate) fn build_tar_restore_list(
+    archive: &str,
+    include: &[String],
+    exclude: &[String],
+) -> CmdSpec {
+    let c = CmdSpec::new("tar")
+        .args(["--force-local", "-tvzf", archive])
+        .args(repeat_flag("--exclude", exclude));
+    if include.is_empty() {
+        c
+    } else {
+        c.args(["--wildcards", "--no-wildcards-match-slash", "--"])
+            .args(include.iter().cloned())
+    }
+}
+
+/// Restore dry run for borg: the archive items a restore would extract
+/// (`borg list --json-lines`), under the same include and exclude patterns.
+pub(crate) fn build_borg_restore_list(
+    repo: &str,
+    snapshot_id: &str,
+    include: &[String],
+    exclude: &[String],
+) -> CmdSpec {
+    CmdSpec::new("borg")
+        .args(["list", "--json-lines"])
+        .args(repeat_flag("--exclude", exclude))
+        .arg("--")
+        .arg(format!("{}::{}", repo, snapshot_id))
+        .args(include.iter().cloned())
+}
+
+/// Inserts `flags` into the argument list at `at` (after the subcommand,
+/// where every backend reads its global options).
+fn with_flags(mut spec: CmdSpec, at: usize, flags: &[&str]) -> CmdSpec {
+    let at = at.min(spec.args.len());
+    spec.args
+        .splice(at..at, flags.iter().map(|f| f.to_string()));
+    spec
+}
+
+/// (regular files, bytes) in a `tar -tv` listing.
+pub(crate) fn parse_tar_listing(stdout: &str) -> (u64, u64) {
+    let (mut files, mut bytes) = (0, 0);
+    for line in stdout.lines().filter(|l| l.starts_with('-')) {
+        files += 1;
+        bytes += line
+            .split_whitespace()
+            .nth(2)
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0);
+    }
+    (files, bytes)
+}
+
+/// (regular files, bytes) in `borg list --json-lines` output.
+pub(crate) fn parse_borg_listing(stdout: &str) -> (u64, u64) {
+    let (mut files, mut bytes) = (0, 0);
+    for v in stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+    {
+        if v["type"] == "-" {
+            files += 1;
+            bytes += v["size"].as_u64().unwrap_or(0);
+        }
+    }
+    (files, bytes)
+}
+
+/// (files_restored, bytes_restored) from restic `restore --json`'s summary.
+pub(crate) fn parse_restic_restore_summary(stdout: &str) -> (Option<u64>, Option<u64>) {
+    match parse_restic_summary(stdout) {
+        Some(v) => (v["files_restored"].as_u64(), v["bytes_restored"].as_u64()),
+        None => (parse_restic_restored(stdout), None),
+    }
+}
+
+/// The paths borg listed as extracted: plain `--list` lines, or with
+/// `--log-json` the messages of the `borg.output.list` logger.
+pub(crate) fn borg_listed(stdout: &str, stderr: &str) -> String {
+    let mut out = String::new();
+    for line in stdout.lines().chain(stderr.lines()) {
+        match serde_json::from_str::<Value>(line.trim()) {
+            Ok(v) if v.is_object() => {
+                if v["name"] == "borg.output.list"
+                    && let Some(m) = v["message"].as_str()
+                {
+                    out.push_str(m);
+                    out.push('\n');
+                }
+            }
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// A progress event in a backend output line: restic `--json` status
+/// messages (stdout) and borg `--log-json` progress records (stderr).
+pub(crate) fn progress_event(backend: &BackendType, stdout: bool, line: &str) -> Option<Value> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    let is_progress = match backend {
+        BackendType::Restic => stdout && v["message_type"] == "status",
+        BackendType::Borg => {
+            !stdout
+                && matches!(
+                    v["type"].as_str(),
+                    Some("archive_progress" | "progress_percent" | "progress_message")
+                )
+        }
+        _ => false,
+    };
+    is_progress.then_some(v)
 }
 
 pub(crate) fn build_restic_verify(repo_url: Option<&String>, read_data: bool) -> CmdSpec {
@@ -1898,6 +2053,18 @@ fn arg_timeout(args: &Args, default: u64) -> VResult<u64> {
     }
 }
 
+/// `progress`: stream progress events (restic and borg only).
+fn arg_progress(args: &Args, backend: &BackendType) -> VResult<bool> {
+    let progress = bool_arg(args, "progress", false)?;
+    if progress && backend.is_local() {
+        return Err(Fail::invalid(
+            "progress",
+            format!("progress is supported for restic and borg, not {backend}; nothing was done"),
+        ));
+    }
+    Ok(progress)
+}
+
 /// A `keep_*` count: absent, or an integer of at least 1.
 fn arg_keep(args: &Args, key: &str) -> VResult<Option<u32>> {
     match args.get(key) {
@@ -1957,6 +2124,110 @@ fn shell_quote(word: &str) -> String {
         word.to_string()
     } else {
         format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+/// What a restore would find at `dest`. A symlink or an existing
+/// non-directory is refused (never restored through or over).
+fn check_destination(path: &Path, dest: &str) -> VResult<Value> {
+    fn writable(p: &Path) -> bool {
+        use std::os::unix::ffi::OsStrExt;
+        let p = if p.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            p
+        };
+        std::ffi::CString::new(p.as_os_str().as_bytes())
+            // SAFETY: a valid NUL-terminated path; access only reads it.
+            .map(|c| unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0)
+            .unwrap_or(false)
+    }
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => Err(Fail::invalid(
+            "dest",
+            format!(
+                "dest {dest} is a symbolic link; pass the directory it points to; \
+                 nothing was restored"
+            ),
+        )),
+        Ok(m) if !m.is_dir() => Err(Fail::invalid(
+            "dest",
+            format!("dest {dest} exists and is not a directory; nothing was restored"),
+        )),
+        Ok(_) => Ok(json!({
+            "path": dest,
+            "exists": true,
+            "would_create": false,
+            "empty": fs::read_dir(path).ok().map(|mut d| d.next().is_none()),
+            "writable": writable(path),
+        })),
+        Err(_) => {
+            let parent = path
+                .ancestors()
+                .skip(1)
+                .find(|a| a.as_os_str().is_empty() || a.exists())
+                .unwrap_or(Path::new("."));
+            Ok(json!({
+                "path": dest,
+                "exists": false,
+                "would_create": true,
+                "empty": true,
+                "writable": writable(parent),
+            }))
+        }
+    }
+}
+
+/// The inputs of a restore dry run.
+struct RestorePlan<'a> {
+    args: &'a Args,
+    cx: &'a mut Ctx,
+    c: &'a Common,
+    snapshot_id: &'a str,
+    dest: &'a str,
+    archive: &'a str,
+    snapshot_dir: &'a str,
+    include: &'a [String],
+    exclude: &'a [String],
+    destination: Value,
+}
+
+/// Lets unit tests give `schedule` a cron provider they keep a handle on.
+#[cfg(test)]
+#[derive(Debug)]
+struct SharedCronProvider(std::sync::Arc<dyn crate::handles::processes::cronh::CronProvider>);
+
+#[cfg(test)]
+impl crate::handles::processes::cronh::CronProvider for SharedCronProvider {
+    fn list_cron_entries(
+        &self,
+        o: &crate::handles::processes::cronh::CronListOptions,
+    ) -> Result<crate::handles::processes::cronh::CronListResponse> {
+        self.0.list_cron_entries(o)
+    }
+    fn add_cron_job(
+        &self,
+        o: &crate::handles::processes::cronh::CronAddOptions,
+    ) -> Result<crate::handles::processes::cronh::CronAddResponse> {
+        self.0.add_cron_job(o)
+    }
+    fn remove_cron_jobs(
+        &self,
+        o: &crate::handles::processes::cronh::CronRmOptions,
+    ) -> Result<crate::handles::processes::cronh::CronRmResponse> {
+        self.0.remove_cron_jobs(o)
+    }
+    fn enable_cron_jobs(
+        &self,
+        o: &crate::handles::processes::cronh::CronEnableOptions,
+    ) -> Result<crate::handles::processes::cronh::CronEnableResponse> {
+        self.0.enable_cron_jobs(o)
+    }
+    fn disable_cron_jobs(
+        &self,
+        o: &crate::handles::processes::cronh::CronDisableOptions,
+    ) -> Result<crate::handles::processes::cronh::CronDisableResponse> {
+        self.0.disable_cron_jobs(o)
     }
 }
 
@@ -2056,6 +2327,8 @@ impl BackupHandle {
             repo,
             target: url.to_string(),
             bin_dir: None,
+            #[cfg(test)]
+            cron_provider: None,
         })
     }
 
@@ -2280,6 +2553,167 @@ impl BackupHandle {
         })
     }
 
+    /// Like `execute`, and writes each progress event of the backend as one
+    /// JSON line on stdout as it happens (flushed per line).
+    fn execute_streaming(
+        &self,
+        cx: &Ctx,
+        spec: &CmdSpec,
+        backend: &BackendType,
+        io: &mut IoStreams,
+    ) -> VResult<BackendResult> {
+        use std::io::BufRead;
+        use std::os::unix::process::ExitStatusExt;
+        use std::sync::mpsc;
+        let start = Instant::now();
+        let program = self.program_path(&spec.program).ok_or_else(|| {
+            Fail::new(
+                Code::BackendNotFound,
+                format!("{} is not installed (not found on PATH)", spec.program),
+            )
+        })?;
+        let mut cmd = Command::new(&program);
+        cmd.args(&spec.args);
+        for key in &spec.env_remove {
+            cmd.env_remove(key);
+        }
+        for (key, value) in &spec.env {
+            cmd.env(key, value);
+        }
+        if let Some(cwd) = &spec.cwd {
+            cmd.current_dir(cwd);
+        }
+        process::contain(&mut cmd);
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| {
+            Fail::new(
+                Code::ExecutionFailed,
+                format!("cannot run {}: {}", spec.program, e),
+            )
+        })?;
+        let group = child.id() as libc::pid_t;
+        let (tx, rx) = mpsc::channel::<(bool, String)>();
+        let pipes: [(bool, Option<Box<dyn Read + Send>>); 2] = [
+            (
+                true,
+                child
+                    .stdout
+                    .take()
+                    .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            ),
+            (
+                false,
+                child
+                    .stderr
+                    .take()
+                    .map(|p| Box::new(p) as Box<dyn Read + Send>),
+            ),
+        ];
+        for (is_stdout, pipe) in pipes {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let Some(pipe) = pipe else { return };
+                let mut reader = std::io::BufReader::new(pipe);
+                let mut buf = Vec::new();
+                while matches!(reader.read_until(b'\n', &mut buf), Ok(n) if n > 0) {
+                    let line = String::from_utf8_lossy(&buf).into_owned();
+                    if tx.send((is_stdout, line)).is_err() {
+                        return;
+                    }
+                    buf.clear();
+                }
+            });
+        }
+        drop(tx);
+        let (mut stdout, mut stderr) = (String::new(), String::new());
+        let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
+        loop {
+            match rx.recv_timeout(Duration::from_millis(20)) {
+                Ok((is_stdout, line)) => {
+                    if let Some(p) = progress_event(backend, is_stdout, &line) {
+                        let event = json!({
+                            "event": "progress",
+                            "handle": "backup",
+                            "verb": cx.verb,
+                            "backend": backend.to_string(),
+                            "ts": Utc::now().to_rfc3339(),
+                            "progress": p,
+                        });
+                        let _ = writeln!(io.stdout, "{event}");
+                        let _ = io.stdout.flush();
+                    }
+                    if is_stdout {
+                        stdout.push_str(&line);
+                    } else {
+                        stderr.push_str(&line);
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    if exited.is_some() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if exited.is_none()
+                && let Ok(Some(status)) = child.try_wait()
+            {
+                exited = Some((status, Instant::now()));
+            }
+            // A descendant can hold the output open after the backend exits.
+            if let Some((_, at)) = exited
+                && at.elapsed() >= Duration::from_secs(2)
+            {
+                break;
+            }
+            if exited.is_none() && Instant::now() >= cx.deadline {
+                let stopped = process::stop_tree(&spec.program, group);
+                let _ = child.try_wait();
+                let state = match stopped {
+                    process::Stopped::StillRunning => "could not be stopped",
+                    _ => "was stopped",
+                };
+                return Err(Fail::new(
+                    Code::Timeout,
+                    format!(
+                        "{} timed out and {state} at the deadline (timeout_ms={})",
+                        spec.program, cx.timeout_ms
+                    ),
+                )
+                .with(json!({ "timeout_ms": cx.timeout_ms })));
+            }
+        }
+        let Some((status, _)) = exited else {
+            unreachable!("the loop ends only after the backend exited")
+        };
+        Ok(BackendResult {
+            exit_code: status.code(),
+            signal: status.signal(),
+            stdout,
+            stderr,
+            duration_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
+    /// Runs `spec`, streaming progress events when `progress` is set.
+    fn run_backend(
+        &self,
+        cx: &Ctx,
+        spec: &CmdSpec,
+        backend: &BackendType,
+        progress: bool,
+        io: &mut IoStreams,
+    ) -> VResult<BackendResult> {
+        if progress {
+            self.execute_streaming(cx, spec, backend, io)
+        } else {
+            self.execute(cx, spec)
+        }
+    }
+
     /// backend_failed for a backend that exited non-zero or was killed.
     fn exit_fail(&self, spec: &CmdSpec, res: &BackendResult) -> Fail {
         let last = res
@@ -2411,12 +2845,13 @@ impl BackupHandle {
 
 // Verb implementations
 impl BackupHandle {
-    fn verb_create(&self, args: &Args, cx: &mut Ctx) -> VResult<Value> {
+    fn verb_create(&self, args: &Args, cx: &mut Ctx, io: &mut IoStreams) -> VResult<Value> {
         let src = required(args, "src")?;
         cx.set_timeout(arg_timeout(args, DEFAULT_CREATE_TIMEOUT_MS)?);
         let c = self.common("create", args, cx)?;
         let backend = c.backend.clone();
         let repo_url = c.repo_url.as_ref();
+        let progress = arg_progress(args, &backend)?;
 
         let sources = split_list(src, ';');
         let mut tags = args
@@ -2475,6 +2910,9 @@ impl BackupHandle {
                 )
             }
         };
+        if progress && backend == BackendType::Borg {
+            spec = with_flags(spec, 1, &["--progress", "--log-json"]);
+        }
         self.set_info(cx, &backend, Some(&spec));
         self.apply_secret(&c, args, &mut spec)?;
         self.set_info(cx, &backend, Some(&spec));
@@ -2546,7 +2984,9 @@ impl BackupHandle {
             }
         };
 
-        let res = self.execute(cx, &spec).map_err(clean_up)?;
+        let res = self
+            .run_backend(cx, &spec, &backend, progress, io)
+            .map_err(clean_up)?;
         if !res.success() {
             match res.exit_code.and_then(|c| create_exit_warning(&backend, c)) {
                 Some(w) => cx.warnings.push(w.to_string()),
@@ -2646,13 +3086,14 @@ impl BackupHandle {
         }))
     }
 
-    fn verb_restore(&self, args: &Args, cx: &mut Ctx) -> VResult<Value> {
+    fn verb_restore(&self, args: &Args, cx: &mut Ctx, io: &mut IoStreams) -> VResult<Value> {
         let snapshot_id = required(args, "snapshot_id")?;
         let dest = required(args, "dest")?;
         cx.set_timeout(arg_timeout(args, DEFAULT_RESTORE_TIMEOUT_MS)?);
         let c = self.common("restore", args, cx)?;
         let backend = c.backend.clone();
         let repo_url = c.repo_url.as_ref();
+        let progress = arg_progress(args, &backend)?;
         let include = args
             .get("include")
             .map(|i| split_list(i, ','))
@@ -2664,23 +3105,24 @@ impl BackupHandle {
 
         // Never restore through a symlink planted at dest.
         let dest_path = Path::new(dest);
-        match fs::symlink_metadata(dest_path) {
-            Ok(m) if m.file_type().is_symlink() => {
-                return Err(Fail::invalid(
-                    "dest",
-                    format!(
-                        "dest {dest} is a symbolic link; pass the directory it points to; \
-                         nothing was restored"
-                    ),
-                ));
-            }
-            Ok(m) if !m.is_dir() => {
-                return Err(Fail::invalid(
-                    "dest",
-                    format!("dest {dest} exists and is not a directory; nothing was restored"),
-                ));
-            }
-            _ => {}
+        let destination = check_destination(dest_path, dest)?;
+        let repo = local_repo_path(repo_url);
+        let archive = format!("{}/{}.tar.gz", repo, snapshot_id);
+        let snapshot_dir = format!("{}/{}/", repo, snapshot_id);
+
+        if cx.dry_run {
+            return self.restore_plan(RestorePlan {
+                args,
+                cx,
+                c: &c,
+                snapshot_id,
+                dest,
+                archive: &archive,
+                snapshot_dir: &snapshot_dir,
+                include: &include,
+                exclude: &exclude,
+                destination,
+            });
         }
 
         let mut spec = match backend {
@@ -2688,26 +3130,16 @@ impl BackupHandle {
                 build_restic_restore(repo_url, snapshot_id, dest, &include, &exclude)
             }
             BackendType::Borg => {
-                build_borg_restore(&borg_repo(repo_url), snapshot_id, dest, &include, &exclude)
+                let spec =
+                    build_borg_restore(&borg_repo(repo_url), snapshot_id, dest, &include, &exclude);
+                if progress {
+                    with_flags(spec, 1, &["--progress", "--log-json"])
+                } else {
+                    spec
+                }
             }
-            BackendType::Tar => {
-                let repo = local_repo_path(repo_url);
-                build_tar_restore(
-                    &format!("{}/{}.tar.gz", repo, snapshot_id),
-                    dest,
-                    &include,
-                    &exclude,
-                )
-            }
-            BackendType::Rsync => {
-                let repo = local_repo_path(repo_url);
-                build_rsync_restore(
-                    &format!("{}/{}/", repo, snapshot_id),
-                    dest,
-                    &include,
-                    &exclude,
-                )
-            }
+            BackendType::Tar => build_tar_restore(&archive, dest, &include, &exclude),
+            BackendType::Rsync => build_rsync_restore(&snapshot_dir, dest, &include, &exclude),
         };
         self.set_info(cx, &backend, Some(&spec));
         self.apply_secret(&c, args, &mut spec)?;
@@ -2734,18 +3166,20 @@ impl BackupHandle {
                 ..f
             }
         };
-        let res = self.execute(cx, &spec).map_err(partial)?;
+        let res = self
+            .run_backend(cx, &spec, &backend, progress, io)
+            .map_err(partial)?;
         if !res.success() {
             return Err(partial(self.exit_fail(&spec, &res)));
         }
         let (files, bytes): (Option<u64>, Option<u64>) = match backend {
-            BackendType::Restic => (parse_restic_restored(&res.stdout), None),
+            BackendType::Restic => parse_restic_restore_summary(&res.stdout),
             BackendType::Tar => {
                 let (f, b) = count_listed_files(dest_path, &res.stdout);
                 (Some(f), Some(b))
             }
             BackendType::Borg => {
-                let listed = format!("{}\n{}", res.stdout, res.stderr);
+                let listed = borg_listed(&res.stdout, &res.stderr);
                 let (f, b) = count_listed_files(dest_path, &listed);
                 (Some(f), Some(b))
             }
@@ -2767,6 +3201,101 @@ impl BackupHandle {
             },
             "snapshot_id": snapshot_id,
             "destination": dest,
+            "capabilities": self.get_capabilities(&backend)
+        }))
+    }
+
+    /// `restore dry_run=true`: checks the destination and lists what the
+    /// restore would write with the backend's read-only listing (restic
+    /// `restore --dry-run`, borg `list`, tar `-t`, rsync `--dry-run`).
+    /// Nothing is written to the destination.
+    fn restore_plan(&self, p: RestorePlan<'_>) -> VResult<Value> {
+        let RestorePlan {
+            args,
+            cx,
+            c,
+            snapshot_id,
+            dest,
+            archive,
+            snapshot_dir,
+            include,
+            exclude,
+            destination,
+        } = p;
+        let backend = c.backend.clone();
+        let repo_url = c.repo_url.as_ref();
+        match backend {
+            BackendType::Tar if !Path::new(archive).is_file() => {
+                return Err(Fail::new(
+                    Code::SnapshotNotFound,
+                    format!("no archive {archive}; nothing was restored"),
+                ));
+            }
+            BackendType::Rsync if !Path::new(snapshot_dir).is_dir() => {
+                return Err(Fail::new(
+                    Code::SnapshotNotFound,
+                    format!("no snapshot directory {snapshot_dir}; nothing was restored"),
+                ));
+            }
+            _ => {}
+        }
+        let mut spec = match backend {
+            BackendType::Restic => with_flags(
+                build_restic_restore(repo_url, snapshot_id, dest, include, exclude),
+                2,
+                &["--dry-run"],
+            ),
+            BackendType::Borg => {
+                build_borg_restore_list(&borg_repo(repo_url), snapshot_id, include, exclude)
+            }
+            BackendType::Tar => build_tar_restore_list(archive, include, exclude),
+            BackendType::Rsync => with_flags(
+                build_rsync_restore(snapshot_dir, dest, include, exclude),
+                2,
+                &["--dry-run"],
+            ),
+        };
+        // The listing runs, so the command is reported as run, not simulated.
+        cx.info = self.backend_info(&backend, Some(&spec), cx.timeout_ms, false);
+        self.apply_secret(c, args, &mut spec)?;
+        cx.info = self.backend_info(&backend, Some(&spec), cx.timeout_ms, false);
+        self.require_program(&spec.program)?;
+        let res = self.execute(cx, &spec)?;
+        if !res.success() {
+            return Err(self.exit_fail(&spec, &res));
+        }
+        let (files, bytes) = match backend {
+            BackendType::Restic => parse_restic_restore_summary(&res.stdout),
+            BackendType::Borg => {
+                let (f, b) = parse_borg_listing(&res.stdout);
+                (Some(f), Some(b))
+            }
+            BackendType::Tar => {
+                let (f, b) = parse_tar_listing(&res.stdout);
+                (Some(f), Some(b))
+            }
+            BackendType::Rsync => (
+                rsync_stat(&res.stdout, "Number of regular files transferred:"),
+                rsync_stat(&res.stdout, "Total transferred file size:"),
+            ),
+        };
+        if destination["empty"] == json!(false) {
+            cx.warnings.push(format!(
+                "dest {dest} is not empty: a restore may overwrite files in it"
+            ));
+        }
+        if destination["writable"] == json!(false) {
+            cx.warnings
+                .push(format!("dest {dest} is not writable by this user"));
+        }
+        cx.warnings
+            .push("Dry run: nothing was restored".to_string());
+        Ok(json!({
+            "dry_run": true,
+            "dry_run_mode": "backend",
+            "snapshot_id": snapshot_id,
+            "destination": destination,
+            "would_restore": { "files": files, "bytes": bytes },
             "capabilities": self.get_capabilities(&backend)
         }))
     }
@@ -3080,19 +3609,31 @@ impl BackupHandle {
         }
     }
 
-    /// Reports what to schedule: the backup command, the cron handle command
-    /// that installs it, and the detected scheduler. Installs nothing.
+    /// Installs a scheduled `create` for this profile with the cron handle's
+    /// `add` (systemd timer or crontab line; every check is cron's own), or
+    /// with `dry_run=true` reports what would be installed.
     fn verb_schedule(&self, args: &Args, cx: &mut Ctx) -> VResult<Value> {
         let when = required(args, "when")?;
         let src = required(args, "src")?;
         let enabled = bool_arg(args, "enabled", true)?;
-        if let Err(e) = crate::handles::processes::cronh::parse_schedule(when) {
-            return Err(Fail::invalid("when", format!("when {e}; nothing was done")));
+        let scheduler = args.get("scheduler").map(String::as_str).unwrap_or("auto");
+        if !matches!(scheduler, "auto" | "cron" | "systemd") {
+            return Err(Fail::invalid(
+                "scheduler",
+                format!(
+                    "scheduler must be auto, cron or systemd, got {scheduler:?}; nothing was done"
+                ),
+            ));
         }
-        let profile_ok = self
-            .repo
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/'));
+        if args.contains_key("timeout_ms") {
+            // Checked here; enforced by the cron handle on its tools.
+            cx.info.timeout_ms = arg_timeout(args, 0)?;
+        }
+        let profile_ok = !self.repo.is_empty()
+            && self
+                .repo
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/'));
         if !profile_ok {
             return Err(Fail::invalid(
                 "profile",
@@ -3136,21 +3677,8 @@ impl BackupHandle {
             );
         }
 
-        let runner = if self.program_path("systemctl").is_some() {
-            "systemd"
-        } else if self.program_path("crontab").is_some() {
-            "cron"
-        } else {
-            cx.warnings
-                .push("No supported scheduler found (systemd/cron)".to_string());
-            "none"
-        };
-        let definition_path = std::env::var_os("HOME")
-            .filter(|h| !h.is_empty())
-            .map(|h| format!("{}/resh-backup-{}.json", h.to_string_lossy(), self.repo));
-
         let mut command = vec![
-            "resh".to_string(),
+            self.resh_program(),
             format!("backup://{}.create", self.repo),
             format!("src={src}"),
             format!("backend={backend}"),
@@ -3160,30 +3688,177 @@ impl BackupHandle {
                 command.push(format!("{key}={v}"));
             }
         }
-        let label: String = format!("backup-{}", self.repo)
-            .chars()
-            .map(|c| if c == '/' { '-' } else { c })
-            .collect();
-        let install_command = enabled.then(|| {
-            let line: Vec<String> = command.iter().map(|w| shell_quote(w)).collect();
-            vec![
-                "resh".to_string(),
-                format!("cron://{label}.add"),
-                format!("schedule={when}"),
-                format!("command={}", line.join(" ")),
-            ]
-        });
+        let flat = self.repo.replace('/', "-");
+        let label = format!("backup-{flat}");
+        let id = format!("resh-backup-{flat}");
+        let line: Vec<String> = command.iter().map(|w| shell_quote(w)).collect();
+        let add = |dry_run: bool| {
+            let mut add: Vec<(&str, String)> = vec![
+                ("schedule", when.clone()),
+                ("command", line.join(" ")),
+                ("backend", scheduler.to_string()),
+                ("id", id.clone()),
+                ("description", format!("resh backup profile {}", self.repo)),
+                ("allow_duplicate", "false".to_string()),
+                ("dry_run", dry_run.to_string()),
+            ];
+            if let Some(t) = args.get("timeout_ms") {
+                add.push(("timeout_ms", t.clone()));
+            }
+            add
+        };
+        // First cron's own dry run: the scheduler it picks, and whether this
+        // exact job is already installed.
+        let planned = self.cron_call(&label, "add", &add(true))?;
+        let used = planned["backend_used"]
+            .as_str()
+            .unwrap_or(scheduler)
+            .to_string();
+        let duplicate = planned["duplicate"] == json!(true);
+        if !duplicate {
+            // Another job of this profile (a different schedule or command)
+            // is never added beside it: remove it first.
+            let probe = vec![
+                ("id", id.clone()),
+                ("backend", used.clone()),
+                ("require_match", "false".to_string()),
+                ("dry_run", "true".to_string()),
+            ];
+            let found = self.cron_call(&label, "rm", &probe)?;
+            let matched = found["matched_count"]["cron"].as_u64().unwrap_or(0)
+                + found["matched_count"]["systemd"].as_u64().unwrap_or(0);
+            if matched > 0 {
+                return Err(Fail::new(
+                    Code::ScheduleFailed,
+                    format!(
+                        "a different job for profile {} (id {id}) is already installed; remove it \
+                         with resh cron://{label}.rm id={id} backend={used} and schedule again; \
+                         nothing was changed",
+                        self.repo
+                    ),
+                )
+                .with(json!({
+                    "id": id,
+                    "remove_command": ["resh", format!("cron://{label}.rm"), format!("id={id}"), format!("backend={used}")],
+                })));
+            }
+        }
+        let added = if cx.dry_run || duplicate {
+            planned
+        } else {
+            self.cron_call(&label, "add", &add(false))?
+        };
+        cx.warnings.extend(json_strings(&added["warnings"]));
+
+        if !enabled && !cx.dry_run {
+            let disable = vec![("id", id.clone()), ("backend", used.clone())];
+            let disabled = self.cron_call(&label, "disable", &disable).map_err(|f| {
+                let mut details = f.details.clone().unwrap_or_else(|| json!({}));
+                details["installed"] = json!(true);
+                Fail {
+                    details: Some(details),
+                    ..f
+                }
+            })?;
+            cx.warnings.extend(json_strings(&disabled["warnings"]));
+        }
+        if cx.dry_run {
+            cx.warnings
+                .push("Dry run: nothing was installed".to_string());
+        }
         Ok(json!({
             "capabilities": self.get_capabilities(&backend),
             "schedule": {
                 "when": when,
                 "enabled": enabled,
-                "runner": runner,
-                "definition_path": definition_path,
+                "scheduler": used,
+                "id": id,
+                "installed": !cx.dry_run,
+                "duplicate": duplicate,
                 "command": command,
-                "install_command": install_command
+                "job": added["job"],
+                "preview": added["preview"],
+                "remove_command": [
+                    "resh",
+                    format!("cron://{label}.rm"),
+                    format!("id={id}"),
+                    format!("backend={used}"),
+                ],
             }
         }))
+    }
+
+    /// The program the scheduled job runs: this resh executable.
+    fn resh_program(&self) -> String {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.to_str().map(String::from))
+            .unwrap_or_else(|| "resh".to_string())
+    }
+
+    /// Runs a cron handle verb in-process and returns its JSON result, or
+    /// its failure as a backup failure: a refused argument is
+    /// `backup.invalid_argument` (exit 2), a timeout `backup.timeout`, any
+    /// other failure `backup.schedule_failed`. `details.cron_error` carries
+    /// the cron handle's error object.
+    fn cron_call(&self, label: &str, verb: &str, args: &[(&str, String)]) -> VResult<Value> {
+        let cron_args: Args = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        let handle = self.cron_handle(label)?;
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut stdin = std::io::empty();
+        let status = {
+            let mut io = IoStreams::new(&mut stdin, &mut out, &mut err);
+            handle.call(verb, &cron_args, &mut io)
+        }
+        .map_err(|e| Fail::new(Code::ScheduleFailed, format!("cron {verb} failed: {e:#}")))?;
+        let text = String::from_utf8_lossy(&out);
+        let value: Value = serde_json::from_str(text.trim()).unwrap_or(Value::Null);
+        if status.ok {
+            return Ok(value);
+        }
+        let error = value["error"].clone();
+        let code = error["code"].as_str().unwrap_or("cron.failed").to_string();
+        let message = error["message"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| status.reason.clone())
+            .unwrap_or_else(|| format!("cron {verb} failed"));
+        let details = json!({ "cron_error": error });
+        Err(match status.exit_code() {
+            exit::USAGE => {
+                let field = if code.contains("schedule") {
+                    "when"
+                } else {
+                    "scheduler"
+                };
+                Fail::invalid(field, format!("{message} ({code})")).with(json!({
+                    "field": field,
+                    "cron_error": details["cron_error"]
+                }))
+            }
+            exit::TIMEOUT => Fail::new(Code::Timeout, format!("{message} ({code})")).with(details),
+            _ => Fail::new(Code::ScheduleFailed, format!("{message} ({code})")).with(details),
+        })
+    }
+
+    /// The cron handle `schedule` installs jobs with.
+    fn cron_handle(&self, label: &str) -> VResult<crate::handles::processes::cronh::CronHandle> {
+        use crate::handles::processes::cronh::CronHandle;
+        #[cfg(test)]
+        if let Some(p) = &self.cron_provider {
+            return Ok(CronHandle::new(
+                label.to_string(),
+                Box::new(SharedCronProvider(p.clone())),
+            ));
+        }
+        let url = Url::parse(&format!("cron://{label}")).map_err(|e| {
+            Fail::invalid("profile", format!("profile cannot name a cron job: {e}"))
+        })?;
+        CronHandle::from_url(&url)
+            .map_err(|e| Fail::new(Code::ScheduleFailed, format!("cron handle: {e:#}")))
     }
 }
 
@@ -3221,13 +3896,13 @@ impl BackupHandle {
             }
             cx.pretty = bool_arg(args, "json_pretty", false)?;
             check_known_args(verb, args)?;
-            if matches!(verb, "create" | "prune") {
+            if matches!(verb, "create" | "prune" | "restore" | "schedule") {
                 cx.dry_run = bool_arg(args, "dry_run", false)?;
             }
             match verb {
-                "create" => self.verb_create(args, &mut cx),
+                "create" => self.verb_create(args, &mut cx, io),
                 "list" => self.verb_list(args, &mut cx),
-                "restore" => self.verb_restore(args, &mut cx),
+                "restore" => self.verb_restore(args, &mut cx, io),
                 "verify" => self.verb_verify(args, &mut cx),
                 "prune" => self.verb_prune(args, &mut cx),
                 _ => self.verb_schedule(args, &mut cx),

@@ -15,7 +15,7 @@ This page covers the **Automation Utilities** handles:
 
 | Handle        | Purpose | Verbs |
 | ------------- | ------- | ----- |
-| `backup://`   | Run restic, borg, rsync or tar to create, list, restore, verify and prune snapshots | `create`, `list`, `restore`, `verify`, `prune`, `schedule` (reports the job and the `cron://` command that installs it; installs nothing) |
+| `backup://`   | Run restic, borg, rsync or tar to create, list, restore, verify and prune snapshots | `create`, `list`, `restore`, `verify`, `prune`, `schedule` (installs a systemd timer or crontab line through `cron://`) |
 | `plugin://`   | Manage the local resh plugin store and read plugin catalogs | `install`, `update`, `remove`, `enable`, `disable`, `installed.list`, `available.list`, `available.search`, `available.info` |
 | `template://` | Render, validate and test Tera templates | `render`, `validate`, `test` |
 
@@ -35,7 +35,7 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 
 | Handle   | `dry_run` |
 | -------- | --------- |
-| backup   | Honored by `create` and `prune`. `restore`, `list`, `verify` and `schedule` have no dry-run mode and refuse `dry_run` in any spelling (exit 2, `backup.invalid_argument`). An unrecognised value (such as `dry_run=maybe`) is refused |
+| backup   | Honored by `create`, `restore` (lists what would be restored), `prune` and `schedule` (cron add's dry run). `list` and `verify` refuse `dry_run` in any spelling (exit 2, `backup.invalid_argument`). An unrecognised value (such as `dry_run=maybe`) is refused |
 | plugin   | Honored by `install`, `update`, `remove`, `enable`, `disable`. Values other than true/false/1/0/yes/no/on/off are errors |
 | template | Not read (no verb writes anything) |
 
@@ -43,7 +43,7 @@ Detailed pages: [backup](backup.md), [plugin](plugin.md), [template](template.md
 
 | Handle   | Enforced | Accepted but not used | Notes |
 | -------- | -------- | --------------------- | ----- |
-| backup   | every verb except `schedule`, as a deadline for the whole verb (backend runs and in-process tar/rsync work) | none (`schedule` refuses it, exit 2) | At the deadline the backend's whole process tree is stopped and the verb fails with `backup.timeout`, exit 124. Malformed values are refused (exit 2) |
+| backup   | every verb, as a deadline for the whole verb (backend runs and in-process tar/rsync work; `schedule` passes it to the cron handle) | none | At the deadline the backend's whole process tree is stopped and the verb fails with `backup.timeout`, exit 124. Malformed values are refused (exit 2) |
 | plugin   | `install`, `update` (per HTTPS request, not a total deadline); `available.search`; `available.info` | `remove`, `enable`, `disable`; not read by `available.list`, `installed.list` | `available.search` rejects values outside 100-60000; `available.info` rejects non-integers and clamps to 100-30000; the other verbs silently use their default for a malformed value |
 | template | none | all verbs ignore it | |
 
