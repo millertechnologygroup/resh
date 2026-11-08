@@ -8,7 +8,9 @@ Definition: Signs a file or base64 data with a private key, as a raw signature
 
 Usage:
   resh cert://<label>.sign [mode=data] signer_key=<path>
-    [signer_key_passphrase=<pass>] data_source=<path>
+    [signer_key_passphrase=<pass> | signer_key_passphrase_env=<VAR>
+    | signer_key_passphrase_stdin=true]
+    data_source=<path>
     (or data_bytes_base64=<b64>) [signature_output_path=<path>]
     [signature_algorithm=<alg>] [signature_encoding=base64|pem|der]
     [signature_format=raw|cms_detached|cms_attached signer_cert=<path>]

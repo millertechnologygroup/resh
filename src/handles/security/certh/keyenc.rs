@@ -4,10 +4,14 @@
 //! `openssl genpkey -aes256` write. Keys are written with PBKDF2-HMAC-SHA256
 //! and AES-256-CBC, a random 16-byte salt and IV.
 //!
+//! AES-CBC with PKCS#7 padding comes from the `cbc` crate.
+//!
 //! Passphrases never appear in messages.
 
-use aes_gcm::aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
+use aes_gcm::aes::cipher::{BlockCipher, BlockDecrypt, BlockEncrypt, KeyInit};
 use aes_gcm::aes::{Aes128, Aes192, Aes256};
+use cbc::cipher::block_padding::Pkcs7;
+use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use der::{Decode, Encode};
 use pkcs8::EncryptedPrivateKeyInfo;
 use pkcs8::pkcs5::EncryptionScheme;
@@ -26,44 +30,28 @@ pub const MAX_ITERATIONS: u64 = 10_000_000;
 /// Default `key_kdf_iterations`.
 pub const DEFAULT_ITERATIONS: u32 = 100_000;
 
-fn cbc_encrypt<C: BlockEncrypt>(cipher: &C, iv: &[u8; 16], plain: &[u8]) -> Vec<u8> {
-    // PKCS#7 padding: always 1..=16 bytes.
-    let pad = 16 - plain.len() % 16;
-    let mut data = plain.to_vec();
-    data.extend(std::iter::repeat_n(pad as u8, pad));
-    let mut prev = *iv;
-    for chunk in data.chunks_mut(16) {
-        for (b, p) in chunk.iter_mut().zip(prev.iter()) {
-            *b ^= p;
-        }
-        let block = GenericArray::from_mut_slice(chunk);
-        cipher.encrypt_block(block);
-        prev.copy_from_slice(chunk);
+fn cbc_encrypt<C>(key: &[u8], iv: &[u8; 16], plain: &[u8]) -> Vec<u8>
+where
+    C: BlockEncrypt + BlockCipher + KeyInit,
+    cbc::Encryptor<C>: KeyIvInit + BlockEncryptMut,
+{
+    match cbc::Encryptor::<C>::new_from_slices(key, iv) {
+        Ok(enc) => enc.encrypt_padded_vec_mut::<Pkcs7>(plain),
+        Err(_) => Vec::new(),
     }
-    data
 }
 
-fn cbc_decrypt<C: BlockDecrypt>(cipher: &C, iv: &[u8; 16], data: &[u8]) -> Option<Vec<u8>> {
-    if data.is_empty() || !data.len().is_multiple_of(16) {
-        return None;
-    }
-    let mut out = data.to_vec();
-    let mut prev = *iv;
-    for chunk in out.chunks_mut(16) {
-        let mut this = [0u8; 16];
-        this.copy_from_slice(chunk);
-        cipher.decrypt_block(GenericArray::from_mut_slice(chunk));
-        for (b, p) in chunk.iter_mut().zip(prev.iter()) {
-            *b ^= p;
-        }
-        prev = this;
-    }
-    let pad = *out.last()? as usize;
-    if pad == 0 || pad > 16 || out[out.len() - pad..].iter().any(|b| *b as usize != pad) {
-        return None;
-    }
-    out.truncate(out.len() - pad);
-    Some(out)
+/// AES-CBC decryption with the PKCS#7 padding checked; None if the key or
+/// the padding is wrong.
+fn cbc_decrypt<C>(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Option<Vec<u8>>
+where
+    C: BlockDecrypt + BlockCipher + KeyInit,
+    cbc::Decryptor<C>: KeyIvInit + BlockDecryptMut,
+{
+    cbc::Decryptor::<C>::new_from_slices(key, iv)
+        .ok()?
+        .decrypt_padded_vec_mut::<Pkcs7>(data)
+        .ok()
 }
 
 fn derive_key(prf: Pbkdf2Prf, pass: &[u8], salt: &[u8], rounds: u32, out: &mut [u8]) -> bool {
@@ -99,8 +87,7 @@ pub fn encrypt_pkcs8(plain_der: &[u8], passphrase: &str, iterations: u32) -> CRe
         iterations,
         &mut key,
     );
-    let cipher = Aes256::new(GenericArray::from_slice(&key));
-    let encrypted = cbc_encrypt(&cipher, &iv, plain_der);
+    let encrypted = cbc_encrypt::<Aes256>(&key, &iv, plain_der);
     let params =
         pbes2::Parameters::pbkdf2_sha256_aes256cbc(iterations, &salt, &iv).map_err(|e| fail(&e))?;
     EncryptedPrivateKeyInfo {
@@ -169,21 +156,9 @@ pub fn decrypt_pkcs8(enc_der: &[u8], passphrase: &str, label: &str) -> CResult<V
         return Err(unsupported("unsupported PBKDF2 hash".into()));
     }
     let plain = match key_len {
-        16 => cbc_decrypt(
-            &Aes128::new(GenericArray::from_slice(&key)),
-            iv,
-            info.encrypted_data,
-        ),
-        24 => cbc_decrypt(
-            &Aes192::new(GenericArray::from_slice(&key)),
-            iv,
-            info.encrypted_data,
-        ),
-        _ => cbc_decrypt(
-            &Aes256::new(GenericArray::from_slice(&key)),
-            iv,
-            info.encrypted_data,
-        ),
+        16 => cbc_decrypt::<Aes128>(&key, iv, info.encrypted_data),
+        24 => cbc_decrypt::<Aes192>(&key, iv, info.encrypted_data),
+        _ => cbc_decrypt::<Aes256>(&key, iv, info.encrypted_data),
     };
     // A wrong passphrase almost always breaks the padding; if it does not,
     // the result is not a PrivateKeyInfo.
@@ -291,16 +266,19 @@ mod tests {
 
     #[test]
     fn cbc_padding_is_checked() {
-        let cipher = Aes128::new(GenericArray::from_slice(&[7u8; 16]));
+        let key = [7u8; 16];
         let iv = [1u8; 16];
         for len in [0usize, 1, 15, 16, 17, 31, 32, 100] {
             let plain: Vec<u8> = (0..len).map(|i| i as u8).collect();
-            let enc = cbc_encrypt(&cipher, &iv, &plain);
+            let enc = cbc_encrypt::<Aes128>(&key, &iv, &plain);
             assert_eq!(enc.len() % 16, 0);
             assert!(enc.len() > plain.len());
-            assert_eq!(cbc_decrypt(&cipher, &iv, &enc).unwrap(), plain);
+            assert_eq!(cbc_decrypt::<Aes128>(&key, &iv, &enc).unwrap(), plain);
+            // Another key breaks the padding (or, rarely, the content).
+            let other = cbc_decrypt::<Aes128>(&[8u8; 16], &iv, &enc);
+            assert_ne!(other.as_deref(), Some(plain.as_slice()));
         }
-        assert!(cbc_decrypt(&cipher, &iv, &[0u8; 15]).is_none());
+        assert!(cbc_decrypt::<Aes128>(&key, &iv, &[0u8; 15]).is_none());
     }
 
     #[test]

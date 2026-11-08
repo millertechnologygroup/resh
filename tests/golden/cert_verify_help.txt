@@ -12,7 +12,7 @@ Usage:
     [trust_pem=<pem>] [max_chain_depth=<n>] [min_rsa_bits=<n>]
     [allow_self_signed=true|false] [allow_expired=true|false]
     [allow_not_yet_valid=true|false] [check_revocation=none|soft|hard]
-    [keypair_target=<key-path>] [disallow_weak_signatures=true|false]
+    [keypair_target=<key-path>]
     [include_chain_report=true|false] [encoding=auto|pem|der]
     [format=json|text]
 

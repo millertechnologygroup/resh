@@ -8,8 +8,12 @@ Definition: Creates a certificate signing request at the target path, signed
 Usage:
   resh cert://<csr-path>.csr.create subject=<json>
     [key_strategy=reuse|generate] [existing_key_path=<path>]
-    [existing_key_passphrase=<pass>] [new_key_output_path=<path>]
-    [new_key_passphrase=<pass>] [algorithm=rsa|ecdsa|ed25519]
+    [existing_key_passphrase=<pass> | existing_key_passphrase_env=<VAR>
+    | existing_key_passphrase_stdin=true]
+    [new_key_output_path=<path>]
+    [new_key_passphrase=<pass> | new_key_passphrase_env=<VAR>
+    | new_key_passphrase_stdin=true]
+    [algorithm=rsa|ecdsa|ed25519]
     [rsa_bits=2048|3072|4096] [ecdsa_curve=P-256|P-384]
     [key_format=pkcs8|pkcs1|sec1] [key_encoding=pem|der]
     [key_kdf=pbkdf2] [key_kdf_iterations=<n>] [csr_encoding=pem|der]

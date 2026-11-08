@@ -11,10 +11,14 @@ Usage:
     [ecdsa_curve=P-256|P-384] [subject=<json>] [sans=<json-array>]
     [is_ca=true|false] [path_len=<n>] [not_before=now|<rfc3339>]
     [not_after=<rfc3339>] [not_after_offset_days=<n>]
-    [signer_ca=<path>] [signer_key=<path>] [signer_key_passphrase=<pass>]
+    [signer_ca=<path>] [signer_key=<path>]
+    [signer_key_passphrase=<pass> | signer_key_passphrase_env=<VAR>
+    | signer_key_passphrase_stdin=true]
     [key_format=pkcs8|pkcs1|sec1] [key_encoding=pem|der]
     [cert_encoding=pem|der] [csr_encoding=pem|der]
-    [key_passphrase=<pass>] [key_kdf=pbkdf2] [key_kdf_iterations=<n>]
+    [key_passphrase=<pass> | key_passphrase_env=<VAR>
+    | key_passphrase_stdin=true]
+    [key_kdf=pbkdf2] [key_kdf_iterations=<n>]
     [output=<json>] [overwrite=true|false] [format=json|text]
     [timeout_ms=<ms>]
 
@@ -59,5 +63,7 @@ Example Output:
 
   Shown with --json-pretty. mode=leaf_cert needs signer_ca and signer_key
   (signer_key_passphrase for an encrypted CA key). key_passphrase writes an
-  encrypted PKCS#8 key (PBKDF2-HMAC-SHA256, AES-256-CBC). Default
-  timeout_ms is 300000; at the deadline nothing is written (exit 124).
+  encrypted PKCS#8 key (PBKDF2-HMAC-SHA256, AES-256-CBC). Give a passphrase
+  as <name>_env=<VAR> or <name>_stdin=true; <name>=<pass> works but warns.
+  Default timeout_ms is 300000; at the deadline nothing is written (exit
+  124).

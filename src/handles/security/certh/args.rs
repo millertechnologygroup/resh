@@ -40,7 +40,6 @@ const VERIFY_ARGS: &[&str] = &[
     "allow_not_yet_valid",
     "check_revocation",
     "keypair_target",
-    "disallow_weak_signatures",
     "include_chain_report",
     "encoding",
     "format",
@@ -218,6 +217,40 @@ const RENEW_ARGS: &[&str] = &[
 /// The arguments `verb` accepts (one list per verb; the help usage lists
 /// exactly these). For `sign` this is the union of both modes.
 pub fn verb_args(verb: &str) -> Option<Vec<&'static str>> {
+    base_args(verb).map(|v| expand(&v))
+}
+
+/// The three sources of each passphrase option `<name>`: `<name>=<pass>`,
+/// `<name>_env=<VAR>` and `<name>_stdin=true`.
+pub fn expand(list: &[&'static str]) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for a in list {
+        out.push(*a);
+        if a.ends_with("_passphrase") {
+            out.push(leak(format!("{a}_env")));
+            out.push(leak(format!("{a}_stdin")));
+        }
+    }
+    out
+}
+
+/// The option names are a small fixed set; each derived name is made once.
+fn leak(s: String) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    static NAMES: OnceLock<Mutex<Vec<&'static str>>> = OnceLock::new();
+    let mut names = NAMES
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if let Some(n) = names.iter().find(|n| **n == s) {
+        return n;
+    }
+    let n: &'static str = Box::leak(s.into_boxed_str());
+    names.push(n);
+    n
+}
+
+fn base_args(verb: &str) -> Option<Vec<&'static str>> {
     Some(match verb {
         "info" => INFO_ARGS.to_vec(),
         "verify" => VERIFY_ARGS.to_vec(),
@@ -280,11 +313,15 @@ pub fn hint(bad: &str, candidates: &[&str]) -> String {
 /// Typed, strict access to one verb's arguments.
 pub struct Reader<'a> {
     pub args: &'a Args,
+    /// The passphrase read from stdin (`<name>_passphrase_stdin=true`).
+    stdin: Option<String>,
+    /// Warnings for stderr (a passphrase given on the command line).
+    pub warnings: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'a> Reader<'a> {
     /// Refuses any argument `verb` does not accept, then gives typed access.
-    pub fn new(verb: &'a str, args: &'a Args) -> CResult<Self> {
+    pub fn new(verb: &'a str, args: &'a Args, input: &mut dyn std::io::Read) -> CResult<Self> {
         let allowed = verb_args(verb).unwrap_or_default();
         let mut keys: Vec<&String> = args.keys().collect();
         keys.sort();
@@ -298,6 +335,11 @@ impl<'a> Reader<'a> {
                      bounded size and finishes at once"
                 ),
                 "dry_run" => format!("cert {verb} does not accept dry_run"),
+                "disallow_weak_signatures" if verb == "verify" => {
+                    "disallow_weak_signatures was removed: weak signature algorithms \
+                     (SHA-1, MD5) are always rejected"
+                        .to_string()
+                }
                 _ => format!(
                     "unknown argument for cert {verb}: {key}{} (accepted: {})",
                     hint(key, &allowed),
@@ -306,10 +348,63 @@ impl<'a> Reader<'a> {
             };
             return Err(CertError::usage(message));
         }
-        Ok(Self { args })
+        // One source per passphrase, and at most one read from stdin.
+        let mut from_stdin = Vec::new();
+        for base in allowed.iter().filter(|a| a.ends_with("_passphrase")) {
+            let env = format!("{base}_env");
+            let stdin = format!("{base}_stdin");
+            let on_stdin = crate::core::lenient::bool_arg(args, &stdin)
+                .map_err(|e| CertError::usage(e.to_string()))?
+                .unwrap_or(false);
+            let given = usize::from(args.contains_key(*base))
+                + usize::from(args.contains_key(&env))
+                + usize::from(on_stdin);
+            if given > 1 {
+                return Err(CertError::usage(format!(
+                    "give {base} one way only: {base}=, {env}= or {stdin}=true"
+                )));
+            }
+            if on_stdin {
+                from_stdin.push(stdin);
+            }
+        }
+        if from_stdin.len() > 1 {
+            return Err(CertError::usage(format!(
+                "only one passphrase can be read from stdin per call ({})",
+                from_stdin.join(", ")
+            )));
+        }
+        let stdin = match from_stdin.first() {
+            None => None,
+            Some(name) => {
+                let mut text = String::new();
+                input.read_to_string(&mut text).map_err(|e| {
+                    CertError::usage(format!(
+                        "{name}: cannot read the passphrase from stdin: {e}"
+                    ))
+                })?;
+                let text = text
+                    .strip_suffix('\n')
+                    .map(|t| t.strip_suffix('\r').unwrap_or(t))
+                    .unwrap_or(&text)
+                    .to_string();
+                Some(text)
+            }
+        };
+        Ok(Self {
+            args,
+            stdin,
+            warnings: Default::default(),
+        })
     }
 
+    /// True if `key` is given; for a passphrase option, from any source.
     pub fn has(&self, key: &str) -> bool {
+        if key.ends_with("_passphrase") {
+            return self.args.contains_key(key)
+                || self.args.contains_key(&format!("{key}_env"))
+                || self.args.contains_key(&format!("{key}_stdin"));
+        }
         self.args.contains_key(key)
     }
 
@@ -318,6 +413,11 @@ impl<'a> Reader<'a> {
     pub fn refuse(&self, keys: &[&str], why: &str) -> CResult<()> {
         for k in keys {
             if self.has(k) {
+                let k = if self.args.contains_key(*k) {
+                    k.to_string()
+                } else {
+                    format!("{k}_env/{k}_stdin")
+                };
                 return Err(CertError::usage(format!(
                     "{k} is not used {why}; remove it"
                 )));
@@ -357,17 +457,52 @@ impl<'a> Reader<'a> {
         Ok(v)
     }
 
-    /// A passphrase: never empty (control characters other than line breaks
-    /// are allowed, but never echoed in messages).
+    /// A passphrase from `<key>=`, `<key>_env=<VAR>` or `<key>_stdin=true`:
+    /// never empty, no line breaks, never echoed in messages. The plain
+    /// option adds a warning (process lists and shell history show it).
     pub fn passphrase(&self, key: &str) -> CResult<Option<String>> {
-        match self.args.get(key) {
-            None => Ok(None),
-            Some(v) if v.is_empty() => Err(CertError::usage(format!("{key} must not be empty"))),
-            Some(v) if v.contains('\n') || v.contains('\r') => Err(CertError::usage(format!(
-                "{key} must not contain line breaks"
-            ))),
-            Some(v) => Ok(Some(v.clone())),
+        let (value, source) = if let Some(v) = self.args.get(key) {
+            self.warnings.borrow_mut().push(format!(
+                "Warning: {key}= puts the passphrase on the command line, where the process \
+                 list and shell history can show it; use {key}_env=<VAR> or \
+                 {key}_stdin=true"
+            ));
+            (v.clone(), key.to_string())
+        } else if let Some(var) = self.args.get(&format!("{key}_env")) {
+            let ok = var
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !ok {
+                return Err(CertError::usage(format!(
+                    "{key}_env must name an environment variable, got {var:?}"
+                )));
+            }
+            match std::env::var(var) {
+                Ok(v) => (v, format!("environment variable {var}")),
+                Err(_) => {
+                    return Err(CertError::usage(format!(
+                        "{key}_env: environment variable {var} is not set (or not UTF-8)"
+                    )));
+                }
+            }
+        } else if self.opt_flag(&format!("{key}_stdin"))? == Some(true) {
+            (self.stdin.clone().unwrap_or_default(), "stdin".to_string())
+        } else {
+            return Ok(None);
+        };
+        if value.is_empty() {
+            return Err(CertError::usage(format!(
+                "{key}: the passphrase from {source} is empty"
+            )));
         }
+        if value.contains('\n') || value.contains('\r') {
+            return Err(CertError::usage(format!(
+                "{key}: the passphrase from {source} contains a line break"
+            )));
+        }
+        Ok(Some(value))
     }
 
     /// A boolean in the CLI spellings (`true|false|1|0|yes|no|on|off`).

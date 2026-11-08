@@ -8,9 +8,13 @@ Definition: Issues a replacement for an existing certificate with the same
 Usage:
   resh cert://<cert-path>.renew
     [renewal_mode=auto|self_signed|explicit_signer] [signer_ca=<path>]
-    [signer_key=<path>] [signer_key_passphrase=<pass>]
+    [signer_key=<path>]
+    [signer_key_passphrase=<pass> | signer_key_passphrase_env=<VAR>
+    | signer_key_passphrase_stdin=true]
     [key_strategy=reuse|rekey] [existing_key_path=<path>]
-    [key_passphrase=<pass>] [algorithm=rsa|ecdsa|ed25519]
+    [key_passphrase=<pass> | key_passphrase_env=<VAR>
+    | key_passphrase_stdin=true]
+    [algorithm=rsa|ecdsa|ed25519]
     [rsa_bits=2048|3072|4096] [ecdsa_curve=P-256|P-384]
     [key_format=pkcs8|pkcs1|sec1] [key_encoding=pem|der]
     [key_kdf=pbkdf2] [key_kdf_iterations=<n>]

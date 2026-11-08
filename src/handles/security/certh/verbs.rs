@@ -342,17 +342,31 @@ fn write_outputs(files: &[(&str, &[u8], bool)], overwrite: bool) -> CResult<()> 
 // ---------------------------------------------------------------------------
 
 impl CertHandle {
-    pub(super) fn dispatch(&self, verb: &str, args: &Args) -> CResult<Done> {
-        let r = Reader::new(verb, args)?;
+    /// Runs `verb`; also returns the warnings for stderr.
+    pub(super) fn dispatch(
+        &self,
+        verb: &str,
+        args: &Args,
+        stdin: &mut dyn std::io::Read,
+    ) -> (CResult<Done>, Vec<String>) {
+        let r = match Reader::new(verb, args, stdin) {
+            Ok(r) => r,
+            Err(e) => return (Err(e), Vec::new()),
+        };
+        let result = self.run_verb(verb, &r);
+        (result, r.warnings.take())
+    }
+
+    fn run_verb(&self, verb: &str, r: &Reader) -> CResult<Done> {
         match verb {
-            "info" => self.run_info(&r),
-            "verify" => self.run_verify(&r),
-            "chain.info" => self.run_chain_info(&r),
-            "generate" => self.run_generate(&r),
-            "csr.create" => self.run_csr_create(&r),
-            "sign" => self.run_sign(&r),
-            "csr.sign" => self.run_csr_sign(&r),
-            "renew" => self.run_renew(&r),
+            "info" => self.run_info(r),
+            "verify" => self.run_verify(r),
+            "chain.info" => self.run_chain_info(r),
+            "generate" => self.run_generate(r),
+            "csr.create" => self.run_csr_create(r),
+            "sign" => self.run_sign(r),
+            "csr.sign" => self.run_csr_sign(r),
+            "renew" => self.run_renew(r),
             other => Err(CertError::usage(format!(
                 "unknown verb for cert://: {other}{}",
                 args::hint(other, args::VERBS)
@@ -609,7 +623,6 @@ impl CertHandle {
             _ => RevocationMode::None,
         };
         opts.keypair_target = r.text("keypair_target")?;
-        opts.disallow_weak_signatures = r.flag("disallow_weak_signatures", true)?;
         opts.include_chain_report = r.flag("include_chain_report", true)?;
 
         let data = read_input("certificate file", &self.target_path)?;
@@ -2232,11 +2245,11 @@ impl CertHandle {
     fn run_sign(&self, r: &Reader) -> CResult<Done> {
         let json = format_json(r)?;
         let csr_mode = r.choice("mode", &["data", "csr"])?.unwrap_or("data") == "csr";
-        let allowed = if csr_mode {
+        let allowed = args::expand(if csr_mode {
             args::SIGN_CSR_ARGS
         } else {
             args::SIGN_DATA_ARGS
-        };
+        });
         let mode_name = if csr_mode { "mode=csr" } else { "mode=data" };
         for k in r.args.keys() {
             if !allowed.contains(&k.as_str()) {

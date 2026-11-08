@@ -6,7 +6,7 @@
 
 Resource Shell (resh) is a resource-oriented command-line environment that models infrastructure operations as URI-style commands. The `cert://` handle inspects and manages X.509 certificates, private keys, and certificate signing requests (CSRs) stored as PEM or DER files.
 
-It uses pure-Rust libraries (x509-parser, rcgen, ring, rustls-webpki, rsa, p256, p384, ed25519-dalek, pkcs8); OpenSSL is not required. All work is on local files: the handle makes no network connections.
+It uses pure-Rust libraries (x509-parser, rcgen, ring, rustls-webpki, rsa, p256, p384, ed25519-dalek, pkcs8, cbc); OpenSSL is not required. All work is on local files: the handle makes no network connections.
 
 ### What the handle does
 
@@ -45,6 +45,21 @@ Built-in help (authoritative for every option):
 ```bash
 resh cert --help
 resh cert generate --help
+```
+
+### Passphrases
+
+Every passphrase option `<name>` (`key_passphrase`, `signer_key_passphrase`, `existing_key_passphrase`, `new_key_passphrase`) can be given three ways, exactly one per passphrase:
+
+* `<name>_env=<VAR>`: read from the environment variable `VAR` (it must be set and not empty);
+* `<name>_stdin=true`: read from standard input (one trailing newline is removed); at most one passphrase per call can come from stdin;
+* `<name>=<pass>`: on the command line. This works, but prints `Warning: <name>= puts the passphrase on the command line, ...` on stderr every time, because the process list and shell history can show it.
+
+An empty passphrase, or one with a line break, is refused (exit 2). Passphrases never appear in the output or in messages.
+
+```bash
+CA_PASS='ca secret' resh cert://./ca.generate mode=self_signed algorithm=ecdsa is_ca=true subject='{"common_name":"Example CA"}' key_passphrase_env=CA_PASS
+printf '%s\n' "$CA_PASS" | resh cert://./ca.sign mode=csr csr_source=web-req.pem signer_cert=ca.pem signer_key=ca-key.pem signer_key_passphrase_stdin=true cert_output_path=web.pem
 ```
 
 ### Strict arguments
@@ -96,7 +111,7 @@ resh cert:///etc/ssl/certs/server.pem.verify purpose=server_auth
 resh cert://./web.pem.verify ca_file=private-ca.pem keypair_target=web-key.pem
 ```
 
-Options: `hostname=`, `purpose=server_auth|client_auth|code_signing|email_protection|any` (default `any`), `trust=system|mount|inline` (default `system`), `trust_paths=<path>,...`, `ca_file=<pem>`, `trust_pem=<pem>`, `max_chain_depth` (1-20, default 10), `min_rsa_bits` (2048-16384, default 2048), `allow_self_signed`, `allow_expired`, `allow_not_yet_valid`, `check_revocation=none|soft|hard`, `keypair_target=<key-path>`, `disallow_weak_signatures` (default `true`), `include_chain_report` (default `true`), `encoding=auto|pem|der`, `format=json|text`.
+Options: `hostname=`, `purpose=server_auth|client_auth|code_signing|email_protection|any` (default `any`), `trust=system|mount|inline` (default `system`), `trust_paths=<path>,...`, `ca_file=<pem>`, `trust_pem=<pem>`, `max_chain_depth` (1-20, default 10), `min_rsa_bits` (2048-16384, default 2048), `allow_self_signed`, `allow_expired`, `allow_not_yet_valid`, `check_revocation=none|soft|hard`, `keypair_target=<key-path>`, `include_chain_report` (default `true`), `encoding=auto|pem|der`, `format=json|text`.
 
 Trust anchors:
 
@@ -109,7 +124,7 @@ Checks:
 
 | Check        | What is checked |
 | ------------ | --------------- |
-| `structure`  | X.509 version, matching signature algorithm fields, weak signature algorithm (SHA-1, MD5) when `disallow_weak_signatures=true`, RSA key size against `min_rsa_bits` |
+| `structure`  | X.509 version, matching signature algorithm fields, weak signature algorithm (SHA-1, MD5: always refused), RSA key size against `min_rsa_bits` |
 | `chain`      | The first certificate is validated by **rustls-webpki** through the other certificates in the file (intermediates) to a trust anchor: every signature, the validity of every certificate, basic constraints, path length, name constraints. Then the path length against `max_chain_depth` and every RSA key against `min_rsa_bits`. A certificate that is itself an anchor passes. A self-signed certificate that is not an anchor fails with `cert.self_signed_not_allowed` unless `allow_self_signed=true` (its self-signature is still checked). |
 | `time`       | The certificate's own validity period; `allow_expired` / `allow_not_yet_valid` accept it, and the chain is then validated at the certificate's expiry (or start). |
 | `hostname`   | rustls-webpki's TLS name check against the subjectAltName DNS and IP entries (wildcards in the leftmost label). The common name is not used. |
@@ -117,7 +132,7 @@ Checks:
 | `keypair`    | The private key in `keypair_target` belongs to the certificate (encrypted keys cannot be checked here). |
 | `revocation` | Not implemented: `none` skips, `soft` reports `not_checked`, `hard` reports `unsupported` and fails. |
 
-* Supported in chains: RSA 2048-8192 bits (PKCS#1 v1.5 SHA-256/384/512, PSS), ECDSA P-256/P-384, Ed25519. Other algorithms report `cert.unsupported_signature_algorithm` (status `unsupported`). `disallow_weak_signatures=false` only stops the structure check from failing on SHA-1: a SHA-1 chain is never accepted.
+* Supported in chains: RSA 2048-8192 bits (PKCS#1 v1.5 SHA-256/384/512, PSS), ECDSA P-256/P-384, Ed25519. Other algorithms report `cert.unsupported_signature_algorithm` (status `unsupported`). Weak signature algorithms (SHA-1, MD5) are always rejected; the former `disallow_weak_signatures` option is refused (exit 2).
 * webpki does not accept a CA certificate as the end-entity: verifying a CA certificate that is not itself an anchor fails with `cert.ca_used_as_end_entity`.
 * A private key file is checked for structure only (the other checks are skipped). A CSR or public key fails with `cert.unsupported_type`.
 * If any check fails, the full report is printed with `"ok": false` and an `error` object (`cert.verification_failed`), and the command exits 1.
@@ -146,8 +161,8 @@ Before this release chain.info did not link certificates to their issuers and al
 
 ```bash
 resh --json-pretty cert://./server.generate mode=key algorithm=ecdsa
-resh cert://./ca.generate mode=self_signed algorithm=ecdsa is_ca=true subject='{"common_name":"Example CA"}' key_passphrase='ca secret'
-resh cert://./web.generate mode=leaf_cert signer_ca=ca.pem signer_key=ca-key.pem signer_key_passphrase='ca secret' subject='{"common_name":"web.test"}' sans='["DNS:web.test"]'
+resh cert://./ca.generate mode=self_signed algorithm=ecdsa is_ca=true subject='{"common_name":"Example CA"}' key_passphrase_env=CA_PASS
+resh cert://./web.generate mode=leaf_cert signer_ca=ca.pem signer_key=ca-key.pem signer_key_passphrase_env=CA_PASS subject='{"common_name":"web.test"}' sans='["DNS:web.test"]'
 ```
 
 Files are written beside the target path: `<target>-key.pem` (key), `<target>.pem` (certificate), `<target>.csr` (CSR, `mode=csr`), also when the encoding is DER.
@@ -166,7 +181,7 @@ Files are written beside the target path: `<target>-key.pem` (key), `<target>.pe
 | `key_format`            | `pkcs8` (default), `pkcs1` (RSA only), `sec1` (ECDSA only, with the named curve) |
 | `key_encoding`, `cert_encoding`, `csr_encoding` | `pem` (default), `der`                       |
 | `key_passphrase`        | encrypts the key as PKCS#8 `ENCRYPTED PRIVATE KEY` (PBKDF2-HMAC-SHA256, AES-256-CBC, random salt and IV); needs `key_format=pkcs8` |
-| `key_kdf`               | `pbkdf2` (default); `argon2id` is refused (PKCS#8 has no standard argon2 scheme). Only with `key_passphrase` |
+| `key_kdf`               | `pbkdf2` (the default and only value); `argon2id` is refused with exit 2 (PKCS#8 has no standard argon2 scheme). Only with `key_passphrase` |
 | `key_kdf_iterations`    | PBKDF2 iterations, 10000-10000000, default 100000. Only with `key_passphrase` |
 | `output`                | JSON object: `write_key`, `write_cert`, `write_csr` (default `true`), `return_key`, `return_csr` (default `false`), `return_cert` (default `true`); the cert fields only in certificate modes, the CSR fields only with `mode=csr` |
 | `overwrite`             | default `false`: if any output file exists, nothing is written and the command fails with `cert.target_exists` |
@@ -186,7 +201,7 @@ The CSR is written to the target path exactly (here `./web-req.pem`).
 
 * `subject` (required, with `common_name`), `sans`, `key_usage` (`digitalSignature`, `contentCommitment`, `keyEncipherment`, `dataEncipherment`, `keyAgreement`, `keyCertSign`, `cRLSign`, `encipherOnly`, `decipherOnly`), `extended_key_usage` (`serverAuth`, `clientAuth`, `codeSigning`, `emailProtection`, `timeStamping`, `ocspSigning`): the key usage (critical) and extended key usage are requested in the CSR's extension request. Before this release `key_usage` made csr.create fail.
 * `key_strategy=reuse` (default) needs `existing_key_path`; `existing_key_passphrase` decrypts an encrypted key. The algorithm is read from the key; `algorithm=` is only checked against it (a mismatch fails with `cert.keypair_mismatch`).
-* `key_strategy=generate` needs `new_key_output_path` (mode 0600, different from the CSR path) and takes `algorithm`, `rsa_bits`, `ecdsa_curve`, `key_format`, `key_encoding`, `new_key_passphrase` (encrypted PKCS#8, as `key_passphrase` on generate), `key_kdf`, `key_kdf_iterations`, `include_new_key_pem`. Before this release `new_key_passphrase` had no effect and `key_format=pkcs1|sec1` wrote a mislabelled key.
+* `key_strategy=generate` needs `new_key_output_path` (mode 0600, different from the CSR path) and takes `algorithm`, `rsa_bits`, `ecdsa_curve`, `key_format`, `key_encoding`, `new_key_passphrase` (encrypted PKCS#8, as `key_passphrase` on generate; see Passphrases), `key_kdf`, `key_kdf_iterations`, `include_new_key_pem`. Before this release `new_key_passphrase` had no effect and `key_format=pkcs1|sec1` wrote a mislabelled key.
 * `csr_encoding=pem|der`, `include_csr_pem` (returns the CSR, PEM or base64 DER), `overwrite` (covers both the CSR and the new key), `format`, `timeout_ms` (default 300000).
 
 ### sign
@@ -232,7 +247,7 @@ The CSR signature is verified (`cert.csr_invalid` if it does not verify); the ce
 ```bash
 resh cert:///etc/ssl/certs/server.pem.renew format=text
 resh cert://./web.pem.renew signer_ca=ca.pem signer_key=ca-key.pem existing_key_path=web-key.pem
-resh cert://./web.pem.renew key_strategy=rekey algorithm=ecdsa key_passphrase='new secret' signer_ca=ca.pem signer_key=ca-key.pem
+resh cert://./web.pem.renew key_strategy=rekey algorithm=ecdsa key_passphrase_stdin=true signer_ca=ca.pem signer_key=ca-key.pem
 ```
 
 * `renewal_mode=auto` (default: self-signed certificates are self-signed again, CA-signed ones need `signer_ca` and `signer_key` together, else `cert.signer_required`, exit 2), `self_signed` (refuses signer options), `explicit_signer` (requires both). `signer_key_passphrase` decrypts an encrypted CA key.
@@ -314,15 +329,15 @@ Linux is the only supported and tested platform. macOS and Windows are not suppo
 ## 7. Usage Guidance
 
 * Prefer ECDSA P-256 or Ed25519, or RSA 2048+.
-* Protect CA keys with `key_passphrase` and keep them in a directory only you can read. Passphrases on the command line are visible in the process list and shell history.
+* Protect CA keys with a passphrase (`key_passphrase_env=` or `key_passphrase_stdin=true`) and keep them in a directory only you can read. Passphrases on the command line are visible in the process list and shell history.
 * Validate certificates with `verify` before deploying them; use `chain.info` to see why a chain does not validate.
 * Monitor expiry with `info` (`validity.not_after`, `validity.is_currently_valid`).
 
 Typical CA-signed workflow:
 
 ```bash
-resh cert://./ca.generate mode=self_signed algorithm=ecdsa is_ca=true subject='{"common_name":"Example CA"}' key_passphrase='ca secret'
+resh cert://./ca.generate mode=self_signed algorithm=ecdsa is_ca=true subject='{"common_name":"Example CA"}' key_passphrase_env=CA_PASS
 resh cert://./web-req.pem.csr.create key_strategy=generate algorithm=ecdsa new_key_output_path=web-key.pem subject='{"common_name":"web.test"}' sans='["DNS:web.test"]'
-resh cert://./ca.sign mode=csr csr_source=web-req.pem signer_cert=ca.pem signer_key=ca-key.pem signer_key_passphrase='ca secret' cert_output_path=web.pem
+resh cert://./ca.sign mode=csr csr_source=web-req.pem signer_cert=ca.pem signer_key=ca-key.pem signer_key_passphrase_env=CA_PASS cert_output_path=web.pem
 resh cert://./web.pem.verify ca_file=ca.pem hostname=web.test purpose=server_auth format=text
 ```

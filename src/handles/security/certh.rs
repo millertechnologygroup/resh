@@ -138,7 +138,7 @@ digests of the whole DER certificate."#,
                     [trust_pem=<pem>] [max_chain_depth=<n>] [min_rsa_bits=<n>]\n  \
                     [allow_self_signed=true|false] [allow_expired=true|false]\n  \
                     [allow_not_yet_valid=true|false] [check_revocation=none|soft|hard]\n  \
-                    [keypair_target=<key-path>] [disallow_weak_signatures=true|false]\n  \
+                    [keypair_target=<key-path>]\n  \
                     [include_chain_report=true|false] [encoding=auto|pem|der]\n  \
                     [format=json|text]",
                 example: "resh cert://./web.pem.verify trust_paths=ca.pem hostname=web.test \
@@ -241,10 +241,14 @@ trust_paths, ca_file and trust_pem as anchors."#,
                     [ecdsa_curve=P-256|P-384] [subject=<json>] [sans=<json-array>]\n  \
                     [is_ca=true|false] [path_len=<n>] [not_before=now|<rfc3339>]\n  \
                     [not_after=<rfc3339>] [not_after_offset_days=<n>]\n  \
-                    [signer_ca=<path>] [signer_key=<path>] [signer_key_passphrase=<pass>]\n  \
+                    [signer_ca=<path>] [signer_key=<path>]\n  \
+                    [signer_key_passphrase=<pass> | signer_key_passphrase_env=<VAR>\n  \
+                    | signer_key_passphrase_stdin=true]\n  \
                     [key_format=pkcs8|pkcs1|sec1] [key_encoding=pem|der]\n  \
                     [cert_encoding=pem|der] [csr_encoding=pem|der]\n  \
-                    [key_passphrase=<pass>] [key_kdf=pbkdf2] [key_kdf_iterations=<n>]\n  \
+                    [key_passphrase=<pass> | key_passphrase_env=<VAR>\n  \
+                    | key_passphrase_stdin=true]\n  \
+                    [key_kdf=pbkdf2] [key_kdf_iterations=<n>]\n  \
                     [output=<json>] [overwrite=true|false] [format=json|text]\n  \
                     [timeout_ms=<ms>]",
                 example: "resh --json-pretty cert://./server.generate mode=key algorithm=ecdsa",
@@ -286,8 +290,10 @@ trust_paths, ca_file and trust_pem as anchors."#,
 
 Shown with --json-pretty. mode=leaf_cert needs signer_ca and signer_key
 (signer_key_passphrase for an encrypted CA key). key_passphrase writes an
-encrypted PKCS#8 key (PBKDF2-HMAC-SHA256, AES-256-CBC). Default
-timeout_ms is 300000; at the deadline nothing is written (exit 124)."#,
+encrypted PKCS#8 key (PBKDF2-HMAC-SHA256, AES-256-CBC). Give a passphrase
+as <name>_env=<VAR> or <name>_stdin=true; <name>=<pass> works but warns.
+Default timeout_ms is 300000; at the deadline nothing is written (exit
+124)."#,
                 ),
             }),
         },
@@ -300,8 +306,12 @@ timeout_ms is 300000; at the deadline nothing is written (exit 124)."#,
             detail: Some(VerbDetail {
                 usage: "resh cert://<csr-path>.csr.create subject=<json>\n  \
                     [key_strategy=reuse|generate] [existing_key_path=<path>]\n  \
-                    [existing_key_passphrase=<pass>] [new_key_output_path=<path>]\n  \
-                    [new_key_passphrase=<pass>] [algorithm=rsa|ecdsa|ed25519]\n  \
+                    [existing_key_passphrase=<pass> | existing_key_passphrase_env=<VAR>\n  \
+                    | existing_key_passphrase_stdin=true]\n  \
+                    [new_key_output_path=<path>]\n  \
+                    [new_key_passphrase=<pass> | new_key_passphrase_env=<VAR>\n  \
+                    | new_key_passphrase_stdin=true]\n  \
+                    [algorithm=rsa|ecdsa|ed25519]\n  \
                     [rsa_bits=2048|3072|4096] [ecdsa_curve=P-256|P-384]\n  \
                     [key_format=pkcs8|pkcs1|sec1] [key_encoding=pem|der]\n  \
                     [key_kdf=pbkdf2] [key_kdf_iterations=<n>] [csr_encoding=pem|der]\n  \
@@ -364,7 +374,9 @@ or serverAuth, as a JSON array or comma list."#,
                 label in the output.",
             detail: Some(VerbDetail {
                 usage: "resh cert://<label>.sign [mode=data] signer_key=<path>\n  \
-                    [signer_key_passphrase=<pass>] data_source=<path>\n  \
+                    [signer_key_passphrase=<pass> | signer_key_passphrase_env=<VAR>\n  \
+                    | signer_key_passphrase_stdin=true]\n  \
+                    data_source=<path>\n  \
                     (or data_bytes_base64=<b64>) [signature_output_path=<path>]\n  \
                     [signature_algorithm=<alg>] [signature_encoding=base64|pem|der]\n  \
                     [signature_format=raw|cms_detached|cms_attached signer_cert=<path>]\n  \
@@ -438,9 +450,13 @@ certificate keeps the CSR subject, SANs, and public key."#,
             detail: Some(VerbDetail {
                 usage: "resh cert://<cert-path>.renew\n  \
                     [renewal_mode=auto|self_signed|explicit_signer] [signer_ca=<path>]\n  \
-                    [signer_key=<path>] [signer_key_passphrase=<pass>]\n  \
+                    [signer_key=<path>]\n  \
+                    [signer_key_passphrase=<pass> | signer_key_passphrase_env=<VAR>\n  \
+                    | signer_key_passphrase_stdin=true]\n  \
                     [key_strategy=reuse|rekey] [existing_key_path=<path>]\n  \
-                    [key_passphrase=<pass>] [algorithm=rsa|ecdsa|ed25519]\n  \
+                    [key_passphrase=<pass> | key_passphrase_env=<VAR>\n  \
+                    | key_passphrase_stdin=true]\n  \
+                    [algorithm=rsa|ecdsa|ed25519]\n  \
                     [rsa_bits=2048|3072|4096] [ecdsa_curve=P-256|P-384]\n  \
                     [key_format=pkcs8|pkcs1|sec1] [key_encoding=pem|der]\n  \
                     [key_kdf=pbkdf2] [key_kdf_iterations=<n>]\n  \
@@ -870,7 +886,6 @@ pub struct CertVerifyOptions {
     pub max_chain_depth: u8,
     pub check_revocation: RevocationMode,
     pub min_rsa_bits: u16,
-    pub disallow_weak_signatures: bool,
     pub keypair_target: Option<String>,
     pub include_chain_report: bool,
 }
@@ -891,7 +906,6 @@ impl Default for CertVerifyOptions {
             max_chain_depth: 10,
             check_revocation: RevocationMode::None,
             min_rsa_bits: 2048,
-            disallow_weak_signatures: true,
             keypair_target: None,
             include_chain_report: true,
         }
@@ -1677,7 +1691,7 @@ impl CertHandle {
             );
         }
 
-        if opts.disallow_weak_signatures && is_weak_signature_algorithm(&sig_oid) {
+        if is_weak_signature_algorithm(&sig_oid) {
             return CheckResult::fail(
                 &format!(
                     "Certificate uses weak signature algorithm {}",
@@ -1773,7 +1787,6 @@ impl CertHandle {
                 RevocationMode::Hard => "hard",
             },
             "min_rsa_bits": opts.min_rsa_bits,
-            "disallow_weak_signatures": opts.disallow_weak_signatures,
             "allow_self_signed": opts.allow_self_signed,
             "allow_expired": opts.allow_expired,
             "allow_not_yet_valid": opts.allow_not_yet_valid,
@@ -2340,7 +2353,11 @@ impl Handle for CertHandle {
         }
 
         let json = args.get("format").map(String::as_str) != Some("text");
-        match self.dispatch(verb, args) {
+        let (result, warnings) = self.dispatch(verb, args, &mut *io.stdin);
+        for w in &warnings {
+            writeln!(io.stderr, "{w}")?;
+        }
+        let status = match result {
             Ok(done) => {
                 match done.out {
                     verbs::Out::Json(v) => {
@@ -2348,8 +2365,7 @@ impl Handle for CertHandle {
                     }
                     verbs::Out::Text(t) => write!(io.stdout, "{}", t)?,
                 }
-                io.stdout.flush()?;
-                Ok(done.status)
+                done.status
             }
             Err(e) => {
                 if json {
@@ -2359,11 +2375,21 @@ impl Handle for CertHandle {
                         "error": e.to_json(),
                     });
                     writeln!(io.stdout, "{}", serde_json::to_string_pretty(&v)?)?;
-                    io.stdout.flush()?;
                 }
-                Ok(Status::coded(e.exit, e.code, &e.message))
+                Status::coded(e.exit, e.code, &e.message)
             }
+        };
+        io.stdout.flush()?;
+        // main prints the error line only when the handle wrote nothing to
+        // stderr; after a warning it is printed here.
+        if !status.ok && !warnings.is_empty() {
+            writeln!(
+                io.stderr,
+                "Error: {}",
+                status.reason.as_deref().unwrap_or("")
+            )?;
         }
+        Ok(status)
     }
 }
 

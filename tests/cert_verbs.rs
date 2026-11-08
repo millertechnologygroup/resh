@@ -51,12 +51,29 @@ impl Run {
 }
 
 fn resh_in(dir: &Path, args: &[&str]) -> Run {
-    let out = Command::new(assert_cmd::cargo::cargo_bin!("resh"))
+    resh_with(dir, args, &[], "")
+}
+
+/// Runs resh with extra environment variables and `input` on stdin.
+fn resh_with(dir: &Path, args: &[&str], env: &[(&str, &str)], input: &str) -> Run {
+    use std::io::Write;
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin!("resh"))
         .env_remove("SSH_AUTH_SOCK")
+        .envs(env.iter().copied())
         .current_dir(dir)
         .args(args)
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
     Run {
         code: out.status.code().unwrap_or(-1),
@@ -88,7 +105,7 @@ fn have_openssl() -> bool {
 /// ca.pem/ca-key.pem (encrypted with "ca pass"), web-key.pem, web.csr and
 /// web.pem issued by the CA, made through the binary.
 fn workflow(d: &Path) {
-    resh_in(
+    let r = resh_with(
         d,
         &[
             "cert://./ca.generate",
@@ -96,10 +113,13 @@ fn workflow(d: &Path) {
             "algorithm=ecdsa",
             "is_ca=true",
             r#"subject={"common_name":"Example CA"}"#,
-            "key_passphrase=ca pass",
+            "key_passphrase_env=RESH_TEST_CA_PASS",
         ],
-    )
-    .ok();
+        &[("RESH_TEST_CA_PASS", "ca pass")],
+        "",
+    );
+    r.ok();
+    assert!(r.stderr.is_empty(), "{}", r.stderr);
     resh_in(
         d,
         &[
@@ -114,7 +134,7 @@ fn workflow(d: &Path) {
         ],
     )
     .ok();
-    resh_in(
+    let r = resh_with(
         d,
         &[
             "cert://./ca.sign",
@@ -122,12 +142,15 @@ fn workflow(d: &Path) {
             "csr_source=web.csr",
             "signer_cert=ca.pem",
             "signer_key=ca-key.pem",
-            "signer_key_passphrase=ca pass",
+            "signer_key_passphrase_stdin=true",
             "cert_output_path=web.pem",
             "key_usage=digitalSignature,keyEncipherment",
         ],
-    )
-    .ok();
+        &[],
+        "ca pass\n",
+    );
+    r.ok();
+    assert!(r.stderr.is_empty(), "{}", r.stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -624,4 +647,44 @@ fn help_examples_run() {
     }
     // csr.sign's example is the sign help.
     assert_eq!(example("csr.sign").0, vec!["cert", "sign", "--help"]);
+}
+
+/// A passphrase on the command line works but warns; the passphrase never
+/// appears in the output.
+#[test]
+fn plain_passphrases_warn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    workflow(d);
+    std::fs::write(d.join("data"), b"x").unwrap();
+    let r = resh_in(
+        d,
+        &[
+            "cert://./ca.sign",
+            "signer_key=ca-key.pem",
+            "signer_key_passphrase=ca pass",
+            "data_source=data",
+            "include_signature_bytes=true",
+        ],
+    );
+    r.ok();
+    assert!(
+        r.stderr
+            .contains("Warning: signer_key_passphrase= puts the passphrase on the command line"),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stdout.contains("ca pass") && !r.stderr.contains("ca pass"));
+    let r = resh_with(
+        d,
+        &[
+            "cert://./ca.sign",
+            "signer_key=ca-key.pem",
+            "signer_key_passphrase_env=NOPE_X",
+            "data_source=data",
+        ],
+        &[],
+        "",
+    );
+    r.fails(2, "cert.invalid_argument");
 }

@@ -13,6 +13,7 @@ struct Run {
     exit: i32,
     json: Value,
     stdout: String,
+    stderr: String,
     reason: String,
 }
 
@@ -40,6 +41,10 @@ impl Run {
 }
 
 fn call(target: &str, verb: &str, pairs: &[(&str, &str)]) -> Run {
+    call_in(target, verb, pairs, "")
+}
+
+fn call_in(target: &str, verb: &str, pairs: &[(&str, &str)], input: &str) -> Run {
     let handle = CertHandle {
         target_path: target.to_string(),
     };
@@ -47,7 +52,7 @@ fn call(target: &str, verb: &str, pairs: &[(&str, &str)]) -> Run {
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    let mut stdin = std::io::empty();
+    let mut stdin = std::io::Cursor::new(input.as_bytes().to_vec());
     let mut out: Vec<u8> = Vec::new();
     let mut err: Vec<u8> = Vec::new();
     let status = {
@@ -63,6 +68,7 @@ fn call(target: &str, verb: &str, pairs: &[(&str, &str)]) -> Run {
         exit: status.exit_code(),
         json: serde_json::from_str(&stdout).unwrap_or(Value::Null),
         stdout,
+        stderr: String::from_utf8(err).unwrap(),
         reason: status.reason.unwrap_or_default(),
     }
 }
@@ -1561,4 +1567,106 @@ fn renew_refusals() {
         call(&t, "renew", &bad).fails(2, "cert.invalid_argument");
     }
     call(&t, "renew", &[]).fails(1, "cert.not_found");
+}
+
+// ---------------------------------------------------------------------------
+// Passphrase sources
+// ---------------------------------------------------------------------------
+
+#[test]
+fn passphrases_come_from_stdin_env_or_the_command_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    // stdin (one trailing newline is not part of the passphrase).
+    let r = call_in(
+        &p(d, "s"),
+        "generate",
+        &[("algorithm", "ed25519"), ("key_passphrase_stdin", "true")],
+        "stdin pass\n",
+    );
+    r.ok();
+    assert!(r.stderr.is_empty(), "{}", r.stderr);
+    let k = keys::load_key("k", &p(d, "s-key.pem"), Some("stdin pass"), "x").unwrap();
+    assert!(k.encrypted);
+    // The plain option works and warns every time.
+    let r = call(
+        &p(d, "c"),
+        "csr.create",
+        &[
+            ("subject", r#"{"common_name":"c"}"#),
+            ("existing_key_path", &p(d, "s-key.pem")),
+            ("existing_key_passphrase", "stdin pass"),
+        ],
+    );
+    r.ok();
+    assert!(
+        r.stderr
+            .contains("Warning: existing_key_passphrase= puts the passphrase"),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stdout.contains("stdin pass") && !r.stderr.contains("stdin pass"));
+    // A failure after a warning still prints the error line.
+    let r = call(
+        &p(d, "c2"),
+        "csr.create",
+        &[
+            ("subject", r#"{"common_name":"c"}"#),
+            ("existing_key_path", &p(d, "s-key.pem")),
+            ("existing_key_passphrase", "wrong pass"),
+        ],
+    );
+    r.fails(1, "cert.key_decrypt_failed");
+    assert!(
+        r.stderr.contains("Error: [cert.key_decrypt_failed]"),
+        "{}",
+        r.stderr
+    );
+    // Refusals: two sources, two stdin passphrases, empty stdin, bad env.
+    let t = p(d, "x");
+    for (args, input) in [
+        (
+            vec![("key_passphrase", "a"), ("key_passphrase_stdin", "true")],
+            "b",
+        ),
+        (
+            vec![("key_passphrase", "a"), ("key_passphrase_env", "HOME")],
+            "",
+        ),
+        (vec![("key_passphrase_stdin", "true")], ""),
+        (vec![("key_passphrase_stdin", "true")], "\n"),
+        (vec![("key_passphrase_stdin", "true")], "two\nlines\n"),
+        (vec![("key_passphrase_stdin", "maybe")], "x"),
+        (vec![("key_passphrase_env", "NOT A VAR")], ""),
+        (
+            vec![("key_passphrase_env", "RESH_CERT_TEST_UNSET_VARIABLE")],
+            "",
+        ),
+        (
+            vec![
+                ("key_kdf_iterations", "20000"),
+                ("key_passphrase_stdin", "false"),
+            ],
+            "",
+        ),
+        (
+            vec![
+                ("mode", "leaf_cert"),
+                ("subject", r#"{"common_name":"l"}"#),
+                ("signer_ca", "c"),
+                ("signer_key", "k"),
+                ("signer_key_passphrase_stdin", "true"),
+                ("key_passphrase_stdin", "true"),
+            ],
+            "p",
+        ),
+    ] {
+        call_in(&t, "generate", &args, input).fails(2, "cert.invalid_argument");
+    }
+    call(&t, "generate", &[("signer_key_passphrase_env", "X")]).fails(2, "cert.invalid_argument");
+    let r = call(&t, "verify", &[("disallow_weak_signatures", "false")]);
+    r.fails(2, "cert.invalid_argument");
+    assert!(r.reason.contains("always rejected"), "{}", r.reason);
+    // Only the key and the CSR of the successful calls exist.
+    assert_eq!(fs::read_dir(d).unwrap().count(), 2);
 }
