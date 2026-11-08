@@ -1846,3 +1846,19 @@ fn config_get_uses_the_url_host_and_reads_files() {
     assert_eq!(r.code(), 0);
     assert!(r.json.get("effective").is_none());
 }
+
+#[test]
+fn help_usage_lists_exactly_the_accepted_arguments() {
+    for verb in SSH_HELP.verbs {
+        let usage = verb.detail.as_ref().unwrap().usage;
+        let mut accepted = super::args::options_for(verb.name).unwrap().to_vec();
+        accepted.sort_unstable();
+        accepted.dedup();
+        assert_eq!(
+            crate::core::test_support::usage_option_names(usage),
+            accepted,
+            "{}: {usage}",
+            verb.name
+        );
+    }
+}

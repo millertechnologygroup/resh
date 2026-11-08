@@ -30,3 +30,21 @@ pub fn write_executable(path: &Path, contents: &str) {
         path.display()
     );
 }
+
+/// The option names a help usage lists (`name=` words, after `[`, `|`, `(`
+/// or whitespace), sorted and without duplicates. Templated names such as
+/// `header_<Name>=` are left out.
+pub fn usage_option_names(usage: &str) -> Vec<&str> {
+    let mut names: Vec<&str> = usage
+        .split(|c: char| c.is_whitespace() || matches!(c, '[' | '|' | '('))
+        .filter_map(|w| w.split_once('=').map(|(k, _)| k))
+        .filter(|k| {
+            k.starts_with(|c: char| c.is_ascii_lowercase())
+                && k.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}

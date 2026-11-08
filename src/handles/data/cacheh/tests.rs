@@ -1048,3 +1048,15 @@ fn ca_file_is_checked_and_added_to_the_trusted_cas() {
         assert!(roots.len() > 1);
     }
 }
+
+#[test]
+fn help_usage_lists_exactly_the_accepted_arguments() {
+    for verb in CACHE_HELP.verbs {
+        let usage = verb.detail.as_ref().unwrap().usage;
+        let listed = crate::core::test_support::usage_option_names(usage);
+        let mut accepted = allowed_args(verb.name);
+        accepted.sort_unstable();
+        accepted.dedup();
+        assert_eq!(listed, accepted, "{}: {usage}", verb.name);
+    }
+}

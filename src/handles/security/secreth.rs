@@ -595,14 +595,38 @@ fn check_args(scope: &str, verb: &str, args: &Args) -> VResult<()> {
         .collect();
     unknown.sort_unstable();
     if let Some(k) = unknown.first() {
-        let hint = suggest(k, &allowed)
-            .map(|s| format!("; did you mean {s:?}?"))
-            .unwrap_or_default();
         let accepted = if allowed.is_empty() {
             "none".to_string()
         } else {
             allowed.join(", ")
         };
+        // An option of another scope (the usage marks those "(vault)") is
+        // not unknown: say where it applies.
+        let elsewhere: Vec<&str> = ["local", "env", "vault"]
+            .into_iter()
+            .filter(|s| *s != scope && allowed_args(s, verb).contains(k))
+            .collect();
+        if !elsewhere.is_empty() {
+            return Err(Failure::usage(
+                "secret.invalid_argument",
+                format!(
+                    "argument {k:?} applies to secret {verb} in scope {} only, not in \
+                     scope {scope} (accepted: {accepted}); nothing was done",
+                    elsewhere.join(" or ")
+                ),
+            ));
+        }
+        // Suggest from every scope's options: a typo of a vault option on a
+        // local target is still a typo.
+        let mut known: Vec<&str> = ["local", "env", "vault"]
+            .into_iter()
+            .flat_map(|s| allowed_args(s, verb))
+            .collect();
+        known.sort_unstable();
+        known.dedup();
+        let hint = suggest(k, &known)
+            .map(|s| format!("; did you mean {s:?}?"))
+            .unwrap_or_default();
         return Err(Failure::usage(
             "secret.invalid_argument",
             format!(

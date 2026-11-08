@@ -872,3 +872,16 @@ fn follow_ends_normally_at_the_limit_but_plain_tail_times_out() {
     let j = FakeJournal::new("", "", "sleep 30");
     run(&j.handle("x"), "tail", &[("timeout_ms", "200")]).fails(124, "log.timeout");
 }
+
+#[test]
+fn help_usage_lists_exactly_the_accepted_arguments() {
+    assert_eq!(LOG_HELP.verbs.len(), 1);
+    let usage = LOG_HELP.verbs[0].detail.as_ref().unwrap().usage;
+    let mut accepted = TAIL_ARGS.to_vec();
+    accepted.sort_unstable();
+    assert_eq!(
+        crate::core::test_support::usage_option_names(usage),
+        accepted,
+        "{usage}"
+    );
+}

@@ -964,3 +964,38 @@ fn in_url_help_renders_approved_help() {
     let o = run("secret://local/x.--help", &[]);
     assert!(o.out.starts_with("Handle: secret"), "{}", o.out);
 }
+
+#[test]
+fn help_usage_lists_exactly_the_accepted_arguments() {
+    // The usage lists every scope's options (marked "(local, vault)" or
+    // "(vault)"); each verb accepts their union, scope by scope.
+    for verb in SECRET_HELP.verbs {
+        let usage = verb.detail.as_ref().unwrap().usage;
+        let listed = crate::core::test_support::usage_option_names(usage);
+        let mut accepted: Vec<&str> = ["local", "env", "vault"]
+            .into_iter()
+            .flat_map(|s| allowed_args(s, verb.name))
+            .collect();
+        accepted.sort_unstable();
+        accepted.dedup();
+        assert_eq!(listed, accepted, "{}: {usage}", verb.name);
+    }
+}
+
+#[test]
+fn an_option_of_another_scope_is_refused_with_where_it_applies() {
+    let o = run("secret://local/app/k.get", &["mount=kv"]).fails(2, "secret.invalid_argument");
+    assert!(
+        o.message()
+            .contains("applies to secret get in scope vault only"),
+        "{}",
+        o.err
+    );
+    // A typo of a vault option still gets a suggestion on a local target.
+    let o = run("secret://local/app/k.rm", &["destoy=true"]).fails(2, "secret.invalid_argument");
+    assert!(
+        o.message().contains("did you mean \"destroy\""),
+        "{}",
+        o.err
+    );
+}
