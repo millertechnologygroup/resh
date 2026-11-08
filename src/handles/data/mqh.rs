@@ -761,15 +761,33 @@ impl MQHandle {
         // Only a quick, non-waiting lock to return stale in-flight
         // messages; otherwise no lock: a message taken by a get between
         // listing and opening is skipped and the listing repeated.
-        self.recover_if_free(&p)?;
+        let mut stale = self.recover_if_free(&p)?;
         loop {
-            let Some((_, name)) = Self::list_messages(&p.queue)?.into_iter().next() else {
+            // A stale claim that could not be returned (the lock was busy)
+            // is still the next message a get delivers when its number is
+            // the lowest, as len counts it: peek shows it where it is.
+            let queued = Self::list_messages(&p.queue)?
+                .into_iter()
+                .next()
+                .map(|(n, name)| (n, p.queue.join(name)));
+            let claimed = stale.first().map(|c| (c.number, p.inflight.join(&c.name)));
+            let next = match (queued, claimed) {
+                (Some(q), Some(c)) => Some(if c.0 < q.0 { c } else { q }),
+                (q, c) => q.or(c),
+            };
+            let Some((_, path)) = next else {
                 return Err(self.empty("peek"));
             };
-            let path = p.queue.join(&name);
             let mut f = match open_nofollow(&path) {
                 Ok(f) => f,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    // Taken by a get, or returned to the queue meanwhile.
+                    stale = list_claims(&p.inflight)?
+                        .into_iter()
+                        .filter(|c| !c.claimer_alive())
+                        .collect();
+                    continue;
+                }
                 Err(e) => return Err(Failure::io(format!("cannot read {}", path.display()), e)),
             };
             return copy_out(&mut f, io.stdout, &path);

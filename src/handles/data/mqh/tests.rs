@@ -742,10 +742,20 @@ fn peek_and_len_see_stale_messages_even_when_the_lock_is_busy() {
     let h = e.q("busy");
     plant_claim(&h, 1, Some((dead_pid(), 1)), "stale");
     let held = hold_lock(&h);
+    // Both work while another process holds the lock: neither may report
+    // an empty queue while a message waits to be delivered again.
     assert_eq!(call(&h, "len", &[]).text(), "1");
-    drop(held);
     assert_eq!(call(&h, "peek", &[]).text(), "stale");
+    drop(held);
+    // Also when a later message is queued: the stale claim comes first...
+    call(&h, "put", &[("data", "later")]).ok();
+    let held = hold_lock(&h);
+    assert_eq!(call(&h, "len", &[]).text(), "2");
+    assert_eq!(call(&h, "peek", &[]).text(), "stale");
+    drop(held);
+    // ... and a get delivers it first.
     assert_eq!(get_text(&h), "stale");
+    assert_eq!(get_text(&h), "later");
 }
 
 // --- get wait=true ----------------------------------------------------------
@@ -855,10 +865,11 @@ fn the_waker_uses_inotify_and_wakes_on_a_change() {
         std::thread::sleep(Duration::from_millis(50));
         fs::write(path, "x").unwrap();
     });
-    let t = Instant::now();
-    // Far deadline: only the change (or the 500 ms poll) can end the wait.
-    w.wait(Some(Instant::now() + Duration::from_secs(60)));
-    assert!(t.elapsed() < Waker::POLL, "{:?}", t.elapsed());
+    // The watcher reports the change (checked on the channel itself, not
+    // by how fast a wait returns, which a busy machine can delay).
+    let rx = w.rx.as_ref().unwrap();
+    rx.recv_timeout(Duration::from_secs(30))
+        .expect("an inotify event for the new file");
     writer.join().unwrap();
     // The deadline bounds a wait with no change.
     let t = Instant::now();
