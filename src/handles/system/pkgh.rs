@@ -12,6 +12,11 @@ use tokio::time::timeout;
 use url::Url;
 use which::which;
 
+#[path = "pkg_args.rs"]
+mod pkg_args;
+#[path = "pkg_version.rs"]
+mod version_cmp;
+
 use crate::core::{
     help::{HandleHelp, VerbDetail, VerbHelp},
     registry::{Args, Handle, IoStreams},
@@ -33,10 +38,11 @@ static PKG_HELP: HandleHelp = HandleHelp {
                 versions, summary, homepage, and repository.",
             detail: Some(VerbDetail {
                 usage: "resh pkg://<alias>.info input=<json>\n  \
-                    <json> keys: manager, packages (both required),\n  \
+                    <json> keys: manager, packages (both required; package names),\n  \
                     include_dependencies, include_reverse_deps, include_files,\n  \
                     include_repo (default true; false sets repository to null),\n  \
-                    timeout_ms, extra_args, env",
+                    timeout_ms (default 5000), env\n  \
+                    An unknown package is reported with found false and exit 1",
                 example: "resh pkg://system.info 'input={\"manager\":\"apt\",\"packages\":[\"nginx\"]}'",
                 example_output: Some(
                     r#"{
@@ -69,9 +75,10 @@ Shown for apt. Other managers fill different subsets of these fields."#,
                 paginated matches with versions and installed state.",
             detail: Some(VerbDetail {
                 usage: "resh pkg://<alias>.search input=<json>\n  \
-                    <json> keys: manager, query (both required), search_in, exact,\n  \
-                    case_sensitive, limit, offset, include_installed, include_versions,\n  \
-                    include_repo, timeout_ms, extra_args, env",
+                    <json> keys: manager, query (both required), search_in\n  \
+                    (name|description|all), exact, case_sensitive, limit (default 50),\n  \
+                    offset, include_installed, include_versions, include_repo,\n  \
+                    timeout_ms (default 5000), extra_args, env",
                 example: "resh pkg://system.search 'input={\"manager\":\"apt\",\"query\":\"nginx\",\"limit\":1}'",
                 example_output: Some(
                     r#"{
@@ -114,8 +121,8 @@ Shown for apt."#,
                 usage: "resh pkg://<alias>.list_installed input=<json>\n  \
                     <json> keys: manager (required), filter, prefix, include_versions\n  \
                     (default true; false sets version to null), include_repo,\n  \
-                    include_size, include_install_reason, limit, offset, timeout_ms,\n  \
-                    extra_args, env",
+                    include_size, include_install_reason, limit (default 500), offset,\n  \
+                    timeout_ms (default 600000), env",
                 example: "resh pkg://system.list_installed 'input={\"manager\":\"apt\",\"prefix\":\"nginx\"}'",
                 example_output: Some(
                     r#"{
@@ -149,9 +156,10 @@ Shown for apt."#,
             detail: Some(VerbDetail {
                 usage: "resh pkg://<alias>.snapshot input=<json>\n  \
                     <json> keys: manager (required), scope (all|manual|dependency),\n  \
-                    include_versions (exact|minimal|none), include_repo, include_arch,\n  \
-                    include_install_reason, include_os_metadata, exclude_patterns,\n  \
-                    format (json|yaml|text), timeout_ms, extra_args, env",
+                    include_versions (exact|none), include_repo, include_arch,\n  \
+                    include_install_reason, include_os_metadata, exclude_patterns\n  \
+                    (shell-style globs), format (json|yaml|text), timeout_ms\n  \
+                    (default 15000), env",
                 example: "resh pkg://system.snapshot 'input={\"manager\":\"apt\",\"scope\":\"manual\"}'",
                 example_output: Some(
                     r#"{
@@ -192,7 +200,9 @@ Shown for apt with the lockfile string shortened."#,
                 usage: "resh pkg://<alias>.install input=<json>\n  \
                     <json> keys: manager, packages (both required; each package is\n  \
                     {name, version}), update_cache, assume_yes, only_if_missing,\n  \
-                    reinstall, upgrade, dry_run, timeout_ms, arch, extra_args, env\n  \
+                    reinstall, upgrade, dry_run, timeout_ms (default 600000), arch,\n  \
+                    extra_args, env\n  \
+                    version: apt, dnf, yum, apk; arch: apt, dnf, yum; elsewhere refused\n  \
                     A package source is not supported; a package with source is refused",
                 example: "resh pkg://system.install 'input={\"manager\":\"apt\",\"packages\":[{\"name\":\"jq\"}]}'",
                 example_output: Some(
@@ -233,8 +243,9 @@ actions instead."#,
                 usage: "resh pkg://<alias>.remove input=<json>\n  \
                     <json> keys: manager, packages (both required), purge, recursive,\n  \
                     assume_yes, only_if_installed, fail_if_missing, dry_run,\n  \
-                    timeout_ms, arch, extra_args, env\n  \
-                    Each package is {name, version}; a package with source is refused",
+                    timeout_ms (default 600000), arch, extra_args, env\n  \
+                    Each package is {name, version}; a package with source is refused\n  \
+                    purge: apt, apk, pacman; version and arch: apt, dnf, yum",
                 example: "resh pkg://system.remove 'input={\"manager\":\"apt\",\"packages\":[{\"name\":\"jq\"}]}'",
                 example_output: Some(
                     r#"{
@@ -274,8 +285,8 @@ Shown for apt."#,
             detail: Some(VerbDetail {
                 usage: "resh pkg://<alias>.update input=<json>\n  \
                     <json> keys: manager (required), packages, refresh_index, upgrade,\n  \
-                    assume_yes, security_only, check_only, dry_run, timeout_ms,\n  \
-                    extra_args, env\n  \
+                    assume_yes, security_only, check_only, dry_run, timeout_ms\n  \
+                    (default 900000), extra_args, env\n  \
                     security_only works with dnf and yum only; elsewhere it is refused",
                 example: "resh pkg://system.update 'input={\"manager\":\"apt\",\"check_only\":true}'",
                 example_output: Some(
@@ -313,8 +324,8 @@ instead of available_updates and commands."#,
             detail: Some(VerbDetail {
                 usage: "resh pkg://<alias>.upgrade input=<json>\n  \
                     <json> keys: manager (required), packages, refresh_index,\n  \
-                    assume_yes, security_only, dry_run, check_only, timeout_ms,\n  \
-                    extra_args, env\n  \
+                    assume_yes, security_only, check_only, dry_run, timeout_ms\n  \
+                    (default 900000), extra_args, env\n  \
                     security_only works with dnf only; elsewhere it is refused",
                 example: "resh pkg://system.upgrade 'input={\"manager\":\"apt\",\"check_only\":true}'",
                 example_output: Some(
@@ -351,17 +362,18 @@ instead of available_upgrades and commands."#,
             detail: Some(VerbDetail {
                 usage: "resh pkg://<alias>.restore input=<json>\n  \
                     <json> keys: manager, lockfile (both required; lockfile is the\n  \
-                    lockfile content as a string), format, mode (exact|best_effort),\n  \
-                    allow_downgrades, allow_removals, allow_newer, on_missing_package,\n  \
-                    on_repo_mismatch, on_platform_mismatch, include_dependencies,\n  \
-                    dry_run, timeout_ms, extra_args, env\n  \
+                    lockfile content as a string), format (auto|json|yaml|text),\n  \
+                    mode (exact|best_effort, default exact), allow_downgrades,\n  \
+                    allow_removals, allow_newer, on_missing_package, on_repo_mismatch,\n  \
+                    on_platform_mismatch, include_dependencies, dry_run, timeout_ms\n  \
+                    (default 180000), extra_args, env\n  \
+                    mode exact installs the locked versions (pacman: only the\n  \
+                    repository version; brew: refused) and fails a package left at\n  \
+                    another version; best_effort falls back to the repository version\n  \
                     on_repo_mismatch (fail|warn|ignore, default warn) compares each\n  \
                     locked repository with the installed package's repository;\n  \
                     include_dependencies (default true) false leaves packages the\n  \
-                    lockfile records as dependencies out of the plan; mode is only\n  \
-                    echoed, and extra_args is not passed to the restore commands\n  \
-                    A text lockfile (name=version lines) restores with the given\n  \
-                    manager, or with the detected system manager for manager=auto",
+                    lockfile records as dependencies out of the plan",
                 example: "resh pkg://system.restore \"input=$(cat restore.json)\"",
                 example_output: Some(
                     r#"{
@@ -369,7 +381,7 @@ instead of available_upgrades and commands."#,
   "alias": "system",
   "backend": "pkg",
   "commands": [
-    "apt-get install -y jq"
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y jq=1.7.1-3build1"
   ],
   "dry_run": true,
   "manager": "apt",
@@ -453,7 +465,7 @@ impl CmdLine {
 
     /// A `tokio` command for this line; nothing is spawned yet.
     fn command(&self) -> AsyncCommand {
-        let mut c = AsyncCommand::new(&self.argv[0]);
+        let mut c = pkg_cmd(&self.argv[0]);
         c.args(&self.argv[1..]);
         for (k, v) in &self.env {
             c.env(k, v);
@@ -539,12 +551,10 @@ fn check_lockfile_pkg_name(value: &str) -> std::result::Result<(), String> {
 }
 
 /// Package manager error types
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum PkgError {
     #[error("Invalid install configuration: {0}")]
     InvalidInstallConfig(String),
-    #[error("Manager not found: {0}")]
-    ManagerNotFound(String),
     #[error("Manager not available: {0}")]
     ManagerNotAvailable(String),
     #[error("Update cache failed: {0}")]
@@ -559,8 +569,6 @@ pub enum PkgError {
     InstallPermissionDenied(String),
     #[error("Invalid version: {0}")]
     InstallInvalidVersion(String),
-    #[error("Install timeout")]
-    InstallTimeout,
     #[error("Install failed: {0}")]
     InstallFailed(String),
     // Remove errors
@@ -569,14 +577,11 @@ pub enum PkgError {
     #[error("Package not found for removal: {0}")]
     RemoveNotFound(String),
     #[error("Package not installed: {0}")]
-    #[allow(dead_code)]
     RemoveNotInstalled(String),
     #[error("Remove dependency failure: {0}")]
     RemoveDependencyFailure(String),
     #[error("Remove permission denied: {0}")]
     RemovePermissionDenied(String),
-    #[error("Remove timeout")]
-    RemoveTimeout,
     #[error("Remove failed: {0}")]
     RemoveFailed(String),
     // Update errors
@@ -653,13 +658,723 @@ pub enum PkgError {
     RestoreTimeout,
     #[error("Restore apply failed: {0}")]
     RestoreApplyFailed(String),
-    #[error("Downgrade not supported: {0}")]
-    RestoreDowngradeNotSupported(String),
     #[error("Repository not available: {0}")]
     #[allow(dead_code)]
     RestoreRepoNotAvailable(String),
     #[error("Repository mismatch: {0}")]
     RestoreRepoMismatch(String),
+    /// A request that this manager cannot honor; refused before anything ran.
+    #[error("{0}")]
+    Unsupported(String),
+    /// Restore `on_missing_package: fail` with packages the plan cannot bring
+    /// to the locked state; refused before anything ran.
+    #[error("Unresolved packages: {0}")]
+    RestoreUnresolved(String),
+}
+
+impl PkgError {
+    /// True for the errors that report a passed deadline.
+    fn is_timeout(&self) -> bool {
+        self.code().1 == "pkg.timeout"
+    }
+
+    /// The exit status and `pkg.*` error code of this error (see
+    /// `pkg_args::ERROR_CODES` and `pkg.md` 3.6).
+    fn code(&self) -> (i32, &'static str) {
+        use crate::core::status::exit::{FAILED, TIMEOUT, USAGE};
+        match self {
+            PkgError::InvalidInstallConfig(_)
+            | PkgError::InvalidRemoveConfig(_)
+            | PkgError::InvalidUpdateConfig(_)
+            | PkgError::InvalidUpgradeConfig(_)
+            | PkgError::InvalidInfoConfig(_)
+            | PkgError::InvalidSearchConfig(_)
+            | PkgError::InvalidListInstalledConfig(_)
+            | PkgError::InvalidSnapshotConfig(_)
+            | PkgError::InvalidRestoreConfig(_) => (USAGE, "pkg.invalid_argument"),
+            PkgError::Unsupported(_) => (USAGE, "pkg.unsupported_option"),
+            PkgError::RestoreInvalidLockfile(_) => (USAGE, "pkg.invalid_lockfile"),
+            PkgError::RestoreManagerMismatch(_) => (USAGE, "pkg.manager_mismatch"),
+            PkgError::ManagerNotAvailable(_) => (FAILED, "pkg.manager_not_found"),
+            PkgError::InstallNotFound(_)
+            | PkgError::InstallInvalidVersion(_)
+            | PkgError::RemoveNotFound(_)
+            | PkgError::RemoveNotInstalled(_) => (FAILED, "pkg.not_found"),
+            PkgError::InstallPermissionDenied(_)
+            | PkgError::RemovePermissionDenied(_)
+            | PkgError::UpdatePermissionDenied(_)
+            | PkgError::UpgradePermissionDenied(_) => (FAILED, "pkg.permission_denied"),
+            PkgError::InstallDependencyFailure(_) | PkgError::RemoveDependencyFailure(_) => {
+                (FAILED, "pkg.dependency_failure")
+            }
+            PkgError::InstallConflict(_) => (FAILED, "pkg.conflict"),
+            PkgError::UpdateCacheFailed(_)
+            | PkgError::UpdateIndexFailed(_)
+            | PkgError::UpgradeIndexFailed(_) => (FAILED, "pkg.index_failed"),
+            PkgError::RestorePlatformIncompatible(_) => (FAILED, "pkg.platform_mismatch"),
+            PkgError::RestoreRepoMismatch(_) => (FAILED, "pkg.repo_mismatch"),
+            PkgError::RestoreUnresolved(_) => (FAILED, "pkg.unresolved"),
+            PkgError::UpdateTimeout
+            | PkgError::UpgradeTimeout
+            | PkgError::InfoTimeout
+            | PkgError::SearchTimeout
+            | PkgError::ListInstalledTimeout
+            | PkgError::SnapshotTimeout
+            | PkgError::RestoreTimeout => (TIMEOUT, "pkg.timeout"),
+            PkgError::InstallFailed(_)
+            | PkgError::RemoveFailed(_)
+            | PkgError::UpdateCheckFailed(_)
+            | PkgError::UpdateFailed(_)
+            | PkgError::UpgradeCheckFailed(_)
+            | PkgError::UpgradeFailed(_)
+            | PkgError::InfoQueryFailed(_)
+            | PkgError::InfoPartialFailure(_)
+            | PkgError::SearchFailed(_)
+            | PkgError::ListInstalledFailed(_)
+            | PkgError::SnapshotFailed(_)
+            | PkgError::SnapshotScopeUnsupported(_)
+            | PkgError::RestoreApplyFailed(_)
+            | PkgError::RestoreRepoNotAvailable(_) => (FAILED, "pkg.command_failed"),
+        }
+    }
+}
+
+/// The error of a failed package-manager command, by its standard error.
+/// Used for per-package failures recorded in a result.
+fn error_value(e: &PkgError) -> Value {
+    crate::core::status::error_json(e.code().1, &e.to_string())
+}
+
+/// The manager's name as it appears in output and lockfiles.
+fn manager_name(manager: &ManagerKind) -> &'static str {
+    match manager {
+        ManagerKind::Auto => "auto",
+        ManagerKind::Apt => "apt",
+        ManagerKind::Dnf => "dnf",
+        ManagerKind::Yum => "yum",
+        ManagerKind::Pacman => "pacman",
+        ManagerKind::Apk => "apk",
+        ManagerKind::Brew => "brew",
+    }
+}
+
+/// Whether `manager` can install a given version of a package (`name=1.2`
+/// for apt and apk, `name-1.2` for dnf and yum). pacman installs only the
+/// version its repositories carry, and brew only the current formula.
+fn supports_version_pin(manager: &ManagerKind) -> bool {
+    matches!(
+        manager,
+        ManagerKind::Apt | ManagerKind::Dnf | ManagerKind::Yum | ManagerKind::Apk
+    )
+}
+
+/// Whether `manager` can select a package architecture (`name:arch` for apt,
+/// `name.arch` for dnf and yum).
+fn supports_arch(manager: &ManagerKind) -> bool {
+    matches!(
+        manager,
+        ManagerKind::Apt | ManagerKind::Dnf | ManagerKind::Yum
+    )
+}
+
+/// Whether `assume_yes: false` means something: apt, dnf, yum and pacman
+/// then ask for confirmation, which fails without a terminal (resh gives
+/// the manager none), so nothing changes when a confirmation is needed. apk
+/// and brew do not ask, so `false` cannot be honored.
+fn supports_confirmation(manager: &ManagerKind) -> bool {
+    matches!(
+        manager,
+        ManagerKind::Apt | ManagerKind::Dnf | ManagerKind::Yum | ManagerKind::Pacman
+    )
+}
+
+/// The package argument for `manager`: the name with a version and an
+/// architecture in the manager's syntax.
+fn package_argument(
+    manager: &ManagerKind,
+    name: &str,
+    version: Option<&str>,
+    arch: Option<&str>,
+) -> String {
+    let mut arg = name.to_string();
+    if let Some(arch) = arch {
+        match manager {
+            ManagerKind::Apt => arg = format!("{arg}:{arch}"),
+            ManagerKind::Dnf | ManagerKind::Yum => {}
+            _ => {}
+        }
+    }
+    if let Some(version) = version {
+        match manager {
+            ManagerKind::Apt | ManagerKind::Apk => arg = format!("{arg}={version}"),
+            ManagerKind::Dnf | ManagerKind::Yum => arg = format!("{arg}-{version}"),
+            _ => {}
+        }
+    }
+    if let Some(arch) = arch {
+        if matches!(manager, ManagerKind::Dnf | ManagerKind::Yum) {
+            arg = format!("{arg}.{arch}");
+        }
+    }
+    arg
+}
+
+/// Refuses the install options that `manager` cannot honor, before anything
+/// runs.
+fn check_install_support(config: &InstallConfig, manager: &ManagerKind) -> Result<(), PkgError> {
+    let name = manager_name(manager);
+    if !supports_version_pin(manager) {
+        if let Some(pkg) = config.packages.iter().find(|p| p.version.is_some()) {
+            return Err(PkgError::Unsupported(format!(
+                "a package version (package {:?}) is not supported by pkg install for {name}: \
+                 it installs only the version its repositories carry; remove version; \
+                 nothing was run",
+                pkg.name
+            )));
+        }
+    }
+    if config.arch.is_some() && !supports_arch(manager) {
+        return Err(PkgError::Unsupported(format!(
+            "arch is not supported by pkg install for {name} (only apt, dnf and yum); \
+             nothing was run"
+        )));
+    }
+    if !config.assume_yes && !supports_confirmation(manager) {
+        return Err(PkgError::Unsupported(format!(
+            "assume_yes=false is not supported for {name}: it does not ask for \
+             confirmation, so the install would go ahead anyway; nothing was run"
+        )));
+    }
+    Ok(())
+}
+
+/// What `install` does with one package, given its installed version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallStep {
+    /// Already installed (at the requested version): nothing to do.
+    Skip,
+    /// Install it (or install the requested version).
+    Install,
+    /// Upgrade the installed package to the latest version.
+    Upgrade,
+    /// Reinstall the installed package.
+    Reinstall,
+}
+
+fn install_step(config: &InstallConfig, pkg: &PackageSpec, installed: Option<&str>) -> InstallStep {
+    let Some(installed) = installed else {
+        return InstallStep::Install;
+    };
+    if config.reinstall {
+        return InstallStep::Reinstall;
+    }
+    if let Some(wanted) = pkg.version.as_deref() {
+        return if wanted == installed {
+            InstallStep::Skip
+        } else {
+            InstallStep::Install
+        };
+    }
+    if config.upgrade {
+        InstallStep::Upgrade
+    } else if config.only_if_missing {
+        InstallStep::Skip
+    } else {
+        InstallStep::Install
+    }
+}
+
+/// Refuses the remove options that `manager` cannot honor, before anything
+/// runs.
+fn check_remove_support(config: &RemoveConfig, manager: &ManagerKind) -> Result<(), PkgError> {
+    let name = manager_name(manager);
+    let version_ok = matches!(
+        manager,
+        ManagerKind::Apt | ManagerKind::Dnf | ManagerKind::Yum
+    );
+    if !version_ok {
+        if let Some(pkg) = config.packages.iter().find(|p| p.version.is_some()) {
+            return Err(PkgError::Unsupported(format!(
+                "a package version (package {:?}) is not supported by pkg remove for {name} \
+                 (only apt, dnf and yum); remove version; nothing was run",
+                pkg.name
+            )));
+        }
+    }
+    if config.arch.is_some() && !supports_arch(manager) {
+        return Err(PkgError::Unsupported(format!(
+            "arch is not supported by pkg remove for {name} (only apt, dnf and yum); \
+             nothing was run"
+        )));
+    }
+    if config.purge
+        && !matches!(
+            manager,
+            ManagerKind::Apt | ManagerKind::Apk | ManagerKind::Pacman
+        )
+    {
+        return Err(PkgError::Unsupported(format!(
+            "purge is not supported by pkg remove for {name} (only apt, apk and pacman); \
+             nothing was run"
+        )));
+    }
+    if !config.assume_yes && !supports_confirmation(manager) {
+        return Err(PkgError::Unsupported(format!(
+            "assume_yes=false is not supported for {name}: it does not ask for \
+             confirmation, so the removal would go ahead anyway; nothing was run"
+        )));
+    }
+    Ok(())
+}
+
+/// The command that upgrades every package (`packages` empty) or only the
+/// listed installed packages, for `update` and `upgrade`. A listed package
+/// that is not installed is not installed by it (`--only-upgrade` for apt,
+/// `--needed` without `-u` for pacman).
+fn upgrade_command(
+    manager: &ManagerKind,
+    packages: &[String],
+    assume_yes: bool,
+    security_only: bool,
+    extra_args: Option<&[String]>,
+) -> Result<CmdLine, PkgError> {
+    let mut cmd = match manager {
+        ManagerKind::Apt => {
+            let mut cmd = CmdLine::lit(if packages.is_empty() {
+                "DEBIAN_FRONTEND=noninteractive apt-get upgrade"
+            } else {
+                "DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade"
+            });
+            if assume_yes {
+                cmd.push_lit(" -y");
+            }
+            cmd
+        }
+        ManagerKind::Dnf | ManagerKind::Yum => {
+            let mut cmd = CmdLine::lit(if *manager == ManagerKind::Dnf {
+                "dnf upgrade"
+            } else {
+                "yum update"
+            });
+            if assume_yes {
+                cmd.push_lit(" -y");
+            }
+            if security_only {
+                cmd.push_lit(" --security");
+            }
+            cmd
+        }
+        ManagerKind::Pacman => {
+            let mut cmd = CmdLine::lit(if packages.is_empty() {
+                "pacman -Su"
+            } else {
+                "pacman -S --needed"
+            });
+            if assume_yes {
+                cmd.push_lit(" --noconfirm");
+            }
+            cmd
+        }
+        ManagerKind::Apk => CmdLine::lit("apk upgrade --no-interactive"),
+        ManagerKind::Brew => CmdLine::lit("brew upgrade"),
+        ManagerKind::Auto => {
+            return Err(PkgError::ManagerNotAvailable(
+                "manager auto was not resolved".to_string(),
+            ));
+        }
+    };
+    for package in packages {
+        cmd.arg(package);
+    }
+    for arg in extra_args.unwrap_or_default() {
+        cmd.arg(arg);
+    }
+    Ok(cmd)
+}
+
+/// Refuses `assume_yes: false` where the manager never asks (apk, brew), for
+/// `update` and `upgrade`.
+fn check_confirmation_support(
+    verb: &str,
+    assume_yes: bool,
+    manager: &ManagerKind,
+) -> Result<(), PkgError> {
+    if !assume_yes && !supports_confirmation(manager) {
+        return Err(PkgError::Unsupported(format!(
+            "assume_yes=false is not supported by pkg {verb} for {}: it does not ask for \
+             confirmation, so the upgrade would go ahead anyway; nothing was run",
+            manager_name(manager)
+        )));
+    }
+    Ok(())
+}
+
+/// Compiles `exclude_patterns` as shell-style globs (`*` and `?` never
+/// cross `/`). An invalid pattern is refused.
+fn exclude_matchers(patterns: &[String]) -> Result<Vec<globset::GlobMatcher>, PkgError> {
+    patterns
+        .iter()
+        .map(|p| {
+            globset::GlobBuilder::new(p)
+                .literal_separator(true)
+                .build()
+                .map(|g| g.compile_matcher())
+                .map_err(|e| {
+                    PkgError::InvalidSnapshotConfig(format!(
+                        "exclude_patterns: invalid pattern {p:?}: {e}"
+                    ))
+                })
+        })
+        .collect()
+}
+
+/// The kind of one restore operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreKind {
+    Install,
+    Upgrade,
+    Downgrade,
+    Remove,
+}
+
+/// One restore operation: a package, the locked version to install (when
+/// the lockfile records one) and the installed version before.
+#[derive(Debug, Clone)]
+struct RestoreOp {
+    kind: RestoreKind,
+    name: String,
+    version: Option<String>,
+    from: Option<String>,
+}
+
+/// The operations for `plan`, in execution order (see
+/// `restore_operations_with`), for tests.
+#[cfg(test)]
+fn restore_operations(
+    plan: &mut RestorePlan,
+    lockfile: &Lockfile,
+    current: &[InstalledPackage],
+    config: &RestoreConfig,
+    manager: &ManagerKind,
+) -> Result<Vec<RestoreOp>, PkgError> {
+    restore_operations_with(plan, lockfile, current, config, manager, &HashSet::new())
+}
+
+/// The operations for `plan`, in execution order. With `mode: exact`, a
+/// manager that cannot install a given version (pacman, brew) refuses a
+/// plan that needs one, except for the packages in `at_repo_version`, whose
+/// locked version is the one the repositories carry; with `best_effort` it
+/// installs by name and a downgrade, which it cannot do, becomes
+/// unresolved.
+fn restore_operations_with(
+    plan: &mut RestorePlan,
+    lockfile: &Lockfile,
+    current: &[InstalledPackage],
+    config: &RestoreConfig,
+    manager: &ManagerKind,
+    at_repo_version: &HashSet<String>,
+) -> Result<Vec<RestoreOp>, PkgError> {
+    let locked: HashMap<&str, &LockfilePackage> = lockfile
+        .packages
+        .iter()
+        .map(|p| (p.name.as_str(), p))
+        .collect();
+    let installed: HashMap<&str, &str> = current
+        .iter()
+        .map(|p| (p.name.as_str(), p.version.as_str()))
+        .collect();
+    let op = |kind: RestoreKind, name: &String| RestoreOp {
+        kind,
+        name: name.clone(),
+        version: if kind == RestoreKind::Remove {
+            None
+        } else {
+            locked
+                .get(name.as_str())
+                .and_then(|p| p.version.as_deref())
+                .map(|v| normalize_version(manager, v))
+        },
+        from: installed.get(name.as_str()).map(|v| v.to_string()),
+    };
+
+    if !supports_version_pin(manager) {
+        let needs_pin: Vec<String> = plan
+            .install
+            .iter()
+            .chain(&plan.upgrade)
+            .chain(&plan.downgrade)
+            .filter(|n| op(RestoreKind::Install, n).version.is_some())
+            .filter(|n| !at_repo_version.contains(*n))
+            .cloned()
+            .collect();
+        if config.mode == RestoreMode::Exact && !needs_pin.is_empty() {
+            return Err(PkgError::Unsupported(format!(
+                "mode=exact needs the locked versions of {} package(s), but {} cannot install \
+                 a given version: {}; use mode=best_effort to install the repository \
+                 versions; nothing was changed",
+                needs_pin.len(),
+                manager_name(manager),
+                name_list(&needs_pin)
+            )));
+        }
+        for name in std::mem::take(&mut plan.downgrade) {
+            plan.unresolved.push(UnresolvedPackage {
+                name,
+                reason: format!("downgrade_not_supported_by_{}", manager_name(manager)),
+            });
+        }
+    }
+
+    let mut ops = Vec::new();
+    ops.extend(plan.install.iter().map(|n| op(RestoreKind::Install, n)));
+    ops.extend(plan.upgrade.iter().map(|n| op(RestoreKind::Upgrade, n)));
+    ops.extend(plan.downgrade.iter().map(|n| op(RestoreKind::Downgrade, n)));
+    ops.extend(plan.remove.iter().map(|n| op(RestoreKind::Remove, n)));
+    Ok(ops)
+}
+
+/// The command for one restore operation. `pin` passes the locked version
+/// where the manager can take one; `extra_args` is added to every command.
+fn restore_command(
+    op: &RestoreOp,
+    manager: &ManagerKind,
+    config: &RestoreConfig,
+    pin: bool,
+) -> Result<CmdLine, PkgError> {
+    let version = op
+        .version
+        .as_deref()
+        .filter(|_| pin && supports_version_pin(manager));
+    let target = package_argument(manager, &op.name, version, None);
+    let kind = op.kind;
+    let mut cmd = match (manager, kind) {
+        (ManagerKind::Apt, RestoreKind::Remove) => {
+            CmdLine::lit("DEBIAN_FRONTEND=noninteractive apt-get remove -y")
+        }
+        (ManagerKind::Apt, RestoreKind::Downgrade) => {
+            CmdLine::lit("DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades")
+        }
+        (ManagerKind::Apt, _) => CmdLine::lit("DEBIAN_FRONTEND=noninteractive apt-get install -y"),
+        (ManagerKind::Dnf | ManagerKind::Yum, _) => {
+            let mut cmd = CmdLine::lit(manager_name(manager));
+            cmd.push_lit(match kind {
+                RestoreKind::Install => "install -y",
+                RestoreKind::Upgrade if *manager == ManagerKind::Yum => "update -y",
+                RestoreKind::Upgrade => "upgrade -y",
+                RestoreKind::Downgrade => "downgrade -y",
+                RestoreKind::Remove => "remove -y",
+            });
+            cmd
+        }
+        (ManagerKind::Pacman, RestoreKind::Remove) => CmdLine::lit("pacman -R --noconfirm"),
+        (ManagerKind::Pacman, _) => CmdLine::lit("pacman -S --noconfirm --needed"),
+        (ManagerKind::Apk, RestoreKind::Remove) => CmdLine::lit("apk del --no-interactive"),
+        (ManagerKind::Apk, RestoreKind::Upgrade) if version.is_none() => {
+            CmdLine::lit("apk add --no-interactive --upgrade")
+        }
+        (ManagerKind::Apk, _) => CmdLine::lit("apk add --no-interactive"),
+        (ManagerKind::Brew, RestoreKind::Remove) => CmdLine::lit("brew uninstall"),
+        (ManagerKind::Brew, RestoreKind::Upgrade) => CmdLine::lit("brew upgrade"),
+        (ManagerKind::Brew, _) => CmdLine::lit("brew install"),
+        (ManagerKind::Auto, _) => {
+            return Err(PkgError::ManagerNotAvailable(
+                "manager auto was not resolved".to_string(),
+            ));
+        }
+    };
+    cmd.arg(&target);
+    for arg in config.extra_args.iter().flatten() {
+        cmd.arg(arg);
+    }
+    Ok(cmd)
+}
+
+/// Warnings about versions `mode` will not reproduce.
+fn restore_mode_warnings(
+    ops: &[RestoreOp],
+    config: &RestoreConfig,
+    manager: &ManagerKind,
+) -> Vec<String> {
+    let unpinned: Vec<String> = ops
+        .iter()
+        .filter(|op| op.kind != RestoreKind::Remove && op.version.is_some())
+        .map(|op| op.name.clone())
+        .collect();
+    if config.mode == RestoreMode::BestEffort
+        && !supports_version_pin(manager)
+        && !unpinned.is_empty()
+    {
+        vec![format!(
+            "best_effort: {} cannot install a given version, so {} package(s) get the \
+             repository version instead of the locked one: {}",
+            manager_name(manager),
+            unpinned.len(),
+            name_list(&unpinned)
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Checks the version an operation left: a removed package must be gone,
+/// any other installed; with `mode: exact` at the locked version.
+fn verify_restore_op(
+    op: &RestoreOp,
+    now: Option<&str>,
+    config: &RestoreConfig,
+    manager: &ManagerKind,
+) -> Result<(), PkgError> {
+    match (op.kind, now) {
+        (RestoreKind::Remove, None) => Ok(()),
+        (RestoreKind::Remove, Some(v)) => Err(PkgError::RestoreApplyFailed(format!(
+            "{} is still installed ({v})",
+            op.name
+        ))),
+        (_, None) => Err(PkgError::RestoreApplyFailed(format!(
+            "{} is not installed after the command",
+            op.name
+        ))),
+        (_, Some(v)) => match op.version.as_deref() {
+            Some(locked)
+                if config.mode == RestoreMode::Exact
+                    && normalize_version(manager, v) != normalize_version(manager, locked) =>
+            {
+                Err(PkgError::RestoreApplyFailed(format!(
+                    "{} is at {v}, not the locked version {locked} (mode=exact)",
+                    op.name
+                )))
+            }
+            _ => Ok(()),
+        },
+    }
+}
+
+/// What `remove` does with one package, given its installed version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoveStep {
+    /// Installed (at the requested version, when one is given): remove it.
+    Remove,
+    /// Not installed: reported as `not_installed`.
+    NotInstalled,
+    /// Not installed with `fail_if_missing`: a failure.
+    Missing,
+    /// Installed, but not at the requested version: a failure.
+    OtherVersion,
+}
+
+fn remove_step(config: &RemoveConfig, pkg: &PackageSpec, installed: Option<&str>) -> RemoveStep {
+    match installed {
+        None if config.fail_if_missing => RemoveStep::Missing,
+        // only_if_installed=false hands the package to the manager anyway,
+        // which decides what a missing package means.
+        None if !config.only_if_installed => RemoveStep::Remove,
+        None => RemoveStep::NotInstalled,
+        Some(v) if pkg.version.as_deref().is_some_and(|want| want != v) => RemoveStep::OtherVersion,
+        Some(_) => RemoveStep::Remove,
+    }
+}
+
+/// Whether a manager's (lowercased) error says a package does not exist:
+/// apt "unable to locate package", dnf "no match for argument", pacman
+/// "target not found", apk "no such package", brew "no available formula".
+fn is_not_found_message(lower: &str) -> bool {
+    lower.contains("unable to locate package")
+        || lower.contains("no match for argument")
+        || lower.contains("target not found")
+        || lower.contains("no such package")
+        || lower.contains("no available formula")
+        || (lower.contains("package") && lower.contains("not found"))
+        || (lower.contains("version") && lower.contains("was not found"))
+}
+
+/// Whether a manager's (lowercased) error is about privileges: apt "are you
+/// root?", dnf "this command has to be run with superuser privileges",
+/// pacman "you cannot perform this operation unless you are root", apk
+/// "permission denied".
+fn is_permission_message(lower: &str) -> bool {
+    lower.contains("permission denied")
+        || lower.contains("not allowed")
+        || lower.contains("are you root")
+        || lower.contains("superuser privileges")
+        || lower.contains("unless you are root")
+        || lower.contains("operation not permitted")
+}
+
+/// The package name in apk's `<name>-<version>-r<release>` (such as
+/// `tree-sitter-c-0.24.1-r0`): the part before the version.
+fn apk_package_name(name_version: &str) -> &str {
+    let without_release = match name_version.rsplit_once("-r") {
+        Some((rest, rel)) if !rel.is_empty() && rel.bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => name_version,
+    };
+    match without_release.rfind('-') {
+        Some(i)
+            if without_release[i + 1..]
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_digit()) =>
+        {
+            &name_version[..i]
+        }
+        _ => name_version,
+    }
+}
+
+/// The last `n` non-empty lines of a tool's output, for an error message.
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
+}
+
+/// Reads the installed version from the per-package query of
+/// `installed_version_of`.
+fn parse_installed_version(manager: &ManagerKind, name: &str, stdout: &str) -> Option<String> {
+    let lines = || stdout.lines().map(str::trim).filter(|l| !l.is_empty());
+    let version = match manager {
+        // `<dpkg status>\t<version>`; only state `installed` counts.
+        ManagerKind::Apt => lines().find_map(|l| {
+            let (status, version) = l.split_once('\t')?;
+            (status == "installed").then(|| version.to_string())
+        }),
+        // One line per installed instance (several for kernels): the last.
+        ManagerKind::Dnf | ManagerKind::Yum => lines().next_back().map(str::to_string),
+        // `<name> <version>`
+        ManagerKind::Pacman | ManagerKind::Brew => lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .map(str::to_string),
+        // `<name>-<version>`
+        ManagerKind::Apk => lines()
+            .find_map(|l| l.strip_prefix(name)?.strip_prefix('-'))
+            .map(str::to_string),
+        ManagerKind::Auto => None,
+    };
+    version.filter(|v| !v.is_empty())
+}
+
+/// A version as compared by restore: rpm's epoch 0 is the same as none.
+fn normalize_version(manager: &ManagerKind, version: &str) -> String {
+    match manager {
+        ManagerKind::Dnf | ManagerKind::Yum | ManagerKind::Pacman => {
+            version.strip_prefix("0:").unwrap_or(version).to_string()
+        }
+        _ => version.to_string(),
+    }
+}
+
+/// Compares two versions the way `manager` does: dpkg's algorithm for apt,
+/// rpm's for dnf, yum and pacman (`vercmp` uses it), apk's for apk; brew
+/// (no defined order) compares the strings.
+fn compare_package_versions(manager: &ManagerKind, a: &str, b: &str) -> std::cmp::Ordering {
+    let (a, b) = (normalize_version(manager, a), normalize_version(manager, b));
+    match manager {
+        ManagerKind::Apt => version_cmp::dpkg(&a, &b),
+        ManagerKind::Dnf | ManagerKind::Yum => version_cmp::rpm_evr(&a, &b),
+        ManagerKind::Pacman => version_cmp::pacman(&a, &b),
+        ManagerKind::Apk => version_cmp::apk(&a, &b),
+        _ => a.cmp(&b),
+    }
 }
 
 /// Whether `verb` restricts its upgrade to security fixes on `manager` when
@@ -853,7 +1568,6 @@ pub struct InfoConfig {
     pub include_repo: bool,
     #[serde(default = "default_info_timeout")]
     pub timeout_ms: u64,
-    pub extra_args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
 }
 
@@ -1035,9 +1749,12 @@ pub struct PackageResult {
     pub name: String,
     pub requested_version: Option<String>,
     pub installed_version: Option<String>,
-    pub action: String, // "installed", "upgraded", "reinstalled", "unchanged", "would_install", "already_installed"
+    pub action: String, // "installed", "upgraded", "reinstalled", "unchanged", "failed", ...
     #[serde(default)]
     pub from_cache: bool,
+    /// Why the operation failed (`action: "failed"` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
 }
 
 /// Install result summary
@@ -1081,7 +1798,6 @@ pub struct ListInstalledConfig {
     pub offset: u32,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
-    pub extra_args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
 }
 
@@ -1111,7 +1827,6 @@ pub struct SnapshotConfig {
     pub format: SnapshotFormat,
     #[serde(default = "default_snapshot_timeout")]
     pub timeout_ms: u64,
-    pub extra_args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
 }
 
@@ -1367,8 +2082,12 @@ pub struct PackageOpResult {
     pub from_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_version: Option<String>,
+    /// The version the lockfile asks for, when it records one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub locked_version: Option<String>,
+    /// `{code, message}` of a failed operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
 }
 
 /// Restore operation results
@@ -1481,219 +2200,236 @@ impl Handle for PkgHandle {
             return Ok(Status::success());
         }
 
-        match verb {
-            "install" => self.install_verb(args, io),
-            "remove" => self.remove_verb(args, io),
-            "update" => self.update_verb(args, io),
-            "upgrade" => self.upgrade_verb(args, io),
-            "info" => self.info_verb(args, io),
-            "search" => self.search_verb(args, io),
-            "list_installed" => self.list_installed_verb(args, io),
-            "snapshot" => self.snapshot_verb(args, io),
-            "restore" => self.restore_verb(args, io),
-            "apply_lock" => self.restore_verb(args, io), // alias for restore
-            _ => bail!("unknown verb for pkg://: {}", verb),
+        if !PKG_VERBS.contains(&verb) {
+            bail!("unknown verb for pkg://: {}", verb);
         }
+        self.call_verb(verb, args, io)
     }
 }
 
 impl PkgHandle {
-    fn install_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments from JSON input
-        let config_json = args.get("input").ok_or_else(|| {
-            PkgError::InvalidInstallConfig("Missing input configuration".to_string())
-        })?;
-
-        let config: InstallConfig = serde_json::from_str(config_json)
-            .map_err(|e| PkgError::InvalidInstallConfig(format!("Invalid JSON: {}", e)))?;
-
-        // Run the install operation
-        let result = tokio::runtime::Runtime::new()?.block_on(self.install_async(config))?;
-
-        // Write result to stdout
-        let result_json = serde_json::to_string_pretty(&result)?;
-        writeln!(io.stdout, "{}", result_json)?;
-
-        Ok(result_status("install", &result))
-    }
-
-    fn remove_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments from JSON input
-        let config_json = args.get("input").ok_or_else(|| {
-            PkgError::InvalidRemoveConfig("Missing input configuration".to_string())
-        })?;
-
-        let config: RemoveConfig = serde_json::from_str(config_json)
-            .map_err(|e| PkgError::InvalidRemoveConfig(format!("Invalid JSON: {}", e)))?;
-
-        // Run the remove operation
-        let result = tokio::runtime::Runtime::new()?.block_on(self.remove_async(config))?;
-
-        // Write result to stdout
-        let result_json = serde_json::to_string_pretty(&result)?;
-        writeln!(io.stdout, "{}", result_json)?;
-
-        Ok(result_status("remove", &result))
-    }
-
-    fn update_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments from JSON input
-        let config_json = args.get("input").ok_or_else(|| {
-            PkgError::InvalidUpdateConfig("Missing input configuration".to_string())
-        })?;
-
-        let config: UpdateConfig = serde_json::from_str(config_json)
-            .map_err(|e| PkgError::InvalidUpdateConfig(format!("Invalid JSON: {}", e)))?;
-
-        // Run the update operation
-        let result = tokio::runtime::Runtime::new()?.block_on(self.update_async(config))?;
-
-        // Write result to stdout
-        let result_json = serde_json::to_string_pretty(&result)?;
-        writeln!(io.stdout, "{}", result_json)?;
-
-        Ok(result_status("update", &result))
-    }
-
-    fn upgrade_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments from JSON input
-        let config_json = args.get("input").ok_or_else(|| {
-            PkgError::InvalidUpgradeConfig("Missing input configuration".to_string())
-        })?;
-
-        let config: UpgradeConfig = serde_json::from_str(config_json)
-            .map_err(|e| PkgError::InvalidUpgradeConfig(format!("Invalid JSON: {}", e)))?;
-
-        // Run the upgrade operation
-        let result = tokio::runtime::Runtime::new()?.block_on(self.upgrade_async(config))?;
-
-        // Write result to stdout
-        let result_json = serde_json::to_string_pretty(&result)?;
-        writeln!(io.stdout, "{}", result_json)?;
-
-        Ok(result_status("upgrade", &result))
-    }
-
-    fn info_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments from JSON input
-        let config_json = args.get("input").ok_or_else(|| {
-            PkgError::InvalidInfoConfig("Missing input configuration".to_string())
-        })?;
-
-        let config: InfoConfig = serde_json::from_str(config_json)
-            .map_err(|e| PkgError::InvalidInfoConfig(format!("Invalid JSON: {}", e)))?;
-
-        // Run the info operation
-        let result = tokio::runtime::Runtime::new()?.block_on(self.info_async(config))?;
-
-        // Write result to stdout
-        let result_json = serde_json::to_string_pretty(&result)?;
-        writeln!(io.stdout, "{}", result_json)?;
-
-        Ok(Status::success())
-    }
-
-    fn search_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments from JSON input
-        let config_json = args.get("input").ok_or_else(|| {
-            PkgError::InvalidSearchConfig("Missing input configuration".to_string())
-        })?;
-
-        let config: SearchConfig = serde_json::from_str(config_json)
-            .map_err(|e| PkgError::InvalidSearchConfig(format!("Invalid JSON: {}", e)))?;
-
-        // Run the search operation
-        let result = tokio::runtime::Runtime::new()?.block_on(self.search_async(config))?;
-
-        // Write result to stdout
-        let result_json = serde_json::to_string_pretty(&result)?;
-        writeln!(io.stdout, "{}", result_json)?;
-
-        Ok(Status::success())
-    }
-
-    fn list_installed_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments from JSON input
-        let config_json = args.get("input").ok_or_else(|| {
-            PkgError::InvalidListInstalledConfig("Missing input configuration".to_string())
-        })?;
-
-        let config: ListInstalledConfig = serde_json::from_str(config_json)
-            .map_err(|e| PkgError::InvalidListInstalledConfig(format!("Invalid JSON: {}", e)))?;
-
-        // Run the list installed operation
-        let result = tokio::runtime::Runtime::new()?.block_on(self.list_installed_async(config))?;
-
-        // Write result to stdout
-        let result_json = serde_json::to_string_pretty(&result)?;
-        writeln!(io.stdout, "{}", result_json)?;
-
-        Ok(Status::success())
-    }
-
-    fn snapshot_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments from JSON input
-        let config_json = args.get("input").ok_or_else(|| {
-            PkgError::InvalidSnapshotConfig("Missing input configuration".to_string())
-        })?;
-
-        // A removed key is a usage error: exit 2, nothing runs.
-        if let Err(e) = check_snapshot_input(config_json) {
-            return Ok(Status::err(2, e.to_string()));
+    /// Runs one verb: checks the arguments and the input keys (exit 2,
+    /// nothing run), applies `timeout_ms` as the deadline of every
+    /// package-manager process (stopped at the deadline: exit 124), and maps
+    /// every failure to a `pkg.*` code and exit status.
+    fn call_verb(&self, verb: &str, args: &Args, io: &mut IoStreams) -> Result<Status> {
+        let text = match pkg_args::check_args(verb, args) {
+            Ok(text) => text,
+            Err(reason) => return Ok(usage_error(reason)),
+        };
+        let input = match pkg_args::check_input(verb, text) {
+            Ok(input) => input,
+            Err(reason) => return Ok(usage_error(reason)),
+        };
+        let config = match VerbConfig::parse(verb, input) {
+            Ok(config) => config,
+            Err(reason) => return Ok(usage_error(reason)),
+        };
+        let (timeout_ms, env) = config.common();
+        if timeout_ms == 0 {
+            return Ok(usage_error(format!(
+                "timeout_ms must be greater than 0 for pkg {verb}"
+            )));
         }
-        let config: SnapshotConfig = serde_json::from_str(config_json)
-            .map_err(|e| PkgError::InvalidSnapshotConfig(format!("Invalid JSON: {}", e)))?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let _env = VerbEnv::set(env);
+        crate::core::process::limit(Duration::from_millis(timeout_ms));
+        let outcome = runtime.block_on(async {
+            match config {
+                VerbConfig::Install(c) => self.install_async(c).await,
+                VerbConfig::Remove(c) => self.remove_async(c).await,
+                VerbConfig::Update(c) => self.update_async(c).await,
+                VerbConfig::Upgrade(c) => self.upgrade_async(c).await,
+                VerbConfig::Info(c) => self.info_async(c).await,
+                VerbConfig::Search(c) => self.search_async(c).await,
+                VerbConfig::ListInstalled(c) => self.list_installed_async(c).await,
+                VerbConfig::Snapshot(c) => self.snapshot_async(c).await,
+                VerbConfig::Restore(c) => self.restore_async(c).await,
+            }
+        });
+        crate::core::process::clear_limit();
+        let lost = crate::core::process::has_lost();
+        match outcome {
+            Ok(result) => {
+                writeln!(io.stdout, "{}", serde_json::to_string_pretty(&result)?)?;
+                io.stdout.flush()?;
+                if lost {
+                    return Ok(timeout_status(verb, timeout_ms));
+                }
+                Ok(result_status(verb, &result))
+            }
+            Err(e) if lost || e.is_timeout() => Ok(timeout_status(verb, timeout_ms)),
+            Err(e) => {
+                let (exit, code) = e.code();
+                Ok(Status::coded(exit, code, e.to_string()))
+            }
+        }
+    }
+}
 
-        // Run the snapshot operation
-        let result = tokio::runtime::Runtime::new()?.block_on(self.snapshot_async(config))?;
+/// A refused request: exit 2, `pkg.invalid_argument`, nothing was run.
+fn usage_error(reason: String) -> Status {
+    Status::coded(
+        crate::core::status::exit::USAGE,
+        "pkg.invalid_argument",
+        reason,
+    )
+}
 
-        // Write result to stdout
-        let result_json = serde_json::to_string_pretty(&result)?;
-        writeln!(io.stdout, "{}", result_json)?;
+/// The deadline passed: a package-manager process was stopped (or never
+/// started), so the outcome is unknown.
+fn timeout_status(verb: &str, timeout_ms: u64) -> Status {
+    Status::coded(
+        crate::core::status::exit::TIMEOUT,
+        "pkg.timeout",
+        format!(
+            "pkg {verb} did not finish within timeout_ms={timeout_ms}; the package manager \
+             was stopped and may have left work half done; check its state before retrying"
+        ),
+    )
+}
 
-        Ok(Status::success())
+/// One verb's parsed input.
+enum VerbConfig {
+    Install(InstallConfig),
+    Remove(RemoveConfig),
+    Update(UpdateConfig),
+    Upgrade(UpgradeConfig),
+    Info(InfoConfig),
+    Search(SearchConfig),
+    ListInstalled(ListInstalledConfig),
+    Snapshot(SnapshotConfig),
+    Restore(RestoreConfig),
+}
+
+impl VerbConfig {
+    fn parse(verb: &str, input: Value) -> std::result::Result<Self, String> {
+        Ok(match verb {
+            "install" => Self::Install(parse_config(verb, input)?),
+            "remove" => Self::Remove(parse_config(verb, input)?),
+            "update" => Self::Update(parse_config(verb, input)?),
+            "upgrade" => Self::Upgrade(parse_config(verb, input)?),
+            "info" => Self::Info(parse_config(verb, input)?),
+            "search" => Self::Search(parse_config(verb, input)?),
+            "list_installed" => Self::ListInstalled(parse_config(verb, input)?),
+            "snapshot" => Self::Snapshot(parse_config(verb, input)?),
+            "restore" | "apply_lock" => Self::Restore(parse_config(verb, input)?),
+            other => return Err(format!("unknown verb for pkg://: {other}")),
+        })
     }
 
-    fn restore_verb(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
-        // Parse arguments from JSON input
-        let config_json = args.get("input").ok_or_else(|| {
-            PkgError::InvalidRestoreConfig("Missing input configuration".to_string())
-        })?;
-
-        let config: RestoreConfig = serde_json::from_str(config_json)
-            .map_err(|e| PkgError::InvalidRestoreConfig(format!("Invalid JSON: {}", e)))?;
-
-        // Run the restore operation
-        let result = tokio::runtime::Runtime::new()?.block_on(self.restore_async(config))?;
-
-        // Write result to stdout
-        let result_json = serde_json::to_string_pretty(&result)?;
-        writeln!(io.stdout, "{}", result_json)?;
-
-        Ok(result_status("restore", &result))
+    /// `timeout_ms` and `env`, which every verb has.
+    fn common(&self) -> (u64, Vec<(String, String)>) {
+        let (timeout_ms, env) = match self {
+            Self::Install(c) => (c.timeout_ms, &c.env),
+            Self::Remove(c) => (c.timeout_ms, &c.env),
+            Self::Update(c) => (c.timeout_ms, &c.env),
+            Self::Upgrade(c) => (c.timeout_ms, &c.env),
+            Self::Info(c) => (c.timeout_ms, &c.env),
+            Self::Search(c) => (c.timeout_ms, &c.env),
+            Self::ListInstalled(c) => (c.timeout_ms, &c.env),
+            Self::Snapshot(c) => (c.timeout_ms, &c.env),
+            Self::Restore(c) => (c.timeout_ms, &c.env),
+        };
+        let mut env: Vec<(String, String)> = env
+            .iter()
+            .flatten()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        env.sort();
+        (timeout_ms, env)
     }
+}
 
+/// Deserializes a verb's input. A value of the wrong type or outside its
+/// accepted set is refused with the key named.
+fn parse_config<T: serde::de::DeserializeOwned>(
+    verb: &str,
+    input: Value,
+) -> std::result::Result<T, String> {
+    let err = match serde_json::from_value::<T>(input.clone()) {
+        Ok(config) => return Ok(config),
+        Err(e) => e,
+    };
+    // The key whose removal makes the input parse is the one at fault.
+    let culprit = input.as_object().and_then(|object| {
+        let mut keys: Vec<&String> = object.keys().collect();
+        keys.sort();
+        keys.into_iter()
+            .find(|key| {
+                let mut rest = object.clone();
+                rest.remove(*key);
+                serde_json::from_value::<T>(Value::Object(rest)).is_ok()
+            })
+            .cloned()
+            // A required key cannot be removed: find it by the value the
+            // error quotes (such as an unknown manager name).
+            .or_else(|| {
+                let text = err.to_string();
+                let mut keys: Vec<&String> = object.keys().collect();
+                keys.sort();
+                keys.into_iter()
+                    .find(|key| {
+                        object[*key].as_str().is_some_and(|v| {
+                            text.contains(&format!("`{v}`")) || text.contains(&format!("\"{v}\""))
+                        })
+                    })
+                    .cloned()
+            })
+    });
+    Err(match culprit {
+        Some(key) => format!("invalid value for `{key}` in pkg {verb} input: {err}"),
+        None => format!("invalid input for pkg {verb}: {err}"),
+    })
+}
+
+thread_local! {
+    /// The `env` of the verb being run, set in every package-manager process
+    /// it starts (after `LC_ALL=C`, so the caller can override that).
+    static VERB_ENV: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Holds the verb's `env` while it runs.
+struct VerbEnv;
+
+impl VerbEnv {
+    fn set(env: Vec<(String, String)>) -> Self {
+        VERB_ENV.with(|e| *e.borrow_mut() = env);
+        VerbEnv
+    }
+}
+
+impl Drop for VerbEnv {
+    fn drop(&mut self) {
+        VERB_ENV.with(|e| e.borrow_mut().clear());
+    }
+}
+
+/// A package-manager command: `LC_ALL=C` so its output is parsed in the
+/// language the parsers read, then the verb's `env`.
+fn pkg_cmd(program: &str) -> AsyncCommand {
+    let mut command = AsyncCommand::new(program);
+    command.env("LC_ALL", "C");
+    VERB_ENV.with(|env| {
+        for (name, value) in env.borrow().iter() {
+            command.env(name, value);
+        }
+    });
+    command
+}
+
+impl PkgHandle {
     async fn install_async(&self, config: InstallConfig) -> Result<Value, PkgError> {
-        // Validate configuration
         self.validate_config(&config)?;
-
-        // Resolve manager
         let manager = self.resolve_manager(&config.manager).await?;
-
-        // Check if dry run
+        check_install_support(&config, &manager)?;
         if config.dry_run {
             return self.dry_run_install(&config, &manager).await;
         }
-
-        // Perform actual install with timeout
-        let result = timeout(
-            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
-            self.perform_install(&config, &manager),
-        )
-        .await
-        .map_err(|_| PkgError::InstallTimeout)?;
-
-        result
+        self.perform_install(&config, &manager).await
     }
 
     /// Validate install configuration
@@ -1770,6 +2506,7 @@ impl PkgHandle {
                     "package name cannot be empty".to_string(),
                 ));
             }
+            check_pkg_token("package name", pkg).map_err(PkgError::InvalidInfoConfig)?;
         }
 
         // Check timeout
@@ -1777,15 +2514,6 @@ impl PkgHandle {
             return Err(PkgError::InvalidInfoConfig(
                 "timeout_ms must be greater than 0".to_string(),
             ));
-        }
-
-        // Check extra_args if present
-        if let Some(ref extra_args) = config.extra_args {
-            if extra_args.iter().any(|arg| arg.is_empty()) {
-                return Err(PkgError::InvalidInfoConfig(
-                    "extra_args cannot contain empty strings".to_string(),
-                ));
-            }
         }
 
         // Check env if present
@@ -1868,42 +2596,38 @@ impl PkgHandle {
         let mut commands = Vec::new();
         let mut packages = Vec::new();
 
-        // Add cache update command if needed
         if config.update_cache {
             commands.push(self.build_update_cache_command(manager)?.to_string());
         }
 
-        // Check package status and build install commands
-        let install_command = self.build_install_command(config, manager).await?;
-        commands.push(install_command.to_string());
-
-        // Check which packages would be installed
+        // The same per-package decision and command as a real install.
         for pkg in &config.packages {
-            let is_installed = self
-                .is_package_installed(&pkg.name, manager)
-                .await
-                .unwrap_or(false);
-            let action = if is_installed {
-                if config.reinstall {
-                    "would_reinstall"
-                } else if config.upgrade {
-                    "would_upgrade"
-                } else {
-                    "already_installed"
-                }
-            } else {
-                "would_install"
+            let installed = self.installed_version_of(&pkg.name, manager).await;
+            let action = match install_step(config, pkg, installed.as_deref()) {
+                InstallStep::Skip => "already_installed",
+                InstallStep::Reinstall => "would_reinstall",
+                InstallStep::Upgrade => "would_upgrade",
+                InstallStep::Install if installed.is_some() => "would_change_version",
+                InstallStep::Install => "would_install",
             };
-
+            if action != "already_installed" {
+                let step = install_step(config, pkg, installed.as_deref());
+                commands.push(
+                    self.build_install_command(config, pkg, manager, step)?
+                        .to_string(),
+                );
+            }
             packages.push(json!({
                 "name": pkg.name,
-                "action": action
+                "action": action,
+                "installed_version": installed,
+                "requested_version": pkg.version,
             }));
         }
 
         Ok(json!({
             "backend": "pkg",
-            "manager": format!("{:?}", manager).to_lowercase(),
+            "manager": manager_name(manager),
             "alias": self.alias,
             "dry_run": true,
             "commands": commands,
@@ -1926,42 +2650,39 @@ impl PkgHandle {
             failed: 0,
         };
 
-        // Update cache if requested
         if config.update_cache {
             self.update_package_cache(manager).await?;
         }
 
-        // Process packages
         for pkg in &config.packages {
-            match self.install_single_package(pkg, config, manager).await {
-                Ok(result) => {
-                    match result.action.as_str() {
-                        "installed" => summary.installed += 1,
-                        "upgraded" => summary.upgraded += 1,
-                        "reinstalled" => summary.reinstalled += 1,
-                        "unchanged" => summary.unchanged += 1,
-                        _ => {}
-                    }
-                    results.push(result);
-                }
-                Err(e) => {
-                    summary.failed += 1;
-                    results.push(PackageResult {
-                        name: pkg.name.clone(),
-                        requested_version: pkg.version.clone(),
-                        installed_version: None,
-                        action: "failed".to_string(),
-                        from_cache: false,
-                    });
-                    // Log error but continue with other packages
-                    eprintln!("Failed to install {}: {}", pkg.name, e);
-                }
+            let result = match self.install_single_package(pkg, config, manager).await {
+                Ok(result) => result,
+                Err(e) => PackageResult {
+                    name: pkg.name.clone(),
+                    requested_version: pkg.version.clone(),
+                    installed_version: self.installed_version_of(&pkg.name, manager).await,
+                    action: "failed".to_string(),
+                    from_cache: false,
+                    error: Some(error_value(&e)),
+                },
+            };
+            match result.action.as_str() {
+                "installed" => summary.installed += 1,
+                "upgraded" => summary.upgraded += 1,
+                "reinstalled" => summary.reinstalled += 1,
+                "unchanged" => summary.unchanged += 1,
+                _ => summary.failed += 1,
+            }
+            results.push(result);
+            if crate::core::process::has_lost() {
+                // The deadline passed: nothing more is started.
+                break;
             }
         }
 
         Ok(json!({
             "backend": "pkg",
-            "manager": format!("{:?}", manager).to_lowercase(),
+            "manager": manager_name(manager),
             "alias": self.alias,
             "update_cache": config.update_cache,
             "dry_run": false,
@@ -1986,39 +2707,45 @@ impl PkgHandle {
     }
 
     /// Build install command for manager and packages
-    async fn build_install_command(
+    /// The command that installs (or upgrades, or reinstalls) one package.
+    fn build_install_command(
         &self,
         config: &InstallConfig,
+        pkg: &PackageSpec,
         manager: &ManagerKind,
+        step: InstallStep,
     ) -> Result<CmdLine, PkgError> {
+        let upgrade = step == InstallStep::Upgrade;
+        let reinstall = step == InstallStep::Reinstall;
         let mut cmd = match manager {
             ManagerKind::Apt => {
                 let mut base = CmdLine::lit("DEBIAN_FRONTEND=noninteractive apt-get install");
                 if config.assume_yes {
                     base.push_lit(" -y");
                 }
-                if config.reinstall {
+                if reinstall {
                     base.push_lit(" --reinstall");
                 }
-                base
-            }
-            ManagerKind::Dnf => {
-                let mut base = CmdLine::lit(if config.reinstall {
-                    "dnf reinstall"
-                } else {
-                    "dnf install"
-                });
-                if config.assume_yes {
-                    base.push_lit(" -y");
+                if upgrade {
+                    base.push_lit(" --only-upgrade");
                 }
                 base
             }
-            ManagerKind::Yum => {
-                let mut base = CmdLine::lit(if config.reinstall {
-                    "yum reinstall"
+            ManagerKind::Dnf | ManagerKind::Yum => {
+                let tool = if *manager == ManagerKind::Dnf {
+                    "dnf"
                 } else {
-                    "yum install"
-                });
+                    "yum"
+                };
+                let verb = if reinstall {
+                    "reinstall"
+                } else if upgrade {
+                    "upgrade"
+                } else {
+                    "install"
+                };
+                let mut base = CmdLine::lit(tool);
+                base.push_lit(verb);
                 if config.assume_yes {
                     base.push_lit(" -y");
                 }
@@ -2029,112 +2756,93 @@ impl PkgHandle {
                 if config.assume_yes {
                     base.push_lit(" --noconfirm");
                 }
-                if config.only_if_missing {
+                // Without reinstall, a package that is up to date is left
+                // alone (and an outdated one is upgraded).
+                if !reinstall {
                     base.push_lit(" --needed");
                 }
                 base
             }
             ManagerKind::Apk => {
-                let mut base = CmdLine::lit("apk add --no-interactive");
-                if config.reinstall {
-                    base.push_lit(" --force-reinstall");
+                // `apk fix` reinstalls an installed package.
+                let mut base = CmdLine::lit(if reinstall {
+                    "apk fix --no-interactive"
+                } else {
+                    "apk add --no-interactive"
+                });
+                if upgrade {
+                    base.push_lit(" --upgrade");
                 }
                 base
             }
-            ManagerKind::Brew => {
-                if config.reinstall {
-                    CmdLine::lit("brew reinstall")
-                } else {
-                    CmdLine::lit("brew install")
-                }
-            }
-            _ => {
+            ManagerKind::Brew => CmdLine::lit(if reinstall {
+                "brew reinstall"
+            } else if upgrade {
+                "brew upgrade"
+            } else {
+                "brew install"
+            }),
+            ManagerKind::Auto => {
                 return Err(PkgError::ManagerNotAvailable(
-                    "Unsupported manager".to_string(),
+                    "manager auto was not resolved".to_string(),
                 ));
             }
         };
 
-        // Add packages to command
-        for pkg in &config.packages {
-            cmd.arg(&self.format_package_name(pkg, manager, config)?);
-        }
-
-        // Add extra args if specified
+        cmd.arg(&self.format_package_name(pkg, manager, config)?);
         if let Some(ref extra_args) = config.extra_args {
             for arg in extra_args {
                 cmd.arg(arg);
             }
         }
-
         Ok(cmd)
     }
 
     /// Format package name for specific manager
+    /// The package argument: `name`, with the requested version and `arch`
+    /// in the manager's syntax (`check_install_support` has refused the
+    /// managers that have none).
     fn format_package_name(
         &self,
         pkg: &PackageSpec,
         manager: &ManagerKind,
         config: &InstallConfig,
     ) -> Result<String, PkgError> {
-        let mut name = pkg.name.clone();
-
-        // Add version if specified
-        if let Some(ref version) = pkg.version {
-            match manager {
-                ManagerKind::Apt => name = format!("{}={}", name, version),
-                ManagerKind::Dnf | ManagerKind::Yum => name = format!("{}-{}", name, version),
-                ManagerKind::Apk => name = format!("{}={}", name, version),
-                ManagerKind::Pacman => {
-                    // Pacman version pinning is complex, often ignored
-                    return Err(PkgError::InstallInvalidVersion(
-                        "Version pinning not supported for pacman".to_string(),
-                    ));
-                }
-                ManagerKind::Brew => {
-                    // Homebrew typically ignores version, warning logged elsewhere
-                }
-                _ => {}
-            }
-        }
-
-        // Add architecture if specified
-        if let Some(ref arch) = config.arch {
-            match manager {
-                ManagerKind::Apt => name = format!("{}:{}", name, arch),
-                ManagerKind::Dnf | ManagerKind::Yum => name = format!("{}.{}", name, arch),
-                _ => {} // Other managers don't commonly support arch specification
-            }
-        }
-
-        Ok(name)
+        Ok(package_argument(
+            manager,
+            &pkg.name,
+            pkg.version.as_deref(),
+            config.arch.as_deref(),
+        ))
     }
 
-    /// Check if package is installed
-    async fn is_package_installed(
+    /// The installed version of a package, or None when it is not installed.
+    /// apt counts only packages in dpkg state `installed` (a removed package
+    /// whose configuration files remain is not installed).
+    async fn installed_version_of(
         &self,
         package_name: &str,
         manager: &ManagerKind,
-    ) -> Result<bool, PkgError> {
+    ) -> Option<String> {
         let mut cmd = match manager {
-            ManagerKind::Apt => CmdLine::lit("dpkg -s"),
-            ManagerKind::Dnf | ManagerKind::Yum => CmdLine::lit("rpm -q"),
-            ManagerKind::Pacman => CmdLine::lit("pacman -Q"),
-            ManagerKind::Apk => CmdLine::lit("apk info -e"),
-            ManagerKind::Brew => CmdLine::lit("brew list --versions"),
-            _ => {
-                return Err(PkgError::ManagerNotAvailable(
-                    "Unsupported manager".to_string(),
-                ));
+            ManagerKind::Apt => {
+                CmdLine::lit("dpkg-query -W -f=${db:Status-Status}\\t${Version}\\n")
             }
+            ManagerKind::Dnf | ManagerKind::Yum => {
+                CmdLine::lit("rpm -q --qf %|EPOCH?{%{EPOCH}:}:{}|%{VERSION}-%{RELEASE}\\n")
+            }
+            ManagerKind::Pacman => CmdLine::lit("pacman -Q"),
+            ManagerKind::Apk => CmdLine::lit("apk info -e -v"),
+            ManagerKind::Brew => CmdLine::lit("brew list --versions"),
+            ManagerKind::Auto => return None,
         };
         cmd.arg(package_name);
-
-        let output = cmd.command().bounded_output().await.map_err(|e| {
-            PkgError::InstallFailed(format!("Failed to check package status: {}", e))
-        })?;
-
-        Ok(output.status.success())
+        let output = cmd.command().bounded_output().await.ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_installed_version(manager, package_name, &stdout)
     }
 
     /// Update package cache
@@ -2161,148 +2869,69 @@ impl PkgHandle {
     }
 
     /// Install single package
+    /// Installs one package: skipped when `only_if_missing` finds it
+    /// installed (at the requested version, when one is given), upgraded in
+    /// place with `upgrade`, reinstalled with `reinstall`. The action is
+    /// decided from the installed version before and after.
     async fn install_single_package(
         &self,
         pkg: &PackageSpec,
         config: &InstallConfig,
         manager: &ManagerKind,
     ) -> Result<PackageResult, PkgError> {
-        // Check if already installed first
-        let was_installed = self
-            .is_package_installed(&pkg.name, manager)
-            .await
-            .unwrap_or(false);
-
-        // Handle only_if_missing logic
-        if config.only_if_missing && was_installed && !config.upgrade && !config.reinstall {
-            let installed_version = self.get_installed_version(&pkg.name, manager).await.ok();
+        let before = self.installed_version_of(&pkg.name, manager).await;
+        let step = install_step(config, pkg, before.as_deref());
+        if step == InstallStep::Skip {
             return Ok(PackageResult {
                 name: pkg.name.clone(),
                 requested_version: pkg.version.clone(),
-                installed_version,
+                installed_version: before,
                 action: "unchanged".to_string(),
                 from_cache: false,
+                error: None,
             });
         }
 
-        // Build command for this specific package
-        let temp_config = InstallConfig {
-            manager: config.manager.clone(),
-            packages: vec![pkg.clone()],
-            update_cache: false, // Already handled
-            assume_yes: config.assume_yes,
-            only_if_missing: config.only_if_missing,
-            reinstall: config.reinstall,
-            upgrade: config.upgrade,
-            dry_run: config.dry_run,
-            timeout_ms: config.timeout_ms,
-            arch: config.arch.clone(),
-            extra_args: config.extra_args.clone(),
-            env: config.env.clone(),
-        };
-
-        let cmd = self.build_install_command(&temp_config, manager).await?;
-
-        // Execute command
-        let mut command = cmd.command();
-
-        // Set environment variables if specified
-        if let Some(ref env) = config.env {
-            for (key, value) in env {
-                command.env(key, value);
-            }
-        }
-
-        let output = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let cmd = self.build_install_command(config, pkg, manager, step)?;
+        let output = cmd
+            .command()
             .bounded_output()
             .await
-            .map_err(|e| PkgError::InstallFailed(format!("Failed to execute install: {}", e)))?;
-
+            .map_err(|e| PkgError::InstallFailed(format!("could not run {cmd}: {e}")))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(self.map_install_error(&stderr, &output.status.code()));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(self.map_install_error(
+                &format!("{}{}", stderr, tail_lines(&stdout, 5)),
+                &output.status.code(),
+            ));
         }
 
-        // Determine action based on previous state and current result
-        let action = if !was_installed {
+        let after = self.installed_version_of(&pkg.name, manager).await;
+        let action = if after.is_none() {
+            // The manager reported success but the package is not installed.
+            return Err(PkgError::InstallFailed(format!(
+                "{cmd} succeeded but {} is not installed afterwards",
+                pkg.name
+            )));
+        } else if before.is_none() {
             "installed"
-        } else if config.reinstall {
+        } else if step == InstallStep::Reinstall {
             "reinstalled"
-        } else if config.upgrade {
+        } else if before != after {
             "upgraded"
         } else {
             "unchanged"
         };
 
-        let installed_version = self.get_installed_version(&pkg.name, manager).await.ok();
-
         Ok(PackageResult {
             name: pkg.name.clone(),
             requested_version: pkg.version.clone(),
-            installed_version,
+            installed_version: after,
             action: action.to_string(),
             from_cache: false,
+            error: None,
         })
-    }
-
-    /// Get installed version of package
-    async fn get_installed_version(
-        &self,
-        package_name: &str,
-        manager: &ManagerKind,
-    ) -> Result<String, PkgError> {
-        // The former shell pipelines (`| cut -d' ' -f2`, `| grep -o ...`)
-        // are applied to the output here instead.
-        let mut cmd = match manager {
-            ManagerKind::Apt => CmdLine::lit("dpkg-query -W -f=${Version}"),
-            ManagerKind::Dnf | ManagerKind::Yum => {
-                CmdLine::lit("rpm -q --qf %{VERSION}-%{RELEASE}")
-            }
-            ManagerKind::Pacman => CmdLine::lit("pacman -Q"),
-            ManagerKind::Apk => CmdLine::lit("apk info"),
-            ManagerKind::Brew => CmdLine::lit("brew list --versions"),
-            _ => {
-                return Err(PkgError::ManagerNotAvailable(
-                    "Unsupported manager".to_string(),
-                ));
-            }
-        };
-        cmd.arg(package_name);
-
-        let output = cmd
-            .command()
-            .bounded_output()
-            .await
-            .map_err(|e| PkgError::InstallFailed(format!("Failed to get version: {}", e)))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let version = match manager {
-            // `cut -d' ' -f2`: second field; lines without a space pass whole.
-            // The pipeline's status was cut's, so the query's status is ignored.
-            ManagerKind::Pacman | ManagerKind::Brew => Some(
-                stdout
-                    .lines()
-                    .map(|l| l.split(' ').nth(1).unwrap_or(l))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ),
-            // `grep -o '[0-9][^[:space:]]*'`: fails when nothing matches
-            ManagerKind::Apk => {
-                let re = regex::Regex::new(r"[0-9][^\s]*").expect("static regex");
-                let found: Vec<&str> = re.find_iter(&stdout).map(|m| m.as_str()).collect();
-                (!found.is_empty()).then(|| found.join("\n"))
-            }
-            _ => output.status.success().then(|| stdout.to_string()),
-        };
-
-        match version {
-            Some(v) => Ok(v.trim().to_string()),
-            None => Err(PkgError::InstallFailed(
-                "Could not get package version".to_string(),
-            )),
-        }
     }
 
     /// Map install error from stderr and exit code
@@ -2310,14 +2939,9 @@ impl PkgHandle {
         let stderr_lower = stderr.to_lowercase();
 
         // Check for specific error patterns
-        if stderr_lower.contains("package")
-            && (stderr_lower.contains("not found") || stderr_lower.contains("no such package"))
-        {
+        if is_not_found_message(&stderr_lower) {
             PkgError::InstallNotFound(stderr.to_string())
-        } else if stderr_lower.contains("permission denied")
-            || stderr_lower.contains("not allowed")
-            || exit_code == &Some(13)
-        {
+        } else if is_permission_message(&stderr_lower) || exit_code == &Some(13) {
             PkgError::InstallPermissionDenied(stderr.to_string())
         } else if stderr_lower.contains("dependency")
             || stderr_lower.contains("broken")
@@ -2338,26 +2962,13 @@ impl PkgHandle {
     // ===== REMOVE METHODS =====
 
     async fn remove_async(&self, config: RemoveConfig) -> Result<Value, PkgError> {
-        // Validate configuration
         self.validate_remove_config(&config)?;
-
-        // Resolve manager
         let manager = self.resolve_manager(&config.manager).await?;
-
-        // Check if dry run
+        check_remove_support(&config, &manager)?;
         if config.dry_run {
             return self.dry_run_remove(&config, &manager).await;
         }
-
-        // Perform actual remove with timeout
-        let result = timeout(
-            crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
-            self.perform_remove(&config, &manager),
-        )
-        .await
-        .map_err(|_| PkgError::RemoveTimeout)?;
-
-        result
+        self.perform_remove(&config, &manager).await
     }
 
     /// Validate remove configuration
@@ -2412,7 +3023,8 @@ impl PkgHandle {
         Ok(())
     }
 
-    /// Perform dry run removal
+    /// Reports the packages a removal would act on and the commands it
+    /// would run, without running them.
     async fn dry_run_remove(
         &self,
         config: &RemoveConfig,
@@ -2420,67 +3032,56 @@ impl PkgHandle {
     ) -> Result<Value, PkgError> {
         let mut commands = Vec::new();
         let mut packages = Vec::new();
-
-        // Check package status and build remove commands
-        let mut remove_packages = Vec::new();
-
+        let mut to_remove = Vec::new();
         for pkg in &config.packages {
-            let is_installed = self
-                .is_package_installed(&pkg.name, manager)
-                .await
-                .unwrap_or(false);
-            if is_installed || !config.only_if_installed {
-                remove_packages.push(pkg);
-            }
-        }
-
-        if !remove_packages.is_empty() {
-            let remove_command = self
-                .build_remove_command(&remove_packages, config, manager)
-                .await?;
-            commands.push(remove_command.to_string());
-
-            // Add autoremove command if recursive and supported
-            if config.recursive {
-                if let Ok(autoremove_cmd) = self.build_autoremove_command(manager) {
-                    commands.push(autoremove_cmd.to_string());
+            let installed = self.installed_version_of(&pkg.name, manager).await;
+            let action = match remove_step(config, pkg, installed.as_deref()) {
+                RemoveStep::Remove => {
+                    to_remove.push(pkg);
+                    if config.purge {
+                        "would_purge"
+                    } else {
+                        "would_remove"
+                    }
                 }
-            }
-        }
-
-        // Check which packages would be removed
-        for pkg in &config.packages {
-            let is_installed = self
-                .is_package_installed(&pkg.name, manager)
-                .await
-                .unwrap_or(false);
-            let action = if is_installed {
-                if config.purge && self.supports_purge(manager) {
-                    "would_purge"
-                } else {
-                    "would_remove"
-                }
-            } else {
-                "not_installed"
+                RemoveStep::NotInstalled => "not_installed",
+                RemoveStep::Missing => "would_fail_not_installed",
+                RemoveStep::OtherVersion => "would_fail_other_version",
             };
-
             packages.push(json!({
                 "name": pkg.name,
-                "action": action
+                "action": action,
+                "installed_version": installed,
             }));
         }
-
+        if !to_remove.is_empty() {
+            commands.push(
+                self.build_remove_command(&to_remove, config, manager)
+                    .await?
+                    .to_string(),
+            );
+            if config.recursive {
+                if let Some(cmd) = self.build_autoremove_command(manager)? {
+                    commands.push(cmd.to_string());
+                }
+            }
+        }
         Ok(json!({
             "backend": "pkg",
-            "manager": format!("{:?}", manager).to_lowercase(),
+            "manager": manager_name(manager),
             "alias": self.alias,
             "dry_run": true,
+            "purge": config.purge,
+            "recursive": config.recursive,
             "commands": commands,
             "packages": packages
         }))
     }
 
-    /// Perform actual removal
+    /// Removes the packages in one manager command, then checks that each
+    /// one is gone. Packages that are not installed are reported (or fail
+    /// with `fail_if_missing`); with `recursive`, unused dependencies are
+    /// removed afterwards.
     async fn perform_remove(
         &self,
         config: &RemoveConfig,
@@ -2495,22 +3096,25 @@ impl PkgHandle {
             failed: 0,
             autoremove_run: false,
         };
+        let failed = |pkg: &PackageSpec, installed: Option<String>, e: PkgError| PackageResult {
+            name: pkg.name.clone(),
+            requested_version: pkg.version.clone(),
+            installed_version: installed,
+            action: "failed".to_string(),
+            from_cache: false,
+            error: Some(error_value(&e)),
+        };
 
-        let mut packages_to_remove = Vec::new();
-        let mut packages_to_fail = Vec::new();
-
-        // First pass: check installed status and handle flags
+        let mut to_remove = Vec::new();
+        let mut before = HashMap::new();
         for pkg in &config.packages {
-            let is_installed = self
-                .is_package_installed(&pkg.name, manager)
-                .await
-                .unwrap_or(false);
-
-            if !is_installed {
-                if config.fail_if_missing {
-                    packages_to_fail.push(pkg);
-                    summary.failed += 1;
-                } else {
+            let installed = self.installed_version_of(&pkg.name, manager).await;
+            match remove_step(config, pkg, installed.as_deref()) {
+                RemoveStep::Remove => {
+                    before.insert(pkg.name.clone(), installed);
+                    to_remove.push(pkg);
+                }
+                RemoveStep::NotInstalled => {
                     summary.not_installed += 1;
                     results.push(PackageResult {
                         name: pkg.name.clone(),
@@ -2518,142 +3122,132 @@ impl PkgHandle {
                         installed_version: None,
                         action: "not_installed".to_string(),
                         from_cache: false,
+                        error: None,
                     });
                 }
-            } else {
-                packages_to_remove.push(pkg);
+                RemoveStep::Missing => {
+                    summary.failed += 1;
+                    results.push(failed(
+                        pkg,
+                        None,
+                        PkgError::RemoveNotInstalled(format!(
+                            "{} is not installed (fail_if_missing)",
+                            pkg.name
+                        )),
+                    ));
+                }
+                RemoveStep::OtherVersion => {
+                    summary.failed += 1;
+                    let e = PkgError::RemoveNotInstalled(format!(
+                        "{} {} is not installed (installed: {})",
+                        pkg.name,
+                        pkg.version.as_deref().unwrap_or(""),
+                        installed.as_deref().unwrap_or("none")
+                    ));
+                    results.push(failed(pkg, installed, e));
+                }
             }
         }
 
-        // Add failed packages due to missing + fail_if_missing
-        for pkg in packages_to_fail {
-            results.push(PackageResult {
-                name: pkg.name.clone(),
-                requested_version: pkg.version.clone(),
-                installed_version: None,
-                action: "failed".to_string(),
-                from_cache: false,
-            });
-        }
-
-        // Remove packages that are actually installed
-        if !packages_to_remove.is_empty() {
+        let mut autoremove_error = None;
+        if !to_remove.is_empty() {
             match self
-                .remove_packages_batch(&packages_to_remove, config, manager)
+                .remove_packages_batch(&to_remove, config, manager)
                 .await
             {
-                Ok(batch_results) => {
-                    for result in batch_results {
-                        match result.action.as_str() {
-                            "removed" => summary.removed += 1,
-                            "purged" => {
-                                summary.purged += 1;
-                                summary.removed += 1; // purged counts as removed too
+                Ok(()) => {
+                    for pkg in &to_remove {
+                        let previous = before.get(&pkg.name).cloned().flatten();
+                        match self.installed_version_of(&pkg.name, manager).await {
+                            None => {
+                                let action = if config.purge {
+                                    summary.purged += 1;
+                                    "purged"
+                                } else {
+                                    "removed"
+                                };
+                                summary.removed += 1;
+                                results.push(PackageResult {
+                                    name: pkg.name.clone(),
+                                    requested_version: pkg.version.clone(),
+                                    installed_version: previous,
+                                    action: action.to_string(),
+                                    from_cache: false,
+                                    error: None,
+                                });
                             }
-                            "skipped" => summary.skipped += 1,
-                            _ => summary.failed += 1,
+                            // Previously absent and still absent is handled
+                            // above; here the package is still installed.
+                            Some(still) => {
+                                summary.failed += 1;
+                                let e = PkgError::RemoveFailed(format!(
+                                    "{} is still installed ({still}) after the remove command",
+                                    pkg.name
+                                ));
+                                results.push(failed(pkg, Some(still), e));
+                            }
                         }
-                        results.push(result);
                     }
                 }
                 Err(e) => {
-                    // If batch fails, mark all as failed
-                    summary.failed += packages_to_remove.len() as u32;
-                    for pkg in packages_to_remove {
-                        results.push(PackageResult {
-                            name: pkg.name.clone(),
-                            requested_version: pkg.version.clone(),
-                            installed_version: None,
-                            action: "failed".to_string(),
-                            from_cache: false,
-                        });
+                    summary.failed += to_remove.len() as u32;
+                    for pkg in &to_remove {
+                        let previous = before.get(&pkg.name).cloned().flatten();
+                        results.push(failed(pkg, previous, e.clone()));
                     }
-                    eprintln!("Failed to remove packages: {}", e);
                 }
             }
 
-            // Run autoremove if requested and some packages were removed
-            if config.recursive && (summary.removed > 0 || summary.purged > 0) {
-                if let Ok(_) = self.run_autoremove(manager).await {
-                    summary.autoremove_run = true;
+            if config.recursive && summary.removed > 0 && !crate::core::process::has_lost() {
+                match self.run_autoremove(manager, config).await {
+                    Ok(ran) => summary.autoremove_run = ran,
+                    Err(e) => autoremove_error = Some(error_value(&e)),
                 }
             }
         }
 
-        Ok(json!({
+        let mut result = json!({
             "backend": "pkg",
-            "manager": format!("{:?}", manager).to_lowercase(),
+            "manager": manager_name(manager),
             "alias": self.alias,
             "dry_run": false,
             "purge": config.purge,
             "recursive": config.recursive,
             "packages": results,
             "summary": summary
-        }))
+        });
+        if let Some(e) = autoremove_error {
+            result["autoremove_error"] = e;
+        }
+        Ok(result)
     }
 
-    /// Remove a batch of packages
+    /// Runs one remove command for `packages`.
     async fn remove_packages_batch(
         &self,
         packages: &[&PackageSpec],
         config: &RemoveConfig,
         manager: &ManagerKind,
-    ) -> Result<Vec<PackageResult>, PkgError> {
-        let mut results = Vec::new();
-
-        // Get installed versions before removal
-        let mut installed_versions = HashMap::new();
-        for pkg in packages {
-            if let Ok(version) = self.get_installed_version(&pkg.name, manager).await {
-                installed_versions.insert(pkg.name.clone(), version);
-            }
-        }
-
-        // Build and execute remove command
+    ) -> Result<(), PkgError> {
         let cmd = self.build_remove_command(packages, config, manager).await?;
-
-        let mut command = cmd.command();
-
-        // Set environment variables if specified
-        if let Some(ref env) = config.env {
-            for (key, value) in env {
-                command.env(key, value);
-            }
-        }
-
-        let output = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let output = cmd
+            .command()
             .bounded_output()
             .await
-            .map_err(|e| PkgError::RemoveFailed(format!("Failed to execute remove: {}", e)))?;
-
+            .map_err(|e| PkgError::RemoveFailed(format!("could not run {cmd}: {e}")))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(self.map_remove_error(&stderr, &output.status.code()));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(self.map_remove_error(
+                &format!("{}{}", stderr, tail_lines(&stdout, 5)),
+                &output.status.code(),
+            ));
         }
-
-        // Create results for each package
-        for pkg in packages {
-            let action = if config.purge && self.supports_purge(manager) {
-                "purged"
-            } else {
-                "removed"
-            };
-
-            results.push(PackageResult {
-                name: pkg.name.clone(),
-                requested_version: pkg.version.clone(),
-                installed_version: installed_versions.get(&pkg.name).cloned(),
-                action: action.to_string(),
-                from_cache: false,
-            });
-        }
-
-        Ok(results)
+        Ok(())
     }
 
-    /// Build remove command for manager and packages
+    /// The command that removes `packages` (refused options were checked by
+    /// `check_remove_support`).
     pub async fn build_remove_command(
         &self,
         packages: &[&PackageSpec],
@@ -2662,38 +3256,36 @@ impl PkgHandle {
     ) -> Result<CmdLine, PkgError> {
         let mut cmd = match manager {
             ManagerKind::Apt => {
-                let base_cmd = if config.purge {
+                let mut cmd = CmdLine::lit(if config.purge {
                     "DEBIAN_FRONTEND=noninteractive apt-get purge"
                 } else {
                     "DEBIAN_FRONTEND=noninteractive apt-get remove"
-                };
-                let mut cmd = CmdLine::lit(base_cmd);
+                });
                 if config.assume_yes {
                     cmd.push_lit(" -y");
                 }
                 cmd
             }
-            ManagerKind::Dnf => {
-                let mut cmd = CmdLine::lit("dnf remove");
-                if config.assume_yes {
-                    cmd.push_lit(" -y");
-                }
-                cmd
-            }
-            ManagerKind::Yum => {
-                let mut cmd = CmdLine::lit("yum remove");
+            ManagerKind::Dnf | ManagerKind::Yum => {
+                let mut cmd = CmdLine::lit(manager_name(manager));
+                cmd.push_lit("remove");
                 if config.assume_yes {
                     cmd.push_lit(" -y");
                 }
                 cmd
             }
             ManagerKind::Pacman => {
-                // Remove with dependencies when recursive
-                let mut cmd = CmdLine::lit(if config.recursive {
-                    "pacman -Rs"
-                } else {
-                    "pacman -R"
-                });
+                // -s: also dependencies nothing else needs; -n: configuration
+                // files are deleted instead of kept as .pacsave.
+                let mut flags = String::from("-R");
+                if config.recursive {
+                    flags.push('s');
+                }
+                if config.purge {
+                    flags.push('n');
+                }
+                let mut cmd = CmdLine::lit("pacman");
+                cmd.push_lit(&flags);
                 if config.assume_yes {
                     cmd.push_lit(" --noconfirm");
                 }
@@ -2707,90 +3299,86 @@ impl PkgHandle {
                 cmd
             }
             ManagerKind::Brew => CmdLine::lit("brew uninstall"),
-            _ => {
+            ManagerKind::Auto => {
                 return Err(PkgError::ManagerNotAvailable(
-                    "Unsupported manager".to_string(),
+                    "manager auto was not resolved".to_string(),
                 ));
             }
         };
-
-        // Add packages to command
         for pkg in packages {
             cmd.arg(&self.format_remove_package_name(pkg, manager, config)?);
         }
-
-        // Add extra args if specified
         if let Some(ref extra_args) = config.extra_args {
             for arg in extra_args {
                 cmd.arg(arg);
             }
         }
-
         Ok(cmd)
     }
 
-    /// Build autoremove command if supported
-    pub fn build_autoremove_command(&self, manager: &ManagerKind) -> Result<CmdLine, PkgError> {
-        match manager {
-            ManagerKind::Apt => Ok(CmdLine::lit(
+    /// The command that removes dependencies nothing needs any more, for
+    /// `recursive`. pacman does it in the remove command itself (`-Rs`) and
+    /// apk on every removal, so they have none.
+    pub fn build_autoremove_command(
+        &self,
+        manager: &ManagerKind,
+    ) -> Result<Option<CmdLine>, PkgError> {
+        Ok(match manager {
+            ManagerKind::Apt => Some(CmdLine::lit(
                 "DEBIAN_FRONTEND=noninteractive apt-get autoremove -y",
             )),
-            ManagerKind::Dnf => Ok(CmdLine::lit("dnf autoremove -y")),
-            ManagerKind::Yum => Ok(CmdLine::lit("yum autoremove -y")),
-            // Pacman recursive removal is handled in the main command
-            // APK and Brew don't have explicit autoremove
-            _ => Err(PkgError::ManagerNotAvailable(
-                "Autoremove not supported".to_string(),
-            )),
-        }
-    }
-
-    /// Run autoremove command
-    async fn run_autoremove(&self, manager: &ManagerKind) -> Result<(), PkgError> {
-        if let Ok(cmd) = self.build_autoremove_command(manager) {
-            let output = cmd
-                .command()
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .bounded_output()
-                .await
-                .map_err(|e| PkgError::RemoveFailed(format!("Failed to run autoremove: {}", e)))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(PkgError::RemoveFailed(format!(
-                    "Autoremove failed: {}",
-                    stderr
-                )));
+            ManagerKind::Dnf => Some(CmdLine::lit("dnf autoremove -y")),
+            ManagerKind::Yum => Some(CmdLine::lit("yum autoremove -y")),
+            ManagerKind::Brew => Some(CmdLine::lit("brew autoremove")),
+            ManagerKind::Pacman | ManagerKind::Apk => None,
+            ManagerKind::Auto => {
+                return Err(PkgError::ManagerNotAvailable(
+                    "manager auto was not resolved".to_string(),
+                ));
             }
-        }
-        Ok(())
+        })
     }
 
-    /// Format package name for removal
+    /// Removes unused dependencies after a removal (`recursive`). Returns
+    /// whether dependencies were taken care of: by the autoremove command, or
+    /// by the removal itself for pacman (`-Rs`) and apk.
+    async fn run_autoremove(
+        &self,
+        manager: &ManagerKind,
+        _config: &RemoveConfig,
+    ) -> Result<bool, PkgError> {
+        let Some(cmd) = self.build_autoremove_command(manager)? else {
+            return Ok(true);
+        };
+        let output = cmd
+            .command()
+            .bounded_output()
+            .await
+            .map_err(|e| PkgError::RemoveFailed(format!("could not run {cmd}: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(PkgError::RemoveFailed(format!(
+                "{cmd} failed: {}",
+                stderr.trim()
+            )));
+        }
+        Ok(true)
+    }
+
+    /// The package argument for a removal: the name, with the version and
+    /// `arch` in the manager's syntax.
     pub fn format_remove_package_name(
         &self,
         pkg: &PackageSpec,
         manager: &ManagerKind,
         config: &RemoveConfig,
     ) -> Result<String, PkgError> {
-        let mut name = pkg.name.clone();
-
-        // Add architecture if specified (similar to install)
-        if let Some(ref arch) = config.arch {
-            match manager {
-                ManagerKind::Apt => name = format!("{}:{}", name, arch),
-                ManagerKind::Dnf | ManagerKind::Yum => name = format!("{}.{}", name, arch),
-                _ => {} // Other managers don't commonly support arch specification for removal
-            }
-        }
-
-        Ok(name)
-    }
-
-    /// Check if manager supports purge operation
-    pub fn supports_purge(&self, manager: &ManagerKind) -> bool {
-        matches!(manager, ManagerKind::Apt | ManagerKind::Apk)
+        Ok(package_argument(
+            manager,
+            &pkg.name,
+            pkg.version.as_deref(),
+            config.arch.as_deref(),
+        ))
     }
 
     /// Map remove error from stderr and exit code
@@ -2798,14 +3386,11 @@ impl PkgHandle {
         let stderr_lower = stderr.to_lowercase();
 
         // Check for specific error patterns
-        if stderr_lower.contains("package")
-            && (stderr_lower.contains("not found") || stderr_lower.contains("not installed"))
+        if is_not_found_message(&stderr_lower)
+            || (stderr_lower.contains("package") && stderr_lower.contains("not installed"))
         {
             PkgError::RemoveNotFound(stderr.to_string())
-        } else if stderr_lower.contains("permission denied")
-            || stderr_lower.contains("not allowed")
-            || exit_code == &Some(13)
-        {
+        } else if is_permission_message(&stderr_lower) || exit_code == &Some(13) {
             PkgError::RemovePermissionDenied(stderr.to_string())
         } else if stderr_lower.contains("dependency")
             || stderr_lower.contains("required by")
@@ -2829,7 +3414,7 @@ impl PkgHandle {
             && config.manager != ManagerKind::Auto
             && !security_only_supported("update", &config.manager)
         {
-            return Err(PkgError::InvalidUpdateConfig(security_only_refusal(
+            return Err(PkgError::Unsupported(security_only_refusal(
                 "update",
                 &config.manager,
             )));
@@ -2838,10 +3423,11 @@ impl PkgHandle {
         // Resolve manager
         let manager = self.resolve_manager(&config.manager).await?;
         if config.security_only && !security_only_supported("update", &manager) {
-            return Err(PkgError::InvalidUpdateConfig(security_only_refusal(
+            return Err(PkgError::Unsupported(security_only_refusal(
                 "update", &manager,
             )));
         }
+        check_confirmation_support("update", config.assume_yes, &manager)?;
 
         // Check for check-only or dry-run modes
         if config.check_only || config.dry_run {
@@ -2997,9 +3583,9 @@ impl PkgHandle {
         if !config.check_only && config.dry_run {
             // Add upgrade commands for dry-run
             let upgrade_cmd = self
-                .build_upgrade_command_for_dry_run(config, manager, &available_updates)
+                .build_upgrade_command_for_execution(config, manager, &available_updates)
                 .await?;
-            commands.push(upgrade_cmd);
+            commands.push(upgrade_cmd.to_string());
         }
 
         let packages_scope = if config.packages.is_empty() {
@@ -3031,7 +3617,7 @@ impl PkgHandle {
             && config.manager != ManagerKind::Auto
             && !security_only_supported("upgrade", &config.manager)
         {
-            return Err(PkgError::InvalidUpgradeConfig(security_only_refusal(
+            return Err(PkgError::Unsupported(security_only_refusal(
                 "upgrade",
                 &config.manager,
             )));
@@ -3040,10 +3626,11 @@ impl PkgHandle {
         // Resolve manager
         let manager = self.resolve_manager(&config.manager).await?;
         if config.security_only && !security_only_supported("upgrade", &manager) {
-            return Err(PkgError::InvalidUpgradeConfig(security_only_refusal(
+            return Err(PkgError::Unsupported(security_only_refusal(
                 "upgrade", &manager,
             )));
         }
+        check_confirmation_support("upgrade", config.assume_yes, &manager)?;
 
         // Check for check-only or dry-run modes
         if config.check_only || config.dry_run {
@@ -3215,35 +3802,54 @@ impl PkgHandle {
         }))
     }
 
-    /// Get available updates for packages
+    /// The pending updates (for `update`).
     async fn get_available_updates(
         &self,
         config: &UpdateConfig,
         manager: &ManagerKind,
     ) -> Result<Vec<AvailableUpdate>, PkgError> {
-        let (cmd, ignore_status, skip_header) =
-            self.list_updates_command(&config.packages, manager)?;
+        let stdout = self
+            .pending_updates_output(&config.packages, manager)
+            .await
+            .map_err(PkgError::UpdateCheckFailed)?;
+        self.parse_available_updates(&stdout, manager)
+    }
 
-        let output = cmd.command().bounded_output().await.map_err(|e| {
-            PkgError::UpdateCheckFailed(format!("Failed to check for updates: {}", e))
-        })?;
-
-        if !ignore_status && !output.status.success() && output.status.code() != Some(100) {
-            // 100 is normal for yum/dnf when no updates
+    /// Runs the manager's list of pending updates and returns its output.
+    /// dnf and yum `check-update` exit 100 when updates are pending, and
+    /// pacman `-Qu` exits 1 with no output when there are none; any other
+    /// failure is an error.
+    async fn pending_updates_output(
+        &self,
+        packages: &[String],
+        manager: &ManagerKind,
+    ) -> Result<String, String> {
+        let (cmd, _, skip_header) = self
+            .list_updates_command(packages, manager)
+            .map_err(|e| e.to_string())?;
+        let output = cmd
+            .command()
+            .bounded_output()
+            .await
+            .map_err(|e| format!("could not run {cmd}: {e}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let code = output.status.code();
+        let ok = output.status.success()
+            || (matches!(manager, ManagerKind::Dnf | ManagerKind::Yum) && code == Some(100))
+            || (*manager == ManagerKind::Pacman && code == Some(1) && stdout.trim().is_empty());
+        if !ok {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(PkgError::UpdateCheckFailed(format!(
-                "Update check failed: {}",
-                stderr
-            )));
+            return Err(format!(
+                "{cmd} failed (exit {}): {}",
+                code.map_or("signal".to_string(), |c| c.to_string()),
+                stderr.trim()
+            ));
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stdout = if skip_header {
+        Ok(if skip_header {
             stdout.lines().skip(1).map(|l| format!("{}\n", l)).collect()
         } else {
-            stdout.into_owned()
-        };
-        self.parse_available_updates(&stdout, manager)
+            stdout
+        })
     }
 
     /// Parse available updates from command output
@@ -3396,124 +4002,32 @@ impl PkgHandle {
         }
     }
 
-    /// Build upgrade command
+    /// The upgrade command of `update` (the same as `upgrade`'s).
     async fn build_upgrade_command(
         &self,
         config: &UpdateConfig,
         manager: &ManagerKind,
         _available_updates: &[AvailableUpdate],
     ) -> Result<CmdLine, PkgError> {
-        let mut cmd = match manager {
-            ManagerKind::Apt => {
-                let base_cmd = if config.security_only {
-                    "DEBIAN_FRONTEND=noninteractive apt-get upgrade" // Best effort for security
-                } else {
-                    "DEBIAN_FRONTEND=noninteractive apt-get upgrade"
-                };
-                let mut cmd = CmdLine::lit(base_cmd);
-                if config.assume_yes {
-                    cmd.push_lit(" -y");
-                }
-                if config.dry_run {
-                    cmd.push_lit(" -s");
-                }
-                cmd
-            }
-            ManagerKind::Dnf => {
-                let mut cmd = if config.security_only {
-                    CmdLine::lit("dnf update --security")
-                } else {
-                    CmdLine::lit("dnf upgrade")
-                };
-                if config.assume_yes {
-                    cmd.push_lit(" -y");
-                }
-                if config.dry_run {
-                    cmd.push_lit(" --assumeno");
-                }
-                cmd
-            }
-            ManagerKind::Yum => {
-                let mut cmd = if config.security_only {
-                    CmdLine::lit("yum update --security")
-                } else {
-                    CmdLine::lit("yum update")
-                };
-                if config.assume_yes {
-                    cmd.push_lit(" -y");
-                }
-                if config.dry_run {
-                    cmd.push_lit(" --assumeno");
-                }
-                cmd
-            }
-            ManagerKind::Pacman => {
-                let mut cmd = CmdLine::lit("pacman -Su");
-                if config.assume_yes {
-                    cmd.push_lit(" --noconfirm");
-                }
-                // Pacman doesn't have built-in dry-run for upgrades
-                cmd
-            }
-            ManagerKind::Apk => {
-                let mut cmd = CmdLine::lit("apk upgrade");
-                if !config.assume_yes {
-                    cmd.push_lit(" --interactive");
-                } else {
-                    cmd.push_lit(" --no-interactive");
-                }
-                cmd
-            }
-            ManagerKind::Brew => CmdLine::lit("brew upgrade"),
-            _ => {
-                return Err(PkgError::ManagerNotAvailable(
-                    "Unsupported manager".to_string(),
-                ));
-            }
-        };
-
-        // Add specific packages if requested
-        if !config.packages.is_empty() {
-            for package in &config.packages {
-                cmd.arg(package);
-            }
-        }
-
-        // Add extra args if specified
-        if let Some(ref extra_args) = config.extra_args {
-            for arg in extra_args {
-                cmd.arg(arg);
-            }
-        }
-
-        Ok(cmd)
+        upgrade_command(
+            manager,
+            &config.packages,
+            config.assume_yes,
+            config.security_only,
+            config.extra_args.as_deref(),
+        )
     }
 
-    /// Get available upgrades for packages
+    /// The pending upgrades (for `upgrade`).
     async fn get_available_upgrades(
         &self,
         config: &UpgradeConfig,
         manager: &ManagerKind,
     ) -> Result<Vec<AvailableUpdate>, PkgError> {
-        // The exit status was never checked here
-        let (cmd, _, skip_header) = self.list_updates_command(&config.packages, manager)?;
-
-        let output = cmd
-            .command()
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .bounded_output()
+        let stdout = self
+            .pending_updates_output(&config.packages, manager)
             .await
-            .map_err(|e| {
-                PkgError::UpgradeCheckFailed(format!("Failed to execute command: {}", e))
-            })?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stdout = if skip_header {
-            stdout.lines().skip(1).map(|l| format!("{}\n", l)).collect()
-        } else {
-            stdout.into_owned()
-        };
+            .map_err(PkgError::UpgradeCheckFailed)?;
         self.parse_available_upgrades(&stdout, manager)
     }
 
@@ -3657,196 +4171,20 @@ impl PkgHandle {
         Ok(results)
     }
 
-    /// Build upgrade command for dry run
-    async fn build_upgrade_command_for_dry_run(
-        &self,
-        config: &UpgradeConfig,
-        manager: &ManagerKind,
-        _available_upgrades: &[AvailableUpdate],
-    ) -> Result<String, PkgError> {
-        match manager {
-            ManagerKind::Apt => {
-                let mut cmd = String::from("apt-get -s upgrade");
-                if config.assume_yes {
-                    cmd.push_str(" -y");
-                }
-                if !config.packages.is_empty() {
-                    cmd.push_str(" && apt-get -s install");
-                    if config.assume_yes {
-                        cmd.push_str(" -y");
-                    }
-                    for package in &config.packages {
-                        cmd.push(' ');
-                        cmd.push_str(package);
-                    }
-                }
-                Ok(cmd)
-            }
-            ManagerKind::Dnf => {
-                let cmd = if config.packages.is_empty() {
-                    "dnf upgrade -y --assumeno".to_string()
-                } else {
-                    format!("dnf upgrade -y --assumeno {}", config.packages.join(" "))
-                };
-                Ok(cmd)
-            }
-            ManagerKind::Yum => {
-                let cmd = if config.packages.is_empty() {
-                    "yum update -y --assumeno".to_string()
-                } else {
-                    format!("yum update -y --assumeno {}", config.packages.join(" "))
-                };
-                Ok(cmd)
-            }
-            ManagerKind::Pacman => Ok("pacman -Su --print".to_string()),
-            ManagerKind::Apk => {
-                let mut cmd = "apk upgrade --simulate".to_string();
-                if !config.packages.is_empty() {
-                    cmd.push(' ');
-                    cmd.push_str(&config.packages.join(" "));
-                }
-                Ok(cmd)
-            }
-            ManagerKind::Brew => {
-                Ok("brew outdated".to_string()) // Brew doesn't have a real dry-run for upgrade
-            }
-            _ => Err(PkgError::ManagerNotAvailable(
-                "Unsupported manager".to_string(),
-            )),
-        }
-    }
-
-    /// Build upgrade command for actual execution  
+    /// The upgrade command of `upgrade`, shown by a dry run and run for real.
     async fn build_upgrade_command_for_execution(
         &self,
         config: &UpgradeConfig,
         manager: &ManagerKind,
         _available_upgrades: &[AvailableUpdate],
     ) -> Result<CmdLine, PkgError> {
-        match manager {
-            ManagerKind::Apt => {
-                let mut cmd = CmdLine::default();
-                if config.assume_yes {
-                    cmd.push_lit("DEBIAN_FRONTEND=noninteractive ");
-                }
-
-                if config.packages.is_empty() {
-                    cmd.push_lit("apt-get upgrade");
-                    if config.assume_yes {
-                        cmd.push_lit(" -y");
-                    }
-                } else {
-                    cmd.push_lit("apt-get install");
-                    if config.assume_yes {
-                        cmd.push_lit(" -y");
-                    }
-                    for package in &config.packages {
-                        cmd.arg(package);
-                    }
-                }
-
-                if let Some(ref extra_args) = config.extra_args {
-                    for arg in extra_args {
-                        cmd.arg(arg);
-                    }
-                }
-                Ok(cmd)
-            }
-            ManagerKind::Dnf => {
-                let mut cmd = CmdLine::lit("dnf upgrade");
-                for package in &config.packages {
-                    cmd.arg(package);
-                }
-
-                if config.assume_yes {
-                    cmd.push_lit(" -y");
-                }
-
-                if config.security_only {
-                    cmd.push_lit(" --security");
-                }
-
-                if let Some(ref extra_args) = config.extra_args {
-                    for arg in extra_args {
-                        cmd.arg(arg);
-                    }
-                }
-                Ok(cmd)
-            }
-            ManagerKind::Yum => {
-                let mut cmd = CmdLine::lit("yum update");
-                for package in &config.packages {
-                    cmd.arg(package);
-                }
-
-                if config.assume_yes {
-                    cmd.push_lit(" -y");
-                }
-
-                if let Some(ref extra_args) = config.extra_args {
-                    for arg in extra_args {
-                        cmd.arg(arg);
-                    }
-                }
-                Ok(cmd)
-            }
-            ManagerKind::Pacman => {
-                let mut cmd = CmdLine::lit(if config.packages.is_empty() {
-                    "pacman -Su"
-                } else {
-                    "pacman -S"
-                });
-                for package in &config.packages {
-                    cmd.arg(package);
-                }
-
-                if config.assume_yes {
-                    cmd.push_lit(" --noconfirm");
-                }
-
-                if let Some(ref extra_args) = config.extra_args {
-                    for arg in extra_args {
-                        cmd.arg(arg);
-                    }
-                }
-                Ok(cmd)
-            }
-            ManagerKind::Apk => {
-                let mut cmd = CmdLine::lit("apk upgrade");
-
-                if config.assume_yes {
-                    cmd.push_lit(" --no-interactive");
-                }
-
-                for package in &config.packages {
-                    cmd.arg(package);
-                }
-
-                if let Some(ref extra_args) = config.extra_args {
-                    for arg in extra_args {
-                        cmd.arg(arg);
-                    }
-                }
-                Ok(cmd)
-            }
-            ManagerKind::Brew => {
-                let mut cmd = CmdLine::lit("brew upgrade");
-
-                for package in &config.packages {
-                    cmd.arg(package);
-                }
-
-                if let Some(ref extra_args) = config.extra_args {
-                    for arg in extra_args {
-                        cmd.arg(arg);
-                    }
-                }
-                Ok(cmd)
-            }
-            _ => Err(PkgError::ManagerNotAvailable(
-                "Unsupported manager".to_string(),
-            )),
-        }
+        upgrade_command(
+            manager,
+            &config.packages,
+            config.assume_yes,
+            config.security_only,
+            config.extra_args.as_deref(),
+        )
     }
 
     /// Apply updates
@@ -3974,7 +4312,9 @@ impl PkgHandle {
                     packages.push(package_info)
                 }
                 Err(e) => {
-                    eprintln!("Failed to query package {}: {}", package_name, e);
+                    if crate::core::process::has_lost() {
+                        return Err(PkgError::InfoTimeout);
+                    }
                     partial_failures += 1;
                     // Add a failed package result
                     packages.push(PackageInfo {
@@ -3992,26 +4332,23 @@ impl PkgHandle {
                         dependencies: None,
                         reverse_dependencies: None,
                         files: None,
-                        raw: Some(json!({ "error": e.to_string() })),
+                        raw: Some(json!({ "error": error_value(&e) })),
                     });
                 }
             }
         }
 
-        // If all packages failed, return error
+        // Every query failed: an error. Some failed: the result says which
+        // (`raw.error`) and the exit status is a partial failure.
         if partial_failures == config.packages.len() {
-            return Err(PkgError::InfoQueryFailed(
-                "All packages failed to query".to_string(),
-            ));
-        }
-
-        // If some packages failed, log but continue
-        if partial_failures > 0 {
-            eprintln!(
-                "Warning: {} out of {} packages failed to query",
-                partial_failures,
-                config.packages.len()
-            );
+            return Err(PkgError::InfoQueryFailed(format!(
+                "every package query failed; first: {}",
+                packages
+                    .first()
+                    .and_then(|p| p.raw.as_ref())
+                    .map(|r| r["error"]["message"].to_string())
+                    .unwrap_or_default()
+            )));
         }
 
         Ok(json!({
@@ -4784,6 +5121,22 @@ impl PkgHandle {
                 "Query cannot be empty".to_string(),
             ));
         }
+        // The query is a manager argument: it must not read as an option.
+        if config.query.starts_with('-')
+            || config.query.len() > 256
+            || config.query.chars().any(char::is_control)
+        {
+            return Err(PkgError::InvalidSearchConfig(format!(
+                "query {:?} must be 1-256 characters, not start with '-', and have no \
+                 control characters",
+                config.query
+            )));
+        }
+        if config.search_in.is_empty() {
+            return Err(PkgError::InvalidSearchConfig(
+                "search_in cannot be empty (use name, description or all)".to_string(),
+            ));
+        }
 
         if config.timeout_ms == 0 {
             return Err(PkgError::InvalidSearchConfig(
@@ -4822,15 +5175,23 @@ impl PkgHandle {
         config: &SearchConfig,
         manager: &ManagerKind,
     ) -> Result<Value, PkgError> {
-        // Get raw search results from the package manager
+        // The manager's matches (names and summaries only): the details
+        // are looked up afterwards for the returned page, not every match.
+        let listing = SearchConfig {
+            include_installed: false,
+            include_versions: false,
+            include_repo: false,
+            ..config.clone()
+        };
         let raw_results = match manager {
-            ManagerKind::Apt => self.search_apt(&config.query, config).await?,
+            ManagerKind::Apt => self.search_apt(&config.query, &listing).await?,
             ManagerKind::Yum | ManagerKind::Dnf => {
-                self.search_yum_dnf(&config.query, config, manager).await?
+                self.search_yum_dnf(&config.query, &listing, manager)
+                    .await?
             }
-            ManagerKind::Pacman => self.search_pacman(&config.query, config).await?,
-            ManagerKind::Apk => self.search_apk(&config.query, config).await?,
-            ManagerKind::Brew => self.search_brew(&config.query, config).await?,
+            ManagerKind::Pacman => self.search_pacman(&config.query, &listing).await?,
+            ManagerKind::Apk => self.search_apk(&config.query, &listing).await?,
+            ManagerKind::Brew => self.search_brew(&config.query, &listing).await?,
             ManagerKind::Auto => unreachable!("Auto should have been resolved by now"),
         };
 
@@ -4842,11 +5203,43 @@ impl PkgHandle {
         let start = config.offset as usize;
         let end = std::cmp::min(start + config.limit as usize, filtered_results.len());
 
-        let paginated_results = if start < filtered_results.len() {
+        let mut paginated_results = if start < filtered_results.len() {
             filtered_results[start..end].to_vec()
         } else {
             vec![]
         };
+        if config.include_installed || config.include_versions || config.include_repo {
+            let info = InfoConfig {
+                manager: manager.clone(),
+                packages: Vec::new(),
+                include_dependencies: false,
+                include_reverse_deps: false,
+                include_files: false,
+                include_repo: config.include_repo,
+                timeout_ms: config.timeout_ms,
+                env: None,
+            };
+            for result in &mut paginated_results {
+                let Ok(details) = self
+                    .query_single_package(&result.name, &info, manager)
+                    .await
+                else {
+                    continue;
+                };
+                if config.include_installed {
+                    result.installed = details.installed;
+                }
+                if config.include_versions {
+                    result.version = details.candidate_version.or(details.installed_version);
+                }
+                if config.include_repo {
+                    result.repository = details.repository;
+                }
+                if result.homepage.is_none() {
+                    result.homepage = details.homepage;
+                }
+            }
+        }
 
         Ok(json!(SearchResults {
             backend: "pkg".to_string(),
@@ -5012,10 +5405,19 @@ impl PkgHandle {
                 continue;
             }
 
-            // Parse YUM/DNF search output: "package.arch : description"
-            if let Some(colon_pos) = line.find(" : ") {
-                let name_part = line[..colon_pos].trim();
-                let summary = line[colon_pos + 3..].trim();
+            // dnf 4 and yum print "package.arch : summary"; dnf 5 prints
+            // " package.arch<TAB>summary" under "Matched fields:" headings.
+            let split = line
+                .find(" : ")
+                .map(|i| (&line[..i], &line[i + 3..]))
+                .or_else(|| {
+                    line.starts_with(' ')
+                        .then(|| line.trim_start().split_once('\t'))
+                        .flatten()
+                });
+            if let Some((name_part, summary)) = split {
+                let name_part = name_part.trim();
+                let summary = summary.trim();
 
                 // Extract just the package name (remove architecture)
                 let name = if let Some(dot_pos) = name_part.find('.') {
@@ -5053,7 +5455,7 @@ impl PkgHandle {
                                     }
                                 }
                                 if info_line.starts_with("URL") {
-                                    if let Some(url) = info_line.split(':').nth(1) {
+                                    if let Some((_, url)) = info_line.split_once(':') {
                                         search_result.homepage = Some(url.trim().to_string());
                                     }
                                 }
@@ -5207,22 +5609,7 @@ impl PkgHandle {
                 let name_version = line[..dash_pos].trim();
                 let summary = line[dash_pos + 3..].trim();
 
-                // Extract package name (remove version)
-                let name = if let Some(version_start) = name_version.rfind('-') {
-                    let potential_name = &name_version[..version_start];
-                    // Check if this looks like a version number
-                    if name_version[version_start + 1..]
-                        .chars()
-                        .next()
-                        .map_or(false, |c| c.is_ascii_digit())
-                    {
-                        potential_name
-                    } else {
-                        name_version
-                    }
-                } else {
-                    name_version
-                };
+                let name = apk_package_name(name_version);
 
                 let mut search_result = SearchResult {
                     name: name.to_string(),
@@ -5604,7 +5991,7 @@ impl PkgHandle {
         args: &[&str],
         env: Option<&HashMap<String, String>>,
     ) -> Result<CommandOutput, PkgError> {
-        let mut command = AsyncCommand::new(cmd);
+        let mut command = pkg_cmd(cmd);
         command.args(args);
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -5657,17 +6044,6 @@ impl PkgHandle {
             return Err(PkgError::InvalidListInstalledConfig(
                 "limit must be greater than 0".to_string(),
             ));
-        }
-
-        // Validate extra_args if present
-        if let Some(extra_args) = &config.extra_args {
-            for arg in extra_args {
-                if arg.trim().is_empty() {
-                    return Err(PkgError::InvalidListInstalledConfig(
-                        "extra_args cannot contain empty strings".to_string(),
-                    ));
-                }
-            }
         }
 
         Ok(())
@@ -5755,135 +6131,110 @@ impl PkgHandle {
         &self,
         config: &ListInstalledConfig,
     ) -> Result<Vec<InstalledPackage>, PkgError> {
-        // Use dpkg-query to get installed packages
-        let mut cmd = AsyncCommand::new("dpkg-query");
-        cmd.arg("-W")
-            .arg("-f")
-            .arg("${Package}\\t${Version}\\t${Architecture}\\n");
+        self.apt_installed_packages(
+            config.include_repo,
+            config.include_install_reason,
+            config.include_size,
+        )
+        .await
+        .map_err(PkgError::ListInstalledFailed)
+    }
 
-        // Add environment variables if specified
-        if let Some(ref env) = config.env {
-            for (key, value) in env {
-                cmd.env(key, value);
-            }
-        }
-
-        let output = cmd.bounded_output().await.map_err(|e| {
-            PkgError::ListInstalledFailed(format!("dpkg-query command failed: {}", e))
-        })?;
-
+    /// The installed packages from `dpkg-query` (state `installed` only: a
+    /// removed package whose configuration files remain is not listed), with
+    /// the repository of the installed version (one batched `apt-cache
+    /// policy`), the install reason (one `apt-mark showmanual`) and the size.
+    async fn apt_installed_packages(
+        &self,
+        with_repo: bool,
+        with_reason: bool,
+        with_size: bool,
+    ) -> Result<Vec<InstalledPackage>, String> {
+        let output = pkg_cmd("dpkg-query")
+            .args([
+                "-W",
+                "-f",
+                "${Package}\\t${Version}\\t${Architecture}\\t${db:Status-Status}\\t${Installed-Size}\\n",
+            ])
+            .bounded_output()
+            .await
+            .map_err(|e| format!("could not run dpkg-query: {e}"))?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(PkgError::ListInstalledFailed(format!(
+            return Err(format!(
                 "dpkg-query failed: {}",
-                stderr
-            )));
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
         }
-
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut packages = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 3 {
-                let mut package = InstalledPackage {
+        let mut packages: Vec<InstalledPackage> = stdout
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() < 3 || parts.get(3).is_some_and(|s| *s != "installed") {
+                    return None;
+                }
+                Some(InstalledPackage {
                     name: parts[0].to_string(),
                     version: parts[1].to_string(),
                     architecture: Some(parts[2].to_string()),
                     repository: None,
-                    installed_size_bytes: None,
+                    installed_size_bytes: if with_size {
+                        parts
+                            .get(4)
+                            .and_then(|kib| kib.trim().parse::<u64>().ok())
+                            .map(|kib| kib * 1024)
+                    } else {
+                        None
+                    },
                     install_reason: None,
                     manager_specific: None,
-                };
-
-                // Get repository info if requested
-                if config.include_repo {
-                    if let Ok(repo) = self.get_apt_package_repo(&package.name).await {
-                        package.repository = repo;
+                })
+            })
+            .collect();
+        if with_reason {
+            let manual = self.get_apt_manual_packages().await.unwrap_or_default();
+            for pkg in &mut packages {
+                pkg.install_reason = Some(
+                    if manual.contains(&pkg.name) {
+                        "manual"
+                    } else {
+                        "dependency"
                     }
-                }
-
-                // Get size info if requested
-                if config.include_size {
-                    if let Ok(size) = self.get_apt_package_size(&package.name).await {
-                        package.installed_size_bytes = size;
-                    }
-                }
-
-                // Get install reason if requested
-                if config.include_install_reason {
-                    if let Ok(reason) = self.get_apt_install_reason(&package.name).await {
-                        package.install_reason = reason;
-                    }
-                }
-
-                packages.push(package);
+                    .to_string(),
+                );
             }
         }
-
+        if with_repo {
+            let names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
+            let repos = self.apt_policy_repositories(&names).await;
+            for pkg in &mut packages {
+                pkg.repository = repos.get(&pkg.name).cloned().flatten();
+            }
+        }
         Ok(packages)
     }
 
-    async fn get_apt_package_repo(&self, package_name: &str) -> Result<Option<String>, PkgError> {
-        let mut cmd = AsyncCommand::new("apt-cache");
-        cmd.arg("policy").arg(package_name);
-
-        let output = cmd.bounded_output().await.map_err(|e| {
-            PkgError::ListInstalledFailed(format!("apt-cache policy failed: {}", e))
-        })?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if line.trim().starts_with("***") {
-                    // Look for the origin line
-                    if let Some(origin_line) = stdout.lines().find(|l| l.trim().starts_with("o=")) {
-                        return Ok(Some(origin_line.trim().to_string()));
-                    }
-                }
+    /// The repository of the installed version of each package, from
+    /// `apt-cache policy` run on many packages at once.
+    async fn apt_policy_repositories(&self, names: &[String]) -> HashMap<String, Option<String>> {
+        let mut repos = HashMap::new();
+        for chunk in names.chunks(200) {
+            let Ok(output) = pkg_cmd("apt-cache")
+                .arg("policy")
+                .args(chunk)
+                .bounded_output()
+                .await
+            else {
+                break;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            for (name, section) in apt_policy_sections(&String::from_utf8_lossy(&output.stdout)) {
+                repos.insert(name, apt_policy_installed_repository(&section));
             }
         }
-        Ok(None)
-    }
-
-    async fn get_apt_package_size(&self, package_name: &str) -> Result<Option<u64>, PkgError> {
-        let mut cmd = AsyncCommand::new("dpkg-query");
-        cmd.arg("-W")
-            .arg("-f")
-            .arg("${Installed-Size}")
-            .arg(package_name);
-
-        let output = cmd
-            .bounded_output()
-            .await
-            .map_err(|e| PkgError::ListInstalledFailed(format!("dpkg-query size failed: {}", e)))?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(size_kb) = stdout.trim().parse::<u64>() {
-                return Ok(Some(size_kb * 1024)); // Convert from KB to bytes
-            }
-        }
-        Ok(None)
-    }
-
-    async fn get_apt_install_reason(&self, package_name: &str) -> Result<Option<String>, PkgError> {
-        let mut cmd = AsyncCommand::new("apt-mark");
-        cmd.arg("showmanual");
-
-        let output = cmd.bounded_output().await.map_err(|e| {
-            PkgError::ListInstalledFailed(format!("apt-mark showmanual failed: {}", e))
-        })?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.lines().any(|line| line.trim() == package_name) {
-                return Ok(Some("manual".to_string()));
-            } else {
-                return Ok(Some("dependency".to_string()));
-            }
-        }
-        Ok(None)
+        repos
     }
 
     async fn list_installed_dnf(
@@ -5906,10 +6257,10 @@ impl PkgHandle {
         config: &ListInstalledConfig,
     ) -> Result<Vec<InstalledPackage>, PkgError> {
         // Use rpm to get installed packages
-        let mut cmd = AsyncCommand::new("rpm");
+        let mut cmd = pkg_cmd("rpm");
         cmd.arg("-qa")
             .arg("--qf")
-            .arg("%{NAME}\\t%{VERSION}-%{RELEASE}\\t%{ARCH}\\n");
+            .arg("%{NAME}\\t%|EPOCH?{%{EPOCH}:}:{}|%{VERSION}-%{RELEASE}\\t%{ARCH}\\n");
 
         // Add environment variables if specified
         if let Some(ref env) = config.env {
@@ -5936,7 +6287,7 @@ impl PkgHandle {
 
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 3 {
+            if parts.len() >= 3 && parts[0] != "gpg-pubkey" {
                 let mut package = InstalledPackage {
                     name: parts[0].to_string(),
                     version: parts[1].to_string(),
@@ -5980,7 +6331,7 @@ impl PkgHandle {
         package_name: &str,
         manager_cmd: &str,
     ) -> Result<Option<String>, PkgError> {
-        let mut cmd = AsyncCommand::new(manager_cmd);
+        let mut cmd = pkg_cmd(manager_cmd);
         cmd.arg("repoquery")
             .arg("--installed")
             .arg("--qf")
@@ -6002,7 +6353,7 @@ impl PkgHandle {
     }
 
     async fn get_rpm_package_size(&self, package_name: &str) -> Result<Option<u64>, PkgError> {
-        let mut cmd = AsyncCommand::new("rpm");
+        let mut cmd = pkg_cmd("rpm");
         cmd.arg("-qi").arg(package_name);
 
         let output = cmd
@@ -6026,7 +6377,7 @@ impl PkgHandle {
     }
 
     async fn get_dnf_install_reason(&self, package_name: &str) -> Result<Option<String>, PkgError> {
-        let mut cmd = AsyncCommand::new("dnf");
+        let mut cmd = pkg_cmd("dnf");
         cmd.arg("repoquery")
             .arg("--installed")
             .arg("--qf")
@@ -6056,7 +6407,7 @@ impl PkgHandle {
         config: &ListInstalledConfig,
     ) -> Result<Vec<InstalledPackage>, PkgError> {
         // Use pacman -Q to get installed packages
-        let mut cmd = AsyncCommand::new("pacman");
+        let mut cmd = pkg_cmd("pacman");
         cmd.arg("-Q");
 
         // Add environment variables if specified
@@ -6121,7 +6472,7 @@ impl PkgHandle {
         &self,
         package_name: &str,
     ) -> Result<InstalledPackage, PkgError> {
-        let mut cmd = AsyncCommand::new("pacman");
+        let mut cmd = pkg_cmd("pacman");
         cmd.arg("-Qi").arg(package_name);
 
         let output = cmd
@@ -6193,7 +6544,7 @@ impl PkgHandle {
         config: &ListInstalledConfig,
     ) -> Result<Vec<InstalledPackage>, PkgError> {
         // Use apk info -v to get installed packages
-        let mut cmd = AsyncCommand::new("apk");
+        let mut cmd = pkg_cmd("apk");
         cmd.arg("info").arg("-v");
 
         // Add environment variables if specified
@@ -6269,7 +6620,7 @@ impl PkgHandle {
     }
 
     async fn get_apk_package_size(&self, package_name: &str) -> Result<Option<u64>, PkgError> {
-        let mut cmd = AsyncCommand::new("apk");
+        let mut cmd = pkg_cmd("apk");
         cmd.arg("info").arg("-s").arg(package_name);
 
         let output = cmd
@@ -6311,7 +6662,7 @@ impl PkgHandle {
     }
 
     async fn get_brew_json_installed(&self) -> Result<Vec<InstalledPackage>, PkgError> {
-        let mut cmd = AsyncCommand::new("brew");
+        let mut cmd = pkg_cmd("brew");
         cmd.arg("info").arg("--json=v2").arg("--installed");
 
         let output = cmd.bounded_output().await.map_err(|e| {
@@ -6367,7 +6718,7 @@ impl PkgHandle {
         &self,
         config: &ListInstalledConfig,
     ) -> Result<Vec<InstalledPackage>, PkgError> {
-        let mut cmd = AsyncCommand::new("brew");
+        let mut cmd = pkg_cmd("brew");
         cmd.arg("list").arg("--versions");
 
         // Add environment variables if specified
@@ -6425,7 +6776,7 @@ impl PkgHandle {
         let lockfile = self.parse_lockfile(&config.lockfile, &config.format)?;
 
         // Validate lockfile against policies
-        self.validate_lockfile(&lockfile, &config).await?;
+        let platform_warnings = self.validate_lockfile(&lockfile, &config).await?;
 
         // Resolve manager (from config or lockfile). A text lockfile records no
         // manager ("auto"), so with manager=auto the system manager is detected.
@@ -6439,7 +6790,7 @@ impl PkgHandle {
         // Perform restore operation with timeout
         let result = timeout(
             crate::core::process::limit(Duration::from_millis(config.timeout_ms)),
-            self.perform_restore(&config, &lockfile, &manager),
+            self.perform_restore(&config, &lockfile, &manager, platform_warnings),
         )
         .await
         .map_err(|_| PkgError::RestoreTimeout)?;
@@ -6510,27 +6861,15 @@ impl PkgHandle {
                 "timeout_ms must be greater than 0".to_string(),
             ));
         }
-
-        // Validate extra_args if present
-        if let Some(extra_args) = &config.extra_args {
-            if extra_args.iter().any(|arg| arg.is_empty()) {
-                return Err(PkgError::InvalidSnapshotConfig(
-                    "extra_args cannot contain empty strings".to_string(),
-                ));
-            }
+        if config.include_versions == SnapshotVersionMode::Minimal {
+            return Err(PkgError::Unsupported(
+                "include_versions=minimal is not supported: it recorded the same exact \
+                 versions as exact, and no reduced form is defined; use exact or none; \
+                 nothing was run"
+                    .to_string(),
+            ));
         }
-
-        // Validate env if present
-        if let Some(env) = &config.env {
-            for (key, value) in env {
-                if key.is_empty() || value.is_empty() {
-                    return Err(PkgError::InvalidSnapshotConfig(
-                        "env keys and values cannot be empty".to_string(),
-                    ));
-                }
-            }
-        }
-
+        exclude_matchers(&config.exclude_patterns)?;
         Ok(())
     }
 
@@ -6638,7 +6977,7 @@ impl PkgHandle {
         };
 
         // Get OS info - try different methods
-        if let Ok(output) = AsyncCommand::new("uname")
+        if let Ok(output) = pkg_cmd("uname")
             .args(&["-s", "-r", "-m"])
             .bounded_output()
             .await
@@ -6654,7 +6993,7 @@ impl PkgHandle {
         }
 
         // Try to get distribution info
-        if let Ok(output) = AsyncCommand::new("lsb_release")
+        if let Ok(output) = pkg_cmd("lsb_release")
             .args(&["-i", "-r"])
             .bounded_output()
             .await
@@ -6727,11 +7066,7 @@ impl PkgHandle {
             ManagerKind::Brew => ("brew", "--version"),
         };
 
-        let version = if let Ok(output) = AsyncCommand::new(binary)
-            .arg(version_arg)
-            .bounded_output()
-            .await
-        {
+        let version = if let Ok(output) = pkg_cmd(binary).arg(version_arg).bounded_output().await {
             if output.status.success() {
                 let version_str = String::from_utf8_lossy(&output.stdout);
                 version_str.lines().next().map(|s| s.trim().to_string())
@@ -6771,54 +7106,37 @@ impl PkgHandle {
         Ok(())
     }
 
+    /// Drops the packages whose name matches a shell-style pattern of
+    /// `exclude_patterns` (`*`, `?`, `[...]`; checked by
+    /// `validate_snapshot_config`).
     fn apply_exclude_patterns(&self, packages: &mut Vec<LockfilePackage>, patterns: &[String]) {
-        if patterns.is_empty() {
+        let Ok(matchers) = exclude_matchers(patterns) else {
             return;
-        }
-
-        packages.retain(|pkg| {
-            for pattern in patterns {
-                // Simple glob pattern matching - for now, just support * at the end
-                if pattern.ends_with('*') {
-                    let prefix = &pattern[..pattern.len() - 1];
-                    if pkg.name.starts_with(prefix) {
-                        return false;
-                    }
-                } else if pattern.starts_with('*') {
-                    let suffix = &pattern[1..];
-                    if pkg.name.ends_with(suffix) {
-                        return false;
-                    }
-                } else if pkg.name == *pattern {
-                    return false;
-                }
-            }
-            true
-        });
+        };
+        packages.retain(|pkg| !matchers.iter().any(|m| m.is_match(&pkg.name)));
     }
 
     fn serialize_lockfile_yaml(&self, lockfile: &Lockfile) -> Result<String, PkgError> {
-        // For now, return JSON as YAML is similar
-        // In a real implementation, you'd use serde_yaml
-        serde_json::to_string_pretty(lockfile)
+        serde_yaml::to_string(lockfile)
             .map_err(|e| PkgError::SnapshotFailed(format!("YAML serialization failed: {}", e)))
     }
 
+    /// The text lockfile: `#` header lines (lockfile version, manager, OS,
+    /// scope), then one package per line, `name[=version] [arch] @repository
+    /// (install reason) [pinned]`. `parse_text_lockfile` reads it back.
     fn serialize_lockfile_text(&self, lockfile: &Lockfile) -> Result<String, PkgError> {
         let mut output = String::new();
-
         output.push_str(&format!("# {}\n", lockfile.lockfile_version));
         output.push_str(&format!(
-            "manager: {} ({})\n",
+            "# manager: {} ({})\n",
             lockfile.manager.name,
             lockfile.manager.version.as_deref().unwrap_or("unknown")
         ));
-
         if let (Some(os_name), Some(os_version)) =
             (&lockfile.platform.os_name, &lockfile.platform.os_version)
         {
             output.push_str(&format!(
-                "os: {} {} ({})\n",
+                "# os: {} {} ({})\n",
                 os_name,
                 os_version,
                 lockfile
@@ -6828,9 +7146,7 @@ impl PkgHandle {
                     .unwrap_or("unknown")
             ));
         }
-
-        output.push_str(&format!("scope: {}\n\n", lockfile.scope));
-
+        output.push_str(&format!("# scope: {}\n\n", lockfile.scope));
         for pkg in &lockfile.packages {
             let mut line = pkg.name.clone();
             if let Some(version) = &pkg.version {
@@ -6850,7 +7166,6 @@ impl PkgHandle {
             }
             output.push_str(&format!("{}\n", line));
         }
-
         Ok(output)
     }
 
@@ -6859,83 +7174,28 @@ impl PkgHandle {
         &self,
         config: &SnapshotConfig,
     ) -> Result<Vec<LockfilePackage>, PkgError> {
-        let mut packages = Vec::new();
-
-        // Get installed packages using dpkg-query
-        let output = AsyncCommand::new("dpkg-query")
-            .args(&["-W", "-f", "${Package}\\t${Version}\\t${Architecture}\\n"])
-            .bounded_output()
+        let installed = self
+            .apt_installed_packages(config.include_repo, config.include_install_reason, false)
             .await
-            .map_err(|e| PkgError::SnapshotFailed(format!("dpkg-query failed: {}", e)))?;
-
-        if !output.status.success() {
-            return Err(PkgError::SnapshotFailed(
-                "dpkg-query command failed".to_string(),
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Get manual packages if needed
-        let manual_packages = if config.include_install_reason {
-            self.get_apt_manual_packages().await.unwrap_or_default()
-        } else {
-            std::collections::HashSet::new()
-        };
-
-        // Get held packages if needed
+            .map_err(PkgError::SnapshotFailed)?;
         let held_packages = self.get_apt_held_packages().await.unwrap_or_default();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 3 {
-                let name = parts[0].to_string();
-                let version = parts[1].to_string();
-                let architecture = parts[2].to_string();
-
-                let install_reason = if config.include_install_reason {
-                    if manual_packages.contains(&name) {
-                        Some("manual".to_string())
-                    } else {
-                        Some("dependency".to_string())
-                    }
-                } else {
-                    None
-                };
-
-                let repository = if config.include_repo {
-                    self.get_apt_package_repository(&name).await
-                } else {
-                    None
-                };
-
-                let package = LockfilePackage {
-                    name,
-                    version: match config.include_versions {
-                        SnapshotVersionMode::Exact => Some(version),
-                        SnapshotVersionMode::Minimal => Some(version), // Could be simplified
-                        SnapshotVersionMode::None => None,
-                    },
-                    version_spec: None,
-                    architecture: if config.include_arch {
-                        Some(architecture)
-                    } else {
-                        None
-                    },
-                    repository,
-                    install_reason,
-                    pinned: held_packages.contains(parts[0]),
-                };
-
-                packages.push(package);
-            }
-        }
-
-        Ok(packages)
+        Ok(installed
+            .into_iter()
+            .map(|pkg| LockfilePackage {
+                pinned: held_packages.contains(&pkg.name),
+                version: (config.include_versions == SnapshotVersionMode::Exact)
+                    .then_some(pkg.version),
+                version_spec: None,
+                architecture: pkg.architecture.filter(|_| config.include_arch),
+                repository: pkg.repository,
+                install_reason: pkg.install_reason,
+                name: pkg.name,
+            })
+            .collect())
     }
 
     async fn get_apt_manual_packages(&self) -> Result<std::collections::HashSet<String>, PkgError> {
-        let output = AsyncCommand::new("apt-mark")
+        let output = pkg_cmd("apt-mark")
             .arg("showmanual")
             .bounded_output()
             .await
@@ -6950,7 +7210,7 @@ impl PkgHandle {
     }
 
     async fn get_apt_held_packages(&self) -> Result<std::collections::HashSet<String>, PkgError> {
-        let output = AsyncCommand::new("apt-mark")
+        let output = pkg_cmd("apt-mark")
             .arg("showhold")
             .bounded_output()
             .await
@@ -6965,7 +7225,7 @@ impl PkgHandle {
     }
 
     async fn get_apt_package_repository(&self, package_name: &str) -> Option<String> {
-        if let Ok(output) = AsyncCommand::new("apt-cache")
+        if let Ok(output) = pkg_cmd("apt-cache")
             .args(&["policy", package_name])
             .bounded_output()
             .await
@@ -6981,12 +7241,22 @@ impl PkgHandle {
         &self,
         config: &SnapshotConfig,
     ) -> Result<Vec<LockfilePackage>, PkgError> {
-        let mut packages = Vec::new();
+        let locked = self.get_dnf_locked_packages().await.unwrap_or_default();
+        self.snapshot_rpm("dnf", config, locked).await
+    }
 
-        // Get installed packages using rpm -qa with format string
-        // Format: name|epoch:version-release|architecture
-        let output = AsyncCommand::new("rpm")
-            .args(&[
+    /// The rpm-based snapshot (dnf, and yum, which is dnf on current
+    /// systems): `rpm -qa` for the packages, one `repoquery --installed` for
+    /// the repository each was installed from, one `repoquery
+    /// --userinstalled` for the install reason.
+    async fn snapshot_rpm(
+        &self,
+        tool: &str,
+        config: &SnapshotConfig,
+        locked_packages: HashSet<String>,
+    ) -> Result<Vec<LockfilePackage>, PkgError> {
+        let output = pkg_cmd("rpm")
+            .args([
                 "-qa",
                 "--queryformat",
                 "%{NAME}|%{EPOCHNUM}:%{VERSION}-%{RELEASE}|%{ARCH}\\n",
@@ -6994,112 +7264,118 @@ impl PkgHandle {
             .bounded_output()
             .await
             .map_err(|e| PkgError::SnapshotFailed(format!("rpm query failed: {}", e)))?;
-
         if !output.status.success() {
-            return Err(PkgError::SnapshotFailed(
-                "rpm query command failed".to_string(),
-            ));
+            return Err(PkgError::SnapshotFailed(format!(
+                "rpm -qa failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Get user-installed packages if needed
         let user_packages = if config.include_install_reason {
-            self.get_dnf_user_packages().await.unwrap_or_default()
+            self.rpm_user_installed(tool).await?
         } else {
-            std::collections::HashSet::new()
+            HashSet::new()
         };
-
-        // Get versionlocked (pinned) packages if needed
-        let locked_packages = self.get_dnf_locked_packages().await.unwrap_or_default();
-
-        for line in stdout.lines() {
+        let repos = if config.include_repo {
+            self.rpm_from_repos(tool, None).await
+        } else {
+            HashMap::new()
+        };
+        let mut packages = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
             let parts: Vec<&str> = line.split('|').collect();
-            if parts.len() >= 3 {
-                let name = parts[0].to_string();
-                let mut version_str = parts[1].to_string();
-                let architecture = parts[2].to_string();
-
-                // Clean up epoch from version (0: prefix)
-                if version_str.starts_with("0:") {
-                    version_str = version_str[2..].to_string();
-                } else if version_str.starts_with("(none):") {
-                    version_str = version_str[7..].to_string();
-                }
-
-                let install_reason = if config.include_install_reason {
-                    if user_packages.contains(&name) {
-                        Some("manual".to_string())
-                    } else {
-                        Some("dependency".to_string())
-                    }
-                } else {
-                    None
-                };
-
-                let repository = if config.include_repo {
-                    self.get_dnf_package_repository(&name).await
-                } else {
-                    None
-                };
-
-                let package = LockfilePackage {
-                    name: name.clone(),
-                    version: match config.include_versions {
-                        SnapshotVersionMode::Exact => Some(version_str),
-                        SnapshotVersionMode::Minimal => Some(version_str), // Could be simplified
-                        SnapshotVersionMode::None => None,
-                    },
-                    version_spec: None,
-                    architecture: if config.include_arch {
-                        Some(architecture)
-                    } else {
-                        None
-                    },
-                    repository,
-                    install_reason,
-                    pinned: locked_packages.contains(&name),
-                };
-
-                packages.push(package);
+            if parts.len() < 3 {
+                continue;
             }
+            // gpg-pubkey entries are imported signing keys, not packages.
+            if parts[0] == "gpg-pubkey" {
+                continue;
+            }
+            let name = parts[0].to_string();
+            let version = normalize_version(&ManagerKind::Dnf, parts[1]);
+            packages.push(LockfilePackage {
+                version: (config.include_versions == SnapshotVersionMode::Exact).then_some(version),
+                version_spec: None,
+                architecture: (config.include_arch && parts[2] != "(none)")
+                    .then(|| parts[2].to_string()),
+                repository: repos.get(&name).cloned().flatten(),
+                install_reason: config.include_install_reason.then(|| {
+                    if user_packages.contains(&name) {
+                        "manual"
+                    } else {
+                        "dependency"
+                    }
+                    .to_string()
+                }),
+                pinned: locked_packages.contains(&name),
+                name,
+            });
         }
-
         Ok(packages)
     }
 
-    async fn get_dnf_user_packages(&self) -> Result<std::collections::HashSet<String>, PkgError> {
-        // DNF/YUM marks packages as userinstalled in the yumdb
-        // We can query this using dnf history userinstalled or repoquery
-        let output = AsyncCommand::new("dnf")
-            .args(&["history", "userinstalled"])
+    /// The repository each installed package came from (`%{from_repo}`), for
+    /// every package or one. A package installed from a file has none.
+    async fn rpm_from_repos(
+        &self,
+        tool: &str,
+        package: Option<&str>,
+    ) -> HashMap<String, Option<String>> {
+        let mut cmd = pkg_cmd(tool);
+        cmd.args([
+            "-q",
+            "repoquery",
+            "--installed",
+            "--queryformat",
+            "%{name} %{from_repo}\\n",
+        ]);
+        if let Some(name) = package {
+            cmd.arg(name);
+        }
+        let mut repos = HashMap::new();
+        let Ok(output) = cmd.bounded_output().await else {
+            return repos;
+        };
+        if !output.status.success() {
+            return repos;
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut words = line.split_whitespace();
+            if let Some(name) = words.next() {
+                let repo = words
+                    .next()
+                    .filter(|r| !matches!(*r, "(none)" | "@System" | "installed"))
+                    .map(str::to_string);
+                repos.insert(name.to_string(), repo);
+            }
+        }
+        repos
+    }
+
+    /// The packages the user asked for (`repoquery --userinstalled`).
+    async fn rpm_user_installed(&self, tool: &str) -> Result<HashSet<String>, PkgError> {
+        let output = pkg_cmd(tool)
+            .args([
+                "-q",
+                "repoquery",
+                "--userinstalled",
+                "--queryformat",
+                "%{name}\\n",
+            ])
             .bounded_output()
             .await
-            .map_err(|e| {
-                PkgError::SnapshotFailed(format!("dnf history userinstalled failed: {}", e))
-            })?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut packages = std::collections::HashSet::new();
-
-            // Skip header lines and collect package names
-            for line in stdout.lines().skip_while(|l| !l.is_empty()) {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with("Packages") || line.contains("---") {
-                    continue;
-                }
-
-                // Package name is typically the first field
-                if let Some(pkg_name) = line.split_whitespace().next() {
-                    packages.insert(pkg_name.to_string());
-                }
-            }
-            Ok(packages)
-        } else {
-            // Fallback: if dnf history fails, treat all as user-installed
-            Ok(std::collections::HashSet::new())
+            .map_err(|e| PkgError::SnapshotFailed(format!("{tool} repoquery failed: {e}")))?;
+        if !output.status.success() {
+            return Err(PkgError::SnapshotFailed(format!(
+                "{tool} repoquery --userinstalled failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
         }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 
     async fn get_dnf_locked_packages(&self) -> Result<std::collections::HashSet<String>, PkgError> {
@@ -7130,166 +7406,18 @@ impl PkgHandle {
     }
 
     async fn get_dnf_package_repository(&self, package_name: &str) -> Option<String> {
-        // Use dnf repoquery to get repository information
-        if let Ok(output) = AsyncCommand::new("dnf")
-            .args(&[
-                "repoquery",
-                "--installed",
-                "--queryformat",
-                "%{REPOID}",
-                package_name,
-            ])
-            .bounded_output()
+        self.rpm_from_repos("dnf", Some(package_name))
             .await
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let repo = stdout.trim();
-                if !repo.is_empty() && repo != "(null)" {
-                    return Some(repo.to_string());
-                }
-            }
-        }
-        None
+            .remove(package_name)
+            .flatten()
     }
 
     async fn snapshot_yum(
         &self,
         config: &SnapshotConfig,
     ) -> Result<Vec<LockfilePackage>, PkgError> {
-        let mut packages = Vec::new();
-
-        // YUM uses RPM backend, so we use rpm -qa just like DNF
-        // Format: name|epoch:version-release|architecture
-        let output = AsyncCommand::new("rpm")
-            .args(&[
-                "-qa",
-                "--queryformat",
-                "%{NAME}|%{EPOCHNUM}:%{VERSION}-%{RELEASE}|%{ARCH}\\n",
-            ])
-            .bounded_output()
-            .await
-            .map_err(|e| PkgError::SnapshotFailed(format!("rpm query failed: {}", e)))?;
-
-        if !output.status.success() {
-            return Err(PkgError::SnapshotFailed(
-                "rpm query command failed".to_string(),
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Get user-installed packages if needed
-        let user_packages = if config.include_install_reason {
-            self.get_yum_user_packages().await.unwrap_or_default()
-        } else {
-            std::collections::HashSet::new()
-        };
-
-        // Get versionlocked (pinned) packages if needed
-        let locked_packages = self.get_yum_locked_packages().await.unwrap_or_default();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('|').collect();
-            if parts.len() >= 3 {
-                let name = parts[0].to_string();
-                let mut version_str = parts[1].to_string();
-                let architecture = parts[2].to_string();
-
-                // Clean up epoch from version (0: prefix)
-                if version_str.starts_with("0:") {
-                    version_str = version_str[2..].to_string();
-                } else if version_str.starts_with("(none):") {
-                    version_str = version_str[7..].to_string();
-                }
-
-                let install_reason = if config.include_install_reason {
-                    if user_packages.contains(&name) {
-                        Some("manual".to_string())
-                    } else {
-                        Some("dependency".to_string())
-                    }
-                } else {
-                    None
-                };
-
-                let repository = if config.include_repo {
-                    self.get_yum_package_repository(&name).await
-                } else {
-                    None
-                };
-
-                let package = LockfilePackage {
-                    name: name.clone(),
-                    version: match config.include_versions {
-                        SnapshotVersionMode::Exact => Some(version_str),
-                        SnapshotVersionMode::Minimal => Some(version_str), // Could be simplified
-                        SnapshotVersionMode::None => None,
-                    },
-                    version_spec: None,
-                    architecture: if config.include_arch {
-                        Some(architecture)
-                    } else {
-                        None
-                    },
-                    repository,
-                    install_reason,
-                    pinned: locked_packages.contains(&name),
-                };
-
-                packages.push(package);
-            }
-        }
-
-        Ok(packages)
-    }
-
-    async fn get_yum_user_packages(&self) -> Result<std::collections::HashSet<String>, PkgError> {
-        // YUM doesn't have a direct "userinstalled" command like DNF
-        // We can use yumdb to query the reason field
-        // For packages installed by user, reason is typically "user" or "group"
-
-        // Try using yumdb if available
-        let output = AsyncCommand::new("yumdb")
-            .args(&["search", "reason", "user"])
-            .bounded_output()
-            .await;
-
-        if let Ok(output) = output {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let mut packages = std::collections::HashSet::new();
-
-                // Parse yumdb output - each package name appears in the output
-                for line in stdout.lines() {
-                    let line = line.trim();
-                    if !line.is_empty() && !line.contains("reason =") {
-                        // Extract package name from various yumdb output formats
-                        if let Some(pkg_name) = line.split_whitespace().next() {
-                            // Remove any version info if present
-                            let clean_name = pkg_name.split('-').next().unwrap_or(pkg_name);
-                            if !clean_name.is_empty() && !clean_name.starts_with('#') {
-                                packages.insert(clean_name.to_string());
-                            }
-                        }
-                    }
-                }
-
-                return Ok(packages);
-            }
-        }
-
-        // Fallback: try reading yumdb files directly
-        // YUM stores package metadata in /var/lib/yum/yumdb/
-        if let Ok(_entries) = tokio::fs::read_dir("/var/lib/yum/yumdb").await {
-            let packages = std::collections::HashSet::new();
-            // This is a simplified approach - full implementation would recursively search
-            // For now, return empty set if yumdb command fails
-            return Ok(packages);
-        }
-
-        // If all fails, return empty set (all packages will be marked as dependencies)
-        Ok(std::collections::HashSet::new())
+        let locked = self.get_yum_locked_packages().await.unwrap_or_default();
+        self.snapshot_rpm("yum", config, locked).await
     }
 
     async fn get_yum_locked_packages(&self) -> Result<std::collections::HashSet<String>, PkgError> {
@@ -7321,46 +7449,10 @@ impl PkgHandle {
     }
 
     async fn get_yum_package_repository(&self, package_name: &str) -> Option<String> {
-        // Use yum to get repository information
-        // YUM's repoquery command can show from which repo a package was installed
-        if let Ok(output) = AsyncCommand::new("yum")
-            .args(&["info", "installed", package_name])
-            .bounded_output()
+        self.rpm_from_repos("yum", Some(package_name))
             .await
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-
-                // Parse yum info output to find "From repo" line
-                for line in stdout.lines() {
-                    if line.starts_with("From repo") || line.starts_with("Repo") {
-                        if let Some(repo) = line.split(':').nth(1) {
-                            let repo_name = repo.trim();
-                            if !repo_name.is_empty() && repo_name != "installed" {
-                                return Some(repo_name.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback: try repoquery if available (part of yum-utils)
-        if let Ok(output) = AsyncCommand::new("repoquery")
-            .args(&["--installed", "--queryformat", "%{REPOID}", package_name])
-            .bounded_output()
-            .await
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let repo = stdout.trim();
-                if !repo.is_empty() && repo != "(null)" && repo != "installed" {
-                    return Some(repo.to_string());
-                }
-            }
-        }
-
-        None
+            .remove(package_name)
+            .flatten()
     }
 
     pub async fn snapshot_pacman(
@@ -7371,7 +7463,7 @@ impl PkgHandle {
         // Uses: pacman -Q (list packages), pacman -Qe (explicit packages), pacman -Qi (package info)
 
         // Get list of all installed packages
-        let mut cmd = tokio::process::Command::new("pacman");
+        let mut cmd = pkg_cmd("pacman");
         cmd.arg("-Q");
 
         if config.include_versions == SnapshotVersionMode::None {
@@ -7379,13 +7471,10 @@ impl PkgHandle {
         }
 
         // Apply timeout
-        let output = tokio::time::timeout(
-            tokio::time::Duration::from_millis(config.timeout_ms as u64),
-            cmd.output(),
-        )
-        .await
-        .map_err(|_| PkgError::SnapshotTimeout)?
-        .map_err(|e| PkgError::SnapshotFailed(format!("Failed to execute pacman: {}", e)))?;
+        let output = cmd
+            .bounded_output()
+            .await
+            .map_err(|e| PkgError::SnapshotFailed(format!("Failed to execute pacman: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -7489,7 +7578,7 @@ impl PkgHandle {
 
     pub async fn get_pacman_explicit_packages(&self) -> Result<HashSet<String>, PkgError> {
         // Get explicitly installed packages using pacman -Qe
-        let output = tokio::process::Command::new("pacman")
+        let output = pkg_cmd("pacman")
             .args(&["-Qe", "-q"])
             .bounded_output()
             .await
@@ -7541,7 +7630,7 @@ impl PkgHandle {
 
     pub async fn get_pacman_package_repository(&self, package_name: &str) -> Option<String> {
         // Query package information using pacman -Qi
-        let output = tokio::process::Command::new("pacman")
+        let output = pkg_cmd("pacman")
             .args(&["-Qi", package_name])
             .bounded_output()
             .await
@@ -7570,7 +7659,7 @@ impl PkgHandle {
 
     async fn get_pacman_package_architecture(&self, package_name: &str) -> Option<String> {
         // Query package architecture using pacman -Qi
-        let output = tokio::process::Command::new("pacman")
+        let output = pkg_cmd("pacman")
             .args(&["-Qi", package_name])
             .bounded_output()
             .await
@@ -7605,7 +7694,7 @@ impl PkgHandle {
         // Uses: apk info (list packages), apk policy (repository info)
 
         // Get list of all installed packages
-        let mut cmd = tokio::process::Command::new("apk");
+        let mut cmd = pkg_cmd("apk");
         cmd.arg("info");
 
         if config.include_versions == SnapshotVersionMode::None {
@@ -7615,13 +7704,10 @@ impl PkgHandle {
         }
 
         // Apply timeout
-        let output = tokio::time::timeout(
-            tokio::time::Duration::from_millis(config.timeout_ms as u64),
-            cmd.output(),
-        )
-        .await
-        .map_err(|_| PkgError::SnapshotTimeout)?
-        .map_err(|e| PkgError::SnapshotFailed(format!("Failed to execute apk: {}", e)))?;
+        let output = cmd
+            .bounded_output()
+            .await
+            .map_err(|e| PkgError::SnapshotFailed(format!("Failed to execute apk: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -7794,7 +7880,7 @@ impl PkgHandle {
 
     pub async fn get_apk_package_repository(&self, package_name: &str) -> Option<String> {
         // Query package repository using apk policy
-        let output = tokio::process::Command::new("apk")
+        let output = pkg_cmd("apk")
             .args(&["policy", package_name])
             .bounded_output()
             .await
@@ -7828,7 +7914,7 @@ impl PkgHandle {
 
     pub async fn get_apk_package_architecture(&self, package_name: &str) -> Option<String> {
         // Query package architecture using apk info
-        let output = tokio::process::Command::new("apk")
+        let output = pkg_cmd("apk")
             .args(&["info", "-a", package_name])
             .bounded_output()
             .await
@@ -7864,18 +7950,15 @@ impl PkgHandle {
         // Uses: brew list (installed packages), brew info --json (package details)
 
         // Get list of all installed formulae and casks
-        let mut cmd = tokio::process::Command::new("brew");
+        let mut cmd = pkg_cmd("brew");
         cmd.arg("list");
         cmd.arg("--formula"); // List formulae only (not casks by default)
 
         // Apply timeout
-        let output = tokio::time::timeout(
-            tokio::time::Duration::from_millis(config.timeout_ms as u64),
-            cmd.output(),
-        )
-        .await
-        .map_err(|_| PkgError::SnapshotTimeout)?
-        .map_err(|e| PkgError::SnapshotFailed(format!("Failed to execute brew: {}", e)))?;
+        let output = cmd
+            .bounded_output()
+            .await
+            .map_err(|e| PkgError::SnapshotFailed(format!("Failed to execute brew: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -7973,7 +8056,7 @@ impl PkgHandle {
 
     pub async fn get_brew_leaves(&self) -> Result<HashSet<String>, PkgError> {
         // Get leaf packages (explicitly installed, not dependencies)
-        let output = tokio::process::Command::new("brew")
+        let output = pkg_cmd("brew")
             .args(&["leaves"])
             .bounded_output()
             .await
@@ -8000,7 +8083,7 @@ impl PkgHandle {
 
     pub async fn get_brew_pinned_packages(&self) -> Result<HashSet<String>, PkgError> {
         // Get pinned packages using brew list --pinned
-        let output = tokio::process::Command::new("brew")
+        let output = pkg_cmd("brew")
             .args(&["list", "--pinned"])
             .bounded_output()
             .await
@@ -8027,7 +8110,7 @@ impl PkgHandle {
 
     pub async fn get_brew_package_version(&self, package_name: &str) -> Option<String> {
         // Query package version using brew info --json
-        let output = tokio::process::Command::new("brew")
+        let output = pkg_cmd("brew")
             .args(&["info", "--json=v2", package_name])
             .bounded_output()
             .await
@@ -8072,7 +8155,7 @@ impl PkgHandle {
 
     pub async fn get_brew_package_tap(&self, package_name: &str) -> Option<String> {
         // Query package tap (repository) using brew info --json
-        let output = tokio::process::Command::new("brew")
+        let output = pkg_cmd("brew")
             .args(&["info", "--json=v2", package_name])
             .bounded_output()
             .await
@@ -8105,11 +8188,7 @@ impl PkgHandle {
     pub async fn get_brew_package_architecture(&self, _package_name: &str) -> Option<String> {
         // Get system architecture for Homebrew packages
         // Homebrew bottles are architecture-specific
-        let output = tokio::process::Command::new("uname")
-            .arg("-m")
-            .bounded_output()
-            .await
-            .ok()?;
+        let output = pkg_cmd("uname").arg("-m").bounded_output().await.ok()?;
 
         if !output.status.success() {
             return None;
@@ -8156,48 +8235,75 @@ impl PkgHandle {
         }
     }
 
+    /// Reads a text lockfile: `name[=version]` per line, optionally followed
+    /// by ` [arch]`, ` @repository`, ` (install reason)` and ` [pinned]` as
+    /// `snapshot` writes them. `#` lines are comments, except
+    /// `# manager: <name>`, which records the manager; header lines of
+    /// earlier releases (`manager: ...`, `os: ...`, `scope: ...`) are read the
+    /// same way.
     fn parse_text_lockfile(&self, content: &str) -> Result<Lockfile, PkgError> {
-        // Simple text format parser - implement basic line-based parsing
-        // This is a minimal implementation - can be extended based on requirements
         let mut packages = Vec::new();
-
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
+        let mut manager = "auto".to_string();
+        let mut scope = "all".to_string();
+        for (number, raw) in content.lines().enumerate() {
+            let line = raw.trim();
+            let header = line.strip_prefix('#').map(str::trim).unwrap_or(line);
+            if let Some(name) = header.strip_prefix("manager:") {
+                if let Some(word) = name.split_whitespace().next() {
+                    manager = word.to_string();
+                }
                 continue;
             }
-
-            // Parse simple format: "package_name=version"
-            if let Some((name, version)) = line.split_once('=') {
-                packages.push(LockfilePackage {
-                    name: name.trim().to_string(),
-                    version: Some(version.trim().to_string()),
-                    version_spec: None,
-                    architecture: None,
-                    repository: None,
-                    install_reason: None,
-                    pinned: false,
-                });
-            } else {
-                // Just package name
-                packages.push(LockfilePackage {
-                    name: line.to_string(),
-                    version: None,
-                    version_spec: None,
-                    architecture: None,
-                    repository: None,
-                    install_reason: None,
-                    pinned: false,
-                });
+            if let Some(value) = header.strip_prefix("scope:") {
+                scope = value.trim().to_string();
+                continue;
             }
+            if line.is_empty() || line.starts_with('#') || header.starts_with("os:") {
+                continue;
+            }
+            let mut words = line.split_whitespace();
+            let first = words.next().unwrap_or_default();
+            let (name, version) = match first.split_once('=') {
+                Some((n, v)) => (n.to_string(), Some(v.to_string())),
+                None => (first.to_string(), None),
+            };
+            let mut pkg = LockfilePackage {
+                name,
+                version,
+                version_spec: None,
+                architecture: None,
+                repository: None,
+                install_reason: None,
+                pinned: false,
+            };
+            for word in words {
+                if word == "[pinned]" {
+                    pkg.pinned = true;
+                } else if let Some(arch) = word.strip_prefix('[').and_then(|w| w.strip_suffix(']'))
+                {
+                    pkg.architecture = Some(arch.to_string());
+                } else if let Some(repo) = word.strip_prefix('@') {
+                    pkg.repository = Some(repo.to_string());
+                } else if let Some(reason) =
+                    word.strip_prefix('(').and_then(|w| w.strip_suffix(')'))
+                {
+                    pkg.install_reason = Some(reason.to_string());
+                } else {
+                    return Err(PkgError::RestoreInvalidLockfile(format!(
+                        "text lockfile line {}: unexpected {:?} after the package (expected \
+                         [arch], @repository, (reason) or [pinned])",
+                        number + 1,
+                        word
+                    )));
+                }
+            }
+            packages.push(pkg);
         }
-
-        // Create minimal lockfile structure
         Ok(Lockfile {
             lockfile_version: "pkg-lock/v1".to_string(),
             generated_at: "unknown".to_string(),
             manager: ManagerInfo {
-                name: "auto".to_string(),
+                name: manager,
                 alias: "system".to_string(),
                 version: None,
                 config: None,
@@ -8209,16 +8315,18 @@ impl PkgHandle {
                 kernel: None,
                 architecture: None,
             },
-            scope: "all".to_string(),
+            scope,
             packages,
         })
     }
 
+    /// Checks the lockfile version and package names, and applies
+    /// `on_platform_mismatch`. Returns the platform warnings.
     async fn validate_lockfile(
         &self,
         lockfile: &Lockfile,
         config: &RestoreConfig,
-    ) -> Result<(), PkgError> {
+    ) -> Result<Vec<String>, PkgError> {
         // Validate lockfile version
         if !lockfile.lockfile_version.starts_with("pkg-lock/v1") {
             return Err(PkgError::RestoreInvalidLockfile(format!(
@@ -8240,141 +8348,176 @@ impl PkgHandle {
             }
         }
 
-        // Validate platform compatibility
-        if config.on_platform_mismatch == PlatformPolicy::Fail {
-            let host_platform = self.get_platform_info().await.ok();
-            if let Some(host) = host_platform {
-                let lockfile_platform = &lockfile.platform;
-
-                if let (Some(host_os), Some(lock_os)) = (&host.os_name, &lockfile_platform.os_name)
-                {
-                    if host_os != lock_os {
-                        return Err(PkgError::RestorePlatformIncompatible(format!(
-                            "Host OS {} does not match lockfile OS {}",
-                            host_os, lock_os
-                        )));
-                    }
-                }
-
-                if let (Some(host_arch), Some(lock_arch)) =
-                    (&host.architecture, &lockfile_platform.architecture)
-                {
-                    if host_arch != lock_arch {
-                        return Err(PkgError::RestorePlatformIncompatible(format!(
-                            "Host architecture {} does not match lockfile architecture {}",
-                            host_arch, lock_arch
-                        )));
-                    }
+        // Platform: the host is described the way snapshot describes it.
+        let mut warnings = Vec::new();
+        if config.on_platform_mismatch != PlatformPolicy::Ignore {
+            let host = self.collect_platform_info().await;
+            let locked = &lockfile.platform;
+            let mut differences = Vec::new();
+            if let (Some(h), Some(l)) = (&host.os_name, &locked.os_name) {
+                if h != l {
+                    differences.push(format!("OS {l} (host: {h})"));
                 }
             }
+            if let (Some(h), Some(l)) = (&host.architecture, &locked.architecture) {
+                if h != l {
+                    differences.push(format!("architecture {l} (host: {h})"));
+                }
+            }
+            if !differences.is_empty() {
+                let text = format!(
+                    "the lockfile was taken on another platform: {}",
+                    differences.join(", ")
+                );
+                if config.on_platform_mismatch == PlatformPolicy::Fail {
+                    return Err(PkgError::RestorePlatformIncompatible(format!(
+                        "{text} (on_platform_mismatch=fail); nothing was changed"
+                    )));
+                }
+                warnings.push(text);
+            }
         }
-
-        Ok(())
+        Ok(warnings)
     }
 
     /// Chooses the manager for `restore`. `detected` is the auto-detected system
     /// manager, used only when both the request and the lockfile say "auto"
-    /// (a text lockfile records no manager).
+    /// (a text lockfile without a `# manager:` line records none).
     fn resolve_restore_manager(
         &self,
         config_manager: &ManagerKind,
         lockfile: &Lockfile,
         detected: Option<ManagerKind>,
     ) -> Result<ManagerKind, PkgError> {
-        if lockfile.manager.name == "auto" {
-            return match config_manager {
-                ManagerKind::Auto => detected.ok_or_else(|| {
-                    PkgError::ManagerNotAvailable("No supported package manager found".to_string())
-                }),
-                explicit => Ok(explicit.clone()),
-            };
-        }
-        match config_manager {
-            ManagerKind::Auto => {
-                // Use lockfile manager
-                match lockfile.manager.name.as_str() {
-                    "apt" => Ok(ManagerKind::Apt),
-                    "yum" => Ok(ManagerKind::Yum),
-                    "dnf" => Ok(ManagerKind::Dnf),
-                    "pacman" => Ok(ManagerKind::Pacman),
-                    "apk" => Ok(ManagerKind::Apk),
-                    "brew" => Ok(ManagerKind::Brew),
-                    _ => Err(PkgError::ManagerNotFound(lockfile.manager.name.clone())),
-                }
-            }
+        let locked = match lockfile.manager.name.as_str() {
+            "auto" => None,
+            "apt" => Some(ManagerKind::Apt),
+            "yum" => Some(ManagerKind::Yum),
+            "dnf" => Some(ManagerKind::Dnf),
+            "pacman" => Some(ManagerKind::Pacman),
+            "apk" => Some(ManagerKind::Apk),
+            "brew" => Some(ManagerKind::Brew),
             other => {
-                // Verify compatibility with lockfile
-                let config_name = match other {
-                    ManagerKind::Apt => "apt",
-                    ManagerKind::Yum => "yum",
-                    ManagerKind::Dnf => "dnf",
-                    ManagerKind::Pacman => "pacman",
-                    ManagerKind::Apk => "apk",
-                    ManagerKind::Brew => "brew",
-                    ManagerKind::Auto => unreachable!(),
-                };
-
-                if config_name != lockfile.manager.name
-                    && !(config_name == "dnf" && lockfile.manager.name == "yum")
-                    && !(config_name == "yum" && lockfile.manager.name == "dnf")
-                {
+                return Err(PkgError::RestoreInvalidLockfile(format!(
+                    "the lockfile names an unknown manager {other:?} (expected apt, dnf, yum, \
+                     pacman, apk or brew)"
+                )));
+            }
+        };
+        match (config_manager, locked) {
+            (ManagerKind::Auto, None) => detected.ok_or_else(|| {
+                PkgError::ManagerNotAvailable("No supported package manager found".to_string())
+            }),
+            (ManagerKind::Auto, Some(locked)) => Ok(locked),
+            (explicit, None) => Ok(explicit.clone()),
+            (explicit, Some(locked)) => {
+                let rpm_pair = matches!(
+                    (explicit, &locked),
+                    (ManagerKind::Dnf, ManagerKind::Yum) | (ManagerKind::Yum, ManagerKind::Dnf)
+                );
+                if *explicit != locked && !rpm_pair {
                     return Err(PkgError::RestoreManagerMismatch(format!(
                         "Config manager {} does not match lockfile manager {}",
-                        config_name, lockfile.manager.name
+                        manager_name(explicit),
+                        manager_name(&locked)
                     )));
                 }
-
-                Ok(other.clone())
+                Ok(explicit.clone())
             }
         }
     }
 
+    /// Compares the lockfile with the host, refuses what cannot be done
+    /// (before anything runs, dry run included), and then runs one command
+    /// per package (see `pkg.md` 3.4).
     async fn perform_restore(
         &self,
         config: &RestoreConfig,
         lockfile: &Lockfile,
         manager: &ManagerKind,
+        mut warnings: Vec<String>,
     ) -> Result<Value, PkgError> {
-        // Get current installed packages
         let current_packages = self.get_current_packages(manager).await?;
 
         // on_repo_mismatch (fails before anything runs, dry run included)
         // and include_dependencies warnings.
-        let mut warnings = self
-            .check_restore_repositories(lockfile, &current_packages, manager, config)
-            .await?;
+        warnings.extend(
+            self.check_restore_repositories(lockfile, &current_packages, manager, config)
+                .await?,
+        );
         warnings.extend(dependency_filter_warnings(lockfile, config));
 
-        // Compute diff between lockfile and current state
-        let plan = self.compute_restore_plan(lockfile, &current_packages, config)?;
+        let mut plan =
+            self.compute_restore_plan_for(lockfile, &current_packages, config, manager)?;
+        let at_repo_version = self
+            .locked_at_repo_version(&plan, lockfile, config, manager)
+            .await;
+        let ops = restore_operations_with(
+            &mut plan,
+            lockfile,
+            &current_packages,
+            config,
+            manager,
+            &at_repo_version,
+        )?;
+        warnings.extend(restore_mode_warnings(&ops, config, manager));
 
+        if !plan.unresolved.is_empty() {
+            let names: Vec<String> = plan
+                .unresolved
+                .iter()
+                .map(|u| format!("{} ({})", u.name, u.reason))
+                .collect();
+            match config.on_missing_package {
+                MissingPolicy::Fail => {
+                    return Err(PkgError::RestoreUnresolved(format!(
+                        "{} locked package(s) cannot be brought to the lockfile state \
+                         (on_missing_package=fail): {}; nothing was changed",
+                        names.len(),
+                        name_list(&names)
+                    )));
+                }
+                MissingPolicy::Warn => warnings.push(format!(
+                    "{} locked package(s) are left as they are: {}",
+                    names.len(),
+                    name_list(&names)
+                )),
+                MissingPolicy::Ignore => {}
+            }
+        }
+
+        let mode = match config.mode {
+            RestoreMode::Exact => "exact",
+            RestoreMode::BestEffort => "best_effort",
+        };
         if config.dry_run {
-            // Return dry-run plan
+            let commands: Vec<String> = ops
+                .iter()
+                .map(|op| restore_command(op, manager, config, true).map(|c| c.to_string()))
+                .collect::<Result<_, _>>()?;
             return Ok(json!({
                 "backend": "pkg",
                 "action": "restore",
-                "manager": format!("{:?}", manager).to_lowercase(),
+                "manager": manager_name(manager),
                 "alias": &self.alias,
-                "mode": format!("{:?}", config.mode).to_lowercase(),
+                "mode": mode,
                 "dry_run": true,
                 "plan": plan,
-                "commands": self.generate_restore_commands(&plan, manager, config),
+                "commands": commands,
                 "warnings": warnings
             }));
         }
 
-        // Execute the restore plan
-        let results = self.execute_restore_plan(&plan, manager, config).await?;
-
-        // Compute summary
+        let results = self
+            .execute_restore_ops(&ops, manager, config, &mut warnings)
+            .await?;
         let summary = self.compute_restore_summary(&plan, &results, config);
-
         Ok(json!({
             "backend": "pkg",
             "action": "restore",
-            "manager": format!("{:?}", manager).to_lowercase(),
+            "manager": manager_name(manager),
             "alias": &self.alias,
-            "mode": format!("{:?}", config.mode).to_lowercase(),
+            "mode": mode,
             "dry_run": false,
             "plan": plan,
             "results": results,
@@ -8426,31 +8569,82 @@ impl PkgHandle {
         }
     }
 
+    /// For `mode: exact` with pacman: the packages to install or upgrade
+    /// whose locked version is the version the repositories carry (`pacman
+    /// -Si`), so installing by name reaches it exactly.
+    async fn locked_at_repo_version(
+        &self,
+        plan: &RestorePlan,
+        lockfile: &Lockfile,
+        config: &RestoreConfig,
+        manager: &ManagerKind,
+    ) -> HashSet<String> {
+        let mut found = HashSet::new();
+        if config.mode != RestoreMode::Exact || *manager != ManagerKind::Pacman {
+            return found;
+        }
+        let wanted: HashMap<&str, &str> = lockfile
+            .packages
+            .iter()
+            .filter(|p| plan.install.contains(&p.name) || plan.upgrade.contains(&p.name))
+            .filter_map(|p| Some((p.name.as_str(), p.version.as_deref()?)))
+            .collect();
+        if wanted.is_empty() {
+            return found;
+        }
+        let mut names: Vec<&str> = wanted.keys().copied().collect();
+        names.sort();
+        let Ok(output) = pkg_cmd("pacman")
+            .arg("-Si")
+            .args(&names)
+            .bounded_output()
+            .await
+        else {
+            return found;
+        };
+        let mut name = String::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            match key.trim() {
+                "Name" => name = value.trim().to_string(),
+                "Version" => {
+                    if wanted.get(name.as_str()).is_some_and(|locked| {
+                        version_cmp::pacman(locked, value.trim()) == std::cmp::Ordering::Equal
+                    }) {
+                        found.insert(name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        found
+    }
+
+    /// Every installed package with its version (no limit, and under the
+    /// restore's own deadline).
     async fn get_current_packages(
         &self,
         manager: &ManagerKind,
     ) -> Result<Vec<InstalledPackage>, PkgError> {
-        // Reuse existing list_installed logic
         let list_config = ListInstalledConfig {
             manager: manager.clone(),
             filter: None,
             prefix: None,
             include_versions: true,
-            include_repo: true,
+            include_repo: false,
             include_size: false,
-            include_install_reason: true,
-            limit: 10000, // Large limit to get all packages
+            include_install_reason: false,
+            limit: u32::MAX,
             offset: 0,
-            timeout_ms: 30000,
-            extra_args: None,
+            timeout_ms: 1,
             env: None,
         };
+        let results = self.perform_list_installed(&list_config, manager).await?;
 
-        let results = self.list_installed_async(list_config).await?;
-
-        // Extract packages from the results JSON. An unreadable list must not
-        // look like an empty host: every locked package would be planned for
-        // install and nothing compared.
+        // An unreadable list must not look like an empty host: every locked
+        // package would be planned for install and nothing compared.
         serde_json::from_value::<ListInstalledResults>(results)
             .map(|list| list.results)
             .map_err(|e| {
@@ -8461,34 +8655,31 @@ impl PkgHandle {
             })
     }
 
-    // Platform detection helpers
-    async fn get_platform_info(&self) -> Result<PlatformInfo, PkgError> {
-        // Detect OS family using compile-time detection
-        let os_family = detect_os_family();
-
-        // Detect OS name and version
-        let (os_name, os_version) = detect_os_name_and_version().await?;
-
-        // Detect kernel version
-        let kernel = detect_kernel_version().await;
-
-        // Detect architecture
-        let architecture = detect_architecture();
-
-        Ok(PlatformInfo {
-            os_family: Some(os_family),
-            os_name,
-            os_version,
-            kernel,
-            architecture: Some(architecture),
-        })
-    }
-
+    /// The plan with version ordering by string comparison (only for tests
+    /// written before the manager-aware ordering; see
+    /// `compute_restore_plan_for`).
+    #[cfg(test)]
     fn compute_restore_plan(
         &self,
         lockfile: &Lockfile,
         current_packages: &[InstalledPackage],
         config: &RestoreConfig,
+    ) -> Result<RestorePlan, PkgError> {
+        self.compute_restore_plan_for(lockfile, current_packages, config, &ManagerKind::Brew)
+    }
+
+    /// Compares each locked package with the host: not installed goes to
+    /// `install`, an older installed version to `upgrade`, a newer one is
+    /// kept (`allow_newer`), downgraded (`allow_downgrades`) or unresolved;
+    /// installed packages missing from the lockfile go to `extra`, or to
+    /// `remove` with `allow_removals`. Versions are ordered as `manager`
+    /// orders them.
+    fn compute_restore_plan_for(
+        &self,
+        lockfile: &Lockfile,
+        current_packages: &[InstalledPackage],
+        config: &RestoreConfig,
+        manager: &ManagerKind,
     ) -> Result<RestorePlan, PkgError> {
         let mut plan = RestorePlan {
             install: Vec::new(),
@@ -8501,13 +8692,11 @@ impl PkgHandle {
             skipped_dependencies: Vec::new(),
         };
 
-        // Create lookup map of current packages
         let mut current_map = std::collections::HashMap::new();
         for pkg in current_packages {
             current_map.insert(&pkg.name, pkg);
         }
 
-        // Process lockfile packages
         for lock_pkg in &lockfile.packages {
             if restore_excludes(lock_pkg, config) {
                 // Out of the plan entirely: also not "extra", so
@@ -8517,10 +8706,10 @@ impl PkgHandle {
                 continue;
             }
             match current_map.remove(&lock_pkg.name) {
-                Some(current_pkg) => {
-                    if let Some(ref lock_version) = lock_pkg.version {
-                        let comparison = self.compare_versions(&current_pkg.version, lock_version);
-                        match comparison {
+                Some(current_pkg) => match lock_pkg.version.as_deref() {
+                    Some(lock_version) => {
+                        match compare_package_versions(manager, &current_pkg.version, lock_version)
+                        {
                             std::cmp::Ordering::Equal => plan.keep.push(lock_pkg.name.clone()),
                             std::cmp::Ordering::Less => plan.upgrade.push(lock_pkg.name.clone()),
                             std::cmp::Ordering::Greater => {
@@ -8537,164 +8726,71 @@ impl PkgHandle {
                                 }
                             }
                         }
-                    } else {
-                        // No version specified in lockfile, just keep
-                        plan.keep.push(lock_pkg.name.clone());
                     }
-                }
-                None => {
-                    // Package not installed, needs to be installed
-                    plan.install.push(lock_pkg.name.clone());
-                }
+                    None => plan.keep.push(lock_pkg.name.clone()),
+                },
+                None => plan.install.push(lock_pkg.name.clone()),
             }
         }
 
-        // Handle extra packages (installed but not in lockfile)
+        let mut rest: Vec<String> = current_map.into_keys().cloned().collect();
+        rest.sort();
         if config.allow_removals {
-            for (name, _) in current_map {
-                plan.remove.push(name.clone());
-            }
+            plan.remove = rest;
         } else {
-            for (name, _) in current_map {
-                plan.extra.push(name.clone());
-            }
+            plan.extra = rest;
         }
-
         Ok(plan)
     }
 
-    fn compare_versions(&self, current: &str, target: &str) -> std::cmp::Ordering {
-        // Simple version comparison - can be enhanced with proper semver logic
-        current.cmp(target)
-    }
-
+    /// The commands a restore would run for `plan` (for tests; `perform_restore`
+    /// builds them from the operations).
+    #[cfg(test)]
     fn generate_restore_commands(
         &self,
         plan: &RestorePlan,
         manager: &ManagerKind,
-        _config: &RestoreConfig,
+        config: &RestoreConfig,
     ) -> Vec<String> {
-        let mut commands = Vec::new();
-
-        match manager {
-            ManagerKind::Apt => {
-                if !plan.install.is_empty() || !plan.upgrade.is_empty() {
-                    let mut install_cmd = "apt-get install -y".to_string();
-                    for pkg in &plan.install {
-                        install_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    for pkg in &plan.upgrade {
-                        install_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    commands.push(install_cmd);
-                }
-
-                if !plan.downgrade.is_empty() {
-                    let mut downgrade_cmd = "apt-get install --allow-downgrades -y".to_string();
-                    for pkg in &plan.downgrade {
-                        downgrade_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    commands.push(downgrade_cmd);
-                }
-
-                if !plan.remove.is_empty() {
-                    let mut remove_cmd = "apt-get remove -y".to_string();
-                    for pkg in &plan.remove {
-                        remove_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    commands.push(remove_cmd);
-                }
-            }
-            ManagerKind::Dnf | ManagerKind::Yum => {
-                let manager_name = if matches!(manager, ManagerKind::Dnf) {
-                    "dnf"
-                } else {
-                    "yum"
-                };
-
-                if !plan.install.is_empty() || !plan.upgrade.is_empty() {
-                    let mut install_cmd = format!("{} install -y", manager_name);
-                    for pkg in &plan.install {
-                        install_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    for pkg in &plan.upgrade {
-                        install_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    commands.push(install_cmd);
-                }
-
-                if !plan.remove.is_empty() {
-                    let mut remove_cmd = format!("{} remove -y", manager_name);
-                    for pkg in &plan.remove {
-                        remove_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    commands.push(remove_cmd);
-                }
-            }
-            ManagerKind::Pacman => {
-                if !plan.install.is_empty() || !plan.upgrade.is_empty() {
-                    let mut install_cmd = "pacman -S --noconfirm".to_string();
-                    for pkg in &plan.install {
-                        install_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    for pkg in &plan.upgrade {
-                        install_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    commands.push(install_cmd);
-                }
-
-                if !plan.remove.is_empty() {
-                    let mut remove_cmd = "pacman -R --noconfirm".to_string();
-                    for pkg in &plan.remove {
-                        remove_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    commands.push(remove_cmd);
-                }
-            }
-            ManagerKind::Apk => {
-                if !plan.install.is_empty() || !plan.upgrade.is_empty() {
-                    let mut install_cmd = "apk add --no-interactive".to_string();
-                    for pkg in &plan.install {
-                        install_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    for pkg in &plan.upgrade {
-                        install_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    commands.push(install_cmd);
-                }
-
-                if !plan.remove.is_empty() {
-                    let mut remove_cmd = "apk del --no-interactive".to_string();
-                    for pkg in &plan.remove {
-                        remove_cmd.push_str(&format!(" {}", pkg));
-                    }
-                    commands.push(remove_cmd);
-                }
-            }
-            ManagerKind::Brew => {
-                if !plan.install.is_empty() {
-                    for pkg in &plan.install {
-                        commands.push(format!("brew install {}", pkg));
-                    }
-                }
-
-                if !plan.remove.is_empty() {
-                    for pkg in &plan.remove {
-                        commands.push(format!("brew uninstall {}", pkg));
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        commands
+        let mut plan = plan.clone();
+        let lockfile = Lockfile {
+            lockfile_version: "pkg-lock/v1".to_string(),
+            generated_at: String::new(),
+            manager: ManagerInfo {
+                name: manager_name(manager).to_string(),
+                alias: "system".to_string(),
+                version: None,
+                config: None,
+            },
+            platform: PlatformInfo {
+                os_family: None,
+                os_name: None,
+                os_version: None,
+                kernel: None,
+                architecture: None,
+            },
+            scope: "all".to_string(),
+            packages: Vec::new(),
+        };
+        restore_operations(&mut plan, &lockfile, &[], config, manager)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|op| restore_command(op, manager, config, true).ok())
+            .map(|c| c.to_string())
+            .collect()
     }
 
-    async fn execute_restore_plan(
+    /// Runs the operations in order (installs, upgrades, downgrades,
+    /// removals), one command each, and checks the version each one left.
+    /// `exact` fails an operation that did not reach the locked version;
+    /// `best_effort` retries a failed pinned install by name and accepts the
+    /// version it gets, with a warning.
+    async fn execute_restore_ops(
         &self,
-        plan: &RestorePlan,
+        ops: &[RestoreOp],
         manager: &ManagerKind,
         config: &RestoreConfig,
+        warnings: &mut Vec<String>,
     ) -> Result<RestoreResults, PkgError> {
         let mut results = RestoreResults {
             install: Vec::new(),
@@ -8702,211 +8798,76 @@ impl PkgHandle {
             downgrade: Vec::new(),
             remove: Vec::new(),
         };
-
-        // Execute installs
-        for pkg in &plan.install {
-            let result = self.execute_package_install(pkg, manager, config).await;
-            results
-                .install
-                .push(self.create_package_result(pkg, result, None));
+        let mut unpinned = Vec::new();
+        for op in ops {
+            if crate::core::process::has_lost() {
+                // The deadline passed: nothing more is started.
+                break;
+            }
+            let mut outcome = self
+                .run_restore_command(&restore_command(op, manager, config, true)?)
+                .await;
+            let pinned = op.kind != RestoreKind::Remove && op.version.is_some();
+            if outcome.is_err()
+                && pinned
+                && config.mode == RestoreMode::BestEffort
+                && supports_version_pin(manager)
+                && !crate::core::process::has_lost()
+            {
+                // best_effort: the locked version may be gone from the
+                // repositories; take what they carry.
+                let retry = restore_command(op, manager, config, false)?;
+                if self.run_restore_command(&retry).await.is_ok() {
+                    unpinned.push(op.name.clone());
+                    outcome = Ok(());
+                }
+            }
+            let now = self.installed_version_of(&op.name, manager).await;
+            let outcome =
+                outcome.and_then(|()| verify_restore_op(op, now.as_deref(), config, manager));
+            let result = PackageOpResult {
+                name: op.name.clone(),
+                status: if outcome.is_ok() { "success" } else { "failed" }.to_string(),
+                from_version: op.from.clone(),
+                to_version: now,
+                locked_version: op.version.clone(),
+                error: outcome.err().map(|e| error_value(&e)),
+            };
+            match op.kind {
+                RestoreKind::Install => results.install.push(result),
+                RestoreKind::Upgrade => results.upgrade.push(result),
+                RestoreKind::Downgrade => results.downgrade.push(result),
+                RestoreKind::Remove => results.remove.push(result),
+            }
         }
-
-        // Execute upgrades
-        for pkg in &plan.upgrade {
-            let result = self.execute_package_upgrade(pkg, manager, config).await;
-            results
-                .upgrade
-                .push(self.create_package_result(pkg, result, None));
+        if !unpinned.is_empty() {
+            warnings.push(format!(
+                "best_effort: the locked version of {} package(s) could not be installed, so \
+                 the repository version was installed instead: {}",
+                unpinned.len(),
+                name_list(&unpinned)
+            ));
         }
-
-        // Execute downgrades
-        for pkg in &plan.downgrade {
-            let result = self.execute_package_downgrade(pkg, manager, config).await;
-            results
-                .downgrade
-                .push(self.create_package_result(pkg, result, None));
-        }
-
-        // Execute removes
-        for pkg in &plan.remove {
-            let result = self.execute_package_remove(pkg, manager, config).await;
-            results
-                .remove
-                .push(self.create_package_result(pkg, result, None));
-        }
-
         Ok(results)
     }
 
-    async fn execute_package_install(
-        &self,
-        pkg: &str,
-        manager: &ManagerKind,
-        config: &RestoreConfig,
-    ) -> Result<String, PkgError> {
-        match manager {
-            ManagerKind::Apt => {
-                let mut cmd = AsyncCommand::new("apt-get");
-                cmd.args(&["install", "-y", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Dnf => {
-                let mut cmd = AsyncCommand::new("dnf");
-                cmd.args(&["install", "-y", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Yum => {
-                let mut cmd = AsyncCommand::new("yum");
-                cmd.args(&["install", "-y", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Pacman => {
-                let mut cmd = AsyncCommand::new("pacman");
-                cmd.args(&["-S", "--noconfirm", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Apk => {
-                let mut cmd = AsyncCommand::new("apk");
-                cmd.args(&["add", "--no-interactive", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Brew => {
-                let mut cmd = AsyncCommand::new("brew");
-                cmd.args(&["install", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Auto => Err(PkgError::ManagerNotFound("auto".to_string())),
-        }
-    }
-
-    async fn execute_package_upgrade(
-        &self,
-        pkg: &str,
-        manager: &ManagerKind,
-        config: &RestoreConfig,
-    ) -> Result<String, PkgError> {
-        // For most managers, upgrade is same as install
-        self.execute_package_install(pkg, manager, config).await
-    }
-
-    async fn execute_package_downgrade(
-        &self,
-        pkg: &str,
-        manager: &ManagerKind,
-        config: &RestoreConfig,
-    ) -> Result<String, PkgError> {
-        match manager {
-            ManagerKind::Apt => {
-                let mut cmd = AsyncCommand::new("apt-get");
-                cmd.args(&["install", "--allow-downgrades", "-y", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Dnf => {
-                let mut cmd = AsyncCommand::new("dnf");
-                cmd.args(&["downgrade", "-y", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Yum => {
-                let mut cmd = AsyncCommand::new("yum");
-                cmd.args(&["downgrade", "-y", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            _ => Err(PkgError::RestoreDowngradeNotSupported(format!(
-                "{:?}",
-                manager
-            ))),
-        }
-    }
-
-    async fn execute_package_remove(
-        &self,
-        pkg: &str,
-        manager: &ManagerKind,
-        config: &RestoreConfig,
-    ) -> Result<String, PkgError> {
-        match manager {
-            ManagerKind::Apt => {
-                let mut cmd = AsyncCommand::new("apt-get");
-                cmd.args(&["remove", "-y", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Dnf => {
-                let mut cmd = AsyncCommand::new("dnf");
-                cmd.args(&["remove", "-y", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Yum => {
-                let mut cmd = AsyncCommand::new("yum");
-                cmd.args(&["remove", "-y", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Pacman => {
-                let mut cmd = AsyncCommand::new("pacman");
-                cmd.args(&["-R", "--noconfirm", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Apk => {
-                let mut cmd = AsyncCommand::new("apk");
-                cmd.args(&["del", "--no-interactive", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Brew => {
-                let mut cmd = AsyncCommand::new("brew");
-                cmd.args(&["uninstall", pkg]);
-                self.execute_manager_command(cmd, config).await
-            }
-            ManagerKind::Auto => Err(PkgError::ManagerNotFound("auto".to_string())),
-        }
-    }
-
-    async fn execute_manager_command(
-        &self,
-        mut cmd: AsyncCommand,
-        config: &RestoreConfig,
-    ) -> Result<String, PkgError> {
-        if let Some(ref env) = config.env {
-            for (key, value) in env {
-                cmd.env(key, value);
-            }
-        }
-
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        let output = cmd.bounded_output().await.map_err(|e| {
-            PkgError::RestoreApplyFailed(format!("Command execution failed: {}", e))
-        })?;
-
+    /// Runs one restore command; its standard error is the failure reason.
+    async fn run_restore_command(&self, cmd: &CmdLine) -> Result<(), PkgError> {
+        let output = cmd
+            .command()
+            .bounded_output()
+            .await
+            .map_err(|e| PkgError::RestoreApplyFailed(format!("could not run {cmd}: {e}")))?;
         if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+            Ok(())
         } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
             Err(PkgError::RestoreApplyFailed(format!(
-                "Command failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+                "{cmd} failed: {}{}",
+                stderr.trim(),
+                tail_lines(&stdout, 3)
             )))
-        }
-    }
-
-    fn create_package_result(
-        &self,
-        pkg: &str,
-        result: Result<String, PkgError>,
-        from_version: Option<String>,
-    ) -> PackageOpResult {
-        match result {
-            Ok(_) => PackageOpResult {
-                name: pkg.to_string(),
-                status: "success".to_string(),
-                from_version,
-                to_version: None, // Could be enhanced to extract actual installed version
-                error: None,
-            },
-            Err(e) => PackageOpResult {
-                name: pkg.to_string(),
-                status: "failed".to_string(),
-                from_version,
-                to_version: None,
-                error: Some(e.to_string()),
-            },
         }
     }
 
@@ -8962,308 +8923,6 @@ impl PkgHandle {
             mode: format!("{:?}", config.mode).to_lowercase(),
             success,
         }
-    }
-}
-
-// Platform detection helper functions
-
-/// Detect OS family using compile-time configuration
-fn detect_os_family() -> String {
-    #[cfg(target_os = "linux")]
-    return "linux".to_string();
-
-    #[cfg(target_os = "macos")]
-    return "darwin".to_string();
-
-    #[cfg(target_os = "windows")]
-    return "windows".to_string();
-
-    #[cfg(target_os = "freebsd")]
-    return "freebsd".to_string();
-
-    #[cfg(target_os = "openbsd")]
-    return "openbsd".to_string();
-
-    #[cfg(target_os = "netbsd")]
-    return "netbsd".to_string();
-
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    )))]
-    return "unknown".to_string();
-}
-
-/// Detect architecture using compile-time configuration
-fn detect_architecture() -> String {
-    #[cfg(target_arch = "x86_64")]
-    return "x86_64".to_string();
-
-    #[cfg(target_arch = "x86")]
-    return "x86".to_string();
-
-    #[cfg(target_arch = "aarch64")]
-    return "aarch64".to_string();
-
-    #[cfg(target_arch = "arm")]
-    return "arm".to_string();
-
-    #[cfg(target_arch = "riscv64")]
-    return "riscv64".to_string();
-
-    #[cfg(target_arch = "powerpc64")]
-    return "powerpc64".to_string();
-
-    #[cfg(target_arch = "s390x")]
-    return "s390x".to_string();
-
-    #[cfg(not(any(
-        target_arch = "x86_64",
-        target_arch = "x86",
-        target_arch = "aarch64",
-        target_arch = "arm",
-        target_arch = "riscv64",
-        target_arch = "powerpc64",
-        target_arch = "s390x"
-    )))]
-    return "unknown".to_string();
-}
-
-/// Detect OS name and version from /etc/os-release or system commands
-async fn detect_os_name_and_version() -> Result<(Option<String>, Option<String>), PkgError> {
-    #[cfg(target_os = "linux")]
-    {
-        // Try reading /etc/os-release first (most modern Linux distributions)
-        if let Ok(contents) = tokio::fs::read_to_string("/etc/os-release").await {
-            let mut os_name = None;
-            let mut os_version = None;
-
-            for line in contents.lines() {
-                if let Some((key, value)) = line.split_once('=') {
-                    let value = value.trim_matches('"');
-                    match key {
-                        "NAME" => os_name = Some(value.to_string()),
-                        "VERSION" | "VERSION_ID" if os_version.is_none() => {
-                            os_version = Some(value.to_string())
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            if os_name.is_some() {
-                return Ok((os_name, os_version));
-            }
-        }
-
-        // Fallback to lsb_release command
-        if let Ok(output) = AsyncCommand::new("lsb_release")
-            .args(&["-si"])
-            .bounded_output()
-            .await
-        {
-            if output.status.success() {
-                let os_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-                // Get version
-                let os_version = if let Ok(version_output) = AsyncCommand::new("lsb_release")
-                    .args(&["-sr"])
-                    .bounded_output()
-                    .await
-                {
-                    if version_output.status.success() {
-                        Some(
-                            String::from_utf8_lossy(&version_output.stdout)
-                                .trim()
-                                .to_string(),
-                        )
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                return Ok((Some(os_name), os_version));
-            }
-        }
-
-        // Fallback to uname
-        if let Ok(output) = AsyncCommand::new("uname")
-            .args(&["-s"])
-            .bounded_output()
-            .await
-        {
-            if output.status.success() {
-                let os_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                return Ok((Some(os_name), None));
-            }
-        }
-
-        Ok((Some("Linux".to_string()), None))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // Get macOS version from sw_vers
-        let os_name = Some("macOS".to_string());
-        let os_version = if let Ok(output) = AsyncCommand::new("sw_vers")
-            .args(&["-productVersion"])
-            .bounded_output()
-            .await
-        {
-            if output.status.success() {
-                Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        Ok((os_name, os_version))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // Get Windows version from ver command or registry
-        let os_name = Some("Windows".to_string());
-        let os_version = if let Ok(output) = AsyncCommand::new("cmd")
-            .args(&["/c", "ver"])
-            .bounded_output()
-            .await
-        {
-            if output.status.success() {
-                let version_str = String::from_utf8_lossy(&output.stdout);
-                // Extract version number from output like "Microsoft Windows [Version 10.0.19041.1234]"
-                if let Some(start) = version_str.find("Version ") {
-                    let version_part = &version_str[start + 8..];
-                    if let Some(end) = version_part.find(']') {
-                        Some(version_part[..end].trim().to_string())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        Ok((os_name, os_version))
-    }
-
-    #[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
-    {
-        // BSD systems
-        if let Ok(output) = AsyncCommand::new("uname")
-            .args(&["-s"])
-            .bounded_output()
-            .await
-        {
-            if output.status.success() {
-                let os_name = Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
-
-                // Get version
-                let os_version = if let Ok(version_output) = AsyncCommand::new("uname")
-                    .args(&["-r"])
-                    .bounded_output()
-                    .await
-                {
-                    if version_output.status.success() {
-                        Some(
-                            String::from_utf8_lossy(&version_output.stdout)
-                                .trim()
-                                .to_string(),
-                        )
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                return Ok((os_name, os_version));
-            }
-        }
-
-        Ok((None, None))
-    }
-
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    )))]
-    {
-        Ok((None, None))
-    }
-}
-
-/// Detect kernel version
-async fn detect_kernel_version() -> Option<String> {
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    ))]
-    {
-        if let Ok(output) = AsyncCommand::new("uname")
-            .args(&["-r"])
-            .bounded_output()
-            .await
-        {
-            if output.status.success() {
-                return Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
-            }
-        }
-        None
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // Windows kernel version is typically the same as OS version
-        // Get from wmic or systeminfo
-        if let Ok(output) = AsyncCommand::new("cmd")
-            .args(&["/c", "ver"])
-            .bounded_output()
-            .await
-        {
-            if output.status.success() {
-                let version_str = String::from_utf8_lossy(&output.stdout);
-                if let Some(start) = version_str.find("Version ") {
-                    let version_part = &version_str[start + 8..];
-                    if let Some(end) = version_part.find(']') {
-                        return Some(version_part[..end].trim().to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    )))]
-    {
-        None
     }
 }
 
@@ -9551,7 +9210,6 @@ mod tests {
             include_files: false,
             include_repo: true,
             timeout_ms: 5000,
-            extra_args: None,
             env: None,
         };
 
@@ -9578,7 +9236,6 @@ mod tests {
             include_files: false,
             include_repo: true,
             timeout_ms: 5000,
-            extra_args: None,
             env: None,
         };
 
@@ -9605,7 +9262,6 @@ mod tests {
             include_files: false,
             include_repo: true,
             timeout_ms: 0, // Invalid timeout
-            extra_args: None,
             env: None,
         };
 
@@ -9616,33 +9272,6 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("timeout_ms must be greater than 0")
-        );
-    }
-
-    #[test]
-    fn test_info_config_validation_empty_extra_args() {
-        let handle = PkgHandle {
-            alias: "test".to_string(),
-        };
-        let config = InfoConfig {
-            manager: ManagerKind::Auto,
-            packages: vec!["curl".to_string()],
-            include_dependencies: false,
-            include_reverse_deps: false,
-            include_files: false,
-            include_repo: true,
-            timeout_ms: 5000,
-            extra_args: Some(vec!["--quiet".to_string(), "".to_string()]), // Empty argument
-            env: None,
-        };
-
-        let result = handle.validate_info_config(&config);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("extra_args cannot contain empty strings")
         );
     }
 
@@ -9659,7 +9288,6 @@ mod tests {
             include_files: true,
             include_repo: true,
             timeout_ms: 5000,
-            extra_args: Some(vec!["--quiet".to_string()]),
             env: Some(
                 [("DEBIAN_FRONTEND".to_string(), "noninteractive".to_string())]
                     .into_iter()
@@ -10117,7 +9745,6 @@ mod tests {
             exclude_patterns: vec![],
             format: SnapshotFormat::Json,
             timeout_ms: 0, // Invalid
-            extra_args: None,
             env: None,
         };
 
@@ -10147,42 +9774,11 @@ mod tests {
             exclude_patterns: vec![],
             format: SnapshotFormat::Json,
             timeout_ms: 15000,
-            extra_args: None,
             env: None,
         };
 
         let result = handle.validate_snapshot_config(&config);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_snapshot_config_validation_invalid_extra_args() {
-        let handle = PkgHandle {
-            alias: "test".to_string(),
-        };
-        let config = SnapshotConfig {
-            manager: ManagerKind::Apt,
-            scope: SnapshotScope::All,
-            include_versions: SnapshotVersionMode::Exact,
-            include_repo: true,
-            include_arch: true,
-            include_install_reason: true,
-            include_os_metadata: true,
-            exclude_patterns: vec![],
-            format: SnapshotFormat::Json,
-            timeout_ms: 15000,
-            extra_args: Some(vec!["valid".to_string(), "".to_string()]), // Empty string invalid
-            env: None,
-        };
-
-        let result = handle.validate_snapshot_config(&config);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("extra_args cannot contain empty strings")
-        );
     }
 
     #[test]
@@ -10222,7 +9818,6 @@ mod tests {
             exclude_patterns: vec![],
             format: SnapshotFormat::Json,
             timeout_ms: 15000,
-            extra_args: None,
             env: None,
         };
 
@@ -10268,7 +9863,6 @@ mod tests {
             exclude_patterns: vec![],
             format: SnapshotFormat::Json,
             timeout_ms: 15000,
-            extra_args: None,
             env: None,
         };
 
@@ -10772,134 +10366,18 @@ mod tests {
 
         let commands = handle.generate_restore_commands(&plan, &ManagerKind::Apt, &config);
 
-        // Should have install/upgrade command, downgrade command, and remove command
-        assert!(commands.len() >= 2);
-
-        // Check install/upgrade command
-        let install_cmd = &commands[0];
-        assert!(install_cmd.starts_with("apt-get install -y"));
-        assert!(install_cmd.contains("curl"));
-        assert!(install_cmd.contains("git"));
-        assert!(install_cmd.contains("vim"));
-
-        // Check for downgrade command
-        let downgrade_cmd = commands.iter().find(|c| c.contains("--allow-downgrades"));
-        assert!(downgrade_cmd.is_some());
-        assert!(downgrade_cmd.unwrap().contains("nginx"));
-
-        // Check for remove command
-        let remove_cmd = commands.iter().find(|c| c.contains("apt-get remove"));
-        assert!(remove_cmd.is_some());
-        assert!(remove_cmd.unwrap().contains("htop"));
-    }
-
-    // Platform detection tests
-    #[test]
-    fn test_detect_os_family() {
-        let os_family = detect_os_family();
-        // Should return one of the known OS families or "unknown"
-        assert!(
-            os_family == "linux"
-                || os_family == "darwin"
-                || os_family == "windows"
-                || os_family == "freebsd"
-                || os_family == "openbsd"
-                || os_family == "netbsd"
-                || os_family == "unknown",
-            "Unexpected OS family: {}",
-            os_family
+        // One command per package, in order: installs, upgrades,
+        // downgrades, removals (no versions in this plan's empty lockfile).
+        assert_eq!(
+            commands,
+            [
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y curl",
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y git",
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y vim",
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades nginx",
+                "DEBIAN_FRONTEND=noninteractive apt-get remove -y htop",
+            ]
         );
-
-        // On Linux systems, should return "linux"
-        #[cfg(target_os = "linux")]
-        assert_eq!(os_family, "linux", "Expected linux OS family");
-
-        // On macOS, should return "darwin"
-        #[cfg(target_os = "macos")]
-        assert_eq!(os_family, "darwin", "Expected darwin OS family");
-
-        // On Windows, should return "windows"
-        #[cfg(target_os = "windows")]
-        assert_eq!(os_family, "windows", "Expected windows OS family");
-    }
-
-    #[test]
-    fn test_detect_architecture() {
-        let arch = detect_architecture();
-        // Should return one of the known architectures or "unknown"
-        assert!(
-            arch == "x86_64"
-                || arch == "x86"
-                || arch == "aarch64"
-                || arch == "arm"
-                || arch == "riscv64"
-                || arch == "powerpc64"
-                || arch == "s390x"
-                || arch == "unknown",
-            "Unexpected architecture: {}",
-            arch
-        );
-
-        // Most modern systems are x86_64 or aarch64
-        #[cfg(target_arch = "x86_64")]
-        assert_eq!(arch, "x86_64", "Expected x86_64 architecture");
-
-        #[cfg(target_arch = "aarch64")]
-        assert_eq!(arch, "aarch64", "Expected aarch64 architecture");
-    }
-
-    #[tokio::test]
-    async fn test_detect_os_name_and_version() {
-        let result = detect_os_name_and_version().await;
-        assert!(
-            result.is_ok(),
-            "detect_os_name_and_version should not error"
-        );
-
-        let (os_name, _os_version) = result.unwrap();
-
-        // On Linux, we should at least get an OS name
-        #[cfg(target_os = "linux")]
-        {
-            assert!(os_name.is_some(), "Linux should have an OS name");
-            let name = os_name.unwrap();
-            assert!(!name.is_empty(), "OS name should not be empty");
-        }
-
-        // On macOS, we should get "macOS"
-        #[cfg(target_os = "macos")]
-        {
-            assert!(os_name.is_some(), "macOS should have an OS name");
-            assert_eq!(os_name.unwrap(), "macOS", "Expected macOS name");
-            // Version is optional but usually available
-        }
-
-        // On Windows, we should get "Windows"
-        #[cfg(target_os = "windows")]
-        {
-            assert!(os_name.is_some(), "Windows should have an OS name");
-            assert_eq!(os_name.unwrap(), "Windows", "Expected Windows name");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_detect_kernel_version() {
-        let kernel = detect_kernel_version().await;
-
-        // On Unix-like systems, kernel version should be available
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-        {
-            // Kernel version might not be available in all test environments
-            // but if it is, it should not be empty
-            if let Some(version) = kernel {
-                assert!(!version.is_empty(), "Kernel version should not be empty");
-                // Should contain at least one digit
-                assert!(
-                    version.chars().any(|c| c.is_ascii_digit()),
-                    "Kernel version should contain digits"
-                );
-            }
-        }
     }
 
     #[test]
@@ -10984,6 +10462,21 @@ mod tests {
 // SEC-04: package-manager commands run without a shell. Nothing here
 // invokes a real package manager; execution is checked with a mock
 // executable inside a temporary directory.
+/// Splits `apt-cache policy` output for several packages into (package,
+/// section) pairs: each section starts with a `<name>:` line at column 0.
+fn apt_policy_sections(policy: &str) -> Vec<(String, String)> {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    for line in policy.lines() {
+        if !line.starts_with(char::is_whitespace) && line.ends_with(':') && !line.is_empty() {
+            sections.push((line[..line.len() - 1].to_string(), String::new()));
+        } else if let Some((_, text)) = sections.last_mut() {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    sections
+}
+
 /// The repository of the installed version in `apt-cache policy <name>`
 /// output, as `<suite>/<component>` (e.g. `noble/main`) or, for a flat
 /// repository, its path (e.g. `./`).
@@ -11028,29 +10521,6 @@ fn apt_policy_installed_repository(policy: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Keys that `snapshot` used to accept without any effect and now refuses,
-/// so a request that relies on one fails instead of being silently ignored.
-const SNAPSHOT_REMOVED_KEYS: &[&str] = &["inline"];
-
-/// Refuses removed `snapshot` keys before anything runs. Malformed JSON is
-/// left to the normal parse, which reports it.
-fn check_snapshot_input(config_json: &str) -> Result<(), PkgError> {
-    let Ok(Value::Object(input)) = serde_json::from_str::<Value>(config_json) else {
-        return Ok(());
-    };
-    match SNAPSHOT_REMOVED_KEYS
-        .iter()
-        .find(|k| input.contains_key(**k))
-    {
-        Some(key) => Err(PkgError::InvalidSnapshotConfig(format!(
-            "{} is not supported (the lockfile is always returned in the lockfile field); \
-             remove it from the request; nothing was run",
-            key
-        ))),
-        None => Ok(()),
-    }
 }
 
 /// `list_installed` with `include_versions: false`: every result keeps its
@@ -11200,10 +10670,52 @@ fn repo_mismatch_warnings(
     Ok(warnings)
 }
 
-/// The exit status for a mutating verb's result: a failure when any package
-/// operation failed (`summary.failed > 0`) or the summary says
-/// `success: false`, even if other packages succeeded.
+/// The exit status for a verb's printed result. A mutating verb fails
+/// (`pkg.partial_failure`, exit 1) when any package operation failed
+/// (`summary.failed > 0`), the summary says `success: false`, or the
+/// autoremove step failed, even if other packages succeeded. `info` fails
+/// (`pkg.not_found`) when a requested package is unknown to the manager.
 fn result_status(verb: &str, result: &Value) -> Status {
+    use crate::core::status::exit::FAILED;
+    if verb == "info" {
+        let packages = || {
+            result
+                .get("packages")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        };
+        let query_failed = packages()
+            .filter(|p| p.pointer("/raw/error").is_some())
+            .count();
+        if query_failed > 0 {
+            return Status::coded(
+                FAILED,
+                "pkg.partial_failure",
+                format!("pkg info: {query_failed} package queries failed (see raw.error)"),
+            );
+        }
+        let missing: Vec<String> = result
+            .get("packages")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|p| p.get("found") == Some(&Value::Bool(false)))
+            .filter_map(|p| p.get("name").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        if missing.is_empty() {
+            return Status::success();
+        }
+        return Status::coded(
+            FAILED,
+            "pkg.not_found",
+            format!(
+                "pkg info: {} package(s) not found: {}",
+                missing.len(),
+                name_list(&missing)
+            ),
+        );
+    }
     let summary = result.get("summary");
     let failed = summary
         .and_then(|s| s.get("failed"))
@@ -11213,7 +10725,8 @@ fn result_status(verb: &str, result: &Value) -> Status {
         .and_then(|s| s.get("success"))
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    if failed == 0 && success {
+    let autoremove = result.get("autoremove_error");
+    if failed == 0 && success && autoremove.is_none() {
         return Status::success();
     }
     let total = result
@@ -11221,11 +10734,15 @@ fn result_status(verb: &str, result: &Value) -> Status {
         .and_then(Value::as_array)
         .map(Vec::len);
     let reason = match (failed, total) {
+        (0, _) if autoremove.is_some() => format!(
+            "pkg {}: the packages were removed but removing unused dependencies failed",
+            verb
+        ),
         (0, _) => format!("pkg {}: operation did not complete successfully", verb),
         (n, Some(t)) => format!("pkg {}: {} of {} package operations failed", verb, n, t),
         (n, None) => format!("pkg {}: {} package operations failed", verb, n),
     };
-    Status::err(1, reason)
+    Status::coded(FAILED, "pkg.partial_failure", reason)
 }
 
 #[cfg(test)]
@@ -11246,7 +10763,7 @@ mod result_status_tests {
         assert_eq!(st.exit_code(), 1);
         assert_eq!(
             st.reason.as_deref(),
-            Some("pkg install: 1 of 2 package operations failed")
+            Some("[pkg.partial_failure] pkg install: 1 of 2 package operations failed")
         );
 
         let restore = json!({"summary": {"failed": 0, "success": false, "unresolved": 2}});
@@ -11486,10 +11003,8 @@ mod cmdline_safety_tests {
                     stdout: &mut o,
                     stderr: &mut e,
                 };
-                assert!(
-                    handle().call(verb, &args, &mut io).is_err(),
-                    "{verb} {name}"
-                );
+                let status = handle().call(verb, &args, &mut io).unwrap();
+                assert_eq!(status.exit_code(), 2, "{verb} {name}");
             }
             for verb in ["update", "upgrade"] {
                 let input = json!({"manager": "apt", "dry_run": true, "packages": [name]});
@@ -11501,10 +11016,8 @@ mod cmdline_safety_tests {
                     stdout: &mut o,
                     stderr: &mut e,
                 };
-                assert!(
-                    handle().call(verb, &args, &mut io).is_err(),
-                    "{verb} {name}"
-                );
+                let status = handle().call(verb, &args, &mut io).unwrap();
+                assert_eq!(status.exit_code(), 2, "{verb} {name}");
             }
         }
         assert!(!sentinel.exists());
@@ -11519,12 +11032,12 @@ mod cmdline_safety_tests {
             "Dpkg::Options::=--force-confold".into(),
             "$(touch X); a b".into(),
         ]);
-        let cmd = rt()
-            .block_on(handle().build_install_command(&c, &ManagerKind::Apt))
+        let cmd = handle()
+            .build_install_command(&c, &c.packages[0], &ManagerKind::Apt, InstallStep::Install)
             .unwrap();
         assert_eq!(
             cmd.to_string(),
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y jq=1.6-2:amd64 -o Dpkg::Options::=--force-confold $(touch X); a b"
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y jq:amd64=1.6-2 -o Dpkg::Options::=--force-confold $(touch X); a b"
         );
         assert_eq!(
             cmd.argv(),
@@ -11532,7 +11045,7 @@ mod cmdline_safety_tests {
                 "apt-get",
                 "install",
                 "-y",
-                "jq=1.6-2:amd64",
+                "jq:amd64=1.6-2",
                 "-o",
                 "Dpkg::Options::=--force-confold",
                 "$(touch X); a b",
@@ -11587,8 +11100,14 @@ mod cmdline_safety_tests {
         assert_eq!(
             h.build_autoremove_command(&ManagerKind::Dnf)
                 .unwrap()
+                .unwrap()
                 .argv(),
             &["dnf", "autoremove", "-y"]
+        );
+        assert!(
+            h.build_autoremove_command(&ManagerKind::Apk)
+                .unwrap()
+                .is_none()
         );
 
         let uc = UpgradeConfig {
@@ -11608,14 +11127,22 @@ mod cmdline_safety_tests {
             .unwrap();
         assert_eq!(
             cmd.to_string(),
-            "dnf upgrade jq curl -y --security --setopt=x=1"
+            "dnf upgrade -y --security jq curl --setopt=x=1"
         );
         let cmd = rt()
             .block_on(h.build_upgrade_command_for_execution(&uc, &ManagerKind::Apt, &[]))
             .unwrap();
         assert_eq!(
             cmd.argv(),
-            &["apt-get", "install", "-y", "jq", "curl", "--setopt=x=1"]
+            &[
+                "apt-get",
+                "install",
+                "--only-upgrade",
+                "-y",
+                "jq",
+                "curl",
+                "--setopt=x=1"
+            ]
         );
 
         let (cmd, ignore, skip) = h
@@ -11698,10 +11225,15 @@ mod cmdline_safety_tests {
                 stdout: &mut o,
                 stderr: &mut e,
             };
-            handle()
+            let status = handle()
                 .call(verb, &args, &mut io)
-                .map(|s| s.ok)
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            if status.ok {
+                Ok(true)
+            } else {
+                assert_eq!(status.exit_code(), 2, "{:?}", status.reason);
+                Err(status.reason.unwrap_or_default())
+            }
         };
         let unsupported = [
             ("update", vec!["apt", "pacman", "apk", "brew"]),
@@ -11992,43 +11524,73 @@ mod option_tests {
 mod apt_policy_and_snapshot_tests {
     use super::*;
 
-    // `apt-cache policy` output in the layout apt 2.x prints (Ubuntu 24.04
-    // and Debian 12 style). Transcribed, since no apt runs where these
-    // tests were written.
+    // Real `apt-cache policy` output, captured in throwaway containers
+    // (ubuntu:24.04 with apt 2.8.4, debian:12-slim with apt 2.6.2,
+    // debian:13-slim with apt 3.0.4). The versions came from the archives at
+    // the time; the layout is what the parser depends on.
 
-    /// Installed from noble/main; a newer candidate in noble-updates.
-    const POLICY_UPDATES: &str = "nginx:
-  Installed: 1.24.0-2ubuntu7
-  Candidate: 1.24.0-2ubuntu7.1
+    /// Ubuntu 24.04, curl installed from noble/main with a newer candidate in
+    /// noble-updates and noble-security.
+    const POLICY_UPDATES: &str = "curl:
+  Installed: 8.5.0-2ubuntu10
+  Candidate: 8.5.0-2ubuntu10.16
   Version table:
-     1.24.0-2ubuntu7.1 500
+     8.5.0-2ubuntu10.16 500
         500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
         500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
- *** 1.24.0-2ubuntu7 500
+ *** 8.5.0-2ubuntu10 500
         500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
         100 /var/lib/dpkg/status
 ";
 
-    /// Installed version is the newest; the status line comes first.
-    const POLICY_CURRENT: &str = "curl:
+    /// Debian 12, curl installed from bookworm-security with a newer
+    /// candidate in bookworm/main.
+    const POLICY_SECURITY: &str = "curl:
   Installed: 7.88.1-10+deb12u5
-  Candidate: 7.88.1-10+deb12u5
+  Candidate: 7.88.1-10+deb12u15
   Version table:
- *** 7.88.1-10+deb12u5 500
-        100 /var/lib/dpkg/status
+     7.88.1-10+deb12u15 500
         500 http://deb.debian.org/debian bookworm/main amd64 Packages
-";
-
-    /// Installed from a local .deb: only the dpkg status file.
-    const POLICY_LOCAL: &str = "mytool:
-  Installed: 0.3.1
-  Candidate: 0.3.1
-  Version table:
- *** 0.3.1 100
+ *** 7.88.1-10+deb12u5 500
+        500 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages
         100 /var/lib/dpkg/status
 ";
 
-    /// Installed from a flat repository, with an epoch in the version.
+    /// Debian 12, the installed version is the candidate; an older version
+    /// follows the installed one.
+    const POLICY_CURRENT: &str = "libc6:
+  Installed: 2.36-9+deb12u14
+  Candidate: 2.36-9+deb12u14
+  Version table:
+ *** 2.36-9+deb12u14 500
+        500 http://deb.debian.org/debian bookworm/main amd64 Packages
+        100 /var/lib/dpkg/status
+     2.36-9+deb12u7 500
+        500 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages
+";
+
+    /// Debian 13, the installed version is no longer in any repository.
+    const POLICY_GONE: &str = "libc6:
+  Installed: 2.41-12+deb13u3
+  Candidate: 2.41-12+deb13u4
+  Version table:
+     2.41-12+deb13u4 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
+ *** 2.41-12+deb13u3 100
+        100 /var/lib/dpkg/status
+";
+
+    /// Installed from a local .deb (Ubuntu 24.04): only the dpkg status file.
+    const POLICY_LOCAL: &str = "vendor-agent:
+  Installed: 2:4.1-1
+  Candidate: 2:4.1-1
+  Version table:
+ *** 2:4.1-1 100
+        100 /var/lib/dpkg/status
+";
+
+    /// Installed from a flat `file:` repository, with an epoch in the
+    /// version (the same on all three releases).
     const POLICY_FLAT: &str = "vendor-agent:
   Installed: 2:4.1-1
   Candidate: 2:4.1-1
@@ -12038,13 +11600,15 @@ mod apt_policy_and_snapshot_tests {
         100 /var/lib/dpkg/status
 ";
 
-    /// Not installed.
+    /// Not installed (Debian 13).
     const POLICY_NOT_INSTALLED: &str = "jq:
   Installed: (none)
-  Candidate: 1.7.1-3build1
+  Candidate: 1.7.1-6+deb13u4
   Version table:
-     1.7.1-3build1 500
-        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+     1.7.1-6+deb13u4 500
+        500 http://deb.debian.org/debian-security trixie-security/main amd64 Packages
+     1.7.1-6+deb13u3 500
+        500 http://deb.debian.org/debian trixie/main amd64 Packages
 ";
 
     #[test]
@@ -12054,6 +11618,10 @@ mod apt_policy_and_snapshot_tests {
             Some("noble/main")
         );
         assert_eq!(
+            apt_policy_installed_repository(POLICY_SECURITY).as_deref(),
+            Some("bookworm-security/main")
+        );
+        assert_eq!(
             apt_policy_installed_repository(POLICY_CURRENT).as_deref(),
             Some("bookworm/main")
         );
@@ -12061,11 +11629,12 @@ mod apt_policy_and_snapshot_tests {
             apt_policy_installed_repository(POLICY_FLAT).as_deref(),
             Some("./")
         );
+        assert_eq!(apt_policy_installed_repository(POLICY_GONE), None);
         assert_eq!(apt_policy_installed_repository(POLICY_LOCAL), None);
         assert_eq!(apt_policy_installed_repository(POLICY_NOT_INSTALLED), None);
         assert_eq!(apt_policy_installed_repository(""), None);
         // Never the priority, which the old parser returned.
-        for policy in [POLICY_UPDATES, POLICY_CURRENT, POLICY_FLAT] {
+        for policy in [POLICY_UPDATES, POLICY_SECURITY, POLICY_CURRENT, POLICY_FLAT] {
             assert_ne!(
                 apt_policy_installed_repository(policy).as_deref(),
                 Some("500")
@@ -12073,38 +11642,53 @@ mod apt_policy_and_snapshot_tests {
         }
     }
 
+    /// `apt-cache policy a b c` prints the sections one after another; an
+    /// unknown package prints nothing.
+    #[test]
+    fn apt_policy_sections_split_a_batched_query() {
+        let batched = format!("{POLICY_UPDATES}{POLICY_LOCAL}{POLICY_NOT_INSTALLED}");
+        let sections = apt_policy_sections(&batched);
+        let names: Vec<&str> = sections.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["curl", "vendor-agent", "jq"]);
+        let repos: Vec<Option<String>> = sections
+            .iter()
+            .map(|(_, s)| apt_policy_installed_repository(s))
+            .collect();
+        assert_eq!(repos, [Some("noble/main".to_string()), None, None]);
+    }
+
     #[test]
     fn snapshot_refuses_inline_before_anything_runs() {
-        for input in [
-            r#"{"manager":"apt","inline":true}"#,
-            r#"{"manager":"apt","inline":false}"#,
-        ] {
-            let err = check_snapshot_input(input).unwrap_err();
-            assert!(matches!(err, PkgError::InvalidSnapshotConfig(_)));
-            assert!(err.to_string().contains("inline is not supported"), "{err}");
-        }
-        assert!(check_snapshot_input(r#"{"manager":"apt"}"#).is_ok());
-        // Through the verb: refused with the snapshot error, no manager
-        // lookup (an unknown manager binary would otherwise fail later).
         let handle = PkgHandle {
             alias: "system".into(),
         };
-        let mut args = Args::new();
-        args.insert("input".into(), r#"{"manager":"brew","inline":true}"#.into());
-        let mut i: &[u8] = &[];
-        let (mut o, mut e) = (Vec::new(), Vec::new());
-        let mut io = IoStreams {
-            stdin: &mut i,
-            stdout: &mut o,
-            stderr: &mut e,
-        };
-        let status = handle.call("snapshot", &args, &mut io).unwrap();
-        assert_eq!(status.exit_code(), 2);
-        let reason = status.reason.unwrap_or_default();
-        assert!(
-            reason.starts_with("Invalid snapshot configuration: inline is not supported"),
-            "{reason}"
-        );
-        assert!(o.is_empty());
+        for input in [
+            r#"{"manager":"brew","inline":true}"#,
+            r#"{"manager":"brew","inline":false}"#,
+        ] {
+            let mut args = Args::new();
+            args.insert("input".into(), input.into());
+            let mut i: &[u8] = &[];
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let mut io = IoStreams {
+                stdin: &mut i,
+                stdout: &mut o,
+                stderr: &mut e,
+            };
+            // Refused before the manager is looked up (brew is not installed
+            // here, which would otherwise fail later with exit 1).
+            let status = handle.call("snapshot", &args, &mut io).unwrap();
+            assert_eq!(status.exit_code(), 2);
+            let reason = status.reason.unwrap_or_default();
+            assert!(
+                reason.starts_with("[pkg.invalid_argument] inline is not supported"),
+                "{reason}"
+            );
+            assert!(o.is_empty());
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "pkg_tests.rs"]
+mod pkg_tests;

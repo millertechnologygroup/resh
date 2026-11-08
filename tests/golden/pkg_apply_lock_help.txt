@@ -1,0 +1,10 @@
+Handle: pkg
+Verb: apply_lock
+Definition: Alias for restore.
+
+Usage:
+  resh pkg://<alias>.apply_lock input=<json>
+    <json> keys: the same as restore
+
+Example:
+  resh pkg://system.apply_lock "input=$(cat restore.json)"

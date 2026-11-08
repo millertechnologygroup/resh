@@ -1,0 +1,39 @@
+Handle: pkg
+Verb: upgrade
+Definition: Upgrades all or the listed packages to their latest available
+  versions, or only reports available upgrades when check_only is set.
+
+Usage:
+  resh pkg://<alias>.upgrade input=<json>
+    <json> keys: manager (required), packages, refresh_index,
+    assume_yes, security_only, check_only, dry_run, timeout_ms
+    (default 900000), extra_args, env
+    security_only works with dnf only; elsewhere it is refused
+
+Example:
+  resh pkg://system.upgrade 'input={"manager":"apt","check_only":true}'
+
+Example Output:
+  {
+    "alias": "system",
+    "available_upgrades": [
+      {
+        "candidate_version": "1.24.0-2ubuntu7.1",
+        "current_version": "1.24.0-2ubuntu7",
+        "name": "nginx",
+        "security": true
+      }
+    ],
+    "backend": "pkg",
+    "check_only": true,
+    "commands": [
+      "apt-get update"
+    ],
+    "dry_run": false,
+    "manager": "apt",
+    "packages_scope": "all",
+    "refresh_index": true
+  }
+
+  Shown for apt with check_only. A real upgrade reports packages and summary
+  instead of available_upgrades and commands.

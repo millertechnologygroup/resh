@@ -1,0 +1,44 @@
+Handle: pkg
+Verb: remove
+Definition: Removes packages, optionally purging configuration and removing
+  unused dependencies.
+
+Usage:
+  resh pkg://<alias>.remove input=<json>
+    <json> keys: manager, packages (both required), purge, recursive,
+    assume_yes, only_if_installed, fail_if_missing, dry_run,
+    timeout_ms (default 600000), arch, extra_args, env
+    Each package is {name, version}; a package with source is refused
+    purge: apt, apk, pacman; version and arch: apt, dnf, yum
+
+Example:
+  resh pkg://system.remove 'input={"manager":"apt","packages":[{"name":"jq"}]}'
+
+Example Output:
+  {
+    "alias": "system",
+    "backend": "pkg",
+    "dry_run": false,
+    "manager": "apt",
+    "packages": [
+      {
+        "action": "removed",
+        "from_cache": false,
+        "installed_version": "1.7.1-3build1",
+        "name": "jq",
+        "requested_version": null
+      }
+    ],
+    "purge": false,
+    "recursive": false,
+    "summary": {
+      "autoremove_run": false,
+      "failed": 0,
+      "not_installed": 0,
+      "purged": 0,
+      "removed": 1,
+      "skipped": 0
+    }
+  }
+
+  Shown for apt.

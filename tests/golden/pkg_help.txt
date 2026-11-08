@@ -1,0 +1,37 @@
+Handle: pkg
+
+Description:
+  The pkg handle installs, removes, updates, queries, and snapshots system
+  packages through the host's package manager, supporting apt, dnf, yum, pacman,
+  apk, and brew. Every verb requires an input argument holding one JSON object,
+  whose manager key names the backend or is auto to detect it. The URL host is a
+  free-form alias, such as pkg://system, that is echoed in the output.
+
+Available Verbs:
+  info             Reports details for named packages, such as installed and
+                   candidate versions, summary, homepage, and repository.
+  search           Searches the package index by name or description and returns
+                   paginated matches with versions and installed state.
+  list_installed   Lists installed packages with their versions, optionally
+                   filtered by name prefix or substring and paginated.
+  snapshot         Captures the installed package set as a pkg-lock/v1 lockfile
+                   in JSON, YAML, or text form, along with parsed metadata.
+  install          Installs packages, refreshing the package index first and
+                   skipping packages that are already installed by default.
+  remove           Removes packages, optionally purging configuration and
+                   removing unused dependencies.
+  update           Refreshes the package index and, by default, upgrades all or
+                   the listed packages, or only reports available updates when
+                   check_only is set.
+  upgrade          Upgrades all or the listed packages to their latest available
+                   versions, or only reports available upgrades when check_only
+                   is set.
+  restore          Installs, upgrades, downgrades, or removes packages so the
+                   host matches a lockfile produced by snapshot.
+  apply_lock       Alias for restore.
+
+Usage:
+  resh pkg://<alias>.<verb> input=<json>
+
+For help with a specific verb:
+  resh pkg <verb> --help

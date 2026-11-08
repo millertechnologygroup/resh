@@ -1,0 +1,38 @@
+Handle: pkg
+Verb: info
+Definition: Reports details for named packages, such as installed and candidate
+  versions, summary, homepage, and repository.
+
+Usage:
+  resh pkg://<alias>.info input=<json>
+    <json> keys: manager, packages (both required; package names),
+    include_dependencies, include_reverse_deps, include_files,
+    include_repo (default true; false sets repository to null),
+    timeout_ms (default 5000), env
+    An unknown package is reported with found false and exit 1
+
+Example:
+  resh pkg://system.info 'input={"manager":"apt","packages":["nginx"]}'
+
+Example Output:
+  {
+    "alias": "system",
+    "backend": "pkg",
+    "manager": "apt",
+    "packages": [
+      {
+        "architecture": "amd64",
+        "candidate_version": "1.24.0-2ubuntu7",
+        "description": "Nginx is a web server and reverse proxy.",
+        "found": true,
+        "homepage": "https://nginx.org",
+        "installed": true,
+        "installed_version": "1.24.0-2ubuntu7",
+        "license": null,
+        "repository": "http://archive.ubuntu.com/ubuntu",
+        "summary": "small, powerful, scalable web/proxy server"
+      }
+    ]
+  }
+
+  Shown for apt. Other managers fill different subsets of these fields.

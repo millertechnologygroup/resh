@@ -1,0 +1,45 @@
+Handle: pkg
+Verb: search
+Definition: Searches the package index by name or description and returns
+  paginated matches with versions and installed state.
+
+Usage:
+  resh pkg://<alias>.search input=<json>
+    <json> keys: manager, query (both required), search_in
+    (name|description|all), exact, case_sensitive, limit (default 50),
+    offset, include_installed, include_versions, include_repo,
+    timeout_ms (default 5000), extra_args, env
+
+Example:
+  resh pkg://system.search 'input={"manager":"apt","query":"nginx","limit":1}'
+
+Example Output:
+  {
+    "alias": "system",
+    "backend": "pkg",
+    "case_sensitive": false,
+    "exact": false,
+    "limit": 1,
+    "manager": "apt",
+    "offset": 0,
+    "query": "nginx",
+    "results": [
+      {
+        "description": null,
+        "homepage": "https://nginx.org",
+        "installed": true,
+        "name": "nginx",
+        "repository": "main",
+        "score": 1.0,
+        "summary": "small, powerful, scalable web/proxy server",
+        "version": "1.24.0-2ubuntu7"
+      }
+    ],
+    "search_in": [
+      "name",
+      "description"
+    ],
+    "total_matches": 12
+  }
+
+  Shown for apt.

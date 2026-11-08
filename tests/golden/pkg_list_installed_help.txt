@@ -1,0 +1,37 @@
+Handle: pkg
+Verb: list_installed
+Definition: Lists installed packages with their versions, optionally filtered by
+  name prefix or substring and paginated.
+
+Usage:
+  resh pkg://<alias>.list_installed input=<json>
+    <json> keys: manager (required), filter, prefix, include_versions
+    (default true; false sets version to null), include_repo,
+    include_size, include_install_reason, limit (default 500), offset,
+    timeout_ms (default 600000), env
+
+Example:
+  resh pkg://system.list_installed 'input={"manager":"apt","prefix":"nginx"}'
+
+Example Output:
+  {
+    "alias": "system",
+    "backend": "pkg",
+    "limit": 500,
+    "manager": "apt",
+    "offset": 0,
+    "results": [
+      {
+        "architecture": "amd64",
+        "install_reason": null,
+        "installed_size_bytes": null,
+        "manager_specific": null,
+        "name": "nginx",
+        "repository": null,
+        "version": "1.24.0-2ubuntu7"
+      }
+    ],
+    "total_installed": 1
+  }
+
+  Shown for apt.

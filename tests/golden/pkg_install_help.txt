@@ -1,0 +1,44 @@
+Handle: pkg
+Verb: install
+Definition: Installs packages, refreshing the package index first and skipping
+  packages that are already installed by default.
+
+Usage:
+  resh pkg://<alias>.install input=<json>
+    <json> keys: manager, packages (both required; each package is
+    {name, version}), update_cache, assume_yes, only_if_missing,
+    reinstall, upgrade, dry_run, timeout_ms (default 600000), arch,
+    extra_args, env
+    version: apt, dnf, yum, apk; arch: apt, dnf, yum; elsewhere refused
+    A package source is not supported; a package with source is refused
+
+Example:
+  resh pkg://system.install 'input={"manager":"apt","packages":[{"name":"jq"}]}'
+
+Example Output:
+  {
+    "alias": "system",
+    "backend": "pkg",
+    "dry_run": false,
+    "manager": "apt",
+    "packages": [
+      {
+        "action": "installed",
+        "from_cache": false,
+        "installed_version": "1.7.1-3build1",
+        "name": "jq",
+        "requested_version": null
+      }
+    ],
+    "summary": {
+      "failed": 0,
+      "installed": 1,
+      "reinstalled": 0,
+      "unchanged": 0,
+      "upgraded": 0
+    },
+    "update_cache": true
+  }
+
+  Shown for apt. With dry_run true, the output lists commands and planned
+  actions instead.

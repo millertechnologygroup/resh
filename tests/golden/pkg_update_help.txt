@@ -1,0 +1,40 @@
+Handle: pkg
+Verb: update
+Definition: Refreshes the package index and, by default, upgrades all or the
+  listed packages, or only reports available updates when check_only is set.
+
+Usage:
+  resh pkg://<alias>.update input=<json>
+    <json> keys: manager (required), packages, refresh_index, upgrade,
+    assume_yes, security_only, check_only, dry_run, timeout_ms
+    (default 900000), extra_args, env
+    security_only works with dnf and yum only; elsewhere it is refused
+
+Example:
+  resh pkg://system.update 'input={"manager":"apt","check_only":true}'
+
+Example Output:
+  {
+    "alias": "system",
+    "available_updates": [
+      {
+        "candidate_version": "1.24.0-2ubuntu7.1",
+        "current_version": "1.24.0-2ubuntu7",
+        "name": "nginx",
+        "security": true
+      }
+    ],
+    "backend": "pkg",
+    "check_only": true,
+    "commands": [
+      "apt-get update"
+    ],
+    "dry_run": false,
+    "manager": "apt",
+    "packages_scope": "all",
+    "refresh_index": true,
+    "upgrade": true
+  }
+
+  Shown for apt with check_only. A real update reports packages and summary
+  instead of available_updates and commands.

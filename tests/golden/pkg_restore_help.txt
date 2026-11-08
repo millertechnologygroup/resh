@@ -1,0 +1,53 @@
+Handle: pkg
+Verb: restore
+Definition: Installs, upgrades, downgrades, or removes packages so the host
+  matches a lockfile produced by snapshot.
+
+Usage:
+  resh pkg://<alias>.restore input=<json>
+    <json> keys: manager, lockfile (both required; lockfile is the
+    lockfile content as a string), format (auto|json|yaml|text),
+    mode (exact|best_effort, default exact), allow_downgrades,
+    allow_removals, allow_newer, on_missing_package, on_repo_mismatch,
+    on_platform_mismatch, include_dependencies, dry_run, timeout_ms
+    (default 180000), extra_args, env
+    mode exact installs the locked versions (pacman: only the
+    repository version; brew: refused) and fails a package left at
+    another version; best_effort falls back to the repository version
+    on_repo_mismatch (fail|warn|ignore, default warn) compares each
+    locked repository with the installed package's repository;
+    include_dependencies (default true) false leaves packages the
+    lockfile records as dependencies out of the plan
+
+Example:
+  resh pkg://system.restore "input=$(cat restore.json)"
+
+Example Output:
+  {
+    "action": "restore",
+    "alias": "system",
+    "backend": "pkg",
+    "commands": [
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y jq=1.7.1-3build1"
+    ],
+    "dry_run": true,
+    "manager": "apt",
+    "mode": "exact",
+    "plan": {
+      "downgrade": [],
+      "extra": [],
+      "install": [
+        "jq"
+      ],
+      "keep": [
+        "nginx"
+      ],
+      "remove": [],
+      "unresolved": [],
+      "upgrade": []
+    },
+    "warnings": []
+  }
+
+  Shown for apt with dry_run true in restore.json. Without dry_run, the
+  output adds results and summary and omits commands.

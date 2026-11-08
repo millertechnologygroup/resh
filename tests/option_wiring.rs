@@ -31,7 +31,13 @@ esac
 exit 0
 "#;
 
+/// `dpkg-query -W -f=<fmt> <name>` (one package: its dpkg state and
+/// version) or `dpkg-query -W -f <fmt>` (every installed package).
 const FAKE_DPKG_QUERY: &str = r#"
+if [ "${2#-f=}" != "$2" ]; then
+  line=$(grep "^$3	" "$FAKE_PKG_DIR/installed") || exit 1
+  printf 'installed\t%s\n' "$(echo "$line" | cut -f2)"; exit 0
+fi
 cat "$FAKE_PKG_DIR/installed"
 "#;
 
@@ -46,12 +52,15 @@ printf 'Package: %s\nVersion: %s\nArchitecture: %s\n' "$2" "$(echo "$line" | cut
 /// from stable-updates/main, then the installed version (`***`) from the
 /// repository in $FAKE_PKG_DIR/repo_<name> (default stable/main), or only
 /// from the dpkg status file when $FAKE_PKG_DIR/local_<name> exists.
-/// `apt-cache show <name>` prints a minimal record.
+/// `apt-cache show <name>` prints a minimal record. `apt-cache policy` takes
+/// several names, as apt's does.
 const FAKE_APT_CACHE: &str = r#"
 name=$2
 case "$1" in
   show) printf 'Package: %s\nVersion: 2.0\nDescription: fake %s\n' "$name" "$name" ;;
   policy)
+    shift
+    for name in "$@"; do
     repo=stable/main
     [ -f "$FAKE_PKG_DIR/repo_$name" ] && repo=$(cat "$FAKE_PKG_DIR/repo_$name")
     printf '%s:\n  Installed: 1.0\n  Candidate: 2.0\n  Version table:\n' "$name"
@@ -59,7 +68,8 @@ case "$1" in
     printf ' *** 1.0 500\n'
     [ -f "$FAKE_PKG_DIR/local_$name" ] ||
       printf '        500 http://deb.example.org/debian %s amd64 Packages\n' "$repo"
-    printf '        100 /var/lib/dpkg/status\n' ;;
+    printf '        100 /var/lib/dpkg/status\n'
+    done ;;
 esac
 exit 0
 "#;
@@ -532,7 +542,9 @@ fn pkg_package_source_is_refused_before_anything_runs() {
                 None,
                 &[&format!("pkg://system.{verb}"), &format!("input={input}")],
             );
-            assert_eq!(r.code, 1, "{verb} dry={dry}: {}", r.stdout);
+            // A refused request: exit 2 (pkg.invalid_argument).
+            assert_eq!(r.code, 2, "{verb} dry={dry}: {}", r.stdout);
+            assert!(r.stderr.contains("[pkg.invalid_argument]"), "{}", r.stderr);
             assert!(r.stderr.contains("source="), "{}", r.stderr);
             assert!(f.calls_to("apt-get").is_empty(), "{verb} dry={dry}");
             assert!(f.calls_to("dpkg").is_empty(), "{verb} dry={dry}");
@@ -628,8 +640,8 @@ fn pkg_restore_on_repo_mismatch_warn_and_ignore() {
     }
     assert!(f.calls_to("apt-get").is_empty());
 
-    // ignore: no warnings, and no repository lookups beyond the two that
-    // listing the installed packages makes (curl, libssl).
+    // ignore: no warnings, and no repository lookups (listing the installed
+    // packages for the plan does not look up repositories).
     std::fs::remove_file(f.log()).unwrap();
     let r = restore(
         &f,
@@ -640,7 +652,7 @@ fn pkg_restore_on_repo_mismatch_warn_and_ignore() {
     assert_eq!(r.json["warnings"], json!([]));
     assert_eq!(
         f.calls_to("apt-cache").len(),
-        2,
+        0,
         "{:?}",
         f.calls_to("apt-cache")
     );
@@ -678,8 +690,14 @@ fn pkg_malformed_option_values_are_refused() {
             None,
             &[&format!("pkg://system.{verb}"), &format!("input={input}")],
         );
-        assert_eq!(r.code, 1, "{verb} {input}: {}", r.stdout);
-        assert!(r.stderr.contains("Invalid JSON"), "{verb}: {}", r.stderr);
+        // A refused request: exit 2, naming the key.
+        assert_eq!(r.code, 2, "{verb} {input}: {}", r.stdout);
+        assert!(
+            r.stderr
+                .contains("[pkg.invalid_argument] invalid value for `"),
+            "{verb}: {}",
+            r.stderr
+        );
     }
     for program in ["apt-get", "apt-cache", "apt-mark", "dpkg", "dpkg-query"] {
         assert!(f.calls_to(program).is_empty(), "{program} ran");
@@ -716,13 +734,20 @@ fn pkg_restore_include_dependencies() {
     assert_eq!(off["skipped_dependencies"], json!(["libdep", "libssl"]));
     assert!(f.calls_to("apt-get").is_empty());
 
-    // For real (the apt-get here is the fake): only `app` is installed.
+    // For real (the apt-get here is the fake): only `app` is installed. The
+    // fake installs nothing, so the check after the command reports that
+    // app is still missing (exit 1).
     let r = restore(
         &f,
         &lockfile,
         json!({ "on_repo_mismatch": "ignore", "include_dependencies": false }),
     );
-    assert_eq!(r.code, 0, "{} {}", r.stdout, r.stderr);
+    assert_eq!(r.code, 1, "{} {}", r.stdout, r.stderr);
+    assert!(r.stderr.contains("[pkg.partial_failure]"), "{}", r.stderr);
+    assert_eq!(
+        r.json["results"]["install"][0]["error"]["message"],
+        "Restore apply failed: app is not installed after the command"
+    );
     assert_eq!(
         f.calls_to("apt-get"),
         vec![vec!["apt-get", "install", "-y", "app"]]
@@ -935,7 +960,7 @@ fn pkg_snapshot_refuses_inline() {
         assert_eq!(r.code, 2, "{}", r.stdout);
         assert!(
             r.stderr
-                .contains("Invalid snapshot configuration: inline is not supported"),
+                .contains("[pkg.invalid_argument] inline is not supported"),
             "{}",
             r.stderr
         );
