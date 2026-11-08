@@ -14,7 +14,7 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
   1 failed, 2 invalid usage (nothing done), 124 timeout or unknown outcome.
   Errors raised before a handle runs use `resh.invalid_stage`,
   `resh.unknown_handle`, `<handle>.invalid_target` and
-  `<handle>.invalid_argument`. Handles not yet aligned (svc, cron,
+  `<handle>.invalid_argument`. Handles not yet aligned (cron,
   firewall, user, pkg, system, cert, backup, plugin) still print their own
   formats until they are.
 - Help: `-h` and `help` work like `--help`, and `resh help <handle> [verb]`;
@@ -221,6 +221,29 @@ Fixes and behavior changes since v1.0.6-beta, grouped by handle.
 - `io.peek` no longer falls back to /tmp, refuses FIFOs and directories
   without blocking, and sets `truncated` correctly.
 
+### svc
+
+- Every verb refuses unknown arguments and invalid values (exit 2,
+  `svc.invalid_argument`), takes `timeout_ms` (`stop`/`wait` keep the older
+  `timeout`) and exits 0/1/2/124 with `[svc.<code>]` errors; JSON results
+  carry an `error` object on failure. Breaking: an unknown verb, a bad
+  `count`, `state`, `lines` or `level` are now usage errors (exit 2); service
+  names may contain only letters, digits, `_`, `.`, `@`, `-` and `\`.
+- `start`, `stop`, `restart`, `reload` and `scale` wait for the systemd job
+  and report its result (`job_result`; a failed job exits 1,
+  `svc.job_failed`). At `timeout_ms` the job is cancelled and resh exits 124
+  (`job_canceled` says whether the cancel worked).
+- `enable` and `mask` reported a failure after succeeding (wrong D-Bus reply
+  types); fixed, and systemd is reloaded after unit-file changes.
+- `is-enabled` reports errors instead of `false`, and adds `unit_file_state`.
+- Without a reachable system bus, every verb uses `systemctl
+  --no-ask-password`. OpenRC refuses `mask`/`unmask`, `stop force=true` and
+  `logs since/until/level` (exit 2, `svc.unsupported`).
+- Remaining limits: for `Type=simple` units systemd reports a start job done
+  as soon as the process is forked; a job queued through `systemctl` (no
+  D-Bus) cannot be cancelled at the deadline (exit 124, outcome unknown);
+  OpenRC is tested only with fake tools.
+
 ### http and https
 
 - 4xx/5xx statuses exit 1 (`http.status_error`) on every verb; `timeout_ms`
@@ -363,22 +386,10 @@ nftables, iptables and ufw backends. No dependencies changed.
 
 Limitations that remain in v1.0.6-beta:
 
-- **Service start/restart report request acceptance, not confirmed readiness.**
-  `svc://<unit>.start` and `.restart` submit the job to the service manager
-  (systemd over D-Bus in `replace` mode) and report success when the job is
-  accepted, not when the unit is confirmed active; a job that later fails is
-  not reflected in that result. This is pre-existing (present in v1.0.5-beta
-  and earlier), is unchanged by this release, and is out of the hotfix's
-  scope. To confirm a service actually reached the desired state, follow a
-  `start`/`restart` with `svc://<unit>.status` or `svc://<unit>.wait`. A
-  corrective change is planned for a later release.
 - **firewalld** shares the validated field-acceptance path with nftables,
   iptables and ufw (so injection and numeric rejection apply equally). Its
   rule rendering and read-back were checked only against firewalld running in
   a container, not on a full systemd host.
-- **Service-manager jobs are not covered by timeout containment.** A job
-  started through systemd belongs to the service manager, so stopping resh at
-  its deadline does not stop the job.
 - **Install script.** `get.reshshell.dev` has not been updated for this
   release and installs an older version. Install from the GitHub release (see
   the README).
