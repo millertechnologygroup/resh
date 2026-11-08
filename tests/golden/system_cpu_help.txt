@@ -37,6 +37,7 @@ Example Output:
     "sample_duration_ms": 250,
     "system": {
       "available": true,
+      "cgroup_utilization_pct": null,
       "frequency_current_hz": 3364628000,
       "frequency_max_hz": 4800000000,
       "guest_nice_pct": 0.0,

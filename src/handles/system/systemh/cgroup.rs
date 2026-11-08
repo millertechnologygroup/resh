@@ -161,14 +161,14 @@ pub fn resolve(host: &Host) -> Result<Cgroups, String> {
             mount: m.point.trim_end_matches('/').to_string(),
         })
     };
-    if let Some(path) = &unified_path {
-        if let Some(m) = mounts.iter().find(|m| m.fstype == "cgroup2") {
-            out.unified = Some(Controller {
-                version: Version::V2,
-                dir: join(m, path),
-                mount: m.point.trim_end_matches('/').to_string(),
-            });
-        }
+    if let Some(path) = &unified_path
+        && let Some(m) = mounts.iter().find(|m| m.fstype == "cgroup2")
+    {
+        out.unified = Some(Controller {
+            version: Version::V2,
+            dir: join(m, path),
+            mount: m.point.trim_end_matches('/').to_string(),
+        });
     }
     let v2 = |file: &str| -> Option<Controller> {
         let u = out.unified.clone()?;
@@ -412,4 +412,17 @@ pub fn cpu(host: &Host, cg: &Cgroups) -> Option<CpuFigures> {
         }
     }
     (!f.paths.is_empty()).then_some(f)
+}
+
+/// The cgroup's cumulative CPU time in seconds: `usage_usec` of `cpu.stat`
+/// (v2) or `cpuacct.usage` (v1, nanoseconds).
+pub fn usage_seconds(host: &Host, cg: &Cgroups) -> Option<f64> {
+    let c = cg.cpuacct.as_ref()?;
+    match c.version {
+        Version::V2 => host.read_trim(&c.file("cpu.stat"))?.lines().find_map(|l| {
+            let v = l.strip_prefix("usage_usec ")?.trim().parse::<u64>().ok()?;
+            Some(v as f64 / 1e6)
+        }),
+        Version::V1 => read_u64(host, &c.file("cpuacct.usage")).map(|ns| ns as f64 / 1e9),
+    }
 }

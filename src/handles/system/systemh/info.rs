@@ -528,10 +528,10 @@ pub fn parse_pressure(text: &str) -> Value {
             continue;
         };
         for kv in it {
-            if let Some((k, v)) = kv.split_once('=') {
-                if let ("avg10" | "avg60" | "avg300", Ok(v)) = (k, v.parse::<f64>()) {
-                    out.insert(format!("{kind}_{k}"), json!(v));
-                }
+            if let Some((k, v)) = kv.split_once('=')
+                && let ("avg10" | "avg60" | "avg300", Ok(v)) = (k, v.parse::<f64>())
+            {
+                out.insert(format!("{kind}_{k}"), json!(v));
             }
         }
     }
@@ -665,15 +665,15 @@ fn virtualization_scope(host: &Host) -> Part {
             .find(|k| l.contains(k))
             .map(String::from);
     }
-    if vm.is_none() {
-        if let Ok(t) = host.read("/proc/cpuinfo") {
-            available = true;
-            let flagged = t
-                .lines()
-                .any(|l| l.starts_with("flags") && l.split_whitespace().any(|f| f == "hypervisor"));
-            if flagged {
-                vm = Some("unknown".into());
-            }
+    if vm.is_none()
+        && let Ok(t) = host.read("/proc/cpuinfo")
+    {
+        available = true;
+        let flagged = t
+            .lines()
+            .any(|l| l.starts_with("flags") && l.split_whitespace().any(|f| f == "hypervisor"));
+        if flagged {
+            vm = Some("unknown".into());
         }
     }
     p.value = json!({

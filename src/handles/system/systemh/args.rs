@@ -587,12 +587,12 @@ pub fn validate_disk(o: &DiskOptions) -> Result<(), SysError> {
 }
 
 pub fn validate_env_list(o: &EnvListOptions) -> Result<Vec<regex::Regex>, SysError> {
-    if let Some(pid) = o.pid {
-        if pid < 1 {
-            return Err(SysError::invalid(format!(
-                "pid must be a positive process ID, got {pid}"
-            )));
-        }
+    if let Some(pid) = o.pid
+        && pid < 1
+    {
+        return Err(SysError::invalid(format!(
+            "pid must be a positive process ID, got {pid}"
+        )));
     }
     no_empty("names", &o.names)?;
     no_empty("prefix_filters", &o.prefix_filters)?;

@@ -197,6 +197,23 @@ fn disk_root_matches_statvfs() {
     let unit = st.fragment_size() as u64;
     assert_eq!(m["total_bytes"], st.blocks() as u64 * unit);
     assert_eq!(m["inodes_total"], st.files() as u64);
+    // used_pct is df's Use% (the filesystem is live: allow one point).
+    let out = Command::new("df")
+        .args(["--output=pcent", "/"])
+        .output()
+        .unwrap();
+    let df: f64 = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .nth(1)
+        .unwrap()
+        .trim()
+        .trim_end_matches('%')
+        .parse()
+        .unwrap();
+    let used = m["used_pct"].as_f64().unwrap();
+    assert!((used - df).abs() <= 1.0, "resh {used} df {df}");
+    let of_total = 100.0 * m["used_bytes"].as_f64().unwrap() / m["total_bytes"].as_f64().unwrap();
+    assert!((m["used_of_total_pct"].as_f64().unwrap() - of_total).abs() < 0.01);
     resh(&["system://.disk", "mount_points=/no/such/mount"])
         .fails(1, "system.disk_mount_not_found");
     let r = resh(&["system://.disk", "format=text"]);

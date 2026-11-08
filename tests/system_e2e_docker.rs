@@ -119,7 +119,12 @@ r mem1 resh system://.memory
 timeout 1 sh -c 'while :; do :; done'
 r cpu resh system://.cpu sample_duration_ms=100
 r info resh system://.info scopes=cgroup,virtualization,memory
+sh -c 'while :; do :; done' & BUSY=$!
+sleep 0.3
+r cpubusy resh system://.cpu sample_duration_ms=1000 per_cpu=false
+kill $BUSY
 r disk resh system://.disk mount_points=/
+printf 'dfpct\t0\t%s\t\n' "$(df --output=pcent / | tail -1 | tr -d ' %')"
 r load resh system://.load
 r up resh system://.uptime
 r env resh system://.env.list names=HOSTNAME,HOME
@@ -174,8 +179,17 @@ r text resh system://.memory format=text
     assert_eq!(info["virtualization"]["container_type"], "docker");
 
     // The container's root is overlay, which is real storage.
+    // One busy core against a 1.5-CPU quota: about 67% of the quota.
+    let busy = c.ok("cpubusy");
+    let cu = busy["system"]["cgroup_utilization_pct"].as_f64().unwrap();
+    assert!((40.0..=100.0).contains(&cu), "{busy}");
+
     let disk = c.ok("disk");
     assert_eq!(disk["mounts"][0]["mount_point"], "/");
+    // used_pct is df's Use% for the container's root.
+    let df = c.get("dfpct").json.as_f64().unwrap();
+    let used = disk["mounts"][0]["used_pct"].as_f64().unwrap();
+    assert!((used - df).abs() <= 1.0, "resh {used} df {df}");
     assert!(disk["mounts"][0]["total_bytes"].as_u64().unwrap() > 0);
 
     c.ok("load");
@@ -206,6 +220,7 @@ r info resh system://.info scopes=cgroup
     assert!(m["cgroup"]["memory_usage_bytes"].as_u64().unwrap() > 0);
     let cpu = c.ok("cpu");
     assert!(cpu["cgroup"].get("cpu_quota_cores").is_none(), "{cpu}");
+    assert_eq!(cpu["system"]["cgroup_utilization_pct"], Value::Null);
     let info = c.ok("info");
     assert_eq!(info["cgroup"]["limits"], serde_json::json!({}));
 }

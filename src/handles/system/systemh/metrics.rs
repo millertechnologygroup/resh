@@ -288,7 +288,7 @@ fn cpu_topology(host: &Host, id: u32) -> (Option<u32>, Option<u32>) {
 }
 
 /// Current and maximum frequency of one CPU in Hz (cpufreq reports kHz).
-fn cpu_freq(host: &Host, id: u32) -> (Option<u64>, Option<u64>) {
+fn cpu_freq(host: &Host, id: u32) -> Freq {
     let read = |f: &str| {
         host.read_trim(&format!("/sys/devices/system/cpu/cpu{id}/cpufreq/{f}"))
             .and_then(|s| s.parse::<u64>().ok())
@@ -834,11 +834,17 @@ pub struct CpuSystem {
     pub socket_count: Option<u32>,
     #[serde(flatten)]
     pub pct: PctFields,
+    /// The resh process's cgroup CPU usage over the sample as a share of its
+    /// quota (quota cores x sample time); `null` without a quota or usage.
+    pub cgroup_utilization_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_current_hz: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_max_hz: Option<u64>,
 }
+
+/// Current and maximum frequency of a CPU, in Hz.
+type Freq = (Option<u64>, Option<u64>);
 
 /// The percentage fields of a CPU entry; absent when no time passed.
 #[derive(Debug, Serialize, Default)]
@@ -974,7 +980,28 @@ fn cpu_status(util: Option<f64>) -> (String, String) {
 pub fn cpu(host: &Host, o: &CpuOptions) -> Result<CpuResponse, SysError> {
     let now = host.now_unix_ms();
     let interval = o.interval_ms();
+    // The cgroup's CPU usage is read around the two /proc/stat samples.
+    let cg = cgroup::resolve(host).ok();
+    let cg_usage = || cg.as_ref().and_then(|c| cgroup::usage_seconds(host, c));
+    let usage_before = cg_usage();
+    let started = std::time::Instant::now();
     let s = sample_cpu(host, interval)?;
+    let usage_after = cg_usage();
+    // The pause is at least `interval`; use the time that really passed.
+    let elapsed_s = started
+        .elapsed()
+        .as_secs_f64()
+        .max(interval as f64 / 1000.0);
+    let quota = cg
+        .as_ref()
+        .and_then(|c| cgroup::cpu(host, c))
+        .and_then(|f| f.quota_cores);
+    let cgroup_utilization_pct = match (usage_before, usage_after, quota) {
+        (Some(a), Some(b), Some(q)) if q > 0.0 && elapsed_s > 0.0 => {
+            Some(round((b - a).max(0.0) / (q * elapsed_s) * 100.0, 3))
+        }
+        _ => None,
+    };
     let mut warnings = Vec::new();
     let find = |list: &[CpuTimes], id: Option<u32>| list.iter().find(|c| c.id == id).cloned();
     let (Some(a), Some(b)) = (find(&s.first, None), find(&s.second, None)) else {
@@ -1000,7 +1027,7 @@ pub fn cpu(host: &Host, o: &CpuOptions) -> Result<CpuResponse, SysError> {
     } else {
         (None, None)
     };
-    let freqs: Vec<(u32, (Option<u64>, Option<u64>))> = if o.include_frequency {
+    let freqs: Vec<(u32, Freq)> = if o.include_frequency {
         ids.iter().map(|id| (*id, cpu_freq(host, *id))).collect()
     } else {
         Vec::new()
@@ -1016,6 +1043,7 @@ pub fn cpu(host: &Host, o: &CpuOptions) -> Result<CpuResponse, SysError> {
         physical_count: physical,
         socket_count: sockets,
         pct: total.into(),
+        cgroup_utilization_pct,
         frequency_current_hz: (!cur.is_empty()).then(|| cur.iter().sum::<u64>() / cur.len() as u64),
         frequency_max_hz: max,
     };

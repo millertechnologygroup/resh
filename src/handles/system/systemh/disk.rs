@@ -145,21 +145,18 @@ pub fn stat_all(
 /// mount point's device number via `/sys/dev/block` (a partition maps to
 /// its parent disk), else from the device path (`/dev/sda1` -> `sda`).
 pub fn io_device(host: &Host, mount_point: &str, device: &str) -> Option<String> {
-    if let Some((maj, min)) = host.device_of(mount_point) {
-        if maj != 0 {
-            let link = format!("/sys/dev/block/{maj}:{min}");
-            if let Some(real) = host.canonical(&link) {
-                let name = real.rsplit('/').next().unwrap_or_default().to_string();
-                if host.exists(&format!("{real}/partition")) {
-                    let parent = real.rsplit('/').nth(1).unwrap_or_default();
-                    if !parent.is_empty() {
-                        return Some(parent.to_string());
-                    }
-                }
-                if !name.is_empty() {
-                    return Some(name);
-                }
-            }
+    let real = host
+        .device_of(mount_point)
+        .filter(|(maj, _)| *maj != 0)
+        .and_then(|(maj, min)| host.canonical(&format!("/sys/dev/block/{maj}:{min}")));
+    if let Some(real) = real {
+        let name = real.rsplit('/').next().unwrap_or_default().to_string();
+        let parent = real.rsplit('/').nth(1).unwrap_or_default();
+        if host.exists(&format!("{real}/partition")) && !parent.is_empty() {
+            return Some(parent.to_string());
+        }
+        if !name.is_empty() {
+            return Some(name);
         }
     }
     base_device_name(device.strip_prefix("/dev/")?)
@@ -215,8 +212,12 @@ pub struct MountEntry {
     pub free_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avail_bytes: Option<u64>,
+    /// As `df` Use%: used / (used + avail), rounded up to a whole percent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_pct: Option<f64>,
+    /// used / total, to two decimals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_of_total_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub free_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -315,6 +316,17 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
+/// `df`'s Use%: used * 100 / (used + avail), rounded up; `None` when both
+/// are 0.
+pub fn df_pct(used: u64, avail: u64) -> Option<f64> {
+    let whole = used as u128 + avail as u128;
+    if whole == 0 {
+        return None;
+    }
+    let u100 = used as u128 * 100;
+    Some((u100 / whole + u128::from(!u100.is_multiple_of(whole))) as f64)
+}
+
 fn pct(part: u64, whole: u64) -> Option<f64> {
     (whole > 0).then(|| (10_000.0 * part as f64 / whole as f64).round() / 100.0)
 }
@@ -324,7 +336,8 @@ pub fn fill_stats(e: &mut MountEntry, st: &FsStats) {
     e.used_bytes = Some(st.used_bytes);
     e.free_bytes = Some(st.free_bytes);
     e.avail_bytes = Some(st.avail_bytes);
-    e.used_pct = pct(st.used_bytes, st.total_bytes);
+    e.used_pct = df_pct(st.used_bytes, st.avail_bytes);
+    e.used_of_total_pct = pct(st.used_bytes, st.total_bytes);
     e.free_pct = pct(st.free_bytes, st.total_bytes);
     e.inodes_total = Some(st.inodes_total);
     e.inodes_used = Some(st.inodes_used);
@@ -432,6 +445,7 @@ pub fn disk(host: &Host, o: &DiskOptions) -> Result<DiskResponse, SysError> {
             free_bytes: None,
             avail_bytes: None,
             used_pct: None,
+            used_of_total_pct: None,
             free_pct: None,
             inodes_total: None,
             inodes_used: None,
@@ -451,7 +465,7 @@ pub fn disk(host: &Host, o: &DiskOptions) -> Result<DiskResponse, SysError> {
         if o.include_human {
             e.human_summary = Some(match (e.total_bytes, e.used_bytes, e.used_pct) {
                 (Some(t), Some(u), Some(p)) => format!(
-                    "{}: {} total, {} used ({p:.1}%)",
+                    "{}: {} total, {} used ({p:.0}%)",
                     e.mount_point,
                     human_bytes(t),
                     human_bytes(u)

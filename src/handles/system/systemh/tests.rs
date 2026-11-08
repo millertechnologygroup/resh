@@ -1681,6 +1681,84 @@ fn info_text() {
 }
 
 // ---------------------------------------------------------------------------
+// cgroup-relative CPU utilization and df-style disk percentages
+// ---------------------------------------------------------------------------
+
+/// Like `two_samples`; the cgroup usage file `usage` gets `after` too.
+fn two_samples_with_usage(fx: &Fx, usage: &str, after: &'static str) -> Host {
+    let stat = fx.path("/proc/stat");
+    let usage = fx.path(usage);
+    fx.host().with_pause(move |_| {
+        std::fs::write(&stat, STAT_B).unwrap();
+        std::fs::write(&usage, after).unwrap();
+    })
+}
+
+#[test]
+fn cpu_cgroup_utilization_v2() {
+    let fx = Fx::new();
+    // 0.1875 s used in 250 ms with a 1.5-CPU quota: 50%.
+    let host = two_samples_with_usage(
+        &fx,
+        "/sys/fs/cgroup/app/svc/cpu.stat",
+        "usage_usec 2687500\nuser_usec 2100000\nsystem_usec 587500\n",
+    );
+    let v = call(&host, "cpu", &[("include_cgroup", "false")]).ok();
+    assert!(close(&v["system"]["cgroup_utilization_pct"], 50.0), "{v}");
+    // The usage file no longer changes: 0% of the quota.
+    let o = call(&host, "cpu", &[("format", "text")]);
+    assert!(
+        o.stdout.contains("Utilization  : 0.0% of quota"),
+        "{}",
+        o.stdout
+    );
+    // No quota anywhere: null.
+    fx.put("/sys/fs/cgroup/app/svc/cpu.max", "max 100000\n");
+    fx.put("/sys/fs/cgroup/app/cpu.max", "max 100000\n");
+    let v = call(&host, "cpu", &[]).ok();
+    assert_eq!(v["system"]["cgroup_utilization_pct"], Value::Null, "{v}");
+    // No cgroup information: null.
+    fx.rm("/proc/self/cgroup");
+    let v = call(&host, "cpu", &[]).ok();
+    assert_eq!(v["system"]["cgroup_utilization_pct"], Value::Null);
+}
+
+#[test]
+fn cpu_cgroup_utilization_v1() {
+    let fx = Fx::new();
+    fx.cgroup_v1();
+    // 0.0625 s used in 250 ms with a 0.5-CPU quota: 50%.
+    let host = two_samples_with_usage(
+        &fx,
+        "/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage",
+        "3062500000\n",
+    );
+    let v = call(&host, "cpu", &[]).ok();
+    assert!(close(&v["system"]["cgroup_utilization_pct"], 50.0), "{v}");
+    assert!(close(&v["cgroup"]["usage_seconds"], 3.0625));
+}
+
+#[test]
+fn disk_used_pct_matches_df() {
+    assert_eq!(disk::df_pct(1, 2), Some(34.0));
+    assert_eq!(disk::df_pct(50, 50), Some(50.0));
+    assert_eq!(disk::df_pct(0, 10), Some(0.0));
+    assert_eq!(disk::df_pct(10, 0), Some(100.0));
+    assert_eq!(disk::df_pct(0, 0), None);
+    assert_eq!(disk::df_pct(u64::MAX, u64::MAX), Some(50.0));
+    let fx = disk_fx();
+    let v = call(&fx.host(), "disk", &[("mount_points", "/")]).ok();
+    let m = &v["mounts"][0];
+    let st = host::statvfs_at(fx.dir.path()).unwrap();
+    // The filesystem is live; allow one percent of drift between the reads.
+    let df = disk::df_pct(st.used_bytes, st.avail_bytes).unwrap();
+    assert!((m["used_pct"].as_f64().unwrap() - df).abs() <= 1.0, "{m}");
+    assert_eq!(m["used_pct"].as_f64().unwrap().fract(), 0.0);
+    let total = 100.0 * st.used_bytes as f64 / st.total_bytes as f64;
+    assert!((m["used_of_total_pct"].as_f64().unwrap() - total).abs() < 1.0);
+}
+
+// ---------------------------------------------------------------------------
 // The real host (read-only)
 // ---------------------------------------------------------------------------
 

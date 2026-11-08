@@ -22,7 +22,7 @@ Example Output:
   {
     "human": {
       "summaries": [
-        "/: 468.3 GiB total, 143.3 GiB used (30.6%)"
+        "/: 468.3 GiB total, 143.3 GiB used (33%)"
       ]
     },
     "io": {
@@ -52,7 +52,7 @@ Example Output:
         "free_bytes": 348985356288,
         "free_pct": 69.41,
         "fs_type": "ext4",
-        "human_summary": "/: 468.3 GiB total, 143.3 GiB used (30.6%)",
+        "human_summary": "/: 468.3 GiB total, 143.3 GiB used (33%)",
         "inodes_free": 30212143,
         "inodes_total": 31227904,
         "inodes_used": 1015761,
@@ -64,7 +64,8 @@ Example Output:
         ],
         "total_bytes": 502819409920,
         "used_bytes": 153834053632,
-        "used_pct": 30.59,
+        "used_of_total_pct": 30.59,
+        "used_pct": 33.0,
         "virtual_fs": false
       }
     ],

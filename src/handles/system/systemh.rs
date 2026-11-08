@@ -243,6 +243,7 @@ Shown for a container started with --memory 512m, with --json-pretty."#,
   "sample_duration_ms": 250,
   "system": {
     "available": true,
+    "cgroup_utilization_pct": null,
     "frequency_current_hz": 3364628000,
     "frequency_max_hz": 4800000000,
     "guest_nice_pct": 0.0,
@@ -288,7 +289,7 @@ Shown with --json-pretty."#,
                     r#"{
   "human": {
     "summaries": [
-      "/: 468.3 GiB total, 143.3 GiB used (30.6%)"
+      "/: 468.3 GiB total, 143.3 GiB used (33%)"
     ]
   },
   "io": {
@@ -318,7 +319,7 @@ Shown with --json-pretty."#,
       "free_bytes": 348985356288,
       "free_pct": 69.41,
       "fs_type": "ext4",
-      "human_summary": "/: 468.3 GiB total, 143.3 GiB used (30.6%)",
+      "human_summary": "/: 468.3 GiB total, 143.3 GiB used (33%)",
       "inodes_free": 30212143,
       "inodes_total": 31227904,
       "inodes_used": 1015761,
@@ -330,7 +331,8 @@ Shown with --json-pretty."#,
       ],
       "total_bytes": 502819409920,
       "used_bytes": 153834053632,
-      "used_pct": 30.59,
+      "used_of_total_pct": 30.59,
+      "used_pct": 33.0,
       "virtual_fs": false
     }
   ],

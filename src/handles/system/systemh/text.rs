@@ -211,20 +211,23 @@ pub fn cpu(r: &CpuResponse) -> String {
         }
         o.push('\n');
     }
-    if let Some(c) = &r.cgroup {
-        if c.available {
-            o.push_str("Cgroup:\n");
-            match c.cpu_quota_cores {
-                Some(q) => {
-                    let _ = writeln!(o, "  Quota        : {q:.2} CPUs");
-                }
-                None => o.push_str("  Quota        : unlimited\n"),
+    if let Some(c) = &r.cgroup
+        && c.available
+    {
+        o.push_str("Cgroup:\n");
+        match c.cpu_quota_cores {
+            Some(q) => {
+                let _ = writeln!(o, "  Quota        : {q:.2} CPUs");
             }
-            if let Some(u) = c.usage_seconds {
-                let _ = writeln!(o, "  Usage        : {u:.1} s");
-            }
-            o.push('\n');
+            None => o.push_str("  Quota        : unlimited\n"),
         }
+        if let Some(u) = r.system.cgroup_utilization_pct {
+            let _ = writeln!(o, "  Utilization  : {u:.1}% of quota");
+        }
+        if let Some(u) = c.usage_seconds {
+            let _ = writeln!(o, "  Usage        : {u:.1} s");
+        }
+        o.push('\n');
     }
     if let Some(h) = &r.human {
         let _ = writeln!(o, "Status:\n  {} - {}", h.status, h.status_reason);
@@ -260,7 +263,7 @@ pub fn disk(r: &DiskResponse) -> String {
             (Some(t), Some(u), Some(a), Some(p)) => {
                 let _ = writeln!(
                     o,
-                    "    Total   : {}\n    Used    : {} ({p:.1}%)\n    Avail   : {}",
+                    "    Total   : {}\n    Used    : {} ({p:.0}%)\n    Avail   : {}",
                     human_bytes(t),
                     human_bytes(u),
                     human_bytes(a)
