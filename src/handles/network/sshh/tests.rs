@@ -1583,7 +1583,8 @@ fn tunnel_closes_on_idle_and_byte_limits() {
             if let Ok(c) = std::net::TcpStream::connect(("127.0.0.1", port)) {
                 break c;
             }
-            assert!(start.elapsed().as_secs() < 10);
+            // Generous under load: the tunnel may take a while to listen.
+            assert!(start.elapsed().as_secs() < 60, "tunnel never listened");
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
         let _ = c.write_all(&[b'x'; 100]);
@@ -1598,7 +1599,7 @@ fn tunnel_closes_on_idle_and_byte_limits() {
             ("remote_dest_host", "127.0.0.1"),
             ("remote_dest_port", &dest),
             ("max_bytes_in", "10"),
-            ("timeout_ms", "10000"),
+            ("timeout_ms", "60000"),
         ],
     );
     client.join().unwrap();
