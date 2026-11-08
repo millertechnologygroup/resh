@@ -4,7 +4,7 @@
 
 Resource Shell (resh) is a command-line tool that runs operations on resources named by URLs.
 
-The `log://` handle has one verb, `tail`. It prints the most recent lines of a plain-text log file, or of a systemd service's journal through `journalctl`, optionally keeping only the lines that contain a substring, and can keep printing new lines as they are written (`follow=true`). Output is the raw lines or a JSON object.
+The `log://` handle has one verb, `tail`. It prints the most recent lines of a plain-text log file, or of a systemd service's journal through `journalctl`, optionally keeping only the lines that contain a substring, and can keep printing new lines as they are written (`follow=true`). Output is the raw lines or a JSON object (with `follow=true`, one JSON object per line).
 
 ```text
 resh log:///<absolute-path>.tail [lines=<n>] [pattern=<text>] [mode=raw|json]
@@ -52,8 +52,8 @@ Every argument is checked before anything is read. An unknown argument or an inv
 | `lines`      | Number of lines to read from the end (1-1000000)    | `100`   |
 | `pattern`    | Keep only lines containing this text (not empty)    | none    |
 | `mode`       | `raw` or `json`                                     | `raw`   |
-| `follow`     | `true` keeps printing new lines (`mode=raw` only); booleans are `true/false`, `1/0`, `yes/no`, `on/off` | `false` |
-| `timeout_ms` | Time limit for the whole command (1-604800000)      | `600000` without `follow`; no limit with `follow` |
+| `follow`     | `true` keeps printing new lines (section 4.3); booleans are `true/false`, `1/0`, `yes/no`, `on/off` | `false` |
+| `timeout_ms` | Time limit for the whole command; with `follow`, how long to follow (1-604800000) | `600000` without `follow`; no limit with `follow` |
 
 `dry_run=false` is accepted and changes nothing; `dry_run=true` is refused (exit 2), as `tail` only reads.
 
@@ -68,6 +68,7 @@ resh 'log:///var/log/syslog.tail(lines=10)'
 resh log://./logs/app.log.tail lines=20
 resh log://./logs/app.log.tail follow=true pattern=ERROR
 resh log://./logs/app.log.tail follow=true timeout_ms=60000
+resh log://./logs/app.log.tail follow=true mode=json
 resh log://svc/nginx.tail lines=50 pattern=error
 resh log://svc/nginx.service.tail follow=true
 ```
@@ -115,14 +116,14 @@ An invalid argument is reported on stderr only (the options could not be read, s
 
 | Exit | Meaning |
 | ---- | ------- |
-| 0    | Success (including an empty file, no matching lines, or no journal entries); also when the reader of a followed output goes away (for example `| head`) |
+| 0    | Success (including an empty file, no matching lines, or no journal entries); a follow that ran for its `timeout_ms`; a follow whose reader went away (for example `| head`) |
 | 1    | The log could not be read (see the codes below) |
 | 2    | Invalid usage: an unknown argument, an invalid value, an invalid target or an unknown verb; nothing was read |
-| 124  | `timeout_ms` passed (`log.timeout`) |
+| 124  | `timeout_ms` passed before a tail without `follow` finished, or `journalctl` could not be stopped at the end of a follow (`log.timeout`) |
 
 | Code | Exit | When |
 | ---- | ---- | ---- |
-| `log.invalid_argument` | 2 | Unknown argument, invalid value, `follow=true` with `mode=json`, `dry_run=true` |
+| `log.invalid_argument` | 2 | Unknown argument, invalid value, `dry_run=true` |
 | `log.invalid_target` | 2 | Unsupported URL host, empty path, NUL byte in the path, invalid service name |
 | `log.unknown_verb` | 2 | A verb other than `tail` (also for `--help=<verb>`) |
 | `log.not_found` | 1 | The file does not exist |
@@ -132,7 +133,7 @@ An invalid argument is reported on stderr only (the options could not be read, s
 | `log.journalctl_not_found` | 1 | `journalctl` is not installed (not on `PATH`) |
 | `log.journal_access_denied` | 1 | `journalctl` could not read the journal (it says the user is "not seeing messages from other users", or cites "insufficient permissions"), even if it exited 0 |
 | `log.journal_failed` | 1 | `journalctl` could not be run, or exited with a non-zero status; its stderr is in the message |
-| `log.timeout` | 124 | `timeout_ms` passed. Lines already printed stay printed; `journalctl` and anything it started is stopped |
+| `log.timeout` | 124 | Without `follow`: `timeout_ms` passed (nothing is printed; `journalctl` and anything it started is stopped). With `follow`: `journalctl` outlived SIGKILL at the end and may still be running |
 | `log.failed` | 1 | The output could not be written (reported by resh itself) |
 
 **Changed in this release:** a missing file or a path that is not a file now exits 1 (was 2); a failing `journalctl` exits 1 (was its own exit status); unknown arguments and invalid values (`lines=abc`, `lines=0`, `mode=xml`, an empty `pattern`) are refused with exit 2 (`lines=abc` used to mean 100); the JSON `error` is an object with `code` and `message` (was a string); a raw-mode error is no longer printed on stdout.
@@ -161,15 +162,31 @@ resh log://svc/postgresql.tail lines=30 mode=json
 
 ### 4.3 Follow mode
 
-`follow=true` prints the last `lines` lines (filtered by `pattern`) and then every new line as it is written, flushing each line at once, so it can be piped into other tools. It works with `mode=raw` only (`mode=json` is refused with exit 2).
+`follow=true` prints the last `lines` lines (filtered by `pattern`) and then every new line as it is written, flushing each line at once, so it can be piped into other tools.
+
+With `mode=json`, each line (the first `lines` ones too) is printed as one JSON object on its own line, flushed at once; `ts` is when resh read the line, in milliseconds since the Unix epoch:
+
+```json
+{"source":"file","path":"/var/log/app.log","line":"started","ts":1762520000123}
+{"source":"journal","unit":"nginx.service","line":"Nov 07 10:00:01 box nginx[1]: ready","ts":1762520000456}
+```
+
+For files, truncation and rotation are reported as objects too (instead of the stderr warnings of `mode=raw`):
+
+```json
+{"event":"truncated","source":"file","path":"/var/log/app.log","ts":1762520001000}
+{"event":"rotated","source":"file","path":"/var/log/app.log","ts":1762520002000}
+```
+
+A failure while following (for example `journalctl` exiting with an error) ends the stream with an object holding `source`, `path` or `unit`, `error` (`code`, `message`) and `ts`, plus the usual error line on stderr.
 
 * **Files** are checked for new data every 100 ms.
-  * A file truncated in place (shorter than what was read) is read again from the start, with a warning on stderr.
-  * A file replaced at its path (rotated by rename and re-create) is read to its end, then the new file is followed from its start, with a warning on stderr. While nothing exists at the path, the old file is still followed.
+  * A file truncated in place (shorter than what was read) is read again from the start, with a warning on stderr (a `truncated` object with `mode=json`).
+  * A file replaced at its path (rotated by rename and re-create) is read to its end, then the new file is followed from its start, with a warning on stderr (a `rotated` object with `mode=json`). While nothing exists at the path, the old file is still followed.
   * A last line still being written (no newline yet) is printed once it is complete, or when the command stops.
 * **Service journals** run `journalctl --follow` and stream its output. If `journalctl` exits on its own, the command ends with its result. If `resh` is killed, `journalctl` is told to stop too.
 
-Without `timeout_ms`, follow mode runs until interrupted (Ctrl-C) or until the reader of its output goes away (exit 0). With `timeout_ms`, it stops at the deadline: the lines already printed stay printed and the exit status is 124 (`log.timeout`), so a script can tell a time limit from an error.
+Without `timeout_ms`, follow mode runs until interrupted (Ctrl-C) or until the reader of its output goes away (exit 0). With `timeout_ms`, `timeout_ms` is how long to follow: at the deadline the command ends normally with exit 0 (a last line still being written is printed first, and `journalctl` is stopped). Only if `journalctl` cannot be stopped is the exit status 124 (`log.timeout`).
 
 ```bash
 resh log://./logs/app.log.tail follow=true lines=1 pattern=ERROR timeout_ms=30000
@@ -183,7 +200,7 @@ ERROR_COUNT=$(resh log:///var/log/app.log.tail lines=1000 pattern=ERROR mode=jso
 
 ### 4.5 timeout_ms
 
-`timeout_ms` bounds the whole command: the file scan, the `journalctl` run, and follow mode. Without `follow` the default is 600000 (10 minutes); with `follow` there is no default limit. Reaching it exits 124 with `log.timeout`.
+`timeout_ms` bounds the whole command: the file scan, the `journalctl` run, and follow mode. Without `follow` the default is 600000 (10 minutes), and reaching it exits 124 with `log.timeout`. With `follow` there is no default limit, and reaching it is the normal end (exit 0).
 
 ---
 
@@ -208,7 +225,7 @@ Linux is the only supported and tested platform. `log://svc/...` needs systemd's
 * Always set `lines` in automation, and make it large enough for `pattern` to find matches (section 3.2).
 * Use `mode=json` with `jq` for scripts.
 * Use absolute paths for system logs.
-* Give follow mode a `timeout_ms` in scripts, and treat exit 124 as "time is up".
+* Give follow mode a `timeout_ms` in scripts; it then ends with exit 0 when the time is up.
 * For anything beyond substring filtering, pipe raw output into `grep`, `awk` or similar tools.
 
 ---

@@ -202,7 +202,7 @@ fn invalid_arguments_are_refused() {
     assert!(invalid(&[("mode", "xml")]).contains("mode"));
     assert!(invalid(&[("pattern", "")]).contains("pattern"));
     assert!(invalid(&[("follow", "maybe")]).contains("follow"));
-    assert!(invalid(&[("follow", "true"), ("mode", "json")]).contains("mode=raw"));
+    assert!(parse(&[("follow", "true"), ("mode", "json")]).is_ok());
     for v in ["0", "x", "604800001"] {
         assert!(invalid(&[("timeout_ms", v)]).contains("timeout_ms"), "{v}");
     }
@@ -556,7 +556,7 @@ fn follow_streams_new_lines_until_the_timeout() {
             append(&q, "no newline yet");
         },
     );
-    let r = r.fails(124, "log.timeout");
+    let r = r.ok();
     assert_eq!(r.out, "old1\nold2\npartial-one\nnew two\nno newline yet\n");
     assert!(took >= Duration::from_millis(1500), "{took:?}");
     assert!(took < Duration::from_secs(10), "{took:?}");
@@ -572,7 +572,7 @@ fn follow_reads_a_truncated_file_from_the_start() {
         pause();
         append(&q, "after\n");
     });
-    let r = r.fails(124, "log.timeout");
+    let r = r.ok();
     assert_eq!(r.out, "before 1\nbefore 2\nafter\n");
     assert!(r.err.contains("was truncated"), "{}", r.err);
 }
@@ -597,7 +597,7 @@ fn follow_continues_into_a_rotated_file() {
             append(&q, "gen2 b\n");
         },
     );
-    let r = r.fails(124, "log.timeout");
+    let r = r.ok();
     assert_eq!(r.out, "gen1 a\ngen1 b\ngen1 c\ngen2 a\ngen2 b\n");
     assert!(r.err.contains("was replaced"), "{}", r.err);
 }
@@ -733,7 +733,7 @@ fn journal_follow_streams_until_the_deadline() {
         "tail",
         &[("follow", "true"), ("timeout_ms", "2000"), ("lines", "3")],
     )
-    .fails(124, "log.timeout");
+    .ok();
     assert_eq!(r.out, "one\ntwo\nthree\n");
     assert!(start.elapsed() < Duration::from_secs(10));
     assert!(!crate::core::process::has_lost());
@@ -770,4 +770,105 @@ fn journal_follow_ends_with_journalctl() {
     let start = Instant::now();
     run(&j.handle("x"), "tail", &[("follow", "true")]).fails(1, "log.journal_access_denied");
     assert!(start.elapsed() < Duration::from_secs(10));
+}
+
+/// Parses one streamed JSON object per line.
+fn objects(out: &str) -> Vec<Value> {
+    out.lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+        .collect()
+}
+
+#[test]
+fn follow_json_streams_one_object_per_line_and_events() {
+    let (d, p) = log_file(b"old\n");
+    let q = p.clone();
+    let rotated = d.path().join("app.log.1");
+    let before = now_ms();
+    let (r, _) = follow_while(
+        &p,
+        &[("follow", "true"), ("mode", "json"), ("timeout_ms", "2000")],
+        move || {
+            pause();
+            append(&q, "new \"quoted\"\n");
+            pause();
+            std::fs::write(&q, "").unwrap();
+            pause();
+            append(&q, "after truncation\n");
+            pause();
+            std::fs::rename(&q, &rotated).unwrap();
+            std::fs::write(&q, "rotated in\n").unwrap();
+        },
+    );
+    let r = r.ok();
+    assert!(r.err.is_empty(), "events go to stdout in json: {}", r.err);
+    let objs = objects(&r.out);
+    let path = p.to_string_lossy();
+    let shape: Vec<Value> = objs
+        .iter()
+        .map(|o| {
+            let ts = o["ts"].as_u64().unwrap();
+            assert!(ts >= before && ts <= now_ms(), "{o}");
+            let mut o = o.clone();
+            o.as_object_mut().unwrap().remove("ts");
+            o
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            json!({"source": "file", "path": path, "line": "old"}),
+            json!({"source": "file", "path": path, "line": "new \"quoted\""}),
+            json!({"event": "truncated", "source": "file", "path": path}),
+            json!({"source": "file", "path": path, "line": "after truncation"}),
+            json!({"event": "rotated", "source": "file", "path": path}),
+            json!({"source": "file", "path": path, "line": "rotated in"}),
+        ]
+    );
+}
+
+#[test]
+fn follow_json_journal_objects_and_errors() {
+    let j = FakeJournal::new("one\n-- No entries --\ntwo ERR\n", "", "sleep 30");
+    let r = run(
+        &j.handle("web.service"),
+        "tail",
+        &[
+            ("follow", "true"),
+            ("mode", "json"),
+            ("timeout_ms", "1000"),
+            ("pattern", "ERR"),
+        ],
+    )
+    .ok();
+    let objs = objects(&r.out);
+    assert_eq!(objs.len(), 1, "{}", r.out);
+    assert_eq!(objs[0]["source"], "journal");
+    assert_eq!(objs[0]["unit"], "web.service");
+    assert_eq!(objs[0]["line"], "two ERR");
+    assert!(objs[0]["ts"].is_u64());
+
+    // A failure ends the stream with an object carrying the error.
+    let j = FakeJournal::new("a\n", "boom\n", "exit 2");
+    let r = run(
+        &j.handle("x"),
+        "tail",
+        &[("follow", "true"), ("mode", "json")],
+    )
+    .fails(1, "log.journal_failed");
+    let objs = objects(&r.out);
+    assert_eq!(objs[0]["line"], "a");
+    assert_eq!(objs[1]["error"]["code"], "log.journal_failed");
+    assert_eq!(objs[1]["unit"], "x");
+}
+
+#[test]
+fn follow_ends_normally_at_the_limit_but_plain_tail_times_out() {
+    // A deadline that passes during the scan: follow ends (exit 0) ...
+    let (_d, p) = log_file(b"x\n");
+    let h = file_handle(&p);
+    run(&h, "tail", &[("follow", "true"), ("timeout_ms", "1")]).ok();
+    // ... while journalctl outliving a plain tail's deadline is exit 124.
+    let j = FakeJournal::new("", "", "sleep 30");
+    run(&j.handle("x"), "tail", &[("timeout_ms", "200")]).fails(124, "log.timeout");
 }

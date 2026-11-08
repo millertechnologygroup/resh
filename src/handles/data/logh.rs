@@ -67,9 +67,11 @@ static LOG_HELP: HandleHelp = HandleHelp {
 Shown with --json-pretty. The default mode=raw prints only the lines. For
 log://svc/<service> the JSON object has "service" in place of "path".
 lines is 1 to 1000000; pattern keeps the lines (among those) that contain
-the text. follow=true (mode=raw only) keeps printing new lines, across
-rotation and truncation, until interrupted or until timeout_ms (exit 124).
-timeout_ms defaults to 600000 without follow and to no limit with it."#,
+the text. follow=true keeps printing new lines, across rotation and
+truncation, until interrupted or for timeout_ms (then exit 0); with mode=json
+it prints one object per line, {"source", "path"|"unit", "line", "ts"}.
+timeout_ms defaults to 600000 without follow (exit 124 when it passes) and
+to no limit with it."#,
             ),
         }),
     }],
@@ -147,6 +149,9 @@ pub(crate) struct TailOpts {
     pub json: bool,
     pub follow: bool,
     pub timeout: Option<Duration>,
+    /// With `follow=true mode=json`: the fields naming the source in each
+    /// streamed object (`source` and `path`, or `source` and `unit`).
+    pub stream_source: serde_json::Map<String, Value>,
 }
 
 impl TailOpts {
@@ -247,11 +252,6 @@ pub(crate) fn parse_tail_args(args: &Args) -> Result<TailOpts, Fail> {
     let follow = lenient::bool_arg(args, "follow")
         .map_err(|e| Fail::invalid(e.to_string()))?
         .unwrap_or(false);
-    if follow && json {
-        return Err(Fail::invalid(
-            "follow=true prints lines as they arrive and works with mode=raw only",
-        ));
-    }
     let timeout = match u64_arg(args, "timeout_ms", 1, MAX_TIMEOUT_MS)? {
         Some(ms) => Some(Duration::from_millis(ms)),
         None if follow => None,
@@ -263,6 +263,7 @@ pub(crate) fn parse_tail_args(args: &Args) -> Result<TailOpts, Fail> {
         json,
         follow,
         timeout,
+        stream_source: serde_json::Map::new(),
     })
 }
 
@@ -412,6 +413,15 @@ impl LogHandle {
     fn fail(&self, io: &mut IoStreams, opts: &Option<&TailOpts>, f: Fail) -> Result<Status> {
         if let Some(o) = opts
             && o.json
+            && o.follow
+        {
+            // A stream of objects ends with an object carrying the error.
+            let mut obj = o.stream_source.clone();
+            obj.insert("error".into(), error_json(f.code, &f.msg));
+            obj.insert("ts".into(), json!(now_ms()));
+            writeln!(io.stdout, "{}", Value::Object(obj))?;
+        } else if let Some(o) = opts
+            && o.json
         {
             let mut obj = self.source_fields();
             obj.insert("error".into(), error_json(f.code, &f.msg));
@@ -444,10 +454,19 @@ impl LogHandle {
 
     fn tail(&self, args: &Args, io: &mut IoStreams) -> Result<Status> {
         let start = Instant::now();
-        let o = match parse_tail_args(args) {
+        let mut o = match parse_tail_args(args) {
             Ok(o) => o,
             Err(f) => return self.fail(io, &None, f),
         };
+        o.stream_source = match &self.target.source {
+            LogSourceKind::File(p) => {
+                json!({"source": "file", "path": p.to_string_lossy()})
+            }
+            LogSourceKind::Service(s) => json!({"source": "journal", "unit": s}),
+        }
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
         let result = match &self.target.source {
             LogSourceKind::File(path) => self.tail_file(path, &o, start, io),
             LogSourceKind::Service(service) => journal::tail(self, service, &o, start, io),
@@ -481,6 +500,8 @@ impl LogHandle {
         let deadline = o.deadline(start);
         let tail = match scan::last_lines(&file, end, o.lines, deadline) {
             Ok(t) => t,
+            // Following ends normally at timeout_ms, even during the scan.
+            Err(scan::ScanError::Timeout) if o.follow => return Ok(Outcome::Done),
             Err(scan::ScanError::Timeout) => return Ok(Outcome::Failed(Fail::timeout(o.timeout))),
             Err(scan::ScanError::Io(e)) => return Ok(Outcome::Failed(io_fail(path, "read", &e))),
         };
@@ -496,9 +517,12 @@ impl LogHandle {
             lines.pop();
             offset = start;
         }
-        self.print(io, o, lines)?;
         if !o.follow {
+            self.print(io, o, lines)?;
             return Ok(Outcome::Done);
+        }
+        for l in &lines {
+            emit(io, o, l)?;
         }
         follow_file(path, file, offset, o, deadline, io)
     }
@@ -610,7 +634,8 @@ fn follow_file(
             if let Some(rest) = lines.finish() {
                 emit(io, o, &rest)?;
             }
-            return Ok(Outcome::Failed(Fail::timeout(o.timeout)));
+            // timeout_ms is how long to follow: reaching it is the normal end.
+            return Ok(Outcome::Done);
         }
         let pause = deadline.map_or(FOLLOW_POLL, |d| FOLLOW_POLL.min(d - now));
         std::thread::sleep(pause);
@@ -622,10 +647,14 @@ fn follow_file(
             .map_err(|e| io_fail(path, "read", &e));
         match len {
             Ok(len) if len < offset => {
-                writeln!(
-                    io.stderr,
-                    "Warning: {} was truncated; reading it from the start",
-                    path.display()
+                event(
+                    io,
+                    o,
+                    "truncated",
+                    &format!(
+                        "{} was truncated; reading it from the start",
+                        path.display()
+                    ),
                 )?;
                 offset = 0;
             }
@@ -648,10 +677,11 @@ fn follow_file(
             if let Some(rest) = lines.finish() {
                 emit(io, o, &rest)?;
             }
-            writeln!(
-                io.stderr,
-                "Warning: {} was replaced; following the new file",
-                path.display()
+            event(
+                io,
+                o,
+                "rotated",
+                &format!("{} was replaced; following the new file", path.display()),
             )?;
             ident = new.metadata().map(|m| (m.dev(), m.ino())).ok();
             file = new;
@@ -660,13 +690,45 @@ fn follow_file(
     }
 }
 
-/// Prints one followed line if it passes the pattern, and flushes it.
-fn emit(io: &mut IoStreams, o: &TailOpts, line: &str) -> std::io::Result<()> {
-    if o.keeps(line) {
-        writeln!(io.stdout, "{line}")?;
-        io.stdout.flush()?;
+/// Milliseconds since the Unix epoch, now.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Prints one followed line if it passes the pattern, and flushes it: the
+/// line itself, or with `mode=json` one object
+/// `{"source", "path"|"unit", "line", "ts"}` per line.
+pub(crate) fn emit(io: &mut IoStreams, o: &TailOpts, line: &str) -> std::io::Result<()> {
+    if !o.keeps(line) {
+        return Ok(());
     }
-    Ok(())
+    if o.json {
+        let mut obj = o.stream_source.clone();
+        obj.insert("line".into(), json!(line));
+        obj.insert("ts".into(), json!(now_ms()));
+        writeln!(io.stdout, "{}", Value::Object(obj))?;
+    } else {
+        writeln!(io.stdout, "{line}")?;
+    }
+    io.stdout.flush()
+}
+
+/// Reports a change to a followed file: with `mode=json` an object
+/// `{"event", "source", "path", "ts"}` on stdout, otherwise a warning on
+/// stderr.
+fn event(io: &mut IoStreams, o: &TailOpts, name: &str, msg: &str) -> std::io::Result<()> {
+    if o.json {
+        let mut obj = serde_json::Map::new();
+        obj.insert("event".into(), json!(name));
+        obj.extend(o.stream_source.clone());
+        obj.insert("ts".into(), json!(now_ms()));
+        writeln!(io.stdout, "{}", Value::Object(obj))?;
+        io.stdout.flush()
+    } else {
+        writeln!(io.stderr, "Warning: {msg}")
+    }
 }
 
 impl Handle for LogHandle {

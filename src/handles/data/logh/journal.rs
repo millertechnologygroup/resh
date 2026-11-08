@@ -148,10 +148,12 @@ enum Msg {
 
 /// Stops journalctl and everything it started, without leaving the loss
 /// for `main` to report as an unknown outcome (reading changes nothing).
-fn stop(child: &mut Child) {
-    process::stop_tree("journalctl", child.id() as libc::pid_t);
+/// False when something outlived SIGKILL.
+fn stop(child: &mut Child) -> bool {
+    let stopped = process::stop_tree("journalctl", child.id() as libc::pid_t);
     let _ = process::take_lost();
     let _ = child.try_wait();
+    stopped != process::Stopped::StillRunning
 }
 
 fn follow(
@@ -163,7 +165,7 @@ fn follow(
 ) -> Result<Outcome> {
     let deadline = o.deadline(start);
     if deadline.is_some_and(|d| Instant::now() >= d) {
-        return Ok(Outcome::Failed(Fail::timeout(o.timeout)));
+        return Ok(Outcome::Done);
     }
     let mut cmd = command(h, service, o);
     cmd.stdin(Stdio::null())
@@ -249,7 +251,7 @@ fn follow(
             Ok(Msg::Out(chunk)) => {
                 split.push(&chunk, |l| print(io, l));
                 if let Err(e) = split.take_error() {
-                    stop(&mut child);
+                    let _ = stop(&mut child);
                     return Err(e.into());
                 }
                 if split.cut > 0 {
@@ -258,7 +260,7 @@ fn follow(
             }
             Ok(Msg::Err(line)) => {
                 if denied(&line) {
-                    stop(&mut child);
+                    let _ = stop(&mut child);
                     return Ok(Outcome::Failed(access_denied(service, &line)));
                 }
                 stderr.push_str(&line);
@@ -279,11 +281,20 @@ fn follow(
             return Ok(Outcome::Failed(failed(service, status.code(), &stderr)));
         }
         if deadline.is_some_and(|d| Instant::now() >= d) {
-            stop(&mut child);
+            let stopped = stop(&mut child);
             if let Some(rest) = split.finish() {
                 print(io, &rest)?;
             }
-            return Ok(Outcome::Failed(Fail::timeout(o.timeout)));
+            // timeout_ms is how long to follow: reaching it is the normal
+            // end, unless journalctl could not be stopped.
+            if stopped {
+                return Ok(Outcome::Done);
+            }
+            return Ok(Outcome::Failed(Fail::new(
+                exit::TIMEOUT,
+                "log.timeout",
+                "timeout_ms passed and journalctl could not be stopped; it may still be running",
+            )));
         }
     }
 }

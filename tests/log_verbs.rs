@@ -336,8 +336,6 @@ fn invalid_arguments_exit_2_and_read_nothing() {
         assert!(r.err.contains(needle), "{arg}: {}", r.err);
         assert!(r.out.is_empty(), "{arg}: {}", r.out);
     }
-    env.run(&[&stage, "follow=true", "mode=json"])
-        .fails(2, "log.invalid_argument");
     let r = env.run(&[&stage, "dry_run=true"]);
     assert_eq!(r.code, 2, "{}", r.err);
     assert!(r.err.contains("dry_run"), "{}", r.err);
@@ -431,12 +429,40 @@ fn follow_streams_lines_as_they_are_written() {
         assert_eq!(next(&rx), format!("live {i}"));
         assert!(child.try_wait().unwrap().is_none());
     }
+    // timeout_ms is the follow duration: reaching it is a normal end.
     let status = child.wait().unwrap();
-    assert_eq!(status.code(), Some(124));
+    assert_eq!(status.code(), Some(0));
     assert!(start.elapsed() >= Duration::from_millis(4000));
     let mut err = String::new();
     std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
-    assert!(err.starts_with("Error: [log.timeout] "), "{err}");
+    assert!(err.is_empty(), "{err}");
+}
+
+#[test]
+fn follow_json_streams_one_object_per_line() {
+    let env = Env::new();
+    let p = env.file("app.log", b"first\n");
+    let stage = url(&p, "tail");
+    let (mut child, rx) = spawn_follow(
+        &env,
+        &[&stage, "follow=true", "mode=json", "timeout_ms=3000"],
+    );
+    let parse = |l: String| -> Value { serde_json::from_str(&l).unwrap() };
+    let first = parse(next(&rx));
+    assert_eq!(first["source"], "file");
+    assert_eq!(first["path"], p.to_string_lossy().as_ref());
+    assert_eq!(first["line"], "first");
+    assert!(first["ts"].as_u64().unwrap() > 1_600_000_000_000);
+    append(&p, "second\n");
+    assert_eq!(parse(next(&rx))["line"], "second");
+    assert!(child.try_wait().unwrap().is_none(), "streamed before exit");
+    std::fs::write(&p, "").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    append(&p, "third\n");
+    let ev = parse(next(&rx));
+    assert_eq!(ev["event"], "truncated");
+    assert_eq!(parse(next(&rx))["line"], "third");
+    assert_eq!(child.wait().unwrap().code(), Some(0));
 }
 
 #[test]
@@ -547,6 +573,6 @@ fn journal_follow_streams_and_stops_journalctl() {
     assert_eq!(next(&rx), "old");
     assert_eq!(next(&rx), "new");
     assert!(child.try_wait().unwrap().is_none());
-    assert_eq!(child.wait().unwrap().code(), Some(124));
+    assert_eq!(child.wait().unwrap().code(), Some(0));
     assert_eq!(env.argv().last().map(String::as_str), Some("--follow"));
 }

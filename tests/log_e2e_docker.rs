@@ -163,11 +163,36 @@ echo "exit=$?""#,
     let msgs = messages(&r.out);
     assert_eq!(
         msgs,
-        ["hello 3", "later 7", "later 8", "exit=124"],
+        ["hello 3", "later 7", "later 8", "exit=0"],
         "{}",
         r.err
     );
-    assert!(r.err.contains("Error: [log.timeout] "), "{}", r.err);
+    assert!(r.err.is_empty(), "{}", r.err);
+}
+
+#[test]
+fn follow_json_streams_one_object_per_journal_entry() {
+    let r = container(
+        IMAGE,
+        r#"resh log://svc/demo.service.tail follow=true mode=json lines=1 timeout_ms=4000 &
+sleep 1.5
+mk demo.service "7" later
+wait $!
+echo "exit=$?" >&2"#,
+    );
+    assert!(r.err.contains("exit=0"), "{}", r.err);
+    let objs: Vec<Value> = r
+        .out
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(objs.len(), 2, "{}", r.out);
+    for (o, msg) in objs.iter().zip(["hello 3", "later 7"]) {
+        assert_eq!(o["source"], "journal");
+        assert_eq!(o["unit"], "demo.service");
+        assert!(o["line"].as_str().unwrap().ends_with(msg), "{o}");
+        assert!(o["ts"].as_u64().unwrap() > 1_600_000_000_000);
+    }
 }
 
 #[test]
@@ -228,5 +253,5 @@ printf 'd\n' >> /tmp/app.log
 wait $!
 echo "exit=$?""#,
     );
-    assert_eq!(r.out, "a\nb\nc\nd\nexit=124\n", "{}", r.err);
+    assert_eq!(r.out, "a\nb\nc\nd\nexit=0\n", "{}", r.err);
 }

@@ -26,6 +26,8 @@ Example Output:
   Shown with --json-pretty. The default mode=raw prints only the lines. For
   log://svc/<service> the JSON object has "service" in place of "path".
   lines is 1 to 1000000; pattern keeps the lines (among those) that contain
-  the text. follow=true (mode=raw only) keeps printing new lines, across
-  rotation and truncation, until interrupted or until timeout_ms (exit 124).
-  timeout_ms defaults to 600000 without follow and to no limit with it.
+  the text. follow=true keeps printing new lines, across rotation and
+  truncation, until interrupted or for timeout_ms (then exit 0); with mode=json
+  it prints one object per line, {"source", "path"|"unit", "line", "ts"}.
+  timeout_ms defaults to 600000 without follow (exit 124 when it passes) and
+  to no limit with it.
